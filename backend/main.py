@@ -487,17 +487,22 @@ async def start_scan(
 
     # Run analysis in background
     def run_scan():
+        import time
         scan_db = SessionLocal()
         try:
             processed = 0
+            successful = 0
             for ticker in tickers:
                 try:
                     analysis = analyze_stock(ticker)
                     if analysis:
                         # Apply price filter
                         if max_price and analysis["current_price"] > max_price:
+                            processed += 1
                             continue
                         save_stock_to_db(scan_db, analysis)
+                        successful += 1
+                        logger.info(f"Scanned {ticker}: score={analysis.get('canslim_score', 0):.1f}")
                     processed += 1
 
                     # Update progress
@@ -505,8 +510,12 @@ async def start_scan(
                     scan_job.tickers_processed = processed
                     scan_db.commit()
 
+                    # Delay to avoid rate limiting (2 seconds between requests)
+                    time.sleep(2)
+
                 except Exception as e:
                     logger.error(f"Error scanning {ticker}: {e}")
+                    processed += 1
 
             # Mark complete
             scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()

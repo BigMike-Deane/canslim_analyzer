@@ -9,6 +9,36 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional
 import time
+import requests
+
+
+def fetch_price_from_chart_api(ticker: str) -> dict:
+    """Fallback: fetch basic price data from Yahoo chart API"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {"interval": "1d", "range": "1y"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("chart", {}).get("result", [])
+            if result:
+                meta = result[0].get("meta", {})
+                indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
+                timestamps = result[0].get("timestamp", [])
+
+                return {
+                    "current_price": meta.get("regularMarketPrice") or meta.get("previousClose"),
+                    "high_52w": meta.get("fiftyTwoWeekHigh"),
+                    "name": meta.get("longName") or meta.get("shortName") or ticker,
+                    "close_prices": indicators.get("close", []),
+                    "volumes": indicators.get("volume", []),
+                    "timestamps": timestamps
+                }
+    except Exception:
+        pass
+    return {}
 
 
 class StockData:
@@ -49,63 +79,96 @@ class DataFetcher:
         self._cache: dict[str, StockData] = {}
         self._sp500_history: Optional[pd.DataFrame] = None
 
-    def get_stock_data(self, ticker: str, retries: int = 3) -> StockData:
+    def get_stock_data(self, ticker: str, retries: int = 2) -> StockData:
         """
         Fetch all required data for a stock.
         Uses caching to avoid redundant API calls.
+        Falls back to chart API if yfinance fails.
         """
         if ticker in self._cache:
             return self._cache[ticker]
 
         stock_data = StockData(ticker)
 
+        # First try the direct chart API (more reliable from servers)
+        chart_data = fetch_price_from_chart_api(ticker)
+        if chart_data.get("current_price"):
+            stock_data.current_price = chart_data["current_price"]
+            stock_data.high_52w = chart_data.get("high_52w", 0) or 0
+            stock_data.name = chart_data.get("name", ticker)
+
+            # Build price history from chart data
+            close_prices = chart_data.get("close_prices", [])
+            volumes = chart_data.get("volumes", [])
+            timestamps = chart_data.get("timestamps", [])
+
+            if len(close_prices) >= 50:
+                dates = pd.to_datetime(timestamps, unit='s')
+                stock_data.price_history = pd.DataFrame({
+                    'Close': close_prices,
+                    'Volume': volumes
+                }, index=dates)
+
+                # Calculate volume metrics from chart data
+                if volumes:
+                    recent_volumes = [v for v in volumes[-50:] if v]
+                    stock_data.avg_volume_50d = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
+                    stock_data.current_volume = volumes[-1] if volumes[-1] else 0
+
+        # Try yfinance for additional data (earnings, institutional, etc.)
         for attempt in range(retries):
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
 
-                # Basic info
-                stock_data.name = info.get('longName', info.get('shortName', ticker))
-                stock_data.sector = info.get('sector', 'Unknown')
-                stock_data.current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
-                stock_data.high_52w = info.get('fiftyTwoWeekHigh', 0)
+                # Only update if we got valid data
+                if info and info.get('regularMarketPrice'):
+                    # Basic info (update if not set from chart API)
+                    if not stock_data.name or stock_data.name == ticker:
+                        stock_data.name = info.get('longName', info.get('shortName', ticker))
+                    stock_data.sector = info.get('sector', 'Unknown')
+                    if not stock_data.current_price:
+                        stock_data.current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                    stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
+                    if not stock_data.high_52w:
+                        stock_data.high_52w = info.get('fiftyTwoWeekHigh', 0)
 
-                # Institutional ownership
-                stock_data.institutional_holders_pct = info.get('heldPercentInstitutions', 0) * 100
+                    # Institutional ownership
+                    inst_pct = info.get('heldPercentInstitutions', 0)
+                    stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
 
-                # Volume data
-                stock_data.avg_volume_50d = info.get('averageVolume', 0)
-                stock_data.current_volume = info.get('volume', info.get('regularMarketVolume', 0))
+                    # Volume data (if not set from chart)
+                    if not stock_data.avg_volume_50d:
+                        stock_data.avg_volume_50d = info.get('averageVolume', 0)
+                    if not stock_data.current_volume:
+                        stock_data.current_volume = info.get('volume', info.get('regularMarketVolume', 0))
 
-                # Analyst data
-                stock_data.analyst_target_price = info.get('targetMeanPrice', 0) or 0
-                stock_data.analyst_target_low = info.get('targetLowPrice', 0) or 0
-                stock_data.analyst_target_high = info.get('targetHighPrice', 0) or 0
-                stock_data.num_analyst_opinions = info.get('numberOfAnalystOpinions', 0) or 0
+                    # Analyst data
+                    stock_data.analyst_target_price = info.get('targetMeanPrice', 0) or 0
+                    stock_data.analyst_target_low = info.get('targetLowPrice', 0) or 0
+                    stock_data.analyst_target_high = info.get('targetHighPrice', 0) or 0
+                    stock_data.num_analyst_opinions = info.get('numberOfAnalystOpinions', 0) or 0
 
-                # Map recommendation key to readable string
-                rec_key = info.get('recommendationKey', '')
-                rec_map = {'strong_buy': 'strong buy', 'buy': 'buy', 'hold': 'hold',
-                           'sell': 'sell', 'strong_sell': 'strong sell'}
-                stock_data.analyst_recommendation = rec_map.get(rec_key, rec_key)
+                    # Map recommendation key to readable string
+                    rec_key = info.get('recommendationKey', '')
+                    rec_map = {'strong_buy': 'strong buy', 'buy': 'buy', 'hold': 'hold',
+                               'sell': 'sell', 'strong_sell': 'strong sell'}
+                    stock_data.analyst_recommendation = rec_map.get(rec_key, rec_key)
 
-                # Valuation metrics
-                stock_data.forward_pe = info.get('forwardPE', 0) or 0
-                stock_data.trailing_pe = info.get('trailingPE', 0) or 0
-                stock_data.peg_ratio = info.get('pegRatio', 0) or 0
-                stock_data.earnings_growth_estimate = info.get('earningsGrowth', 0) or 0
+                    # Valuation metrics
+                    stock_data.forward_pe = info.get('forwardPE', 0) or 0
+                    stock_data.trailing_pe = info.get('trailingPE', 0) or 0
+                    stock_data.peg_ratio = info.get('pegRatio', 0) or 0
+                    stock_data.earnings_growth_estimate = info.get('earningsGrowth', 0) or 0
 
-                # Price history (1 year)
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=365)
-                history = stock.history(start=start_date, end=end_date)
+                # Price history from yfinance if chart API didn't work
+                if stock_data.price_history.empty:
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=365)
+                    history = stock.history(start=start_date, end=end_date)
 
-                if len(history) < 50:
-                    stock_data.error_message = "Insufficient price history"
-                    break
-
-                stock_data.price_history = history
+                    if len(history) >= 50:
+                        stock_data.price_history = history
 
                 # Quarterly earnings (EPS)
                 try:
@@ -139,13 +202,20 @@ class DataFetcher:
                 except Exception:
                     pass
 
-                stock_data.is_valid = True
-                break
+                break  # Success with yfinance data
 
             except Exception as e:
                 stock_data.error_message = str(e)
                 if attempt < retries - 1:
-                    time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                    time.sleep(1)  # Wait before retry
+
+        # Mark as valid if we have basic price data (from chart API or yfinance)
+        if stock_data.current_price and not stock_data.price_history.empty and len(stock_data.price_history) >= 50:
+            stock_data.is_valid = True
+        elif stock_data.current_price:
+            # Partial data - still somewhat usable
+            stock_data.is_valid = True
+            stock_data.error_message = "Limited data available"
 
         self._cache[ticker] = stock_data
         return stock_data
