@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from canslim_scorer import CANSLIMScorer
 from data_fetcher import DataFetcher
 from growth_projector import GrowthProjector
-from sp500_tickers import get_sp500_tickers, get_russell_2000_sample, get_top_sp500_by_market_cap
+from sp500_tickers import get_sp500_tickers, get_russell2000_tickers, get_all_tickers
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -467,11 +467,11 @@ async def start_scan(
     elif source == "sp500":
         tickers = get_sp500_tickers()
     elif source == "top50":
-        tickers = get_top_sp500_by_market_cap(50)
+        tickers = get_sp500_tickers()[:50]  # First 50 S&P 500
     elif source == "russell":
-        tickers = get_russell_2000_sample()
+        tickers = get_russell2000_tickers()
     elif source == "all":
-        tickers = list(set(get_sp500_tickers() + get_russell_2000_sample()))
+        tickers = get_all_tickers()
     else:
         tickers = get_sp500_tickers()
 
