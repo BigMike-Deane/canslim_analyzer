@@ -28,7 +28,11 @@ COPY backend/ ./backend/
 COPY canslim_scorer.py ./
 COPY data_fetcher.py ./
 COPY growth_projector.py ./
-COPY email_sender.py ./
+COPY email_report.py ./
+COPY sp500_tickers.py ./
+COPY portfolio_analyzer.py ./
+COPY portfolio_manager.py ./
+COPY score_history.py ./
 
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
