@@ -202,6 +202,7 @@ function AddPositionModal({ onClose, onAdd }) {
 
 export default function Portfolio() {
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [positions, setPositions] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
 
@@ -214,6 +215,18 @@ export default function Portfolio() {
       console.error('Failed to fetch portfolio:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleRefresh = async () => {
+    try {
+      setRefreshing(true)
+      await api.refreshPortfolio()
+      await fetchPortfolio()
+    } catch (err) {
+      console.error('Failed to refresh portfolio:', err)
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -255,12 +268,31 @@ export default function Portfolio() {
     <div className="p-4">
       <div className="flex justify-between items-center mb-4">
         <h1 className="text-xl font-bold">Portfolio</h1>
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="btn-primary text-sm"
-        >
-          + Add
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="btn-secondary text-sm flex items-center gap-1"
+          >
+            {refreshing ? (
+              <>
+                <span className="animate-spin">⟳</span>
+                <span>Refreshing...</span>
+              </>
+            ) : (
+              <>
+                <span>🔄</span>
+                <span>Refresh</span>
+              </>
+            )}
+          </button>
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="btn-primary text-sm"
+          >
+            + Add
+          </button>
+        </div>
       </div>
 
       {positions.length === 0 ? (

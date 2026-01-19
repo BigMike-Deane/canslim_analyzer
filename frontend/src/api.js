@@ -80,6 +80,8 @@ export const api = {
 
   deletePosition: (id) => request(`/api/portfolio/${id}`, { method: 'DELETE' }),
 
+  refreshPortfolio: () => request('/api/portfolio/refresh', { method: 'POST' }),
+
   // Watchlist
   getWatchlist: () => request('/api/watchlist'),
 

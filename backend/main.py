@@ -644,6 +644,59 @@ async def remove_position(position_id: int, db: Session = Depends(get_db)):
     return {"message": f"Removed position in {position.ticker}"}
 
 
+@app.post("/api/portfolio/refresh")
+async def refresh_portfolio(db: Session = Depends(get_db)):
+    """Refresh all portfolio positions with current prices and CANSLIM scores"""
+    positions = db.query(PortfolioPosition).all()
+
+    updated = 0
+    errors = []
+
+    for position in positions:
+        try:
+            # Try to get from cache first
+            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+
+            # If not cached or no price, fetch fresh
+            if not stock or not stock.current_price:
+                analysis = analyze_stock(position.ticker)
+                if analysis:
+                    stock = save_stock_to_db(db, analysis)
+
+            if stock and stock.current_price:
+                position.current_price = stock.current_price
+                position.current_value = stock.current_price * position.shares
+                position.canslim_score = stock.canslim_score
+
+                if position.cost_basis:
+                    position.gain_loss = (stock.current_price - position.cost_basis) * position.shares
+                    position.gain_loss_pct = (stock.current_price - position.cost_basis) / position.cost_basis * 100
+
+                    # Set recommendation based on score and performance
+                    if stock.canslim_score and stock.canslim_score >= 70:
+                        position.recommendation = "buy" if position.gain_loss_pct < 20 else "hold"
+                    elif stock.canslim_score and stock.canslim_score >= 50:
+                        position.recommendation = "hold"
+                    else:
+                        position.recommendation = "sell" if position.gain_loss_pct < -10 else "hold"
+
+                updated += 1
+            else:
+                errors.append(position.ticker)
+
+        except Exception as e:
+            logger.error(f"Error refreshing {position.ticker}: {e}")
+            errors.append(position.ticker)
+
+    db.commit()
+
+    return {
+        "message": f"Refreshed {updated} positions",
+        "updated": updated,
+        "errors": errors
+    }
+
+
 # ============== Watchlist ==============
 
 @app.get("/api/watchlist")
