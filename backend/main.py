@@ -648,11 +648,9 @@ async def remove_position(position_id: int, db: Session = Depends(get_db)):
 async def refresh_portfolio(db: Session = Depends(get_db)):
     """Refresh all portfolio positions with current prices"""
     import yfinance as yf
-    import time
 
     positions = db.query(PortfolioPosition).all()
 
-    # Batch download all tickers at once to avoid rate limiting
     tickers = [p.ticker for p in positions]
     logger.info(f"Fetching prices for: {tickers}")
 
@@ -660,23 +658,28 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
     errors = []
 
     try:
-        # Download all tickers in one batch request
-        data = yf.download(tickers, period="5d", progress=False, group_by='ticker')
+        # Download all tickers in one batch request (default format)
+        data = yf.download(tickers, period="5d", progress=False)
+        logger.info(f"Download columns: {data.columns.tolist()}")
 
         for position in positions:
             try:
                 ticker = position.ticker
+                current_price = None
 
                 # Handle single vs multiple ticker response format
                 if len(tickers) == 1:
-                    ticker_data = data
+                    # Single ticker: columns are just ['Open', 'High', 'Low', 'Close', ...]
+                    if 'Close' in data.columns and not data['Close'].dropna().empty:
+                        current_price = float(data['Close'].dropna().iloc[-1])
                 else:
-                    ticker_data = data[ticker] if ticker in data.columns.get_level_values(0) else None
+                    # Multiple tickers: columns are MultiIndex like ('Close', 'AAPL')
+                    if 'Close' in data.columns:
+                        close_data = data['Close']
+                        if ticker in close_data.columns and not close_data[ticker].dropna().empty:
+                            current_price = float(close_data[ticker].dropna().iloc[-1])
 
-                if ticker_data is not None and not ticker_data.empty:
-                    # Get the most recent closing price
-                    current_price = float(ticker_data['Close'].dropna().iloc[-1])
-
+                if current_price:
                     position.current_price = current_price
                     position.current_value = current_price * position.shares
 
@@ -695,7 +698,7 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
                     updated += 1
                     logger.info(f"Updated {ticker}: ${current_price:.2f}")
                 else:
-                    errors.append(f"{ticker}: no data returned")
+                    errors.append(f"{ticker}: no price found")
 
             except Exception as e:
                 logger.error(f"Error processing {position.ticker}: {e}")
