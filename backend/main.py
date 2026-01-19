@@ -646,7 +646,9 @@ async def remove_position(position_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/portfolio/refresh")
 async def refresh_portfolio(db: Session = Depends(get_db)):
-    """Refresh all portfolio positions with current prices and CANSLIM scores"""
+    """Refresh all portfolio positions with current prices"""
+    import yfinance as yf
+
     positions = db.query(PortfolioPosition).all()
 
     updated = 0
@@ -654,39 +656,36 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
 
     for position in positions:
         try:
-            # Try to get from cache first
-            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            # Fetch current price directly from yfinance
+            ticker_obj = yf.Ticker(position.ticker)
+            info = ticker_obj.info
 
-            # If not cached or no price, fetch fresh
-            if not stock or not stock.current_price:
-                analysis = analyze_stock(position.ticker)
-                if analysis:
-                    stock = save_stock_to_db(db, analysis)
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
 
-            if stock and stock.current_price:
-                position.current_price = stock.current_price
-                position.current_value = stock.current_price * position.shares
-                position.canslim_score = stock.canslim_score
+            if current_price:
+                position.current_price = current_price
+                position.current_value = current_price * position.shares
 
                 if position.cost_basis:
-                    position.gain_loss = (stock.current_price - position.cost_basis) * position.shares
-                    position.gain_loss_pct = (stock.current_price - position.cost_basis) / position.cost_basis * 100
+                    position.gain_loss = (current_price - position.cost_basis) * position.shares
+                    position.gain_loss_pct = (current_price - position.cost_basis) / position.cost_basis * 100
 
-                    # Set recommendation based on score and performance
-                    if stock.canslim_score and stock.canslim_score >= 70:
-                        position.recommendation = "buy" if position.gain_loss_pct < 20 else "hold"
-                    elif stock.canslim_score and stock.canslim_score >= 50:
-                        position.recommendation = "hold"
+                    # Simple recommendation based on performance
+                    if position.gain_loss_pct >= 20:
+                        position.recommendation = "hold"  # Take some profits?
+                    elif position.gain_loss_pct <= -15:
+                        position.recommendation = "sell"  # Cut losses
                     else:
-                        position.recommendation = "sell" if position.gain_loss_pct < -10 else "hold"
+                        position.recommendation = "hold"
 
                 updated += 1
+                logger.info(f"Updated {position.ticker}: ${current_price:.2f}")
             else:
-                errors.append(position.ticker)
+                errors.append(f"{position.ticker}: no price data")
 
         except Exception as e:
             logger.error(f"Error refreshing {position.ticker}: {e}")
-            errors.append(position.ticker)
+            errors.append(f"{position.ticker}: {str(e)}")
 
     db.commit()
 
