@@ -100,13 +100,25 @@ def analyze_stock(ticker: str) -> dict:
         if not stock_data or not stock_data.is_valid:
             return None
 
-        # Get CANSLIM score
-        score_result = canslim_scorer.score_stock(ticker)
-        if not score_result:
+        # Get CANSLIM score (pass StockData object, not ticker string)
+        score_obj = canslim_scorer.score_stock(stock_data)
+        if not score_obj:
             return None
 
-        # Get growth projection
-        growth_result = growth_projector.project_growth(ticker)
+        # Convert score object to dict for easier handling
+        score_result = {
+            "total_score": score_obj.total_score,
+            "C": {"score": score_obj.c_score, "detail": score_obj.c_detail},
+            "A": {"score": score_obj.a_score, "detail": score_obj.a_detail},
+            "N": {"score": score_obj.n_score, "detail": score_obj.n_detail},
+            "S": {"score": score_obj.s_score, "detail": score_obj.s_detail},
+            "L": {"score": score_obj.l_score, "detail": score_obj.l_detail},
+            "I": {"score": score_obj.i_score, "detail": score_obj.i_detail},
+            "M": {"score": score_obj.m_score, "detail": score_obj.m_detail},
+        }
+
+        # Get growth projection (pass StockData and CANSLIMScore objects)
+        growth_obj = growth_projector.project_growth(stock_data, score_obj)
 
         return {
             "ticker": ticker,
@@ -140,9 +152,15 @@ def analyze_stock(ticker: str) -> dict:
             },
 
             # Growth projection
-            "projected_growth": growth_result.get("projected_growth_pct", 0) if growth_result else 0,
-            "growth_confidence": growth_result.get("confidence", "low") if growth_result else "low",
-            "growth_details": growth_result if growth_result else {},
+            "projected_growth": getattr(growth_obj, 'projected_growth_pct', 0) if growth_obj else 0,
+            "growth_confidence": getattr(growth_obj, 'confidence', "low") if growth_obj else "low",
+            "growth_details": {
+                "momentum": getattr(growth_obj, 'momentum_projection', 0),
+                "earnings": getattr(growth_obj, 'earnings_projection', 0),
+                "analyst": getattr(growth_obj, 'analyst_projection', 0),
+                "analyst_target": getattr(growth_obj, 'analyst_target', 0),
+                "analyst_upside": getattr(growth_obj, 'analyst_upside', 0),
+            } if growth_obj else {},
 
             "analyzed_at": datetime.utcnow().isoformat()
         }
