@@ -542,11 +542,11 @@ async def get_job_status(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found")
 
     return {
-        "id": job.id,
+        "job_id": job.id,
         "type": job.job_type,
         "status": job.status,
-        "progress": job.tickers_processed,
-        "total": job.tickers_total,
+        "tickers_processed": job.tickers_processed or 0,
+        "tickers_total": job.tickers_total or 0,
         "percent": round(job.tickers_processed / job.tickers_total * 100, 1) if job.tickers_total else 0,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
