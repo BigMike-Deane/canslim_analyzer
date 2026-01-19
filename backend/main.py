@@ -644,69 +644,74 @@ async def remove_position(position_id: int, db: Session = Depends(get_db)):
     return {"message": f"Removed position in {position.ticker}"}
 
 
+def fetch_price_yahoo_chart(ticker: str) -> float | None:
+    """Fetch current price using Yahoo Finance chart API (less rate-limited)"""
+    import requests
+    import time
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {"interval": "1d", "range": "5d"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("chart", {}).get("result", [])
+            if result:
+                meta = result[0].get("meta", {})
+                price = meta.get("regularMarketPrice") or meta.get("previousClose")
+                return float(price) if price else None
+        else:
+            logger.warning(f"{ticker}: Yahoo chart API returned {resp.status_code}")
+    except Exception as e:
+        logger.error(f"{ticker}: chart API error: {e}")
+
+    return None
+
+
 @app.post("/api/portfolio/refresh")
 async def refresh_portfolio(db: Session = Depends(get_db)):
     """Refresh all portfolio positions with current prices"""
-    import yfinance as yf
+    import time
 
     positions = db.query(PortfolioPosition).all()
-
-    tickers = [p.ticker for p in positions]
-    logger.info(f"Fetching prices for: {tickers}")
+    logger.info(f"Fetching prices for {len(positions)} positions")
 
     updated = 0
     errors = []
 
-    try:
-        # Download all tickers in one batch request (default format)
-        data = yf.download(tickers, period="5d", progress=False)
-        logger.info(f"Download columns: {data.columns.tolist()}")
+    for position in positions:
+        try:
+            current_price = fetch_price_yahoo_chart(position.ticker)
 
-        for position in positions:
-            try:
-                ticker = position.ticker
-                current_price = None
+            if current_price:
+                position.current_price = current_price
+                position.current_value = current_price * position.shares
 
-                # Handle single vs multiple ticker response format
-                if len(tickers) == 1:
-                    # Single ticker: columns are just ['Open', 'High', 'Low', 'Close', ...]
-                    if 'Close' in data.columns and not data['Close'].dropna().empty:
-                        current_price = float(data['Close'].dropna().iloc[-1])
-                else:
-                    # Multiple tickers: columns are MultiIndex like ('Close', 'AAPL')
-                    if 'Close' in data.columns:
-                        close_data = data['Close']
-                        if ticker in close_data.columns and not close_data[ticker].dropna().empty:
-                            current_price = float(close_data[ticker].dropna().iloc[-1])
+                if position.cost_basis:
+                    position.gain_loss = (current_price - position.cost_basis) * position.shares
+                    position.gain_loss_pct = (current_price - position.cost_basis) / position.cost_basis * 100
 
-                if current_price:
-                    position.current_price = current_price
-                    position.current_value = current_price * position.shares
+                    # Simple recommendation based on performance
+                    if position.gain_loss_pct >= 20:
+                        position.recommendation = "hold"
+                    elif position.gain_loss_pct <= -15:
+                        position.recommendation = "sell"
+                    else:
+                        position.recommendation = "hold"
 
-                    if position.cost_basis:
-                        position.gain_loss = (current_price - position.cost_basis) * position.shares
-                        position.gain_loss_pct = (current_price - position.cost_basis) / position.cost_basis * 100
+                updated += 1
+                logger.info(f"Updated {position.ticker}: ${current_price:.2f}")
+            else:
+                errors.append(f"{position.ticker}: no price found")
 
-                        # Simple recommendation based on performance
-                        if position.gain_loss_pct >= 20:
-                            position.recommendation = "hold"
-                        elif position.gain_loss_pct <= -15:
-                            position.recommendation = "sell"
-                        else:
-                            position.recommendation = "hold"
+            # Small delay between requests to avoid rate limiting
+            time.sleep(0.3)
 
-                    updated += 1
-                    logger.info(f"Updated {ticker}: ${current_price:.2f}")
-                else:
-                    errors.append(f"{ticker}: no price found")
-
-            except Exception as e:
-                logger.error(f"Error processing {position.ticker}: {e}")
-                errors.append(f"{position.ticker}: {str(e)}")
-
-    except Exception as e:
-        logger.error(f"Batch download failed: {e}")
-        errors.append(f"Batch download failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error processing {position.ticker}: {e}")
+            errors.append(f"{position.ticker}: {str(e)}")
 
     db.commit()
 
