@@ -95,9 +95,9 @@ growth_projector = GrowthProjector(data_fetcher)
 def analyze_stock(ticker: str) -> dict:
     """Analyze a single stock and return full results"""
     try:
-        # Get stock data
+        # Get stock data (returns StockData object)
         stock_data = data_fetcher.get_stock_data(ticker)
-        if not stock_data:
+        if not stock_data or not stock_data.is_valid:
             return None
 
         # Get CANSLIM score
@@ -110,13 +110,13 @@ def analyze_stock(ticker: str) -> dict:
 
         return {
             "ticker": ticker,
-            "name": stock_data.get("name", ticker),
-            "sector": stock_data.get("sector", "Unknown"),
-            "industry": stock_data.get("industry", "Unknown"),
-            "current_price": stock_data.get("price", 0),
-            "market_cap": stock_data.get("market_cap", 0),
-            "week_52_high": stock_data.get("52_week_high", 0),
-            "week_52_low": stock_data.get("52_week_low", 0),
+            "name": getattr(stock_data, 'name', ticker),
+            "sector": getattr(stock_data, 'sector', "Unknown"),
+            "industry": getattr(stock_data, 'sector', "Unknown"),  # StockData doesn't have industry
+            "current_price": getattr(stock_data, 'current_price', 0),
+            "market_cap": getattr(stock_data, 'shares_outstanding', 0) * getattr(stock_data, 'current_price', 0),
+            "week_52_high": getattr(stock_data, 'high_52w', 0),
+            "week_52_low": 0,  # StockData doesn't have 52w low
 
             # CANSLIM scores
             "canslim_score": score_result.get("total_score", 0),
