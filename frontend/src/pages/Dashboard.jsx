@@ -48,8 +48,8 @@ function MarketStatus({ market }) {
       <div className="mt-3 pt-3 border-t border-dark-700">
         <div className="flex items-center justify-between">
           <span className="text-dark-400 text-sm">M Score</span>
-          <span className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(market.score)}`}>
-            {formatScore(market.score)}
+          <span className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass((market.score / 15) * 100)}`}>
+            {market.score != null ? `${market.score.toFixed(1)}/15` : '-'}
           </span>
         </div>
       </div>

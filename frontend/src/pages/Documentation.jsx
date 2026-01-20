@@ -247,6 +247,32 @@ export default function Documentation() {
         </p>
       </div>
 
+      <div className="card mb-4 bg-cyan-500/10 border border-cyan-500/30">
+        <h2 className="font-semibold text-cyan-400 mb-2">Market Direction (Dashboard)</h2>
+        <p className="text-dark-300 text-sm mb-3">
+          The Market Direction box on the Dashboard shows the overall market health using the S&P 500 (SPY) as a benchmark.
+          O'Neil emphasized that 75% of stocks follow the general market direction, making this crucial for timing.
+        </p>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-start gap-2">
+            <span className="text-green-400 font-bold">BULLISH</span>
+            <span className="text-dark-400">SPY is above both 50-day and 200-day moving averages - strong uptrend</span>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="text-yellow-400 font-bold">NEUTRAL</span>
+            <span className="text-dark-400">SPY is between the moving averages - mixed signals, proceed with caution</span>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="text-red-400 font-bold">BEARISH</span>
+            <span className="text-dark-400">SPY is below both moving averages - downtrend, consider staying in cash</span>
+          </div>
+        </div>
+        <p className="text-dark-400 text-sm mt-3">
+          The M Score (15 pts max) reflects this analysis and is applied to every stock's CANSLIM score.
+          Even great stocks struggle in bear markets.
+        </p>
+      </div>
+
       <h2 className="text-lg font-semibold mb-3">Scoring Breakdown</h2>
       <p className="text-dark-400 text-sm mb-4">
         Total score is out of 100 points. Tap each criterion to see detailed scoring logic.
