@@ -1049,10 +1049,9 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
 
                 # Update CANSLIM score from stock data
                 if stock:
-                    old_score = position.canslim_score
                     position.canslim_score = stock.canslim_score
-                    if old_score and stock.canslim_score:
-                        position.score_change = stock.canslim_score - old_score
+                    # Use stock's scan-to-scan score_change (matches Dashboard display)
+                    position.score_change = stock.score_change
 
                     # Smarter recommendation based on score + performance
                     score = stock.canslim_score or 0
