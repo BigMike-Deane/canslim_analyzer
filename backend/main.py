@@ -1326,19 +1326,31 @@ async def get_ai_portfolio_history(
 ):
     """Get AI Portfolio performance history for charts - includes all snapshots from scans"""
     from datetime import timedelta, datetime as dt
+    from sqlalchemy import or_
+
     start_date = dt.utcnow() - timedelta(days=days)
+    start_date_only = date.today() - timedelta(days=days)
 
-    # Get all snapshots (multiple per day now)
+    # Get all snapshots - include both timestamp-based (new) and date-based (old/migrated)
     snapshots = db.query(AIPortfolioSnapshot).filter(
-        AIPortfolioSnapshot.timestamp >= start_date
-    ).order_by(AIPortfolioSnapshot.timestamp).all()
-
-    # Fallback: if no timestamp-based data, try date-based (for migration)
-    if not snapshots:
-        start_date_only = date.today() - timedelta(days=days)
-        snapshots = db.query(AIPortfolioSnapshot).filter(
+        or_(
+            AIPortfolioSnapshot.timestamp >= start_date,
             AIPortfolioSnapshot.date >= start_date_only
-        ).order_by(AIPortfolioSnapshot.date).all()
+        )
+    ).order_by(
+        AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
+        AIPortfolioSnapshot.date.asc()
+    ).all()
+
+    # Sort properly: use timestamp if available, otherwise use date
+    def sort_key(s):
+        if s.timestamp:
+            return s.timestamp
+        elif s.date:
+            return dt.combine(s.date, dt.min.time())
+        return dt.min
+
+    snapshots = sorted(snapshots, key=sort_key)
 
     return [{
         "timestamp": s.timestamp.isoformat() if s.timestamp else None,
