@@ -346,6 +346,134 @@ export default function Documentation() {
         </div>
       </div>
 
+      <div className="my-6 border-t border-dark-700" />
+
+      <h2 className="text-lg font-semibold mb-3">Portfolio Recommendations</h2>
+      <p className="text-dark-400 text-sm mb-4">
+        The BUY/HOLD/SELL recommendations for portfolio positions use a weighted signal system analyzing 5 factors.
+      </p>
+
+      <div className="card mb-4">
+        <h3 className="font-semibold mb-3">Factor 1: CANSLIM Score</h3>
+        <p className="text-dark-400 text-sm mb-2">Strong influence on the recommendation:</p>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-dark-400">Score &ge; 70</span>
+            <span className="text-green-400">+2 buy signals</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Score 50-69</span>
+            <span className="text-yellow-400">+1 hold signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Score 35-49</span>
+            <span className="text-yellow-400">+1 hold signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Score &lt; 35</span>
+            <span className="text-red-400">+2 sell signals</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-4">
+        <h3 className="font-semibold mb-3">Factor 2: Projected Growth</h3>
+        <p className="text-dark-400 text-sm mb-2">6-month growth projection impact:</p>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-dark-400">&ge; 20% projected</span>
+            <span className="text-green-400">+2 buy signals</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">10-20% projected</span>
+            <span className="text-green-400">+1 buy signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">0-10% projected</span>
+            <span className="text-yellow-400">+1 hold signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">-10% to 0%</span>
+            <span className="text-red-400">+1 sell signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">&lt; -10% projected</span>
+            <span className="text-red-400">+2 sell signals</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-4">
+        <h3 className="font-semibold mb-3">Factor 3: Current Gain/Loss</h3>
+        <p className="text-dark-400 text-sm mb-2">Your position's performance:</p>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-dark-400">Large loss (&lt; -20%) + weak score</span>
+            <span className="text-red-400">+2 sell signals</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Moderate loss (-10% to -20%) + weak outlook</span>
+            <span className="text-red-400">+1 sell signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Most other gain/loss scenarios</span>
+            <span className="text-yellow-400">+1 hold signal</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-4">
+        <h3 className="font-semibold mb-3">Factor 4: Analyst Sentiment</h3>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-dark-400">Analyst upside &ge; 30%</span>
+            <span className="text-green-400">+1 buy signal</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Analyst downside &le; -10%</span>
+            <span className="text-red-400">+1 sell signal</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-4">
+        <h3 className="font-semibold mb-3">Factor 5: 52-Week High Proximity</h3>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-dark-400">Within 5% of 52-week high</span>
+            <span className="text-green-400">+1 buy signal (momentum)</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">40%+ below high + good score</span>
+            <span className="text-green-400">+1 buy signal (value)</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">40%+ below high + weak score</span>
+            <span className="text-red-400">+1 sell signal</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-4 bg-dark-700/50">
+        <h3 className="font-semibold mb-3">Final Decision Logic</h3>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-start gap-2">
+            <span className="px-2 py-1 rounded bg-red-500/20 text-red-400 text-xs font-medium">SELL</span>
+            <span className="text-dark-300">4+ sell signals, OR 3+ sells with 0 buys, OR sells &gt; buys + 1</span>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="px-2 py-1 rounded bg-green-500/20 text-green-400 text-xs font-medium">BUY MORE</span>
+            <span className="text-dark-300">4+ buy signals, OR 3+ buys with 0 sells, OR buys &gt; sells + 1</span>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-400 text-xs font-medium">HOLD</span>
+            <span className="text-dark-300">Everything else - mixed signals or balanced outlook</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="my-6 border-t border-dark-700" />
+
       <div className="card bg-dark-700/50">
         <h3 className="font-semibold mb-2">Data Sources</h3>
         <ul className="text-dark-400 text-sm space-y-1">
