@@ -92,9 +92,8 @@ def run_continuous_scan():
 
             canslim_result = canslim_scorer.score_stock(stock_data)
             projection = growth_projector.project_growth(
-                ticker=ticker,
                 stock_data=stock_data,
-                canslim_score=canslim_result.total_score
+                canslim_score=canslim_result
             )
 
             return {
