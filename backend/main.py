@@ -1042,6 +1042,11 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
                 logger.error(f"Error scanning {position.ticker}: {e}")
                 errors.append(f"{position.ticker}: scan failed - {str(e)}")
 
+    # Calculate total portfolio value for position weight calculations
+    total_value = sum(p.current_value or 0 for p in positions)
+    if total_value == 0:
+        total_value = 10000  # Default for calculations
+
     # Second pass: update all positions with current prices and scores
     for position in positions:
         try:
@@ -1064,16 +1069,30 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
                     # Calculate score_change from historical StockScore entries (matches Dashboard)
                     position.score_change = get_score_change_from_history(db, stock.id)
 
-                    # Smarter recommendation based on score + performance
+                    # Smart recommendation matching gameplan logic
                     score = stock.canslim_score or 0
+                    projected = stock.projected_growth or 0
                     gain_pct = position.gain_loss_pct or 0
+                    position_weight = (position.current_value or 0) / total_value * 100
 
+                    # SELL: Weak fundamentals with losses
                     if score < 35 and gain_pct < -10:
                         position.recommendation = "sell"
-                    elif score >= 70 and gain_pct > -5:
-                        position.recommendation = "buy"
+                    elif score < 40 and projected < -5:
+                        position.recommendation = "sell"
                     elif score < 50 and gain_pct < -15:
                         position.recommendation = "sell"
+                    # TRIM: Big winners - take profits
+                    elif gain_pct >= 100:
+                        position.recommendation = "trim"
+                    elif gain_pct >= 50 and position_weight >= 15:
+                        position.recommendation = "trim"
+                    # ADD: Strong stock on pullback with room to grow
+                    elif score >= 65 and projected >= 10 and -15 <= gain_pct <= 5 and position_weight < 12:
+                        position.recommendation = "add"
+                    # BUY: Strong fundamentals in profit
+                    elif score >= 70 and gain_pct > -5:
+                        position.recommendation = "buy"
                     else:
                         position.recommendation = "hold"
 

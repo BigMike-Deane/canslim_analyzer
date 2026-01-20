@@ -51,7 +51,9 @@ function PositionRow({ position, onDelete }) {
   const getRecommendationStyle = (rec) => {
     switch (rec) {
       case 'buy': return 'bg-green-500/20 text-green-400'
+      case 'add': return 'bg-blue-500/20 text-blue-400'
       case 'hold': return 'bg-yellow-500/20 text-yellow-400'
+      case 'trim': return 'bg-orange-500/20 text-orange-400'
       case 'sell': return 'bg-red-500/20 text-red-400'
       default: return 'bg-dark-600 text-dark-300'
     }
