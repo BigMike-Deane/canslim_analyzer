@@ -1,0 +1,267 @@
+"""
+CANSLIM Continuous Scanning Scheduler
+
+Runs automatic scans at configurable intervals to keep stock data fresh.
+Stays within FMP API rate limits (300 calls/min).
+"""
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from datetime import datetime
+import logging
+import os
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Scheduler instance
+scheduler = BackgroundScheduler()
+
+# State tracking
+_scan_config = {
+    "enabled": False,
+    "source": "sp500",  # sp500, top50, russell, all
+    "interval_minutes": 15,
+    "last_scan_start": None,
+    "last_scan_end": None,
+    "stocks_scanned": 0,
+    "is_scanning": False
+}
+
+
+def get_scan_status():
+    """Get current scheduler status"""
+    return {
+        **_scan_config,
+        "scheduler_running": scheduler.running,
+        "next_run": str(scheduler.get_job("continuous_scan").next_run_time) if scheduler.get_job("continuous_scan") else None
+    }
+
+
+def run_continuous_scan():
+    """Execute a scan of the configured stock universe"""
+    from backend.database import SessionLocal, Stock
+    from sp500_tickers import get_sp500_tickers, get_russell2000_tickers, get_all_tickers
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+    import random
+
+    if _scan_config["is_scanning"]:
+        logger.info("Scan already in progress, skipping...")
+        return
+
+    _scan_config["is_scanning"] = True
+    _scan_config["last_scan_start"] = datetime.now().isoformat()
+
+    logger.info(f"Starting continuous scan ({_scan_config['source']})...")
+
+    # Get tickers based on source
+    source = _scan_config["source"]
+    if source == "top50":
+        tickers = get_sp500_tickers()[:50]
+    elif source == "sp500":
+        tickers = get_sp500_tickers()
+    elif source == "russell":
+        tickers = get_russell2000_tickers()
+    elif source == "all":
+        tickers = get_all_tickers()
+    else:
+        tickers = get_sp500_tickers()
+
+    logger.info(f"Scanning {len(tickers)} stocks...")
+
+    # Import here to avoid circular imports
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    from canslim_scorer import CANSLIMScorer
+    from data_fetcher import DataFetcher
+    from growth_projector import GrowthProjector
+
+    data_fetcher = DataFetcher()
+    canslim_scorer = CANSLIMScorer(data_fetcher)
+    growth_projector = GrowthProjector(data_fetcher)
+
+    def analyze_stock(ticker: str) -> dict:
+        """Analyze a single stock"""
+        try:
+            stock_data = data_fetcher.get_stock_data(ticker)
+            if not stock_data or not stock_data.is_valid:
+                return None
+
+            canslim_result = canslim_scorer.calculate_score(stock_data)
+            projection = growth_projector.project_growth(
+                ticker=ticker,
+                stock_data=stock_data,
+                canslim_score=canslim_result.total_score
+            )
+
+            return {
+                "ticker": ticker,
+                "company_name": stock_data.company_name,
+                "sector": stock_data.sector,
+                "industry": stock_data.industry,
+                "current_price": stock_data.current_price,
+                "market_cap": stock_data.market_cap,
+                "canslim_score": canslim_result.total_score,
+                "c_score": canslim_result.c_score,
+                "a_score": canslim_result.a_score,
+                "n_score": canslim_result.n_score,
+                "s_score": canslim_result.s_score,
+                "l_score": canslim_result.l_score,
+                "i_score": canslim_result.i_score,
+                "m_score": canslim_result.m_score,
+                "score_details": canslim_result.details,
+                "projected_growth": projection.get("projected_growth_pct"),
+                "confidence": projection.get("confidence"),
+                "analyst_target": stock_data.analyst_target,
+                "pe_ratio": stock_data.pe_ratio,
+                "week_52_high": stock_data.high_52w,
+                "week_52_low": stock_data.low_52w,
+                "relative_strength": canslim_result.details.get("l", {}).get("rs_rating"),
+                "institutional_ownership": canslim_result.details.get("i", {}).get("inst_ownership"),
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing {ticker}: {e}")
+            return None
+
+    def save_stock_to_db(db, analysis: dict):
+        """Save analysis to database"""
+        from backend.database import Stock, StockScore
+
+        stock = db.query(Stock).filter(Stock.ticker == analysis["ticker"]).first()
+        if not stock:
+            stock = Stock(ticker=analysis["ticker"])
+            db.add(stock)
+
+        # Update stock data
+        stock.company_name = analysis.get("company_name")
+        stock.sector = analysis.get("sector")
+        stock.industry = analysis.get("industry")
+        stock.current_price = analysis.get("current_price")
+        stock.market_cap = analysis.get("market_cap")
+        stock.canslim_score = analysis.get("canslim_score")
+        stock.c_score = analysis.get("c_score")
+        stock.a_score = analysis.get("a_score")
+        stock.n_score = analysis.get("n_score")
+        stock.s_score = analysis.get("s_score")
+        stock.l_score = analysis.get("l_score")
+        stock.i_score = analysis.get("i_score")
+        stock.m_score = analysis.get("m_score")
+        stock.score_details = analysis.get("score_details")
+        stock.projected_growth = analysis.get("projected_growth")
+        stock.confidence = analysis.get("confidence")
+        stock.analyst_target = analysis.get("analyst_target")
+        stock.pe_ratio = analysis.get("pe_ratio")
+        stock.week_52_high = analysis.get("week_52_high")
+        stock.week_52_low = analysis.get("week_52_low")
+        stock.relative_strength = analysis.get("relative_strength")
+        stock.institutional_ownership = analysis.get("institutional_ownership")
+        stock.last_updated = datetime.utcnow()
+
+        db.commit()
+        return stock
+
+    processed = 0
+    successful = 0
+
+    def process_single_stock(ticker):
+        """Process a single stock with rate limiting"""
+        nonlocal processed, successful
+        # Delay to stay under FMP's 300 calls/min limit (4 calls/stock)
+        time.sleep(random.uniform(1.5, 2.5))
+
+        try:
+            thread_db = SessionLocal()
+            analysis = analyze_stock(ticker)
+            if analysis:
+                save_stock_to_db(thread_db, analysis)
+                successful += 1
+            thread_db.close()
+            processed += 1
+            return ticker, True
+        except Exception as e:
+            logger.error(f"Error processing {ticker}: {e}")
+            processed += 1
+            return ticker, False
+
+    try:
+        # Use 6 workers to stay within rate limits
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(process_single_stock, t): t for t in tickers}
+
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Thread error for {ticker}: {e}")
+
+        _scan_config["stocks_scanned"] = successful
+        logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks")
+
+    except Exception as e:
+        logger.error(f"Scan error: {e}")
+    finally:
+        _scan_config["is_scanning"] = False
+        _scan_config["last_scan_end"] = datetime.now().isoformat()
+
+
+def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):
+    """Start continuous scanning with specified interval"""
+    _scan_config["enabled"] = True
+    _scan_config["source"] = source
+    _scan_config["interval_minutes"] = interval_minutes
+
+    # Remove existing job if any
+    if scheduler.get_job("continuous_scan"):
+        scheduler.remove_job("continuous_scan")
+
+    # Add the scan job
+    scheduler.add_job(
+        run_continuous_scan,
+        IntervalTrigger(minutes=interval_minutes),
+        id="continuous_scan",
+        name=f"Continuous CANSLIM Scan ({source})",
+        replace_existing=True
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
+
+    # Run first scan immediately
+    from threading import Thread
+    Thread(target=run_continuous_scan).start()
+
+    return get_scan_status()
+
+
+def stop_continuous_scanning():
+    """Stop continuous scanning"""
+    _scan_config["enabled"] = False
+
+    if scheduler.get_job("continuous_scan"):
+        scheduler.remove_job("continuous_scan")
+
+    logger.info("Continuous scanning stopped")
+    return get_scan_status()
+
+
+def update_scan_config(source: str = None, interval_minutes: int = None):
+    """Update scan configuration"""
+    if source:
+        _scan_config["source"] = source
+    if interval_minutes:
+        _scan_config["interval_minutes"] = interval_minutes
+
+    # If enabled, restart with new config
+    if _scan_config["enabled"]:
+        return start_continuous_scanning(
+            _scan_config["source"],
+            _scan_config["interval_minutes"]
+        )
+
+    return get_scan_status()

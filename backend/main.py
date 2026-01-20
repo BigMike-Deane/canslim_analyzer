@@ -712,6 +712,43 @@ async def get_job_status(job_id: int, db: Session = Depends(get_db)):
     }
 
 
+# ============== Continuous Scanning ==============
+
+from backend.scheduler import (
+    get_scan_status, start_continuous_scanning,
+    stop_continuous_scanning, update_scan_config
+)
+
+@app.get("/api/scanner/status")
+async def get_scanner_status():
+    """Get continuous scanner status"""
+    return get_scan_status()
+
+
+@app.post("/api/scanner/start")
+async def start_scanner(
+    source: str = Query("sp500", enum=["sp500", "top50", "russell", "all"]),
+    interval: int = Query(15, ge=5, le=120, description="Scan interval in minutes")
+):
+    """Start continuous scanning"""
+    return start_continuous_scanning(source=source, interval_minutes=interval)
+
+
+@app.post("/api/scanner/stop")
+async def stop_scanner():
+    """Stop continuous scanning"""
+    return stop_continuous_scanning()
+
+
+@app.patch("/api/scanner/config")
+async def update_scanner_config(
+    source: str = Query(None, enum=["sp500", "top50", "russell", "all"]),
+    interval: int = Query(None, ge=5, le=120)
+):
+    """Update scanner configuration"""
+    return update_scan_config(source=source, interval_minutes=interval)
+
+
 # ============== Portfolio ==============
 
 @app.get("/api/portfolio")
