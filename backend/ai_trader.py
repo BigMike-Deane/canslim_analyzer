@@ -65,6 +65,9 @@ def fetch_live_price(ticker: str) -> float | None:
 
     # Try FMP first (more reliable, you have API key)
     fmp_api_key = os.environ.get('FMP_API_KEY', '')
+    if not fmp_api_key:
+        logger.warning(f"FMP_API_KEY not set, will use Yahoo for {ticker}")
+
     if fmp_api_key:
         try:
             url = f"https://financialmodelingprep.com/stable/quote?symbol={ticker}&apikey={fmp_api_key}"
@@ -353,14 +356,18 @@ def evaluate_buys(db: Session) -> list:
 def run_ai_trading_cycle(db: Session) -> dict:
     """
     Run a complete AI trading cycle:
-    1. Update all position prices
+    1. Update existing position prices (if any)
     2. Evaluate and execute sells
-    3. Evaluate and execute buys
+    3. Evaluate and execute buys (using cached data for decisions, live prices for execution)
     4. Take a portfolio snapshot
     """
+    import time
+
     config = get_or_create_config(db)
+    logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}")
 
     if not config.is_active:
+        logger.info("AI Portfolio is not active, skipping cycle")
         return {"status": "inactive", "message": "AI Portfolio is not active"}
 
     results = {
@@ -370,16 +377,20 @@ def run_ai_trading_cycle(db: Session) -> dict:
         "buys_considered": 0
     }
 
-    # Update position prices with live data
-    update_position_prices(db, use_live_prices=True)
-
-    # Get current position count
+    # Get current positions
     positions = db.query(AIPortfolioPosition).all()
     position_count = len(positions)
+    logger.info(f"Current positions: {position_count}")
+
+    # Only fetch live prices for existing positions (skip if none)
+    if position_count > 0:
+        logger.info("Updating existing position prices...")
+        update_position_prices(db, use_live_prices=True)
 
     # Evaluate and execute sells
     sells = evaluate_sells(db)
     results["sells_considered"] = len(sells)
+    logger.info(f"Sells to consider: {len(sells)}")
 
     for sell in sells:
         position = sell["position"]
@@ -416,30 +427,46 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
     # Evaluate and execute buys (only if we have room for more positions)
     if position_count < config.max_positions:
+        logger.info("Evaluating buy candidates from Stock table...")
         buys = evaluate_buys(db)
         results["buys_considered"] = len(buys)
+        logger.info(f"Buy candidates found: {len(buys)}")
 
-        import time
+        if not buys:
+            logger.warning("No buy candidates found! Check if Stock table has data with scores >= 65")
 
         for buy in buys:
             if position_count >= config.max_positions:
+                logger.info(f"Max positions ({config.max_positions}) reached, stopping buys")
                 break
 
             stock = buy["stock"]
+            logger.info(f"Processing buy: {stock.ticker} (score: {stock.canslim_score}, cached price: ${stock.current_price})")
 
-            # Fetch live price for this buy
+            # Fetch live price for this specific stock
             live_price = fetch_live_price(stock.ticker)
-            if not live_price:
+            if live_price:
+                logger.info(f"{stock.ticker}: Live price ${live_price:.2f}")
+            else:
                 live_price = stock.current_price  # Fallback to cached
-            time.sleep(0.5)  # Rate limit delay
+                logger.warning(f"{stock.ticker}: Using cached price ${live_price} (live fetch failed)")
+
+            if not live_price or live_price <= 0:
+                logger.error(f"{stock.ticker}: No valid price, skipping")
+                continue
+
+            time.sleep(0.3)  # Rate limit delay
 
             # Recalculate position value and shares with live price
             actual_value = min(buy["value"], config.current_cash * 0.95)
             if actual_value < 100:
+                logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f}), skipping")
                 continue
+
             actual_shares = actual_value / live_price
 
             if config.current_cash < actual_value:
+                logger.info(f"{stock.ticker}: Not enough cash (${config.current_cash:.2f} < ${actual_value:.2f})")
                 continue
 
             # Execute the buy at live price
@@ -470,6 +497,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             )
             db.add(new_position)
             position_count += 1
+            logger.info(f"BOUGHT {stock.ticker}: {actual_shares:.2f} shares @ ${live_price:.2f} = ${actual_value:.2f}")
 
             results["buys_executed"].append({
                 "ticker": stock.ticker,
@@ -479,12 +507,15 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 "score": stock.canslim_score,
                 "reason": buy["reason"]
             })
+    else:
+        logger.info(f"Already at max positions ({position_count}), skipping buys")
 
     db.commit()
 
     # Take daily snapshot
     take_portfolio_snapshot(db)
 
+    logger.info(f"Trading cycle complete: {len(results['buys_executed'])} buys, {len(results['sells_executed'])} sells")
     return results
 
 
