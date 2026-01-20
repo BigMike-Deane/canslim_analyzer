@@ -74,6 +74,7 @@ def fetch_fmp_quote(ticker: str) -> dict:
 def fetch_fmp_earnings(ticker: str) -> dict:
     """Fetch quarterly and annual earnings from FMP"""
     if not FMP_API_KEY:
+        print(f"FMP: No API key configured")
         return {}
 
     result = {"quarterly_eps": [], "annual_eps": []}
@@ -82,6 +83,7 @@ def fetch_fmp_earnings(ticker: str) -> dict:
         # Quarterly income statement
         url = f"{FMP_BASE_URL}/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
+        print(f"FMP quarterly {ticker}: status={resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
             if data:
@@ -89,6 +91,11 @@ def fetch_fmp_earnings(ticker: str) -> dict:
                 result["quarterly_eps"] = [q.get("eps", 0) or 0 for q in data]
                 # Also get net income for backup
                 result["quarterly_net_income"] = [q.get("netIncome", 0) or 0 for q in data]
+                print(f"FMP quarterly {ticker}: got {len(data)} quarters, eps={result['quarterly_eps'][:3]}")
+            else:
+                print(f"FMP quarterly {ticker}: empty response")
+        else:
+            print(f"FMP quarterly {ticker}: error response: {resp.text[:200]}")
     except Exception as e:
         print(f"FMP quarterly earnings error for {ticker}: {e}")
 
@@ -311,6 +318,7 @@ class DataFetcher:
             if earnings:
                 stock_data.quarterly_earnings = earnings.get("quarterly_eps", [])
                 stock_data.annual_earnings = earnings.get("annual_eps", [])
+                print(f"FMP {ticker}: quarterly_earnings={stock_data.quarterly_earnings[:3] if stock_data.quarterly_earnings else 'EMPTY'}")
 
             # 4. Get institutional ownership from FMP
             inst_shares = fetch_fmp_institutional(ticker)
