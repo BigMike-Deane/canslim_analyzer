@@ -165,10 +165,11 @@ function TradeHistory({ trades }) {
   )
 }
 
-function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle }) {
+function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) {
   const [isActive, setIsActive] = useState(config?.is_active || false)
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     setIsActive(config?.is_active || false)
@@ -181,6 +182,15 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle }) {
       setIsActive(!isActive)
     } finally {
       setUpdating(false)
+    }
+  }
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try {
+      await onRefresh()
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -225,37 +235,46 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle }) {
       <div className="grid grid-cols-2 gap-3 text-sm mb-3">
         <div>
           <div className="text-dark-400 text-xs">Min Score to Buy</div>
-          <div className="font-medium">{config?.min_score_to_buy || 75}</div>
+          <div className="font-medium">{config?.min_score_to_buy || 65}</div>
         </div>
         <div>
           <div className="text-dark-400 text-xs">Sell Below Score</div>
-          <div className="font-medium">{config?.sell_score_threshold || 50}</div>
+          <div className="font-medium">{config?.sell_score_threshold || 45}</div>
         </div>
         <div>
           <div className="text-dark-400 text-xs">Take Profit</div>
-          <div className="font-medium text-green-400">+{config?.take_profit_pct || 25}%</div>
+          <div className="font-medium text-green-400">+{config?.take_profit_pct || 40}%</div>
         </div>
         <div>
           <div className="text-dark-400 text-xs">Stop Loss</div>
-          <div className="font-medium text-red-400">-{config?.stop_loss_pct || 15}%</div>
+          <div className="font-medium text-red-400">-{config?.stop_loss_pct || 10}%</div>
         </div>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 mb-2">
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="flex-1 py-2 bg-dark-600 hover:bg-dark-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <span className={refreshing ? 'animate-spin' : ''}>⟳</span>
+          <span>{refreshing ? 'Refreshing...' : 'Refresh Prices'}</span>
+        </button>
         <button
           onClick={onRunCycle}
           className="flex-1 py-2 bg-primary-500 hover:bg-primary-600 rounded-lg text-sm font-medium transition-colors"
         >
           Run Trading Cycle
         </button>
-        <button
-          onClick={handleInitialize}
-          disabled={initializing}
-          className="px-4 py-2 bg-dark-600 hover:bg-dark-500 rounded-lg text-sm font-medium transition-colors"
-        >
-          {initializing ? 'Resetting...' : 'Reset'}
-        </button>
       </div>
+
+      <button
+        onClick={handleInitialize}
+        disabled={initializing}
+        className="w-full py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-dark-300"
+      >
+        {initializing ? 'Resetting...' : 'Reset Portfolio ($25k)'}
+      </button>
     </div>
   )
 }
@@ -306,6 +325,15 @@ export default function AIPortfolio() {
     }
   }
 
+  const handleRefresh = async () => {
+    try {
+      await api.refreshAIPortfolio()
+      fetchData()
+    } catch (err) {
+      console.error('Failed to refresh:', err)
+    }
+  }
+
   const handleRunCycle = async () => {
     try {
       await api.runAITradingCycle()
@@ -352,6 +380,7 @@ export default function AIPortfolio() {
         config={portfolio?.config}
         onUpdate={handleUpdateConfig}
         onInitialize={handleInitialize}
+        onRefresh={handleRefresh}
         onRunCycle={handleRunCycle}
       />
 

@@ -61,6 +61,7 @@ def get_portfolio_value(db: Session) -> dict:
 def update_position_prices(db: Session):
     """Update all position prices from latest stock data"""
     positions = db.query(AIPortfolioPosition).all()
+    updated = 0
 
     for position in positions:
         stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
@@ -70,8 +71,22 @@ def update_position_prices(db: Session):
             position.gain_loss = position.current_value - (position.shares * position.cost_basis)
             position.gain_loss_pct = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
             position.current_score = stock.canslim_score
+            updated += 1
 
     db.commit()
+    return updated
+
+
+def refresh_ai_portfolio(db: Session) -> dict:
+    """Refresh position prices and take snapshot without trading"""
+    updated = update_position_prices(db)
+    take_portfolio_snapshot(db)
+    portfolio = get_portfolio_value(db)
+
+    return {
+        "message": f"Refreshed {updated} positions",
+        "summary": portfolio
+    }
 
 
 def execute_trade(db: Session, ticker: str, action: str, shares: float,

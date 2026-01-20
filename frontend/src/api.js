@@ -128,6 +128,8 @@ export const api = {
   initializeAIPortfolio: (startingCash = 25000) =>
     request(`/api/ai-portfolio/initialize?starting_cash=${startingCash}`, { method: 'POST' }),
 
+  refreshAIPortfolio: () => request('/api/ai-portfolio/refresh', { method: 'POST' }),
+
   runAITradingCycle: () => request('/api/ai-portfolio/run-cycle', { method: 'POST' }),
 
   updateAIPortfolioConfig: (config) => {

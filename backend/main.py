@@ -1198,7 +1198,8 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
 
 from backend.ai_trader import (
     get_or_create_config, get_portfolio_value, update_position_prices,
-    run_ai_trading_cycle, take_portfolio_snapshot, initialize_ai_portfolio
+    run_ai_trading_cycle, take_portfolio_snapshot, initialize_ai_portfolio,
+    refresh_ai_portfolio
 )
 
 @app.get("/api/ai-portfolio")
@@ -1260,6 +1261,13 @@ async def get_ai_portfolio_history(
         "day_change": s.day_change,
         "day_change_pct": s.day_change_pct
     } for s in snapshots]
+
+
+@app.post("/api/ai-portfolio/refresh")
+async def refresh_ai_portfolio_endpoint(db: Session = Depends(get_db)):
+    """Refresh position prices without executing trades"""
+    result = refresh_ai_portfolio(db)
+    return result
 
 
 @app.get("/api/ai-portfolio/trades")
