@@ -93,6 +93,17 @@ canslim_scorer = CANSLIMScorer(data_fetcher)
 growth_projector = GrowthProjector(data_fetcher)
 
 
+def get_score_change_from_history(db: Session, stock_id: int) -> Optional[float]:
+    """Calculate score change from the last 2 historical StockScore entries"""
+    scores = db.query(StockScore).filter(
+        StockScore.stock_id == stock_id
+    ).order_by(desc(StockScore.date)).limit(2).all()
+
+    if len(scores) >= 2 and scores[0].total_score is not None and scores[1].total_score is not None:
+        return round(scores[0].total_score - scores[1].total_score, 1)
+    return None
+
+
 def update_market_snapshot(db: Session):
     """Update market direction data (SPY price, MAs, trend)"""
     import requests
@@ -423,7 +434,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "name": s.name,
             "sector": s.sector,
             "canslim_score": adjust_score(s),
-            "score_change": s.score_change,
+            "score_change": get_score_change_from_history(db, s.id),
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
@@ -435,7 +446,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "name": s.name,
             "sector": s.sector,
             "canslim_score": adjust_score(s),
-            "score_change": s.score_change,
+            "score_change": get_score_change_from_history(db, s.id),
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
@@ -1049,14 +1060,9 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
 
                 # Update CANSLIM score from stock data
                 if stock:
-                    old_score = position.canslim_score
                     position.canslim_score = stock.canslim_score
-                    # Prefer stock's scan-to-scan score_change (matches Dashboard)
-                    # Fall back to position-based calculation if stock has no delta
-                    if stock.score_change is not None:
-                        position.score_change = stock.score_change
-                    elif old_score and stock.canslim_score:
-                        position.score_change = round(stock.canslim_score - old_score, 1)
+                    # Calculate score_change from historical StockScore entries (matches Dashboard)
+                    position.score_change = get_score_change_from_history(db, stock.id)
 
                     # Smarter recommendation based on score + performance
                     score = stock.canslim_score or 0
@@ -1485,10 +1491,7 @@ async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks):
             logger.info("Refreshing AI portfolio prices in background...")
             result = refresh_ai_portfolio(db)
             logger.info(f"AI portfolio refresh complete: {result.get('message')}")
-
-            # Take portfolio snapshot after refresh
-            take_portfolio_snapshot(db)
-            logger.info("Portfolio snapshot taken")
+            # Note: refresh_ai_portfolio already calls take_portfolio_snapshot internally
         except Exception as e:
             logger.error(f"AI portfolio refresh error: {e}")
         finally:
@@ -1544,10 +1547,7 @@ async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
             logger.info("Starting AI trading cycle in background...")
             result = run_ai_trading_cycle(db)
             logger.info(f"AI trading cycle complete: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
-
-            # Take portfolio snapshot after trading cycle
-            take_portfolio_snapshot(db)
-            logger.info("Portfolio snapshot taken")
+            # Note: run_ai_trading_cycle already calls take_portfolio_snapshot internally
         except Exception as e:
             logger.error(f"AI trading cycle error: {e}")
         finally:
