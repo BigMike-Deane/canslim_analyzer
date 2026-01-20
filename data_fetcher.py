@@ -133,19 +133,28 @@ def fetch_fmp_institutional(ticker: str) -> float:
         except Exception as e:
             print(f"FMP institutional error for {ticker}: {e}")
 
-    # Fallback to Yahoo Finance for institutional ownership
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        if info:
-            inst_pct = info.get('heldPercentInstitutions', 0)
-            if inst_pct and inst_pct > 0:
-                # Return as percentage (0-100)
-                pct = inst_pct * 100
-                print(f"Yahoo inst ownership for {ticker}: {pct:.1f}%")
-                return pct  # Return directly as percentage, not shares
-    except Exception as e:
-        print(f"Yahoo institutional error for {ticker}: {e}")
+    # Fallback to Yahoo Finance for institutional ownership with retry and delay
+    time.sleep(1.5)  # Initial delay to avoid rate limiting during bulk scans
+    for attempt in range(3):
+        try:
+            if attempt > 0:
+                time.sleep(2 * attempt)  # Exponential backoff: 2s, 4s
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            if info:
+                inst_pct = info.get('heldPercentInstitutions', 0)
+                if inst_pct and inst_pct > 0:
+                    # Return as percentage (0-100)
+                    pct = inst_pct * 100
+                    print(f"Yahoo inst ownership for {ticker}: {pct:.1f}%")
+                    return pct  # Return directly as percentage, not shares
+            break  # Success, no retry needed
+        except Exception as e:
+            if "429" in str(e) and attempt < 2:
+                print(f"Yahoo rate limited for {ticker}, retrying in {2 * (attempt + 1)}s...")
+                continue
+            print(f"Yahoo institutional error for {ticker}: {e}")
+            break
 
     return 0.0
 
