@@ -34,7 +34,7 @@ def init_db():
 
 
 def run_migrations():
-    """Add any missing columns to existing tables"""
+    """Add any missing columns to existing tables and fix constraints"""
     import sqlite3
     import logging
     from pathlib import Path
@@ -49,7 +49,7 @@ def run_migrations():
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    # Define migrations: (table, column, type)
+    # Define column migrations: (table, column, type)
     migrations = [
         ("stocks", "previous_score", "FLOAT"),
         ("stocks", "score_change", "FLOAT"),
@@ -63,9 +63,66 @@ def run_migrations():
         try:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
             logger.info(f"Migration: Added {table}.{column}")
-        except sqlite3.OperationalError as e:
-            # Column already exists or table doesn't exist yet
+        except sqlite3.OperationalError:
             pass
+
+    # Fix: Remove unique constraint on ai_portfolio_snapshots.date
+    # Check if the old unique index exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='ix_ai_portfolio_snapshots_date' AND sql LIKE '%UNIQUE%'")
+    has_unique = cursor.fetchone()
+
+    # Also check for implicit unique constraint in table definition
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_portfolio_snapshots'")
+    table_sql = cursor.fetchone()
+    needs_rebuild = has_unique or (table_sql and 'UNIQUE' in table_sql[0] and 'date' in table_sql[0].lower())
+
+    if needs_rebuild:
+        logger.info("Rebuilding ai_portfolio_snapshots table to remove unique constraint on date")
+        try:
+            # Create new table without unique constraint
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ai_portfolio_snapshots_new (
+                    id INTEGER PRIMARY KEY,
+                    timestamp DATETIME,
+                    total_value FLOAT NOT NULL,
+                    cash FLOAT NOT NULL,
+                    positions_value FLOAT NOT NULL,
+                    positions_count INTEGER NOT NULL,
+                    total_return FLOAT,
+                    total_return_pct FLOAT,
+                    prev_value FLOAT,
+                    value_change FLOAT,
+                    value_change_pct FLOAT,
+                    date DATE
+                )
+            ''')
+
+            # Get existing columns from old table
+            cursor.execute('PRAGMA table_info(ai_portfolio_snapshots)')
+            old_cols = [row[1] for row in cursor.fetchall()]
+
+            # Only copy columns that exist in both tables
+            new_cols = ['id', 'timestamp', 'total_value', 'cash', 'positions_value', 'positions_count',
+                        'total_return', 'total_return_pct', 'prev_value', 'value_change', 'value_change_pct', 'date']
+            common_cols = [c for c in new_cols if c in old_cols]
+            cols_str = ', '.join(common_cols)
+
+            cursor.execute(f'''
+                INSERT INTO ai_portfolio_snapshots_new ({cols_str})
+                SELECT {cols_str} FROM ai_portfolio_snapshots
+            ''')
+
+            # Drop old table and rename new
+            cursor.execute('DROP TABLE ai_portfolio_snapshots')
+            cursor.execute('ALTER TABLE ai_portfolio_snapshots_new RENAME TO ai_portfolio_snapshots')
+
+            # Recreate indexes (non-unique)
+            cursor.execute('CREATE INDEX IF NOT EXISTS ix_ai_portfolio_snapshots_timestamp ON ai_portfolio_snapshots(timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS ix_ai_portfolio_snapshots_date ON ai_portfolio_snapshots(date)')
+
+            logger.info("Successfully rebuilt ai_portfolio_snapshots table")
+        except Exception as e:
+            logger.error(f"Failed to rebuild ai_portfolio_snapshots: {e}")
 
     conn.commit()
     conn.close()
