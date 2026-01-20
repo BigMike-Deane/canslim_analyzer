@@ -341,18 +341,47 @@ async def get_dashboard(db: Session = Depends(get_db)):
             desc(MarketSnapshot.date)
         ).first()
 
-    # Get top stocks by CANSLIM score
-    top_stocks = db.query(Stock).filter(
+    # Define duplicate ticker groups (same company, different share classes)
+    DUPLICATE_TICKERS = [
+        {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
+    ]
+
+    def filter_duplicates(stocks, limit):
+        """Filter out duplicate tickers, keeping highest scorer from each group"""
+        seen_groups = set()
+        filtered = []
+        for stock in stocks:
+            # Check if this ticker belongs to a duplicate group
+            in_group = None
+            for group in DUPLICATE_TICKERS:
+                if stock.ticker in group:
+                    in_group = frozenset(group)
+                    break
+
+            if in_group:
+                if in_group in seen_groups:
+                    continue  # Skip - already have higher-scored ticker from this group
+                seen_groups.add(in_group)
+
+            filtered.append(stock)
+            if len(filtered) >= limit:
+                break
+        return filtered
+
+    # Get top stocks by CANSLIM score (fetch extra to account for duplicates)
+    top_stocks_raw = db.query(Stock).filter(
         Stock.canslim_score != None
-    ).order_by(desc(Stock.canslim_score)).limit(10).all()
+    ).order_by(desc(Stock.canslim_score)).limit(15).all()
+    top_stocks = filter_duplicates(top_stocks_raw, 10)
 
     # Get top stocks under $25 by CANSLIM score
-    top_stocks_under_25 = db.query(Stock).filter(
+    top_stocks_under_25_raw = db.query(Stock).filter(
         Stock.canslim_score != None,
         Stock.current_price != None,
         Stock.current_price > 0,
         Stock.current_price <= 25
-    ).order_by(desc(Stock.canslim_score)).limit(10).all()
+    ).order_by(desc(Stock.canslim_score)).limit(15).all()
+    top_stocks_under_25 = filter_duplicates(top_stocks_under_25_raw, 10)
 
     # Get portfolio summary
     positions = db.query(PortfolioPosition).all()
