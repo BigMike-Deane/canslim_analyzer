@@ -118,6 +118,11 @@ export const api = {
     return request(`/api/scanner/config?${params}`, { method: 'PATCH' })
   },
 
+  // Market Data
+  getMarket: () => request('/api/market'),
+
+  refreshMarket: () => request('/api/market/refresh', { method: 'POST' }),
+
   // AI Portfolio
   getAIPortfolio: () => request('/api/ai-portfolio'),
 

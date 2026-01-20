@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatScore, getScoreClass, formatCurrency, formatPercent, formatMarketCap } from '../api'
 
-function MarketStatus({ market }) {
+function MarketStatus({ market, onRefresh }) {
+  const [refreshing, setRefreshing] = useState(false)
+
   if (!market) return null
 
   const trendColors = {
@@ -17,10 +19,29 @@ function MarketStatus({ market }) {
     bearish: '▼'
   }
 
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try {
+      await onRefresh()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-3">
-        <div className="font-semibold">Market Direction</div>
+        <div className="flex items-center gap-2">
+          <span className="font-semibold">Market Direction</span>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="text-dark-400 hover:text-white transition-colors p-1"
+            title="Refresh SPY data"
+          >
+            <span className={refreshing ? 'animate-spin inline-block' : ''}>⟳</span>
+          </button>
+        </div>
         <div className={`text-sm font-medium ${trendColors[market.trend] || 'text-dark-400'}`}>
           {trendIcons[market.trend]} {market.trend?.toUpperCase()}
         </div>
@@ -466,6 +487,28 @@ export default function Dashboard() {
     }
   }
 
+  const handleMarketRefresh = async () => {
+    try {
+      const result = await api.refreshMarket()
+      if (result && !result.error) {
+        // Update market data in state
+        setData(prev => ({
+          ...prev,
+          market: {
+            ...prev?.market,
+            spy_price: result.spy_price,
+            spy_50_ma: result.spy_50_ma,
+            spy_200_ma: result.spy_200_ma,
+            trend: result.market_trend,
+            score: result.market_score
+          }
+        }))
+      }
+    } catch (err) {
+      console.error('Failed to refresh market:', err)
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-4">
@@ -486,7 +529,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <MarketStatus market={data?.market} />
+      <MarketStatus market={data?.market} onRefresh={handleMarketRefresh} />
 
       <QuickStats stats={data?.stats} />
 

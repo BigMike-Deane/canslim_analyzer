@@ -330,12 +330,24 @@ async def health_check(db: Session = Depends(get_db)):
 @app.get("/api/dashboard")
 async def get_dashboard(db: Session = Depends(get_db)):
     """Get dashboard overview data"""
-    # Update market snapshot if stale (older than 1 hour)
+    # Update market snapshot if stale (older than 5 minutes during market hours)
     latest_market = db.query(MarketSnapshot).order_by(
         desc(MarketSnapshot.date)
     ).first()
 
-    if not latest_market or latest_market.date < date.today():
+    # Check if we need to refresh SPY data
+    should_refresh = False
+    if not latest_market:
+        should_refresh = True
+    elif latest_market.date < date.today():
+        should_refresh = True
+    elif latest_market.created_at:
+        # Refresh if data is older than 5 minutes
+        age_seconds = (datetime.utcnow() - latest_market.created_at).total_seconds()
+        if age_seconds > 300:  # 5 minutes
+            should_refresh = True
+
+    if should_refresh:
         update_market_snapshot(db)
         latest_market = db.query(MarketSnapshot).order_by(
             desc(MarketSnapshot.date)
@@ -444,6 +456,49 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
         "last_scan": db.query(func.max(Stock.last_updated)).scalar()
     }
+
+
+# ============== Market Data ==============
+
+@app.get("/api/market")
+async def get_market_data(db: Session = Depends(get_db)):
+    """Get current market direction data (SPY price, MAs, trend)"""
+    latest = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+
+    if not latest:
+        return {"error": "No market data available", "spy_price": None}
+
+    return {
+        "spy_price": latest.spy_price,
+        "spy_50_ma": latest.spy_50_ma,
+        "spy_200_ma": latest.spy_200_ma,
+        "market_score": latest.market_score,
+        "market_trend": latest.market_trend,
+        "date": latest.date.isoformat(),
+        "last_updated": latest.created_at.isoformat() if latest.created_at else None
+    }
+
+
+@app.post("/api/market/refresh")
+async def refresh_market_data(db: Session = Depends(get_db)):
+    """Force refresh SPY price and moving averages - call this independently of scans"""
+    try:
+        update_market_snapshot(db)
+        latest = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+
+        if latest:
+            return {
+                "message": "Market data refreshed",
+                "spy_price": latest.spy_price,
+                "spy_50_ma": latest.spy_50_ma,
+                "spy_200_ma": latest.spy_200_ma,
+                "market_trend": latest.market_trend,
+                "market_score": latest.market_score
+            }
+        return {"message": "Refresh completed but no data available"}
+    except Exception as e:
+        logger.error(f"Market refresh error: {e}")
+        return {"error": str(e)}
 
 
 # ============== Stock Screener ==============
