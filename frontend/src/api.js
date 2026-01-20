@@ -97,7 +97,26 @@ export const api = {
     body: JSON.stringify(item)
   }),
 
-  removeFromWatchlist: (id) => request(`/api/watchlist/${id}`, { method: 'DELETE' })
+  removeFromWatchlist: (id) => request(`/api/watchlist/${id}`, { method: 'DELETE' }),
+
+  // Continuous Scanner
+  getScannerStatus: () => request('/api/scanner/status'),
+
+  startScanner: (source = 'sp500', interval = 15) => {
+    const params = new URLSearchParams()
+    params.set('source', source)
+    params.set('interval', interval)
+    return request(`/api/scanner/start?${params}`, { method: 'POST' })
+  },
+
+  stopScanner: () => request('/api/scanner/stop', { method: 'POST' }),
+
+  updateScannerConfig: (source, interval) => {
+    const params = new URLSearchParams()
+    if (source) params.set('source', source)
+    if (interval) params.set('interval', interval)
+    return request(`/api/scanner/config?${params}`, { method: 'PATCH' })
+  }
 }
 
 // Formatting utilities

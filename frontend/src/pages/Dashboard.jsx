@@ -177,6 +177,126 @@ function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
   )
 }
 
+function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
+  const [source, setSource] = useState(scannerStatus?.source || 'sp500')
+  const [interval, setInterval] = useState(scannerStatus?.interval_minutes || 15)
+  const [updating, setUpdating] = useState(false)
+
+  const sourceOptions = [
+    { value: 'top50', label: 'Top 50', interval: 5 },
+    { value: 'sp500', label: 'S&P 500', interval: 15 },
+    { value: 'russell', label: 'Russell 2000', interval: 45 },
+    { value: 'all', label: 'All Stocks', interval: 60 },
+  ]
+
+  const intervalOptions = [5, 10, 15, 30, 45, 60, 90, 120]
+
+  const handleToggle = async () => {
+    setUpdating(true)
+    try {
+      await onToggle(!scannerStatus?.enabled, source, interval)
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const handleSourceChange = (newSource) => {
+    setSource(newSource)
+    // Auto-suggest interval based on source
+    const suggested = sourceOptions.find(o => o.value === newSource)?.interval || 15
+    setInterval(suggested)
+    if (scannerStatus?.enabled) {
+      onConfigChange(newSource, suggested)
+    }
+  }
+
+  const handleIntervalChange = (newInterval) => {
+    setInterval(newInterval)
+    if (scannerStatus?.enabled) {
+      onConfigChange(source, newInterval)
+    }
+  }
+
+  const formatLastScan = (isoString) => {
+    if (!isoString) return 'Never'
+    const date = new Date(isoString)
+    return date.toLocaleTimeString()
+  }
+
+  return (
+    <div className="card mb-4">
+      <div className="flex justify-between items-center mb-3">
+        <div className="font-semibold">Auto-Scan</div>
+        <button
+          onClick={handleToggle}
+          disabled={updating}
+          className={`relative w-12 h-6 rounded-full transition-colors ${
+            scannerStatus?.enabled ? 'bg-green-500' : 'bg-dark-600'
+          }`}
+        >
+          <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+            scannerStatus?.enabled ? 'translate-x-7' : 'translate-x-1'
+          }`} />
+        </button>
+      </div>
+
+      {scannerStatus?.enabled && (
+        <div className="mb-3 p-2 bg-green-500/10 border border-green-500/30 rounded-lg">
+          <div className="flex items-center gap-2 text-green-400 text-sm">
+            <span className="animate-pulse">●</span>
+            <span>
+              {scannerStatus?.is_scanning ? 'Scanning...' : 'Active'}
+              {scannerStatus?.next_run && !scannerStatus?.is_scanning && (
+                <span className="text-dark-400 ml-2">
+                  Next: {new Date(scannerStatus.next_run).toLocaleTimeString()}
+                </span>
+              )}
+            </span>
+          </div>
+          {scannerStatus?.last_scan_end && (
+            <div className="text-xs text-dark-400 mt-1">
+              Last scan: {formatLastScan(scannerStatus.last_scan_end)} ({scannerStatus.stocks_scanned} stocks)
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-dark-400 text-xs mb-1 block">Universe</label>
+          <select
+            value={source}
+            onChange={(e) => handleSourceChange(e.target.value)}
+            disabled={updating}
+            className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm"
+          >
+            {sourceOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-dark-400 text-xs mb-1 block">Interval</label>
+          <select
+            value={interval}
+            onChange={(e) => handleIntervalChange(Number(e.target.value))}
+            disabled={updating}
+            className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm"
+          >
+            {intervalOptions.map(mins => (
+              <option key={mins} value={mins}>{mins} min</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="text-xs text-dark-500 mt-2">
+        Continuously scans stocks to keep data fresh. Stays within API limits.
+      </div>
+    </div>
+  )
+}
+
 function ScanProgress({ scanJob, scanStartTime }) {
   const [elapsed, setElapsed] = useState(0)
 
@@ -234,18 +354,39 @@ export default function Dashboard() {
   const [scanJob, setScanJob] = useState(null)
   const [scanSource, setScanSource] = useState('sp500')
   const [scanStartTime, setScanStartTime] = useState(null)
+  const [scannerStatus, setScannerStatus] = useState(null)
 
   const fetchData = async () => {
     try {
       setLoading(true)
-      const dashboard = await api.getDashboard()
+      const [dashboard, scanner] = await Promise.all([
+        api.getDashboard(),
+        api.getScannerStatus().catch(() => null)
+      ])
       setData(dashboard)
+      setScannerStatus(scanner)
     } catch (err) {
       console.error('Failed to fetch dashboard:', err)
     } finally {
       setLoading(false)
     }
   }
+
+  // Poll scanner status when enabled
+  useEffect(() => {
+    if (!scannerStatus?.enabled) return
+
+    const interval = setInterval(async () => {
+      try {
+        const status = await api.getScannerStatus()
+        setScannerStatus(status)
+      } catch (err) {
+        console.error('Failed to get scanner status:', err)
+      }
+    }, 10000) // Poll every 10 seconds
+
+    return () => clearInterval(interval)
+  }, [scannerStatus?.enabled])
 
   useEffect(() => {
     fetchData()
@@ -287,6 +428,29 @@ export default function Dashboard() {
     }
   }
 
+  const handleScannerToggle = async (enabled, source, interval) => {
+    try {
+      let status
+      if (enabled) {
+        status = await api.startScanner(source, interval)
+      } else {
+        status = await api.stopScanner()
+      }
+      setScannerStatus(status)
+    } catch (err) {
+      console.error('Failed to toggle scanner:', err)
+    }
+  }
+
+  const handleScannerConfigChange = async (source, interval) => {
+    try {
+      const status = await api.updateScannerConfig(source, interval)
+      setScannerStatus(status)
+    } catch (err) {
+      console.error('Failed to update scanner config:', err)
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-4">
@@ -324,6 +488,12 @@ export default function Dashboard() {
         scanning={scanning}
         scanSource={scanSource}
         setScanSource={setScanSource}
+      />
+
+      <ContinuousScanner
+        scannerStatus={scannerStatus}
+        onToggle={handleScannerToggle}
+        onConfigChange={handleScannerConfigChange}
       />
 
       <div className="h-4" />
