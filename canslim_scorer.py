@@ -312,7 +312,9 @@ class CANSLIMScorer:
         inst_pct = data.institutional_holders_pct
 
         if inst_pct <= 0:
-            return 0, "No data"
+            # Default to neutral score when data unavailable (e.g., rate limited)
+            # Most large-cap stocks have 40-80% institutional ownership
+            return max_score * 0.5, "No data (neutral)"
 
         # Ideal range is 20-60%
         if 20 <= inst_pct <= 60:
