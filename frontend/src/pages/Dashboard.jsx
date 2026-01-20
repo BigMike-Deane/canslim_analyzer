@@ -93,7 +93,7 @@ function ScoreTrend({ change }) {
   )
 }
 
-function TopStocksList({ stocks, title, showPrice = false }) {
+function TopStocksList({ stocks, title }) {
   if (!stocks || stocks.length === 0) return null
 
   return (
@@ -126,16 +126,16 @@ function TopStocksList({ stocks, title, showPrice = false }) {
               <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(stock.canslim_score)}`}>
                 {formatScore(stock.canslim_score)}
               </div>
-              {showPrice && stock.current_price != null && (
-                <div className="text-xs text-green-400 mt-1">
-                  ${stock.current_price.toFixed(2)}
-                </div>
-              )}
-              {!showPrice && stock.projected_growth != null && (
-                <div className="text-xs text-dark-400 mt-1">
-                  +{stock.projected_growth.toFixed(0)}% proj
-                </div>
-              )}
+              <div className="text-xs mt-1 space-y-0.5">
+                {stock.current_price != null && (
+                  <div className="text-dark-300">${stock.current_price.toFixed(2)}</div>
+                )}
+                {stock.projected_growth != null && (
+                  <div className={stock.projected_growth >= 0 ? 'text-green-400' : 'text-red-400'}>
+                    {stock.projected_growth >= 0 ? '+' : ''}{stock.projected_growth.toFixed(0)}% proj
+                  </div>
+                )}
+              </div>
             </div>
           </Link>
         ))}
@@ -538,7 +538,7 @@ export default function Dashboard() {
 
       <TopStocksList stocks={data?.top_stocks} title="Top Rated Stocks" />
 
-      <TopStocksList stocks={data?.top_stocks_under_25} title="Top Under $25" showPrice={true} />
+      <TopStocksList stocks={data?.top_stocks_under_25} title="Top Under $25" />
 
       {scanJob && scanJob.status === 'running' && (
         <ScanProgress scanJob={scanJob} scanStartTime={scanStartTime} />
