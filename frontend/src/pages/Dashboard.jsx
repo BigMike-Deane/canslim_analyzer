@@ -126,15 +126,13 @@ function TopStocksList({ stocks, title }) {
               <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(stock.canslim_score)}`}>
                 {formatScore(stock.canslim_score)}
               </div>
-              <div className="text-xs mt-1 space-y-0.5">
-                {stock.current_price != null && (
-                  <div className="text-dark-300">${stock.current_price.toFixed(2)}</div>
-                )}
-                {stock.projected_growth != null && (
-                  <div className={stock.projected_growth >= 0 ? 'text-green-400' : 'text-red-400'}>
-                    {stock.projected_growth >= 0 ? '+' : ''}{stock.projected_growth.toFixed(0)}% proj
-                  </div>
-                )}
+              <div className="text-xs mt-1">
+                <div className="text-dark-300">
+                  {stock.current_price != null ? `$${stock.current_price.toFixed(2)}` : '-'}
+                </div>
+                <div className={stock.projected_growth != null && stock.projected_growth >= 0 ? 'text-green-400' : stock.projected_growth != null ? 'text-red-400' : 'text-dark-500'}>
+                  {stock.projected_growth != null ? `${stock.projected_growth >= 0 ? '+' : ''}${stock.projected_growth.toFixed(0)}% proj` : 'No projection'}
+                </div>
               </div>
             </div>
           </Link>
