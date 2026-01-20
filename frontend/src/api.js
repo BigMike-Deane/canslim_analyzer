@@ -87,6 +87,8 @@ export const api = {
 
   refreshPortfolio: () => request('/api/portfolio/refresh', { method: 'POST' }),
 
+  getGameplan: () => request('/api/portfolio/gameplan'),
+
   // Watchlist
   getWatchlist: () => request('/api/watchlist'),
 

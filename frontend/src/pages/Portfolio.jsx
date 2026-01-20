@@ -114,6 +114,147 @@ function PositionRow({ position, onDelete }) {
   )
 }
 
+function GameplanCard({ action }) {
+  const actionStyles = {
+    SELL: { bg: 'bg-red-500/10', border: 'border-red-500/30', icon: '🔴', label: 'SELL', textColor: 'text-red-400' },
+    TRIM: { bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: '🟠', label: 'TAKE PROFITS', textColor: 'text-orange-400' },
+    BUY: { bg: 'bg-green-500/10', border: 'border-green-500/30', icon: '🟢', label: 'BUY', textColor: 'text-green-400' },
+    ADD: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', icon: '🔵', label: 'ADD MORE', textColor: 'text-blue-400' },
+    WATCH: { bg: 'bg-purple-500/10', border: 'border-purple-500/30', icon: '👁️', label: 'WATCH', textColor: 'text-purple-400' },
+  }
+
+  const style = actionStyles[action.action] || actionStyles.WATCH
+
+  return (
+    <div className={`card mb-3 ${style.bg} border ${style.border}`}>
+      <div className="flex justify-between items-start mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">{style.icon}</span>
+          <span className={`font-bold ${style.textColor}`}>{style.label}</span>
+          <span className="font-semibold text-lg">{action.ticker}</span>
+        </div>
+        {action.estimated_value > 0 && (
+          <div className="text-right">
+            <div className="text-dark-400 text-xs">Est. Value</div>
+            <div className="font-semibold">{formatCurrency(action.estimated_value)}</div>
+          </div>
+        )}
+      </div>
+
+      <div className="mb-3">
+        <div className="font-medium text-sm">{action.reason}</div>
+      </div>
+
+      {action.shares_action > 0 && (
+        <div className="flex items-center gap-4 mb-3 p-2 bg-dark-700/50 rounded-lg">
+          <div>
+            <div className="text-dark-400 text-xs">Shares to {action.action === 'SELL' || action.action === 'TRIM' ? 'Sell' : 'Buy'}</div>
+            <div className="font-bold text-lg">{action.shares_action}</div>
+          </div>
+          {action.shares_current > 0 && (
+            <div>
+              <div className="text-dark-400 text-xs">Current Position</div>
+              <div className="font-semibold">{action.shares_current} shares</div>
+            </div>
+          )}
+          <div>
+            <div className="text-dark-400 text-xs">Price</div>
+            <div className="font-semibold">{formatCurrency(action.current_price)}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        {action.details?.filter(d => d).map((detail, i) => (
+          <div key={i} className="text-dark-300 text-sm flex items-start gap-2">
+            <span className="text-dark-500">•</span>
+            <span>{detail}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function Gameplan({ gameplan, loading }) {
+  if (loading) {
+    return (
+      <div className="mb-4">
+        <div className="skeleton h-6 w-32 mb-3" />
+        <div className="skeleton h-32 rounded-2xl mb-3" />
+        <div className="skeleton h-32 rounded-2xl" />
+      </div>
+    )
+  }
+
+  if (!gameplan || gameplan.length === 0) {
+    return (
+      <div className="card mb-4 text-center py-6">
+        <div className="text-3xl mb-2">✅</div>
+        <div className="font-semibold">No Actions Needed</div>
+        <div className="text-dark-400 text-sm">Your portfolio looks good! Check back after running a scan.</div>
+      </div>
+    )
+  }
+
+  const sellActions = gameplan.filter(a => a.action === 'SELL')
+  const trimActions = gameplan.filter(a => a.action === 'TRIM')
+  const buyActions = gameplan.filter(a => a.action === 'BUY')
+  const addActions = gameplan.filter(a => a.action === 'ADD')
+  const watchActions = gameplan.filter(a => a.action === 'WATCH')
+
+  return (
+    <div className="mb-4">
+      <h2 className="text-lg font-bold mb-3">Gameplan</h2>
+
+      {sellActions.length > 0 && (
+        <div className="mb-4">
+          <div className="text-red-400 font-semibold text-sm mb-2">SELL POSITIONS ({sellActions.length})</div>
+          {sellActions.map((action, i) => (
+            <GameplanCard key={`sell-${i}`} action={action} />
+          ))}
+        </div>
+      )}
+
+      {trimActions.length > 0 && (
+        <div className="mb-4">
+          <div className="text-orange-400 font-semibold text-sm mb-2">TAKE PROFITS ({trimActions.length})</div>
+          {trimActions.map((action, i) => (
+            <GameplanCard key={`trim-${i}`} action={action} />
+          ))}
+        </div>
+      )}
+
+      {buyActions.length > 0 && (
+        <div className="mb-4">
+          <div className="text-green-400 font-semibold text-sm mb-2">NEW BUYS ({buyActions.length})</div>
+          {buyActions.map((action, i) => (
+            <GameplanCard key={`buy-${i}`} action={action} />
+          ))}
+        </div>
+      )}
+
+      {addActions.length > 0 && (
+        <div className="mb-4">
+          <div className="text-blue-400 font-semibold text-sm mb-2">ADD TO POSITIONS ({addActions.length})</div>
+          {addActions.map((action, i) => (
+            <GameplanCard key={`add-${i}`} action={action} />
+          ))}
+        </div>
+      )}
+
+      {watchActions.length > 0 && (
+        <div className="mb-4">
+          <div className="text-purple-400 font-semibold text-sm mb-2">WATCHLIST ({watchActions.length})</div>
+          {watchActions.map((action, i) => (
+            <GameplanCard key={`watch-${i}`} action={action} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AddPositionModal({ onClose, onAdd }) {
   const [ticker, setTicker] = useState('')
   const [shares, setShares] = useState('')
@@ -205,6 +346,8 @@ export default function Portfolio() {
   const [refreshing, setRefreshing] = useState(false)
   const [positions, setPositions] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
+  const [gameplan, setGameplan] = useState([])
+  const [gameplanLoading, setGameplanLoading] = useState(true)
 
   const fetchPortfolio = async () => {
     try {
@@ -218,11 +361,24 @@ export default function Portfolio() {
     }
   }
 
+  const fetchGameplan = async () => {
+    try {
+      setGameplanLoading(true)
+      const data = await api.getGameplan()
+      setGameplan(data.gameplan || [])
+    } catch (err) {
+      console.error('Failed to fetch gameplan:', err)
+    } finally {
+      setGameplanLoading(false)
+    }
+  }
+
   const handleRefresh = async () => {
     try {
       setRefreshing(true)
       await api.refreshPortfolio()
       await fetchPortfolio()
+      await fetchGameplan()
     } catch (err) {
       console.error('Failed to refresh portfolio:', err)
     } finally {
@@ -232,6 +388,7 @@ export default function Portfolio() {
 
   useEffect(() => {
     fetchPortfolio()
+    fetchGameplan()
   }, [])
 
   const handleAdd = async (position) => {
@@ -313,7 +470,7 @@ export default function Portfolio() {
         <>
           <PortfolioSummary positions={positions} />
 
-          <div className="card">
+          <div className="card mb-4">
             <div className="font-semibold mb-3">Positions</div>
             {positions.map(position => (
               <PositionRow
@@ -323,6 +480,8 @@ export default function Portfolio() {
               />
             ))}
           </div>
+
+          <Gameplan gameplan={gameplan} loading={gameplanLoading} />
         </>
       )}
 

@@ -880,6 +880,245 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
     }
 
 
+# ============== Portfolio Gameplan ==============
+
+@app.get("/api/portfolio/gameplan")
+async def get_portfolio_gameplan(db: Session = Depends(get_db)):
+    """Generate actionable gameplan based on portfolio analysis"""
+    positions = db.query(PortfolioPosition).all()
+
+    # Calculate portfolio totals
+    total_value = sum(p.current_value or 0 for p in positions)
+    if total_value == 0:
+        total_value = 10000  # Default for empty portfolio
+
+    # Get top stocks for potential buys
+    top_stocks = db.query(Stock).filter(
+        Stock.canslim_score != None,
+        Stock.canslim_score >= 65
+    ).order_by(desc(Stock.canslim_score)).limit(20).all()
+
+    # Get tickers we already own
+    owned_tickers = {p.ticker for p in positions}
+
+    actions = []
+
+    # === SELL ACTIONS ===
+    for p in positions:
+        stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+        score = stock.canslim_score if stock else (p.canslim_score or 0)
+        projected = stock.projected_growth if stock else 0
+
+        # Strong sell signals
+        if score < 35 and (p.gain_loss_pct or 0) < -10:
+            actions.append({
+                "action": "SELL",
+                "priority": 1,
+                "ticker": p.ticker,
+                "shares_action": p.shares,  # Sell all
+                "shares_current": p.shares,
+                "current_price": p.current_price,
+                "estimated_value": p.current_value,
+                "reason": f"Weak fundamentals (score {score:.0f}) with loss of {p.gain_loss_pct:.1f}%",
+                "details": [
+                    f"CANSLIM Score: {score:.0f}/100 (below 35 threshold)",
+                    f"Current loss: {p.gain_loss_pct:.1f}%",
+                    f"Projected growth: {projected:.1f}%" if projected else "No growth projection",
+                    "Cut losses early - O'Neil recommends selling at -7% to -8%"
+                ]
+            })
+        elif score < 40 and projected < -5:
+            actions.append({
+                "action": "SELL",
+                "priority": 2,
+                "ticker": p.ticker,
+                "shares_action": p.shares,
+                "shares_current": p.shares,
+                "current_price": p.current_price,
+                "estimated_value": p.current_value,
+                "reason": f"Deteriorating outlook (score {score:.0f}, {projected:.1f}% projected)",
+                "details": [
+                    f"CANSLIM Score: {score:.0f}/100",
+                    f"Negative growth projection: {projected:.1f}%",
+                    "Fundamentals weakening - consider exiting before further decline"
+                ]
+            })
+
+    # === TRIM / TAKE PROFITS ===
+    for p in positions:
+        gain_pct = p.gain_loss_pct or 0
+        position_weight = (p.current_value or 0) / total_value * 100
+
+        # Big winner - consider taking some profits
+        if gain_pct >= 50 and position_weight >= 15:
+            trim_shares = int(p.shares * 0.3)  # Trim 30%
+            trim_value = trim_shares * (p.current_price or 0)
+            actions.append({
+                "action": "TRIM",
+                "priority": 3,
+                "ticker": p.ticker,
+                "shares_action": trim_shares,
+                "shares_current": p.shares,
+                "current_price": p.current_price,
+                "estimated_value": trim_value,
+                "reason": f"Lock in gains - up {gain_pct:.0f}%, {position_weight:.0f}% of portfolio",
+                "details": [
+                    f"Position up {gain_pct:.1f}% (${p.gain_loss:,.0f} profit)",
+                    f"Position is {position_weight:.1f}% of portfolio (overweight)",
+                    f"Trim {trim_shares} shares (~30%) to lock in ~${trim_value:,.0f}",
+                    "Reduce concentration risk while letting winner run"
+                ]
+            })
+        elif gain_pct >= 100:
+            trim_shares = int(p.shares * 0.5)  # Trim 50% on 100%+ gains
+            trim_value = trim_shares * (p.current_price or 0)
+            actions.append({
+                "action": "TRIM",
+                "priority": 2,
+                "ticker": p.ticker,
+                "shares_action": trim_shares,
+                "shares_current": p.shares,
+                "current_price": p.current_price,
+                "estimated_value": trim_value,
+                "reason": f"Exceptional gain of {gain_pct:.0f}% - secure profits",
+                "details": [
+                    f"Position doubled! Up {gain_pct:.1f}%",
+                    f"Trim {trim_shares} shares (50%) to recover original investment",
+                    f"Let remaining shares ride as 'house money'",
+                    "Classic O'Neil strategy: sell half at 100% gain"
+                ]
+            })
+
+    # === BUY NEW POSITIONS ===
+    max_position_value = total_value * 0.10  # Max 10% per position
+
+    for stock in top_stocks:
+        if stock.ticker in owned_tickers:
+            continue
+
+        if stock.canslim_score >= 75 and (stock.projected_growth or 0) >= 15:
+            shares_to_buy = int(max_position_value / stock.current_price) if stock.current_price else 0
+            buy_value = shares_to_buy * stock.current_price if shares_to_buy else max_position_value
+
+            # Check if near 52-week high (momentum)
+            near_high = ""
+            if stock.week_52_high and stock.current_price:
+                pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+                if pct_from_high <= 10:
+                    near_high = f"Within {pct_from_high:.0f}% of 52-week high"
+
+            actions.append({
+                "action": "BUY",
+                "priority": 2,
+                "ticker": stock.ticker,
+                "shares_action": shares_to_buy,
+                "shares_current": 0,
+                "current_price": stock.current_price,
+                "estimated_value": buy_value,
+                "reason": f"Strong candidate - Score {stock.canslim_score:.0f}, +{stock.projected_growth:.0f}% projected",
+                "details": [
+                    f"CANSLIM Score: {stock.canslim_score:.0f}/100",
+                    f"Projected 6-month growth: +{stock.projected_growth:.0f}%",
+                    f"Sector: {stock.sector}",
+                    near_high if near_high else f"Current price: ${stock.current_price:.2f}",
+                    f"Suggested position: {shares_to_buy} shares (~${buy_value:,.0f}, 10% of portfolio)"
+                ]
+            })
+
+            if len([a for a in actions if a["action"] == "BUY"]) >= 3:
+                break  # Max 3 buy recommendations
+
+    # === ADD TO WINNERS ===
+    for p in positions:
+        stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+        if not stock:
+            continue
+
+        score = stock.canslim_score or 0
+        projected = stock.projected_growth or 0
+        gain_pct = p.gain_loss_pct or 0
+        position_weight = (p.current_value or 0) / total_value * 100
+
+        # Good stock that's pulled back - add on dip
+        if score >= 65 and projected >= 10 and -15 <= gain_pct <= 5 and position_weight < 12:
+            # Calculate how much to add (up to 10% total position)
+            target_value = total_value * 0.10
+            current_value = p.current_value or 0
+            add_value = min(target_value - current_value, total_value * 0.05)  # Add up to 5% more
+
+            if add_value > 500 and stock.current_price:  # Min $500 to add
+                add_shares = int(add_value / stock.current_price)
+                actions.append({
+                    "action": "ADD",
+                    "priority": 3,
+                    "ticker": p.ticker,
+                    "shares_action": add_shares,
+                    "shares_current": p.shares,
+                    "current_price": p.current_price,
+                    "estimated_value": add_value,
+                    "reason": f"Strong stock on pullback - Score {score:.0f}, currently {gain_pct:+.1f}%",
+                    "details": [
+                        f"CANSLIM Score: {score:.0f}/100 (strong)",
+                        f"Projected growth: +{projected:.0f}%",
+                        f"Current position: {gain_pct:+.1f}% (buying the dip)",
+                        f"Position weight: {position_weight:.1f}% (room to add)",
+                        f"Add {add_shares} shares (~${add_value:,.0f})"
+                    ]
+                })
+
+    # === WATCH LIST CANDIDATES ===
+    watch_actions = []
+    for stock in top_stocks:
+        if stock.ticker in owned_tickers:
+            continue
+        if stock.ticker in [a["ticker"] for a in actions if a["action"] == "BUY"]:
+            continue
+
+        if stock.canslim_score >= 70 and stock.week_52_high and stock.current_price:
+            pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+
+            # Approaching breakout (within 5-15% of high)
+            if 5 <= pct_from_high <= 15:
+                watch_actions.append({
+                    "action": "WATCH",
+                    "priority": 4,
+                    "ticker": stock.ticker,
+                    "shares_action": 0,
+                    "shares_current": 0,
+                    "current_price": stock.current_price,
+                    "estimated_value": 0,
+                    "reason": f"Approaching breakout - {pct_from_high:.0f}% from 52-week high",
+                    "details": [
+                        f"CANSLIM Score: {stock.canslim_score:.0f}/100",
+                        f"52-week high: ${stock.week_52_high:.2f}",
+                        f"Current: ${stock.current_price:.2f} ({pct_from_high:.1f}% below high)",
+                        "Watch for breakout above prior high on volume",
+                        f"Projected growth: +{stock.projected_growth:.0f}%" if stock.projected_growth else ""
+                    ]
+                })
+
+                if len(watch_actions) >= 3:
+                    break
+
+    actions.extend(watch_actions)
+
+    # Sort by priority
+    actions.sort(key=lambda x: (x["priority"], -x.get("estimated_value", 0)))
+
+    return {
+        "gameplan": actions,
+        "summary": {
+            "total_actions": len(actions),
+            "sell_count": len([a for a in actions if a["action"] == "SELL"]),
+            "trim_count": len([a for a in actions if a["action"] == "TRIM"]),
+            "buy_count": len([a for a in actions if a["action"] == "BUY"]),
+            "add_count": len([a for a in actions if a["action"] == "ADD"]),
+            "watch_count": len([a for a in actions if a["action"] == "WATCH"]),
+            "portfolio_value": total_value
+        }
+    }
+
+
 # ============== Watchlist ==============
 
 @app.get("/api/watchlist")
