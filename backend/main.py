@@ -830,18 +830,39 @@ def fetch_price_yahoo_chart(ticker: str) -> float | None:
 
 @app.post("/api/portfolio/refresh")
 async def refresh_portfolio(db: Session = Depends(get_db)):
-    """Refresh all portfolio positions with current prices"""
+    """Refresh all portfolio positions with current prices and auto-scan missing stocks"""
     import time
 
     positions = db.query(PortfolioPosition).all()
-    logger.info(f"Fetching prices for {len(positions)} positions")
+    logger.info(f"Refreshing {len(positions)} positions")
 
     updated = 0
+    scanned = 0
     errors = []
 
+    # First pass: identify and scan stocks without data
+    for position in positions:
+        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+        if not stock or stock.canslim_score is None:
+            logger.info(f"Auto-scanning {position.ticker} (no existing data)")
+            try:
+                analysis = analyze_stock(position.ticker)
+                if analysis:
+                    save_stock_to_db(db, analysis)
+                    scanned += 1
+                    logger.info(f"Scanned {position.ticker}: score={analysis.get('canslim_score', 0):.1f}")
+                else:
+                    logger.warning(f"Could not analyze {position.ticker}")
+                # Rate limit delay
+                time.sleep(2)
+            except Exception as e:
+                logger.error(f"Error scanning {position.ticker}: {e}")
+                errors.append(f"{position.ticker}: scan failed - {str(e)}")
+
+    # Second pass: update all positions with current prices and scores
     for position in positions:
         try:
-            # Get stock data for CANSLIM score
+            # Get stock data for CANSLIM score (may have just been scanned)
             stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
 
             current_price = fetch_price_yahoo_chart(position.ticker)
@@ -889,8 +910,9 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "message": f"Refreshed {updated} positions",
+        "message": f"Refreshed {updated} positions, scanned {scanned} new stocks",
         "updated": updated,
+        "scanned": scanned,
         "errors": errors
     }
 
