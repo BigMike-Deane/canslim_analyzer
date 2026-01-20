@@ -124,6 +124,20 @@ def run_migrations():
         except Exception as e:
             logger.error(f"Failed to rebuild ai_portfolio_snapshots: {e}")
 
+    # Create indexes that may not exist on older databases
+    index_migrations = [
+        ('ix_stocks_sector', 'stocks', 'sector'),
+        ('ix_stocks_canslim', 'stocks', 'canslim_score'),
+        ('ix_stocks_price', 'stocks', 'current_price'),
+        ('ix_stocks_score_price', 'stocks', 'canslim_score, current_price'),
+        ('ix_stock_scores_stock_date', 'stock_scores', 'stock_id, date'),
+    ]
+    for idx_name, table, columns in index_migrations:
+        try:
+            cursor.execute(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})')
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
     conn.close()
     logger.info("Database migrations complete")
@@ -170,6 +184,8 @@ class Stock(Base):
     __table_args__ = (
         Index('ix_stocks_sector', 'sector'),
         Index('ix_stocks_canslim', 'canslim_score'),
+        Index('ix_stocks_price', 'current_price'),
+        Index('ix_stocks_score_price', 'canslim_score', 'current_price'),  # Composite for filtered queries
     )
 
 

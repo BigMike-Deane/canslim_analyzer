@@ -90,7 +90,7 @@ def run_continuous_scan():
             if not stock_data or not stock_data.is_valid:
                 return None
 
-            canslim_result = canslim_scorer.calculate_score(stock_data)
+            canslim_result = canslim_scorer.score_stock(stock_data)
             projection = growth_projector.project_growth(
                 ticker=ticker,
                 stock_data=stock_data,

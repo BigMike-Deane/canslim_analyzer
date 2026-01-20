@@ -93,6 +93,59 @@ canslim_scorer = CANSLIMScorer(data_fetcher)
 growth_projector = GrowthProjector(data_fetcher)
 
 
+# ============== Shared Constants & Helpers ==============
+
+# Duplicate ticker groups (same company, different share classes)
+DUPLICATE_TICKERS = [
+    {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
+    # Add more pairs here if needed (e.g., BRK.A/BRK.B)
+]
+
+
+def adjust_score_for_market(stock, current_m_score: float) -> Optional[float]:
+    """Adjust CANSLIM score using current market M score instead of stored M score"""
+    if stock.canslim_score is None:
+        return None
+    stored_m = stock.m_score or 0
+    # Replace stored M score with current market M score
+    return round(stock.canslim_score - stored_m + current_m_score, 1)
+
+
+def expand_tickers_with_duplicates(tickers: set) -> set:
+    """Expand a set of tickers to include all related duplicates"""
+    expanded = set(tickers)
+    for ticker in list(expanded):
+        for group in DUPLICATE_TICKERS:
+            if ticker in group:
+                expanded.update(group)
+    return expanded
+
+
+def filter_duplicate_stocks(stocks, limit: int):
+    """Filter out duplicate tickers, keeping highest scorer from each group"""
+    seen_groups = set()
+    filtered = []
+    for stock in stocks:
+        # Check if this ticker belongs to a duplicate group
+        ticker_group = None
+        for group in DUPLICATE_TICKERS:
+            if stock.ticker in group:
+                ticker_group = frozenset(group)
+                break
+
+        # Skip if we've already seen this group
+        if ticker_group and ticker_group in seen_groups:
+            continue
+
+        if ticker_group:
+            seen_groups.add(ticker_group)
+
+        filtered.append(stock)
+        if len(filtered) >= limit:
+            break
+    return filtered
+
+
 def get_score_change_from_history(db: Session, stock_id: int) -> Optional[float]:
     """Calculate score change from the last 2 historical StockScore entries"""
     scores = db.query(StockScore).filter(
@@ -367,42 +420,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
     # Get current market M score to adjust stock scores dynamically
     current_m_score = latest_market.market_score if latest_market else 0
 
-    def adjust_score(stock):
-        """Adjust CANSLIM score using current market M score instead of stored M score"""
-        if stock.canslim_score is None:
-            return None
-        stored_m = stock.m_score or 0
-        # Replace stored M score with current market M score
-        adjusted = stock.canslim_score - stored_m + current_m_score
-        return round(adjusted, 1)
-
-    # Define duplicate ticker groups (same company, different share classes)
-    DUPLICATE_TICKERS = [
-        {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
-    ]
-
-    def filter_duplicates(stocks, limit):
-        """Filter out duplicate tickers, keeping highest scorer from each group"""
-        seen_groups = set()
-        filtered = []
-        for stock in stocks:
-            # Check if this ticker belongs to a duplicate group
-            in_group = None
-            for group in DUPLICATE_TICKERS:
-                if stock.ticker in group:
-                    in_group = frozenset(group)
-                    break
-
-            if in_group:
-                if in_group in seen_groups:
-                    continue  # Skip - already have higher-scored ticker from this group
-                seen_groups.add(in_group)
-
-            filtered.append(stock)
-            if len(filtered) >= limit:
-                break
-        return filtered
-
     # Get top stocks - prioritize those with positive growth projections
     # First: stocks with high scores AND positive projected growth (quality data)
     top_quality_raw = db.query(Stock).filter(
@@ -421,7 +438,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
     ).order_by(desc(Stock.canslim_score)).limit(8).all()
 
     top_stocks_raw = top_quality_raw + top_fallback_raw
-    top_stocks = filter_duplicates(top_stocks_raw, 10)
+    top_stocks = filter_duplicate_stocks(top_stocks_raw, 10)
 
     # Get top stocks under $25 - same prioritization
     top_u25_quality_raw = db.query(Stock).filter(
@@ -443,7 +460,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
     ).order_by(desc(Stock.canslim_score)).limit(8).all()
 
     top_stocks_under_25_raw = top_u25_quality_raw + top_u25_fallback_raw
-    top_stocks_under_25 = filter_duplicates(top_stocks_under_25_raw, 10)
+    top_stocks_under_25 = filter_duplicate_stocks(top_stocks_under_25_raw, 10)
 
     # Get portfolio summary
     positions = db.query(PortfolioPosition).all()
@@ -469,7 +486,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "ticker": s.ticker,
             "name": s.name,
             "sector": s.sector,
-            "canslim_score": adjust_score(s),
+            "canslim_score": adjust_score_for_market(s, current_m_score),
             "score_change": s.score_change,  # Updates every scan
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
@@ -482,7 +499,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "ticker": s.ticker,
             "name": s.name,
             "sector": s.sector,
-            "canslim_score": adjust_score(s),
+            "canslim_score": adjust_score_for_market(s, current_m_score),
             "score_change": s.score_change,  # Updates every scan
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
@@ -604,13 +621,6 @@ async def get_stocks(
     latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
     current_m_score = latest_market.market_score if latest_market else 0
 
-    def adjust_score(stock):
-        """Adjust CANSLIM score using current market M score"""
-        if stock.canslim_score is None:
-            return None
-        stored_m = stock.m_score or 0
-        return round(stock.canslim_score - stored_m + current_m_score, 1)
-
     query = db.query(Stock).filter(Stock.canslim_score != None)
 
     # Apply filters
@@ -642,7 +652,7 @@ async def get_stocks(
             "name": s.name,
             "sector": s.sector,
             "industry": s.industry,
-            "canslim_score": adjust_score(s),
+            "canslim_score": adjust_score_for_market(s, current_m_score),
             "projected_growth": s.projected_growth,
             "growth_confidence": s.growth_confidence,
             "current_price": s.current_price,
@@ -972,9 +982,24 @@ async def get_portfolio(db: Session = Depends(get_db)):
 @app.post("/api/portfolio")
 async def add_position(data: PositionCreate, db: Session = Depends(get_db)):
     """Add a new portfolio position"""
-    ticker = data.ticker.upper()
+    ticker = data.ticker.upper().strip()
     shares = data.shares
     cost_basis = data.cost_basis
+
+    # Input validation
+    if not ticker or len(ticker) > 10:
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol")
+    if not ticker.replace('.', '').replace('-', '').isalnum():
+        raise HTTPException(status_code=400, detail="Ticker must contain only letters, numbers, dots, or hyphens")
+    if shares is None or shares <= 0:
+        raise HTTPException(status_code=400, detail="Shares must be a positive number")
+    if shares > 1_000_000_000:
+        raise HTTPException(status_code=400, detail="Share count exceeds maximum allowed")
+    if cost_basis is not None:
+        if cost_basis < 0:
+            raise HTTPException(status_code=400, detail="Cost basis cannot be negative")
+        if cost_basis > 1_000_000:
+            raise HTTPException(status_code=400, detail="Cost basis exceeds reasonable limit")
 
     # Check if position already exists
     existing = db.query(PortfolioPosition).filter(
@@ -1168,26 +1193,14 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
     if total_value == 0:
         total_value = 10000  # Default for empty portfolio
 
-    # Define duplicate ticker groups (same company, different share classes)
-    DUPLICATE_TICKERS = [
-        {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
-        # Add more pairs here if needed (e.g., BRK.A/BRK.B)
-    ]
-
     # Get top stocks for potential buys
     top_stocks = db.query(Stock).filter(
         Stock.canslim_score != None,
         Stock.canslim_score >= 65
     ).order_by(desc(Stock.canslim_score)).limit(20).all()
 
-    # Get tickers we already own (including duplicates)
-    owned_tickers = {p.ticker for p in positions}
-
-    # Expand owned_tickers to include duplicates
-    for ticker in list(owned_tickers):
-        for group in DUPLICATE_TICKERS:
-            if ticker in group:
-                owned_tickers.update(group)
+    # Get tickers we already own (including duplicates like GOOG/GOOGL)
+    owned_tickers = expand_tickers_with_duplicates({p.ticker for p in positions})
 
     actions = []
 
