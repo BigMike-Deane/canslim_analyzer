@@ -588,37 +588,59 @@ async def start_scan(
     db.add(job)
     db.commit()
 
-    # Run analysis in background
+    # Run analysis in background with parallel processing
     def run_scan():
-        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
         scan_db = SessionLocal()
+        processed = 0
+        successful = 0
+        lock = threading.Lock()
+
+        def process_single_stock(ticker):
+            """Process a single stock - runs in thread pool"""
+            nonlocal processed, successful
+            thread_db = SessionLocal()
+            try:
+                analysis = analyze_stock(ticker)
+                if analysis:
+                    # Apply price filter
+                    if max_price and analysis["current_price"] > max_price:
+                        return ticker, False
+                    save_stock_to_db(thread_db, analysis)
+                    logger.info(f"Scanned {ticker}: score={analysis.get('canslim_score', 0):.1f}")
+                    return ticker, True
+                return ticker, False
+            except Exception as e:
+                logger.error(f"Error scanning {ticker}: {e}")
+                return ticker, False
+            finally:
+                thread_db.close()
+
         try:
-            processed = 0
-            successful = 0
-            for ticker in tickers:
-                try:
-                    analysis = analyze_stock(ticker)
-                    if analysis:
-                        # Apply price filter
-                        if max_price and analysis["current_price"] > max_price:
+            # Process stocks in parallel with 4 workers
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(process_single_stock, t): t for t in tickers}
+
+                for future in as_completed(futures):
+                    ticker = futures[future]
+                    try:
+                        _, was_successful = future.result()
+                        with lock:
                             processed += 1
-                            continue
-                        save_stock_to_db(scan_db, analysis)
-                        successful += 1
-                        logger.info(f"Scanned {ticker}: score={analysis.get('canslim_score', 0):.1f}")
-                    processed += 1
+                            if was_successful:
+                                successful += 1
 
-                    # Update progress
-                    scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
-                    scan_job.tickers_processed = processed
-                    scan_db.commit()
-
-                    # Delay to avoid rate limiting (2 seconds between requests)
-                    time.sleep(2)
-
-                except Exception as e:
-                    logger.error(f"Error scanning {ticker}: {e}")
-                    processed += 1
+                            # Update progress every few stocks
+                            if processed % 4 == 0 or processed == len(tickers):
+                                scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
+                                scan_job.tickers_processed = processed
+                                scan_db.commit()
+                    except Exception as e:
+                        logger.error(f"Future error for {ticker}: {e}")
+                        with lock:
+                            processed += 1
 
             # Mark complete
             scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()

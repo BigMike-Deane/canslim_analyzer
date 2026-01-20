@@ -151,7 +151,6 @@ def fetch_fmp_institutional(ticker: str) -> float:
             print(f"FMP institutional error for {ticker}: {e}")
 
     # Fallback to Finviz (more reliable than Yahoo Finance from servers)
-    time.sleep(0.3)  # Small delay to be polite to Finviz
     return fetch_finviz_institutional(ticker)
 
 
