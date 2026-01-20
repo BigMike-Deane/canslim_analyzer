@@ -967,14 +967,26 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
     if total_value == 0:
         total_value = 10000  # Default for empty portfolio
 
+    # Define duplicate ticker groups (same company, different share classes)
+    DUPLICATE_TICKERS = [
+        {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
+        # Add more pairs here if needed (e.g., BRK.A/BRK.B)
+    ]
+
     # Get top stocks for potential buys
     top_stocks = db.query(Stock).filter(
         Stock.canslim_score != None,
         Stock.canslim_score >= 65
     ).order_by(desc(Stock.canslim_score)).limit(20).all()
 
-    # Get tickers we already own
+    # Get tickers we already own (including duplicates)
     owned_tickers = {p.ticker for p in positions}
+
+    # Expand owned_tickers to include duplicates
+    for ticker in list(owned_tickers):
+        for group in DUPLICATE_TICKERS:
+            if ticker in group:
+                owned_tickers.update(group)
 
     actions = []
 
@@ -1067,8 +1079,25 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
     # === BUY NEW POSITIONS ===
     max_position_value = total_value * 0.10  # Max 10% per position
 
+    # Track which duplicate groups we've already recommended a BUY for
+    recommended_groups = set()
+
     for stock in top_stocks:
         if stock.ticker in owned_tickers:
+            continue
+
+        # Check if this ticker belongs to a duplicate group we've already recommended
+        skip_duplicate = False
+        ticker_group = None
+        for group in DUPLICATE_TICKERS:
+            if stock.ticker in group:
+                ticker_group = frozenset(group)
+                if ticker_group in recommended_groups:
+                    # Already recommended a higher-scoring stock from this group
+                    skip_duplicate = True
+                break
+
+        if skip_duplicate:
             continue
 
         if stock.canslim_score >= 75 and (stock.projected_growth or 0) >= 15:
@@ -1099,6 +1128,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                     f"Suggested position: {shares_to_buy} shares (~${buy_value:,.0f}, 10% of portfolio)"
                 ]
             })
+
+            # Mark this duplicate group as recommended (if applicable)
+            if ticker_group:
+                recommended_groups.add(ticker_group)
 
             if len([a for a in actions if a["action"] == "BUY"]) >= 3:
                 break  # Max 3 buy recommendations
@@ -1143,10 +1176,24 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
 
     # === WATCH LIST CANDIDATES ===
     watch_actions = []
+    watched_groups = set()  # Track duplicate groups already on watch list
     for stock in top_stocks:
         if stock.ticker in owned_tickers:
             continue
         if stock.ticker in [a["ticker"] for a in actions if a["action"] == "BUY"]:
+            continue
+
+        # Check for duplicate groups (skip if already watching one from same group)
+        skip_watch = False
+        watch_ticker_group = None
+        for group in DUPLICATE_TICKERS:
+            if stock.ticker in group:
+                watch_ticker_group = frozenset(group)
+                if watch_ticker_group in watched_groups or watch_ticker_group in recommended_groups:
+                    skip_watch = True
+                break
+
+        if skip_watch:
             continue
 
         if stock.canslim_score >= 70 and stock.week_52_high and stock.current_price:
@@ -1171,6 +1218,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                         f"Projected growth: +{stock.projected_growth:.0f}%" if stock.projected_growth else ""
                     ]
                 })
+
+                # Mark this duplicate group as watched (if applicable)
+                if watch_ticker_group:
+                    watched_groups.add(watch_ticker_group)
 
                 if len(watch_actions) >= 3:
                     break
