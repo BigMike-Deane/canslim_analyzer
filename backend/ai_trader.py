@@ -241,6 +241,9 @@ def evaluate_sells(db: Session) -> list:
 def evaluate_buys(db: Session) -> list:
     """Evaluate stocks for potential buys - prioritize high growth momentum stocks"""
     config = get_or_create_config(db)
+    portfolio = get_portfolio_value(db)
+    logger.info(f"evaluate_buys: cash=${config.current_cash:.2f}, portfolio_value=${portfolio['total_value']:.2f}")
+
     positions = db.query(AIPortfolioPosition).all()
     current_tickers = {p.ticker for p in positions}
 
@@ -327,6 +330,10 @@ def evaluate_buys(db: Session) -> list:
 
     # Sort by composite score (highest first)
     buys.sort(key=lambda x: x["priority"])
+
+    # Log first few buy candidates for debugging
+    for b in buys[:3]:
+        logger.info(f"Buy candidate: {b['stock'].ticker}, value=${b['value']:.2f}, shares={b['shares']:.2f}")
 
     # Remove duplicates from buy candidates (keep only highest scoring from each group)
     final_buys = []
