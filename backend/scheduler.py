@@ -201,6 +201,16 @@ def run_continuous_scan():
         _scan_config["stocks_scanned"] = successful
         logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks")
 
+        # Update market snapshot (SPY price, MAs, trend)
+        try:
+            from backend.main import update_market_snapshot
+            market_db = SessionLocal()
+            update_market_snapshot(market_db)
+            market_db.close()
+            logger.info("Market snapshot updated")
+        except Exception as e:
+            logger.error(f"Market snapshot error: {e}")
+
         # Run AI trading cycle after scan completes
         try:
             from backend.ai_trader import run_ai_trading_cycle, get_or_create_config
