@@ -172,21 +172,20 @@ function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
   )
 }
 
-function ScanProgress({ scanJob }) {
+function ScanProgress({ scanJob, scanStartTime }) {
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
-    if (!scanJob?.started_at) return
+    if (!scanStartTime) return
 
-    const startTime = new Date(scanJob.started_at).getTime()
     const updateElapsed = () => {
-      setElapsed(Math.floor((Date.now() - startTime) / 1000))
+      setElapsed(Math.floor((Date.now() - scanStartTime) / 1000))
     }
 
     updateElapsed()
     const interval = setInterval(updateElapsed, 1000)
     return () => clearInterval(interval)
-  }, [scanJob?.started_at])
+  }, [scanStartTime])
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60)
@@ -229,6 +228,7 @@ export default function Dashboard() {
   const [scanning, setScanning] = useState(false)
   const [scanJob, setScanJob] = useState(null)
   const [scanSource, setScanSource] = useState('sp500')
+  const [scanStartTime, setScanStartTime] = useState(null)
 
   const fetchData = async () => {
     try {
@@ -272,11 +272,13 @@ export default function Dashboard() {
   const handleScan = async () => {
     try {
       setScanning(true)
+      setScanStartTime(Date.now())
       const result = await api.startScan(null, scanSource)
       setScanJob(result)
     } catch (err) {
       console.error('Failed to start scan:', err)
       setScanning(false)
+      setScanStartTime(null)
     }
   }
 
@@ -307,7 +309,7 @@ export default function Dashboard() {
       <TopStocksList stocks={data?.top_stocks} title="Top Rated Stocks" />
 
       {scanJob && scanJob.status === 'running' && (
-        <ScanProgress scanJob={scanJob} />
+        <ScanProgress scanJob={scanJob} scanStartTime={scanStartTime} />
       )}
 
       <ScanControls
