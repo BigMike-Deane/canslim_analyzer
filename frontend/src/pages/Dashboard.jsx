@@ -128,25 +128,47 @@ function QuickStats({ stats }) {
   )
 }
 
-function ScanButton({ onScan, scanning }) {
+function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
+  const sourceOptions = [
+    { value: 'sp500', label: 'S&P 500', count: '~500' },
+    { value: 'top50', label: 'Top 50', count: '50' },
+    { value: 'russell', label: 'Russell 2000', count: '~750' },
+    { value: 'all', label: 'All Stocks', count: '~950+' },
+  ]
+
   return (
-    <button
-      onClick={onScan}
-      disabled={scanning}
-      className="w-full btn-primary flex items-center justify-center gap-2"
-    >
-      {scanning ? (
-        <>
-          <span className="animate-spin">⟳</span>
-          <span>Scanning...</span>
-        </>
-      ) : (
-        <>
-          <span>🔄</span>
-          <span>Run Full Scan</span>
-        </>
-      )}
-    </button>
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <select
+          value={scanSource}
+          onChange={(e) => setScanSource(e.target.value)}
+          disabled={scanning}
+          className="flex-1 bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm"
+        >
+          {sourceOptions.map(opt => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label} ({opt.count})
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={onScan}
+          disabled={scanning}
+          className="flex-1 btn-primary flex items-center justify-center gap-2"
+        >
+          {scanning ? (
+            <>
+              <span className="animate-spin">⟳</span>
+              <span>Scanning...</span>
+            </>
+          ) : (
+            <>
+              <span>Run Scan</span>
+            </>
+          )}
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -155,6 +177,7 @@ export default function Dashboard() {
   const [data, setData] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanJob, setScanJob] = useState(null)
+  const [scanSource, setScanSource] = useState('sp500')
 
   const fetchData = async () => {
     try {
@@ -198,7 +221,7 @@ export default function Dashboard() {
   const handleScan = async () => {
     try {
       setScanning(true)
-      const result = await api.startScan()
+      const result = await api.startScan(null, scanSource)
       setScanJob(result)
     } catch (err) {
       console.error('Failed to start scan:', err)
@@ -249,7 +272,12 @@ export default function Dashboard() {
         </div>
       )}
 
-      <ScanButton onScan={handleScan} scanning={scanning} />
+      <ScanControls
+        onScan={handleScan}
+        scanning={scanning}
+        scanSource={scanSource}
+        setScanSource={setScanSource}
+      />
 
       <div className="h-4" />
     </div>

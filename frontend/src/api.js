@@ -58,10 +58,15 @@ export const api = {
   refreshStock: (ticker) => request(`/api/stocks/${ticker}/refresh`, { method: 'POST' }),
 
   // Analysis jobs
-  startScan: (tickers = null) => request('/api/analyze/scan', {
-    method: 'POST',
-    body: JSON.stringify({ tickers })
-  }),
+  startScan: (tickers = null, source = 'sp500') => {
+    const params = new URLSearchParams()
+    if (source) params.set('source', source)
+    const query = params.toString()
+    return request(`/api/analyze/scan${query ? `?${query}` : ''}`, {
+      method: 'POST',
+      body: JSON.stringify({ tickers })
+    })
+  },
 
   getJobStatus: (jobId) => request(`/api/analyze/jobs/${jobId}`),
 
