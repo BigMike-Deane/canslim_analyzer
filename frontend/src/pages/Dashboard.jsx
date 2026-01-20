@@ -57,7 +57,7 @@ function MarketStatus({ market }) {
   )
 }
 
-function TopStocksList({ stocks, title }) {
+function TopStocksList({ stocks, title, showPrice = false }) {
   if (!stocks || stocks.length === 0) return null
 
   return (
@@ -87,7 +87,12 @@ function TopStocksList({ stocks, title }) {
               <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(stock.canslim_score)}`}>
                 {formatScore(stock.canslim_score)}
               </div>
-              {stock.projected_growth != null && (
+              {showPrice && stock.current_price != null && (
+                <div className="text-xs text-green-400 mt-1">
+                  ${stock.current_price.toFixed(2)}
+                </div>
+              )}
+              {!showPrice && stock.projected_growth != null && (
                 <div className="text-xs text-dark-400 mt-1">
                   +{stock.projected_growth.toFixed(0)}% proj
                 </div>
@@ -307,6 +312,8 @@ export default function Dashboard() {
       <QuickStats stats={data?.stats} />
 
       <TopStocksList stocks={data?.top_stocks} title="Top Rated Stocks" />
+
+      <TopStocksList stocks={data?.top_stocks_under_25} title="Top Under $25" showPrice={true} />
 
       {scanJob && scanJob.status === 'running' && (
         <ScanProgress scanJob={scanJob} scanStartTime={scanStartTime} />

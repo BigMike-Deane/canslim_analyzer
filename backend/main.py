@@ -345,6 +345,14 @@ async def get_dashboard(db: Session = Depends(get_db)):
         Stock.canslim_score != None
     ).order_by(desc(Stock.canslim_score)).limit(10).all()
 
+    # Get top stocks under $25 by CANSLIM score
+    top_stocks_under_25 = db.query(Stock).filter(
+        Stock.canslim_score != None,
+        Stock.current_price != None,
+        Stock.current_price > 0,
+        Stock.current_price <= 25
+    ).order_by(desc(Stock.canslim_score)).limit(10).all()
+
     # Get portfolio summary
     positions = db.query(PortfolioPosition).all()
     total_value = sum(p.current_value or 0 for p in positions)
@@ -365,6 +373,16 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence
         } for s in top_stocks],
+
+        "top_stocks_under_25": [{
+            "ticker": s.ticker,
+            "name": s.name,
+            "sector": s.sector,
+            "canslim_score": s.canslim_score,
+            "projected_growth": s.projected_growth,
+            "current_price": s.current_price,
+            "growth_confidence": s.growth_confidence
+        } for s in top_stocks_under_25],
 
         "market": {
             "trend": latest_market.market_trend if latest_market else "unknown",
