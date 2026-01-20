@@ -174,3 +174,86 @@ class MarketSnapshot(Base):
     market_trend = Column(String)  # bullish, neutral, bearish
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============== AI Portfolio Models ==============
+
+class AIPortfolioConfig(Base):
+    """AI Portfolio configuration"""
+    __tablename__ = "ai_portfolio_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    starting_cash = Column(Float, default=25000.0)
+    current_cash = Column(Float, default=25000.0)
+    max_positions = Column(Integer, default=15)
+    max_position_pct = Column(Float, default=10.0)  # Max % of portfolio per position
+    min_score_to_buy = Column(Integer, default=75)
+    sell_score_threshold = Column(Integer, default=50)  # Sell if score drops below
+    take_profit_pct = Column(Float, default=25.0)  # Take profits at this gain %
+    stop_loss_pct = Column(Float, default=15.0)  # Stop loss at this loss %
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AIPortfolioPosition(Base):
+    """AI Portfolio current positions"""
+    __tablename__ = "ai_portfolio_positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    shares = Column(Float, nullable=False)
+    cost_basis = Column(Float, nullable=False)  # Price per share when bought
+    purchase_date = Column(DateTime, default=datetime.utcnow)
+    purchase_score = Column(Float)  # CANSLIM score when purchased
+
+    # Current values (updated on each scan)
+    current_price = Column(Float)
+    current_value = Column(Float)
+    gain_loss = Column(Float)
+    gain_loss_pct = Column(Float)
+    current_score = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AIPortfolioTrade(Base):
+    """AI Portfolio trade history"""
+    __tablename__ = "ai_portfolio_trades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)  # BUY, SELL
+    shares = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    total_value = Column(Float, nullable=False)
+    reason = Column(String)  # Why the trade was made
+    canslim_score = Column(Float)  # Score at time of trade
+
+    # For sells, track the gain/loss
+    cost_basis = Column(Float)  # Original cost basis for sells
+    realized_gain = Column(Float)  # Profit/loss on the trade
+
+    executed_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AIPortfolioSnapshot(Base):
+    """Daily AI Portfolio snapshots for performance chart"""
+    __tablename__ = "ai_portfolio_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, unique=True, index=True, nullable=False)
+
+    total_value = Column(Float, nullable=False)  # Cash + positions
+    cash = Column(Float, nullable=False)
+    positions_value = Column(Float, nullable=False)
+    positions_count = Column(Integer, nullable=False)
+
+    # Performance metrics
+    total_return = Column(Float)  # Total return since inception
+    total_return_pct = Column(Float)
+    day_change = Column(Float)  # Change from previous day
+    day_change_pct = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)

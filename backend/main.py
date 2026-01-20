@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.database import (
     init_db, get_db, Stock, StockScore, PortfolioPosition,
-    Watchlist, AnalysisJob, MarketSnapshot
+    Watchlist, AnalysisJob, MarketSnapshot,
+    AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot
 )
 from backend.config import settings
 from pydantic import BaseModel
@@ -1189,6 +1190,152 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
             "add_count": len([a for a in actions if a["action"] == "ADD"]),
             "watch_count": len([a for a in actions if a["action"] == "WATCH"]),
             "portfolio_value": total_value
+        }
+    }
+
+
+# ============== AI Portfolio ==============
+
+from backend.ai_trader import (
+    get_or_create_config, get_portfolio_value, update_position_prices,
+    run_ai_trading_cycle, take_portfolio_snapshot, initialize_ai_portfolio
+)
+
+@app.get("/api/ai-portfolio")
+async def get_ai_portfolio(db: Session = Depends(get_db)):
+    """Get AI Portfolio overview"""
+    config = get_or_create_config(db)
+    portfolio = get_portfolio_value(db)
+    positions = db.query(AIPortfolioPosition).all()
+
+    return {
+        "config": {
+            "starting_cash": config.starting_cash,
+            "max_positions": config.max_positions,
+            "max_position_pct": config.max_position_pct,
+            "min_score_to_buy": config.min_score_to_buy,
+            "sell_score_threshold": config.sell_score_threshold,
+            "take_profit_pct": config.take_profit_pct,
+            "stop_loss_pct": config.stop_loss_pct,
+            "is_active": config.is_active
+        },
+        "summary": portfolio,
+        "positions": [{
+            "id": p.id,
+            "ticker": p.ticker,
+            "shares": p.shares,
+            "cost_basis": p.cost_basis,
+            "current_price": p.current_price,
+            "current_value": p.current_value,
+            "gain_loss": p.gain_loss,
+            "gain_loss_pct": p.gain_loss_pct,
+            "purchase_score": p.purchase_score,
+            "current_score": p.current_score,
+            "purchase_date": p.purchase_date.isoformat() if p.purchase_date else None
+        } for p in positions]
+    }
+
+
+@app.get("/api/ai-portfolio/history")
+async def get_ai_portfolio_history(
+    days: int = Query(30, le=365),
+    db: Session = Depends(get_db)
+):
+    """Get AI Portfolio performance history for charts"""
+    from datetime import timedelta
+    start_date = date.today() - timedelta(days=days)
+
+    snapshots = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.date >= start_date
+    ).order_by(AIPortfolioSnapshot.date).all()
+
+    return [{
+        "date": s.date.isoformat(),
+        "total_value": s.total_value,
+        "cash": s.cash,
+        "positions_value": s.positions_value,
+        "positions_count": s.positions_count,
+        "total_return": s.total_return,
+        "total_return_pct": s.total_return_pct,
+        "day_change": s.day_change,
+        "day_change_pct": s.day_change_pct
+    } for s in snapshots]
+
+
+@app.get("/api/ai-portfolio/trades")
+async def get_ai_portfolio_trades(
+    limit: int = Query(50, le=200),
+    db: Session = Depends(get_db)
+):
+    """Get AI Portfolio trade history"""
+    trades = db.query(AIPortfolioTrade).order_by(
+        desc(AIPortfolioTrade.executed_at)
+    ).limit(limit).all()
+
+    return [{
+        "id": t.id,
+        "ticker": t.ticker,
+        "action": t.action,
+        "shares": t.shares,
+        "price": t.price,
+        "total_value": t.total_value,
+        "reason": t.reason,
+        "canslim_score": t.canslim_score,
+        "realized_gain": t.realized_gain,
+        "executed_at": t.executed_at.isoformat() if t.executed_at else None
+    } for t in trades]
+
+
+@app.post("/api/ai-portfolio/initialize")
+async def initialize_ai_portfolio_endpoint(
+    starting_cash: float = Query(25000.0, ge=1000, le=1000000),
+    db: Session = Depends(get_db)
+):
+    """Initialize or reset the AI Portfolio"""
+    result = initialize_ai_portfolio(db, starting_cash)
+    return result
+
+
+@app.post("/api/ai-portfolio/run-cycle")
+async def run_ai_trading_cycle_endpoint(db: Session = Depends(get_db)):
+    """Manually trigger an AI trading cycle"""
+    result = run_ai_trading_cycle(db)
+    return result
+
+
+@app.patch("/api/ai-portfolio/config")
+async def update_ai_portfolio_config(
+    is_active: bool = Query(None),
+    min_score_to_buy: int = Query(None, ge=50, le=100),
+    sell_score_threshold: int = Query(None, ge=20, le=80),
+    take_profit_pct: float = Query(None, ge=10, le=100),
+    stop_loss_pct: float = Query(None, ge=5, le=50),
+    db: Session = Depends(get_db)
+):
+    """Update AI Portfolio configuration"""
+    config = get_or_create_config(db)
+
+    if is_active is not None:
+        config.is_active = is_active
+    if min_score_to_buy is not None:
+        config.min_score_to_buy = min_score_to_buy
+    if sell_score_threshold is not None:
+        config.sell_score_threshold = sell_score_threshold
+    if take_profit_pct is not None:
+        config.take_profit_pct = take_profit_pct
+    if stop_loss_pct is not None:
+        config.stop_loss_pct = stop_loss_pct
+
+    db.commit()
+
+    return {
+        "message": "Config updated",
+        "config": {
+            "is_active": config.is_active,
+            "min_score_to_buy": config.min_score_to_buy,
+            "sell_score_threshold": config.sell_score_threshold,
+            "take_profit_pct": config.take_profit_pct,
+            "stop_loss_pct": config.stop_loss_pct
         }
     }
 

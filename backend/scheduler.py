@@ -201,6 +201,19 @@ def run_continuous_scan():
         _scan_config["stocks_scanned"] = successful
         logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks")
 
+        # Run AI trading cycle after scan completes
+        try:
+            from backend.ai_trader import run_ai_trading_cycle, get_or_create_config
+            ai_db = SessionLocal()
+            config = get_or_create_config(ai_db)
+            if config.is_active:
+                logger.info("Running AI trading cycle...")
+                result = run_ai_trading_cycle(ai_db)
+                logger.info(f"AI trading: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+            ai_db.close()
+        except Exception as e:
+            logger.error(f"AI trading error: {e}")
+
     except Exception as e:
         logger.error(f"Scan error: {e}")
     finally:

@@ -5,6 +5,7 @@ import StockDetail from './pages/StockDetail'
 import Portfolio from './pages/Portfolio'
 import Watchlist from './pages/Watchlist'
 import Documentation from './pages/Documentation'
+import AIPortfolio from './pages/AIPortfolio'
 
 function NavIcon({ icon, label }) {
   return (
@@ -20,6 +21,7 @@ function BottomNav() {
     { to: '/', icon: '📊', label: 'Home' },
     { to: '/screener', icon: '🔍', label: 'Screener' },
     { to: '/portfolio', icon: '💼', label: 'Portfolio' },
+    { to: '/ai-portfolio', icon: '🤖', label: 'AI' },
     { to: '/watchlist', icon: '👁️', label: 'Watch' },
     { to: '/docs', icon: '📖', label: 'Docs' },
   ]
@@ -53,6 +55,7 @@ export default function App() {
         <Route path="/screener" element={<Screener />} />
         <Route path="/stock/:ticker" element={<StockDetail />} />
         <Route path="/portfolio" element={<Portfolio />} />
+        <Route path="/ai-portfolio" element={<AIPortfolio />} />
         <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/docs" element={<Documentation />} />
       </Routes>

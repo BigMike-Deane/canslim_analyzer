@@ -116,6 +116,28 @@ export const api = {
     if (source) params.set('source', source)
     if (interval) params.set('interval', interval)
     return request(`/api/scanner/config?${params}`, { method: 'PATCH' })
+  },
+
+  // AI Portfolio
+  getAIPortfolio: () => request('/api/ai-portfolio'),
+
+  getAIPortfolioHistory: (days = 30) => request(`/api/ai-portfolio/history?days=${days}`),
+
+  getAIPortfolioTrades: (limit = 50) => request(`/api/ai-portfolio/trades?limit=${limit}`),
+
+  initializeAIPortfolio: (startingCash = 25000) =>
+    request(`/api/ai-portfolio/initialize?starting_cash=${startingCash}`, { method: 'POST' }),
+
+  runAITradingCycle: () => request('/api/ai-portfolio/run-cycle', { method: 'POST' }),
+
+  updateAIPortfolioConfig: (config) => {
+    const params = new URLSearchParams()
+    Object.entries(config).forEach(([key, value]) => {
+      if (value !== null && value !== undefined) {
+        params.set(key, value)
+      }
+    })
+    return request(`/api/ai-portfolio/config?${params}`, { method: 'PATCH' })
   }
 }
 
