@@ -114,8 +114,27 @@ def fetch_fmp_earnings(ticker: str) -> dict:
     return result
 
 
+def fetch_finviz_institutional(ticker: str) -> float:
+    """Fetch institutional ownership percentage from Finviz (scraping)"""
+    import re
+    try:
+        url = f"https://finviz.com/quote.ashx?t={ticker}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            # Extract institutional ownership percentage from HTML
+            match = re.search(r'Inst Own</td><td[^>]*><b>([0-9.]+)%', resp.text)
+            if match:
+                pct = float(match.group(1))
+                print(f"Finviz inst ownership for {ticker}: {pct:.1f}%")
+                return pct
+    except Exception as e:
+        print(f"Finviz institutional error for {ticker}: {e}")
+    return 0.0
+
+
 def fetch_fmp_institutional(ticker: str) -> float:
-    """Fetch institutional ownership percentage from FMP, fallback to Yahoo Finance"""
+    """Fetch institutional ownership percentage from FMP, fallback to Finviz"""
     # Try FMP first
     if FMP_API_KEY:
         try:
@@ -126,37 +145,14 @@ def fetch_fmp_institutional(ticker: str) -> float:
                 if data:
                     # Sum up institutional shares and compare to outstanding
                     total_inst_shares = sum(h.get("shares", 0) or 0 for h in data[:50])  # Top 50 holders
-                    # We need shares outstanding to calculate percentage
-                    # This will be combined with quote data
                     if total_inst_shares > 0:
                         return total_inst_shares
         except Exception as e:
             print(f"FMP institutional error for {ticker}: {e}")
 
-    # Fallback to Yahoo Finance for institutional ownership with retry and delay
-    time.sleep(1.5)  # Initial delay to avoid rate limiting during bulk scans
-    for attempt in range(3):
-        try:
-            if attempt > 0:
-                time.sleep(2 * attempt)  # Exponential backoff: 2s, 4s
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            if info:
-                inst_pct = info.get('heldPercentInstitutions', 0)
-                if inst_pct and inst_pct > 0:
-                    # Return as percentage (0-100)
-                    pct = inst_pct * 100
-                    print(f"Yahoo inst ownership for {ticker}: {pct:.1f}%")
-                    return pct  # Return directly as percentage, not shares
-            break  # Success, no retry needed
-        except Exception as e:
-            if "429" in str(e) and attempt < 2:
-                print(f"Yahoo rate limited for {ticker}, retrying in {2 * (attempt + 1)}s...")
-                continue
-            print(f"Yahoo institutional error for {ticker}: {e}")
-            break
-
-    return 0.0
+    # Fallback to Finviz (more reliable than Yahoo Finance from servers)
+    time.sleep(0.3)  # Small delay to be polite to Finviz
+    return fetch_finviz_institutional(ticker)
 
 
 def fetch_fmp_analyst(ticker: str) -> dict:
