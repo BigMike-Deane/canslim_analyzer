@@ -13,9 +13,9 @@ import time
 import requests
 import os
 
-# FMP API Configuration
+# FMP API Configuration - using new /stable/ endpoints
 FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
-FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 
 
 def fetch_fmp_profile(ticker: str) -> dict:
@@ -24,7 +24,7 @@ def fetch_fmp_profile(ticker: str) -> dict:
         return {}
 
     try:
-        url = f"{FMP_BASE_URL}/profile/{ticker}?apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/profile?symbol={ticker}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -50,7 +50,7 @@ def fetch_fmp_quote(ticker: str) -> dict:
         return {}
 
     try:
-        url = f"{FMP_BASE_URL}/quote/{ticker}?apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/quote?symbol={ticker}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -80,8 +80,8 @@ def fetch_fmp_earnings(ticker: str) -> dict:
     result = {"quarterly_eps": [], "annual_eps": []}
 
     try:
-        # Quarterly income statement
-        url = f"{FMP_BASE_URL}/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}"
+        # Quarterly income statement - using new /stable/ endpoint
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         print(f"FMP quarterly {ticker}: status={resp.status_code}")
         if resp.status_code == 200:
@@ -100,8 +100,8 @@ def fetch_fmp_earnings(ticker: str) -> dict:
         print(f"FMP quarterly earnings error for {ticker}: {e}")
 
     try:
-        # Annual income statement
-        url = f"{FMP_BASE_URL}/income-statement/{ticker}?limit=5&apikey={FMP_API_KEY}"
+        # Annual income statement - using new /stable/ endpoint
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=5&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -120,7 +120,7 @@ def fetch_fmp_institutional(ticker: str) -> float:
         return 0.0
 
     try:
-        url = f"{FMP_BASE_URL}/institutional-holder/{ticker}?apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/institutional-holder?symbol={ticker}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -141,7 +141,7 @@ def fetch_fmp_analyst(ticker: str) -> dict:
         return {}
 
     try:
-        url = f"{FMP_BASE_URL}/analyst-estimates/{ticker}?limit=1&apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&limit=1&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -165,7 +165,7 @@ def fetch_fmp_price_target(ticker: str) -> dict:
         return {}
 
     try:
-        url = f"{FMP_BASE_URL}/price-target-consensus/{ticker}?apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/price-target-consensus?symbol={ticker}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
