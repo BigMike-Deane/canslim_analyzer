@@ -92,6 +92,78 @@ canslim_scorer = CANSLIMScorer(data_fetcher)
 growth_projector = GrowthProjector(data_fetcher)
 
 
+def update_market_snapshot(db: Session):
+    """Update market direction data (SPY price, MAs, trend)"""
+    import requests
+
+    try:
+        # Fetch SPY data from Yahoo chart API
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/SPY"
+        params = {"interval": "1d", "range": "1y"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch SPY data: {resp.status_code}")
+            return
+
+        data = resp.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
+            logger.error("No SPY chart data returned")
+            return
+
+        meta = result[0].get("meta", {})
+        close_prices = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+
+        # Filter out None values
+        close_prices = [p for p in close_prices if p is not None]
+
+        if len(close_prices) < 50:
+            logger.error("Insufficient SPY price history")
+            return
+
+        current_price = meta.get("regularMarketPrice") or close_prices[-1]
+
+        # Calculate moving averages
+        ma_50 = sum(close_prices[-50:]) / 50
+        ma_200 = sum(close_prices[-200:]) / 200 if len(close_prices) >= 200 else sum(close_prices) / len(close_prices)
+
+        # Determine trend
+        if current_price > ma_50 and current_price > ma_200:
+            trend = "bullish"
+            score = 15.0
+        elif current_price > ma_200:
+            trend = "neutral"
+            score = 10.5
+        elif current_price > ma_50:
+            trend = "neutral"
+            score = 7.5
+        else:
+            trend = "bearish"
+            score = 3.0
+
+        # Save to database
+        today = date.today()
+        snapshot = db.query(MarketSnapshot).filter(MarketSnapshot.date == today).first()
+
+        if not snapshot:
+            snapshot = MarketSnapshot(date=today)
+            db.add(snapshot)
+
+        snapshot.spy_price = current_price
+        snapshot.spy_50_ma = ma_50
+        snapshot.spy_200_ma = ma_200
+        snapshot.market_score = score
+        snapshot.market_trend = trend
+
+        db.commit()
+        logger.info(f"Market snapshot updated: SPY=${current_price:.2f}, trend={trend}, score={score}")
+
+    except Exception as e:
+        logger.error(f"Error updating market snapshot: {e}")
+
+
 def analyze_stock(ticker: str) -> dict:
     """Analyze a single stock and return full results"""
     try:
@@ -257,15 +329,21 @@ async def health_check(db: Session = Depends(get_db)):
 @app.get("/api/dashboard")
 async def get_dashboard(db: Session = Depends(get_db)):
     """Get dashboard overview data"""
+    # Update market snapshot if stale (older than 1 hour)
+    latest_market = db.query(MarketSnapshot).order_by(
+        desc(MarketSnapshot.date)
+    ).first()
+
+    if not latest_market or latest_market.date < date.today():
+        update_market_snapshot(db)
+        latest_market = db.query(MarketSnapshot).order_by(
+            desc(MarketSnapshot.date)
+        ).first()
+
     # Get top stocks by CANSLIM score
     top_stocks = db.query(Stock).filter(
         Stock.canslim_score != None
     ).order_by(desc(Stock.canslim_score)).limit(10).all()
-
-    # Get market snapshot
-    latest_market = db.query(MarketSnapshot).order_by(
-        desc(MarketSnapshot.date)
-    ).first()
 
     # Get portfolio summary
     positions = db.query(PortfolioPosition).all()
