@@ -623,8 +623,8 @@ async def start_scan(
             import time
             import random
             nonlocal processed, successful
-            # Small random delay to avoid API rate limits
-            time.sleep(random.uniform(0.1, 0.3))
+            # Delay to stay under FMP's 300 calls/min limit (4 calls/stock)
+            time.sleep(random.uniform(1.5, 2.5))
             thread_db = SessionLocal()
             try:
                 analysis = analyze_stock(ticker)
