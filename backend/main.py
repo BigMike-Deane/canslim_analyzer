@@ -434,7 +434,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "name": s.name,
             "sector": s.sector,
             "canslim_score": adjust_score(s),
-            "score_change": get_score_change_from_history(db, s.id),
+            "score_change": s.score_change,  # Updates every scan
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
@@ -446,7 +446,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "name": s.name,
             "sector": s.sector,
             "canslim_score": adjust_score(s),
-            "score_change": get_score_change_from_history(db, s.id),
+            "score_change": s.score_change,  # Updates every scan
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
@@ -1067,7 +1067,7 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
                 if stock:
                     position.canslim_score = stock.canslim_score
                     # Calculate score_change from historical StockScore entries (matches Dashboard)
-                    position.score_change = get_score_change_from_history(db, stock.id)
+                    position.score_change = stock.score_change  # Updates every scan
 
                     # Smart recommendation matching gameplan logic
                     score = stock.canslim_score or 0
