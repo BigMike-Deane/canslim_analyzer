@@ -98,9 +98,9 @@ def run_continuous_scan():
 
             return {
                 "ticker": ticker,
-                "company_name": stock_data.company_name,
+                "company_name": stock_data.name,
                 "sector": stock_data.sector,
-                "industry": stock_data.industry,
+                "industry": None,  # StockData doesn't have industry
                 "current_price": stock_data.current_price,
                 "market_cap": stock_data.market_cap,
                 "canslim_score": canslim_result.total_score,
@@ -112,10 +112,10 @@ def run_continuous_scan():
                 "i_score": canslim_result.i_score,
                 "m_score": canslim_result.m_score,
                 "score_details": canslim_result.details,
-                "projected_growth": projection.get("projected_growth_pct"),
-                "confidence": projection.get("confidence"),
-                "analyst_target": stock_data.analyst_target,
-                "pe_ratio": stock_data.pe_ratio,
+                "projected_growth": projection.projected_growth_pct,
+                "confidence": projection.confidence,
+                "analyst_target": stock_data.analyst_target_price,
+                "pe_ratio": stock_data.trailing_pe,
                 "week_52_high": stock_data.high_52w,
                 "week_52_low": stock_data.low_52w,
                 "relative_strength": canslim_result.details.get("l", {}).get("rs_rating"),
