@@ -20,7 +20,8 @@ class GrowthProjection:
     # Component projections
     momentum_projection: float = 0.0
     earnings_projection: float = 0.0
-    analyst_projection: float = 0.0  # NEW: analyst price targets
+    analyst_projection: float = 0.0  # analyst price targets
+    valuation_factor: float = 0.0    # NEW: P/E relative to growth
     canslim_factor: float = 0.0
     sector_bonus: float = 0.0
 
@@ -33,12 +34,13 @@ class GrowthProjection:
 class GrowthProjector:
     """Projects 6-month stock growth based on multiple factors"""
 
-    # REFINED weights - analyst targets now included
-    MOMENTUM_WEIGHT = 0.25      # Reduced from 0.40
-    EARNINGS_WEIGHT = 0.20      # Reduced from 0.30
-    ANALYST_WEIGHT = 0.30       # NEW: significant weight for analyst consensus
-    CANSLIM_WEIGHT = 0.15       # Reduced from 0.20
-    SECTOR_WEIGHT = 0.10        # Same
+    # REFINED weights - now includes valuation factor
+    MOMENTUM_WEIGHT = 0.20      # Price momentum
+    EARNINGS_WEIGHT = 0.15      # Earnings trajectory
+    ANALYST_WEIGHT = 0.25       # Analyst price targets
+    VALUATION_WEIGHT = 0.15     # NEW: P/E relative to growth (PEG-style)
+    CANSLIM_WEIGHT = 0.15       # CANSLIM score factor
+    SECTOR_WEIGHT = 0.10        # Sector momentum
 
     # Sector momentum data (would be fetched in production)
     SECTOR_PERFORMANCE: dict[str, float] = {}
@@ -77,30 +79,33 @@ class GrowthProjector:
     def project_growth(self, stock_data: StockData, canslim_score: CANSLIMScore) -> GrowthProjection:
         """
         Project 6-month growth for a stock.
-        REFINED: Now includes analyst price targets as a major factor.
+        REFINED: Includes analyst targets, valuation, and dynamic weighting.
         """
         projection = GrowthProjection(ticker=stock_data.ticker)
 
         if not stock_data.is_valid or stock_data.price_history.empty:
             return projection
 
-        # 1. Momentum Projection (25% weight)
+        # 1. Momentum Projection (20% weight)
         projection.momentum_projection = self._calculate_momentum_projection(stock_data)
 
-        # 2. Earnings Trajectory Projection (20% weight) - with anomaly filtering
+        # 2. Earnings Trajectory Projection (15% weight)
         projection.earnings_projection = self._calculate_earnings_projection(stock_data)
 
-        # 3. NEW: Analyst Price Target Projection (30% weight)
+        # 3. Analyst Price Target Projection (25% weight)
         analyst_proj, target, upside, num = self._calculate_analyst_projection(stock_data)
         projection.analyst_projection = analyst_proj
         projection.analyst_target = target
         projection.analyst_upside = upside
         projection.num_analysts = num
 
-        # 4. CANSLIM Score Factor (15% weight)
+        # 4. NEW: Valuation Factor (15% weight) - P/E relative to growth
+        projection.valuation_factor = self._calculate_valuation_factor(stock_data)
+
+        # 5. CANSLIM Score Factor (15% weight)
         projection.canslim_factor = self._calculate_canslim_factor(canslim_score)
 
-        # 5. Sector Momentum Bonus (10% weight)
+        # 6. Sector Momentum Bonus (10% weight)
         projection.sector_bonus = self._calculate_sector_bonus(stock_data.sector)
 
         # Combined projection with dynamic weighting
@@ -111,19 +116,22 @@ class GrowthProjector:
                 projection.momentum_projection * self.MOMENTUM_WEIGHT +
                 projection.earnings_projection * self.EARNINGS_WEIGHT +
                 projection.analyst_projection * self.ANALYST_WEIGHT +
+                projection.valuation_factor * self.VALUATION_WEIGHT +
                 projection.canslim_factor * self.CANSLIM_WEIGHT +
                 projection.sector_bonus * self.SECTOR_WEIGHT
             )
         else:
             # Low analyst coverage - redistribute analyst weight
-            adj_momentum = self.MOMENTUM_WEIGHT + (self.ANALYST_WEIGHT * 0.4)
-            adj_earnings = self.EARNINGS_WEIGHT + (self.ANALYST_WEIGHT * 0.3)
-            adj_canslim = self.CANSLIM_WEIGHT + (self.ANALYST_WEIGHT * 0.3)
+            adj_momentum = self.MOMENTUM_WEIGHT + (self.ANALYST_WEIGHT * 0.3)
+            adj_earnings = self.EARNINGS_WEIGHT + (self.ANALYST_WEIGHT * 0.2)
+            adj_valuation = self.VALUATION_WEIGHT + (self.ANALYST_WEIGHT * 0.25)
+            adj_canslim = self.CANSLIM_WEIGHT + (self.ANALYST_WEIGHT * 0.25)
 
             projection.projected_growth_pct = (
                 projection.momentum_projection * adj_momentum +
                 projection.earnings_projection * adj_earnings +
                 projection.analyst_projection * 0 +  # Ignore weak analyst data
+                projection.valuation_factor * adj_valuation +
                 projection.canslim_factor * adj_canslim +
                 projection.sector_bonus * self.SECTOR_WEIGHT
             )
@@ -219,6 +227,83 @@ class GrowthProjector:
         analyst_projection = max(-30, min(60, analyst_projection))
 
         return analyst_projection, target, upside_pct, num_analysts
+
+    def _calculate_valuation_factor(self, data: StockData) -> float:
+        """
+        NEW: Calculate valuation-based growth factor.
+        Uses P/E relative to earnings growth (PEG-style analysis).
+        - Low P/E + high growth = undervalued = positive factor
+        - High P/E + low growth = overvalued = negative factor
+        Also considers earnings yield and FCF yield for quality.
+        """
+        pe = data.trailing_pe
+        earnings_yield = getattr(data, 'earnings_yield', 0) or 0
+        fcf_yield = getattr(data, 'fcf_yield', 0) or 0
+
+        # Estimate growth rate from quarterly earnings if available
+        growth_rate = 0
+        if len(data.quarterly_earnings) >= 5:
+            current_q = data.quarterly_earnings[0]
+            year_ago_q = data.quarterly_earnings[4] if len(data.quarterly_earnings) > 4 else 0
+            if year_ago_q > 0 and current_q > 0:
+                growth_rate = ((current_q / year_ago_q) - 1) * 100
+
+        # Use forward estimate if available and more reliable
+        if data.earnings_growth_estimate > 0:
+            growth_rate = max(growth_rate, data.earnings_growth_estimate * 100)
+
+        valuation_score = 0
+
+        # PEG-style analysis
+        if pe > 0 and growth_rate > 0:
+            peg = pe / growth_rate
+
+            if peg < 0.5:
+                # Deeply undervalued relative to growth
+                valuation_score = 30
+            elif peg < 1.0:
+                # Undervalued (PEG < 1 is classic "buy" signal)
+                valuation_score = 20
+            elif peg < 1.5:
+                # Fairly valued
+                valuation_score = 5
+            elif peg < 2.0:
+                # Slightly overvalued
+                valuation_score = -5
+            elif peg < 3.0:
+                # Overvalued
+                valuation_score = -15
+            else:
+                # Extremely overvalued
+                valuation_score = -25
+        elif pe > 0 and pe < 15 and growth_rate <= 0:
+            # Low P/E even with no growth - could be value play
+            valuation_score = 5
+        elif pe > 50 and growth_rate <= 20:
+            # High P/E without strong growth justification
+            valuation_score = -20
+
+        # Earnings yield bonus (inverse of P/E, higher is better)
+        # Earnings yield > 5% is generally attractive
+        if earnings_yield > 0.08:  # > 8%
+            valuation_score += 10
+        elif earnings_yield > 0.05:  # > 5%
+            valuation_score += 5
+        elif earnings_yield < 0.02 and earnings_yield > 0:  # < 2%
+            valuation_score -= 5
+
+        # FCF yield bonus (free cash flow relative to price)
+        # FCF yield > 5% indicates strong cash generation
+        if fcf_yield > 0.08:
+            valuation_score += 10
+        elif fcf_yield > 0.05:
+            valuation_score += 5
+        elif fcf_yield < 0 and fcf_yield != 0:
+            # Negative FCF is a red flag
+            valuation_score -= 10
+
+        # Cap the valuation factor
+        return max(-30, min(40, valuation_score))
 
     def _calculate_earnings_projection(self, data: StockData) -> float:
         """

@@ -78,10 +78,13 @@ class CANSLIMScorer:
     def _score_current_earnings(self, data: StockData) -> tuple[float, str]:
         """
         C - Current Quarterly Earnings (15 pts max)
-        REFINED: Uses TTM (Trailing Twelve Months) comparison with anomaly filtering.
-        Compares current TTM to prior year TTM for more stable measurement.
+        REFINED: Uses TTM comparison + EPS acceleration bonus.
+        - Base: TTM EPS growth vs prior year (up to 12 pts)
+        - Bonus: EPS acceleration (current Q growth > prior Q growth) (up to 3 pts)
         """
         max_score = self.MAX_SCORES['C']
+        base_max = 12  # Base score for TTM growth
+        accel_max = 3  # Bonus for acceleration
 
         # Need at least 8 quarters for TTM vs prior TTM comparison
         if len(data.quarterly_earnings) < 8:
@@ -103,21 +106,47 @@ class CANSLIMScorer:
 
         # Anomaly filter: cap extreme values that are likely data errors
         if abs(ttm_growth) > 500:
-            # Use forward estimates if available as sanity check
             if data.earnings_growth_estimate > 0:
                 ttm_growth = min(ttm_growth, data.earnings_growth_estimate * 100 * 2)
             else:
                 ttm_growth = max(-100, min(200, ttm_growth))
 
+        # Base score from TTM growth (up to 12 pts)
         if ttm_growth >= 25:
-            score = max_score
+            base_score = base_max
         elif ttm_growth >= 0:
-            score = (ttm_growth / 25) * max_score
+            base_score = (ttm_growth / 25) * base_max
         else:
-            # Partial credit for small declines
-            score = max(0, (1 + ttm_growth / 50) * max_score * 0.3)
+            base_score = max(0, (1 + ttm_growth / 50) * base_max * 0.3)
 
-        return round(score, 1), f"TTM: {ttm_growth:+.0f}%"
+        # EPS Acceleration bonus (up to 3 pts)
+        # Check if most recent quarter's YoY growth > prior quarter's YoY growth
+        accel_score = 0
+        accel_detail = ""
+        if len(data.quarterly_earnings) >= 5:
+            # Current quarter vs same quarter last year
+            current_q = data.quarterly_earnings[0]
+            prior_year_q = data.quarterly_earnings[4] if len(data.quarterly_earnings) > 4 else 0
+
+            # Previous quarter vs same quarter last year
+            prev_q = data.quarterly_earnings[1]
+            prev_prior_year_q = data.quarterly_earnings[5] if len(data.quarterly_earnings) > 5 else 0
+
+            if prior_year_q > 0 and prev_prior_year_q > 0:
+                current_q_growth = ((current_q - prior_year_q) / abs(prior_year_q)) * 100
+                prev_q_growth = ((prev_q - prev_prior_year_q) / abs(prev_prior_year_q)) * 100
+
+                if current_q_growth > prev_q_growth and current_q_growth > 0:
+                    # Accelerating earnings growth
+                    accel_score = accel_max
+                    accel_detail = " +accel"
+                elif current_q_growth > 0 and current_q_growth >= prev_q_growth * 0.9:
+                    # Maintaining strong growth
+                    accel_score = accel_max * 0.5
+                    accel_detail = " steady"
+
+        total_score = min(base_score + accel_score, max_score)
+        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}"
 
     def _score_earnings_with_anomaly_filter(self, data: StockData, max_score: float) -> tuple[float, str]:
         """
@@ -158,9 +187,12 @@ class CANSLIMScorer:
     def _score_annual_earnings(self, data: StockData) -> tuple[float, str]:
         """
         A - Annual Earnings Growth (15 pts max)
-        Target: 25%+ CAGR over 3 years
+        REFINED: 3-year CAGR (up to 12 pts) + ROE quality check (up to 3 pts)
+        - O'Neil recommends 25%+ CAGR and 17%+ ROE
         """
         max_score = self.MAX_SCORES['A']
+        cagr_max = 12  # Base score for CAGR
+        roe_max = 3    # Bonus for strong ROE
 
         if len(data.annual_earnings) < 3:
             return 0, "Insufficient data"
@@ -176,44 +208,91 @@ class CANSLIMScorer:
 
         cagr = ((recent / older) ** (1 / 3) - 1) * 100
 
+        # Base score from CAGR (up to 12 pts)
         if cagr >= 25:
-            score = max_score
+            cagr_score = cagr_max
         elif cagr >= 0:
-            score = (cagr / 25) * max_score
+            cagr_score = (cagr / 25) * cagr_max
         else:
-            score = 0
+            cagr_score = 0
 
-        return round(score, 1), f"3yr CAGR: {cagr:+.0f}%"
+        # ROE quality bonus (up to 3 pts)
+        # O'Neil recommends ROE of 17% or higher
+        roe_score = 0
+        roe_detail = ""
+        roe = getattr(data, 'roe', 0) or 0
+
+        # ROE from FMP is already a decimal (e.g., 0.25 = 25%)
+        roe_pct = roe * 100 if roe < 1 else roe  # Handle both formats
+
+        if roe_pct >= 25:
+            roe_score = roe_max
+            roe_detail = f", ROE {roe_pct:.0f}%"
+        elif roe_pct >= 17:
+            roe_score = roe_max * 0.7
+            roe_detail = f", ROE {roe_pct:.0f}%"
+        elif roe_pct >= 10:
+            roe_score = roe_max * 0.3
+            roe_detail = f", ROE {roe_pct:.0f}%"
+        elif roe_pct > 0:
+            roe_detail = f", low ROE"
+
+        total_score = min(cagr_score + roe_score, max_score)
+        return round(total_score, 1), f"3yr CAGR: {cagr:+.0f}%{roe_detail}"
 
     def _score_new_highs(self, data: StockData) -> tuple[float, str]:
         """
         N - New Highs / Near 52-week High (15 pts max)
-        Target: Within 15% of 52-week high
+        REFINED: Price proximity to high (up to 12 pts) + Volume confirmation (up to 3 pts)
+        - Breakouts on high volume are more significant
         """
         max_score = self.MAX_SCORES['N']
+        price_max = 12  # Base score for price proximity
+        vol_max = 3     # Bonus for volume confirmation
 
         if data.high_52w <= 0 or data.current_price <= 0:
             return 0, "No price data"
 
         pct_from_high = ((data.high_52w - data.current_price) / data.high_52w) * 100
 
+        # Base score from price proximity to 52-week high (up to 12 pts)
         if pct_from_high <= 5:
-            score = max_score
-            detail = f"within {pct_from_high:.0f}% of 52wk high"
+            price_score = price_max
+            price_detail = f"{pct_from_high:.0f}% from high"
         elif pct_from_high <= 10:
-            score = max_score * 0.75
-            detail = f"within {pct_from_high:.0f}% of 52wk high"
+            price_score = price_max * 0.75
+            price_detail = f"{pct_from_high:.0f}% from high"
         elif pct_from_high <= 15:
-            score = max_score * 0.5
-            detail = f"within {pct_from_high:.0f}% of 52wk high"
+            price_score = price_max * 0.5
+            price_detail = f"{pct_from_high:.0f}% from high"
         elif pct_from_high <= 25:
-            score = max_score * 0.25
-            detail = f"{pct_from_high:.0f}% below 52wk high"
+            price_score = price_max * 0.25
+            price_detail = f"{pct_from_high:.0f}% below high"
         else:
-            score = 0
-            detail = f"{pct_from_high:.0f}% below 52wk high"
+            price_score = 0
+            price_detail = f"{pct_from_high:.0f}% below high"
 
-        return round(score, 1), detail
+        # Volume confirmation bonus (up to 3 pts)
+        # If near highs AND volume is elevated, it's a stronger signal
+        vol_score = 0
+        vol_detail = ""
+
+        if data.avg_volume_50d > 0 and data.current_volume > 0:
+            vol_ratio = data.current_volume / data.avg_volume_50d
+
+            # Only give volume bonus if price is within 15% of high
+            if pct_from_high <= 15:
+                if vol_ratio >= 1.5:
+                    vol_score = vol_max
+                    vol_detail = f", vol {vol_ratio:.1f}x"
+                elif vol_ratio >= 1.2:
+                    vol_score = vol_max * 0.6
+                    vol_detail = f", vol {vol_ratio:.1f}x"
+                elif vol_ratio >= 1.0:
+                    vol_score = vol_max * 0.3
+
+        total_score = min(price_score + vol_score, max_score)
+        return round(total_score, 1), f"{price_detail}{vol_detail}"
 
     def _score_supply_demand(self, data: StockData) -> tuple[float, str]:
         """
@@ -268,40 +347,69 @@ class CANSLIMScorer:
     def _score_leader(self, data: StockData) -> tuple[float, str]:
         """
         L - Leader vs Laggard (15 pts max)
-        Relative strength vs S&P 500 over 12 months
+        REFINED: Multi-timeframe relative strength with momentum weighting
+        - 12-month RS (60% weight) + 3-month RS (40% weight)
+        - Approximates IBD RS Rating by rewarding consistent outperformers
         """
         max_score = self.MAX_SCORES['L']
 
-        if data.price_history.empty:
-            return 0, "No price data"
+        if data.price_history.empty or len(data.price_history) < 63:
+            return 0, "Insufficient price data"
 
         sp500_history = self.fetcher.get_sp500_history()
         if sp500_history.empty:
             return max_score * 0.5, "No benchmark data"
 
-        # Calculate relative strength
-        stock_return = (data.price_history['Close'].iloc[-1] / data.price_history['Close'].iloc[0]) - 1
-        sp500_return = (sp500_history['Close'].iloc[-1] / sp500_history['Close'].iloc[0]) - 1
+        prices = data.price_history['Close']
+        sp500_prices = sp500_history['Close']
 
-        if sp500_return == 0:
-            rs = 1.0
+        # Calculate 12-month RS (if enough data)
+        if len(prices) >= 252 and len(sp500_prices) >= 252:
+            stock_return_12m = (prices.iloc[-1] / prices.iloc[-252]) - 1
+            sp500_return_12m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-252]) - 1
         else:
-            rs = (1 + stock_return) / (1 + sp500_return)
+            # Use available data
+            stock_return_12m = (prices.iloc[-1] / prices.iloc[0]) - 1
+            sp500_return_12m = (sp500_prices.iloc[-1] / sp500_prices.iloc[0]) - 1
 
-        if rs >= 1.5:
+        # Calculate 3-month RS (more recent momentum)
+        lookback_3m = min(63, len(prices) - 1, len(sp500_prices) - 1)
+        stock_return_3m = (prices.iloc[-1] / prices.iloc[-lookback_3m]) - 1
+        sp500_return_3m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-lookback_3m]) - 1
+
+        # Calculate RS ratios
+        rs_12m = (1 + stock_return_12m) / (1 + sp500_return_12m) if sp500_return_12m != -1 else 1.0
+        rs_3m = (1 + stock_return_3m) / (1 + sp500_return_3m) if sp500_return_3m != -1 else 1.0
+
+        # Weighted RS: 60% 12-month + 40% 3-month (emphasizes recent momentum)
+        weighted_rs = rs_12m * 0.6 + rs_3m * 0.4
+
+        # RS trend bonus: is 3-month RS stronger than 12-month? (improving)
+        rs_improving = rs_3m > rs_12m
+
+        # Score based on weighted RS (approximates percentile ranking)
+        # RS of 1.5+ typically represents top 10-20% of stocks
+        if weighted_rs >= 1.5:
             score = max_score
-        elif rs >= 1.3:
+        elif weighted_rs >= 1.3:
             score = max_score * 0.9
-        elif rs >= 1.1:
-            score = max_score * 0.7
-        elif rs >= 1.0:
-            score = max_score * 0.5
-        elif rs >= 0.8:
-            score = max_score * 0.3
+        elif weighted_rs >= 1.15:
+            score = max_score * 0.75
+        elif weighted_rs >= 1.0:
+            score = max_score * 0.55
+        elif weighted_rs >= 0.85:
+            score = max_score * 0.35
+        elif weighted_rs >= 0.7:
+            score = max_score * 0.15
         else:
             score = 0
 
-        return round(score, 1), f"RS: {rs:.2f}"
+        # Small bonus for improving RS trend
+        if rs_improving and score > 0:
+            score = min(score + 1, max_score)
+
+        trend_indicator = "↑" if rs_improving else "↓" if rs_3m < rs_12m * 0.95 else "→"
+        return round(score, 1), f"RS: {weighted_rs:.2f} {trend_indicator}"
 
     def _score_institutional(self, data: StockData) -> tuple[float, str]:
         """

@@ -71,6 +71,31 @@ def fetch_fmp_quote(ticker: str) -> dict:
     return {}
 
 
+def fetch_fmp_key_metrics(ticker: str) -> dict:
+    """Fetch key metrics including ROE, PE, and other valuation data from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/key-metrics?symbol={ticker}&limit=1&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                metrics = data[0]
+                return {
+                    "roe": metrics.get("returnOnEquity", 0) or 0,
+                    "roa": metrics.get("returnOnAssets", 0) or 0,
+                    "roic": metrics.get("returnOnInvestedCapital", 0) or 0,
+                    "current_ratio": metrics.get("currentRatio", 0) or 0,
+                    "earnings_yield": metrics.get("earningsYield", 0) or 0,
+                    "fcf_yield": metrics.get("freeCashFlowYield", 0) or 0,
+                }
+    except Exception as e:
+        print(f"FMP key metrics error for {ticker}: {e}")
+    return {}
+
+
 def fetch_fmp_earnings(ticker: str) -> dict:
     """Fetch quarterly and annual earnings from FMP"""
     if not FMP_API_KEY:
@@ -262,6 +287,13 @@ class StockData:
         self.peg_ratio: float = 0.0
         self.earnings_growth_estimate: float = 0.0  # Next year growth estimate
 
+        # Key financial metrics for improved scoring
+        self.roe: float = 0.0  # Return on Equity
+        self.roa: float = 0.0  # Return on Assets
+        self.roic: float = 0.0  # Return on Invested Capital
+        self.earnings_yield: float = 0.0
+        self.fcf_yield: float = 0.0
+
 
 class DataFetcher:
     """Fetches and caches stock data using FMP API and Yahoo chart API"""
@@ -344,6 +376,15 @@ class DataFetcher:
                 stock_data.quarterly_earnings = earnings.get("quarterly_eps", [])
                 stock_data.annual_earnings = earnings.get("annual_eps", [])
                 print(f"FMP {ticker}: quarterly_earnings={stock_data.quarterly_earnings[:3] if stock_data.quarterly_earnings else 'EMPTY'}")
+
+            # 3b. Get key metrics (ROE, etc.) from FMP
+            key_metrics = fetch_fmp_key_metrics(ticker)
+            if key_metrics:
+                stock_data.roe = key_metrics.get("roe", 0)
+                stock_data.roa = key_metrics.get("roa", 0)
+                stock_data.roic = key_metrics.get("roic", 0)
+                stock_data.earnings_yield = key_metrics.get("earnings_yield", 0)
+                stock_data.fcf_yield = key_metrics.get("fcf_yield", 0)
 
             # 4. Get institutional ownership from FMP (or Yahoo fallback)
             inst_result = fetch_fmp_institutional(ticker)
