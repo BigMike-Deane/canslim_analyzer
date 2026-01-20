@@ -47,26 +47,35 @@ function FilterBar({ filters, onFilterChange, sectors }) {
 
 function CANSLIMBreakdown({ stock }) {
   const scores = [
-    { key: 'C', label: 'Current Earnings', value: stock.c_score },
-    { key: 'A', label: 'Annual Earnings', value: stock.a_score },
-    { key: 'N', label: 'New Highs', value: stock.n_score },
-    { key: 'S', label: 'Supply/Demand', value: stock.s_score },
-    { key: 'L', label: 'Leader/Laggard', value: stock.l_score },
-    { key: 'I', label: 'Institutional', value: stock.i_score },
-    { key: 'M', label: 'Market Direction', value: stock.m_score },
+    { key: 'C', label: 'Current Earnings', value: stock.c_score, max: 15 },
+    { key: 'A', label: 'Annual Earnings', value: stock.a_score, max: 15 },
+    { key: 'N', label: 'New Highs', value: stock.n_score, max: 15 },
+    { key: 'S', label: 'Supply/Demand', value: stock.s_score, max: 15 },
+    { key: 'L', label: 'Leader/Laggard', value: stock.l_score, max: 15 },
+    { key: 'I', label: 'Institutional', value: stock.i_score, max: 10 },
+    { key: 'M', label: 'Market Direction', value: stock.m_score, max: 15 },
   ]
+
+  // Normalize score to 0-100 for color coding
+  const normalizeScore = (value, max) => {
+    if (value == null || max === 0) return 0
+    return (value / max) * 100
+  }
 
   return (
     <div className="flex gap-1 mt-2">
-      {scores.map(s => (
-        <div
-          key={s.key}
-          title={`${s.label}: ${formatScore(s.value)}`}
-          className={`w-6 h-6 rounded text-xs font-bold flex items-center justify-center ${getScoreClass(s.value)}`}
-        >
-          {s.key}
-        </div>
-      ))}
+      {scores.map(s => {
+        const normalized = normalizeScore(s.value, s.max)
+        return (
+          <div
+            key={s.key}
+            title={`${s.label}: ${s.value?.toFixed(1) || 0}/${s.max}`}
+            className={`w-6 h-6 rounded text-xs font-bold flex items-center justify-center ${getScoreClass(normalized)}`}
+          >
+            {s.key}
+          </div>
+        )
+      })}
     </div>
   )
 }

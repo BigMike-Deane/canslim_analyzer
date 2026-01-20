@@ -465,6 +465,8 @@ async def get_stocks(
             "growth_confidence": s.growth_confidence,
             "current_price": s.current_price,
             "market_cap": s.market_cap,
+            "week_52_high": s.week_52_high,
+            "week_52_low": s.week_52_low,
             "c_score": s.c_score,
             "a_score": s.a_score,
             "n_score": s.n_score,
