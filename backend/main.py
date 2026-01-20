@@ -515,6 +515,27 @@ async def refresh_market_data(db: Session = Depends(get_db)):
         return {"error": str(e)}
 
 
+@app.get("/api/rate-limit-stats")
+async def get_rate_limit_stats():
+    """Get FMP API rate limit statistics (429 errors tracked)"""
+    from data_fetcher import get_rate_limit_stats
+    stats = get_rate_limit_stats()
+    return {
+        "errors_429": stats["errors_429"],
+        "total_requests": stats["total_requests"],
+        "error_rate": f"{(stats['errors_429'] / stats['total_requests'] * 100):.1f}%" if stats["total_requests"] > 0 else "0%",
+        "last_reset": stats["last_reset"].isoformat()
+    }
+
+
+@app.post("/api/rate-limit-stats/reset")
+async def reset_rate_limit_stats():
+    """Reset FMP API rate limit statistics"""
+    from data_fetcher import reset_rate_limit_stats
+    reset_rate_limit_stats()
+    return {"message": "Rate limit stats reset"}
+
+
 # ============== Stock Screener ==============
 
 @app.get("/api/stocks")
@@ -737,7 +758,8 @@ async def start_scan(
             import random
             nonlocal processed, successful
             # Delay to stay under FMP's 300 calls/min limit (4 calls/stock)
-            time.sleep(random.uniform(1.5, 2.5))
+            # Using 2.5-4.0s with 4 workers = ~60-90 stocks/min, well under limit
+            time.sleep(random.uniform(2.5, 4.0))
             thread_db = SessionLocal()
             try:
                 analysis = analyze_stock(ticker)
@@ -756,8 +778,8 @@ async def start_scan(
                 thread_db.close()
 
         try:
-            # Process stocks in parallel with 6 workers
-            with ThreadPoolExecutor(max_workers=6) as executor:
+            # Process stocks in parallel with 4 workers (reduces 429 errors)
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = {executor.submit(process_single_stock, t): t for t in tickers}
 
                 for future in as_completed(futures):
