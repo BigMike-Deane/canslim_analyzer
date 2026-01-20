@@ -97,12 +97,14 @@ class CANSLIMScorer:
         current_ttm = sum(data.quarterly_earnings[0:4])
         prior_ttm = sum(data.quarterly_earnings[4:8])
 
-        # CRITICAL: Penalize companies with negative TTM earnings
-        # CANSLIM requires positive earnings growth, not just "improving losses"
+        # Companies with negative TTM earnings get reduced scores
+        # Give partial credit for improving losses (turnaround potential)
         if current_ttm < 0:
             if prior_ttm < 0 and current_ttm > prior_ttm:
-                # Losses shrinking but still negative - minimal score
-                return round(max_score * 0.15, 1), f"TTM loss (improving)"
+                # Losses shrinking - give partial credit (up to 40% of max)
+                improvement_pct = ((prior_ttm - current_ttm) / abs(prior_ttm)) * 100
+                partial_score = min(max_score * 0.4, (improvement_pct / 50) * max_score * 0.4)
+                return round(partial_score, 1), f"Losses improving ({improvement_pct:+.0f}%)"
             else:
                 # Losses worsening or stable negative
                 return 0, f"TTM loss: ${current_ttm:.2f}"
@@ -166,18 +168,22 @@ class CANSLIMScorer:
         """
         earnings = data.quarterly_earnings[:4]
 
-        # CRITICAL: Check if earnings are negative (company is losing money)
-        # CANSLIM requires positive earnings - penalize companies with losses
+        # Check if earnings are negative (company is losing money)
+        # Give partial credit for improving losses, but cap below profitable companies
         recent_earnings = earnings[:2] if len(earnings) >= 2 else earnings
         if all(e < 0 for e in recent_earnings if e is not None):
             # Company is losing money in recent quarters
-            # Check if losses are improving or worsening
             if len(earnings) >= 2 and earnings[0] < earnings[1]:
                 # Losses are getting WORSE (more negative)
                 return 0, "Losses worsening"
+            elif len(earnings) >= 2:
+                # Losses are shrinking - give partial credit (up to 35% of max)
+                # Q0 > Q1 (less negative), so improvement = (Q0 - Q1) / |Q1|
+                improvement = ((earnings[0] - earnings[1]) / abs(earnings[1])) * 100
+                partial_score = min(max_score * 0.35, (improvement / 50) * max_score * 0.35)
+                return round(max(partial_score, max_score * 0.1), 1), f"Losses shrinking ({improvement:+.0f}%)"
             else:
-                # Losses are shrinking but still negative - very low score
-                return round(max_score * 0.15, 1), "Negative EPS"
+                return round(max_score * 0.1, 1), "Negative EPS"
 
         # Calculate growth rates between consecutive quarters
         growth_rates = []
