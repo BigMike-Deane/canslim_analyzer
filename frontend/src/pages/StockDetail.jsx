@@ -45,46 +45,55 @@ function ScoreGauge({ score, label }) {
 
 function CANSLIMDetail({ stock }) {
   const scores = [
-    { key: 'C', label: 'Current Earnings', value: stock.c_score, desc: 'Quarterly earnings growth' },
-    { key: 'A', label: 'Annual Earnings', value: stock.a_score, desc: 'Annual earnings growth' },
-    { key: 'N', label: 'New Highs', value: stock.n_score, desc: 'New products, management, price highs' },
-    { key: 'S', label: 'Supply/Demand', value: stock.s_score, desc: 'Shares outstanding and volume' },
-    { key: 'L', label: 'Leader/Laggard', value: stock.l_score, desc: 'Relative strength vs market' },
-    { key: 'I', label: 'Institutional', value: stock.i_score, desc: 'Institutional sponsorship' },
-    { key: 'M', label: 'Market Direction', value: stock.m_score, desc: 'Overall market trend' },
+    { key: 'C', label: 'Current Earnings', value: stock.c_score, max: 15, desc: 'Quarterly earnings growth' },
+    { key: 'A', label: 'Annual Earnings', value: stock.a_score, max: 15, desc: 'Annual earnings growth' },
+    { key: 'N', label: 'New Highs', value: stock.n_score, max: 15, desc: 'New products, management, price highs' },
+    { key: 'S', label: 'Supply/Demand', value: stock.s_score, max: 15, desc: 'Shares outstanding and volume' },
+    { key: 'L', label: 'Leader/Laggard', value: stock.l_score, max: 15, desc: 'Relative strength vs market' },
+    { key: 'I', label: 'Institutional', value: stock.i_score, max: 10, desc: 'Institutional sponsorship' },
+    { key: 'M', label: 'Market Direction', value: stock.m_score, max: 15, desc: 'Overall market trend' },
   ]
+
+  // Normalize score to 0-100 for color coding
+  const normalizeScore = (value, max) => {
+    if (value == null || max === 0) return 0
+    return (value / max) * 100
+  }
 
   return (
     <div className="card mb-4">
       <div className="font-semibold mb-3">CANSLIM Breakdown</div>
       <div className="space-y-3">
-        {scores.map(s => (
-          <div key={s.key} className="flex items-center gap-3">
-            <div className={`w-8 h-8 rounded-lg font-bold flex items-center justify-center ${getScoreClass(s.value)}`}>
-              {s.key}
-            </div>
-            <div className="flex-1">
-              <div className="flex justify-between">
-                <span className="font-medium text-sm">{s.label}</span>
-                <span className={`text-sm font-semibold ${getScoreClass(s.value)}`}>
-                  {formatScore(s.value)}
-                </span>
+        {scores.map(s => {
+          const normalized = normalizeScore(s.value, s.max)
+          return (
+            <div key={s.key} className="flex items-center gap-3">
+              <div className={`w-8 h-8 rounded-lg font-bold flex items-center justify-center ${getScoreClass(normalized)}`}>
+                {s.key}
               </div>
-              <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden mt-1">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    s.value >= 80 ? 'bg-green-500' :
-                    s.value >= 65 ? 'bg-emerald-500' :
-                    s.value >= 50 ? 'bg-yellow-500' :
-                    s.value >= 35 ? 'bg-orange-500' : 'bg-red-500'
-                  }`}
-                  style={{ width: `${s.value || 0}%` }}
-                />
+              <div className="flex-1">
+                <div className="flex justify-between">
+                  <span className="font-medium text-sm">{s.label}</span>
+                  <span className={`text-sm font-semibold ${getScoreClass(normalized)}`}>
+                    {s.value != null ? `${s.value.toFixed(1)}/${s.max}` : '-'}
+                  </span>
+                </div>
+                <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden mt-1">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      normalized >= 80 ? 'bg-green-500' :
+                      normalized >= 65 ? 'bg-emerald-500' :
+                      normalized >= 50 ? 'bg-yellow-500' :
+                      normalized >= 35 ? 'bg-orange-500' : 'bg-red-500'
+                    }`}
+                    style={{ width: `${normalized}%` }}
+                  />
+                </div>
+                <div className="text-dark-400 text-xs mt-0.5">{s.desc}</div>
               </div>
-              <div className="text-dark-400 text-xs mt-0.5">{s.desc}</div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
