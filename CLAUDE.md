@@ -8,6 +8,24 @@ A mobile-first web application for CANSLIM stock analysis with React frontend an
 - **Backend**: FastAPI + SQLAlchemy + SQLite
 - **Deployment**: Docker on VPS at `/opt/canslim_analyzer`
 - **Docker command**: Use `docker-compose` (with hyphen, old version)
+- **Container name**: `canslim-analyzer`
+- **Port**: 8001
+
+## CRITICAL: Multi-Container VPS Setup
+**This VPS runs multiple applications. NEVER use `docker rm -f $(docker ps -aq)` as it kills ALL containers including other apps.**
+
+Other apps on the VPS:
+- **Finance Tracker**: `/opt/finance-tracker` (separate container)
+
+### Safe Deployment Command (USE THIS)
+```bash
+cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build
+```
+
+### If ContainerConfig error occurs
+```bash
+cd /opt/canslim_analyzer && docker-compose down && docker rm -f canslim-analyzer 2>/dev/null; docker-compose up -d --build
+```
 
 ## Key Features Implemented
 
@@ -65,13 +83,13 @@ Generates actionable recommendations with position sizing:
 
 ### Docker "ContainerConfig" Error
 ```bash
-docker rm -f $(docker ps -aq) && docker-compose up -d --build
+cd /opt/canslim_analyzer && docker-compose down && docker rm -f canslim-analyzer 2>/dev/null; docker-compose up -d --build
 ```
 
 ### Frontend changes not appearing
 Force full rebuild (clears Docker cache):
 ```bash
-docker-compose down && docker rmi $(docker images -q canslim_analyzer*) 2>/dev/null; docker-compose build --no-cache && docker-compose up -d
+cd /opt/canslim_analyzer && docker-compose down && docker rmi $(docker images -q canslim_analyzer*) 2>/dev/null; docker-compose build --no-cache && docker-compose up -d
 ```
 
 ### Check container logs
