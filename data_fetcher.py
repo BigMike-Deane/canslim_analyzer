@@ -115,23 +115,38 @@ def fetch_fmp_earnings(ticker: str) -> dict:
 
 
 def fetch_fmp_institutional(ticker: str) -> float:
-    """Fetch institutional ownership percentage from FMP"""
-    if not FMP_API_KEY:
-        return 0.0
+    """Fetch institutional ownership percentage from FMP, fallback to Yahoo Finance"""
+    # Try FMP first
+    if FMP_API_KEY:
+        try:
+            url = f"{FMP_BASE_URL}/institutional-holder?symbol={ticker}&apikey={FMP_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data:
+                    # Sum up institutional shares and compare to outstanding
+                    total_inst_shares = sum(h.get("shares", 0) or 0 for h in data[:50])  # Top 50 holders
+                    # We need shares outstanding to calculate percentage
+                    # This will be combined with quote data
+                    if total_inst_shares > 0:
+                        return total_inst_shares
+        except Exception as e:
+            print(f"FMP institutional error for {ticker}: {e}")
 
+    # Fallback to Yahoo Finance for institutional ownership
     try:
-        url = f"{FMP_BASE_URL}/institutional-holder?symbol={ticker}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data:
-                # Sum up institutional shares and compare to outstanding
-                total_inst_shares = sum(h.get("shares", 0) or 0 for h in data[:50])  # Top 50 holders
-                # We need shares outstanding to calculate percentage
-                # This will be combined with quote data
-                return total_inst_shares
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        if info:
+            inst_pct = info.get('heldPercentInstitutions', 0)
+            if inst_pct and inst_pct > 0:
+                # Return as percentage (0-100)
+                pct = inst_pct * 100
+                print(f"Yahoo inst ownership for {ticker}: {pct:.1f}%")
+                return pct  # Return directly as percentage, not shares
     except Exception as e:
-        print(f"FMP institutional error for {ticker}: {e}")
+        print(f"Yahoo institutional error for {ticker}: {e}")
+
     return 0.0
 
 
@@ -320,10 +335,15 @@ class DataFetcher:
                 stock_data.annual_earnings = earnings.get("annual_eps", [])
                 print(f"FMP {ticker}: quarterly_earnings={stock_data.quarterly_earnings[:3] if stock_data.quarterly_earnings else 'EMPTY'}")
 
-            # 4. Get institutional ownership from FMP
-            inst_shares = fetch_fmp_institutional(ticker)
-            if inst_shares and stock_data.shares_outstanding:
-                stock_data.institutional_holders_pct = (inst_shares / stock_data.shares_outstanding) * 100
+            # 4. Get institutional ownership from FMP (or Yahoo fallback)
+            inst_result = fetch_fmp_institutional(ticker)
+            if inst_result:
+                # If result is > 100, it's likely shares from FMP - convert to percentage
+                if inst_result > 100 and stock_data.shares_outstanding:
+                    stock_data.institutional_holders_pct = (inst_result / stock_data.shares_outstanding) * 100
+                else:
+                    # Already a percentage (from Yahoo Finance fallback)
+                    stock_data.institutional_holders_pct = inst_result
                 # Cap at 100% in case of data issues
                 stock_data.institutional_holders_pct = min(stock_data.institutional_holders_pct, 100)
 

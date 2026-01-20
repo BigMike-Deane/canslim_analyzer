@@ -377,7 +377,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
         "stats": {
             "total_stocks": db.query(Stock).filter(Stock.canslim_score != None).count(),
-            "high_score_count": db.query(Stock).filter(Stock.canslim_score >= 80).count(),
+            "high_score_count": db.query(Stock).filter(Stock.canslim_score >= 70).count(),
             "portfolio_count": len(positions),
             "watchlist_count": db.query(Watchlist).count()
         },

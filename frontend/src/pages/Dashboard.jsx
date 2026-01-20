@@ -112,7 +112,7 @@ function QuickStats({ stats }) {
           <div className="font-semibold text-lg">{stats.total_stocks || 0}</div>
         </div>
         <div>
-          <div className="text-dark-400 text-xs">Score 80+</div>
+          <div className="text-dark-400 text-xs">Score 70+</div>
           <div className="font-semibold text-lg text-green-400">{stats.high_score_count || 0}</div>
         </div>
         <div>
