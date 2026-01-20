@@ -465,6 +465,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             time.sleep(0.3)  # Rate limit delay
 
             # Recalculate position value and shares with live price
+            logger.info(f"{stock.ticker}: buy_value=${buy['value']:.2f}, cash=${config.current_cash:.2f}")
             actual_value = min(buy["value"], config.current_cash * 0.95)
             if actual_value < 100:
                 logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f}), skipping")
