@@ -841,6 +841,9 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
 
     for position in positions:
         try:
+            # Get stock data for CANSLIM score
+            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+
             current_price = fetch_price_yahoo_chart(position.ticker)
 
             if current_price:
@@ -851,16 +854,28 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
                     position.gain_loss = (current_price - position.cost_basis) * position.shares
                     position.gain_loss_pct = (current_price - position.cost_basis) / position.cost_basis * 100
 
-                    # Simple recommendation based on performance
-                    if position.gain_loss_pct >= 20:
-                        position.recommendation = "hold"
-                    elif position.gain_loss_pct <= -15:
+                # Update CANSLIM score from stock data
+                if stock:
+                    old_score = position.canslim_score
+                    position.canslim_score = stock.canslim_score
+                    if old_score and stock.canslim_score:
+                        position.score_change = stock.canslim_score - old_score
+
+                    # Smarter recommendation based on score + performance
+                    score = stock.canslim_score or 0
+                    gain_pct = position.gain_loss_pct or 0
+
+                    if score < 35 and gain_pct < -10:
+                        position.recommendation = "sell"
+                    elif score >= 70 and gain_pct > -5:
+                        position.recommendation = "buy"
+                    elif score < 50 and gain_pct < -15:
                         position.recommendation = "sell"
                     else:
                         position.recommendation = "hold"
 
                 updated += 1
-                logger.info(f"Updated {position.ticker}: ${current_price:.2f}")
+                logger.info(f"Updated {position.ticker}: ${current_price:.2f}, score={position.canslim_score}")
             else:
                 errors.append(f"{position.ticker}: no price found")
 
