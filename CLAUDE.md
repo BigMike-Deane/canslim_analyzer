@@ -10,6 +10,7 @@ A mobile-first web application for CANSLIM stock analysis with React frontend an
 - **Docker command**: Use `docker-compose` (with hyphen, old version)
 - **Container name**: `canslim-analyzer`
 - **Port**: 8001
+- **VPS IP**: 147.93.72.73
 
 ## CRITICAL: Multi-Container VPS Setup
 **This VPS runs multiple applications. NEVER use `docker rm -f $(docker ps -aq)` as it kills ALL containers including other apps.**
@@ -41,43 +42,86 @@ cd /opt/canslim_analyzer && docker-compose down && docker rm -f canslim-analyzer
 ### Growth Projection Model
 Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLIM 15%, Sector 10%
 - Includes PEG-style valuation analysis
+- `growth_confidence` field: high/medium/low based on data quality
 
 ### Data Sources
 - **Financial Modeling Prep (FMP)**: Earnings, ROE, key metrics, analyst targets
-- **Yahoo Finance**: Price history, volume data (chart API)
+- **Yahoo Finance**: Price history, volume data (chart API), fallback for analyst data
 - **Finviz**: Institutional ownership (web scraping)
 
 ### API Rate Limiting
 - FMP limit: 300 calls/minute
-- Current config: 6 workers with 1.5-2.5s delay (~90 stocks/min)
+- Current config: 4 workers with 2.5-4.0s delay (~60-90 stocks/min)
 - Avoids 429 errors while maintaining reasonable scan speed
 
 ## Recent Improvements (Jan 2025)
 
-### Frontend
-- Score 80+ threshold for "Top Stocks" display
-- Scan progress timer with elapsed time and ETA
-- Scan source dropdown (S&P 500, Top 50, Russell 2000, All)
-- "Top Under $25" section on Dashboard
-- CANSLIM letter colors normalized (scores are out of 15/10, not 100)
-- M Score in Market Direction box fixed (was showing red for 15/15)
-- Documentation page with full methodology explanation
-- Portfolio Gameplan feature with detailed action cards
+### Code Quality Fixes
+- Fixed scheduler bug: `calculate_score()` → `score_stock()` (auto-scan was broken)
+- Consolidated duplicate `adjust_score_for_market()` function to module level
+- Consolidated `DUPLICATE_TICKERS` constant (GOOG/GOOGL handling)
+- Added `expand_tickers_with_duplicates()` and `filter_duplicate_stocks()` helpers
+- Replaced all `print()` with proper `logger` in data_fetcher.py
+- Added input validation on portfolio position creation
 
-### Backend
-- Parallel scanning with ThreadPoolExecutor (6 workers)
-- 52-week high/low fallback calculation from price history
-- week_52_high added to /api/stocks endpoint
-- Portfolio refresh auto-scans positions without stock data
-- Gameplan endpoint generates BUY/SELL/TRIM/ADD/WATCH recommendations
+### Performance Optimizations
+- Added database indexes on `stocks.current_price` and composite `(canslim_score, current_price)`
+- Optimized dashboard stats: combined multiple count queries into single query
+- Added bounded LRU cache to DataFetcher (max 1000 entries, prevents memory growth)
+
+### Score Trend Analysis
+- 7-day trend analysis: improving/stable/deteriorating signals
+- `get_score_trend()` and `get_score_trends_batch()` functions in main.py
+- Frontend shows "↗ Up" (green) or "↘ Down" (red) badges on dashboard
+- Threshold: ±3 points over 7 days triggers trend status
+
+### Backtesting Data Preparation
+- Changed StockScore from 1 record/day to 1 record/scan (6x more data)
+- Added `timestamp` column for precise timing
+- Added `week_52_high` column to track breakout proximity over time
+- ~84,000 records after 2 weeks of scanning (enough for backtesting)
+
+### Frontend Enhancements
+- Collapsible Manual Scan section (cleaner Home tab)
+- Default scan settings: "All Stocks" at 90-minute intervals
+- WeeklyTrend component showing 7-day score trajectory
+- Data quality warning icon for stocks with limited analyst data
 
 ### Portfolio Gameplan
 Generates actionable recommendations with position sizing:
-- **SELL**: Weak fundamentals + losses
-- **TRIM**: Take profits on big winners (100%+ gains)
+- **SELL**: Weak fundamentals + losses (score < 35, loss > 10%)
+- **TRIM**: Take profits on big winners (100%+ gains or 50%+ with large position)
 - **BUY**: Top stocks not in portfolio (score 75+, 15%+ projected)
-- **ADD**: Add to strong positions on dips
+- **ADD**: Strong stock on pullback with room to grow
 - **WATCH**: Stocks approaching breakout (5-15% from 52-week high)
+
+## Database Schema Notes
+
+### StockScore Table (Historical Data)
+Stores one record per stock per scan for granular backtesting:
+- `timestamp`: When the scan occurred
+- `date`: Date for easy daily grouping
+- `total_score`, `c/a/n/s/l/i/m_score`: All CANSLIM components
+- `projected_growth`, `current_price`, `week_52_high`
+
+### Key Indexes
+- `ix_stocks_canslim` on canslim_score
+- `ix_stocks_price` on current_price
+- `ix_stocks_score_price` composite for filtered queries
+- `ix_stock_scores_stock_timestamp` for backtesting queries
+
+## Pending Features
+
+### Ready to Build
+- **Watchlist Alerts**: `target_price` and `alert_score` fields exist but aren't monitored
+- **Transaction Protection**: Wrap portfolio refresh in atomic transaction
+
+### Waiting on Data
+- **Backtesting UI**: Need 1-2 weeks of scan data (collecting now)
+
+### Lower Priority
+- **Portfolio Correlation**: Show hidden concentration risk
+- **Earnings Calendar**: Avoid buying before earnings surprises
 
 ## Common Issues & Fixes
 
@@ -102,16 +146,23 @@ docker logs -f canslim-analyzer
 docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stock = db.query(Stock).first(); print(f'Ticker: {stock.ticker}, Score: {stock.canslim_score}'); db.close()"
 ```
 
+### Check StockScore data for backtesting
+```bash
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, StockScore; db = SessionLocal(); count = db.query(StockScore).count(); print(f'StockScore records: {count}'); db.close()"
+```
+
 ## File Structure
-- `/backend/main.py` - FastAPI endpoints
-- `/backend/database.py` - SQLAlchemy models
+- `/backend/main.py` - FastAPI endpoints + shared helpers
+- `/backend/database.py` - SQLAlchemy models + migrations
+- `/backend/scheduler.py` - Continuous scanning logic
+- `/backend/ai_trader.py` - AI Portfolio trading logic
 - `/frontend/src/pages/` - React page components
 - `/frontend/src/api.js` - API client + utility functions
 - `/canslim_scorer.py` - CANSLIM scoring logic
-- `/data_fetcher.py` - Data fetching from APIs
+- `/data_fetcher.py` - Data fetching from APIs (with bounded cache)
 - `/growth_projector.py` - Growth projection model
-- `/portfolio_analyzer.py` - BUY/HOLD/SELL recommendation logic
 
 ## Owner's Trading Preferences
 - Likes stocks under $25 that fit CANSLIM criteria
 - Uses the "Top Under $25" section for finding opportunities
+- Default scan: All Stocks at 90-minute intervals
