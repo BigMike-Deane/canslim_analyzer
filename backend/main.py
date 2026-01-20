@@ -429,6 +429,13 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
         "week_52_low": stock.week_52_low,
 
         "canslim_score": stock.canslim_score,
+        "c_score": stock.c_score,
+        "a_score": stock.a_score,
+        "n_score": stock.n_score,
+        "s_score": stock.s_score,
+        "l_score": stock.l_score,
+        "i_score": stock.i_score,
+        "m_score": stock.m_score,
         "scores": {
             "C": {"score": stock.c_score, "max": 15, "label": "Current Earnings"},
             "A": {"score": stock.a_score, "max": 15, "label": "Annual Earnings"},
@@ -442,9 +449,9 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
         "projected_growth": stock.projected_growth,
         "growth_confidence": stock.growth_confidence,
 
-        "history": [{
+        "score_history": [{
             "date": h.date.isoformat(),
-            "score": h.total_score,
+            "total_score": h.total_score,
             "price": h.current_price,
             "projected_growth": h.projected_growth
         } for h in reversed(history)],
