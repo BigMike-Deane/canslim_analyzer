@@ -357,9 +357,9 @@ class DataFetcher:
                 if not stock_data.current_price:
                     stock_data.current_price = quote.get("current_price", 0)
                 if not stock_data.high_52w:
-                    stock_data.high_52w = quote.get("high_52w", 0)
+                    stock_data.high_52w = quote.get("high_52w", 0) or 0
                 if not stock_data.low_52w:
-                    stock_data.low_52w = quote.get("low_52w", 0)
+                    stock_data.low_52w = quote.get("low_52w", 0) or 0
                 if not stock_data.market_cap:
                     stock_data.market_cap = quote.get("market_cap", 0)
                 if not stock_data.avg_volume_50d:
@@ -369,6 +369,19 @@ class DataFetcher:
                 stock_data.trailing_pe = quote.get("pe", 0) or 0
                 if not stock_data.shares_outstanding:
                     stock_data.shares_outstanding = int(quote.get("shares_outstanding", 0) or 0)
+
+            # Fallback: Calculate 52-week high/low from price history if still missing
+            if (not stock_data.high_52w or not stock_data.low_52w) and not stock_data.price_history.empty:
+                try:
+                    closes = stock_data.price_history['Close'].dropna()
+                    if len(closes) > 0:
+                        if not stock_data.high_52w:
+                            stock_data.high_52w = float(closes.max())
+                        if not stock_data.low_52w:
+                            stock_data.low_52w = float(closes.min())
+                        print(f"Calculated 52w range for {ticker}: ${stock_data.low_52w:.2f} - ${stock_data.high_52w:.2f}")
+                except Exception as e:
+                    print(f"Error calculating 52w range for {ticker}: {e}")
 
             # 3. Get earnings data from FMP (critical for C and A scores)
             earnings = fetch_fmp_earnings(ticker)
