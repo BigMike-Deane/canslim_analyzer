@@ -173,41 +173,25 @@ def run_continuous_scan():
         stock.institutional_ownership = analysis.get("institutional_ownership")
         stock.last_updated = datetime.utcnow()
 
-        # Save historical score (one per day per stock)
+        # Save historical score (one per scan for granular backtesting data)
         today = date.today()
-        existing_score = db.query(StockScore).filter(
-            StockScore.stock_id == stock.id,
-            StockScore.date == today
-        ).first()
-
-        if not existing_score:
-            historical_score = StockScore(
-                stock_id=stock.id,
-                date=today,
-                total_score=new_score,
-                c_score=analysis.get("c_score"),
-                a_score=analysis.get("a_score"),
-                n_score=analysis.get("n_score"),
-                s_score=analysis.get("s_score"),
-                l_score=analysis.get("l_score"),
-                i_score=analysis.get("i_score"),
-                m_score=analysis.get("m_score"),
-                projected_growth=analysis.get("projected_growth"),
-                current_price=analysis.get("current_price")
-            )
-            db.add(historical_score)
-        else:
-            # Update today's record with latest
-            existing_score.total_score = new_score
-            existing_score.c_score = analysis.get("c_score")
-            existing_score.a_score = analysis.get("a_score")
-            existing_score.n_score = analysis.get("n_score")
-            existing_score.s_score = analysis.get("s_score")
-            existing_score.l_score = analysis.get("l_score")
-            existing_score.i_score = analysis.get("i_score")
-            existing_score.m_score = analysis.get("m_score")
-            existing_score.projected_growth = analysis.get("projected_growth")
-            existing_score.current_price = analysis.get("current_price")
+        historical_score = StockScore(
+            stock_id=stock.id,
+            timestamp=datetime.utcnow(),
+            date=today,
+            total_score=new_score,
+            c_score=analysis.get("c_score"),
+            a_score=analysis.get("a_score"),
+            n_score=analysis.get("n_score"),
+            s_score=analysis.get("s_score"),
+            l_score=analysis.get("l_score"),
+            i_score=analysis.get("i_score"),
+            m_score=analysis.get("m_score"),
+            projected_growth=analysis.get("projected_growth"),
+            current_price=analysis.get("current_price"),
+            week_52_high=analysis.get("week_52_high")
+        )
+        db.add(historical_score)
 
         db.commit()
         return stock

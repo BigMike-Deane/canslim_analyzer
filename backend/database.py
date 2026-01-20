@@ -57,6 +57,9 @@ def run_migrations():
         ("ai_portfolio_snapshots", "prev_value", "FLOAT"),
         ("ai_portfolio_snapshots", "value_change", "FLOAT"),
         ("ai_portfolio_snapshots", "value_change_pct", "FLOAT"),
+        # StockScore enhancements for backtesting
+        ("stock_scores", "timestamp", "DATETIME"),
+        ("stock_scores", "week_52_high", "FLOAT"),
     ]
 
     for table, column, col_type in migrations:
@@ -131,6 +134,7 @@ def run_migrations():
         ('ix_stocks_price', 'stocks', 'current_price'),
         ('ix_stocks_score_price', 'stocks', 'canslim_score, current_price'),
         ('ix_stock_scores_stock_date', 'stock_scores', 'stock_id, date'),
+        ('ix_stock_scores_stock_timestamp', 'stock_scores', 'stock_id, timestamp'),
     ]
     for idx_name, table, columns in index_migrations:
         try:
@@ -190,12 +194,13 @@ class Stock(Base):
 
 
 class StockScore(Base):
-    """Historical CANSLIM scores for tracking changes"""
+    """Historical CANSLIM scores for tracking changes - one record per scan"""
     __tablename__ = "stock_scores"
 
     id = Column(Integer, primary_key=True, index=True)
     stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
-    date = Column(Date, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    date = Column(Date, nullable=False, index=True)  # Kept for easy daily grouping
 
     # CANSLIM breakdown
     total_score = Column(Float)
@@ -207,15 +212,17 @@ class StockScore(Base):
     i_score = Column(Float)
     m_score = Column(Float)
 
-    # Growth projection at this point
+    # Growth projection and price at this point
     projected_growth = Column(Float)
     current_price = Column(Float)
+    week_52_high = Column(Float)  # Track breakout proximity over time
 
     # Relationships
     stock = relationship("Stock", back_populates="scores")
 
     __table_args__ = (
         Index('ix_stock_scores_stock_date', 'stock_id', 'date'),
+        Index('ix_stock_scores_stock_timestamp', 'stock_id', 'timestamp'),
     )
 
 

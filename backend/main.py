@@ -471,29 +471,24 @@ def save_stock_to_db(db: Session, analysis: dict):
 
     db.flush()
 
-    # Save score history (one per day)
-    today = date.today()
-    existing_score = db.query(StockScore).filter(
-        StockScore.stock_id == stock.id,
-        StockScore.date == today
-    ).first()
-
-    if not existing_score:
-        score_history = StockScore(
-            stock_id=stock.id,
-            date=today,
-            total_score=analysis["canslim_score"],
-            c_score=analysis["c_score"],
-            a_score=analysis["a_score"],
-            n_score=analysis["n_score"],
-            s_score=analysis["s_score"],
-            l_score=analysis["l_score"],
-            i_score=analysis["i_score"],
-            m_score=analysis["m_score"],
-            projected_growth=analysis["projected_growth"],
-            current_price=analysis["current_price"]
-        )
-        db.add(score_history)
+    # Save score history (one per scan for granular backtesting)
+    score_history = StockScore(
+        stock_id=stock.id,
+        timestamp=datetime.utcnow(),
+        date=date.today(),
+        total_score=analysis["canslim_score"],
+        c_score=analysis["c_score"],
+        a_score=analysis["a_score"],
+        n_score=analysis["n_score"],
+        s_score=analysis["s_score"],
+        l_score=analysis["l_score"],
+        i_score=analysis["i_score"],
+        m_score=analysis["m_score"],
+        projected_growth=analysis["projected_growth"],
+        current_price=analysis["current_price"],
+        week_52_high=analysis.get("week_52_high")
+    )
+    db.add(score_history)
 
     db.commit()
     return stock
