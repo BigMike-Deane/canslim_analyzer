@@ -79,13 +79,16 @@ function MarketStatus({ market, onRefresh }) {
 }
 
 function ScoreTrend({ change }) {
-  if (change == null || change === 0) return null
+  if (change == null) return null
+
+  if (change === 0) {
+    return <span className="text-xs text-dark-400">-</span>
+  }
 
   const isUp = change > 0
   return (
     <span className={`text-xs font-medium ${isUp ? 'text-green-400' : 'text-red-400'}`}>
-      {isUp ? '▲' : '▼'}
-      <span className="ml-0.5">{Math.abs(change).toFixed(1)}</span>
+      {isUp ? '+' : ''}{change.toFixed(1)}
     </span>
   )
 }
