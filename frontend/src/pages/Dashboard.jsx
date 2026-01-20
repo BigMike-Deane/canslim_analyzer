@@ -174,62 +174,65 @@ function QuickStats({ stats }) {
 }
 
 function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
+  const [expanded, setExpanded] = useState(false)
+
   const sourceOptions = [
-    { value: 'sp500', label: 'S&P 500', count: '~500' },
-    { value: 'top50', label: 'Top 50', count: '50' },
-    { value: 'russell', label: 'Russell 2000', count: '~750' },
     { value: 'all', label: 'All Stocks', count: '~950+' },
+    { value: 'sp500', label: 'S&P 500', count: '~500' },
+    { value: 'russell', label: 'Russell 2000', count: '~750' },
+    { value: 'top50', label: 'Top 50', count: '50' },
   ]
 
   return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
-        <select
-          value={scanSource}
-          onChange={(e) => setScanSource(e.target.value)}
-          disabled={scanning}
-          className="flex-1 bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm"
-        >
-          {sourceOptions.map(opt => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label} ({opt.count})
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={onScan}
-          disabled={scanning}
-          className="flex-1 btn-primary flex items-center justify-center gap-2"
-        >
-          {scanning ? (
-            <>
-              <span className="animate-spin">⟳</span>
-              <span>Scanning...</span>
-            </>
-          ) : (
-            <>
-              <span>Run Scan</span>
-            </>
-          )}
-        </button>
-      </div>
+    <div className="mb-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-dark-500 text-xs hover:text-dark-300 flex items-center gap-1 mb-2"
+      >
+        <span className="text-[10px]">{expanded ? '▼' : '▶'}</span>
+        <span>Manual Scan</span>
+      </button>
+
+      {expanded && (
+        <div className="flex gap-2">
+          <select
+            value={scanSource}
+            onChange={(e) => setScanSource(e.target.value)}
+            disabled={scanning}
+            className="flex-1 bg-dark-700 border border-dark-600 rounded-lg px-2 py-1.5 text-xs"
+          >
+            {sourceOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label} ({opt.count})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={onScan}
+            disabled={scanning}
+            className="btn-primary text-xs px-3 py-1.5"
+          >
+            {scanning ? '...' : 'Run'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
 function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
-  const [source, setSource] = useState(scannerStatus?.source || 'sp500')
-  const [interval, setInterval] = useState(scannerStatus?.interval_minutes || 15)
+  const [source, setSource] = useState(scannerStatus?.source || 'all')
+  const [interval, setInterval] = useState(scannerStatus?.interval_minutes || 90)
   const [updating, setUpdating] = useState(false)
 
   const sourceOptions = [
-    { value: 'top50', label: 'Top 50', interval: 5 },
-    { value: 'sp500', label: 'S&P 500', interval: 15 },
+    { value: 'all', label: 'All Stocks', interval: 90 },
+    { value: 'sp500', label: 'S&P 500', interval: 30 },
     { value: 'russell', label: 'Russell 2000', interval: 45 },
-    { value: 'all', label: 'All Stocks', interval: 60 },
+    { value: 'top50', label: 'Top 50', interval: 15 },
   ]
 
-  const intervalOptions = [5, 10, 15, 30, 45, 60, 90, 120]
+  const intervalOptions = [15, 30, 45, 60, 90, 120, 180]
 
   const handleToggle = async () => {
     setUpdating(true)
