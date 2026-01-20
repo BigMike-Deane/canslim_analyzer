@@ -518,7 +518,17 @@ def run_ai_trading_cycle(db: Session) -> dict:
     else:
         logger.info(f"Already at max positions ({position_count}), skipping buys")
 
-    db.commit()
+    try:
+        db.commit()
+        logger.info("Commit successful")
+
+        # Verify positions were saved
+        saved_positions = db.query(AIPortfolioPosition).count()
+        saved_config = db.query(AIPortfolioConfig).first()
+        logger.info(f"After commit: {saved_positions} positions, cash=${saved_config.current_cash:.2f}")
+    except Exception as e:
+        logger.error(f"Commit failed: {e}")
+        db.rollback()
 
     # Take daily snapshot
     take_portfolio_snapshot(db)
