@@ -26,7 +26,8 @@ def get_sp500_tickers() -> list[str]:
     """
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        response = requests.get(url, timeout=10)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
