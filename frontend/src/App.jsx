@@ -4,6 +4,7 @@ import Screener from './pages/Screener'
 import StockDetail from './pages/StockDetail'
 import Portfolio from './pages/Portfolio'
 import Watchlist from './pages/Watchlist'
+import Documentation from './pages/Documentation'
 
 function NavIcon({ icon, label }) {
   return (
@@ -20,6 +21,7 @@ function BottomNav() {
     { to: '/screener', icon: '🔍', label: 'Screener' },
     { to: '/portfolio', icon: '💼', label: 'Portfolio' },
     { to: '/watchlist', icon: '👁️', label: 'Watch' },
+    { to: '/docs', icon: '📖', label: 'Docs' },
   ]
 
   return (
@@ -52,6 +54,7 @@ export default function App() {
         <Route path="/stock/:ticker" element={<StockDetail />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/watchlist" element={<Watchlist />} />
+        <Route path="/docs" element={<Documentation />} />
       </Routes>
       <BottomNav />
     </div>
