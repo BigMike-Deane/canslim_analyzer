@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, text
+from sqlalchemy import func, desc, text, case
 from datetime import datetime, date, timedelta
 from typing import Optional, List
 import logging
@@ -377,8 +377,8 @@ async def health_check(db: Session = Depends(get_db)):
     except Exception as e:
         db_status = f"unhealthy: {str(e)}"
 
-    stock_count = db.query(Stock).count()
-    portfolio_count = db.query(PortfolioPosition).count()
+    stock_count = db.query(func.count(Stock.id)).scalar() or 0
+    portfolio_count = db.query(func.count(PortfolioPosition.id)).scalar() or 0
 
     return {
         "status": "healthy" if db_status == "healthy" else "degraded",
@@ -472,6 +472,17 @@ async def get_dashboard(db: Session = Depends(get_db)):
     hold_count = len([p for p in positions if p.recommendation == "hold"])
     sell_count = len([p for p in positions if p.recommendation == "sell"])
 
+    # Get stats in a single query (avoids N+1)
+    stock_stats_row = db.query(
+        func.count(Stock.id).filter(Stock.canslim_score != None).label('total'),
+        func.count(Stock.id).filter(Stock.canslim_score >= 80).label('high_score')
+    ).first()
+    stock_stats = {
+        "total_stocks": stock_stats_row.total if stock_stats_row else 0,
+        "high_score_count": stock_stats_row.high_score if stock_stats_row else 0
+    }
+    watchlist_count = db.query(func.count(Watchlist.id)).scalar() or 0
+
     def get_data_quality(stock):
         """Assess data quality based on available projection data"""
         if stock.growth_confidence == 'high' and stock.projected_growth and stock.projected_growth > 0:
@@ -518,10 +529,9 @@ async def get_dashboard(db: Session = Depends(get_db)):
         },
 
         "stats": {
-            "total_stocks": db.query(Stock).filter(Stock.canslim_score != None).count(),
-            "high_score_count": db.query(Stock).filter(Stock.canslim_score >= 80).count(),
+            **stock_stats,  # total_stocks, high_score_count (computed above)
             "portfolio_count": len(positions),
-            "watchlist_count": db.query(Watchlist).count()
+            "watchlist_count": watchlist_count
         },
 
         "portfolio": {

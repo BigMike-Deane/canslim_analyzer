@@ -9,10 +9,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional
+from collections import OrderedDict
 import time
 import requests
 import os
 import threading
+import logging
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # FMP API Configuration - using new /stable/ endpoints
 FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
@@ -78,7 +83,7 @@ def fetch_fmp_profile(ticker: str) -> dict:
                     "shares_outstanding": profile.get("sharesOutstanding", 0) or 0,
                 }
     except Exception as e:
-        print(f"FMP profile error for {ticker}: {e}")
+        logger.debug(f"FMP profile error for {ticker}: {e}")
     return {}
 
 
@@ -105,7 +110,7 @@ def fetch_fmp_quote(ticker: str) -> dict:
                     "shares_outstanding": quote.get("sharesOutstanding", 0),
                 }
     except Exception as e:
-        print(f"FMP quote error for {ticker}: {e}")
+        logger.debug(f"FMP quote error for {ticker}: {e}")
     return {}
 
 
@@ -130,14 +135,14 @@ def fetch_fmp_key_metrics(ticker: str) -> dict:
                     "fcf_yield": metrics.get("freeCashFlowYield", 0) or 0,
                 }
     except Exception as e:
-        print(f"FMP key metrics error for {ticker}: {e}")
+        logger.debug(f"FMP key metrics error for {ticker}: {e}")
     return {}
 
 
 def fetch_fmp_earnings(ticker: str) -> dict:
     """Fetch quarterly and annual earnings from FMP"""
     if not FMP_API_KEY:
-        print(f"FMP: No API key configured")
+        logger.warning("FMP: No API key configured")
         return {}
 
     result = {"quarterly_eps": [], "annual_eps": []}
@@ -146,7 +151,7 @@ def fetch_fmp_earnings(ticker: str) -> dict:
         # Quarterly income statement - using new /stable/ endpoint
         url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
         resp = _fmp_get(url, timeout=10)
-        print(f"FMP quarterly {ticker}: status={resp.status_code}")
+        logger.debug(f"FMP quarterly {ticker}: status={resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
             if data:
@@ -154,13 +159,13 @@ def fetch_fmp_earnings(ticker: str) -> dict:
                 result["quarterly_eps"] = [q.get("eps", 0) or 0 for q in data]
                 # Also get net income for backup
                 result["quarterly_net_income"] = [q.get("netIncome", 0) or 0 for q in data]
-                print(f"FMP quarterly {ticker}: got {len(data)} quarters, eps={result['quarterly_eps'][:3]}")
+                logger.debug(f"FMP quarterly {ticker}: got {len(data)} quarters, eps={result['quarterly_eps'][:3]}")
             else:
-                print(f"FMP quarterly {ticker}: empty response")
+                logger.debug(f"FMP quarterly {ticker}: empty response")
         else:
-            print(f"FMP quarterly {ticker}: error response: {resp.text[:200]}")
+            logger.debug(f"FMP quarterly {ticker}: error response: {resp.text[:200]}")
     except Exception as e:
-        print(f"FMP quarterly earnings error for {ticker}: {e}")
+        logger.debug(f"FMP quarterly earnings error for {ticker}: {e}")
 
     try:
         # Annual income statement - using new /stable/ endpoint
@@ -172,7 +177,7 @@ def fetch_fmp_earnings(ticker: str) -> dict:
                 result["annual_eps"] = [a.get("eps", 0) or 0 for a in data]
                 result["annual_net_income"] = [a.get("netIncome", 0) or 0 for a in data]
     except Exception as e:
-        print(f"FMP annual earnings error for {ticker}: {e}")
+        logger.debug(f"FMP annual earnings error for {ticker}: {e}")
 
     return result
 
@@ -189,10 +194,10 @@ def fetch_finviz_institutional(ticker: str) -> float:
             match = re.search(r'Inst Own</td><td[^>]*><b>([0-9.]+)%', resp.text)
             if match:
                 pct = float(match.group(1))
-                print(f"Finviz inst ownership for {ticker}: {pct:.1f}%")
+                logger.debug(f"Finviz inst ownership for {ticker}: {pct:.1f}%")
                 return pct
     except Exception as e:
-        print(f"Finviz institutional error for {ticker}: {e}")
+        logger.debug(f"Finviz institutional error for {ticker}: {e}")
     return 0.0
 
 
@@ -211,7 +216,7 @@ def fetch_fmp_institutional(ticker: str) -> float:
                     if total_inst_shares > 0:
                         return total_inst_shares
         except Exception as e:
-            print(f"FMP institutional error for {ticker}: {e}")
+            logger.debug(f"FMP institutional error for {ticker}: {e}")
 
     # Fallback to Finviz (more reliable than Yahoo Finance from servers)
     return fetch_finviz_institutional(ticker)
@@ -237,7 +242,7 @@ def fetch_fmp_analyst(ticker: str) -> dict:
                     "num_analysts": est.get("numberAnalystsEstimatedEps", 0),
                 }
     except Exception as e:
-        print(f"FMP analyst error for {ticker}: {e}")
+        logger.debug(f"FMP analyst error for {ticker}: {e}")
     return {}
 
 
@@ -260,7 +265,7 @@ def fetch_fmp_price_target(ticker: str) -> dict:
                     "target_median": pt.get("targetMedian", 0),
                 }
     except Exception as e:
-        print(f"FMP price target error for {ticker}: {e}")
+        logger.debug(f"FMP price target error for {ticker}: {e}")
     return {}
 
 
@@ -336,8 +341,11 @@ class StockData:
 class DataFetcher:
     """Fetches and caches stock data using FMP API and Yahoo chart API"""
 
+    # Maximum cache size to prevent memory growth
+    MAX_CACHE_SIZE = 1000
+
     def __init__(self):
-        self._cache: dict[str, StockData] = {}
+        self._cache: OrderedDict[str, StockData] = OrderedDict()
         self._sp500_history: Optional[pd.DataFrame] = None
 
     def get_stock_data(self, ticker: str, retries: int = 2) -> StockData:
@@ -346,6 +354,8 @@ class DataFetcher:
         Uses FMP API for earnings/fundamentals, Yahoo chart API for price history.
         """
         if ticker in self._cache:
+            # Move to end (most recently used)
+            self._cache.move_to_end(ticker)
             return self._cache[ticker]
 
         stock_data = StockData(ticker)
@@ -417,16 +427,16 @@ class DataFetcher:
                             stock_data.high_52w = float(closes.max())
                         if not stock_data.low_52w:
                             stock_data.low_52w = float(closes.min())
-                        print(f"Calculated 52w range for {ticker}: ${stock_data.low_52w:.2f} - ${stock_data.high_52w:.2f}")
+                        logger.debug(f"Calculated 52w range for {ticker}: ${stock_data.low_52w:.2f} - ${stock_data.high_52w:.2f}")
                 except Exception as e:
-                    print(f"Error calculating 52w range for {ticker}: {e}")
+                    logger.debug(f"Error calculating 52w range for {ticker}: {e}")
 
             # 3. Get earnings data from FMP (critical for C and A scores)
             earnings = fetch_fmp_earnings(ticker)
             if earnings:
                 stock_data.quarterly_earnings = earnings.get("quarterly_eps", [])
                 stock_data.annual_earnings = earnings.get("annual_eps", [])
-                print(f"FMP {ticker}: quarterly_earnings={stock_data.quarterly_earnings[:3] if stock_data.quarterly_earnings else 'EMPTY'}")
+                logger.debug(f"FMP {ticker}: quarterly_earnings={stock_data.quarterly_earnings[:3] if stock_data.quarterly_earnings else 'EMPTY'}")
 
             # 3b. Get key metrics (ROE, etc.) from FMP
             key_metrics = fetch_fmp_key_metrics(ticker)
@@ -550,7 +560,11 @@ class DataFetcher:
             stock_data.is_valid = True
             stock_data.error_message = "Limited data available"
 
+        # Add to cache with LRU eviction
         self._cache[ticker] = stock_data
+        if len(self._cache) > self.MAX_CACHE_SIZE:
+            # Remove oldest (first) item
+            self._cache.popitem(last=False)
         return stock_data
 
     def get_sp500_history(self) -> pd.DataFrame:
