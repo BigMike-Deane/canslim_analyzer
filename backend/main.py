@@ -1358,6 +1358,7 @@ async def get_ai_portfolio_history(
 async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks):
     """Refresh position prices without executing trades (runs in background)"""
     from backend.database import SessionLocal
+    from backend.ai_trader import take_portfolio_snapshot
 
     def refresh_background():
         db = SessionLocal()
@@ -1365,6 +1366,10 @@ async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks):
             logger.info("Refreshing AI portfolio prices in background...")
             result = refresh_ai_portfolio(db)
             logger.info(f"AI portfolio refresh complete: {result.get('message')}")
+
+            # Take portfolio snapshot after refresh
+            take_portfolio_snapshot(db)
+            logger.info("Portfolio snapshot taken")
         except Exception as e:
             logger.error(f"AI portfolio refresh error: {e}")
         finally:
@@ -1412,6 +1417,7 @@ async def initialize_ai_portfolio_endpoint(
 async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
     """Manually trigger an AI trading cycle (runs in background)"""
     from backend.database import SessionLocal
+    from backend.ai_trader import take_portfolio_snapshot
 
     def run_cycle_background():
         db = SessionLocal()
@@ -1419,6 +1425,10 @@ async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
             logger.info("Starting AI trading cycle in background...")
             result = run_ai_trading_cycle(db)
             logger.info(f"AI trading cycle complete: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+
+            # Take portfolio snapshot after trading cycle
+            take_portfolio_snapshot(db)
+            logger.info("Portfolio snapshot taken")
         except Exception as e:
             logger.error(f"AI trading cycle error: {e}")
         finally:

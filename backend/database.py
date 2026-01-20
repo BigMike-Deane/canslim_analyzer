@@ -36,10 +36,14 @@ def init_db():
 def run_migrations():
     """Add any missing columns to existing tables"""
     import sqlite3
+    import logging
     from pathlib import Path
+
+    logger = logging.getLogger(__name__)
 
     db_path = DATA_DIR / "canslim.db"
     if not db_path.exists():
+        logger.info("No database yet, skipping migrations")
         return
 
     conn = sqlite3.connect(str(db_path))
@@ -58,13 +62,14 @@ def run_migrations():
     for table, column, col_type in migrations:
         try:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-            print(f"Migration: Added {table}.{column}")
+            logger.info(f"Migration: Added {table}.{column}")
         except sqlite3.OperationalError as e:
-            if "duplicate column" not in str(e).lower():
-                pass  # Column already exists, ignore
+            # Column already exists or table doesn't exist yet
+            pass
 
     conn.commit()
     conn.close()
+    logger.info("Database migrations complete")
 
 
 # ============== Models ==============
