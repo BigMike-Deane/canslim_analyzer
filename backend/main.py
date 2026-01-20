@@ -157,6 +157,139 @@ def get_score_change_from_history(db: Session, stock_id: int) -> Optional[float]
     return None
 
 
+def get_score_trend(db: Session, stock_id: int, days: int = 7) -> dict:
+    """
+    Analyze score trend over recent history.
+    Returns trend direction, magnitude, and consistency.
+    """
+    from datetime import date, timedelta
+
+    cutoff_date = date.today() - timedelta(days=days)
+    scores = db.query(StockScore).filter(
+        StockScore.stock_id == stock_id,
+        StockScore.date >= cutoff_date
+    ).order_by(StockScore.date).all()
+
+    if len(scores) < 2:
+        return {"trend": None, "change": None, "consistency": None, "data_points": len(scores)}
+
+    # Get oldest and newest scores
+    oldest_score = scores[0].total_score
+    newest_score = scores[-1].total_score
+
+    if oldest_score is None or newest_score is None:
+        return {"trend": None, "change": None, "consistency": None, "data_points": len(scores)}
+
+    # Calculate total change
+    total_change = newest_score - oldest_score
+
+    # Calculate consistency (what % of day-over-day changes match the overall direction)
+    if len(scores) >= 3:
+        daily_changes = []
+        for i in range(1, len(scores)):
+            if scores[i].total_score is not None and scores[i-1].total_score is not None:
+                daily_changes.append(scores[i].total_score - scores[i-1].total_score)
+
+        if daily_changes and total_change != 0:
+            matching_direction = sum(1 for c in daily_changes if (c > 0) == (total_change > 0))
+            consistency = matching_direction / len(daily_changes)
+        else:
+            consistency = 0.5
+    else:
+        consistency = 0.5
+
+    # Determine trend
+    if abs(total_change) < 3:
+        trend = "stable"
+    elif total_change > 0:
+        trend = "improving"
+    else:
+        trend = "deteriorating"
+
+    return {
+        "trend": trend,
+        "change": round(total_change, 1),
+        "consistency": round(consistency, 2),
+        "data_points": len(scores)
+    }
+
+
+def get_score_trends_batch(db: Session, stock_ids: List[int], days: int = 7) -> dict:
+    """
+    Batch fetch score trends for multiple stocks efficiently.
+    Returns dict mapping stock_id -> trend data
+    """
+    from datetime import date, timedelta
+
+    if not stock_ids:
+        return {}
+
+    cutoff_date = date.today() - timedelta(days=days)
+
+    # Fetch all scores for all stocks in one query
+    all_scores = db.query(StockScore).filter(
+        StockScore.stock_id.in_(stock_ids),
+        StockScore.date >= cutoff_date
+    ).order_by(StockScore.stock_id, StockScore.date).all()
+
+    # Group by stock_id
+    scores_by_stock = {}
+    for score in all_scores:
+        if score.stock_id not in scores_by_stock:
+            scores_by_stock[score.stock_id] = []
+        scores_by_stock[score.stock_id].append(score)
+
+    # Calculate trends for each stock
+    results = {}
+    for stock_id in stock_ids:
+        scores = scores_by_stock.get(stock_id, [])
+
+        if len(scores) < 2:
+            results[stock_id] = {"trend": None, "change": None, "consistency": None, "data_points": len(scores)}
+            continue
+
+        oldest_score = scores[0].total_score
+        newest_score = scores[-1].total_score
+
+        if oldest_score is None or newest_score is None:
+            results[stock_id] = {"trend": None, "change": None, "consistency": None, "data_points": len(scores)}
+            continue
+
+        total_change = newest_score - oldest_score
+
+        # Calculate consistency
+        if len(scores) >= 3:
+            daily_changes = []
+            for i in range(1, len(scores)):
+                if scores[i].total_score is not None and scores[i-1].total_score is not None:
+                    daily_changes.append(scores[i].total_score - scores[i-1].total_score)
+
+            if daily_changes and total_change != 0:
+                matching_direction = sum(1 for c in daily_changes if (c > 0) == (total_change > 0))
+                consistency = matching_direction / len(daily_changes)
+            else:
+                consistency = 0.5
+        else:
+            consistency = 0.5
+
+        # Determine trend
+        if abs(total_change) < 3:
+            trend = "stable"
+        elif total_change > 0:
+            trend = "improving"
+        else:
+            trend = "deteriorating"
+
+        results[stock_id] = {
+            "trend": trend,
+            "change": round(total_change, 1),
+            "consistency": round(consistency, 2),
+            "data_points": len(scores)
+        }
+
+    return results
+
+
 def update_market_snapshot(db: Session):
     """Update market direction data (SPY price, MAs, trend)"""
     import requests
@@ -462,6 +595,11 @@ async def get_dashboard(db: Session = Depends(get_db)):
     top_stocks_under_25_raw = top_u25_quality_raw + top_u25_fallback_raw
     top_stocks_under_25 = filter_duplicate_stocks(top_stocks_under_25_raw, 10)
 
+    # Get score trends for all displayed stocks (batch query for efficiency)
+    all_display_stocks = top_stocks + top_stocks_under_25
+    stock_ids = [s.id for s in all_display_stocks]
+    score_trends = get_score_trends_batch(db, stock_ids, days=7)
+
     # Get portfolio summary
     positions = db.query(PortfolioPosition).all()
     total_value = sum(p.current_value or 0 for p in positions)
@@ -499,6 +637,8 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "sector": s.sector,
             "canslim_score": adjust_score_for_market(s, current_m_score),
             "score_change": s.score_change,  # Updates every scan
+            "score_trend": score_trends.get(s.id, {}).get("trend"),  # improving/stable/deteriorating
+            "trend_change": score_trends.get(s.id, {}).get("change"),  # 7-day change
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
@@ -512,6 +652,8 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "sector": s.sector,
             "canslim_score": adjust_score_for_market(s, current_m_score),
             "score_change": s.score_change,  # Updates every scan
+            "score_trend": score_trends.get(s.id, {}).get("trend"),  # improving/stable/deteriorating
+            "trend_change": score_trends.get(s.id, {}).get("change"),  # 7-day change
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,

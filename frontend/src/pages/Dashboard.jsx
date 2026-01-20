@@ -93,6 +93,27 @@ function ScoreTrend({ change }) {
   )
 }
 
+function WeeklyTrend({ trend, change }) {
+  if (!trend) return null
+
+  const config = {
+    improving: { icon: '↗', color: 'text-green-400', bg: 'bg-green-500/10' },
+    stable: { icon: '→', color: 'text-dark-400', bg: 'bg-dark-600' },
+    deteriorating: { icon: '↘', color: 'text-red-400', bg: 'bg-red-500/10' }
+  }
+
+  const { icon, color, bg } = config[trend] || config.stable
+
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded ${bg} ${color}`}
+      title={`7-day trend: ${change != null ? (change > 0 ? '+' : '') + change.toFixed(1) : ''} pts`}
+    >
+      {icon} {trend === 'improving' ? 'Up' : trend === 'deteriorating' ? 'Down' : ''}
+    </span>
+  )
+}
+
 function TopStocksList({ stocks, title }) {
   if (!stocks || stocks.length === 0) return null
 
@@ -118,6 +139,7 @@ function TopStocksList({ stocks, title }) {
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{stock.ticker}</span>
                   <ScoreTrend change={stock.score_change} />
+                  <WeeklyTrend trend={stock.score_trend} change={stock.trend_change} />
                   {stock.data_quality === 'low' && (
                     <span className="text-yellow-500 text-xs" title="Limited analyst data">⚠</span>
                   )}
