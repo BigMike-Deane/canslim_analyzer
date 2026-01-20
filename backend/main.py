@@ -1344,10 +1344,23 @@ async def get_ai_portfolio_history(
 
 
 @app.post("/api/ai-portfolio/refresh")
-async def refresh_ai_portfolio_endpoint(db: Session = Depends(get_db)):
-    """Refresh position prices without executing trades"""
-    result = refresh_ai_portfolio(db)
-    return result
+async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks):
+    """Refresh position prices without executing trades (runs in background)"""
+    from backend.database import SessionLocal
+
+    def refresh_background():
+        db = SessionLocal()
+        try:
+            logger.info("Refreshing AI portfolio prices in background...")
+            result = refresh_ai_portfolio(db)
+            logger.info(f"AI portfolio refresh complete: {result.get('message')}")
+        except Exception as e:
+            logger.error(f"AI portfolio refresh error: {e}")
+        finally:
+            db.close()
+
+    background_tasks.add_task(refresh_background)
+    return {"status": "started", "message": "Price refresh started. Refresh page in 10-15 seconds."}
 
 
 @app.get("/api/ai-portfolio/trades")
@@ -1385,10 +1398,23 @@ async def initialize_ai_portfolio_endpoint(
 
 
 @app.post("/api/ai-portfolio/run-cycle")
-async def run_ai_trading_cycle_endpoint(db: Session = Depends(get_db)):
-    """Manually trigger an AI trading cycle"""
-    result = run_ai_trading_cycle(db)
-    return result
+async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
+    """Manually trigger an AI trading cycle (runs in background)"""
+    from backend.database import SessionLocal
+
+    def run_cycle_background():
+        db = SessionLocal()
+        try:
+            logger.info("Starting AI trading cycle in background...")
+            result = run_ai_trading_cycle(db)
+            logger.info(f"AI trading cycle complete: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+        except Exception as e:
+            logger.error(f"AI trading cycle error: {e}")
+        finally:
+            db.close()
+
+    background_tasks.add_task(run_cycle_background)
+    return {"status": "started", "message": "Trading cycle started in background. Refresh page in 15-20 seconds."}
 
 
 @app.patch("/api/ai-portfolio/config")

@@ -170,6 +170,7 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) 
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [runningCycle, setRunningCycle] = useState(false)
 
   useEffect(() => {
     setIsActive(config?.is_active || false)
@@ -189,8 +190,21 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) 
     setRefreshing(true)
     try {
       await onRefresh()
-    } finally {
+      // Keep spinner for 12 seconds while background task runs
+      setTimeout(() => setRefreshing(false), 12000)
+    } catch {
       setRefreshing(false)
+    }
+  }
+
+  const handleRunCycle = async () => {
+    setRunningCycle(true)
+    try {
+      await onRunCycle()
+      // Keep spinner for 20 seconds while background task runs
+      setTimeout(() => setRunningCycle(false), 20000)
+    } catch {
+      setRunningCycle(false)
     }
   }
 
@@ -261,10 +275,12 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) 
           <span>{refreshing ? 'Refreshing...' : 'Refresh Prices'}</span>
         </button>
         <button
-          onClick={onRunCycle}
-          className="flex-1 py-2 bg-primary-500 hover:bg-primary-600 rounded-lg text-sm font-medium transition-colors"
+          onClick={handleRunCycle}
+          disabled={runningCycle}
+          className="flex-1 py-2 bg-primary-500 hover:bg-primary-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
         >
-          Run Trading Cycle
+          {runningCycle && <span className="animate-spin">⟳</span>}
+          <span>{runningCycle ? 'Running...' : 'Run Trading Cycle'}</span>
         </button>
       </div>
 
@@ -327,8 +343,13 @@ export default function AIPortfolio() {
 
   const handleRefresh = async () => {
     try {
-      await api.refreshAIPortfolio()
-      fetchData()
+      const result = await api.refreshAIPortfolio()
+      // Show status and auto-refresh after delay
+      if (result.status === 'started') {
+        setTimeout(() => fetchData(), 12000) // Refresh after 12 seconds
+      } else {
+        fetchData()
+      }
     } catch (err) {
       console.error('Failed to refresh:', err)
     }
@@ -336,8 +357,13 @@ export default function AIPortfolio() {
 
   const handleRunCycle = async () => {
     try {
-      await api.runAITradingCycle()
-      fetchData()
+      const result = await api.runAITradingCycle()
+      // Show status and auto-refresh after delay
+      if (result.status === 'started') {
+        setTimeout(() => fetchData(), 20000) // Refresh after 20 seconds
+      } else {
+        fetchData()
+      }
     } catch (err) {
       console.error('Failed to run cycle:', err)
     }
