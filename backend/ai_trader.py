@@ -114,7 +114,7 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
         # Try to get live price first
         if use_live_prices:
             current_price = fetch_live_price(position.ticker)
-            time.sleep(0.2)  # Small delay to avoid rate limiting
+            time.sleep(0.5)  # Delay to stay under FMP 300 calls/min limit
 
         # Fallback to Stock table if live fetch fails
         if not current_price:
@@ -370,8 +370,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
         "buys_considered": 0
     }
 
-    # Update position prices first
-    update_position_prices(db)
+    # Update position prices first (use cached Stock table since we just scanned)
+    update_position_prices(db, use_live_prices=False)
 
     # Get current position count
     positions = db.query(AIPortfolioPosition).all()
