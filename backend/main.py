@@ -198,9 +198,9 @@ def analyze_stock(ticker: str) -> dict:
             "sector": getattr(stock_data, 'sector', "Unknown"),
             "industry": getattr(stock_data, 'sector', "Unknown"),  # StockData doesn't have industry
             "current_price": getattr(stock_data, 'current_price', 0),
-            "market_cap": getattr(stock_data, 'shares_outstanding', 0) * getattr(stock_data, 'current_price', 0),
+            "market_cap": getattr(stock_data, 'market_cap', 0) or (getattr(stock_data, 'shares_outstanding', 0) * getattr(stock_data, 'current_price', 0)),
             "week_52_high": getattr(stock_data, 'high_52w', 0),
-            "week_52_low": 0,  # StockData doesn't have 52w low
+            "week_52_low": getattr(stock_data, 'low_52w', 0),
 
             # CANSLIM scores
             "canslim_score": score_result.get("total_score", 0),

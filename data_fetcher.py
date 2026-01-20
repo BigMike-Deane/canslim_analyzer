@@ -246,6 +246,8 @@ class StockData:
         self.avg_volume_50d: float = 0.0
         self.current_volume: float = 0.0
         self.high_52w: float = 0.0
+        self.low_52w: float = 0.0
+        self.market_cap: float = 0.0
         self.is_valid: bool = False
         self.error_message: str = ""
 
@@ -324,6 +326,10 @@ class DataFetcher:
                     stock_data.current_price = quote.get("current_price", 0)
                 if not stock_data.high_52w:
                     stock_data.high_52w = quote.get("high_52w", 0)
+                if not stock_data.low_52w:
+                    stock_data.low_52w = quote.get("low_52w", 0)
+                if not stock_data.market_cap:
+                    stock_data.market_cap = quote.get("market_cap", 0)
                 if not stock_data.avg_volume_50d:
                     stock_data.avg_volume_50d = quote.get("avg_volume", 0)
                 if not stock_data.current_volume:
