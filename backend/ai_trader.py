@@ -538,54 +538,43 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
 
 def take_portfolio_snapshot(db: Session):
-    """Take a snapshot of current portfolio state"""
-    today = date.today()
-
-    # Check if we already have a snapshot for today
-    existing = db.query(AIPortfolioSnapshot).filter(
-        AIPortfolioSnapshot.date == today
-    ).first()
+    """Take a snapshot of current portfolio state - called after each scan"""
+    from datetime import datetime as dt
 
     portfolio = get_portfolio_value(db)
     config = get_or_create_config(db)
 
-    # Get yesterday's snapshot for day change calculation
-    yesterday_snapshot = db.query(AIPortfolioSnapshot).filter(
-        AIPortfolioSnapshot.date < today
-    ).order_by(desc(AIPortfolioSnapshot.date)).first()
+    # Get previous snapshot for change calculation
+    prev_snapshot = db.query(AIPortfolioSnapshot).order_by(
+        desc(AIPortfolioSnapshot.timestamp)
+    ).first()
 
-    day_change = 0
-    day_change_pct = 0
-    if yesterday_snapshot:
-        day_change = portfolio["total_value"] - yesterday_snapshot.total_value
-        day_change_pct = (day_change / yesterday_snapshot.total_value) * 100 if yesterday_snapshot.total_value > 0 else 0
+    value_change = 0
+    value_change_pct = 0
+    prev_value = None
+    if prev_snapshot:
+        prev_value = prev_snapshot.total_value
+        value_change = portfolio["total_value"] - prev_snapshot.total_value
+        value_change_pct = (value_change / prev_snapshot.total_value) * 100 if prev_snapshot.total_value > 0 else 0
 
-    if existing:
-        # Update existing snapshot
-        existing.total_value = portfolio["total_value"]
-        existing.cash = portfolio["cash"]
-        existing.positions_value = portfolio["positions_value"]
-        existing.positions_count = portfolio["positions_count"]
-        existing.total_return = portfolio["total_return"]
-        existing.total_return_pct = portfolio["total_return_pct"]
-        existing.day_change = day_change
-        existing.day_change_pct = day_change_pct
-    else:
-        # Create new snapshot
-        snapshot = AIPortfolioSnapshot(
-            date=today,
-            total_value=portfolio["total_value"],
-            cash=portfolio["cash"],
-            positions_value=portfolio["positions_value"],
-            positions_count=portfolio["positions_count"],
-            total_return=portfolio["total_return"],
-            total_return_pct=portfolio["total_return_pct"],
-            day_change=day_change,
-            day_change_pct=day_change_pct
-        )
-        db.add(snapshot)
-
+    # Create new snapshot (one per scan)
+    snapshot = AIPortfolioSnapshot(
+        timestamp=dt.utcnow(),
+        date=date.today(),
+        total_value=portfolio["total_value"],
+        cash=portfolio["cash"],
+        positions_value=portfolio["positions_value"],
+        positions_count=portfolio["positions_count"],
+        total_return=portfolio["total_return"],
+        total_return_pct=portfolio["total_return_pct"],
+        prev_value=prev_value,
+        value_change=value_change,
+        value_change_pct=value_change_pct
+    )
+    db.add(snapshot)
     db.commit()
+
+    logger.info(f"Portfolio snapshot taken: ${portfolio['total_value']:.2f} ({portfolio['positions_count']} positions)")
 
 
 def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):

@@ -127,13 +127,26 @@ def run_continuous_scan():
             return None
 
     def save_stock_to_db(db, analysis: dict):
-        """Save analysis to database"""
+        """Save analysis to database with historical tracking"""
         from backend.database import Stock, StockScore
+        from datetime import date
 
         stock = db.query(Stock).filter(Stock.ticker == analysis["ticker"]).first()
         if not stock:
             stock = Stock(ticker=analysis["ticker"])
             db.add(stock)
+            db.flush()  # Get the ID
+
+        # Track score change
+        old_score = stock.canslim_score
+        new_score = analysis.get("canslim_score")
+
+        if old_score is not None and new_score is not None:
+            stock.previous_score = old_score
+            stock.score_change = round(new_score - old_score, 2)
+        else:
+            stock.previous_score = None
+            stock.score_change = None
 
         # Update stock data
         stock.company_name = analysis.get("company_name")
@@ -141,7 +154,7 @@ def run_continuous_scan():
         stock.industry = analysis.get("industry")
         stock.current_price = analysis.get("current_price")
         stock.market_cap = analysis.get("market_cap")
-        stock.canslim_score = analysis.get("canslim_score")
+        stock.canslim_score = new_score
         stock.c_score = analysis.get("c_score")
         stock.a_score = analysis.get("a_score")
         stock.n_score = analysis.get("n_score")
@@ -159,6 +172,42 @@ def run_continuous_scan():
         stock.relative_strength = analysis.get("relative_strength")
         stock.institutional_ownership = analysis.get("institutional_ownership")
         stock.last_updated = datetime.utcnow()
+
+        # Save historical score (one per day per stock)
+        today = date.today()
+        existing_score = db.query(StockScore).filter(
+            StockScore.stock_id == stock.id,
+            StockScore.date == today
+        ).first()
+
+        if not existing_score:
+            historical_score = StockScore(
+                stock_id=stock.id,
+                date=today,
+                total_score=new_score,
+                c_score=analysis.get("c_score"),
+                a_score=analysis.get("a_score"),
+                n_score=analysis.get("n_score"),
+                s_score=analysis.get("s_score"),
+                l_score=analysis.get("l_score"),
+                i_score=analysis.get("i_score"),
+                m_score=analysis.get("m_score"),
+                projected_growth=analysis.get("projected_growth"),
+                current_price=analysis.get("current_price")
+            )
+            db.add(historical_score)
+        else:
+            # Update today's record with latest
+            existing_score.total_score = new_score
+            existing_score.c_score = analysis.get("c_score")
+            existing_score.a_score = analysis.get("a_score")
+            existing_score.n_score = analysis.get("n_score")
+            existing_score.s_score = analysis.get("s_score")
+            existing_score.l_score = analysis.get("l_score")
+            existing_score.i_score = analysis.get("i_score")
+            existing_score.m_score = analysis.get("m_score")
+            existing_score.projected_growth = analysis.get("projected_growth")
+            existing_score.current_price = analysis.get("current_price")
 
         db.commit()
         return stock
@@ -213,13 +262,16 @@ def run_continuous_scan():
 
         # Run AI trading cycle after scan completes
         try:
-            from backend.ai_trader import run_ai_trading_cycle, get_or_create_config
+            from backend.ai_trader import run_ai_trading_cycle, get_or_create_config, take_portfolio_snapshot
             ai_db = SessionLocal()
             config = get_or_create_config(ai_db)
             if config.is_active:
                 logger.info("Running AI trading cycle...")
                 result = run_ai_trading_cycle(ai_db)
                 logger.info(f"AI trading: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+
+            # Take portfolio snapshot after each scan (regardless of trading status)
+            take_portfolio_snapshot(ai_db)
             ai_db.close()
         except Exception as e:
             logger.error(f"AI trading error: {e}")

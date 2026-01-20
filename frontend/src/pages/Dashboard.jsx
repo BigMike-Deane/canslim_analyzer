@@ -57,6 +57,18 @@ function MarketStatus({ market }) {
   )
 }
 
+function ScoreTrend({ change }) {
+  if (change == null || change === 0) return null
+
+  const isUp = change > 0
+  return (
+    <span className={`text-xs font-medium ${isUp ? 'text-green-400' : 'text-red-400'}`}>
+      {isUp ? '▲' : '▼'}
+      <span className="ml-0.5">{Math.abs(change).toFixed(1)}</span>
+    </span>
+  )
+}
+
 function TopStocksList({ stocks, title, showPrice = false }) {
   if (!stocks || stocks.length === 0) return null
 
@@ -79,7 +91,10 @@ function TopStocksList({ stocks, title, showPrice = false }) {
                 {index + 1}
               </div>
               <div>
-                <div className="font-medium">{stock.ticker}</div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{stock.ticker}</span>
+                  <ScoreTrend change={stock.score_change} />
+                </div>
                 <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>
               </div>
             </div>

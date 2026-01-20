@@ -15,9 +15,29 @@ function PerformanceChart({ history, startingCash }) {
   const latestValue = history[history.length - 1]?.total_value || startingCash
   const isPositive = latestValue >= startingCash
 
+  // Format timestamp for tooltip
+  const formatTimestamp = (ts) => {
+    if (!ts) return ''
+    try {
+      const date = new Date(ts)
+      return date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch {
+      return ts
+    }
+  }
+
   return (
     <div className="card mb-4">
-      <div className="h-48">
+      <div className="flex justify-between items-center mb-2">
+        <div className="text-dark-400 text-xs">Performance</div>
+        <div className="text-dark-500 text-xs">{history.length} data points</div>
+      </div>
+      <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={history}>
             <Line
@@ -25,7 +45,8 @@ function PerformanceChart({ history, startingCash }) {
               dataKey="total_value"
               stroke={isPositive ? '#34c759' : '#ff3b30'}
               strokeWidth={2}
-              dot={false}
+              dot={history.length <= 50}
+              activeDot={{ r: 4, fill: isPositive ? '#34c759' : '#ff3b30' }}
             />
             <ReferenceLine
               y={startingCash}
@@ -37,12 +58,14 @@ function PerformanceChart({ history, startingCash }) {
               contentStyle={{ background: '#2c2c2e', border: 'none', borderRadius: '8px' }}
               labelStyle={{ color: '#8e8e93' }}
               formatter={(value) => [formatCurrency(value), 'Value']}
-              labelFormatter={(label) => {
-                const [y, m, d] = label.split('-').map(Number)
-                return new Date(y, m - 1, d).toLocaleDateString()
+              labelFormatter={(_, payload) => {
+                if (payload && payload[0]) {
+                  return formatTimestamp(payload[0].payload.timestamp || payload[0].payload.date)
+                }
+                return ''
               }}
             />
-            <XAxis dataKey="date" hide />
+            <XAxis dataKey="timestamp" hide />
             <YAxis hide domain={['dataMin - 500', 'dataMax + 500']} />
           </LineChart>
         </ResponsiveContainer>
@@ -165,12 +188,11 @@ function TradeHistory({ trades }) {
   )
 }
 
-function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) {
+function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, waitingForTrades }) {
   const [isActive, setIsActive] = useState(config?.is_active || false)
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [runningCycle, setRunningCycle] = useState(false)
 
   useEffect(() => {
     setIsActive(config?.is_active || false)
@@ -198,13 +220,10 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) 
   }
 
   const handleRunCycle = async () => {
-    setRunningCycle(true)
     try {
       await onRunCycle()
-      // Keep spinner for 20 seconds while background task runs
-      setTimeout(() => setRunningCycle(false), 20000)
-    } catch {
-      setRunningCycle(false)
+    } catch (err) {
+      console.error('Failed to run cycle:', err)
     }
   }
 
@@ -276,11 +295,11 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh }) 
         </button>
         <button
           onClick={handleRunCycle}
-          disabled={runningCycle}
-          className="flex-1 py-2 bg-primary-500 hover:bg-primary-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          disabled={waitingForTrades}
+          className="flex-1 py-2 bg-primary-500 hover:bg-primary-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
         >
-          {runningCycle && <span className="animate-spin">⟳</span>}
-          <span>{runningCycle ? 'Running...' : 'Run Trading Cycle'}</span>
+          {waitingForTrades && <span className="animate-spin">⟳</span>}
+          <span>{waitingForTrades ? 'Running...' : 'Run Trading Cycle'}</span>
         </button>
       </div>
 
@@ -300,10 +319,13 @@ export default function AIPortfolio() {
   const [portfolio, setPortfolio] = useState(null)
   const [history, setHistory] = useState([])
   const [trades, setTrades] = useState([])
+  const [lastUpdated, setLastUpdated] = useState(null)
+  const [waitingForTrades, setWaitingForTrades] = useState(false)
+  const [waitingCash, setWaitingCash] = useState(null)
 
-  const fetchData = async () => {
+  const fetchData = async (showLoading = true) => {
     try {
-      setLoading(true)
+      if (showLoading) setLoading(true)
       const [portfolioData, historyData, tradesData] = await Promise.all([
         api.getAIPortfolio(),
         api.getAIPortfolioHistory(90),
@@ -312,6 +334,19 @@ export default function AIPortfolio() {
       setPortfolio(portfolioData)
       setHistory(historyData)
       setTrades(tradesData)
+      setLastUpdated(new Date())
+
+      // Check if data changed while waiting for trades
+      if (waitingForTrades && waitingCash !== null) {
+        const newCash = portfolioData?.summary?.cash
+        if (Math.abs(newCash - waitingCash) > 100) {
+          // Cash changed significantly - trades executed
+          setWaitingForTrades(false)
+          setWaitingCash(null)
+        }
+      }
+
+      return portfolioData
     } catch (err) {
       console.error('Failed to fetch AI Portfolio:', err)
     } finally {
@@ -321,7 +356,34 @@ export default function AIPortfolio() {
 
   useEffect(() => {
     fetchData()
+
+    // Auto-refresh every 15 seconds to catch background updates
+    const interval = setInterval(() => {
+      fetchData(false)
+    }, 15000)
+
+    return () => clearInterval(interval)
   }, [])
+
+  // Keep polling while waiting for trades
+  useEffect(() => {
+    if (!waitingForTrades) return
+
+    const pollInterval = setInterval(() => {
+      fetchData(false)
+    }, 5000) // Poll every 5 seconds while waiting
+
+    // Stop waiting after 2 minutes max
+    const timeout = setTimeout(() => {
+      setWaitingForTrades(false)
+      setWaitingCash(null)
+    }, 120000)
+
+    return () => {
+      clearInterval(pollInterval)
+      clearTimeout(timeout)
+    }
+  }, [waitingForTrades])
 
   const handleUpdateConfig = async (config) => {
     try {
@@ -344,9 +406,11 @@ export default function AIPortfolio() {
   const handleRefresh = async () => {
     try {
       const result = await api.refreshAIPortfolio()
-      // Show status and auto-refresh after delay
+      // Poll more frequently after triggering a refresh
       if (result.status === 'started') {
-        setTimeout(() => fetchData(), 12000) // Refresh after 12 seconds
+        setTimeout(() => fetchData(false), 4000)
+        setTimeout(() => fetchData(false), 8000)
+        setTimeout(() => fetchData(false), 12000)
       } else {
         fetchData()
       }
@@ -357,15 +421,19 @@ export default function AIPortfolio() {
 
   const handleRunCycle = async () => {
     try {
+      // Store current cash to detect when trades complete
+      const currentCash = portfolio?.summary?.cash || 0
+      setWaitingCash(currentCash)
+      setWaitingForTrades(true)
+
       const result = await api.runAITradingCycle()
-      // Show status and auto-refresh after delay
-      if (result.status === 'started') {
-        setTimeout(() => fetchData(), 20000) // Refresh after 20 seconds
-      } else {
+      if (result.status !== 'started') {
+        setWaitingForTrades(false)
         fetchData()
       }
     } catch (err) {
       console.error('Failed to run cycle:', err)
+      setWaitingForTrades(false)
     }
   }
 
@@ -387,10 +455,27 @@ export default function AIPortfolio() {
           <div className="text-dark-400 text-sm">Autonomous</div>
           <h1 className="text-xl font-bold">AI Portfolio</h1>
         </div>
-        <div className="text-dark-400 text-xs">
-          Started: {formatCurrency(portfolio?.config?.starting_cash || 25000)}
+        <div className="text-right">
+          <div className="text-dark-400 text-xs">
+            Started: {formatCurrency(portfolio?.config?.starting_cash || 25000)}
+          </div>
+          {lastUpdated && (
+            <div className="text-dark-500 text-xs">
+              Updated: {lastUpdated.toLocaleTimeString()}
+            </div>
+          )}
         </div>
       </div>
+
+      {waitingForTrades && (
+        <div className="card mb-4 p-3 bg-primary-500/10 border border-primary-500/30">
+          <div className="flex items-center gap-2 text-primary-400">
+            <span className="animate-spin">⟳</span>
+            <span className="font-medium">Executing trades... This may take up to 2 minutes.</span>
+          </div>
+          <div className="text-dark-400 text-xs mt-1">Page will auto-update when complete.</div>
+        </div>
+      )}
 
       <PerformanceChart
         history={history}
@@ -408,6 +493,7 @@ export default function AIPortfolio() {
         onInitialize={handleInitialize}
         onRefresh={handleRefresh}
         onRunCycle={handleRunCycle}
+        waitingForTrades={waitingForTrades}
       />
 
       <PositionsList positions={portfolio?.positions} />

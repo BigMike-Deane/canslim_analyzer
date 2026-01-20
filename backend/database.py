@@ -50,6 +50,8 @@ class Stock(Base):
 
     # Latest CANSLIM data
     canslim_score = Column(Float)
+    previous_score = Column(Float)  # Score from previous scan
+    score_change = Column(Float)  # Change from previous scan
     c_score = Column(Float)  # Current earnings
     a_score = Column(Float)  # Annual earnings
     n_score = Column(Float)  # New highs
@@ -239,11 +241,11 @@ class AIPortfolioTrade(Base):
 
 
 class AIPortfolioSnapshot(Base):
-    """Daily AI Portfolio snapshots for performance chart"""
+    """AI Portfolio snapshots for performance chart - taken after each scan"""
     __tablename__ = "ai_portfolio_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
-    date = Column(Date, unique=True, index=True, nullable=False)
+    timestamp = Column(DateTime, index=True, nullable=False, default=datetime.utcnow)
 
     total_value = Column(Float, nullable=False)  # Cash + positions
     cash = Column(Float, nullable=False)
@@ -253,7 +255,9 @@ class AIPortfolioSnapshot(Base):
     # Performance metrics
     total_return = Column(Float)  # Total return since inception
     total_return_pct = Column(Float)
-    day_change = Column(Float)  # Change from previous day
-    day_change_pct = Column(Float)
+    prev_value = Column(Float)  # Previous snapshot value for change calc
+    value_change = Column(Float)  # Change from previous snapshot
+    value_change_pct = Column(Float)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Keep date for backwards compatibility with existing chart
+    date = Column(Date, index=True)  # Date portion for grouping

@@ -399,6 +399,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "name": s.name,
             "sector": s.sector,
             "canslim_score": s.canslim_score,
+            "score_change": s.score_change,
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence
@@ -409,6 +410,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "name": s.name,
             "sector": s.sector,
             "canslim_score": s.canslim_score,
+            "score_change": s.score_change,
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence
@@ -1322,24 +1324,33 @@ async def get_ai_portfolio_history(
     days: int = Query(30, le=365),
     db: Session = Depends(get_db)
 ):
-    """Get AI Portfolio performance history for charts"""
-    from datetime import timedelta
-    start_date = date.today() - timedelta(days=days)
+    """Get AI Portfolio performance history for charts - includes all snapshots from scans"""
+    from datetime import timedelta, datetime as dt
+    start_date = dt.utcnow() - timedelta(days=days)
 
+    # Get all snapshots (multiple per day now)
     snapshots = db.query(AIPortfolioSnapshot).filter(
-        AIPortfolioSnapshot.date >= start_date
-    ).order_by(AIPortfolioSnapshot.date).all()
+        AIPortfolioSnapshot.timestamp >= start_date
+    ).order_by(AIPortfolioSnapshot.timestamp).all()
+
+    # Fallback: if no timestamp-based data, try date-based (for migration)
+    if not snapshots:
+        start_date_only = date.today() - timedelta(days=days)
+        snapshots = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.date >= start_date_only
+        ).order_by(AIPortfolioSnapshot.date).all()
 
     return [{
-        "date": s.date.isoformat(),
+        "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+        "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
         "total_value": s.total_value,
         "cash": s.cash,
         "positions_value": s.positions_value,
         "positions_count": s.positions_count,
         "total_return": s.total_return,
         "total_return_pct": s.total_return_pct,
-        "day_change": s.day_change,
-        "day_change_pct": s.day_change_pct
+        "value_change": getattr(s, 'value_change', None) or getattr(s, 'day_change', None),
+        "value_change_pct": getattr(s, 'value_change_pct', None) or getattr(s, 'day_change_pct', None)
     } for s in snapshots]
 
 
