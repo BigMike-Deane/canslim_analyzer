@@ -620,7 +620,11 @@ async def start_scan(
 
         def process_single_stock(ticker):
             """Process a single stock - runs in thread pool"""
+            import time
+            import random
             nonlocal processed, successful
+            # Small random delay to avoid API rate limits
+            time.sleep(random.uniform(0.1, 0.3))
             thread_db = SessionLocal()
             try:
                 analysis = analyze_stock(ticker)
@@ -639,8 +643,8 @@ async def start_scan(
                 thread_db.close()
 
         try:
-            # Process stocks in parallel with 8 workers
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            # Process stocks in parallel with 6 workers
+            with ThreadPoolExecutor(max_workers=6) as executor:
                 futures = {executor.submit(process_single_stock, t): t for t in tickers}
 
                 for future in as_completed(futures):
