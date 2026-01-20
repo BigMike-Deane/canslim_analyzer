@@ -1,6 +1,7 @@
 """
 Data Fetcher Module
 Wrapper around yfinance with caching and error handling
+Now with Financial Modeling Prep (FMP) API for earnings data
 """
 
 import yfinance as yf
@@ -10,6 +11,168 @@ from datetime import datetime, timedelta
 from typing import Optional
 import time
 import requests
+import os
+
+# FMP API Configuration
+FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
+FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+
+
+def fetch_fmp_profile(ticker: str) -> dict:
+    """Fetch company profile from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/profile/{ticker}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                profile = data[0]
+                return {
+                    "name": profile.get("companyName", ""),
+                    "sector": profile.get("sector", ""),
+                    "industry": profile.get("industry", ""),
+                    "market_cap": profile.get("mktCap", 0),
+                    "current_price": profile.get("price", 0),
+                    "high_52w": profile.get("range", "").split("-")[-1].strip() if profile.get("range") else 0,
+                    "shares_outstanding": profile.get("sharesOutstanding", 0) or 0,
+                }
+    except Exception as e:
+        print(f"FMP profile error for {ticker}: {e}")
+    return {}
+
+
+def fetch_fmp_quote(ticker: str) -> dict:
+    """Fetch current quote data from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/quote/{ticker}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                quote = data[0]
+                return {
+                    "current_price": quote.get("price", 0),
+                    "high_52w": quote.get("yearHigh", 0),
+                    "low_52w": quote.get("yearLow", 0),
+                    "volume": quote.get("volume", 0),
+                    "avg_volume": quote.get("avgVolume", 0),
+                    "market_cap": quote.get("marketCap", 0),
+                    "pe": quote.get("pe", 0),
+                    "shares_outstanding": quote.get("sharesOutstanding", 0),
+                }
+    except Exception as e:
+        print(f"FMP quote error for {ticker}: {e}")
+    return {}
+
+
+def fetch_fmp_earnings(ticker: str) -> dict:
+    """Fetch quarterly and annual earnings from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    result = {"quarterly_eps": [], "annual_eps": []}
+
+    try:
+        # Quarterly income statement
+        url = f"{FMP_BASE_URL}/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                # EPS from income statement
+                result["quarterly_eps"] = [q.get("eps", 0) or 0 for q in data]
+                # Also get net income for backup
+                result["quarterly_net_income"] = [q.get("netIncome", 0) or 0 for q in data]
+    except Exception as e:
+        print(f"FMP quarterly earnings error for {ticker}: {e}")
+
+    try:
+        # Annual income statement
+        url = f"{FMP_BASE_URL}/income-statement/{ticker}?limit=5&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                result["annual_eps"] = [a.get("eps", 0) or 0 for a in data]
+                result["annual_net_income"] = [a.get("netIncome", 0) or 0 for a in data]
+    except Exception as e:
+        print(f"FMP annual earnings error for {ticker}: {e}")
+
+    return result
+
+
+def fetch_fmp_institutional(ticker: str) -> float:
+    """Fetch institutional ownership percentage from FMP"""
+    if not FMP_API_KEY:
+        return 0.0
+
+    try:
+        url = f"{FMP_BASE_URL}/institutional-holder/{ticker}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                # Sum up institutional shares and compare to outstanding
+                total_inst_shares = sum(h.get("shares", 0) or 0 for h in data[:50])  # Top 50 holders
+                # We need shares outstanding to calculate percentage
+                # This will be combined with quote data
+                return total_inst_shares
+    except Exception as e:
+        print(f"FMP institutional error for {ticker}: {e}")
+    return 0.0
+
+
+def fetch_fmp_analyst(ticker: str) -> dict:
+    """Fetch analyst ratings and price targets from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/analyst-estimates/{ticker}?limit=1&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                est = data[0]
+                return {
+                    "estimated_eps_avg": est.get("estimatedEpsAvg", 0),
+                    "estimated_eps_high": est.get("estimatedEpsHigh", 0),
+                    "estimated_eps_low": est.get("estimatedEpsLow", 0),
+                    "estimated_revenue_avg": est.get("estimatedRevenueAvg", 0),
+                    "num_analysts": est.get("numberAnalystsEstimatedEps", 0),
+                }
+    except Exception as e:
+        print(f"FMP analyst error for {ticker}: {e}")
+    return {}
+
+
+def fetch_fmp_price_target(ticker: str) -> dict:
+    """Fetch analyst price targets from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/price-target-consensus/{ticker}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                pt = data[0]
+                return {
+                    "target_high": pt.get("targetHigh", 0),
+                    "target_low": pt.get("targetLow", 0),
+                    "target_consensus": pt.get("targetConsensus", 0),
+                    "target_median": pt.get("targetMedian", 0),
+                }
+    except Exception as e:
+        print(f"FMP price target error for {ticker}: {e}")
+    return {}
 
 
 def fetch_price_from_chart_api(ticker: str) -> dict:
@@ -73,7 +236,7 @@ class StockData:
 
 
 class DataFetcher:
-    """Fetches and caches stock data from yfinance"""
+    """Fetches and caches stock data using FMP API and Yahoo chart API"""
 
     def __init__(self):
         self._cache: dict[str, StockData] = {}
@@ -82,15 +245,14 @@ class DataFetcher:
     def get_stock_data(self, ticker: str, retries: int = 2) -> StockData:
         """
         Fetch all required data for a stock.
-        Uses caching to avoid redundant API calls.
-        Falls back to chart API if yfinance fails.
+        Uses FMP API for earnings/fundamentals, Yahoo chart API for price history.
         """
         if ticker in self._cache:
             return self._cache[ticker]
 
         stock_data = StockData(ticker)
 
-        # First try the direct chart API (more reliable from servers)
+        # 1. Get price history from Yahoo chart API (reliable)
         chart_data = fetch_price_from_chart_api(ticker)
         if chart_data.get("current_price"):
             stock_data.current_price = chart_data["current_price"]
@@ -115,99 +277,102 @@ class DataFetcher:
                     stock_data.avg_volume_50d = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
                     stock_data.current_volume = volumes[-1] if volumes[-1] else 0
 
-        # Try yfinance for additional data (earnings, institutional, etc.)
-        for attempt in range(retries):
+        # 2. Get company profile and quote from FMP
+        if FMP_API_KEY:
+            profile = fetch_fmp_profile(ticker)
+            if profile:
+                stock_data.name = profile.get("name") or stock_data.name
+                stock_data.sector = profile.get("sector", "")
+                stock_data.shares_outstanding = int(profile.get("shares_outstanding", 0) or 0)
+                if not stock_data.current_price:
+                    stock_data.current_price = profile.get("current_price", 0)
+                if not stock_data.high_52w:
+                    try:
+                        stock_data.high_52w = float(profile.get("high_52w", 0) or 0)
+                    except:
+                        pass
+
+            quote = fetch_fmp_quote(ticker)
+            if quote:
+                if not stock_data.current_price:
+                    stock_data.current_price = quote.get("current_price", 0)
+                if not stock_data.high_52w:
+                    stock_data.high_52w = quote.get("high_52w", 0)
+                if not stock_data.avg_volume_50d:
+                    stock_data.avg_volume_50d = quote.get("avg_volume", 0)
+                if not stock_data.current_volume:
+                    stock_data.current_volume = quote.get("volume", 0)
+                stock_data.trailing_pe = quote.get("pe", 0) or 0
+                if not stock_data.shares_outstanding:
+                    stock_data.shares_outstanding = int(quote.get("shares_outstanding", 0) or 0)
+
+            # 3. Get earnings data from FMP (critical for C and A scores)
+            earnings = fetch_fmp_earnings(ticker)
+            if earnings:
+                stock_data.quarterly_earnings = earnings.get("quarterly_eps", [])
+                stock_data.annual_earnings = earnings.get("annual_eps", [])
+
+            # 4. Get institutional ownership from FMP
+            inst_shares = fetch_fmp_institutional(ticker)
+            if inst_shares and stock_data.shares_outstanding:
+                stock_data.institutional_holders_pct = (inst_shares / stock_data.shares_outstanding) * 100
+                # Cap at 100% in case of data issues
+                stock_data.institutional_holders_pct = min(stock_data.institutional_holders_pct, 100)
+
+            # 5. Get analyst data from FMP
+            price_target = fetch_fmp_price_target(ticker)
+            if price_target:
+                stock_data.analyst_target_price = price_target.get("target_consensus", 0) or price_target.get("target_median", 0)
+                stock_data.analyst_target_high = price_target.get("target_high", 0)
+                stock_data.analyst_target_low = price_target.get("target_low", 0)
+
+            analyst = fetch_fmp_analyst(ticker)
+            if analyst:
+                stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
+                stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)
+
+        # 3. Fallback to yfinance ONLY if FMP didn't provide critical data
+        # Skip yfinance if we already have earnings from FMP (to avoid rate limits)
+        if not stock_data.quarterly_earnings and not FMP_API_KEY:
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
 
-                # Only update if we got valid data
                 if info and info.get('regularMarketPrice'):
-                    # Basic info (update if not set from chart API)
-                    if not stock_data.name or stock_data.name == ticker:
-                        stock_data.name = info.get('longName', info.get('shortName', ticker))
-                    stock_data.sector = info.get('sector', 'Unknown')
-                    if not stock_data.current_price:
-                        stock_data.current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                    stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
-                    if not stock_data.high_52w:
-                        stock_data.high_52w = info.get('fiftyTwoWeekHigh', 0)
+                    if not stock_data.sector:
+                        stock_data.sector = info.get('sector', 'Unknown')
+                    if not stock_data.shares_outstanding:
+                        stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
+                    if not stock_data.institutional_holders_pct:
+                        inst_pct = info.get('heldPercentInstitutions', 0)
+                        stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
 
-                    # Institutional ownership
-                    inst_pct = info.get('heldPercentInstitutions', 0)
-                    stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
+                    # Quarterly earnings from yfinance
+                    if not stock_data.quarterly_earnings:
+                        try:
+                            quarterly = stock.quarterly_financials
+                            if quarterly is not None and not quarterly.empty:
+                                if 'Net Income' in quarterly.index:
+                                    net_income = quarterly.loc['Net Income'].dropna()
+                                    shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
+                                    stock_data.quarterly_earnings = (net_income / shares).tolist()[:8]
+                        except Exception:
+                            pass
 
-                    # Volume data (if not set from chart)
-                    if not stock_data.avg_volume_50d:
-                        stock_data.avg_volume_50d = info.get('averageVolume', 0)
-                    if not stock_data.current_volume:
-                        stock_data.current_volume = info.get('volume', info.get('regularMarketVolume', 0))
-
-                    # Analyst data
-                    stock_data.analyst_target_price = info.get('targetMeanPrice', 0) or 0
-                    stock_data.analyst_target_low = info.get('targetLowPrice', 0) or 0
-                    stock_data.analyst_target_high = info.get('targetHighPrice', 0) or 0
-                    stock_data.num_analyst_opinions = info.get('numberOfAnalystOpinions', 0) or 0
-
-                    # Map recommendation key to readable string
-                    rec_key = info.get('recommendationKey', '')
-                    rec_map = {'strong_buy': 'strong buy', 'buy': 'buy', 'hold': 'hold',
-                               'sell': 'sell', 'strong_sell': 'strong sell'}
-                    stock_data.analyst_recommendation = rec_map.get(rec_key, rec_key)
-
-                    # Valuation metrics
-                    stock_data.forward_pe = info.get('forwardPE', 0) or 0
-                    stock_data.trailing_pe = info.get('trailingPE', 0) or 0
-                    stock_data.peg_ratio = info.get('pegRatio', 0) or 0
-                    stock_data.earnings_growth_estimate = info.get('earningsGrowth', 0) or 0
-
-                # Price history from yfinance if chart API didn't work
-                if stock_data.price_history.empty:
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=365)
-                    history = stock.history(start=start_date, end=end_date)
-
-                    if len(history) >= 50:
-                        stock_data.price_history = history
-
-                # Quarterly earnings (EPS)
-                try:
-                    quarterly = stock.quarterly_financials
-                    if quarterly is not None and not quarterly.empty:
-                        # Try to get Net Income and divide by shares
-                        if 'Net Income' in quarterly.index:
-                            net_income = quarterly.loc['Net Income'].dropna()
-                            shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
-                            stock_data.quarterly_earnings = (net_income / shares).tolist()[:8]  # Last 8 quarters
-                except Exception:
-                    pass
-
-                # If quarterly earnings failed, try earnings history
-                if not stock_data.quarterly_earnings:
-                    try:
-                        earnings = stock.earnings_history
-                        if earnings is not None and not earnings.empty and 'epsActual' in earnings.columns:
-                            stock_data.quarterly_earnings = earnings['epsActual'].dropna().tolist()[-8:]
-                    except Exception:
-                        pass
-
-                # Annual earnings
-                try:
-                    annual = stock.financials
-                    if annual is not None and not annual.empty:
-                        if 'Net Income' in annual.index:
-                            net_income = annual.loc['Net Income'].dropna()
-                            shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
-                            stock_data.annual_earnings = (net_income / shares).tolist()[:5]  # Last 5 years
-                except Exception:
-                    pass
-
-                break  # Success with yfinance data
+                    # Annual earnings from yfinance
+                    if not stock_data.annual_earnings:
+                        try:
+                            annual = stock.financials
+                            if annual is not None and not annual.empty:
+                                if 'Net Income' in annual.index:
+                                    net_income = annual.loc['Net Income'].dropna()
+                                    shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
+                                    stock_data.annual_earnings = (net_income / shares).tolist()[:5]
+                        except Exception:
+                            pass
 
             except Exception as e:
                 stock_data.error_message = str(e)
-                if attempt < retries - 1:
-                    time.sleep(1)  # Wait before retry
 
         # Mark as valid if we have basic price data (from chart API or yfinance)
         if stock_data.current_price and not stock_data.price_history.empty and len(stock_data.price_history) >= 50:
@@ -225,6 +390,19 @@ class DataFetcher:
         if self._sp500_history is not None:
             return self._sp500_history
 
+        # Try Yahoo chart API first (more reliable from servers)
+        chart_data = fetch_price_from_chart_api("SPY")
+        if chart_data.get("close_prices"):
+            close_prices = chart_data.get("close_prices", [])
+            timestamps = chart_data.get("timestamps", [])
+            if len(close_prices) >= 50:
+                dates = pd.to_datetime(timestamps, unit='s')
+                self._sp500_history = pd.DataFrame({
+                    'Close': close_prices,
+                }, index=dates)
+                return self._sp500_history
+
+        # Fallback to yfinance
         try:
             spy = yf.Ticker("SPY")
             end_date = datetime.now()

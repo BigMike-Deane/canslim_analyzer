@@ -11,6 +11,7 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - DEBUG=false
+      - FMP_API_KEY=q2iNuagXaKuuZKuWYrGo9nEEPygMFmX1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
