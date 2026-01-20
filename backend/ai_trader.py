@@ -179,12 +179,25 @@ def evaluate_buys(db: Session) -> list:
     positions = db.query(AIPortfolioPosition).all()
     current_tickers = {p.ticker for p in positions}
 
+    # Define duplicate ticker groups (same company, different share classes)
+    DUPLICATE_TICKERS = [
+        {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
+        # Add more pairs here if needed (e.g., BRK.A/BRK.B)
+    ]
+
+    # Build set of tickers to exclude (already own or own a duplicate)
+    excluded_tickers = set(current_tickers)
+    for ticker in current_tickers:
+        for group in DUPLICATE_TICKERS:
+            if ticker in group:
+                excluded_tickers.update(group)  # Exclude all in the group
+
     # Get stocks that meet minimum score threshold
     candidates = db.query(Stock).filter(
         Stock.canslim_score >= config.min_score_to_buy,
         Stock.current_price > 0,
         Stock.projected_growth != None,  # Must have growth projection
-        ~Stock.ticker.in_(current_tickers) if current_tickers else True
+        ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
     ).all()
 
     buys = []
@@ -249,7 +262,30 @@ def evaluate_buys(db: Session) -> list:
 
     # Sort by composite score (highest first)
     buys.sort(key=lambda x: x["priority"])
-    return buys
+
+    # Remove duplicates from buy candidates (keep only highest scoring from each group)
+    final_buys = []
+    seen_groups = set()
+    for buy in buys:
+        ticker = buy["stock"].ticker
+
+        # Check if this ticker belongs to a duplicate group
+        in_group = None
+        for group in DUPLICATE_TICKERS:
+            if ticker in group:
+                in_group = frozenset(group)
+                break
+
+        if in_group:
+            if in_group in seen_groups:
+                # Already have a higher-scored ticker from this group, skip
+                logger.info(f"Skipping {ticker} - already have another share class from same company")
+                continue
+            seen_groups.add(in_group)
+
+        final_buys.append(buy)
+
+    return final_buys
 
 
 def run_ai_trading_cycle(db: Session) -> dict:
