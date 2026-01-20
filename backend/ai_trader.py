@@ -58,19 +58,62 @@ def get_portfolio_value(db: Session) -> dict:
     }
 
 
-def update_position_prices(db: Session):
-    """Update all position prices from latest stock data"""
+def fetch_live_price(ticker: str) -> float | None:
+    """Fetch current/live price from Yahoo Finance chart API"""
+    import requests
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {"interval": "1d", "range": "1d"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("chart", {}).get("result", [])
+            if result:
+                meta = result[0].get("meta", {})
+                # regularMarketPrice is the current/live price during market hours
+                price = meta.get("regularMarketPrice") or meta.get("previousClose")
+                return float(price) if price else None
+    except Exception as e:
+        logger.warning(f"Error fetching live price for {ticker}: {e}")
+
+    return None
+
+
+def update_position_prices(db: Session, use_live_prices: bool = True):
+    """Update all position prices - fetches live prices by default"""
+    import time
+
     positions = db.query(AIPortfolioPosition).all()
     updated = 0
 
     for position in positions:
-        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
-        if stock and stock.current_price:
-            position.current_price = stock.current_price
-            position.current_value = position.shares * stock.current_price
+        current_price = None
+
+        # Try to get live price first
+        if use_live_prices:
+            current_price = fetch_live_price(position.ticker)
+            time.sleep(0.2)  # Small delay to avoid rate limiting
+
+        # Fallback to Stock table if live fetch fails
+        if not current_price:
+            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            if stock and stock.current_price:
+                current_price = stock.current_price
+
+        if current_price:
+            position.current_price = current_price
+            position.current_value = position.shares * current_price
             position.gain_loss = position.current_value - (position.shares * position.cost_basis)
-            position.gain_loss_pct = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
-            position.current_score = stock.canslim_score
+            position.gain_loss_pct = ((current_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
+
+            # Update score from Stock table (this doesn't need to be live)
+            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            if stock:
+                position.current_score = stock.canslim_score
+
             updated += 1
 
     db.commit()
