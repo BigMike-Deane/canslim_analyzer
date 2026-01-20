@@ -97,6 +97,16 @@ class CANSLIMScorer:
         current_ttm = sum(data.quarterly_earnings[0:4])
         prior_ttm = sum(data.quarterly_earnings[4:8])
 
+        # CRITICAL: Penalize companies with negative TTM earnings
+        # CANSLIM requires positive earnings growth, not just "improving losses"
+        if current_ttm < 0:
+            if prior_ttm < 0 and current_ttm > prior_ttm:
+                # Losses shrinking but still negative - minimal score
+                return round(max_score * 0.15, 1), f"TTM loss (improving)"
+            else:
+                # Losses worsening or stable negative
+                return 0, f"TTM loss: ${current_ttm:.2f}"
+
         if prior_ttm == 0:
             if current_ttm > 0:
                 return max_score * 0.8, "Turnaround (TTM)"
@@ -152,8 +162,22 @@ class CANSLIMScorer:
         """
         Fallback scoring with anomaly filtering for stocks with limited data.
         Filters out extreme QoQ swings (>50%) that are likely one-time items.
+        IMPORTANT: Companies with negative earnings get penalized regardless of "growth" trend.
         """
         earnings = data.quarterly_earnings[:4]
+
+        # CRITICAL: Check if earnings are negative (company is losing money)
+        # CANSLIM requires positive earnings - penalize companies with losses
+        recent_earnings = earnings[:2] if len(earnings) >= 2 else earnings
+        if all(e < 0 for e in recent_earnings if e is not None):
+            # Company is losing money in recent quarters
+            # Check if losses are improving or worsening
+            if len(earnings) >= 2 and earnings[0] < earnings[1]:
+                # Losses are getting WORSE (more negative)
+                return 0, "Losses worsening"
+            else:
+                # Losses are shrinking but still negative - very low score
+                return round(max_score * 0.15, 1), "Negative EPS"
 
         # Calculate growth rates between consecutive quarters
         growth_rates = []
