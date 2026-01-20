@@ -25,12 +25,12 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
         config = AIPortfolioConfig(
             starting_cash=25000.0,
             current_cash=25000.0,
-            max_positions=15,
-            max_position_pct=10.0,
-            min_score_to_buy=75,
-            sell_score_threshold=50,
-            take_profit_pct=25.0,
-            stop_loss_pct=15.0,
+            max_positions=20,  # More positions for diversification
+            max_position_pct=12.0,  # Larger positions for conviction picks
+            min_score_to_buy=65,  # Lower threshold to catch more growth
+            sell_score_threshold=45,  # Hold slightly longer
+            take_profit_pct=40.0,  # Let winners run
+            stop_loss_pct=10.0,  # Cut losers faster
             is_active=True
         )
         db.add(config)
@@ -96,7 +96,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
 
 
 def evaluate_sells(db: Session) -> list:
-    """Evaluate positions for potential sells"""
+    """Evaluate positions for potential sells - aggressive growth strategy"""
     config = get_or_create_config(db)
     positions = db.query(AIPortfolioPosition).all()
     sells = []
@@ -107,72 +107,132 @@ def evaluate_sells(db: Session) -> list:
 
         gain_pct = position.gain_loss_pct or 0
         score = position.current_score or 0
+        purchase_score = position.purchase_score or score
 
-        # Stop loss - sell if down more than threshold
+        # Stop loss - sell if down more than threshold (tight stops)
         if gain_pct <= -config.stop_loss_pct:
             sells.append({
                 "position": position,
                 "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%",
-                "priority": 1  # High priority
+                "priority": 1  # High priority - cut losers fast
             })
+            continue
 
-        # Take profit - sell if up more than threshold
-        elif gain_pct >= config.take_profit_pct:
+        # Score crashed - sell if score dropped dramatically (>20 points)
+        score_drop = purchase_score - score
+        if score_drop > 20 and score < 50:
             sells.append({
                 "position": position,
-                "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%",
+                "reason": f"SCORE CRASH: {purchase_score:.0f} → {score:.0f}",
                 "priority": 2
             })
+            continue
 
-        # Score degradation - sell if score dropped significantly
-        elif score < config.sell_score_threshold:
+        # For winners, use trailing stop logic
+        if gain_pct >= 20:
+            # If up 20%+, only sell if score is weak AND gains are fading
+            if score < config.sell_score_threshold:
+                sells.append({
+                    "position": position,
+                    "reason": f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({score:.0f})",
+                    "priority": 3
+                })
+            # Take partial profits at 40%+ if score is declining
+            elif gain_pct >= config.take_profit_pct and score < purchase_score - 10:
+                sells.append({
+                    "position": position,
+                    "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining",
+                    "priority": 4
+                })
+
+        # For losing or flat positions with weak scores - cut and redeploy capital
+        elif gain_pct < 10 and score < config.sell_score_threshold:
             sells.append({
                 "position": position,
-                "reason": f"WEAK SCORE: Score dropped to {score:.1f}",
-                "priority": 3
+                "reason": f"WEAK POSITION: {gain_pct:+.1f}%, score {score:.0f}",
+                "priority": 5
             })
 
-    # Sort by priority (stop losses first)
+    # Sort by priority (stop losses first, then score crashes, etc.)
     sells.sort(key=lambda x: x["priority"])
     return sells
 
 
 def evaluate_buys(db: Session) -> list:
-    """Evaluate stocks for potential buys"""
+    """Evaluate stocks for potential buys - prioritize high growth momentum stocks"""
     config = get_or_create_config(db)
     positions = db.query(AIPortfolioPosition).all()
     current_tickers = {p.ticker for p in positions}
 
-    # Get top-scoring stocks we don't already own
+    # Get stocks that meet minimum score threshold
     candidates = db.query(Stock).filter(
         Stock.canslim_score >= config.min_score_to_buy,
         Stock.current_price > 0,
+        Stock.projected_growth != None,  # Must have growth projection
         ~Stock.ticker.in_(current_tickers) if current_tickers else True
-    ).order_by(desc(Stock.canslim_score)).limit(20).all()
+    ).all()
 
     buys = []
     for stock in candidates:
-        # Calculate position size (max % of portfolio)
+        # Calculate momentum score (how close to 52-week high)
+        momentum_score = 0
+        if stock.week_52_high and stock.current_price:
+            pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+            # Prefer stocks within 15% of 52-week high (showing strength)
+            if pct_from_high <= 5:
+                momentum_score = 30  # Near highs = strong momentum
+            elif pct_from_high <= 10:
+                momentum_score = 20
+            elif pct_from_high <= 15:
+                momentum_score = 10
+            elif pct_from_high > 30:
+                momentum_score = -10  # Too far from highs, may be in downtrend
+
+        # Calculate composite score: 40% growth, 40% CANSLIM, 20% momentum
+        growth_score = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
+        composite_score = (
+            (growth_score * 0.4) +
+            (stock.canslim_score * 0.4) +
+            (momentum_score * 0.2)
+        )
+
+        # Skip if composite score is too low
+        if composite_score < 30:
+            continue
+
+        # Calculate position size - larger for higher conviction
         portfolio_value = get_portfolio_value(db)["total_value"]
-        max_position_value = portfolio_value * (config.max_position_pct / 100)
+
+        # Scale position size by conviction (6-12% based on composite score)
+        conviction_multiplier = min(composite_score / 60, 1.0)  # 0.5 to 1.0
+        position_pct = 6.0 + (conviction_multiplier * 6.0)  # 6% to 12%
+        max_position_value = portfolio_value * (position_pct / 100)
 
         # Don't exceed available cash
-        position_value = min(max_position_value, config.current_cash * 0.95)  # Keep 5% buffer
+        position_value = min(max_position_value, config.current_cash * 0.90)
 
         if position_value < 100:  # Minimum $100 position
             continue
 
         shares = position_value / stock.current_price
 
+        reason_parts = []
+        if stock.projected_growth and stock.projected_growth > 15:
+            reason_parts.append(f"+{stock.projected_growth:.0f}% growth")
+        reason_parts.append(f"Score {stock.canslim_score:.0f}")
+        if momentum_score >= 20:
+            reason_parts.append("Strong momentum")
+
         buys.append({
             "stock": stock,
             "shares": shares,
             "value": position_value,
-            "reason": f"HIGH SCORE: {stock.canslim_score:.1f} CANSLIM score",
-            "priority": 100 - stock.canslim_score  # Higher scores = lower priority number
+            "reason": " | ".join(reason_parts),
+            "priority": -composite_score,  # Higher composite = lower priority number (buy first)
+            "composite_score": composite_score
         })
 
-    # Sort by score (highest first)
+    # Sort by composite score (highest first)
     buys.sort(key=lambda x: x["priority"])
     return buys
 
@@ -353,23 +413,23 @@ def take_portfolio_snapshot(db: Session):
 
 
 def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
-    """Initialize or reset the AI portfolio"""
+    """Initialize or reset the AI portfolio with aggressive growth settings"""
     # Clear existing data
     db.query(AIPortfolioPosition).delete()
     db.query(AIPortfolioTrade).delete()
     db.query(AIPortfolioSnapshot).delete()
     db.query(AIPortfolioConfig).delete()
 
-    # Create new config
+    # Create new config - aggressive growth strategy
     config = AIPortfolioConfig(
         starting_cash=starting_cash,
         current_cash=starting_cash,
-        max_positions=15,
-        max_position_pct=10.0,
-        min_score_to_buy=75,
-        sell_score_threshold=50,
-        take_profit_pct=25.0,
-        stop_loss_pct=15.0,
+        max_positions=20,  # More diversification
+        max_position_pct=12.0,  # Larger conviction positions
+        min_score_to_buy=65,  # Lower threshold for more opportunities
+        sell_score_threshold=45,  # Hold a bit longer
+        take_profit_pct=40.0,  # Let winners run
+        stop_loss_pct=10.0,  # Cut losers fast
         is_active=True
     )
     db.add(config)
@@ -379,7 +439,14 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
     result = run_ai_trading_cycle(db)
 
     return {
-        "message": "AI Portfolio initialized",
+        "message": "AI Portfolio initialized with aggressive growth strategy",
         "starting_cash": starting_cash,
+        "strategy": {
+            "min_score": 65,
+            "max_positions": 20,
+            "stop_loss": "10%",
+            "take_profit": "40%",
+            "focus": "High growth + momentum stocks"
+        },
         "initial_trades": result
     }
