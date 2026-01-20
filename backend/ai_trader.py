@@ -59,25 +59,44 @@ def get_portfolio_value(db: Session) -> dict:
 
 
 def fetch_live_price(ticker: str) -> float | None:
-    """Fetch current/live price from Yahoo Finance chart API"""
+    """Fetch current/live price - tries FMP first, then Yahoo as fallback"""
     import requests
+    import os
 
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-    params = {"interval": "1d", "range": "1d"}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    # Try FMP first (more reliable, you have API key)
+    fmp_api_key = os.environ.get('FMP_API_KEY', '')
+    if fmp_api_key:
+        try:
+            url = f"https://financialmodelingprep.com/stable/quote?symbol={ticker}&apikey={fmp_api_key}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and len(data) > 0:
+                    price = data[0].get("price")
+                    if price:
+                        logger.info(f"FMP live price for {ticker}: ${price}")
+                        return float(price)
+        except Exception as e:
+            logger.warning(f"FMP price error for {ticker}: {e}")
 
+    # Fallback to Yahoo chart API
     try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        params = {"interval": "1d", "range": "1d"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
         resp = requests.get(url, params=params, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             result = data.get("chart", {}).get("result", [])
             if result:
                 meta = result[0].get("meta", {})
-                # regularMarketPrice is the current/live price during market hours
                 price = meta.get("regularMarketPrice") or meta.get("previousClose")
-                return float(price) if price else None
+                if price:
+                    logger.info(f"Yahoo live price for {ticker}: ${price}")
+                    return float(price)
     except Exception as e:
-        logger.warning(f"Error fetching live price for {ticker}: {e}")
+        logger.warning(f"Yahoo price error for {ticker}: {e}")
 
     return None
 
