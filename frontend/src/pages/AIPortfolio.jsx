@@ -15,17 +15,18 @@ function PerformanceChart({ history, startingCash }) {
   const latestValue = history[history.length - 1]?.total_value || startingCash
   const isPositive = latestValue >= startingCash
 
-  // Format timestamp for tooltip
+  // Format timestamp for tooltip (CST timezone)
   const formatTimestamp = (ts) => {
     if (!ts) return ''
     try {
       const date = new Date(ts)
-      return date.toLocaleString(undefined, {
+      return date.toLocaleString('en-US', {
+        timeZone: 'America/Chicago',
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit'
-      })
+      }) + ' CST'
     } catch {
       return ts
     }
@@ -461,7 +462,7 @@ export default function AIPortfolio() {
           </div>
           {lastUpdated && (
             <div className="text-dark-500 text-xs">
-              Updated: {lastUpdated.toLocaleTimeString()}
+              Updated: {lastUpdated.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
             </div>
           )}
         </div>

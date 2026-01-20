@@ -353,6 +353,18 @@ async def get_dashboard(db: Session = Depends(get_db)):
             desc(MarketSnapshot.date)
         ).first()
 
+    # Get current market M score to adjust stock scores dynamically
+    current_m_score = latest_market.market_score if latest_market else 0
+
+    def adjust_score(stock):
+        """Adjust CANSLIM score using current market M score instead of stored M score"""
+        if stock.canslim_score is None:
+            return None
+        stored_m = stock.m_score or 0
+        # Replace stored M score with current market M score
+        adjusted = stock.canslim_score - stored_m + current_m_score
+        return round(adjusted, 1)
+
     # Define duplicate ticker groups (same company, different share classes)
     DUPLICATE_TICKERS = [
         {'GOOGL', 'GOOG'},  # Alphabet Class A vs Class C
@@ -410,22 +422,24 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "ticker": s.ticker,
             "name": s.name,
             "sector": s.sector,
-            "canslim_score": s.canslim_score,
+            "canslim_score": adjust_score(s),
             "score_change": s.score_change,
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
-            "growth_confidence": s.growth_confidence
+            "growth_confidence": s.growth_confidence,
+            "m_score": current_m_score  # Use current market M score
         } for s in top_stocks],
 
         "top_stocks_under_25": [{
             "ticker": s.ticker,
             "name": s.name,
             "sector": s.sector,
-            "canslim_score": s.canslim_score,
+            "canslim_score": adjust_score(s),
             "score_change": s.score_change,
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
-            "growth_confidence": s.growth_confidence
+            "growth_confidence": s.growth_confidence,
+            "m_score": current_m_score  # Use current market M score
         } for s in top_stocks_under_25],
 
         "market": {
@@ -516,6 +530,17 @@ async def get_stocks(
     offset: int = Query(0)
 ):
     """Get filtered and sorted stock list"""
+    # Get current market M score for dynamic adjustment
+    latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    current_m_score = latest_market.market_score if latest_market else 0
+
+    def adjust_score(stock):
+        """Adjust CANSLIM score using current market M score"""
+        if stock.canslim_score is None:
+            return None
+        stored_m = stock.m_score or 0
+        return round(stock.canslim_score - stored_m + current_m_score, 1)
+
     query = db.query(Stock).filter(Stock.canslim_score != None)
 
     # Apply filters
@@ -547,7 +572,7 @@ async def get_stocks(
             "name": s.name,
             "sector": s.sector,
             "industry": s.industry,
-            "canslim_score": s.canslim_score,
+            "canslim_score": adjust_score(s),
             "projected_growth": s.projected_growth,
             "growth_confidence": s.growth_confidence,
             "current_price": s.current_price,
@@ -560,12 +585,13 @@ async def get_stocks(
             "s_score": s.s_score,
             "l_score": s.l_score,
             "i_score": s.i_score,
-            "m_score": s.m_score,
+            "m_score": current_m_score,  # Use current market M score
             "last_updated": s.last_updated.isoformat() if s.last_updated else None
         } for s in stocks],
         "total": total,
         "limit": limit,
-        "offset": offset
+        "offset": offset,
+        "current_m_score": current_m_score
     }
 
 
