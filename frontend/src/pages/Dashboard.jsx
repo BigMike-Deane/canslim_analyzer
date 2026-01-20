@@ -122,8 +122,8 @@ function TopStocksList({ stocks, title }) {
                 <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>
               </div>
             </div>
-            <div className="text-right">
-              <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(stock.canslim_score)}`}>
+            <div className="text-right min-w-[80px]">
+              <div className={`inline-block px-2 py-1 rounded text-sm font-medium ${getScoreClass(stock.canslim_score)}`}>
                 {formatScore(stock.canslim_score)}
               </div>
               <div className="text-xs mt-1">
@@ -131,7 +131,7 @@ function TopStocksList({ stocks, title }) {
                   {stock.current_price != null ? `$${stock.current_price.toFixed(2)}` : '-'}
                 </div>
                 <div className={stock.projected_growth != null && stock.projected_growth >= 0 ? 'text-green-400' : stock.projected_growth != null ? 'text-red-400' : 'text-dark-500'}>
-                  {stock.projected_growth != null ? `${stock.projected_growth >= 0 ? '+' : ''}${stock.projected_growth.toFixed(0)}% proj` : 'No projection'}
+                  {stock.projected_growth != null ? `${stock.projected_growth >= 0 ? '+' : ''}${stock.projected_growth.toFixed(0)}% proj` : '-'}
                 </div>
               </div>
             </div>
