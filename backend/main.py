@@ -619,8 +619,8 @@ async def start_scan(
                 thread_db.close()
 
         try:
-            # Process stocks in parallel with 4 workers
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            # Process stocks in parallel with 6 workers
+            with ThreadPoolExecutor(max_workers=6) as executor:
                 futures = {executor.submit(process_single_stock, t): t for t in tickers}
 
                 for future in as_completed(futures):

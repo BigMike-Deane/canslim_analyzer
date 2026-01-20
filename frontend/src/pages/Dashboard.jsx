@@ -172,6 +172,57 @@ function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
   )
 }
 
+function ScanProgress({ scanJob }) {
+  const [elapsed, setElapsed] = useState(0)
+
+  useEffect(() => {
+    if (!scanJob?.started_at) return
+
+    const startTime = new Date(scanJob.started_at).getTime()
+    const updateElapsed = () => {
+      setElapsed(Math.floor((Date.now() - startTime) / 1000))
+    }
+
+    updateElapsed()
+    const interval = setInterval(updateElapsed, 1000)
+    return () => clearInterval(interval)
+  }, [scanJob?.started_at])
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const pct = scanJob.tickers_total > 0
+    ? (scanJob.tickers_processed / scanJob.tickers_total * 100)
+    : 0
+
+  const rate = elapsed > 0 ? (scanJob.tickers_processed / elapsed).toFixed(1) : 0
+  const remaining = rate > 0
+    ? Math.ceil((scanJob.tickers_total - scanJob.tickers_processed) / rate)
+    : 0
+
+  return (
+    <div className="card mb-4">
+      <div className="flex justify-between items-center mb-2">
+        <div className="text-sm text-dark-400">Scan Progress</div>
+        <div className="text-sm font-mono">{formatTime(elapsed)}</div>
+      </div>
+      <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-primary-500 transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="flex justify-between text-xs text-dark-400 mt-1">
+        <span>{scanJob.tickers_processed} / {scanJob.tickers_total} stocks</span>
+        <span>{rate}/s {remaining > 0 && `· ~${formatTime(remaining)} left`}</span>
+      </div>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState(null)
@@ -256,20 +307,7 @@ export default function Dashboard() {
       <TopStocksList stocks={data?.top_stocks} title="Top Rated Stocks" />
 
       {scanJob && scanJob.status === 'running' && (
-        <div className="card mb-4">
-          <div className="text-sm text-dark-400 mb-2">Scan Progress</div>
-          <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary-500 transition-all"
-              style={{
-                width: `${scanJob.tickers_total > 0 ? (scanJob.tickers_processed / scanJob.tickers_total * 100) : 0}%`
-              }}
-            />
-          </div>
-          <div className="text-xs text-dark-400 mt-1">
-            {scanJob.tickers_processed} / {scanJob.tickers_total} stocks
-          </div>
-        </div>
+        <ScanProgress scanJob={scanJob} />
       )}
 
       <ScanControls
