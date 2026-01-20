@@ -370,8 +370,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
         "buys_considered": 0
     }
 
-    # Update position prices first (use cached Stock table since we just scanned)
-    update_position_prices(db, use_live_prices=False)
+    # Update position prices with live data
+    update_position_prices(db, use_live_prices=True)
 
     # Get current position count
     positions = db.query(AIPortfolioPosition).all()
@@ -419,37 +419,51 @@ def run_ai_trading_cycle(db: Session) -> dict:
         buys = evaluate_buys(db)
         results["buys_considered"] = len(buys)
 
+        import time
+
         for buy in buys:
             if position_count >= config.max_positions:
                 break
 
-            if config.current_cash < buy["value"]:
-                continue
-
             stock = buy["stock"]
 
-            # Execute the buy
+            # Fetch live price for this buy
+            live_price = fetch_live_price(stock.ticker)
+            if not live_price:
+                live_price = stock.current_price  # Fallback to cached
+            time.sleep(0.5)  # Rate limit delay
+
+            # Recalculate position value and shares with live price
+            actual_value = min(buy["value"], config.current_cash * 0.95)
+            if actual_value < 100:
+                continue
+            actual_shares = actual_value / live_price
+
+            if config.current_cash < actual_value:
+                continue
+
+            # Execute the buy at live price
             execute_trade(
                 db=db,
                 ticker=stock.ticker,
                 action="BUY",
-                shares=buy["shares"],
-                price=stock.current_price,
+                shares=actual_shares,
+                price=live_price,
                 reason=buy["reason"],
                 score=stock.canslim_score
             )
 
             # Deduct cash
-            config.current_cash -= buy["value"]
+            config.current_cash -= actual_value
 
-            # Create position
+            # Create position at live price
             new_position = AIPortfolioPosition(
                 ticker=stock.ticker,
-                shares=buy["shares"],
-                cost_basis=stock.current_price,
+                shares=actual_shares,
+                cost_basis=live_price,
                 purchase_score=stock.canslim_score,
-                current_price=stock.current_price,
-                current_value=buy["value"],
+                current_price=live_price,
+                current_value=actual_value,
                 gain_loss=0,
                 gain_loss_pct=0,
                 current_score=stock.canslim_score
@@ -459,9 +473,9 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
             results["buys_executed"].append({
                 "ticker": stock.ticker,
-                "shares": buy["shares"],
-                "price": stock.current_price,
-                "value": buy["value"],
+                "shares": actual_shares,
+                "price": live_price,
+                "value": actual_value,
                 "score": stock.canslim_score,
                 "reason": buy["reason"]
             })
