@@ -562,11 +562,11 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
     db.add(config)
     db.commit()
 
-    # Run initial trading cycle to build positions
-    result = run_ai_trading_cycle(db)
+    # Take initial snapshot
+    take_portfolio_snapshot(db)
 
     return {
-        "message": "AI Portfolio initialized with aggressive growth strategy",
+        "message": "AI Portfolio reset. Click 'Run Trading Cycle' to build positions.",
         "starting_cash": starting_cash,
         "strategy": {
             "min_score": 65,
@@ -574,6 +574,5 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
             "stop_loss": "10%",
             "take_profit": "40%",
             "focus": "High growth + momentum stocks"
-        },
-        "initial_trades": result
+        }
     }
