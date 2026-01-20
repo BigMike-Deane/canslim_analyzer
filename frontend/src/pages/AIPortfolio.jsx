@@ -15,13 +15,12 @@ function PerformanceChart({ history, startingCash }) {
   const latestValue = history[history.length - 1]?.total_value || startingCash
   const isPositive = latestValue >= startingCash
 
-  // Format timestamp for tooltip (CST timezone)
+  // Format timestamp for tooltip (already stored in CST)
   const formatTimestamp = (ts) => {
     if (!ts) return ''
     try {
       const date = new Date(ts)
       return date.toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
         month: 'short',
         day: 'numeric',
         hour: '2-digit',

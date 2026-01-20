@@ -257,7 +257,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
   const formatLastScan = (isoString) => {
     if (!isoString) return 'Never'
     const date = new Date(isoString)
-    return date.toLocaleTimeString()
+    return date.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' }) + ' CST'
   }
 
   return (
@@ -285,7 +285,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
               {scannerStatus?.is_scanning ? 'Scanning...' : 'Active'}
               {scannerStatus?.next_run && !scannerStatus?.is_scanning && (
                 <span className="text-dark-400 ml-2">
-                  Next: {new Date(scannerStatus.next_run).toLocaleTimeString()}
+                  Next: {new Date(scannerStatus.next_run).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })}
                 </span>
               )}
             </span>

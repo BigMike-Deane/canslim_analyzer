@@ -313,7 +313,7 @@ export default function StockDetail() {
       </button>
 
       <div className="text-dark-500 text-xs text-center mt-3">
-        Last updated: {stock.last_updated ? new Date(stock.last_updated).toLocaleString() : 'Never'}
+        Last updated: {stock.last_updated ? new Date(stock.last_updated).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' CST' : 'Never'}
       </div>
 
       <div className="h-4" />

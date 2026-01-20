@@ -5,10 +5,16 @@ Automatically manages a simulated portfolio based on CANSLIM scores.
 Makes buy/sell decisions after each scan cycle.
 """
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import logging
+
+
+def get_cst_now():
+    """Get current time in CST (UTC-6)"""
+    cst = timezone(timedelta(hours=-6))
+    return datetime.now(cst).replace(tzinfo=None)  # Store without tz for SQLite compatibility
 
 from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
@@ -168,7 +174,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         canslim_score=score,
         cost_basis=cost_basis,
         realized_gain=realized_gain,
-        executed_at=datetime.utcnow()
+        executed_at=get_cst_now()  # Use CST timezone
     )
     db.add(trade)
     logger.info(f"AI Trade: {action} {shares:.2f} shares of {ticker} @ ${price:.2f} - {reason}")
@@ -559,7 +565,7 @@ def take_portfolio_snapshot(db: Session):
 
     # Create new snapshot (one per scan)
     snapshot = AIPortfolioSnapshot(
-        timestamp=dt.utcnow(),
+        timestamp=get_cst_now(),  # Use CST timezone
         date=date.today(),
         total_value=portfolio["total_value"],
         cash=portfolio["cash"],

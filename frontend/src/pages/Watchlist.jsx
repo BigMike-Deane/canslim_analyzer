@@ -84,7 +84,7 @@ function WatchlistItem({ item, onRemove }) {
 
       <div className="flex justify-between items-center mt-2">
         <div className="text-dark-500 text-xs">
-          Added {new Date(item.added_at).toLocaleDateString()}
+          Added {new Date(item.added_at).toLocaleDateString('en-US', { timeZone: 'America/Chicago' })}
         </div>
         <button
           onClick={() => onRemove(item.id)}
