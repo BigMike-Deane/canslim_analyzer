@@ -118,6 +118,9 @@ function TopStocksList({ stocks, title }) {
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{stock.ticker}</span>
                   <ScoreTrend change={stock.score_change} />
+                  {stock.data_quality === 'low' && (
+                    <span className="text-yellow-500 text-xs" title="Limited analyst data">⚠</span>
+                  )}
                 </div>
                 <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>
               </div>

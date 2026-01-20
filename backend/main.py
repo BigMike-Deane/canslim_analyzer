@@ -403,19 +403,46 @@ async def get_dashboard(db: Session = Depends(get_db)):
                 break
         return filtered
 
-    # Get top stocks by CANSLIM score (fetch extra to account for duplicates)
-    top_stocks_raw = db.query(Stock).filter(
-        Stock.canslim_score != None
-    ).order_by(desc(Stock.canslim_score)).limit(15).all()
+    # Get top stocks - prioritize those with positive growth projections
+    # First: stocks with high scores AND positive projected growth (quality data)
+    top_quality_raw = db.query(Stock).filter(
+        Stock.canslim_score != None,
+        Stock.canslim_score >= 65,
+        Stock.projected_growth != None,
+        Stock.projected_growth > 0
+    ).order_by(desc(Stock.canslim_score)).limit(12).all()
+
+    # Fallback: remaining high-score stocks (may have missing data)
+    top_quality_tickers = {s.ticker for s in top_quality_raw}
+    top_fallback_raw = db.query(Stock).filter(
+        Stock.canslim_score != None,
+        Stock.canslim_score >= 65,
+        ~Stock.ticker.in_(top_quality_tickers) if top_quality_tickers else True
+    ).order_by(desc(Stock.canslim_score)).limit(8).all()
+
+    top_stocks_raw = top_quality_raw + top_fallback_raw
     top_stocks = filter_duplicates(top_stocks_raw, 10)
 
-    # Get top stocks under $25 by CANSLIM score
-    top_stocks_under_25_raw = db.query(Stock).filter(
+    # Get top stocks under $25 - same prioritization
+    top_u25_quality_raw = db.query(Stock).filter(
         Stock.canslim_score != None,
         Stock.current_price != None,
         Stock.current_price > 0,
-        Stock.current_price <= 25
-    ).order_by(desc(Stock.canslim_score)).limit(15).all()
+        Stock.current_price <= 25,
+        Stock.projected_growth != None,
+        Stock.projected_growth > 0
+    ).order_by(desc(Stock.canslim_score)).limit(12).all()
+
+    top_u25_quality_tickers = {s.ticker for s in top_u25_quality_raw}
+    top_u25_fallback_raw = db.query(Stock).filter(
+        Stock.canslim_score != None,
+        Stock.current_price != None,
+        Stock.current_price > 0,
+        Stock.current_price <= 25,
+        ~Stock.ticker.in_(top_u25_quality_tickers) if top_u25_quality_tickers else True
+    ).order_by(desc(Stock.canslim_score)).limit(8).all()
+
+    top_stocks_under_25_raw = top_u25_quality_raw + top_u25_fallback_raw
     top_stocks_under_25 = filter_duplicates(top_stocks_under_25_raw, 10)
 
     # Get portfolio summary
@@ -428,6 +455,15 @@ async def get_dashboard(db: Session = Depends(get_db)):
     hold_count = len([p for p in positions if p.recommendation == "hold"])
     sell_count = len([p for p in positions if p.recommendation == "sell"])
 
+    def get_data_quality(stock):
+        """Assess data quality based on available projection data"""
+        if stock.growth_confidence == 'high' and stock.projected_growth and stock.projected_growth > 0:
+            return 'high'
+        elif stock.growth_confidence in ('medium', 'high') and stock.projected_growth is not None:
+            return 'medium'
+        else:
+            return 'low'
+
     return {
         "top_stocks": [{
             "ticker": s.ticker,
@@ -438,6 +474,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
+            "data_quality": get_data_quality(s),
             "m_score": current_m_score  # Use current market M score
         } for s in top_stocks],
 
@@ -450,6 +487,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "projected_growth": s.projected_growth,
             "current_price": s.current_price,
             "growth_confidence": s.growth_confidence,
+            "data_quality": get_data_quality(s),
             "m_score": current_m_score  # Use current market M score
         } for s in top_stocks_under_25],
 

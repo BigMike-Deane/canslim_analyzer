@@ -461,6 +461,44 @@ class DataFetcher:
                 stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
                 stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)
 
+            # 6. Yahoo Finance fallback for analyst/valuation data (rate-limited)
+            # Only call if multiple critical fields are missing to minimize API calls
+            missing_fields = sum([
+                not stock_data.analyst_target_price,
+                not stock_data.trailing_pe,
+                not stock_data.num_analyst_opinions
+            ])
+            if missing_fields >= 2:  # Only fetch if 2+ fields missing
+                try:
+                    import time
+                    time.sleep(0.3)  # Rate limit protection
+                    yf_stock = yf.Ticker(ticker)
+                    yf_info = yf_stock.info
+                    if yf_info:
+                        # Analyst target price fallback
+                        if not stock_data.analyst_target_price:
+                            stock_data.analyst_target_price = yf_info.get('targetMeanPrice', 0) or 0
+                            stock_data.analyst_target_high = yf_info.get('targetHighPrice', 0) or 0
+                            stock_data.analyst_target_low = yf_info.get('targetLowPrice', 0) or 0
+                        # Number of analysts fallback
+                        if not stock_data.num_analyst_opinions:
+                            stock_data.num_analyst_opinions = yf_info.get('numberOfAnalystOpinions', 0) or 0
+                        # Analyst recommendation fallback
+                        if not stock_data.analyst_recommendation:
+                            stock_data.analyst_recommendation = yf_info.get('recommendationKey', '') or ''
+                        # P/E ratio fallback
+                        if not stock_data.trailing_pe:
+                            stock_data.trailing_pe = yf_info.get('trailingPE', 0) or 0
+                        # PEG ratio fallback
+                        if not stock_data.peg_ratio:
+                            stock_data.peg_ratio = yf_info.get('pegRatio', 0) or 0
+                        # Earnings growth estimate fallback
+                        if not stock_data.earnings_growth_estimate:
+                            growth = yf_info.get('earningsQuarterlyGrowth', 0) or yf_info.get('earningsGrowth', 0)
+                            stock_data.earnings_growth_estimate = growth or 0
+                except Exception:
+                    pass  # Silent fallback failure - FMP data is primary
+
         # 3. Fallback to yfinance ONLY if FMP didn't provide critical data
         # Skip yfinance if we already have earnings from FMP (to avoid rate limits)
         if not stock_data.quarterly_earnings and not FMP_API_KEY:
