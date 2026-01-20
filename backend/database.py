@@ -28,8 +28,43 @@ def get_db():
 
 
 def init_db():
-    """Initialize database tables"""
+    """Initialize database tables and run migrations"""
     Base.metadata.create_all(bind=engine)
+    run_migrations()
+
+
+def run_migrations():
+    """Add any missing columns to existing tables"""
+    import sqlite3
+    from pathlib import Path
+
+    db_path = DATA_DIR / "canslim.db"
+    if not db_path.exists():
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # Define migrations: (table, column, type)
+    migrations = [
+        ("stocks", "previous_score", "FLOAT"),
+        ("stocks", "score_change", "FLOAT"),
+        ("ai_portfolio_snapshots", "timestamp", "DATETIME"),
+        ("ai_portfolio_snapshots", "prev_value", "FLOAT"),
+        ("ai_portfolio_snapshots", "value_change", "FLOAT"),
+        ("ai_portfolio_snapshots", "value_change_pct", "FLOAT"),
+    ]
+
+    for table, column, col_type in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            print(f"Migration: Added {table}.{column}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                pass  # Column already exists, ignore
+
+    conn.commit()
+    conn.close()
 
 
 # ============== Models ==============
