@@ -25,6 +25,7 @@ _scan_config = {
     "last_scan_start": None,
     "last_scan_end": None,
     "stocks_scanned": 0,
+    "total_stocks": 0,
     "is_scanning": False
 }
 
@@ -52,6 +53,8 @@ def run_continuous_scan():
 
     _scan_config["is_scanning"] = True
     _scan_config["last_scan_start"] = datetime.now().isoformat()
+    _scan_config["stocks_scanned"] = 0
+    _scan_config["total_stocks"] = 0
 
     logger.info(f"Starting continuous scan ({_scan_config['source']})...")
 
@@ -68,6 +71,7 @@ def run_continuous_scan():
     else:
         tickers = get_sp500_tickers()
 
+    _scan_config["total_stocks"] = len(tickers)
     logger.info(f"Scanning {len(tickers)} stocks...")
 
     # Import here to avoid circular imports

@@ -318,7 +318,24 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
               )}
             </span>
           </div>
-          {scannerStatus?.last_scan_end && (
+
+          {/* Progress bar when scanning */}
+          {scannerStatus?.is_scanning && scannerStatus?.total_stocks > 0 && (
+            <div className="mt-2">
+              <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 transition-all"
+                  style={{ width: `${(scannerStatus.stocks_scanned / scannerStatus.total_stocks * 100)}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-dark-400 mt-1">
+                <span>{scannerStatus.stocks_scanned} / {scannerStatus.total_stocks} stocks</span>
+                <span>{Math.round(scannerStatus.stocks_scanned / scannerStatus.total_stocks * 100)}%</span>
+              </div>
+            </div>
+          )}
+
+          {scannerStatus?.last_scan_end && !scannerStatus?.is_scanning && (
             <div className="text-xs text-dark-400 mt-1">
               Last scan: {formatLastScan(scannerStatus.last_scan_end)} ({scannerStatus.stocks_scanned} stocks)
             </div>
@@ -437,9 +454,11 @@ export default function Dashboard() {
     }
   }
 
-  // Poll scanner status when enabled
+  // Poll scanner status when enabled (faster when scanning)
   useEffect(() => {
     if (!scannerStatus?.enabled) return
+
+    const pollInterval = scannerStatus?.is_scanning ? 3000 : 10000 // 3s when scanning, 10s otherwise
 
     const interval = setInterval(async () => {
       try {
@@ -448,10 +467,10 @@ export default function Dashboard() {
       } catch (err) {
         console.error('Failed to get scanner status:', err)
       }
-    }, 10000) // Poll every 10 seconds
+    }, pollInterval)
 
     return () => clearInterval(interval)
-  }, [scannerStatus?.enabled])
+  }, [scannerStatus?.enabled, scannerStatus?.is_scanning])
 
   useEffect(() => {
     fetchData()
