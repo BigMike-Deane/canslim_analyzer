@@ -395,7 +395,13 @@ def fetch_fmp_price_target(ticker: str) -> dict:
 
 
 def fetch_fmp_earnings_surprise(ticker: str) -> dict:
-    """Fetch earnings surprise history from FMP"""
+    """
+    Fetch earnings surprise history from FMP.
+    IMPORTANT: This endpoint returns ADJUSTED EPS (actualEarningResult), which is what
+    analysts track and what CANSLIM methodology uses. The income-statement endpoint
+    returns GAAP EPS which includes stock-based compensation and is often negative
+    for growth companies.
+    """
     if not FMP_API_KEY:
         return {}
 
@@ -424,9 +430,18 @@ def fetch_fmp_earnings_surprise(ticker: str) -> dict:
                     else:
                         break
 
+                # Extract quarterly ADJUSTED EPS (actualEarningResult) for CANSLIM scoring
+                # This is the EPS that analysts track, not GAAP EPS
+                quarterly_adjusted_eps = []
+                for record in data[:8]:
+                    actual = record.get("actualEarningResult")
+                    if actual is not None:
+                        quarterly_adjusted_eps.append(float(actual))
+
                 return {
                     "latest_surprise_pct": latest_surprise,
                     "beat_streak": beat_streak,
+                    "quarterly_adjusted_eps": quarterly_adjusted_eps,  # Adjusted EPS for CANSLIM
                 }
     except Exception as e:
         logger.debug(f"FMP earnings surprise error for {ticker}: {e}")
@@ -738,10 +753,26 @@ class DataFetcher:
 
             # 5b. Get earnings surprise data (for enhanced C score)
             # TIERED: Cache for 24 hours
+            # IMPORTANT: This also provides ADJUSTED EPS which is more accurate for CANSLIM
+            # than GAAP EPS from income-statement (which includes stock-based comp)
             earnings_surprise = fetch_with_cache(ticker, "earnings_surprise", fetch_fmp_earnings_surprise, ticker)
             if earnings_surprise:
                 stock_data.earnings_surprise_pct = earnings_surprise.get("latest_surprise_pct", 0)
                 stock_data.eps_beat_streak = earnings_surprise.get("beat_streak", 0)
+
+                # Use ADJUSTED EPS if available (preferred for CANSLIM scoring)
+                # This is the EPS analysts track, not GAAP EPS which is often distorted by SBC
+                adjusted_eps = earnings_surprise.get("quarterly_adjusted_eps", [])
+                if adjusted_eps and len(adjusted_eps) >= 4:
+                    logger.debug(f"{ticker}: Using ADJUSTED EPS from earnings-surprise: {adjusted_eps[:4]}")
+                    stock_data.quarterly_earnings = adjusted_eps
+                elif adjusted_eps:
+                    # Partial data - merge with GAAP EPS
+                    logger.debug(f"{ticker}: Partial adjusted EPS ({len(adjusted_eps)} quarters), supplementing with GAAP")
+                    # Prefer adjusted for available quarters, fill rest with GAAP
+                    gaap_eps = stock_data.quarterly_earnings
+                    merged = adjusted_eps + gaap_eps[len(adjusted_eps):] if len(gaap_eps) > len(adjusted_eps) else adjusted_eps
+                    stock_data.quarterly_earnings = merged[:8]
 
             # 5c. Get revenue data (for growth mode scoring)
             # TIERED: Cache for 24 hours
