@@ -99,19 +99,28 @@ def set_cached_data(ticker: str, data_type: str, data):
         _cached_data[key] = data
 
 
+_cache_hit_count = 0
+_cache_miss_count = 0
+
 def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
     """
     Wrapper that checks cache freshness before fetching.
     Returns cached data if fresh, otherwise fetches new data.
     """
+    global _cache_hit_count, _cache_miss_count
+
     # Check if we have fresh cached data
     if is_data_fresh(ticker, data_type):
         cached = get_cached_data(ticker, data_type)
         if cached is not None:
-            logger.debug(f"Using cached {data_type} for {ticker}")
+            _cache_hit_count += 1
+            # Log every 100 hits to avoid spam
+            if _cache_hit_count % 100 == 0:
+                logger.info(f"Cache stats: {_cache_hit_count} hits, {_cache_miss_count} misses")
             return cached
 
     # Fetch fresh data
+    _cache_miss_count += 1
     data = fetch_func(*args, **kwargs)
 
     # Cache the result
@@ -120,6 +129,11 @@ def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
         mark_data_fetched(ticker, data_type)
 
     return data
+
+
+def get_cache_hit_stats() -> dict:
+    """Get cache hit/miss statistics"""
+    return {"hits": _cache_hit_count, "misses": _cache_miss_count}
 
 
 def get_cache_stats() -> dict:

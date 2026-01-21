@@ -336,13 +336,16 @@ def run_continuous_scan():
 
         # Log rate limit stats and cache stats
         try:
-            from data_fetcher import get_rate_limit_stats, reset_rate_limit_stats, get_cache_stats
+            from data_fetcher import get_rate_limit_stats, reset_rate_limit_stats, get_cache_stats, get_cache_hit_stats
             stats = get_rate_limit_stats()
             error_rate = (stats['errors_429'] / stats['total_requests'] * 100) if stats['total_requests'] > 0 else 0
             logger.info(f"Rate limit stats: {stats['errors_429']} 429 errors / {stats['total_requests']} requests ({error_rate:.1f}%)")
 
             cache_stats = get_cache_stats()
-            logger.info(f"Cache stats: {cache_stats['tickers_tracked']} tickers, {cache_stats['cached_data_entries']} data entries cached")
+            hit_stats = get_cache_hit_stats()
+            hit_rate = (hit_stats['hits'] / (hit_stats['hits'] + hit_stats['misses']) * 100) if (hit_stats['hits'] + hit_stats['misses']) > 0 else 0
+            logger.info(f"Cache stats: {hit_stats['hits']} hits, {hit_stats['misses']} misses ({hit_rate:.1f}% hit rate)")
+            logger.info(f"Cache size: {cache_stats['tickers_tracked']} tickers, {cache_stats['cached_data_entries']} data entries")
 
             reset_rate_limit_stats()  # Reset for next scan
         except Exception as e:
