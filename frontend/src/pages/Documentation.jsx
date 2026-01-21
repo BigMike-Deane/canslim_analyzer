@@ -221,12 +221,13 @@ export default function Documentation() {
       title: 'Market Direction',
       maxPoints: 15,
       color: 'bg-cyan-500/20 text-cyan-400',
-      description: "The market determines 75% of a stock's move. Uses S&P 500 position vs 50-day and 200-day moving averages to gauge market health.",
+      description: "The market determines 75% of a stock's move. Uses a weighted analysis of 3 major indexes (SPY 50%, QQQ 30%, DIA 20%) to gauge overall market health.",
       factors: [
-        { condition: 'SPY above both 50 & 200 MA (bullish)', points: '15 pts' },
-        { condition: 'SPY above 200 MA, below 50 MA', points: '10.5 pts' },
-        { condition: 'SPY below 200 MA, above 50 MA (recovery)', points: '7.5 pts' },
-        { condition: 'SPY below both MAs (bearish)', points: '3 pts' },
+        { condition: 'Weighted signal ≥ 1.5 (strong bullish)', points: '15 pts' },
+        { condition: 'Weighted signal ≥ 0.5 (bullish)', points: '12 pts' },
+        { condition: 'Weighted signal ≥ 0 (neutral-bullish)', points: '9 pts' },
+        { condition: 'Weighted signal ≥ -0.5 (neutral-bearish)', points: '5 pts' },
+        { condition: 'Weighted signal < -0.5 (bearish)', points: '2 pts' },
       ]
     },
   ]
@@ -250,26 +251,71 @@ export default function Documentation() {
       <div className="card mb-4 bg-cyan-500/10 border border-cyan-500/30">
         <h2 className="font-semibold text-cyan-400 mb-2">Market Direction (Dashboard)</h2>
         <p className="text-dark-300 text-sm mb-3">
-          The Market Direction box on the Dashboard shows the overall market health using the S&P 500 (SPY) as a benchmark.
+          The Market Direction panel shows overall market health using a weighted analysis of three major indexes.
           O'Neil emphasized that 75% of stocks follow the general market direction, making this crucial for timing.
         </p>
-        <div className="space-y-2 text-sm">
-          <div className="flex items-start gap-2">
-            <span className="text-green-400 font-bold">BULLISH</span>
-            <span className="text-dark-400">SPY is above both 50-day and 200-day moving averages - strong uptrend</span>
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Three-Index Weighted Analysis</h3>
+        <div className="grid grid-cols-3 gap-2 mb-4 text-sm">
+          <div className="bg-dark-800 rounded p-2 text-center">
+            <div className="font-bold text-blue-400">SPY</div>
+            <div className="text-dark-400 text-xs">S&P 500</div>
+            <div className="text-dark-300 font-medium">50%</div>
           </div>
-          <div className="flex items-start gap-2">
-            <span className="text-yellow-400 font-bold">NEUTRAL</span>
-            <span className="text-dark-400">SPY is between the moving averages - mixed signals, proceed with caution</span>
+          <div className="bg-dark-800 rounded p-2 text-center">
+            <div className="font-bold text-purple-400">QQQ</div>
+            <div className="text-dark-400 text-xs">NASDAQ 100</div>
+            <div className="text-dark-300 font-medium">30%</div>
           </div>
-          <div className="flex items-start gap-2">
-            <span className="text-red-400 font-bold">BEARISH</span>
-            <span className="text-dark-400">SPY is below both moving averages - downtrend, consider staying in cash</span>
+          <div className="bg-dark-800 rounded p-2 text-center">
+            <div className="font-bold text-green-400">DIA</div>
+            <div className="text-dark-400 text-xs">Dow Jones</div>
+            <div className="text-dark-300 font-medium">20%</div>
           </div>
         </div>
-        <p className="text-dark-400 text-sm mt-3">
-          The M Score (15 pts max) reflects this analysis and is applied to every stock's CANSLIM score.
-          Even great stocks struggle in bear markets.
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Index Signal Calculation</h3>
+        <p className="text-dark-400 text-sm mb-2">Each index receives a signal based on its position relative to moving averages:</p>
+        <div className="space-y-1 text-sm mb-4">
+          <div className="flex items-center gap-2">
+            <span className="text-green-400 font-bold w-8">▲▲</span>
+            <span className="text-dark-300">+2</span>
+            <span className="text-dark-400">Above both 50 & 200 MA (strong bullish)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-green-400 font-bold w-8">▲</span>
+            <span className="text-dark-300">+1</span>
+            <span className="text-dark-400">Above 200 MA, below 50 MA (bullish)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-yellow-400 font-bold w-8">►</span>
+            <span className="text-dark-300">0</span>
+            <span className="text-dark-400">Below 200 MA, above 50 MA (recovery)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-red-400 font-bold w-8">▼</span>
+            <span className="text-dark-300">-1</span>
+            <span className="text-dark-400">Below both MAs (bearish)</span>
+          </div>
+        </div>
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Weighted Signal Formula</h3>
+        <div className="bg-dark-800 rounded p-3 text-sm font-mono text-dark-300 mb-3">
+          Weighted Signal = (SPY × 0.50) + (QQQ × 0.30) + (DIA × 0.20)
+        </div>
+        <p className="text-dark-400 text-sm">
+          The weighted signal ranges from -1 (all bearish) to +2 (all strong bullish).
+          This combined score is then converted to the M Score (0-15 points).
+        </p>
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Why Three Indexes?</h3>
+        <ul className="text-dark-400 text-sm space-y-1 list-disc list-inside">
+          <li><span className="text-blue-400">SPY</span> - Broad market exposure (500 largest companies)</li>
+          <li><span className="text-purple-400">QQQ</span> - Tech/growth indicator (NASDAQ 100)</li>
+          <li><span className="text-green-400">DIA</span> - Blue chip stability (Dow Jones 30)</li>
+        </ul>
+        <p className="text-dark-400 text-sm mt-2">
+          This approach provides a more comprehensive view than SPY alone, capturing both growth momentum (QQQ) and value stability (DIA).
         </p>
       </div>
 
