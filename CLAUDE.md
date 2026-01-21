@@ -51,8 +51,9 @@ Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLI
 
 ### API Rate Limiting
 - FMP limit: 300 calls/minute
-- Current config: 4 workers with 2.5-4.0s delay (~60-90 stocks/min)
-- Avoids 429 errors while maintaining reasonable scan speed
+- Current config: 8 workers with 0.3-0.6s delay (~65-88 stocks/min)
+- Full 2080 stock scan completes in ~25-35 minutes
+- Yahoo Finance handles most data (no strict rate limit)
 
 ### Stock Universe Coverage (~2000+ tickers)
 Fetched dynamically from Wikipedia (with fallbacks):
@@ -65,6 +66,45 @@ Fetched dynamically from Wikipedia (with fallbacks):
 Portfolio tickers are automatically fetched from the database and scanned first, regardless of which universe is selected. This ensures your holdings always have fresh data.
 
 ## Recent Improvements (Jan 2025)
+
+### Scanner Speed + DB-Backed Caching + ZETA Fix (Jan 21)
+
+**Scanner Speed Improvements (8.5x faster)**:
+- Increased workers from 4 to 8
+- Reduced delay from 2.5-4.0s to 0.3-0.6s per stock
+- Now scans ~65-88 stocks/min (was ~12/min)
+- Full 2080 stock scan: ~25-35 min (was ~3 hours)
+
+**DB-Backed Caching (`StockDataCache` table)**:
+- Raw API data now persists across container restarts
+- On startup, loads cached data from DB into memory
+- Background threads save to DB without blocking scans
+- Data types cached: earnings, revenue, balance_sheet, analyst, institutional, key_metrics
+- Each has separate `*_updated_at` timestamp for freshness checks
+
+**ZETA C Score Fix (GAAP vs Adjusted EPS)**:
+- **Problem**: FMP income-statement returns GAAP EPS (includes stock-based compensation = negative for growth companies)
+- **Solution**: Always use Yahoo `earnings_history.epsActual` which returns adjusted EPS (what analysts track)
+- **Code change**: `data_fetcher.py` line ~1211: `if True:  # Always run to get adjusted EPS`
+- **Requirement**: yfinance >= 0.2.40 (has `earnings_history` attribute)
+- **Critical**: `backend/requirements.txt` must have `yfinance>=0.2.40` not `0.2.33`
+
+**Multi-Index Market Direction (SPY + QQQ + DIA)**:
+- Weighted market signal: SPY (50%), QQQ (30%), DIA (20%)
+- Signal values: +2 (strong bullish), +1 (bullish), 0 (neutral), -1 (bearish)
+- M score now uses combined weighted signal instead of just SPY
+- Dashboard shows all 3 indexes with individual status
+- New endpoint: `/api/market-direction` and `/api/market-direction/refresh`
+
+**Database Changes**:
+- Added `StockDataCache` table for persistent raw data caching
+- Added multi-index fields to `MarketSnapshot`: `spy_signal`, `qqq_*`, `dia_*`, `weighted_signal`
+
+**Files Modified**:
+- `backend/database.py` - Added StockDataCache model, MarketSnapshot multi-index fields
+- `backend/scheduler.py` - 8 workers, 0.3-0.6s delay
+- `data_fetcher.py` - DB-backed caching functions, Yahoo adjusted EPS fix
+- `backend/requirements.txt` - yfinance>=0.2.40
 
 ### Growth Mode Scoring + Dual Portfolio Management (Jan 20)
 
