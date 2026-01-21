@@ -304,11 +304,11 @@ def run_continuous_scan():
     counters = {"processed": 0, "successful": 0}
 
     def process_single_stock(ticker):
-        """Process a single stock with minimal delay"""
-        # Minimal delay - Yahoo handles rate limiting gracefully
-        # FMP calls are mostly cached after first scan of the day
-        # 0.3-0.6s with 10 workers = ~100-200 stocks/min capacity
-        time.sleep(random.uniform(0.3, 0.6))
+        """Process a single stock with rate-limit-safe delay"""
+        # Increased delay to reduce FMP 429 errors
+        # 0.5-1.0s with 6 workers = ~50-70 stocks/min
+        # DB cache reduces FMP calls on subsequent scans
+        time.sleep(random.uniform(0.5, 1.0))
 
         try:
             thread_db = SessionLocal()
@@ -332,10 +332,10 @@ def run_continuous_scan():
             return ticker, False
 
     try:
-        # Use 8 workers to stay under FMP's 300 calls/min limit
-        # 8 workers × ~80 stocks/min × 3 FMP calls = 240 calls/min (safe)
-        # After first scan, FMP data is cached so subsequent scans are faster
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        # Use 6 workers to reduce FMP rate limiting
+        # 6 workers × 0.75s avg delay = ~50-70 stocks/min
+        # DB cache at 100%+ means most FMP calls are skipped anyway
+        with ThreadPoolExecutor(max_workers=6) as executor:
             futures = {executor.submit(process_single_stock, t): t for t in tickers}
 
             for future in as_completed(futures):
