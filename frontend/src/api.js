@@ -119,9 +119,9 @@ export const api = {
   },
 
   // Market Data
-  getMarket: () => request('/api/market'),
+  getMarket: () => request('/api/market-direction'),
 
-  refreshMarket: () => request('/api/market/refresh', { method: 'POST' }),
+  refreshMarket: () => request('/api/market-direction/refresh', { method: 'POST' }),
 
   // AI Portfolio
   getAIPortfolio: () => request('/api/ai-portfolio'),

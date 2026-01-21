@@ -696,9 +696,32 @@ async def get_dashboard(db: Session = Depends(get_db)):
         "market": {
             "trend": latest_market.market_trend if latest_market else "unknown",
             "score": latest_market.market_score if latest_market else 0,
+            "weighted_signal": latest_market.weighted_signal if latest_market else 0,
+            # Legacy SPY fields
             "spy_price": latest_market.spy_price if latest_market else 0,
             "spy_50_ma": latest_market.spy_50_ma if latest_market else 0,
             "spy_200_ma": latest_market.spy_200_ma if latest_market else 0,
+            # Multi-index data
+            "indexes": {
+                "SPY": {
+                    "price": latest_market.spy_price if latest_market else 0,
+                    "ma_50": latest_market.spy_50_ma if latest_market else 0,
+                    "ma_200": latest_market.spy_200_ma if latest_market else 0,
+                    "signal": latest_market.spy_signal if latest_market else 0,
+                },
+                "QQQ": {
+                    "price": latest_market.qqq_price if latest_market else 0,
+                    "ma_50": latest_market.qqq_50_ma if latest_market else 0,
+                    "ma_200": latest_market.qqq_200_ma if latest_market else 0,
+                    "signal": latest_market.qqq_signal if latest_market else 0,
+                },
+                "DIA": {
+                    "price": latest_market.dia_price if latest_market else 0,
+                    "ma_50": latest_market.dia_50_ma if latest_market else 0,
+                    "ma_200": latest_market.dia_200_ma if latest_market else 0,
+                    "signal": latest_market.dia_signal if latest_market else 0,
+                },
+            },
             "date": latest_market.date.isoformat() if latest_market else None
         },
 
@@ -930,6 +953,10 @@ async def get_breaking_out_stocks(
     1. Stocks flagged as is_breaking_out (price near pivot with volume)
     2. Fallback: Stocks within 5% of 52-week high with decent volume/score
     """
+    # Get current market M score for consistent scoring
+    latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    current_m_score = latest_market.market_score if latest_market else 0
+
     # First: Get stocks with is_breaking_out flag
     breakout_stocks = db.query(Stock).filter(
         Stock.is_breaking_out == True,
@@ -982,7 +1009,7 @@ async def get_breaking_out_stocks(
             "ticker": s.ticker,
             "name": s.name,
             "sector": s.sector,
-            "canslim_score": s.canslim_score,
+            "canslim_score": adjust_score_for_market(s, current_m_score),  # Use market-adjusted score
             "growth_mode_score": s.growth_mode_score,
             "current_price": s.current_price,
             "week_52_high": s.week_52_high,

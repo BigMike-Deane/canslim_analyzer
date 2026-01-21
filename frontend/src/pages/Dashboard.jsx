@@ -2,6 +2,45 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatScore, getScoreClass, formatCurrency, formatPercent, formatMarketCap } from '../api'
 
+function IndexCard({ ticker, label, weight, price, ma50, ma200, signal }) {
+  // Signal: -1 bearish, 0 neutral, 1 bullish, 2 strong bullish
+  const signalConfig = {
+    2: { icon: '▲▲', color: 'text-green-400', label: 'Strong' },
+    1: { icon: '▲', color: 'text-green-400', label: 'Bullish' },
+    0: { icon: '►', color: 'text-yellow-400', label: 'Neutral' },
+    '-1': { icon: '▼', color: 'text-red-400', label: 'Bearish' },
+  }
+
+  const config = signalConfig[signal] || signalConfig[0]
+  const above50 = price > ma50
+  const above200 = price > ma200
+
+  return (
+    <div className="bg-dark-800 rounded-lg p-3">
+      <div className="flex justify-between items-center mb-2">
+        <div>
+          <span className="font-semibold text-sm">{ticker}</span>
+          <span className="text-dark-500 text-xs ml-1">({weight}%)</span>
+        </div>
+        <span className={`text-xs font-medium ${config.color}`}>
+          {config.icon}
+        </span>
+      </div>
+      <div className="text-lg font-bold mb-2">
+        {price ? formatCurrency(price) : '-'}
+      </div>
+      <div className="flex gap-2 text-xs">
+        <span className={`px-1.5 py-0.5 rounded ${above50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+          50MA {above50 ? '▲' : '▼'}
+        </span>
+        <span className={`px-1.5 py-0.5 rounded ${above200 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+          200MA {above200 ? '▲' : '▼'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function MarketStatus({ market, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false)
 
@@ -28,6 +67,18 @@ function MarketStatus({ market, onRefresh }) {
     }
   }
 
+  // Extract index data (new multi-index format)
+  const indexes = market.indexes || {}
+  const spy = indexes.SPY || {}
+  const qqq = indexes.QQQ || {}
+  const dia = indexes.DIA || {}
+
+  // Fallback to old format if new format not available
+  const spyPrice = spy.price || market.spy_price
+  const spyMa50 = spy.ma_50 || market.spy_50_ma
+  const spyMa200 = spy.ma_200 || market.spy_200_ma
+  const spySignal = spy.signal ?? (spyPrice > spyMa200 ? (spyPrice > spyMa50 ? 2 : 1) : (spyPrice > spyMa50 ? 0 : -1))
+
   return (
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-3">
@@ -37,43 +88,63 @@ function MarketStatus({ market, onRefresh }) {
             onClick={handleRefresh}
             disabled={refreshing}
             className="text-dark-400 hover:text-white transition-colors p-1"
-            title="Refresh SPY data"
+            title="Refresh market data"
           >
             <span className={refreshing ? 'animate-spin inline-block' : ''}>⟳</span>
           </button>
         </div>
-        <div className={`text-sm font-medium ${trendColors[market.trend] || 'text-dark-400'}`}>
-          {trendIcons[market.trend]} {market.trend?.toUpperCase()}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-4 text-center">
-        <div>
-          <div className="text-dark-400 text-xs mb-1">SPY</div>
-          <div className="font-semibold">{formatCurrency(market.spy_price)}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs mb-1">50 MA</div>
-          <div className={`font-semibold ${market.spy_price > market.spy_50_ma ? 'text-green-400' : 'text-red-400'}`}>
-            {formatCurrency(market.spy_50_ma)}
-          </div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs mb-1">200 MA</div>
-          <div className={`font-semibold ${market.spy_price > market.spy_200_ma ? 'text-green-400' : 'text-red-400'}`}>
-            {formatCurrency(market.spy_200_ma)}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 pt-3 border-t border-dark-700">
-        <div className="flex items-center justify-between">
-          <span className="text-dark-400 text-sm">M Score</span>
+        <div className="flex items-center gap-3">
           <span className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass((market.score / 15) * 100)}`}>
-            {market.score != null ? `${market.score.toFixed(1)}/15` : '-'}
+            M: {market.score != null ? `${market.score.toFixed(1)}/15` : '-'}
+          </span>
+          <div className={`text-sm font-medium ${trendColors[market.trend] || 'text-dark-400'}`}>
+            {trendIcons[market.trend]} {market.trend?.toUpperCase()}
+          </div>
+        </div>
+      </div>
+
+      {/* Three Index Cards */}
+      <div className="grid grid-cols-3 gap-3">
+        <IndexCard
+          ticker="SPY"
+          label="S&P 500"
+          weight={50}
+          price={spyPrice}
+          ma50={spyMa50}
+          ma200={spyMa200}
+          signal={spySignal}
+        />
+        <IndexCard
+          ticker="QQQ"
+          label="NASDAQ"
+          weight={30}
+          price={qqq.price}
+          ma50={qqq.ma_50}
+          ma200={qqq.ma_200}
+          signal={qqq.signal}
+        />
+        <IndexCard
+          ticker="DIA"
+          label="Dow Jones"
+          weight={20}
+          price={dia.price}
+          ma50={dia.ma_50}
+          ma200={dia.ma_200}
+          signal={dia.signal}
+        />
+      </div>
+
+      {/* Weighted Signal */}
+      {market.weighted_signal != null && (
+        <div className="mt-3 pt-3 border-t border-dark-700 text-center">
+          <span className="text-dark-400 text-xs">
+            Weighted Signal: <span className={`font-medium ${market.weighted_signal >= 1 ? 'text-green-400' : market.weighted_signal <= -0.5 ? 'text-red-400' : 'text-yellow-400'}`}>
+              {market.weighted_signal.toFixed(2)}
+            </span>
+            <span className="text-dark-500 ml-2">(SPY×50% + QQQ×30% + DIA×20%)</span>
           </span>
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -716,14 +787,18 @@ export default function Dashboard() {
     try {
       const result = await api.refreshMarket()
       if (result && !result.error) {
-        // Update market data in state
+        // Update market data in state with new multi-index format
         setData(prev => ({
           ...prev,
           market: {
             ...prev?.market,
-            spy_price: result.spy_price,
-            spy_50_ma: result.spy_50_ma,
-            spy_200_ma: result.spy_200_ma,
+            // Legacy fields (for backward compat)
+            spy_price: result.indexes?.SPY?.price || result.spy_price,
+            spy_50_ma: result.indexes?.SPY?.ma_50 || result.spy_50_ma,
+            spy_200_ma: result.indexes?.SPY?.ma_200 || result.spy_200_ma,
+            // New multi-index fields
+            indexes: result.indexes,
+            weighted_signal: result.weighted_signal,
             trend: result.market_trend,
             score: result.market_score
           }
