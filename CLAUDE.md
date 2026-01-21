@@ -79,8 +79,14 @@ Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLI
 ### Score Trend Analysis
 - 7-day trend analysis: improving/stable/deteriorating signals
 - `get_score_trend()` and `get_score_trends_batch()` functions in main.py
-- Frontend shows "↗ Up" (green) or "↘ Down" (red) badges on dashboard
+- Frontend shows "↗ Up" (green) or "↘ Down" (red) badges on dashboard and portfolio
 - Threshold: ±3 points over 7 days triggers trend status
+
+### Portfolio Trending Indicators
+- **↑↓ Score change**: Points changed since last scan (shown in green/red)
+- **↗↘ 7-day trend**: Weekly improving/deteriorating indicator with tooltip
+- **⚠ Low data warning**: Yellow flag for stocks with limited analyst data (growth_confidence != high/medium)
+- Legend in Portfolio header explains all indicators
 
 ### Backtesting Data Preparation
 - Changed StockScore from 1 record/day to 1 record/scan (6x more data)

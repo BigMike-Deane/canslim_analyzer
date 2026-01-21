@@ -1094,15 +1094,39 @@ async def update_scanner_config(
 
 @app.get("/api/portfolio")
 async def get_portfolio(db: Session = Depends(get_db)):
-    """Get all portfolio positions"""
+    """Get all portfolio positions with trend data"""
     positions = db.query(PortfolioPosition).all()
 
     total_value = sum(p.current_value or 0 for p in positions)
     total_cost = sum((p.cost_basis or 0) * (p.shares or 0) for p in positions)
     total_gain = total_value - total_cost
 
-    return {
-        "positions": [{
+    # Get stock IDs for positions to fetch trend data
+    tickers = [p.ticker for p in positions]
+    stocks_by_ticker = {}
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in stocks}
+        stock_ids = [s.id for s in stocks]
+        score_trends = get_score_trends_batch(db, stock_ids, days=7) if stock_ids else {}
+    else:
+        score_trends = {}
+
+    def get_data_quality(stock):
+        """Determine data quality based on growth confidence"""
+        if not stock:
+            return "low"
+        if stock.growth_confidence == 'high' and stock.projected_growth and stock.projected_growth > 0:
+            return "high"
+        elif stock.growth_confidence in ('medium', 'high') and stock.projected_growth is not None:
+            return "medium"
+        return "low"
+
+    position_data = []
+    for p in positions:
+        stock = stocks_by_ticker.get(p.ticker)
+        trend_info = score_trends.get(stock.id, {}) if stock else {}
+        position_data.append({
             "id": p.id,
             "ticker": p.ticker,
             "shares": p.shares,
@@ -1114,8 +1138,14 @@ async def get_portfolio(db: Session = Depends(get_db)):
             "recommendation": p.recommendation,
             "canslim_score": p.canslim_score,
             "score_change": p.score_change,
+            "score_trend": trend_info.get("trend"),  # improving/stable/deteriorating
+            "trend_change": trend_info.get("change"),  # 7-day change
+            "data_quality": get_data_quality(stock),
             "notes": p.notes
-        } for p in positions],
+        })
+
+    return {
+        "positions": position_data,
         "summary": {
             "total_value": total_value,
             "total_cost": total_cost,
