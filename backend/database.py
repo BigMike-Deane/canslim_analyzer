@@ -80,6 +80,18 @@ def run_migrations():
         ("ai_portfolio_positions", "current_growth_score", "FLOAT"),
         ("ai_portfolio_trades", "growth_mode_score", "FLOAT"),
         ("ai_portfolio_trades", "is_growth_stock", "BOOLEAN DEFAULT 0"),
+        # Multi-index market direction
+        ("market_snapshots", "timestamp", "DATETIME"),
+        ("market_snapshots", "spy_signal", "INTEGER"),
+        ("market_snapshots", "qqq_price", "FLOAT"),
+        ("market_snapshots", "qqq_50_ma", "FLOAT"),
+        ("market_snapshots", "qqq_200_ma", "FLOAT"),
+        ("market_snapshots", "qqq_signal", "INTEGER"),
+        ("market_snapshots", "dia_price", "FLOAT"),
+        ("market_snapshots", "dia_50_ma", "FLOAT"),
+        ("market_snapshots", "dia_200_ma", "FLOAT"),
+        ("market_snapshots", "dia_signal", "INTEGER"),
+        ("market_snapshots", "weighted_signal", "FLOAT"),
     ]
 
     for table, column, col_type in migrations:
@@ -319,20 +331,35 @@ class AnalysisJob(Base):
 
 
 class MarketSnapshot(Base):
-    """Daily market direction snapshot"""
+    """Daily market direction snapshot with multi-index support"""
     __tablename__ = "market_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
     date = Column(Date, unique=True, index=True, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
-    # S&P 500 data
+    # S&P 500 data (SPY) - 50% weight
     spy_price = Column(Float)
     spy_50_ma = Column(Float)
     spy_200_ma = Column(Float)
+    spy_signal = Column(Integer)  # -1 bearish, 0 neutral, 1 bullish, 2 strong bullish
 
-    # Market score (M in CANSLIM)
-    market_score = Column(Float)
+    # NASDAQ 100 data (QQQ) - 30% weight
+    qqq_price = Column(Float)
+    qqq_50_ma = Column(Float)
+    qqq_200_ma = Column(Float)
+    qqq_signal = Column(Integer)
+
+    # Dow Jones data (DIA) - 20% weight
+    dia_price = Column(Float)
+    dia_50_ma = Column(Float)
+    dia_200_ma = Column(Float)
+    dia_signal = Column(Integer)
+
+    # Combined market score (M in CANSLIM)
+    market_score = Column(Float)  # 0-15 CANSLIM score
     market_trend = Column(String)  # bullish, neutral, bearish
+    weighted_signal = Column(Float)  # Combined weighted signal
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

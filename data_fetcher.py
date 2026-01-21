@@ -563,6 +563,188 @@ def fetch_price_from_chart_api(ticker: str) -> dict:
     return {}
 
 
+# ============== Multi-Index Market Direction ==============
+
+# Index weights for market direction
+MARKET_INDEX_WEIGHTS = {
+    "SPY": 0.50,  # S&P 500 - broad market
+    "QQQ": 0.30,  # NASDAQ 100 - tech/growth
+    "DIA": 0.20,  # Dow Jones - blue chips
+}
+
+
+def calculate_index_signal(price: float, ma_50: float, ma_200: float) -> int:
+    """
+    Calculate signal for a single index based on MA positions.
+    Returns: -1 (bearish), 0 (neutral), 1 (bullish), 2 (strong bullish)
+    """
+    if price <= 0 or ma_200 <= 0:
+        return 0  # No data, neutral
+
+    above_200 = price > ma_200
+    above_50 = price > ma_50 if ma_50 > 0 else True
+
+    if above_200 and above_50:
+        return 2  # Strong bullish - above both MAs
+    elif above_200 and not above_50:
+        return 1  # Bullish - above 200 but below 50 (minor pullback)
+    elif not above_200 and above_50:
+        return 0  # Neutral - below 200 but above 50 (recovery attempt)
+    else:
+        return -1  # Bearish - below both MAs
+
+
+def fetch_market_direction_data() -> dict:
+    """
+    Fetch market direction data for SPY, QQQ, and DIA.
+    Returns comprehensive market analysis with weighted signal.
+
+    This is designed to be called ONCE at startup or on manual refresh,
+    then cached for several hours to avoid rate limiting during stock scans.
+    """
+    result = {
+        "success": False,
+        "indexes": {},
+        "weighted_signal": 0,
+        "market_score": 7.5,  # Default neutral M score (half of 15)
+        "market_trend": "neutral",
+        "error": None,
+    }
+
+    indexes_data = {}
+    total_weight = 0
+    weighted_sum = 0
+
+    for ticker, weight in MARKET_INDEX_WEIGHTS.items():
+        index_data = {
+            "ticker": ticker,
+            "price": 0,
+            "ma_50": 0,
+            "ma_200": 0,
+            "signal": 0,
+            "status": "unknown",
+        }
+
+        try:
+            # Try Yahoo Chart API first (more reliable)
+            chart_data = fetch_price_from_chart_api(ticker)
+
+            if chart_data.get("close_prices") and len(chart_data["close_prices"]) >= 50:
+                close_prices = [p for p in chart_data["close_prices"] if p is not None]
+
+                if len(close_prices) >= 200:
+                    index_data["price"] = close_prices[-1]
+                    index_data["ma_50"] = sum(close_prices[-50:]) / 50
+                    index_data["ma_200"] = sum(close_prices[-200:]) / 200
+                    index_data["signal"] = calculate_index_signal(
+                        index_data["price"],
+                        index_data["ma_50"],
+                        index_data["ma_200"]
+                    )
+                    index_data["status"] = "ok"
+
+                    # Add to weighted calculation
+                    weighted_sum += index_data["signal"] * weight
+                    total_weight += weight
+
+                    logger.info(f"Market {ticker}: ${index_data['price']:.2f}, "
+                               f"50MA: ${index_data['ma_50']:.2f}, "
+                               f"200MA: ${index_data['ma_200']:.2f}, "
+                               f"signal: {index_data['signal']}")
+                elif len(close_prices) >= 50:
+                    # Partial data - use what we have
+                    index_data["price"] = close_prices[-1]
+                    index_data["ma_50"] = sum(close_prices[-50:]) / 50
+                    # Estimate 200 MA from available data
+                    index_data["ma_200"] = sum(close_prices) / len(close_prices)
+                    index_data["signal"] = calculate_index_signal(
+                        index_data["price"],
+                        index_data["ma_50"],
+                        index_data["ma_200"]
+                    )
+                    index_data["status"] = "partial"
+                    weighted_sum += index_data["signal"] * weight
+                    total_weight += weight
+                    logger.warning(f"Market {ticker}: Using partial data ({len(close_prices)} days)")
+                else:
+                    index_data["status"] = "insufficient_data"
+                    logger.warning(f"Market {ticker}: Insufficient price history")
+            else:
+                index_data["status"] = "fetch_failed"
+                logger.warning(f"Market {ticker}: Failed to fetch chart data")
+
+        except Exception as e:
+            index_data["status"] = "error"
+            index_data["error"] = str(e)
+            logger.error(f"Market {ticker} error: {e}")
+
+        indexes_data[ticker] = index_data
+
+    result["indexes"] = indexes_data
+
+    # Calculate weighted signal and market score
+    if total_weight > 0:
+        result["weighted_signal"] = weighted_sum / total_weight
+        result["success"] = True
+
+        # Convert weighted signal (-1 to +2) to M score (0 to 15)
+        # -1 -> 0, 0 -> 7.5, 1 -> 11.25, 2 -> 15
+        weighted_signal = result["weighted_signal"]
+        if weighted_signal >= 1.5:
+            result["market_score"] = 15.0
+            result["market_trend"] = "bullish"
+        elif weighted_signal >= 0.5:
+            result["market_score"] = 12.0
+            result["market_trend"] = "bullish"
+        elif weighted_signal >= 0:
+            result["market_score"] = 9.0
+            result["market_trend"] = "neutral"
+        elif weighted_signal >= -0.5:
+            result["market_score"] = 5.0
+            result["market_trend"] = "neutral"
+        else:
+            result["market_score"] = 2.0
+            result["market_trend"] = "bearish"
+
+        logger.info(f"Market Direction: weighted_signal={weighted_signal:.2f}, "
+                   f"score={result['market_score']}, trend={result['market_trend']}")
+    else:
+        result["error"] = "Could not fetch any index data"
+        logger.error("Market Direction: No index data available, using defaults")
+
+    return result
+
+
+# Cached market direction (refreshed at startup and periodically)
+_cached_market_direction = None
+_market_direction_timestamp = None
+MARKET_CACHE_DURATION = 4 * 3600  # 4 hours
+
+
+def get_cached_market_direction(force_refresh: bool = False) -> dict:
+    """
+    Get cached market direction data, refreshing if stale or forced.
+    """
+    global _cached_market_direction, _market_direction_timestamp
+
+    now = datetime.now()
+
+    # Check if cache is valid
+    if not force_refresh and _cached_market_direction is not None:
+        if _market_direction_timestamp is not None:
+            age = (now - _market_direction_timestamp).total_seconds()
+            if age < MARKET_CACHE_DURATION:
+                logger.debug(f"Using cached market direction (age: {age/60:.0f} min)")
+                return _cached_market_direction
+
+    # Fetch fresh data
+    logger.info("Fetching fresh market direction data...")
+    _cached_market_direction = fetch_market_direction_data()
+    _market_direction_timestamp = now
+
+    return _cached_market_direction
+
+
 class StockData:
     """Container for all stock data needed for CANSLIM analysis"""
 

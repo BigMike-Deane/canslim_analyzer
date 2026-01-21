@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 # Import existing CANSLIM modules
 from canslim_scorer import CANSLIMScorer
-from data_fetcher import DataFetcher
+from data_fetcher import DataFetcher, get_cached_market_direction, fetch_market_direction_data
 from growth_projector import GrowthProjector
 from sp500_tickers import get_sp500_tickers, get_russell2000_tickers, get_all_tickers
 
@@ -290,56 +290,18 @@ def get_score_trends_batch(db: Session, stock_ids: List[int], days: int = 7) -> 
     return results
 
 
-def update_market_snapshot(db: Session):
-    """Update market direction data (SPY price, MAs, trend)"""
-    import requests
-
+def update_market_snapshot(db: Session, force_refresh: bool = False):
+    """
+    Update market direction data using multi-index approach (SPY, QQQ, DIA).
+    Uses the cached market direction from data_fetcher.
+    """
     try:
-        # Fetch SPY data from Yahoo chart API
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/SPY"
-        params = {"interval": "1d", "range": "1y"}
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        # Get multi-index market direction (uses internal cache)
+        market_data = get_cached_market_direction(force_refresh=force_refresh)
 
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            logger.error(f"Failed to fetch SPY data: {resp.status_code}")
+        if not market_data.get("success"):
+            logger.error(f"Failed to fetch market direction: {market_data.get('error')}")
             return
-
-        data = resp.json()
-        result = data.get("chart", {}).get("result", [])
-        if not result:
-            logger.error("No SPY chart data returned")
-            return
-
-        meta = result[0].get("meta", {})
-        close_prices = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-
-        # Filter out None values
-        close_prices = [p for p in close_prices if p is not None]
-
-        if len(close_prices) < 50:
-            logger.error("Insufficient SPY price history")
-            return
-
-        current_price = meta.get("regularMarketPrice") or close_prices[-1]
-
-        # Calculate moving averages
-        ma_50 = sum(close_prices[-50:]) / 50
-        ma_200 = sum(close_prices[-200:]) / 200 if len(close_prices) >= 200 else sum(close_prices) / len(close_prices)
-
-        # Determine trend
-        if current_price > ma_50 and current_price > ma_200:
-            trend = "bullish"
-            score = 15.0
-        elif current_price > ma_200:
-            trend = "neutral"
-            score = 10.5
-        elif current_price > ma_50:
-            trend = "neutral"
-            score = 7.5
-        else:
-            trend = "bearish"
-            score = 3.0
 
         # Save to database
         today = date.today()
@@ -349,17 +311,92 @@ def update_market_snapshot(db: Session):
             snapshot = MarketSnapshot(date=today)
             db.add(snapshot)
 
-        snapshot.spy_price = current_price
-        snapshot.spy_50_ma = ma_50
-        snapshot.spy_200_ma = ma_200
-        snapshot.market_score = score
-        snapshot.market_trend = trend
+        # Update timestamp
+        snapshot.timestamp = datetime.utcnow()
+
+        # Extract index data
+        indexes = market_data.get("indexes", {})
+
+        # SPY data
+        spy = indexes.get("SPY", {})
+        snapshot.spy_price = spy.get("price", 0)
+        snapshot.spy_50_ma = spy.get("ma_50", 0)
+        snapshot.spy_200_ma = spy.get("ma_200", 0)
+        snapshot.spy_signal = spy.get("signal", 0)
+
+        # QQQ data
+        qqq = indexes.get("QQQ", {})
+        snapshot.qqq_price = qqq.get("price", 0)
+        snapshot.qqq_50_ma = qqq.get("ma_50", 0)
+        snapshot.qqq_200_ma = qqq.get("ma_200", 0)
+        snapshot.qqq_signal = qqq.get("signal", 0)
+
+        # DIA data
+        dia = indexes.get("DIA", {})
+        snapshot.dia_price = dia.get("price", 0)
+        snapshot.dia_50_ma = dia.get("ma_50", 0)
+        snapshot.dia_200_ma = dia.get("ma_200", 0)
+        snapshot.dia_signal = dia.get("signal", 0)
+
+        # Combined metrics
+        snapshot.weighted_signal = market_data.get("weighted_signal", 0)
+        snapshot.market_score = market_data.get("market_score", 7.5)
+        snapshot.market_trend = market_data.get("market_trend", "neutral")
 
         db.commit()
-        logger.info(f"Market snapshot updated: SPY=${current_price:.2f}, trend={trend}, score={score}")
+        logger.info(f"Market snapshot updated: trend={snapshot.market_trend}, "
+                   f"score={snapshot.market_score}, weighted_signal={snapshot.weighted_signal:.2f}")
 
     except Exception as e:
         logger.error(f"Error updating market snapshot: {e}")
+
+
+@app.get("/api/market-direction")
+async def get_market_direction(
+    refresh: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    Get current market direction based on SPY, QQQ, and DIA.
+    Pass refresh=true to force a fresh fetch from Yahoo.
+    """
+    # Update database snapshot if requested
+    if refresh:
+        update_market_snapshot(db, force_refresh=True)
+
+    # Get cached market direction
+    market_data = get_cached_market_direction(force_refresh=refresh)
+
+    # Get latest snapshot from database
+    latest_snapshot = db.query(MarketSnapshot).order_by(
+        desc(MarketSnapshot.date)
+    ).first()
+
+    return {
+        "success": market_data.get("success", False),
+        "market_score": market_data.get("market_score", 7.5),
+        "market_trend": market_data.get("market_trend", "neutral"),
+        "weighted_signal": market_data.get("weighted_signal", 0),
+        "indexes": market_data.get("indexes", {}),
+        "last_updated": latest_snapshot.timestamp.isoformat() if latest_snapshot and latest_snapshot.timestamp else None,
+        "error": market_data.get("error"),
+    }
+
+
+@app.post("/api/market-direction/refresh")
+async def refresh_market_direction(db: Session = Depends(get_db)):
+    """Force refresh market direction data from Yahoo Finance."""
+    update_market_snapshot(db, force_refresh=True)
+
+    market_data = get_cached_market_direction()
+
+    return {
+        "success": market_data.get("success", False),
+        "message": "Market direction refreshed",
+        "market_score": market_data.get("market_score", 7.5),
+        "market_trend": market_data.get("market_trend", "neutral"),
+        "indexes": market_data.get("indexes", {}),
+    }
 
 
 def analyze_stock(ticker: str) -> dict:

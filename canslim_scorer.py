@@ -6,7 +6,7 @@ Implements scoring logic for all 7 CANSLIM criteria
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
-from data_fetcher import StockData, DataFetcher
+from data_fetcher import StockData, DataFetcher, get_cached_market_direction
 
 
 @dataclass
@@ -493,29 +493,55 @@ class CANSLIMScorer:
     def _score_market(self) -> tuple[float, str]:
         """
         M - Market Direction (15 pts max)
-        Based on S&P 500 position relative to moving averages
+        Based on weighted multi-index analysis: SPY (50%), QQQ (30%), DIA (20%)
+        Uses cached market direction to avoid rate limiting during scans.
         """
         if self._market_score is not None:
             return self._market_score, self._market_detail
 
         max_score = self.MAX_SCORES['M']
 
-        is_bullish, pct_200, pct_50 = self.fetcher.get_market_direction()
+        # Get cached multi-index market direction
+        market_data = get_cached_market_direction()
 
-        if is_bullish:
-            if pct_50 > 0:  # Above both MAs
-                score = max_score
-                detail = "bullish (above 50/200 MA)"
-            else:  # Above 200 but below 50
-                score = max_score * 0.7
-                detail = "neutral-bullish"
+        if market_data.get("success"):
+            # Use pre-calculated score from multi-index analysis
+            score = market_data.get("market_score", max_score * 0.5)
+            trend = market_data.get("market_trend", "neutral")
+            weighted_signal = market_data.get("weighted_signal", 0)
+
+            # Build detail string showing index breakdown
+            indexes = market_data.get("indexes", {})
+            index_details = []
+            for ticker in ["SPY", "QQQ", "DIA"]:
+                idx = indexes.get(ticker, {})
+                if idx.get("status") == "ok":
+                    signal = idx.get("signal", 0)
+                    signal_str = {2: "++", 1: "+", 0: "~", -1: "-"}.get(signal, "?")
+                    index_details.append(f"{ticker}{signal_str}")
+
+            if index_details:
+                detail = f"{trend} ({', '.join(index_details)})"
+            else:
+                detail = trend
         else:
-            if pct_50 > 0:  # Below 200 but above 50 (recovery)
-                score = max_score * 0.5
-                detail = "recovery mode"
-            else:  # Below both
-                score = max_score * 0.2
-                detail = "bearish (below MAs)"
+            # Fallback to old single-index method if multi-index fails
+            is_bullish, pct_200, pct_50 = self.fetcher.get_market_direction()
+
+            if is_bullish:
+                if pct_50 > 0:
+                    score = max_score
+                    detail = "bullish (SPY above MAs)"
+                else:
+                    score = max_score * 0.7
+                    detail = "neutral-bullish"
+            else:
+                if pct_50 > 0:
+                    score = max_score * 0.5
+                    detail = "recovery mode"
+                else:
+                    score = max_score * 0.2
+                    detail = "bearish (SPY below MAs)"
 
         self._market_score = round(score, 1)
         self._market_detail = detail

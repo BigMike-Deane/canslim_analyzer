@@ -100,8 +100,19 @@ def run_continuous_scan():
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
     from canslim_scorer import CANSLIMScorer, GrowthModeScorer, TechnicalAnalyzer
-    from data_fetcher import DataFetcher
+    from data_fetcher import DataFetcher, get_cached_market_direction
     from growth_projector import GrowthProjector
+
+    # IMPORTANT: Fetch market direction FIRST, before any stock analysis
+    # This ensures the M score uses fresh data and avoids rate limiting during stock scans
+    logger.info("Fetching market direction data (SPY, QQQ, DIA)...")
+    market_data = get_cached_market_direction(force_refresh=True)
+    if market_data.get("success"):
+        logger.info(f"Market direction: {market_data.get('market_trend')} "
+                   f"(score: {market_data.get('market_score')}, "
+                   f"signal: {market_data.get('weighted_signal', 0):.2f})")
+    else:
+        logger.warning(f"Failed to fetch market direction: {market_data.get('error')}")
 
     data_fetcher = DataFetcher()
     canslim_scorer = CANSLIMScorer(data_fetcher)
