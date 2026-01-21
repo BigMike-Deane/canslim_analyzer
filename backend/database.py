@@ -74,6 +74,12 @@ def run_migrations():
         ("stocks", "base_type", "TEXT"),
         ("stocks", "is_breaking_out", "BOOLEAN"),
         ("stocks", "breakout_volume_ratio", "FLOAT"),
+        # AI Portfolio Growth Mode support
+        ("ai_portfolio_positions", "is_growth_stock", "BOOLEAN DEFAULT 0"),
+        ("ai_portfolio_positions", "purchase_growth_score", "FLOAT"),
+        ("ai_portfolio_positions", "current_growth_score", "FLOAT"),
+        ("ai_portfolio_trades", "growth_mode_score", "FLOAT"),
+        ("ai_portfolio_trades", "is_growth_stock", "BOOLEAN DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:
