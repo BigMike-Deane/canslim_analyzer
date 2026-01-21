@@ -842,14 +842,17 @@ async def get_top_growth_stocks(
     latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
     current_m_score = latest_market.market_score if latest_market else 0
 
-    # Query stocks with growth_mode_score
-    stocks = db.query(Stock).filter(
+    # Query stocks with growth_mode_score (fetch extra to allow for duplicate filtering)
+    stocks_raw = db.query(Stock).filter(
         Stock.growth_mode_score.isnot(None),
         Stock.growth_mode_score >= 50,  # Minimum threshold
         Stock.current_price > 0
     ).order_by(
         desc(Stock.growth_mode_score)
-    ).limit(limit).all()
+    ).limit(limit * 2).all()
+
+    # Filter duplicates (e.g., GOOG/GOOGL) - keep highest scorer
+    stocks = filter_duplicate_stocks(stocks_raw, limit)
 
     return {
         "stocks": [{
@@ -886,13 +889,16 @@ async def get_breaking_out_stocks(
     Get stocks that are currently breaking out of base patterns.
     These are high-probability buy points in CANSLIM methodology.
     """
-    stocks = db.query(Stock).filter(
+    stocks_raw = db.query(Stock).filter(
         Stock.is_breaking_out == True,
         Stock.canslim_score >= 60,
         Stock.current_price > 0
     ).order_by(
         desc(Stock.canslim_score)
-    ).limit(limit).all()
+    ).limit(limit * 2).all()
+
+    # Filter duplicates (e.g., GOOG/GOOGL) - keep highest scorer
+    stocks = filter_duplicate_stocks(stocks_raw, limit)
 
     return {
         "stocks": [{
@@ -969,6 +975,23 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
 
         "projected_growth": stock.projected_growth,
         "growth_confidence": stock.growth_confidence,
+
+        # Growth Mode scoring
+        "is_growth_stock": stock.is_growth_stock,
+        "growth_mode_score": stock.growth_mode_score,
+        "growth_mode_details": stock.growth_mode_details,
+
+        # Enhanced earnings
+        "eps_acceleration": stock.eps_acceleration,
+        "earnings_surprise_pct": stock.earnings_surprise_pct,
+        "revenue_growth_pct": stock.revenue_growth_pct,
+
+        # Technical analysis
+        "volume_ratio": stock.volume_ratio,
+        "weeks_in_base": stock.weeks_in_base,
+        "base_type": stock.base_type,
+        "is_breaking_out": stock.is_breaking_out,
+        "breakout_volume_ratio": stock.breakout_volume_ratio,
 
         "score_history": [{
             "date": h.date.isoformat(),

@@ -171,6 +171,139 @@ function ScoreHistory({ history }) {
   )
 }
 
+function GrowthModeSection({ stock }) {
+  // Only show if stock has growth mode data
+  if (!stock.is_growth_stock && !stock.growth_mode_score) return null
+
+  const details = stock.growth_mode_details || {}
+
+  const scores = [
+    { key: 'R', label: 'Revenue Growth', value: details.r, color: 'text-green-400' },
+    { key: 'F', label: 'Funding Health', value: details.f, color: 'text-blue-400' },
+  ]
+
+  return (
+    <div className="card mb-4 border border-green-500/30">
+      <div className="flex justify-between items-center mb-3">
+        <div className="font-semibold flex items-center gap-2">
+          <span className="text-green-400">↗</span> Growth Mode Score
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">
+            {stock.is_growth_stock ? 'Growth Stock' : 'Hybrid'}
+          </span>
+          <span className="text-xl font-bold text-green-400">
+            {stock.growth_mode_score?.toFixed(1) || '-'}
+          </span>
+        </div>
+      </div>
+
+      <div className="text-dark-400 text-xs mb-3">
+        Alternative scoring for pre-revenue and high-growth companies. Uses revenue momentum instead of earnings.
+      </div>
+
+      <div className="space-y-2">
+        {scores.map(s => (
+          <div key={s.key} className="flex items-center justify-between py-1 border-b border-dark-700 last:border-0">
+            <div className="flex items-center gap-2">
+              <span className={`font-bold ${s.color}`}>{s.key}</span>
+              <span className="text-sm">{s.label}</span>
+            </div>
+            <span className="text-dark-400 text-sm">{s.value || '-'}</span>
+          </div>
+        ))}
+      </div>
+
+      {stock.revenue_growth_pct != null && (
+        <div className="mt-3 pt-3 border-t border-dark-700 flex justify-between items-center">
+          <span className="text-dark-400 text-sm">Revenue Growth (YoY)</span>
+          <span className={`font-semibold ${stock.revenue_growth_pct >= 20 ? 'text-green-400' : stock.revenue_growth_pct >= 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+            {stock.revenue_growth_pct >= 0 ? '+' : ''}{stock.revenue_growth_pct.toFixed(0)}%
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TechnicalAnalysis({ stock }) {
+  const hasData = stock.base_type || stock.volume_ratio || stock.is_breaking_out
+
+  return (
+    <div className="card mb-4">
+      <div className="flex justify-between items-center mb-3">
+        <div className="font-semibold">Technical Analysis</div>
+        {stock.is_breaking_out && (
+          <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded flex items-center gap-1">
+            <span>⚡</span> Breaking Out
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <div className="text-dark-400 text-xs">Base Pattern</div>
+          <div className="font-semibold capitalize">
+            {stock.base_type && stock.base_type !== 'none' ? (
+              <span className="text-blue-400">{stock.base_type} base</span>
+            ) : (
+              <span className="text-dark-500">No base</span>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-dark-400 text-xs">Weeks in Base</div>
+          <div className="font-semibold">
+            {stock.weeks_in_base > 0 ? (
+              <span>{stock.weeks_in_base} weeks</span>
+            ) : (
+              <span className="text-dark-500">-</span>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-dark-400 text-xs">Volume Ratio</div>
+          <div className={`font-semibold ${stock.volume_ratio >= 1.5 ? 'text-green-400' : stock.volume_ratio >= 1.0 ? 'text-yellow-400' : 'text-dark-400'}`}>
+            {stock.volume_ratio ? `${stock.volume_ratio.toFixed(1)}x avg` : '-'}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-dark-400 text-xs">Breakout Volume</div>
+          <div className="font-semibold">
+            {stock.breakout_volume_ratio ? (
+              <span className="text-yellow-400">{stock.breakout_volume_ratio.toFixed(1)}x</span>
+            ) : (
+              <span className="text-dark-500">-</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {stock.eps_acceleration && (
+        <div className="mt-3 pt-3 border-t border-dark-700 flex items-center gap-2">
+          <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">EPS Accelerating</span>
+          {stock.earnings_surprise_pct > 0 && (
+            <span className="text-xs bg-blue-500/20 text-blue-400 px-2 py-1 rounded">
+              Beat estimates +{stock.earnings_surprise_pct.toFixed(0)}%
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="text-dark-500 text-xs mt-3">
+        {stock.is_breaking_out
+          ? 'Stock is breaking out of a consolidation pattern with strong volume - potential buy zone.'
+          : stock.base_type && stock.base_type !== 'none'
+          ? 'Stock is building a base pattern. Watch for breakout with volume.'
+          : 'No clear base pattern detected.'}
+      </div>
+    </div>
+  )
+}
+
 export default function StockDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
@@ -279,6 +412,10 @@ export default function StockDetail() {
       </div>
 
       <PriceInfo stock={stock} />
+
+      <GrowthModeSection stock={stock} />
+
+      <TechnicalAnalysis stock={stock} />
 
       <CANSLIMDetail stock={stock} />
 
