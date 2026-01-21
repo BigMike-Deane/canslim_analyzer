@@ -51,9 +51,10 @@ Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLI
 
 ### API Rate Limiting
 - FMP limit: 300 calls/minute
-- Current config: 8 workers with 0.3-0.6s delay (~65-88 stocks/min)
-- Full 2080 stock scan completes in ~25-35 minutes
+- Current config: 6 workers with 0.5-1.0s delay (~50-70 stocks/min)
+- Full 2080 stock scan completes in ~35-45 minutes
 - Yahoo Finance handles most data (no strict rate limit)
+- DB cache at 100%+ means most FMP calls are skipped on subsequent scans
 
 ### Stock Universe Coverage (~2000+ tickers)
 Fetched dynamically from Wikipedia (with fallbacks):
