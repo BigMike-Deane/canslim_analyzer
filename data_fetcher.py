@@ -830,9 +830,9 @@ class DataFetcher:
                 except Exception:
                     pass  # Silent fallback failure - FMP data is primary
 
-        # 3. Fallback to yfinance ONLY if FMP didn't provide critical data
-        # Skip yfinance if we already have earnings from FMP (to avoid rate limits)
-        if not stock_data.quarterly_earnings and not FMP_API_KEY:
+        # 3. Fallback to yfinance if FMP didn't provide critical data
+        # This runs regardless of whether FMP_API_KEY is set (in case FMP returns empty/error)
+        if not stock_data.quarterly_earnings or not stock_data.institutional_holders_pct:
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
@@ -846,17 +846,40 @@ class DataFetcher:
                         inst_pct = info.get('heldPercentInstitutions', 0)
                         stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
 
-                    # Quarterly earnings from yfinance
+                    # Quarterly earnings from yfinance - PREFER earnings_history (actual reported EPS)
+                    # over calculated EPS from Net Income (which may differ due to share count timing)
                     if not stock_data.quarterly_earnings:
                         try:
-                            quarterly = stock.quarterly_financials
-                            if quarterly is not None and not quarterly.empty:
-                                if 'Net Income' in quarterly.index:
-                                    net_income = quarterly.loc['Net Income'].dropna()
-                                    shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
-                                    stock_data.quarterly_earnings = (net_income / shares).tolist()[:8]
-                        except Exception:
-                            pass
+                            # Try earnings_history first (has actual reported EPS - what analysts track)
+                            earnings_hist = stock.earnings_history
+                            if earnings_hist is not None and not earnings_hist.empty and 'epsActual' in earnings_hist.columns:
+                                # earnings_history is sorted with most recent last, so reverse it
+                                eps_actual = earnings_hist['epsActual'].dropna().tolist()
+                                if eps_actual:
+                                    # Reverse to get most recent first
+                                    stock_data.quarterly_earnings = eps_actual[::-1][:8]
+                                    logger.debug(f"{ticker}: Using Yahoo earnings_history EPS: {stock_data.quarterly_earnings[:4]}")
+
+                                    # Also get earnings surprise data
+                                    if 'surprisePercent' in earnings_hist.columns and not stock_data.earnings_surprise_pct:
+                                        latest_surprise = earnings_hist['surprisePercent'].iloc[-1]
+                                        if pd.notna(latest_surprise):
+                                            stock_data.earnings_surprise_pct = latest_surprise * 100  # Convert to percentage
+                        except Exception as e:
+                            logger.debug(f"{ticker}: earnings_history failed: {e}")
+
+                        # Fallback to Net Income calculation if earnings_history failed
+                        if not stock_data.quarterly_earnings:
+                            try:
+                                quarterly = stock.quarterly_financials
+                                if quarterly is not None and not quarterly.empty:
+                                    if 'Net Income' in quarterly.index:
+                                        net_income = quarterly.loc['Net Income'].dropna()
+                                        shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
+                                        stock_data.quarterly_earnings = (net_income / shares).tolist()[:8]
+                                        logger.debug(f"{ticker}: Using Yahoo calculated EPS from Net Income")
+                            except Exception:
+                                pass
 
                     # Annual earnings from yfinance
                     if not stock_data.annual_earnings:
