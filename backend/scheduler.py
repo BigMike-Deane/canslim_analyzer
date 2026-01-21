@@ -203,12 +203,13 @@ def run_continuous_scan():
         db.commit()
         return stock
 
-    processed = 0
-    successful = 0
+    # Thread-safe counters
+    import threading
+    counter_lock = threading.Lock()
+    counters = {"processed": 0, "successful": 0}
 
     def process_single_stock(ticker):
         """Process a single stock with rate limiting"""
-        nonlocal processed, successful
         # Delay to stay under FMP's 300 calls/min limit (4 calls/stock)
         # Using 2.5-4.0s with 4 workers = ~60-90 stocks/min, well under limit
         time.sleep(random.uniform(2.5, 4.0))
@@ -218,13 +219,20 @@ def run_continuous_scan():
             analysis = analyze_stock(ticker)
             if analysis:
                 save_stock_to_db(thread_db, analysis)
-                successful += 1
+                with counter_lock:
+                    counters["successful"] += 1
+                    counters["processed"] += 1
+                    # Update progress in real-time
+                    _scan_config["stocks_scanned"] = counters["successful"]
+            else:
+                with counter_lock:
+                    counters["processed"] += 1
             thread_db.close()
-            processed += 1
             return ticker, True
         except Exception as e:
             logger.error(f"Error processing {ticker}: {e}")
-            processed += 1
+            with counter_lock:
+                counters["processed"] += 1
             return ticker, False
 
     try:
@@ -239,8 +247,8 @@ def run_continuous_scan():
                 except Exception as e:
                     logger.error(f"Thread error for {ticker}: {e}")
 
-        _scan_config["stocks_scanned"] = successful
-        logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks")
+        _scan_config["stocks_scanned"] = counters["successful"]
+        logger.info(f"Continuous scan complete: {counters['successful']}/{len(tickers)} stocks")
 
         # Log rate limit stats
         try:
