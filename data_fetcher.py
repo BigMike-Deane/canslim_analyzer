@@ -102,12 +102,19 @@ def set_cached_data(ticker: str, data_type: str, data):
 _cache_hit_count = 0
 _cache_miss_count = 0
 
+# Set to False to disable caching (for debugging)
+CACHING_ENABLED = True
+
 def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
     """
     Wrapper that checks cache freshness before fetching.
     Returns cached data if fresh, otherwise fetches new data.
     """
     global _cache_hit_count, _cache_miss_count
+
+    # Skip caching if disabled
+    if not CACHING_ENABLED:
+        return fetch_func(*args, **kwargs)
 
     # Check if we have fresh cached data
     if is_data_fresh(ticker, data_type):
