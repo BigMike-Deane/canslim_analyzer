@@ -1,14 +1,36 @@
 """
 Stock Ticker List Module
-Includes S&P 500, S&P MidCap 400, S&P SmallCap 600, and Russell 2000 stocks.
-Also fetches portfolio tickers to ensure they're always scanned.
+
+Fetches stock tickers from multiple sources:
+- FMP API (primary): S&P 500, Nasdaq 100, Dow Jones
+- Wikipedia (fallback): S&P 500, MidCap 400, SmallCap 600
+- ETF Holdings: Russell 2000 (via IWM)
+- Curated lists: Additional small/mid caps
+- Portfolio: Always included in scans
 """
 
 import requests
 from bs4 import BeautifulSoup
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+# FMP API configuration
+FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
+FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+
+# Cache for ticker lists (avoid re-fetching on every scan)
+_ticker_cache = {
+    'sp500': None,
+    'nasdaq100': None,
+    'dowjones': None,
+    'midcap400': None,
+    'smallcap600': None,
+    'russell2000': None,
+    'last_fetch': None
+}
+CACHE_DURATION_HOURS = 24  # Refresh lists once per day
 
 
 def get_all_tickers(include_portfolio: bool = True) -> list[str]:
@@ -16,34 +38,41 @@ def get_all_tickers(include_portfolio: bool = True) -> list[str]:
     Get combined list of all major index tickers plus portfolio holdings.
 
     Includes:
-    - S&P 500 (large cap)
-    - S&P MidCap 400 (mid cap)
-    - S&P SmallCap 600 (small cap)
-    - Russell 2000 (small cap, curated list)
-    - Portfolio tickers (always scanned)
+    - S&P 500 (large cap) - from FMP or Wikipedia
+    - S&P MidCap 400 (mid cap) - from Wikipedia
+    - S&P SmallCap 600 (small cap) - from Wikipedia
+    - Nasdaq 100 (tech-heavy) - from FMP
+    - Russell 2000 (small cap) - from ETF holdings or curated
+    - Dow Jones 30 (blue chips) - from FMP
+    - Portfolio tickers (always scanned first)
     """
-    sp500 = get_sp500_tickers()
-    midcap400 = get_sp400_midcap_tickers()
-    smallcap600 = get_sp600_smallcap_tickers()
-    russell = get_russell2000_tickers()
-
     # Start with portfolio tickers (highest priority)
     combined = []
     if include_portfolio:
         portfolio = get_portfolio_tickers()
         combined.extend(portfolio)
 
+    # Fetch from all sources
+    sp500 = get_sp500_tickers()
+    nasdaq100 = get_nasdaq100_tickers()
+    dowjones = get_dowjones_tickers()
+    midcap400 = get_sp400_midcap_tickers()
+    smallcap600 = get_sp600_smallcap_tickers()
+    russell2000 = get_russell2000_tickers()
+
     # Add index tickers
     combined.extend(sp500)
+    combined.extend(nasdaq100)
+    combined.extend(dowjones)
     combined.extend(midcap400)
     combined.extend(smallcap600)
-    combined.extend(russell)
+    combined.extend(russell2000)
 
     # Remove duplicates while preserving order (portfolio first)
     seen = set()
     unique = []
     for ticker in combined:
-        if ticker not in seen:
+        if ticker and ticker not in seen:
             seen.add(ticker)
             unique.append(ticker)
 
@@ -93,9 +122,25 @@ def get_portfolio_tickers() -> list[str]:
 
 def get_sp500_tickers() -> list[str]:
     """
-    Fetch S&P 500 tickers from Wikipedia.
-    Falls back to a curated list if fetch fails.
+    Fetch S&P 500 tickers from FMP API (primary) or Wikipedia (fallback).
     """
+    # Try FMP API first (most reliable and up-to-date)
+    if FMP_API_KEY:
+        try:
+            url = f"{FMP_BASE_URL}/sp500_constituent?apikey={FMP_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data and isinstance(data, list):
+                tickers = [item.get('symbol') for item in data if item.get('symbol')]
+                if tickers:
+                    logger.info(f"Fetched {len(tickers)} S&P 500 tickers from FMP")
+                    return tickers
+        except Exception as e:
+            logger.warning(f"FMP S&P 500 fetch failed: {e}")
+
+    # Fallback to Wikipedia
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -115,16 +160,81 @@ def get_sp500_tickers() -> list[str]:
             cells = row.find_all('td')
             if cells:
                 ticker = cells[0].text.strip()
-                # Clean up ticker (remove any notes)
-                ticker = ticker.replace('.', '-')  # BRK.B -> BRK-B for yfinance
+                ticker = ticker.replace('.', '-')  # BRK.B -> BRK-B
                 tickers.append(ticker)
 
+        logger.info(f"Fetched {len(tickers)} S&P 500 tickers from Wikipedia")
         return tickers
 
     except Exception as e:
-        print(f"Warning: Could not fetch S&P 500 list from Wikipedia: {e}")
-        print("Using fallback list of major stocks...")
+        logger.warning(f"Wikipedia S&P 500 fetch failed: {e}")
         return get_fallback_tickers()
+
+
+def get_nasdaq100_tickers() -> list[str]:
+    """
+    Fetch Nasdaq 100 tickers from FMP API.
+    """
+    if FMP_API_KEY:
+        try:
+            url = f"{FMP_BASE_URL}/nasdaq_constituent?apikey={FMP_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data and isinstance(data, list):
+                tickers = [item.get('symbol') for item in data if item.get('symbol')]
+                if tickers:
+                    logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers from FMP")
+                    return tickers
+        except Exception as e:
+            logger.warning(f"FMP Nasdaq 100 fetch failed: {e}")
+
+    # Fallback to hardcoded list
+    return get_fallback_nasdaq100_tickers()
+
+
+def get_fallback_nasdaq100_tickers() -> list[str]:
+    """Fallback Nasdaq 100 tickers."""
+    return [
+        "AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "AMAT", "AMD", "AMGN",
+        "AMZN", "ANSS", "ARM", "ASML", "AVGO", "AZN", "BIIB", "BKNG", "BKR", "CCEP",
+        "CDNS", "CDW", "CEG", "CHTR", "CMCSA", "COST", "CPRT", "CRWD", "CSCO", "CSGP",
+        "CSX", "CTAS", "CTSH", "DDOG", "DLTR", "DXCM", "EA", "EXC", "FANG", "FAST",
+        "FTNT", "GEHC", "GFS", "GILD", "GOOG", "GOOGL", "HON", "IDXX", "ILMN", "INTC",
+        "INTU", "ISRG", "KDP", "KHC", "KLAC", "LIN", "LRCX", "LULU", "MAR", "MCHP",
+        "MDB", "MDLZ", "MELI", "META", "MNST", "MRNA", "MRVL", "MSFT", "MU", "NFLX",
+        "NVDA", "NXPI", "ODFL", "ON", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP",
+        "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SMCI", "SNPS", "TEAM", "TMUS",
+        "TSLA", "TTD", "TTWO", "TXN", "VRSK", "VRTX", "WBD", "WDAY", "XEL", "ZS",
+    ]
+
+
+def get_dowjones_tickers() -> list[str]:
+    """
+    Fetch Dow Jones 30 tickers from FMP API.
+    """
+    if FMP_API_KEY:
+        try:
+            url = f"{FMP_BASE_URL}/dowjones_constituent?apikey={FMP_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data and isinstance(data, list):
+                tickers = [item.get('symbol') for item in data if item.get('symbol')]
+                if tickers:
+                    logger.info(f"Fetched {len(tickers)} Dow Jones tickers from FMP")
+                    return tickers
+        except Exception as e:
+            logger.warning(f"FMP Dow Jones fetch failed: {e}")
+
+    # Fallback to hardcoded list
+    return [
+        "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+        "DOW", "GS", "HD", "HON", "IBM", "INTC", "JNJ", "JPM", "KO", "MCD",
+        "MMM", "MRK", "MSFT", "NKE", "NVDA", "PG", "TRV", "UNH", "V", "WMT",
+    ]
 
 
 def get_fallback_tickers() -> list[str]:
@@ -329,9 +439,35 @@ def get_fallback_smallcap_tickers() -> list[str]:
 
 def get_russell2000_tickers() -> list[str]:
     """
-    Curated list of Russell 2000 small-cap stocks.
-    Focus on liquid, actively traded small caps.
+    Fetch Russell 2000 tickers from IWM ETF holdings via FMP API.
+    Falls back to curated list if fetch fails.
     """
+    # Try FMP ETF Holdings API (IWM = iShares Russell 2000 ETF)
+    if FMP_API_KEY:
+        try:
+            url = f"{FMP_BASE_URL}/etf-holder/IWM?apikey={FMP_API_KEY}"
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if data and isinstance(data, list):
+                # Extract ticker symbols from holdings
+                tickers = [item.get('asset') for item in data if item.get('asset')]
+                if len(tickers) > 1000:  # Should be ~2000 holdings
+                    logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from IWM ETF holdings")
+                    return tickers
+                else:
+                    logger.warning(f"IWM holdings returned only {len(tickers)} tickers, using curated list")
+        except Exception as e:
+            logger.warning(f"FMP IWM ETF holdings fetch failed: {e}")
+
+    # Fallback to curated list
+    logger.info("Using curated Russell 2000 list")
+    return get_fallback_russell2000_tickers()
+
+
+def get_fallback_russell2000_tickers() -> list[str]:
+    """Curated list of Russell 2000 small-cap stocks."""
     return [
         # Biotechnology & Pharmaceuticals (many trade under $20)
         "ACAD", "AGEN", "AKRO", "ALKS", "AMPH", "ARWR", "AUPH", "BBIO", "BEAM", "BCRX",
@@ -484,9 +620,29 @@ def get_russell2000_tickers() -> list[str]:
     ]
 
 
+def _load_env():
+    """Load .env file for local testing."""
+    global FMP_API_KEY
+    from pathlib import Path
+    env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                if '=' in line and not line.startswith('#'):
+                    key, val = line.strip().split('=', 1)
+                    os.environ.setdefault(key, val)
+        FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
+
+
 if __name__ == "__main__":
+    _load_env()
+
     print("Fetching ticker lists...")
+    print(f"FMP API Key: {'configured' if FMP_API_KEY else 'NOT SET'}\n")
+
     sp500 = get_sp500_tickers()
+    nasdaq100 = get_nasdaq100_tickers()
+    dowjones = get_dowjones_tickers()
     midcap400 = get_sp400_midcap_tickers()
     smallcap600 = get_sp600_smallcap_tickers()
     russell = get_russell2000_tickers()
@@ -494,15 +650,19 @@ if __name__ == "__main__":
     all_tickers = get_all_tickers()
 
     print(f"\nIndex Breakdown:")
-    print(f"  S&P 500:        {len(sp500):>4} tickers")
-    print(f"  S&P MidCap 400: {len(midcap400):>4} tickers")
-    print(f"  S&P SmallCap 600: {len(smallcap600):>4} tickers")
-    print(f"  Russell 2000:   {len(russell):>4} tickers (curated)")
-    print(f"  Portfolio:      {len(portfolio):>4} tickers")
-    print(f"\nCombined (deduplicated): {len(all_tickers)} tickers")
+    print(f"  S&P 500:          {len(sp500):>5} tickers")
+    print(f"  Nasdaq 100:       {len(nasdaq100):>5} tickers")
+    print(f"  Dow Jones 30:     {len(dowjones):>5} tickers")
+    print(f"  S&P MidCap 400:   {len(midcap400):>5} tickers")
+    print(f"  S&P SmallCap 600: {len(smallcap600):>5} tickers")
+    print(f"  Russell 2000:     {len(russell):>5} tickers")
+    print(f"  Portfolio:        {len(portfolio):>5} tickers")
+    print(f"\n  Combined (deduplicated): {len(all_tickers)} tickers")
 
     # Check for missing portfolio tickers
     all_set = set(all_tickers)
     missing = [t for t in portfolio if t not in all_set]
     if missing:
         print(f"\nWARNING: Portfolio tickers not in combined list: {missing}")
+    else:
+        print(f"\n✓ All portfolio tickers included in scan")
