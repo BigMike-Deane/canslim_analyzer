@@ -889,8 +889,8 @@ class TechnicalAnalyzer:
 
         if base_pattern["type"] == "none" or base_pattern["pivot_price"] <= 0:
             # Even without a base pattern, check if near 52-week high with volume
-            if stock_data.week_52_high and stock_data.current_price:
-                pct_from_high = (stock_data.week_52_high - stock_data.current_price) / stock_data.week_52_high
+            if stock_data.high_52w and stock_data.current_price:
+                pct_from_high = (stock_data.high_52w - stock_data.current_price) / stock_data.high_52w
                 # Within 5% of 52-week high with decent volume = potential breakout
                 if pct_from_high <= 0.05 and vol_ratio >= 1.2:
                     return True, vol_ratio
