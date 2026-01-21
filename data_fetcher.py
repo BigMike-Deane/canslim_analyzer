@@ -269,6 +269,131 @@ def fetch_fmp_price_target(ticker: str) -> dict:
     return {}
 
 
+def fetch_fmp_earnings_surprise(ticker: str) -> dict:
+    """Fetch earnings surprise history from FMP"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/earnings-surprises?symbol={ticker}&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                # Get latest surprise and count consecutive beats
+                latest = data[0]
+                latest_surprise = 0
+                if latest.get("estimatedEarning") and latest.get("actualEarningResult"):
+                    estimated = latest.get("estimatedEarning", 0)
+                    actual = latest.get("actualEarningResult", 0)
+                    if estimated and estimated != 0:
+                        latest_surprise = ((actual - estimated) / abs(estimated)) * 100
+
+                # Count consecutive beats
+                beat_streak = 0
+                for record in data[:8]:  # Check last 8 quarters
+                    estimated = record.get("estimatedEarning", 0)
+                    actual = record.get("actualEarningResult", 0)
+                    if estimated and actual and actual > estimated:
+                        beat_streak += 1
+                    else:
+                        break
+
+                return {
+                    "latest_surprise_pct": latest_surprise,
+                    "beat_streak": beat_streak,
+                }
+    except Exception as e:
+        logger.debug(f"FMP earnings surprise error for {ticker}: {e}")
+    return {}
+
+
+def fetch_fmp_revenue(ticker: str) -> dict:
+    """Fetch quarterly and annual revenue from FMP income statements"""
+    if not FMP_API_KEY:
+        return {}
+
+    result = {"quarterly_revenue": [], "annual_revenue": []}
+
+    try:
+        # Quarterly revenue
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                result["quarterly_revenue"] = [q.get("revenue", 0) or 0 for q in data]
+    except Exception as e:
+        logger.debug(f"FMP quarterly revenue error for {ticker}: {e}")
+
+    try:
+        # Annual revenue
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=5&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                result["annual_revenue"] = [a.get("revenue", 0) or 0 for a in data]
+    except Exception as e:
+        logger.debug(f"FMP annual revenue error for {ticker}: {e}")
+
+    return result
+
+
+def fetch_fmp_balance_sheet(ticker: str) -> dict:
+    """Fetch balance sheet data for cash/debt analysis (growth stock funding)"""
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/balance-sheet-statement?symbol={ticker}&limit=1&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                bs = data[0]
+                return {
+                    "cash_and_equivalents": bs.get("cashAndCashEquivalents", 0) or 0,
+                    "total_debt": bs.get("totalDebt", 0) or 0,
+                    "total_assets": bs.get("totalAssets", 0) or 0,
+                    "total_liabilities": bs.get("totalLiabilities", 0) or 0,
+                }
+    except Exception as e:
+        logger.debug(f"FMP balance sheet error for {ticker}: {e}")
+    return {}
+
+
+def fetch_weekly_price_history(ticker: str) -> list:
+    """Fetch weekly OHLC data for base pattern detection"""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        params = {"interval": "1wk", "range": "6mo"}  # 6 months of weekly data
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("chart", {}).get("result", [])
+            if result:
+                timestamps = result[0].get("timestamp", [])
+                indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
+
+                weekly_data = []
+                for i, ts in enumerate(timestamps):
+                    weekly_data.append({
+                        "timestamp": ts,
+                        "open": indicators.get("open", [])[i] if i < len(indicators.get("open", [])) else None,
+                        "high": indicators.get("high", [])[i] if i < len(indicators.get("high", [])) else None,
+                        "low": indicators.get("low", [])[i] if i < len(indicators.get("low", [])) else None,
+                        "close": indicators.get("close", [])[i] if i < len(indicators.get("close", [])) else None,
+                        "volume": indicators.get("volume", [])[i] if i < len(indicators.get("volume", [])) else None,
+                    })
+                return weekly_data
+    except Exception as e:
+        logger.debug(f"Weekly price history error for {ticker}: {e}")
+    return []
+
+
 def fetch_price_from_chart_api(ticker: str) -> dict:
     """Fallback: fetch basic price data from Yahoo chart API"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -336,6 +461,17 @@ class StockData:
         self.roic: float = 0.0  # Return on Invested Capital
         self.earnings_yield: float = 0.0
         self.fcf_yield: float = 0.0
+
+        # Enhanced earnings analysis
+        self.quarterly_revenue: list[float] = []  # Last 8 quarters revenue
+        self.annual_revenue: list[float] = []  # Last 5 years revenue
+        self.earnings_surprise_pct: float = 0.0  # Latest earnings surprise %
+        self.eps_beat_streak: int = 0  # Consecutive quarters of beating estimates
+
+        # Technical analysis data
+        self.weekly_price_history: list[dict] = []  # Weekly OHLC for base detection
+        self.cash_and_equivalents: float = 0.0  # For growth stock funding analysis
+        self.total_debt: float = 0.0  # For growth stock funding analysis
 
 
 class DataFetcher:
@@ -470,6 +606,27 @@ class DataFetcher:
             if analyst:
                 stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
                 stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)
+
+            # 5b. Get earnings surprise data (for enhanced C score)
+            earnings_surprise = fetch_fmp_earnings_surprise(ticker)
+            if earnings_surprise:
+                stock_data.earnings_surprise_pct = earnings_surprise.get("latest_surprise_pct", 0)
+                stock_data.eps_beat_streak = earnings_surprise.get("beat_streak", 0)
+
+            # 5c. Get revenue data (for growth mode scoring)
+            revenue_data = fetch_fmp_revenue(ticker)
+            if revenue_data:
+                stock_data.quarterly_revenue = revenue_data.get("quarterly_revenue", [])
+                stock_data.annual_revenue = revenue_data.get("annual_revenue", [])
+
+            # 5d. Get balance sheet data (for growth stock funding analysis)
+            balance_sheet = fetch_fmp_balance_sheet(ticker)
+            if balance_sheet:
+                stock_data.cash_and_equivalents = balance_sheet.get("cash_and_equivalents", 0)
+                stock_data.total_debt = balance_sheet.get("total_debt", 0)
+
+            # 5e. Get weekly price history (for technical analysis / base detection)
+            stock_data.weekly_price_history = fetch_weekly_price_history(ticker)
 
             # 6. Yahoo Finance fallback for analyst/valuation data (rate-limited)
             # Only call if multiple critical fields are missing to minimize API calls

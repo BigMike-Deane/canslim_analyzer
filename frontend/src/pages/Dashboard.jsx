@@ -114,54 +114,139 @@ function WeeklyTrend({ trend, change }) {
   )
 }
 
-function TopStocksList({ stocks, title }) {
+function TopStocksList({ stocks, title, compact = false }) {
   if (!stocks || stocks.length === 0) return null
 
   return (
-    <div className="card mb-4">
-      <div className="flex justify-between items-center mb-3">
-        <div className="font-semibold">{title}</div>
-        <Link to="/screener" className="text-primary-500 text-sm">See All</Link>
+    <div className={compact ? "card mb-3" : "card mb-4"}>
+      <div className="flex justify-between items-center mb-2">
+        <div className={compact ? "font-semibold text-sm" : "font-semibold"}>{title}</div>
+        <Link to="/screener" className="text-primary-500 text-xs">See All</Link>
       </div>
 
-      <div className="space-y-3">
+      <div className={compact ? "space-y-1" : "space-y-3"}>
         {stocks.map((stock, index) => (
           <Link
             key={stock.ticker}
             to={`/stock/${stock.ticker}`}
-            className="flex justify-between items-center py-2 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+            className={`flex justify-between items-center ${compact ? 'py-1' : 'py-2'} border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors`}
           >
-            <div className="flex items-center gap-3">
-              <div className="w-6 h-6 rounded-full bg-dark-600 flex items-center justify-center text-xs font-bold">
+            <div className="flex items-center gap-2">
+              <div className={`${compact ? 'w-5 h-5 text-[10px]' : 'w-6 h-6 text-xs'} rounded-full bg-dark-600 flex items-center justify-center font-bold`}>
                 {index + 1}
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{stock.ticker}</span>
-                  <ScoreTrend change={stock.score_change} />
-                  <WeeklyTrend trend={stock.score_trend} change={stock.trend_change} />
+                <div className="flex items-center gap-1">
+                  <span className={compact ? "font-medium text-sm" : "font-medium"}>{stock.ticker}</span>
+                  {!compact && <ScoreTrend change={stock.score_change} />}
+                  {!compact && <WeeklyTrend trend={stock.score_trend} change={stock.trend_change} />}
                   {stock.data_quality === 'low' && (
-                    <span className="text-yellow-500 text-xs" title="Limited analyst data">⚠</span>
+                    <span className="text-yellow-500 text-[10px]" title="Limited analyst data">⚠</span>
                   )}
                 </div>
-                <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>
+                {!compact && <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>}
               </div>
             </div>
-            <div className="text-right min-w-[80px]">
-              <div className={`inline-block px-2 py-1 rounded text-sm font-medium ${getScoreClass(stock.canslim_score)}`}>
+            <div className="text-right">
+              <div className={`inline-block px-1.5 py-0.5 rounded ${compact ? 'text-xs' : 'text-sm'} font-medium ${getScoreClass(stock.canslim_score)}`}>
                 {formatScore(stock.canslim_score)}
               </div>
-              <div className="text-xs mt-1">
-                <div className="text-dark-300">
-                  {stock.current_price != null ? `$${stock.current_price.toFixed(2)}` : '-'}
+              {!compact && (
+                <div className="text-xs mt-1">
+                  <div className="text-dark-300">
+                    {stock.current_price != null ? `$${stock.current_price.toFixed(2)}` : '-'}
+                  </div>
+                  <div className={stock.projected_growth != null && stock.projected_growth >= 0 ? 'text-green-400' : stock.projected_growth != null ? 'text-red-400' : 'text-dark-500'}>
+                    {stock.projected_growth != null ? `${stock.projected_growth >= 0 ? '+' : ''}${stock.projected_growth.toFixed(0)}% proj` : '-'}
+                  </div>
                 </div>
-                <div className={stock.projected_growth != null && stock.projected_growth >= 0 ? 'text-green-400' : stock.projected_growth != null ? 'text-red-400' : 'text-dark-500'}>
-                  {stock.projected_growth != null ? `${stock.projected_growth >= 0 ? '+' : ''}${stock.projected_growth.toFixed(0)}% proj` : '-'}
+              )}
+              {compact && (
+                <div className="text-[10px] text-dark-400">
+                  ${stock.current_price?.toFixed(0) || '-'}
                 </div>
+              )}
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TopGrowthStocks({ stocks, loading }) {
+  if (loading) {
+    return (
+      <div className="card mb-3">
+        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
+          <span className="text-green-400">↗</span> Top Growth Stocks
+        </div>
+        <div className="animate-pulse space-y-2">
+          {[1,2,3,4,5].map(i => <div key={i} className="h-6 bg-dark-700 rounded" />)}
+        </div>
+      </div>
+    )
+  }
+
+  if (!stocks || stocks.length === 0) {
+    return (
+      <div className="card mb-3">
+        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
+          <span className="text-green-400">↗</span> Top Growth Stocks
+        </div>
+        <div className="text-dark-400 text-xs py-4 text-center">
+          No growth stocks found yet. Run a scan to analyze stocks.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card mb-3">
+      <div className="flex justify-between items-center mb-2">
+        <div className="font-semibold text-sm flex items-center gap-2">
+          <span className="text-green-400">↗</span> Top Growth Stocks
+        </div>
+        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">Growth Mode</span>
+      </div>
+
+      <div className="space-y-1">
+        {stocks.map((stock, index) => (
+          <Link
+            key={stock.ticker}
+            to={`/stock/${stock.ticker}`}
+            className="flex justify-between items-center py-1.5 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 text-[10px] rounded-full bg-green-500/20 text-green-400 flex items-center justify-center font-bold">
+                {index + 1}
+              </div>
+              <div>
+                <div className="flex items-center gap-1">
+                  <span className="font-medium text-sm">{stock.ticker}</span>
+                  {stock.is_breaking_out && (
+                    <span className="text-[9px] bg-yellow-500/20 text-yellow-400 px-1 rounded" title="Breaking out!">BO</span>
+                  )}
+                </div>
+                <div className="text-dark-500 text-[10px]">
+                  {stock.revenue_growth_pct != null ? `Rev +${stock.revenue_growth_pct.toFixed(0)}%` : stock.sector?.slice(0,12) || '-'}
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">
+                {formatScore(stock.growth_mode_score)}
+              </div>
+              <div className="text-[10px] text-dark-400">
+                ${stock.current_price?.toFixed(0) || '-'}
               </div>
             </div>
           </Link>
         ))}
+      </div>
+
+      <div className="text-[10px] text-dark-500 mt-2 pt-2 border-t border-dark-700">
+        Growth Mode: Revenue-focused scoring for high-growth stocks
       </div>
     </div>
   )
@@ -437,20 +522,26 @@ export default function Dashboard() {
   const [scanSource, setScanSource] = useState('sp500')
   const [scanStartTime, setScanStartTime] = useState(null)
   const [scannerStatus, setScannerStatus] = useState(null)
+  const [growthStocks, setGrowthStocks] = useState(null)
+  const [growthLoading, setGrowthLoading] = useState(true)
 
   const fetchData = async () => {
     try {
       setLoading(true)
-      const [dashboard, scanner] = await Promise.all([
+      setGrowthLoading(true)
+      const [dashboard, scanner, growth] = await Promise.all([
         api.getDashboard(),
-        api.getScannerStatus().catch(() => null)
+        api.getScannerStatus().catch(() => null),
+        api.getTopGrowthStocks(10).catch(() => ({ stocks: [] }))
       ])
       setData(dashboard)
       setScannerStatus(scanner)
+      setGrowthStocks(growth?.stocks || [])
     } catch (err) {
       console.error('Failed to fetch dashboard:', err)
     } finally {
       setLoading(false)
+      setGrowthLoading(false)
     }
   }
 
@@ -581,9 +672,13 @@ export default function Dashboard() {
 
       <QuickStats stats={data?.stats} />
 
-      <TopStocksList stocks={data?.top_stocks} title="Top Rated Stocks" />
+      {/* Stock Lists Grid - 2 columns on larger screens */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
+        <TopStocksList stocks={data?.top_stocks?.slice(0, 8)} title="Top CANSLIM" compact />
+        <TopGrowthStocks stocks={growthStocks} loading={growthLoading} />
+      </div>
 
-      <TopStocksList stocks={data?.top_stocks_under_25} title="Top Under $25" />
+      <TopStocksList stocks={data?.top_stocks_under_25?.slice(0, 8)} title="Top Under $25" compact />
 
       {scanJob && scanJob.status === 'running' && (
         <ScanProgress scanJob={scanJob} scanStartTime={scanStartTime} />

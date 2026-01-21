@@ -145,7 +145,12 @@ export const api = {
       }
     })
     return request(`/api/ai-portfolio/config?${params}`, { method: 'PATCH' })
-  }
+  },
+
+  // Growth Mode Stocks
+  getTopGrowthStocks: (limit = 10) => request(`/api/top-growth-stocks?limit=${limit}`),
+
+  getBreakingOutStocks: (limit = 10) => request(`/api/stocks/breaking-out?limit=${limit}`)
 }
 
 // Formatting utilities

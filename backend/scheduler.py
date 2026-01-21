@@ -99,12 +99,13 @@ def run_continuous_scan():
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
-    from canslim_scorer import CANSLIMScorer
+    from canslim_scorer import CANSLIMScorer, GrowthModeScorer, TechnicalAnalyzer
     from data_fetcher import DataFetcher
     from growth_projector import GrowthProjector
 
     data_fetcher = DataFetcher()
     canslim_scorer = CANSLIMScorer(data_fetcher)
+    growth_mode_scorer = GrowthModeScorer(data_fetcher, canslim_scorer)
     growth_projector = GrowthProjector(data_fetcher)
 
     def analyze_stock(ticker: str) -> dict:
@@ -119,6 +120,17 @@ def run_continuous_scan():
                 stock_data=stock_data,
                 canslim_score=canslim_result
             )
+
+            # Calculate Growth Mode score if applicable
+            growth_mode_result = None
+            is_growth_stock = growth_mode_scorer.should_use_growth_mode(stock_data)
+            if is_growth_stock:
+                growth_mode_result = growth_mode_scorer.score_stock(stock_data)
+
+            # Technical analysis
+            base_pattern = TechnicalAnalyzer.detect_base_pattern(stock_data.weekly_price_history)
+            volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
+            is_breaking_out, breakout_vol = TechnicalAnalyzer.is_breaking_out(stock_data, base_pattern)
 
             return {
                 "ticker": ticker,
@@ -152,10 +164,41 @@ def run_continuous_scan():
                 "week_52_low": stock_data.low_52w,
                 "relative_strength": None,  # Could parse from l_detail if needed
                 "institutional_ownership": stock_data.institutional_holders_pct,
+                # Growth Mode scoring
+                "is_growth_stock": is_growth_stock,
+                "growth_mode_score": growth_mode_result.total_score if growth_mode_result else None,
+                "growth_mode_details": {
+                    "r": growth_mode_result.r_detail,
+                    "f": growth_mode_result.f_detail,
+                    "n": growth_mode_result.n_detail,
+                    "s": growth_mode_result.s_detail,
+                    "l": growth_mode_result.l_detail,
+                    "i": growth_mode_result.i_detail,
+                    "m": growth_mode_result.m_detail,
+                } if growth_mode_result else None,
+                # Enhanced earnings
+                "eps_acceleration": len(stock_data.quarterly_earnings) >= 5 and canslim_result.c_detail and "+accel" in canslim_result.c_detail,
+                "earnings_surprise_pct": stock_data.earnings_surprise_pct,
+                "revenue_growth_pct": _calc_revenue_growth(stock_data),
+                # Technical analysis
+                "volume_ratio": volume_ratio,
+                "weeks_in_base": base_pattern.get("weeks", 0),
+                "base_type": base_pattern.get("type", "none"),
+                "is_breaking_out": is_breaking_out,
+                "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
             }
         except Exception as e:
             logger.error(f"Error analyzing {ticker}: {e}")
             return None
+
+    def _calc_revenue_growth(stock_data) -> float:
+        """Calculate YoY revenue growth percentage"""
+        if stock_data.quarterly_revenue and len(stock_data.quarterly_revenue) >= 5:
+            current = stock_data.quarterly_revenue[0]
+            prior = stock_data.quarterly_revenue[4]
+            if prior > 0:
+                return round(((current - prior) / prior) * 100, 1)
+        return None
 
     def save_stock_to_db(db, analysis: dict):
         """Save analysis to database with historical tracking"""
@@ -203,6 +246,23 @@ def run_continuous_scan():
         stock.relative_strength = analysis.get("relative_strength")
         stock.institutional_ownership = analysis.get("institutional_ownership")
         stock.last_updated = datetime.utcnow()
+
+        # Growth Mode scoring
+        stock.growth_mode_score = analysis.get("growth_mode_score")
+        stock.growth_mode_details = analysis.get("growth_mode_details")
+        stock.is_growth_stock = analysis.get("is_growth_stock", False)
+
+        # Enhanced earnings analysis
+        stock.eps_acceleration = analysis.get("eps_acceleration")
+        stock.earnings_surprise_pct = analysis.get("earnings_surprise_pct")
+        stock.revenue_growth_pct = analysis.get("revenue_growth_pct")
+
+        # Technical analysis
+        stock.volume_ratio = analysis.get("volume_ratio")
+        stock.weeks_in_base = analysis.get("weeks_in_base")
+        stock.base_type = analysis.get("base_type")
+        stock.is_breaking_out = analysis.get("is_breaking_out", False)
+        stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
 
         # Save historical score (one per scan for granular backtesting data)
         today = date.today()

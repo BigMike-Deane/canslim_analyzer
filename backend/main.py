@@ -829,6 +829,89 @@ async def get_sectors(db: Session = Depends(get_db)):
     return [s[0] for s in sectors if s[0]]
 
 
+@app.get("/api/top-growth-stocks")
+async def get_top_growth_stocks(
+    db: Session = Depends(get_db),
+    limit: int = Query(10, le=50)
+):
+    """
+    Get top stocks by Growth Mode score.
+    Growth Mode scoring is designed for pre-revenue/high-growth companies.
+    """
+    # Get current market M score
+    latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    current_m_score = latest_market.market_score if latest_market else 0
+
+    # Query stocks with growth_mode_score
+    stocks = db.query(Stock).filter(
+        Stock.growth_mode_score.isnot(None),
+        Stock.growth_mode_score >= 50,  # Minimum threshold
+        Stock.current_price > 0
+    ).order_by(
+        desc(Stock.growth_mode_score)
+    ).limit(limit).all()
+
+    return {
+        "stocks": [{
+            "ticker": s.ticker,
+            "name": s.name,
+            "sector": s.sector,
+            "growth_mode_score": s.growth_mode_score,
+            "growth_mode_details": s.growth_mode_details,
+            "canslim_score": s.canslim_score,
+            "is_growth_stock": s.is_growth_stock,
+            "projected_growth": s.projected_growth,
+            "growth_confidence": s.growth_confidence,
+            "current_price": s.current_price,
+            "market_cap": s.market_cap,
+            "week_52_high": s.week_52_high,
+            "revenue_growth_pct": s.revenue_growth_pct,
+            "is_breaking_out": s.is_breaking_out,
+            "volume_ratio": s.volume_ratio,
+            "base_type": s.base_type,
+            "weeks_in_base": s.weeks_in_base,
+            "last_updated": s.last_updated.isoformat() if s.last_updated else None
+        } for s in stocks],
+        "total": len(stocks),
+        "current_m_score": current_m_score
+    }
+
+
+@app.get("/api/stocks/breaking-out")
+async def get_breaking_out_stocks(
+    db: Session = Depends(get_db),
+    limit: int = Query(10, le=50)
+):
+    """
+    Get stocks that are currently breaking out of base patterns.
+    These are high-probability buy points in CANSLIM methodology.
+    """
+    stocks = db.query(Stock).filter(
+        Stock.is_breaking_out == True,
+        Stock.canslim_score >= 60,
+        Stock.current_price > 0
+    ).order_by(
+        desc(Stock.canslim_score)
+    ).limit(limit).all()
+
+    return {
+        "stocks": [{
+            "ticker": s.ticker,
+            "name": s.name,
+            "sector": s.sector,
+            "canslim_score": s.canslim_score,
+            "growth_mode_score": s.growth_mode_score,
+            "current_price": s.current_price,
+            "week_52_high": s.week_52_high,
+            "base_type": s.base_type,
+            "weeks_in_base": s.weeks_in_base,
+            "breakout_volume_ratio": s.breakout_volume_ratio,
+            "projected_growth": s.projected_growth
+        } for s in stocks],
+        "total": len(stocks)
+    }
+
+
 # ============== Single Stock Analysis ==============
 
 @app.get("/api/stocks/{ticker}")

@@ -45,6 +45,177 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
     return config
 
 
+# Sector concentration and correlation settings
+MAX_SECTOR_ALLOCATION = 0.30  # 30% max per sector
+MAX_STOCKS_PER_SECTOR = 4  # Max stocks in same sector
+MAX_POSITION_ALLOCATION = 0.15  # 15% max single position (for pyramiding)
+
+
+def get_sector_allocations(db: Session) -> dict:
+    """Calculate current allocation by sector"""
+    positions = db.query(AIPortfolioPosition).all()
+    portfolio_value = get_portfolio_value(db)["total_value"]
+
+    if portfolio_value <= 0:
+        return {}
+
+    sector_values = {}
+    sector_counts = {}
+
+    for position in positions:
+        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+        sector = stock.sector if stock and stock.sector else "Unknown"
+
+        sector_values[sector] = sector_values.get(sector, 0) + (position.current_value or 0)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+    return {
+        "allocations": {s: v / portfolio_value for s, v in sector_values.items()},
+        "counts": sector_counts,
+        "portfolio_value": portfolio_value
+    }
+
+
+def check_sector_limit(db: Session, ticker: str, buy_amount: float) -> tuple[float, str]:
+    """
+    Check if a buy would exceed sector limits.
+    Returns: (adjusted_amount, reason)
+    - If sector limit would be exceeded, reduce the buy amount
+    - If already at max stocks in sector, return 0
+    """
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    sector = stock.sector if stock and stock.sector else "Unknown"
+
+    sector_info = get_sector_allocations(db)
+    portfolio_value = sector_info.get("portfolio_value", 0)
+    current_allocation = sector_info.get("allocations", {}).get(sector, 0)
+    current_count = sector_info.get("counts", {}).get(sector, 0)
+
+    # Check stock count limit
+    if current_count >= MAX_STOCKS_PER_SECTOR:
+        return 0, f"Max {MAX_STOCKS_PER_SECTOR} stocks in {sector}"
+
+    # Check allocation limit
+    if portfolio_value > 0:
+        new_allocation = current_allocation + (buy_amount / portfolio_value)
+        if new_allocation > MAX_SECTOR_ALLOCATION:
+            # Calculate how much we can still buy
+            remaining_room = MAX_SECTOR_ALLOCATION - current_allocation
+            if remaining_room <= 0.02:  # Less than 2% room
+                return 0, f"Sector {sector} at {current_allocation*100:.0f}% (max {MAX_SECTOR_ALLOCATION*100:.0f}%)"
+            adjusted_amount = remaining_room * portfolio_value
+            return adjusted_amount, f"Reduced for sector limit"
+
+    return buy_amount, ""
+
+
+def check_correlation(db: Session, ticker: str) -> tuple[str, str]:
+    """
+    Check correlation with existing positions.
+    Returns: (status, detail)
+    - "ok": Low correlation, proceed normally
+    - "high_correlation": Already have 3+ stocks in same sector
+    """
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    sector = stock.sector if stock and stock.sector else "Unknown"
+
+    sector_info = get_sector_allocations(db)
+    current_count = sector_info.get("counts", {}).get(sector, 0)
+
+    if current_count >= 3:
+        return "high_correlation", f"Already own {current_count} stocks in {sector}"
+
+    return "ok", ""
+
+
+def evaluate_pyramids(db: Session) -> list:
+    """
+    Evaluate existing positions for pyramid opportunities.
+    Pyramid = add to a winning position that's still strong.
+
+    Criteria:
+    - Position is profitable (5%+ gain)
+    - Current score is still high (70+)
+    - Not already at max position size (15%)
+    - Stock is showing accumulation (good volume)
+    """
+    config = get_or_create_config(db)
+    positions = db.query(AIPortfolioPosition).all()
+    portfolio = get_portfolio_value(db)
+    portfolio_value = portfolio["total_value"]
+
+    pyramids = []
+
+    for position in positions:
+        if not position.current_price or not position.current_score:
+            continue
+
+        gain_pct = position.gain_loss_pct or 0
+        score = position.current_score or 0
+        current_allocation = (position.current_value or 0) / portfolio_value if portfolio_value > 0 else 0
+
+        # Skip if position is losing or score is weak
+        if gain_pct < 5 or score < 70:
+            continue
+
+        # Skip if already at max position size
+        if current_allocation >= MAX_POSITION_ALLOCATION:
+            continue
+
+        # Skip if not enough cash
+        if config.current_cash < 200:
+            continue
+
+        # Get stock data for additional checks
+        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+        if not stock:
+            continue
+
+        # Prefer stocks that are breaking out or showing accumulation
+        is_breaking_out = getattr(stock, 'is_breaking_out', False)
+        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+
+        # Calculate pyramid amount (50% of original position)
+        original_cost = position.shares * position.cost_basis
+        pyramid_amount = original_cost * 0.5
+
+        # Cap by remaining room in position
+        remaining_room = (MAX_POSITION_ALLOCATION - current_allocation) * portfolio_value
+        pyramid_amount = min(pyramid_amount, remaining_room, config.current_cash * 0.5)
+
+        if pyramid_amount < 100:
+            continue
+
+        # Check sector limits
+        adjusted_amount, limit_reason = check_sector_limit(db, position.ticker, pyramid_amount)
+        if adjusted_amount < 100:
+            continue
+        pyramid_amount = adjusted_amount
+
+        # Priority: higher for breakouts and strong volume
+        priority = 0
+        reason_parts = [f"Winner +{gain_pct:.0f}%", f"Score {score:.0f}"]
+
+        if is_breaking_out:
+            priority -= 20
+            reason_parts.append("Breakout!")
+        if volume_ratio >= 1.5:
+            priority -= 10
+            reason_parts.append(f"Vol {volume_ratio:.1f}x")
+
+        pyramids.append({
+            "position": position,
+            "amount": pyramid_amount,
+            "shares": pyramid_amount / position.current_price,
+            "reason": " | ".join(reason_parts),
+            "priority": priority
+        })
+
+    # Sort by priority (breakouts first)
+    pyramids.sort(key=lambda x: x["priority"])
+    return pyramids
+
+
 def get_portfolio_value(db: Session) -> dict:
     """Calculate current portfolio value"""
     config = get_or_create_config(db)
@@ -305,13 +476,24 @@ def evaluate_buys(db: Session) -> list:
         # Calculate position size - larger for higher conviction
         portfolio_value = get_portfolio_value(db)["total_value"]
 
+        # Check correlation - reduce position for highly correlated sectors
+        correlation_status, correlation_detail = check_correlation(db, stock.ticker)
+        correlation_penalty = 0.7 if correlation_status == "high_correlation" else 1.0
+
         # Scale position size by conviction (6-12% based on composite score)
         conviction_multiplier = min(composite_score / 60, 1.0)  # 0.5 to 1.0
         position_pct = 6.0 + (conviction_multiplier * 6.0)  # 6% to 12%
+        position_pct *= correlation_penalty  # Reduce for high correlation
         max_position_value = portfolio_value * (position_pct / 100)
 
         # Don't exceed available cash
         position_value = min(max_position_value, config.current_cash * 0.90)
+
+        # Check sector limits
+        adjusted_value, sector_reason = check_sector_limit(db, stock.ticker, position_value)
+        if adjusted_value < 100:
+            continue  # Skip if sector limit would be exceeded
+        position_value = adjusted_value
 
         if position_value < 100:  # Minimum $100 position
             continue
@@ -435,6 +617,70 @@ def run_ai_trading_cycle(db: Session) -> dict:
             "gain_loss": position.gain_loss,
             "reason": sell["reason"]
         })
+
+    db.commit()
+
+    # Evaluate and execute pyramid trades (add to winners)
+    pyramids = evaluate_pyramids(db)
+    results["pyramids_executed"] = []
+    results["pyramids_considered"] = len(pyramids)
+
+    if pyramids:
+        logger.info(f"Pyramid opportunities found: {len(pyramids)}")
+
+    for pyramid in pyramids[:3]:  # Limit to 3 pyramids per cycle
+        position = pyramid["position"]
+
+        # Fetch live price
+        live_price = fetch_live_price(position.ticker)
+        if not live_price:
+            live_price = position.current_price
+        if not live_price or live_price <= 0:
+            continue
+
+        time.sleep(0.3)
+
+        # Recalculate with live price
+        actual_value = min(pyramid["amount"], config.current_cash * 0.5)
+        if actual_value < 100:
+            continue
+
+        actual_shares = actual_value / live_price
+
+        if config.current_cash < actual_value:
+            continue
+
+        # Execute the pyramid buy
+        execute_trade(
+            db=db,
+            ticker=position.ticker,
+            action="BUY",
+            shares=actual_shares,
+            price=live_price,
+            reason=f"PYRAMID: {pyramid['reason']}",
+            score=position.current_score
+        )
+
+        # Deduct cash
+        config.current_cash -= actual_value
+
+        # Update position (add shares, recalculate cost basis)
+        total_cost = (position.shares * position.cost_basis) + actual_value
+        position.shares += actual_shares
+        position.cost_basis = total_cost / position.shares
+        position.current_value = position.shares * live_price
+        position.gain_loss = position.current_value - total_cost
+        position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
+
+        results["pyramids_executed"].append({
+            "ticker": position.ticker,
+            "shares_added": actual_shares,
+            "price": live_price,
+            "value": actual_value,
+            "reason": pyramid["reason"]
+        })
+
+        logger.info(f"PYRAMID {position.ticker}: +{actual_shares:.2f} shares @ ${live_price:.2f}")
 
     db.commit()
 

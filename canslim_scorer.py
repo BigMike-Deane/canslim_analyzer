@@ -78,13 +78,15 @@ class CANSLIMScorer:
     def _score_current_earnings(self, data: StockData) -> tuple[float, str]:
         """
         C - Current Quarterly Earnings (15 pts max)
-        REFINED: Uses TTM comparison + EPS acceleration bonus.
-        - Base: TTM EPS growth vs prior year (up to 12 pts)
+        REFINED: Uses TTM comparison + bonuses for acceleration and earnings surprise.
+        - Base: TTM EPS growth vs prior year (up to 10 pts)
         - Bonus: EPS acceleration (current Q growth > prior Q growth) (up to 3 pts)
+        - Bonus: Earnings surprise (beat estimates by 5%+) (up to 2 pts)
         """
         max_score = self.MAX_SCORES['C']
-        base_max = 12  # Base score for TTM growth
+        base_max = 10  # Base score for TTM growth
         accel_max = 3  # Bonus for acceleration
+        surprise_max = 2  # Bonus for earnings surprise
 
         # Need at least 8 quarters for TTM vs prior TTM comparison
         if len(data.quarterly_earnings) < 8:
@@ -123,7 +125,7 @@ class CANSLIMScorer:
             else:
                 ttm_growth = max(-100, min(200, ttm_growth))
 
-        # Base score from TTM growth (up to 12 pts)
+        # Base score from TTM growth (up to 10 pts)
         if ttm_growth >= 25:
             base_score = base_max
         elif ttm_growth >= 0:
@@ -157,8 +159,28 @@ class CANSLIMScorer:
                     accel_score = accel_max * 0.5
                     accel_detail = " steady"
 
-        total_score = min(base_score + accel_score, max_score)
-        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}"
+        # Earnings surprise bonus (up to 2 pts)
+        # Reward companies that beat analyst estimates
+        surprise_score = 0
+        surprise_detail = ""
+        earnings_surprise = getattr(data, 'earnings_surprise_pct', 0) or 0
+        eps_beat_streak = getattr(data, 'eps_beat_streak', 0) or 0
+
+        if earnings_surprise >= 10:
+            surprise_score = surprise_max
+            surprise_detail = f" +beat {earnings_surprise:.0f}%"
+        elif earnings_surprise >= 5:
+            surprise_score = surprise_max * 0.75
+            surprise_detail = f" +beat"
+        elif earnings_surprise > 0:
+            surprise_score = surprise_max * 0.5
+
+        # Extra bonus for consistent beats
+        if eps_beat_streak >= 4:
+            surprise_score = min(surprise_score + 0.5, surprise_max)
+
+        total_score = min(base_score + accel_score + surprise_score, max_score)
+        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{surprise_detail}"
 
     def _score_earnings_with_anomaly_filter(self, data: StockData, max_score: float) -> tuple[float, str]:
         """
@@ -499,6 +521,381 @@ class CANSLIMScorer:
         self._market_detail = detail
 
         return self._market_score, self._market_detail
+
+
+@dataclass
+class GrowthModeScore:
+    """Container for Growth Mode scores (alternative for pre-revenue companies)"""
+    ticker: str
+    total_score: float = 0.0
+    is_growth_stock: bool = True  # Flag to indicate this uses growth mode
+
+    # Individual scores (max points in parentheses)
+    r_score: float = 0.0  # Revenue Growth (20)
+    f_score: float = 0.0  # Funding/Financial Health (15)
+    n_score: float = 0.0  # New Highs (15)
+    s_score: float = 0.0  # Supply & Demand (15)
+    l_score: float = 0.0  # Leader vs Laggard (15)
+    i_score: float = 0.0  # Institutional Ownership (10)
+    m_score: float = 0.0  # Market Direction (10)
+
+    # Details for display
+    r_detail: str = ""
+    f_detail: str = ""
+    n_detail: str = ""
+    s_detail: str = ""
+    l_detail: str = ""
+    i_detail: str = ""
+    m_detail: str = ""
+
+
+class GrowthModeScorer:
+    """
+    Alternative scoring for pre-revenue/high-growth companies.
+
+    Unlike traditional CANSLIM which penalizes companies without earnings,
+    Growth Mode evaluates companies based on:
+    - R: Revenue growth (replaces C+A earnings metrics)
+    - F: Funding health (cash runway, debt levels)
+    - N: New highs (same as CANSLIM)
+    - S: Supply & demand (same as CANSLIM)
+    - L: Leader (same as CANSLIM)
+    - I: Institutional (same as CANSLIM)
+    - M: Market (same as CANSLIM)
+    """
+
+    MAX_SCORES = {
+        'R': 20,  # Revenue replaces C+A
+        'F': 15,  # Funding health
+        'N': 15,
+        'S': 15,
+        'L': 15,
+        'I': 10,
+        'M': 10,  # Slightly reduced to balance R
+    }
+
+    def __init__(self, data_fetcher: DataFetcher, canslim_scorer: CANSLIMScorer = None):
+        self.fetcher = data_fetcher
+        # Reuse CANSLIM scorer for common methods
+        self.canslim_scorer = canslim_scorer or CANSLIMScorer(data_fetcher)
+
+    def should_use_growth_mode(self, stock_data: StockData) -> bool:
+        """
+        Determine if a stock should be scored using Growth Mode.
+        Criteria:
+        - Pre-revenue or negative earnings (last 4 quarters)
+        - High revenue growth (50%+ YoY) even if profitable
+        """
+        # Check if company has negative or no earnings
+        if stock_data.quarterly_earnings:
+            recent_earnings = stock_data.quarterly_earnings[:4]
+            if all(e <= 0 for e in recent_earnings if e is not None):
+                return True  # Pre-revenue or loss-making
+            # Check for very low earnings relative to revenue
+            if stock_data.quarterly_revenue and recent_earnings:
+                revenue_sum = sum(stock_data.quarterly_revenue[:4])
+                earnings_sum = sum(recent_earnings)
+                if revenue_sum > 0 and earnings_sum / revenue_sum < 0.01:
+                    return True  # Minimal profit margin (early stage)
+
+        # Check for high revenue growth (even if profitable)
+        if len(stock_data.quarterly_revenue) >= 5:
+            current_q_rev = stock_data.quarterly_revenue[0]
+            prior_year_q_rev = stock_data.quarterly_revenue[4]
+            if prior_year_q_rev > 0:
+                rev_growth = ((current_q_rev - prior_year_q_rev) / prior_year_q_rev) * 100
+                if rev_growth >= 50:
+                    return True  # High-growth company
+
+        return False
+
+    def score_stock(self, stock_data: StockData) -> GrowthModeScore:
+        """Calculate Growth Mode score for a stock"""
+        score = GrowthModeScore(ticker=stock_data.ticker)
+
+        if not stock_data.is_valid:
+            return score
+
+        # Calculate each criterion
+        score.r_score, score.r_detail = self._score_revenue_growth(stock_data)
+        score.f_score, score.f_detail = self._score_funding_health(stock_data)
+
+        # Reuse CANSLIM scoring for these components
+        score.n_score, score.n_detail = self.canslim_scorer._score_new_highs(stock_data)
+        score.s_score, score.s_detail = self.canslim_scorer._score_supply_demand(stock_data)
+        score.l_score, score.l_detail = self.canslim_scorer._score_leader(stock_data)
+        score.i_score, score.i_detail = self.canslim_scorer._score_institutional(stock_data)
+
+        # Market score (slightly reduced max for Growth Mode)
+        m_score, m_detail = self.canslim_scorer._score_market()
+        # Scale from 15 to 10 max
+        score.m_score = round(m_score * (10 / 15), 1)
+        score.m_detail = m_detail
+
+        score.total_score = (
+            score.r_score + score.f_score + score.n_score +
+            score.s_score + score.l_score + score.i_score + score.m_score
+        )
+
+        return score
+
+    def _score_revenue_growth(self, data: StockData) -> tuple[float, str]:
+        """
+        R - Revenue Growth (20 pts max)
+        Replaces C+A for growth stocks. Focuses on revenue momentum.
+        - YoY quarterly revenue growth (up to 15 pts)
+        - Revenue acceleration bonus (up to 5 pts)
+        """
+        max_score = self.MAX_SCORES['R']
+        growth_max = 15
+        accel_max = 5
+
+        if not data.quarterly_revenue or len(data.quarterly_revenue) < 5:
+            # Try to use annual revenue
+            if data.annual_revenue and len(data.annual_revenue) >= 2:
+                current = data.annual_revenue[0]
+                prior = data.annual_revenue[1]
+                if prior > 0:
+                    growth = ((current - prior) / prior) * 100
+                    score = self._revenue_growth_to_score(growth, growth_max)
+                    return round(score, 1), f"Annual rev: {growth:+.0f}%"
+            return 0, "No revenue data"
+
+        # Calculate YoY quarterly revenue growth
+        current_q = data.quarterly_revenue[0]
+        prior_year_q = data.quarterly_revenue[4] if len(data.quarterly_revenue) > 4 else 0
+
+        if prior_year_q <= 0:
+            if current_q > 0:
+                return max_score * 0.6, "New revenue"
+            return 0, "No revenue"
+
+        yoy_growth = ((current_q - prior_year_q) / prior_year_q) * 100
+
+        # Base score from YoY growth
+        growth_score = self._revenue_growth_to_score(yoy_growth, growth_max)
+
+        # Revenue acceleration bonus
+        accel_score = 0
+        accel_detail = ""
+        if len(data.quarterly_revenue) >= 6:
+            # Compare current quarter's YoY growth to previous quarter's YoY growth
+            prev_q = data.quarterly_revenue[1]
+            prev_prior_year_q = data.quarterly_revenue[5] if len(data.quarterly_revenue) > 5 else 0
+
+            if prev_prior_year_q > 0:
+                prev_yoy_growth = ((prev_q - prev_prior_year_q) / prev_prior_year_q) * 100
+
+                if yoy_growth > prev_yoy_growth and yoy_growth > 0:
+                    accel_score = accel_max
+                    accel_detail = " +accel"
+                elif yoy_growth >= prev_yoy_growth * 0.9 and yoy_growth > 20:
+                    accel_score = accel_max * 0.5
+                    accel_detail = " steady"
+
+        total_score = min(growth_score + accel_score, max_score)
+        return round(total_score, 1), f"Rev YoY: {yoy_growth:+.0f}%{accel_detail}"
+
+    def _revenue_growth_to_score(self, growth_pct: float, max_score: float) -> float:
+        """Convert revenue growth percentage to a score"""
+        if growth_pct >= 50:
+            return max_score
+        elif growth_pct >= 30:
+            return max_score * 0.85
+        elif growth_pct >= 20:
+            return max_score * 0.7
+        elif growth_pct >= 10:
+            return max_score * 0.5
+        elif growth_pct >= 0:
+            return max_score * 0.3
+        else:
+            # Declining revenue
+            return max(0, max_score * 0.1 * (1 + growth_pct / 50))
+
+    def _score_funding_health(self, data: StockData) -> tuple[float, str]:
+        """
+        F - Funding/Financial Health (15 pts max)
+        For pre-revenue companies, cash runway and debt levels matter.
+        - Cash runway estimation (up to 10 pts)
+        - Debt-to-cash ratio (up to 5 pts)
+        """
+        max_score = self.MAX_SCORES['F']
+        runway_max = 10
+        debt_max = 5
+
+        cash = data.cash_and_equivalents
+        debt = data.total_debt
+
+        # If no balance sheet data, give partial neutral score
+        if cash <= 0 and debt <= 0:
+            # Check for institutional backing as proxy
+            if data.institutional_holders_pct >= 30:
+                return max_score * 0.5, "No data (inst. backed)"
+            return max_score * 0.3, "No balance sheet data"
+
+        # Estimate quarterly cash burn from operating losses
+        burn_rate = 0
+        if data.quarterly_earnings and len(data.quarterly_earnings) >= 2:
+            recent_earnings = data.quarterly_earnings[:2]
+            avg_loss = sum(e for e in recent_earnings if e < 0) / max(1, len([e for e in recent_earnings if e < 0]))
+            if avg_loss < 0:
+                # Rough estimate: loss * shares outstanding = quarterly burn
+                shares = data.shares_outstanding if data.shares_outstanding > 0 else 1
+                burn_rate = abs(avg_loss) * shares
+
+        # Cash runway scoring
+        runway_score = 0
+        runway_detail = ""
+
+        if burn_rate > 0 and cash > 0:
+            quarters_runway = cash / burn_rate
+            if quarters_runway >= 12:  # 3+ years
+                runway_score = runway_max
+                runway_detail = f"{quarters_runway:.0f}Q runway"
+            elif quarters_runway >= 8:  # 2+ years
+                runway_score = runway_max * 0.8
+                runway_detail = f"{quarters_runway:.0f}Q runway"
+            elif quarters_runway >= 4:  # 1+ years
+                runway_score = runway_max * 0.5
+                runway_detail = f"{quarters_runway:.0f}Q runway"
+            else:
+                runway_score = runway_max * 0.2
+                runway_detail = f"Low runway ({quarters_runway:.0f}Q)"
+        elif cash > 0:
+            # Profitable or no burn rate data - just check if they have cash
+            if cash >= 100_000_000:  # $100M+
+                runway_score = runway_max * 0.9
+                runway_detail = f"${cash/1e9:.1f}B cash"
+            elif cash >= 50_000_000:  # $50M+
+                runway_score = runway_max * 0.7
+                runway_detail = f"${cash/1e6:.0f}M cash"
+            else:
+                runway_score = runway_max * 0.4
+                runway_detail = f"${cash/1e6:.0f}M cash"
+
+        # Debt-to-cash ratio scoring
+        debt_score = 0
+        debt_detail = ""
+
+        if cash > 0:
+            debt_ratio = debt / cash if debt > 0 else 0
+            if debt_ratio <= 0.3:  # Very low debt
+                debt_score = debt_max
+                debt_detail = ", low debt"
+            elif debt_ratio <= 0.7:  # Manageable debt
+                debt_score = debt_max * 0.7
+                debt_detail = ", mod debt"
+            elif debt_ratio <= 1.5:  # High but covered
+                debt_score = debt_max * 0.4
+                debt_detail = ", high debt"
+            else:
+                debt_detail = ", excess debt"
+        else:
+            # No cash data, just check debt level
+            if debt <= 0:
+                debt_score = debt_max * 0.8
+                debt_detail = ", no debt"
+            elif debt < 50_000_000:
+                debt_score = debt_max * 0.5
+                debt_detail = f", ${debt/1e6:.0f}M debt"
+
+        total_score = min(runway_score + debt_score, max_score)
+        return round(total_score, 1), f"{runway_detail}{debt_detail}"
+
+
+class TechnicalAnalyzer:
+    """Technical analysis helpers for base detection and breakout alerts"""
+
+    @staticmethod
+    def detect_base_pattern(weekly_data: list) -> dict:
+        """
+        Detect consolidation base patterns from weekly price data.
+        Returns: {type: 'flat'|'cup'|'none', weeks: int, pivot_price: float}
+        """
+        if not weekly_data or len(weekly_data) < 5:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Filter out None values and get valid weeks
+        valid_weeks = [w for w in weekly_data if w.get("high") and w.get("low") and w.get("close")]
+        if len(valid_weeks) < 5:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Calculate weekly ranges (high-low as % of close)
+        weekly_ranges = []
+        for week in valid_weeks[-12:]:  # Last 12 weeks
+            if week["close"] > 0:
+                range_pct = (week["high"] - week["low"]) / week["close"]
+                weekly_ranges.append(range_pct)
+
+        if not weekly_ranges:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Flat base detection: tight weekly ranges (<15%) for 5+ weeks
+        tight_weeks = sum(1 for r in weekly_ranges if r < 0.15)
+
+        if tight_weeks >= 5:
+            # Find the highest high in the base (pivot point)
+            recent_highs = [w["high"] for w in valid_weeks[-tight_weeks:]]
+            pivot_price = max(recent_highs) if recent_highs else 0
+            return {
+                "type": "flat",
+                "weeks": tight_weeks,
+                "pivot_price": pivot_price
+            }
+
+        # Cup pattern detection (simplified): look for decline, bottom, recovery
+        if len(valid_weeks) >= 10:
+            closes = [w["close"] for w in valid_weeks[-10:]]
+            highs = [w["high"] for w in valid_weeks[-10:]]
+
+            # Find the bottom
+            min_idx = closes.index(min(closes))
+            max_before = max(closes[:min_idx+1]) if min_idx > 0 else closes[0]
+            max_after = max(closes[min_idx:]) if min_idx < len(closes) else closes[-1]
+
+            # Check for cup shape: declined 15%+, then recovered most of it
+            decline = (max_before - closes[min_idx]) / max_before if max_before > 0 else 0
+            recovery = (max_after - closes[min_idx]) / closes[min_idx] if closes[min_idx] > 0 else 0
+
+            if decline >= 0.15 and recovery >= decline * 0.8:
+                pivot_price = max(highs)
+                return {
+                    "type": "cup",
+                    "weeks": len(valid_weeks),
+                    "pivot_price": pivot_price
+                }
+
+        return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+    @staticmethod
+    def calculate_volume_ratio(stock_data: StockData) -> float:
+        """Calculate current volume vs 50-day average"""
+        if stock_data.avg_volume_50d > 0 and stock_data.current_volume > 0:
+            return stock_data.current_volume / stock_data.avg_volume_50d
+        return 1.0
+
+    @staticmethod
+    def is_breaking_out(stock_data: StockData, base_pattern: dict) -> tuple[bool, float]:
+        """
+        Check if stock is breaking out of its base.
+        Returns: (is_breaking_out, volume_ratio)
+        """
+        if base_pattern["type"] == "none" or base_pattern["pivot_price"] <= 0:
+            return False, 1.0
+
+        pivot = base_pattern["pivot_price"]
+        current = stock_data.current_price
+
+        # Breakout = price within 5% above pivot with elevated volume
+        if current > 0 and pivot > 0:
+            pct_above_pivot = (current - pivot) / pivot
+
+            if 0 <= pct_above_pivot <= 0.05:  # Within 5% above pivot
+                vol_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
+                if vol_ratio >= 1.4:  # 40%+ above average volume
+                    return True, vol_ratio
+
+        return False, TechnicalAnalyzer.calculate_volume_ratio(stock_data)
 
 
 if __name__ == "__main__":

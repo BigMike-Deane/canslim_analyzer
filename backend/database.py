@@ -2,7 +2,7 @@
 Database models for CANSLIM Analyzer Web App
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, Index
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, Index, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, date
@@ -60,6 +60,20 @@ def run_migrations():
         # StockScore enhancements for backtesting
         ("stock_scores", "timestamp", "DATETIME"),
         ("stock_scores", "week_52_high", "FLOAT"),
+        # Growth Mode Scoring
+        ("stocks", "growth_mode_score", "FLOAT"),
+        ("stocks", "growth_mode_details", "TEXT"),  # JSON stored as TEXT in SQLite
+        ("stocks", "is_growth_stock", "BOOLEAN"),
+        # Enhanced Earnings Analysis
+        ("stocks", "eps_acceleration", "BOOLEAN"),
+        ("stocks", "earnings_surprise_pct", "FLOAT"),
+        ("stocks", "revenue_growth_pct", "FLOAT"),
+        # Technical Analysis
+        ("stocks", "volume_ratio", "FLOAT"),
+        ("stocks", "weeks_in_base", "INTEGER"),
+        ("stocks", "base_type", "TEXT"),
+        ("stocks", "is_breaking_out", "BOOLEAN"),
+        ("stocks", "breakout_volume_ratio", "FLOAT"),
     ]
 
     for table, column, col_type in migrations:
@@ -135,6 +149,8 @@ def run_migrations():
         ('ix_stocks_score_price', 'stocks', 'canslim_score, current_price'),
         ('ix_stock_scores_stock_date', 'stock_scores', 'stock_id, date'),
         ('ix_stock_scores_stock_timestamp', 'stock_scores', 'stock_id, timestamp'),
+        ('ix_stocks_growth_mode', 'stocks', 'growth_mode_score'),
+        ('ix_stocks_breaking_out', 'stocks', 'is_breaking_out'),
     ]
     for idx_name, table, columns in index_migrations:
         try:
@@ -178,6 +194,23 @@ class Stock(Base):
     # Growth projection
     projected_growth = Column(Float)
     growth_confidence = Column(String)  # low, medium, high
+
+    # Growth Mode Scoring (alternative scoring for pre-revenue companies)
+    growth_mode_score = Column(Float)  # 0-100 score using growth mode criteria
+    growth_mode_details = Column(JSON)  # Component breakdown: R, F, N, S, L, I, M
+    is_growth_stock = Column(Boolean, default=False)  # True if pre-revenue or high-growth
+
+    # Enhanced Earnings Analysis
+    eps_acceleration = Column(Boolean)  # True if EPS accelerating quarter over quarter
+    earnings_surprise_pct = Column(Float)  # Latest earnings surprise %
+    revenue_growth_pct = Column(Float)  # YoY revenue growth %
+
+    # Technical Analysis
+    volume_ratio = Column(Float)  # Current volume vs 50-day average
+    weeks_in_base = Column(Integer)  # Weeks of consolidation
+    base_type = Column(String)  # 'flat', 'cup', 'none'
+    is_breaking_out = Column(Boolean, default=False)  # Price breaking out with volume
+    breakout_volume_ratio = Column(Float)  # Volume surge on breakout day
 
     # Metadata
     last_updated = Column(DateTime, default=datetime.utcnow)
