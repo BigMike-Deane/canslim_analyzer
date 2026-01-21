@@ -760,9 +760,9 @@ export default function Dashboard() {
 
       {/* Stock Lists Grid - 2x2 on larger screens */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-        <TopStocksList stocks={data?.top_stocks?.slice(0, 8)} title="Top CANSLIM" compact />
+        <TopStocksList stocks={data?.top_stocks?.slice(0, 10)} title="Top CANSLIM" compact />
         <TopGrowthStocks stocks={growthStocks} loading={growthLoading} />
-        <TopStocksList stocks={data?.top_stocks_under_25?.slice(0, 8)} title="Top Under $25" compact />
+        <TopStocksList stocks={data?.top_stocks_under_25?.slice(0, 10)} title="Top Under $25" compact />
         <BreakingOutStocks stocks={breakoutStocks} loading={breakoutLoading} />
       </div>
 
