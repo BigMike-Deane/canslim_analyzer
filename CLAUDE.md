@@ -66,6 +66,90 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 
 ## Recent Improvements (Jan 2025)
 
+### Growth Mode Scoring + Dual Portfolio Management (Jan 20)
+
+**Problem Solved**: Pre-revenue growth stocks (like LCTX) scored 0 on CANSLIM because they have no earnings. Now they get properly evaluated.
+
+**Growth Mode Scoring (100 points)**:
+| Component | Points | Criteria |
+|-----------|--------|----------|
+| R (Revenue) | 20 | Revenue growth rate YoY |
+| F (Funding) | 15 | Cash runway, institutional backing |
+| N (New Highs) | 15 | Price proximity to 52-week high |
+| S (Supply) | 15 | Volume surge patterns |
+| L (Leader) | 15 | Relative strength vs market |
+| I (Institutional) | 10 | Same as CANSLIM |
+| M (Market) | 10 | Same as CANSLIM |
+
+**AI Trader Updates**:
+- Queries both CANSLIM AND Growth Mode stocks for buy candidates
+- Uses `get_effective_score()` helper - Growth stocks use Growth Mode score, traditional use CANSLIM
+- Sell/pyramid decisions use appropriate score for each stock type
+- Logs include stock type (Growth vs CANSLIM)
+
+**Database Fields Added**:
+- `Stock`: `is_growth_stock`, `growth_mode_score`, `growth_mode_details`
+- `AIPortfolioPosition`: `is_growth_stock`, `purchase_growth_score`, `current_growth_score`
+- `AIPortfolioTrade`: `growth_mode_score`, `is_growth_stock`
+
+**UI Updates**:
+- Purple "Growth" badge on growth stocks in portfolios
+- Shows primary score (Growth or CANSLIM) with secondary in parentheses
+- Trade history shows "G" badge for growth stock trades
+
+### Dashboard Enhancements (Jan 20)
+
+**New Tables on Home Page (2x2 grid)**:
+1. **Top CANSLIM** - Top 10 by CANSLIM score
+2. **Top Growth Stocks** - Top 10 by Growth Mode score
+3. **Top Under $25** - Budget-friendly picks
+4. **Breaking Out** - Stocks breaking out of base patterns with volume
+
+**Duplicate Ticker Filtering**:
+- GOOG/GOOGL now filtered in all tables (shows highest scorer only)
+- Uses `DUPLICATE_TICKERS` constant and `filter_duplicate_stocks()` helper
+
+**Stock Detail Page Upgrades**:
+- `GrowthModeSection`: Shows R+F breakdown, revenue growth %
+- `TechnicalAnalysis`: Base pattern, weeks in base, volume ratio, EPS acceleration
+
+### Tiered Data Fetching (Jan 20)
+
+**Reduces API calls by ~70% on subsequent scans**:
+```python
+DATA_FRESHNESS_INTERVALS = {
+    "price": 0,              # Always fetch (real-time)
+    "earnings": 24 * 3600,   # Once per day
+    "revenue": 24 * 3600,
+    "balance_sheet": 24 * 3600,
+    "institutional": 7 * 24 * 3600,  # Once per week
+}
+```
+
+**How it works**:
+- First scan of the day: full API calls
+- Subsequent scans: skip slow-changing data if fresh
+- `fetch_with_cache()` wrapper checks freshness before fetching
+
+### Technical Analysis Integration (Jan 20)
+
+**Base Pattern Detection**:
+- Flat base: 5+ weeks of tight price action (<15% range)
+- Cup pattern detection (simplified)
+- `weeks_in_base` counter
+
+**Breakout Detection**:
+- Price within 5% of pivot point
+- Volume surge (1.5x+ average)
+- `is_breaking_out` flag on Stock model
+
+**New Stock Fields**:
+- `volume_ratio`: Current vs 50-day average
+- `weeks_in_base`: Duration of consolidation
+- `base_type`: 'flat', 'cup', 'none'
+- `is_breaking_out`: Boolean flag
+- `breakout_volume_ratio`: Volume on breakout day
+
 ### Scheduler Fixes (Jan 20-21)
 - **Fixed `project_growth()` call**: Removed incorrect `ticker` param, pass full `CANSLIMScore` object
 - **Fixed `StockData` attribute names**: `company_name` → `name`, `analyst_target` → `analyst_target_price`, `pe_ratio` → `trailing_pe`
