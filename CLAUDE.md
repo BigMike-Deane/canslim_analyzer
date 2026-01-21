@@ -56,6 +56,13 @@ Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLI
 
 ## Recent Improvements (Jan 2025)
 
+### Scheduler Fixes (Jan 20-21)
+- **Fixed `project_growth()` call**: Removed incorrect `ticker` param, pass full `CANSLIMScore` object
+- **Fixed `StockData` attribute names**: `company_name` → `name`, `analyst_target` → `analyst_target_price`, `pe_ratio` → `trailing_pe`
+- **Fixed `CANSLIMScore` access**: Build `score_details` dict from individual `*_detail` fields (not `.details`)
+- **Fixed progress tracking**: Thread-safe counters with lock, updates `stocks_scanned` in real-time
+- Scanner now shows accurate progress during scans instead of stuck at 0
+
 ### Code Quality Fixes
 - Fixed scheduler bug: `calculate_score()` → `score_stock()` (auto-scan was broken)
 - Consolidated duplicate `adjust_score_for_market()` function to module level
