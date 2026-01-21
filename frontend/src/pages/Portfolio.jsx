@@ -87,6 +87,11 @@ function PositionRow({ position, onDelete }) {
         <Link to={`/stock/${position.ticker}`} className="flex-1">
           <div className="flex items-center gap-2">
             <span className="font-semibold">{position.ticker}</span>
+            {position.is_growth_stock && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                Growth
+              </span>
+            )}
             {position.recommendation && (
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getRecommendationStyle(position.recommendation)}`}>
                 {position.recommendation.toUpperCase()}
@@ -109,12 +114,32 @@ function PositionRow({ position, onDelete }) {
 
       <div className="flex items-center justify-between mt-2">
         <div className="flex items-center gap-3 text-sm">
-          <div>
-            <span className="text-dark-400">Score: </span>
-            <span className={`font-medium ${getScoreClass(position.canslim_score)}`}>
-              {formatScore(position.canslim_score)}
-            </span>
-          </div>
+          {/* Show primary score based on stock type */}
+          {position.is_growth_stock ? (
+            <div>
+              <span className="text-purple-400">Growth: </span>
+              <span className={`font-medium ${getScoreClass(position.growth_mode_score)}`}>
+                {formatScore(position.growth_mode_score)}
+              </span>
+              {position.canslim_score > 0 && (
+                <span className="text-dark-400 text-xs ml-2">
+                  (CANSLIM: {position.canslim_score?.toFixed(0)})
+                </span>
+              )}
+            </div>
+          ) : (
+            <div>
+              <span className="text-dark-400">CANSLIM: </span>
+              <span className={`font-medium ${getScoreClass(position.canslim_score)}`}>
+                {formatScore(position.canslim_score)}
+              </span>
+              {position.growth_mode_score > 0 && (
+                <span className="text-purple-400 text-xs ml-2">
+                  (Growth: {position.growth_mode_score?.toFixed(0)})
+                </span>
+              )}
+            </div>
+          )}
           {position.score_change != null && position.score_change !== 0 && (
             <div
               className={position.score_change > 0 ? 'text-green-400' : 'text-red-400'}

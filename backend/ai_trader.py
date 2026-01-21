@@ -24,6 +24,36 @@ from backend.database import (
 logger = logging.getLogger(__name__)
 
 
+def get_effective_score(stock_or_position, use_current: bool = True) -> float:
+    """
+    Get the effective score for a stock or position based on its type.
+    - Growth stocks use growth_mode_score
+    - Traditional stocks use canslim_score
+
+    Args:
+        stock_or_position: Stock or AIPortfolioPosition object
+        use_current: If True, use current scores; if False, use purchase scores (for positions)
+
+    Returns:
+        The appropriate score for this stock's type
+    """
+    is_growth = getattr(stock_or_position, 'is_growth_stock', False)
+
+    if use_current:
+        if is_growth:
+            return getattr(stock_or_position, 'current_growth_score', None) or \
+                   getattr(stock_or_position, 'growth_mode_score', None) or 0
+        else:
+            return getattr(stock_or_position, 'current_score', None) or \
+                   getattr(stock_or_position, 'canslim_score', None) or 0
+    else:
+        # For positions, get purchase score
+        if is_growth:
+            return getattr(stock_or_position, 'purchase_growth_score', None) or 0
+        else:
+            return getattr(stock_or_position, 'purchase_score', None) or 0
+
+
 def get_or_create_config(db: Session) -> AIPortfolioConfig:
     """Get or create AI portfolio configuration"""
     config = db.query(AIPortfolioConfig).first()
@@ -135,7 +165,7 @@ def evaluate_pyramids(db: Session) -> list:
 
     Criteria:
     - Position is profitable (5%+ gain)
-    - Current score is still high (70+)
+    - Current effective score is still high (70+)
     - Not already at max position size (15%)
     - Stock is showing accumulation (good volume)
     """
@@ -147,11 +177,13 @@ def evaluate_pyramids(db: Session) -> list:
     pyramids = []
 
     for position in positions:
-        if not position.current_price or not position.current_score:
+        # Use effective score based on stock type
+        score = get_effective_score(position, use_current=True)
+
+        if not position.current_price or score == 0:
             continue
 
         gain_pct = position.gain_loss_pct or 0
-        score = position.current_score or 0
         current_allocation = (position.current_value or 0) / portfolio_value if portfolio_value > 0 else 0
 
         # Skip if position is losing or score is weak
@@ -308,10 +340,12 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
             position.gain_loss = position.current_value - (position.shares * position.cost_basis)
             position.gain_loss_pct = ((current_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
-            # Update score from Stock table (this doesn't need to be live)
+            # Update scores from Stock table (this doesn't need to be live)
             stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
             if stock:
                 position.current_score = stock.canslim_score
+                position.current_growth_score = stock.growth_mode_score
+                position.is_growth_stock = stock.is_growth_stock or False
 
             updated += 1
 
@@ -333,6 +367,7 @@ def refresh_ai_portfolio(db: Session) -> dict:
 
 def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
+                  growth_score: float = None, is_growth_stock: bool = False,
                   cost_basis: float = None, realized_gain: float = None):
     """Record a trade in the database"""
     trade = AIPortfolioTrade(
@@ -343,28 +378,35 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         total_value=shares * price,
         reason=reason,
         canslim_score=score,
+        growth_mode_score=growth_score,
+        is_growth_stock=is_growth_stock,
         cost_basis=cost_basis,
         realized_gain=realized_gain,
         executed_at=get_cst_now()  # Use CST timezone
     )
     db.add(trade)
-    logger.info(f"AI Trade: {action} {shares:.2f} shares of {ticker} @ ${price:.2f} - {reason}")
+    stock_type = "Growth" if is_growth_stock else "CANSLIM"
+    effective = growth_score if is_growth_stock else score
+    logger.info(f"AI Trade: {action} {shares:.2f} shares of {ticker} @ ${price:.2f} ({stock_type} {effective:.0f}) - {reason}")
     return trade
 
 
 def evaluate_sells(db: Session) -> list:
-    """Evaluate positions for potential sells - aggressive growth strategy"""
+    """Evaluate positions for potential sells - uses effective score based on stock type"""
     config = get_or_create_config(db)
     positions = db.query(AIPortfolioPosition).all()
     sells = []
 
     for position in positions:
-        if not position.current_price or not position.current_score:
+        # Use effective score based on stock type
+        score = get_effective_score(position, use_current=True)
+        purchase_score = get_effective_score(position, use_current=False)
+
+        if not position.current_price or score == 0:
             continue
 
         gain_pct = position.gain_loss_pct or 0
-        score = position.current_score or 0
-        purchase_score = position.purchase_score or score
+        stock_type = "Growth" if position.is_growth_stock else "CANSLIM"
 
         # Stop loss - sell if down more than threshold (tight stops)
         if gain_pct <= -config.stop_loss_pct:
@@ -416,7 +458,10 @@ def evaluate_sells(db: Session) -> list:
 
 
 def evaluate_buys(db: Session) -> list:
-    """Evaluate stocks for potential buys - prioritize high growth momentum stocks"""
+    """
+    Evaluate stocks for potential buys - considers both CANSLIM and Growth Mode stocks.
+    Uses appropriate score based on stock type for a balanced portfolio.
+    """
     config = get_or_create_config(db)
     portfolio = get_portfolio_value(db)
     logger.info(f"evaluate_buys: cash=${config.current_cash:.2f}, portfolio_value=${portfolio['total_value']:.2f}")
@@ -437,16 +482,43 @@ def evaluate_buys(db: Session) -> list:
             if ticker in group:
                 excluded_tickers.update(group)  # Exclude all in the group
 
-    # Get stocks that meet minimum score threshold
-    candidates = db.query(Stock).filter(
+    # Get traditional CANSLIM stocks that meet minimum score threshold
+    canslim_candidates = db.query(Stock).filter(
         Stock.canslim_score >= config.min_score_to_buy,
         Stock.current_price > 0,
         Stock.projected_growth != None,  # Must have growth projection
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
     ).all()
 
+    # Get Growth Mode stocks that meet minimum threshold
+    growth_candidates = db.query(Stock).filter(
+        Stock.growth_mode_score >= config.min_score_to_buy,
+        Stock.is_growth_stock == True,
+        Stock.current_price > 0,
+        ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
+    ).all()
+
+    # Combine candidates, avoiding duplicates
+    seen_tickers = set()
+    candidates = []
+    for stock in canslim_candidates:
+        if stock.ticker not in seen_tickers:
+            seen_tickers.add(stock.ticker)
+            candidates.append(stock)
+    for stock in growth_candidates:
+        if stock.ticker not in seen_tickers:
+            seen_tickers.add(stock.ticker)
+            candidates.append(stock)
+
+    logger.info(f"Buy candidates: {len(canslim_candidates)} CANSLIM, {len(growth_candidates)} Growth Mode, {len(candidates)} total unique")
+
     buys = []
     for stock in candidates:
+        # Determine if this is a growth stock and get effective score
+        is_growth = stock.is_growth_stock or False
+        effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
+        if not effective_score or effective_score < config.min_score_to_buy:
+            continue
         # Calculate momentum score (how close to 52-week high)
         momentum_score = 0
         if stock.week_52_high and stock.current_price:
@@ -461,11 +533,11 @@ def evaluate_buys(db: Session) -> list:
             elif pct_from_high > 30:
                 momentum_score = -10  # Too far from highs, may be in downtrend
 
-        # Calculate composite score: 40% growth, 40% CANSLIM, 20% momentum
-        growth_score = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
+        # Calculate composite score: 40% growth projection, 40% effective score, 20% momentum
+        growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
         composite_score = (
-            (growth_score * 0.4) +
-            (stock.canslim_score * 0.4) +
+            (growth_projection * 0.4) +
+            (effective_score * 0.4) +
             (momentum_score * 0.2)
         )
 
@@ -503,7 +575,8 @@ def evaluate_buys(db: Session) -> list:
         reason_parts = []
         if stock.projected_growth and stock.projected_growth > 15:
             reason_parts.append(f"+{stock.projected_growth:.0f}% growth")
-        reason_parts.append(f"Score {stock.canslim_score:.0f}")
+        stock_type_label = "Growth" if is_growth else "CANSLIM"
+        reason_parts.append(f"{stock_type_label} {effective_score:.0f}")
         if momentum_score >= 20:
             reason_parts.append("Strong momentum")
 
@@ -513,7 +586,9 @@ def evaluate_buys(db: Session) -> list:
             "value": position_value,
             "reason": " | ".join(reason_parts),
             "priority": -composite_score,  # Higher composite = lower priority number (buy first)
-            "composite_score": composite_score
+            "composite_score": composite_score,
+            "is_growth_stock": is_growth,
+            "effective_score": effective_score
         })
 
     # Sort by composite score (highest first)
@@ -590,7 +665,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
     for sell in sells:
         position = sell["position"]
 
-        # Execute the sell
+        # Execute the sell with both scores
         execute_trade(
             db=db,
             ticker=position.ticker,
@@ -599,6 +674,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
             price=position.current_price,
             reason=sell["reason"],
             score=position.current_score,
+            growth_score=position.current_growth_score,
+            is_growth_stock=position.is_growth_stock or False,
             cost_basis=position.cost_basis,
             realized_gain=position.gain_loss
         )
@@ -615,6 +692,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             "shares": position.shares,
             "price": position.current_price,
             "gain_loss": position.gain_loss,
+            "is_growth_stock": position.is_growth_stock or False,
             "reason": sell["reason"]
         })
 
@@ -650,7 +728,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
         if config.current_cash < actual_value:
             continue
 
-        # Execute the pyramid buy
+        # Execute the pyramid buy with both scores
         execute_trade(
             db=db,
             ticker=position.ticker,
@@ -658,7 +736,9 @@ def run_ai_trading_cycle(db: Session) -> dict:
             shares=actual_shares,
             price=live_price,
             reason=f"PYRAMID: {pyramid['reason']}",
-            score=position.current_score
+            score=position.current_score,
+            growth_score=position.current_growth_score,
+            is_growth_stock=position.is_growth_stock or False
         )
 
         # Deduct cash
@@ -729,6 +809,9 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 logger.info(f"{stock.ticker}: Not enough cash (${config.current_cash:.2f} < ${actual_value:.2f})")
                 continue
 
+            # Get growth stock info from buy candidate
+            is_growth = buy.get("is_growth_stock", False)
+
             # Execute the buy at live price
             execute_trade(
                 db=db,
@@ -737,13 +820,15 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 shares=actual_shares,
                 price=live_price,
                 reason=buy["reason"],
-                score=stock.canslim_score
+                score=stock.canslim_score,
+                growth_score=stock.growth_mode_score,
+                is_growth_stock=is_growth
             )
 
             # Deduct cash
             config.current_cash -= actual_value
 
-            # Create position at live price
+            # Create position at live price with both scores
             new_position = AIPortfolioPosition(
                 ticker=stock.ticker,
                 shares=actual_shares,
@@ -753,18 +838,27 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 current_value=actual_value,
                 gain_loss=0,
                 gain_loss_pct=0,
-                current_score=stock.canslim_score
+                current_score=stock.canslim_score,
+                # Growth Mode fields
+                is_growth_stock=is_growth,
+                purchase_growth_score=stock.growth_mode_score,
+                current_growth_score=stock.growth_mode_score
             )
             db.add(new_position)
             position_count += 1
-            logger.info(f"BOUGHT {stock.ticker}: {actual_shares:.2f} shares @ ${live_price:.2f} = ${actual_value:.2f}")
+
+            stock_type = "Growth" if is_growth else "CANSLIM"
+            effective = buy.get("effective_score", stock.canslim_score)
+            logger.info(f"BOUGHT {stock.ticker}: {actual_shares:.2f} shares @ ${live_price:.2f} = ${actual_value:.2f} ({stock_type} {effective:.0f})")
 
             results["buys_executed"].append({
                 "ticker": stock.ticker,
                 "shares": actual_shares,
                 "price": live_price,
                 "value": actual_value,
-                "score": stock.canslim_score,
+                "canslim_score": stock.canslim_score,
+                "growth_mode_score": stock.growth_mode_score,
+                "is_growth_stock": is_growth,
                 "reason": buy["reason"]
             })
     else:

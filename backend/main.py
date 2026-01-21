@@ -1242,10 +1242,14 @@ async def get_portfolio(db: Session = Depends(get_db)):
             "gain_loss": p.gain_loss,
             "gain_loss_pct": p.gain_loss_pct,
             "recommendation": p.recommendation,
+            # CANSLIM score
             "canslim_score": p.canslim_score,
             "score_change": p.score_change,
             "score_trend": trend_info.get("trend"),  # improving/stable/deteriorating
             "trend_change": trend_info.get("change"),  # 7-day change
+            # Growth Mode scores (from Stock table)
+            "is_growth_stock": stock.is_growth_stock if stock else False,
+            "growth_mode_score": stock.growth_mode_score if stock else None,
             "data_quality": get_data_quality(stock),
             "notes": p.notes
         })
@@ -1476,11 +1480,30 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
     if total_value == 0:
         total_value = 10000  # Default for empty portfolio
 
-    # Get top stocks for potential buys
-    top_stocks = db.query(Stock).filter(
+    # Get top CANSLIM stocks for potential buys
+    top_canslim_stocks = db.query(Stock).filter(
         Stock.canslim_score != None,
         Stock.canslim_score >= 65
-    ).order_by(desc(Stock.canslim_score)).limit(20).all()
+    ).order_by(desc(Stock.canslim_score)).limit(15).all()
+
+    # Get top Growth Mode stocks for potential buys
+    top_growth_stocks = db.query(Stock).filter(
+        Stock.growth_mode_score != None,
+        Stock.growth_mode_score >= 65,
+        Stock.is_growth_stock == True
+    ).order_by(desc(Stock.growth_mode_score)).limit(10).all()
+
+    # Combine and dedupe, tracking which are growth stocks
+    seen_tickers = set()
+    top_stocks = []
+    for stock in top_canslim_stocks:
+        if stock.ticker not in seen_tickers:
+            seen_tickers.add(stock.ticker)
+            top_stocks.append(stock)
+    for stock in top_growth_stocks:
+        if stock.ticker not in seen_tickers:
+            seen_tickers.add(stock.ticker)
+            top_stocks.append(stock)
 
     # Get tickers we already own (including duplicates like GOOG/GOOGL)
     owned_tickers = expand_tickers_with_duplicates({p.ticker for p in positions})
@@ -1490,7 +1513,15 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
     # === SELL ACTIONS ===
     for p in positions:
         stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
-        score = stock.canslim_score if stock else (p.canslim_score or 0)
+
+        # Use effective score based on stock type
+        is_growth = stock.is_growth_stock if stock else False
+        if is_growth and stock and stock.growth_mode_score:
+            score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            score = stock.canslim_score if stock else (p.canslim_score or 0)
+            score_type = "CANSLIM"
         projected = stock.projected_growth if stock else 0
 
         # Strong sell signals
@@ -1503,9 +1534,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                 "shares_current": p.shares,
                 "current_price": p.current_price,
                 "estimated_value": p.current_value,
-                "reason": f"Weak fundamentals (score {score:.0f}) with loss of {p.gain_loss_pct:.1f}%",
+                "is_growth_stock": is_growth,
+                "reason": f"Weak fundamentals ({score_type} {score:.0f}) with loss of {p.gain_loss_pct:.1f}%",
                 "details": [
-                    f"CANSLIM Score: {score:.0f}/100 (below 35 threshold)",
+                    f"{score_type} Score: {score:.0f}/100 (below 35 threshold)",
                     f"Current loss: {p.gain_loss_pct:.1f}%",
                     f"Projected growth: {projected:.1f}%" if projected else "No growth projection",
                     "Cut losses early - O'Neil recommends selling at -7% to -8%"
@@ -1520,9 +1552,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                 "shares_current": p.shares,
                 "current_price": p.current_price,
                 "estimated_value": p.current_value,
-                "reason": f"Deteriorating outlook (score {score:.0f}, {projected:.1f}% projected)",
+                "is_growth_stock": is_growth,
+                "reason": f"Deteriorating outlook ({score_type} {score:.0f}, {projected:.1f}% projected)",
                 "details": [
-                    f"CANSLIM Score: {score:.0f}/100",
+                    f"{score_type} Score: {score:.0f}/100",
                     f"Negative growth projection: {projected:.1f}%",
                     "Fundamentals weakening - consider exiting before further decline"
                 ]
@@ -1597,7 +1630,16 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
         if skip_duplicate:
             continue
 
-        if stock.canslim_score >= 75 and (stock.projected_growth or 0) >= 15:
+        # Use effective score based on stock type
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            effective_score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            effective_score = stock.canslim_score or 0
+            score_type = "CANSLIM"
+
+        if effective_score >= 75 and (stock.projected_growth or 0) >= 15:
             shares_to_buy = int(max_position_value / stock.current_price) if stock.current_price else 0
             buy_value = shares_to_buy * stock.current_price if shares_to_buy else max_position_value
 
@@ -1616,9 +1658,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                 "shares_current": 0,
                 "current_price": stock.current_price,
                 "estimated_value": buy_value,
-                "reason": f"Strong candidate - Score {stock.canslim_score:.0f}, +{stock.projected_growth:.0f}% projected",
+                "is_growth_stock": is_growth,
+                "reason": f"Strong candidate - {score_type} {effective_score:.0f}, +{stock.projected_growth:.0f}% projected",
                 "details": [
-                    f"CANSLIM Score: {stock.canslim_score:.0f}/100",
+                    f"{score_type} Score: {effective_score:.0f}/100",
                     f"Projected 6-month growth: +{stock.projected_growth:.0f}%",
                     f"Sector: {stock.sector}",
                     near_high if near_high else f"Current price: ${stock.current_price:.2f}",
@@ -1639,7 +1682,14 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
         if not stock:
             continue
 
-        score = stock.canslim_score or 0
+        # Use effective score based on stock type
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            score = stock.canslim_score or 0
+            score_type = "CANSLIM"
         projected = stock.projected_growth or 0
         gain_pct = p.gain_loss_pct or 0
         position_weight = (p.current_value or 0) / total_value * 100
@@ -1661,9 +1711,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                     "shares_current": p.shares,
                     "current_price": p.current_price,
                     "estimated_value": add_value,
-                    "reason": f"Strong stock on pullback - Score {score:.0f}, currently {gain_pct:+.1f}%",
+                    "is_growth_stock": is_growth,
+                    "reason": f"Strong stock on pullback - {score_type} {score:.0f}, currently {gain_pct:+.1f}%",
                     "details": [
-                        f"CANSLIM Score: {score:.0f}/100 (strong)",
+                        f"{score_type} Score: {score:.0f}/100 (strong)",
                         f"Projected growth: +{projected:.0f}%",
                         f"Current position: {gain_pct:+.1f}% (buying the dip)",
                         f"Position weight: {position_weight:.1f}% (room to add)",
@@ -1693,7 +1744,16 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
         if skip_watch:
             continue
 
-        if stock.canslim_score >= 70 and stock.week_52_high and stock.current_price:
+        # Use effective score based on stock type
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            effective_score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            effective_score = stock.canslim_score or 0
+            score_type = "CANSLIM"
+
+        if effective_score >= 70 and stock.week_52_high and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
 
             # Approaching breakout (within 5-15% of high)
@@ -1706,9 +1766,10 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                     "shares_current": 0,
                     "current_price": stock.current_price,
                     "estimated_value": 0,
+                    "is_growth_stock": is_growth,
                     "reason": f"Approaching breakout - {pct_from_high:.0f}% from 52-week high",
                     "details": [
-                        f"CANSLIM Score: {stock.canslim_score:.0f}/100",
+                        f"{score_type} Score: {effective_score:.0f}/100",
                         f"52-week high: ${stock.week_52_high:.2f}",
                         f"Current: ${stock.current_price:.2f} ({pct_from_high:.1f}% below high)",
                         "Watch for breakout above prior high on volume",
@@ -1778,8 +1839,13 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
             "current_value": p.current_value,
             "gain_loss": p.gain_loss,
             "gain_loss_pct": p.gain_loss_pct,
+            # CANSLIM scores
             "purchase_score": p.purchase_score,
             "current_score": p.current_score,
+            # Growth Mode scores
+            "is_growth_stock": p.is_growth_stock or False,
+            "purchase_growth_score": p.purchase_growth_score,
+            "current_growth_score": p.current_growth_score,
             "purchase_date": p.purchase_date.isoformat() if p.purchase_date else None
         } for p in positions]
     }
@@ -1873,6 +1939,8 @@ async def get_ai_portfolio_trades(
         "total_value": t.total_value,
         "reason": t.reason,
         "canslim_score": t.canslim_score,
+        "growth_mode_score": t.growth_mode_score,
+        "is_growth_stock": t.is_growth_stock or False,
         "realized_gain": t.realized_gain,
         "executed_at": t.executed_at.isoformat() if t.executed_at else None
     } for t in trades]

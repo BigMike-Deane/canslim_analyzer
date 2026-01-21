@@ -130,7 +130,14 @@ function PositionsList({ positions }) {
             className="flex justify-between items-center py-2 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
           >
             <div>
-              <div className="font-medium">{position.ticker}</div>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{position.ticker}</span>
+                {position.is_growth_stock && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-400">
+                    Growth
+                  </span>
+                )}
+              </div>
               <div className="text-dark-400 text-xs">
                 {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
               </div>
@@ -141,8 +148,28 @@ function PositionsList({ positions }) {
                 {position.gain_loss_pct >= 0 ? '+' : ''}{position.gain_loss_pct?.toFixed(2)}%
               </div>
             </div>
-            <div className={`ml-3 px-2 py-1 rounded text-sm font-medium ${getScoreClass(position.current_score)}`}>
-              {formatScore(position.current_score)}
+            <div className="ml-3 text-right">
+              {/* Show appropriate score based on stock type */}
+              {position.is_growth_stock ? (
+                <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(position.current_growth_score)}`}>
+                  {formatScore(position.current_growth_score)}
+                </div>
+              ) : (
+                <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(position.current_score)}`}>
+                  {formatScore(position.current_score)}
+                </div>
+              )}
+              {/* Show secondary score if available */}
+              {position.is_growth_stock && position.current_score > 0 && (
+                <div className="text-[10px] text-dark-400 mt-0.5">
+                  CANSLIM: {position.current_score?.toFixed(0)}
+                </div>
+              )}
+              {!position.is_growth_stock && position.current_growth_score > 0 && (
+                <div className="text-[10px] text-dark-400 mt-0.5">
+                  Growth: {position.current_growth_score?.toFixed(0)}
+                </div>
+              )}
             </div>
           </Link>
         ))}
@@ -172,6 +199,9 @@ function TradeHistory({ trades }) {
                 {trade.action}
               </span>
               <span className="font-medium">{trade.ticker}</span>
+              {trade.is_growth_stock && (
+                <span className="px-1 py-0.5 rounded text-[9px] bg-purple-500/20 text-purple-400">G</span>
+              )}
             </div>
             <div className="text-right">
               <div>{trade.shares.toFixed(2)} @ {formatCurrency(trade.price)}</div>

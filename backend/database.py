@@ -367,7 +367,12 @@ class AIPortfolioPosition(Base):
     current_value = Column(Float)
     gain_loss = Column(Float)
     gain_loss_pct = Column(Float)
-    current_score = Column(Float)
+    current_score = Column(Float)  # CANSLIM score
+
+    # Growth Mode scoring (for pre-revenue/high-growth stocks)
+    is_growth_stock = Column(Boolean, default=False)
+    purchase_growth_score = Column(Float)  # Growth Mode score when purchased
+    current_growth_score = Column(Float)  # Current Growth Mode score
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -384,7 +389,9 @@ class AIPortfolioTrade(Base):
     price = Column(Float, nullable=False)
     total_value = Column(Float, nullable=False)
     reason = Column(String)  # Why the trade was made
-    canslim_score = Column(Float)  # Score at time of trade
+    canslim_score = Column(Float)  # CANSLIM score at time of trade
+    growth_mode_score = Column(Float)  # Growth Mode score at time of trade
+    is_growth_stock = Column(Boolean, default=False)
 
     # For sells, track the gain/loss
     cost_basis = Column(Float)  # Original cost basis for sells
