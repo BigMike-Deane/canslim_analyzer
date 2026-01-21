@@ -334,12 +334,16 @@ def run_continuous_scan():
         _scan_config["stocks_scanned"] = counters["successful"]
         logger.info(f"Continuous scan complete: {counters['successful']}/{len(tickers)} stocks")
 
-        # Log rate limit stats
+        # Log rate limit stats and cache stats
         try:
-            from data_fetcher import get_rate_limit_stats, reset_rate_limit_stats
+            from data_fetcher import get_rate_limit_stats, reset_rate_limit_stats, get_cache_stats
             stats = get_rate_limit_stats()
             error_rate = (stats['errors_429'] / stats['total_requests'] * 100) if stats['total_requests'] > 0 else 0
             logger.info(f"Rate limit stats: {stats['errors_429']} 429 errors / {stats['total_requests']} requests ({error_rate:.1f}%)")
+
+            cache_stats = get_cache_stats()
+            logger.info(f"Cache stats: {cache_stats['tickers_tracked']} tickers, {cache_stats['cached_data_entries']} data entries cached")
+
             reset_rate_limit_stats()  # Reset for next scan
         except Exception as e:
             logger.error(f"Rate limit stats error: {e}")

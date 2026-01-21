@@ -31,6 +31,110 @@ _rate_limit_stats = {
 }
 _stats_lock = threading.Lock()
 
+# Tiered data freshness cache
+# Tracks when each data type was last fetched for each ticker
+# Format: {ticker: {data_type: last_fetch_timestamp}}
+_data_freshness_cache = {}
+_freshness_lock = threading.Lock()
+
+# Freshness intervals (in seconds)
+DATA_FRESHNESS_INTERVALS = {
+    "price": 0,              # Always fetch (real-time)
+    "earnings": 24 * 3600,   # Once per day (24 hours)
+    "revenue": 24 * 3600,    # Once per day
+    "balance_sheet": 24 * 3600,  # Once per day
+    "key_metrics": 24 * 3600,    # Once per day
+    "analyst": 24 * 3600,        # Once per day
+    "earnings_surprise": 24 * 3600,  # Once per day
+    "weekly_history": 24 * 3600,     # Once per day (for base detection)
+    "institutional": 7 * 24 * 3600,  # Once per week
+}
+
+# Cached data storage (stores the actual fetched data)
+_cached_data = {}
+_cached_data_lock = threading.Lock()
+MAX_CACHED_TICKERS = 500  # Limit cache size
+
+
+def is_data_fresh(ticker: str, data_type: str) -> bool:
+    """Check if cached data is still fresh"""
+    with _freshness_lock:
+        if ticker not in _data_freshness_cache:
+            return False
+        if data_type not in _data_freshness_cache[ticker]:
+            return False
+
+        last_fetch = _data_freshness_cache[ticker][data_type]
+        interval = DATA_FRESHNESS_INTERVALS.get(data_type, 0)
+
+        return (datetime.now() - last_fetch).total_seconds() < interval
+
+
+def mark_data_fetched(ticker: str, data_type: str):
+    """Mark that data was just fetched"""
+    with _freshness_lock:
+        if ticker not in _data_freshness_cache:
+            _data_freshness_cache[ticker] = {}
+        _data_freshness_cache[ticker][data_type] = datetime.now()
+
+
+def get_cached_data(ticker: str, data_type: str):
+    """Get cached data if it exists"""
+    with _cached_data_lock:
+        key = f"{ticker}:{data_type}"
+        return _cached_data.get(key)
+
+
+def set_cached_data(ticker: str, data_type: str, data):
+    """Store data in cache"""
+    with _cached_data_lock:
+        # Enforce cache size limit
+        if len(_cached_data) >= MAX_CACHED_TICKERS * 10:  # ~10 data types per ticker
+            # Remove oldest 20% of entries
+            keys_to_remove = list(_cached_data.keys())[:int(len(_cached_data) * 0.2)]
+            for key in keys_to_remove:
+                del _cached_data[key]
+
+        key = f"{ticker}:{data_type}"
+        _cached_data[key] = data
+
+
+def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
+    """
+    Wrapper that checks cache freshness before fetching.
+    Returns cached data if fresh, otherwise fetches new data.
+    """
+    # Check if we have fresh cached data
+    if is_data_fresh(ticker, data_type):
+        cached = get_cached_data(ticker, data_type)
+        if cached is not None:
+            logger.debug(f"Using cached {data_type} for {ticker}")
+            return cached
+
+    # Fetch fresh data
+    data = fetch_func(*args, **kwargs)
+
+    # Cache the result
+    if data:
+        set_cached_data(ticker, data_type, data)
+        mark_data_fetched(ticker, data_type)
+
+    return data
+
+
+def get_cache_stats() -> dict:
+    """Get cache statistics for debugging"""
+    with _freshness_lock:
+        freshness_count = sum(len(v) for v in _data_freshness_cache.values())
+    with _cached_data_lock:
+        data_count = len(_cached_data)
+
+    return {
+        "tickers_tracked": len(_data_freshness_cache),
+        "freshness_entries": freshness_count,
+        "cached_data_entries": data_count
+    }
+
 
 def get_rate_limit_stats() -> dict:
     """Get current rate limit statistics"""
@@ -568,14 +672,16 @@ class DataFetcher:
                     logger.debug(f"Error calculating 52w range for {ticker}: {e}")
 
             # 3. Get earnings data from FMP (critical for C and A scores)
-            earnings = fetch_fmp_earnings(ticker)
+            # TIERED: Cache for 24 hours (earnings don't change intraday)
+            earnings = fetch_with_cache(ticker, "earnings", fetch_fmp_earnings, ticker)
             if earnings:
                 stock_data.quarterly_earnings = earnings.get("quarterly_eps", [])
                 stock_data.annual_earnings = earnings.get("annual_eps", [])
                 logger.debug(f"FMP {ticker}: quarterly_earnings={stock_data.quarterly_earnings[:3] if stock_data.quarterly_earnings else 'EMPTY'}")
 
             # 3b. Get key metrics (ROE, etc.) from FMP
-            key_metrics = fetch_fmp_key_metrics(ticker)
+            # TIERED: Cache for 24 hours
+            key_metrics = fetch_with_cache(ticker, "key_metrics", fetch_fmp_key_metrics, ticker)
             if key_metrics:
                 stock_data.roe = key_metrics.get("roe", 0)
                 stock_data.roa = key_metrics.get("roa", 0)
@@ -584,7 +690,8 @@ class DataFetcher:
                 stock_data.fcf_yield = key_metrics.get("fcf_yield", 0)
 
             # 4. Get institutional ownership from FMP (or Yahoo fallback)
-            inst_result = fetch_fmp_institutional(ticker)
+            # TIERED: Cache for 7 days (institutional holdings rarely change)
+            inst_result = fetch_with_cache(ticker, "institutional", fetch_fmp_institutional, ticker)
             if inst_result:
                 # If result is > 100, it's likely shares from FMP - convert to percentage
                 if inst_result > 100 and stock_data.shares_outstanding:
@@ -596,37 +703,42 @@ class DataFetcher:
                 stock_data.institutional_holders_pct = min(stock_data.institutional_holders_pct, 100)
 
             # 5. Get analyst data from FMP
-            price_target = fetch_fmp_price_target(ticker)
+            # TIERED: Cache for 24 hours
+            price_target = fetch_with_cache(ticker, "analyst", fetch_fmp_price_target, ticker)
             if price_target:
                 stock_data.analyst_target_price = price_target.get("target_consensus", 0) or price_target.get("target_median", 0)
                 stock_data.analyst_target_high = price_target.get("target_high", 0)
                 stock_data.analyst_target_low = price_target.get("target_low", 0)
 
-            analyst = fetch_fmp_analyst(ticker)
+            analyst = fetch_with_cache(ticker, "analyst", fetch_fmp_analyst, ticker)
             if analyst:
                 stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
                 stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)
 
             # 5b. Get earnings surprise data (for enhanced C score)
-            earnings_surprise = fetch_fmp_earnings_surprise(ticker)
+            # TIERED: Cache for 24 hours
+            earnings_surprise = fetch_with_cache(ticker, "earnings_surprise", fetch_fmp_earnings_surprise, ticker)
             if earnings_surprise:
                 stock_data.earnings_surprise_pct = earnings_surprise.get("latest_surprise_pct", 0)
                 stock_data.eps_beat_streak = earnings_surprise.get("beat_streak", 0)
 
             # 5c. Get revenue data (for growth mode scoring)
-            revenue_data = fetch_fmp_revenue(ticker)
+            # TIERED: Cache for 24 hours
+            revenue_data = fetch_with_cache(ticker, "revenue", fetch_fmp_revenue, ticker)
             if revenue_data:
                 stock_data.quarterly_revenue = revenue_data.get("quarterly_revenue", [])
                 stock_data.annual_revenue = revenue_data.get("annual_revenue", [])
 
             # 5d. Get balance sheet data (for growth stock funding analysis)
-            balance_sheet = fetch_fmp_balance_sheet(ticker)
+            # TIERED: Cache for 24 hours
+            balance_sheet = fetch_with_cache(ticker, "balance_sheet", fetch_fmp_balance_sheet, ticker)
             if balance_sheet:
                 stock_data.cash_and_equivalents = balance_sheet.get("cash_and_equivalents", 0)
                 stock_data.total_debt = balance_sheet.get("total_debt", 0)
 
             # 5e. Get weekly price history (for technical analysis / base detection)
-            stock_data.weekly_price_history = fetch_weekly_price_history(ticker)
+            # TIERED: Cache for 24 hours (pattern detection doesn't need real-time)
+            stock_data.weekly_price_history = fetch_with_cache(ticker, "weekly_history", fetch_weekly_price_history, ticker) or []
 
             # 6. Yahoo Finance fallback for analyst/valuation data (rate-limited)
             # Only call if multiple critical fields are missing to minimize API calls
