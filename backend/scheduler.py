@@ -32,10 +32,16 @@ _scan_config = {
 
 def get_scan_status():
     """Get current scheduler status"""
+    next_run = None
+    job = scheduler.get_job("continuous_scan")
+    if job and job.next_run_time:
+        # APScheduler returns timezone-aware datetime, isoformat() includes offset
+        next_run = job.next_run_time.isoformat()
+
     return {
         **_scan_config,
         "scheduler_running": scheduler.running,
-        "next_run": str(scheduler.get_job("continuous_scan").next_run_time) if scheduler.get_job("continuous_scan") else None
+        "next_run": next_run
     }
 
 
@@ -52,24 +58,38 @@ def run_continuous_scan():
         return
 
     _scan_config["is_scanning"] = True
-    _scan_config["last_scan_start"] = datetime.now().isoformat()
+    _scan_config["last_scan_start"] = datetime.utcnow().isoformat() + 'Z'
     _scan_config["stocks_scanned"] = 0
     _scan_config["total_stocks"] = 0
 
     logger.info(f"Starting continuous scan ({_scan_config['source']})...")
 
     # Get tickers based on source
+    # Always include portfolio tickers first (they're most important)
+    from sp500_tickers import get_portfolio_tickers
+    portfolio_tickers = get_portfolio_tickers()
+
     source = _scan_config["source"]
     if source == "top50":
-        tickers = get_sp500_tickers()[:50]
+        base_tickers = get_sp500_tickers()[:50]
     elif source == "sp500":
-        tickers = get_sp500_tickers()
+        base_tickers = get_sp500_tickers()
     elif source == "russell":
-        tickers = get_russell2000_tickers()
+        base_tickers = get_russell2000_tickers()
     elif source == "all":
-        tickers = get_all_tickers()
+        base_tickers = get_all_tickers(include_portfolio=False)  # Portfolio added separately
     else:
-        tickers = get_sp500_tickers()
+        base_tickers = get_sp500_tickers()
+
+    # Combine: portfolio first (priority), then base tickers, deduplicated
+    seen = set()
+    tickers = []
+    for t in portfolio_tickers + base_tickers:
+        if t not in seen:
+            seen.add(t)
+            tickers.append(t)
+
+    logger.info(f"Including {len(portfolio_tickers)} portfolio tickers in scan")
 
     _scan_config["total_stocks"] = len(tickers)
     logger.info(f"Scanning {len(tickers)} stocks...")
@@ -295,7 +315,7 @@ def run_continuous_scan():
         logger.error(f"Scan error: {e}")
     finally:
         _scan_config["is_scanning"] = False
-        _scan_config["last_scan_end"] = datetime.now().isoformat()
+        _scan_config["last_scan_end"] = datetime.utcnow().isoformat() + 'Z'
 
 
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):

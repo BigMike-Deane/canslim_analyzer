@@ -54,6 +54,16 @@ Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLI
 - Current config: 4 workers with 2.5-4.0s delay (~60-90 stocks/min)
 - Avoids 429 errors while maintaining reasonable scan speed
 
+### Stock Universe Coverage (~2000+ tickers)
+Fetched dynamically from Wikipedia (with fallbacks):
+- **S&P 500**: ~503 large-cap stocks
+- **S&P MidCap 400**: ~400 mid-cap stocks (important for CANSLIM growth)
+- **S&P SmallCap 600**: ~603 quality small-caps
+- **Russell 2000**: ~1200 curated small-caps
+- **Portfolio tickers**: Always included in every scan (highest priority)
+
+Portfolio tickers are automatically fetched from the database and scanned first, regardless of which universe is selected. This ensures your holdings always have fresh data.
+
 ## Recent Improvements (Jan 2025)
 
 ### Scheduler Fixes (Jan 20-21)

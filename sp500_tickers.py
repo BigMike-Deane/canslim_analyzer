@@ -1,22 +1,94 @@
 """
 Stock Ticker List Module
-Includes S&P 500 and Russell 2000 small-cap stocks
+Includes S&P 500, S&P MidCap 400, S&P SmallCap 600, and Russell 2000 stocks.
+Also fetches portfolio tickers to ensure they're always scanned.
 """
 
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def get_all_tickers() -> list[str]:
+def get_all_tickers(include_portfolio: bool = True) -> list[str]:
     """
-    Get combined list of S&P 500 and Russell 2000 tickers.
+    Get combined list of all major index tickers plus portfolio holdings.
+
+    Includes:
+    - S&P 500 (large cap)
+    - S&P MidCap 400 (mid cap)
+    - S&P SmallCap 600 (small cap)
+    - Russell 2000 (small cap, curated list)
+    - Portfolio tickers (always scanned)
     """
     sp500 = get_sp500_tickers()
+    midcap400 = get_sp400_midcap_tickers()
+    smallcap600 = get_sp600_smallcap_tickers()
     russell = get_russell2000_tickers()
-    # Combine and remove duplicates
-    combined = list(dict.fromkeys(sp500 + russell))
-    return combined
+
+    # Start with portfolio tickers (highest priority)
+    combined = []
+    if include_portfolio:
+        portfolio = get_portfolio_tickers()
+        combined.extend(portfolio)
+
+    # Add index tickers
+    combined.extend(sp500)
+    combined.extend(midcap400)
+    combined.extend(smallcap600)
+    combined.extend(russell)
+
+    # Remove duplicates while preserving order (portfolio first)
+    seen = set()
+    unique = []
+    for ticker in combined:
+        if ticker not in seen:
+            seen.add(ticker)
+            unique.append(ticker)
+
+    return unique
+
+
+def get_portfolio_tickers() -> list[str]:
+    """
+    Get tickers from the user's portfolio to ensure they're always scanned.
+    Fetches from database if available, falls back to CSV.
+    """
+    tickers = []
+
+    # Try to get from database first
+    try:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent / "backend"))
+        from database import SessionLocal, PortfolioPosition
+
+        db = SessionLocal()
+        positions = db.query(PortfolioPosition.ticker).distinct().all()
+        tickers = [p.ticker for p in positions]
+        db.close()
+
+        if tickers:
+            logger.info(f"Loaded {len(tickers)} portfolio tickers from database")
+            return tickers
+    except Exception as e:
+        logger.debug(f"Could not load portfolio from database: {e}")
+
+    # Fall back to CSV
+    try:
+        from pathlib import Path
+        csv_path = Path(__file__).parent / "portfolio.csv"
+        if csv_path.exists():
+            import csv
+            with open(csv_path, 'r') as f:
+                reader = csv.DictReader(f)
+                tickers = [row['ticker'] for row in reader if row.get('ticker')]
+            logger.info(f"Loaded {len(tickers)} portfolio tickers from CSV")
+    except Exception as e:
+        logger.debug(f"Could not load portfolio from CSV: {e}")
+
+    return tickers
 
 
 def get_sp500_tickers() -> list[str]:
@@ -97,6 +169,161 @@ def get_fallback_tickers() -> list[str]:
         # Utilities
         "NEE", "DUK", "SO", "D", "SRE", "AEP", "EXC", "XEL", "ED", "PEG",
         "WEC", "ES", "AWK", "DTE", "ETR", "FE", "PPL", "AEE", "CMS", "EVRG",
+    ]
+
+
+def get_sp400_midcap_tickers() -> list[str]:
+    """
+    Fetch S&P MidCap 400 tickers from Wikipedia.
+    These are mid-cap stocks - important for CANSLIM growth investing.
+    """
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table', {'id': 'constituents'})
+
+        if table is None:
+            table = soup.find('table', {'class': 'wikitable'})
+
+        tickers = []
+        rows = table.find_all('tr')[1:]  # Skip header
+
+        for row in rows:
+            cells = row.find_all('td')
+            if cells:
+                ticker = cells[0].text.strip()
+                ticker = ticker.replace('.', '-')
+                tickers.append(ticker)
+
+        logger.info(f"Fetched {len(tickers)} S&P MidCap 400 tickers")
+        return tickers
+
+    except Exception as e:
+        logger.warning(f"Could not fetch S&P MidCap 400 list: {e}")
+        return get_fallback_midcap_tickers()
+
+
+def get_fallback_midcap_tickers() -> list[str]:
+    """Fallback list of notable mid-cap stocks."""
+    return [
+        # Technology
+        "ACIW", "AGYS", "ASGN", "BLKB", "CACI", "CDAY", "CDW", "CHDN", "CSGS", "CSGP",
+        "CVLT", "DOCU", "EPAM", "EXLS", "FFIV", "FLT", "GDDY", "GEN", "GLOB", "HQY",
+        "JKHY", "MANH", "MASI", "MKSI", "NOVT", "PCTY", "PLUS", "POWI", "PWSC", "QLYS",
+        "RNG", "SAIC", "SMTC", "SQSP", "TENB", "TYL", "VRSN", "WEX", "WK", "WOLF",
+        # Healthcare
+        "ABMD", "ACHC", "ALGN", "AMN", "BIO", "CHE", "CRL", "CTLT", "DGX", "EHC",
+        "HAE", "HOLX", "HSIC", "IART", "INCY", "ITGR", "JAZZ", "LHCG", "LIVN", "MASI",
+        "MEDP", "MMSI", "MOH", "NBIX", "NEO", "NHC", "NVCR", "OMCL", "PGNY", "PKI",
+        "PRGO", "QDEL", "RCM", "RVMD", "SEM", "SHC", "SRPT", "STE", "TECH", "TFX",
+        # Consumer
+        "AAP", "AEO", "BBWI", "BJ", "BURL", "BWA", "CABO", "CAKE", "CBRL", "CCS",
+        "COTY", "CROX", "DDS", "DKS", "DRI", "EAT", "ETSY", "EXPE", "FIVE", "FL",
+        "GNTX", "GPC", "GPI", "HAS", "HGV", "HRB", "IPAR", "JWN", "KSS", "LAD",
+        "LEA", "LKQ", "LVS", "MAN", "MLKN", "MTN", "NCLH", "NVR", "NWL", "ODP",
+        # Industrials
+        "AGCO", "AIT", "ALK", "ALLE", "ARNC", "ATKR", "AYI", "B", "BC", "BDC",
+        "BERY", "BLD", "BLDR", "CFX", "CLH", "CMC", "CW", "DAR", "DCI", "DINO",
+        "EXP", "FLS", "FLR", "GNRC", "GVA", "GWW", "HUBS", "KBR", "KEX", "LECO",
+        "LII", "MAS", "MIDD", "MSA", "MTRN", "NVT", "OSK", "PLAB", "RBC", "RHI",
+        # Financials
+        "ALLY", "AX", "BOKF", "CADE", "CFG", "COLB", "COOP", "EWBC", "FHN", "FNB",
+        "FULT", "GBCI", "HWC", "IBOC", "LSTR", "MTB", "NDAQ", "OFG", "PNFP", "PRAA",
+        "RJF", "SBNY", "SEIC", "SF", "SNV", "STLD", "SYF", "TCBI", "UMBF", "VLY",
+        # Energy & Materials
+        "CHX", "CNX", "CVI", "DT", "HLX", "HP", "MUR", "NOV", "NTR", "OGE",
+        "OGN", "OI", "OLN", "RYI", "SLB", "SM", "SUM", "TRGP", "TROX", "USG",
+        # Real Estate & Utilities
+        "ACC", "AVB", "BRX", "COLD", "CPT", "CUZ", "DEI", "EPR", "FR", "HR",
+        "INVH", "KIM", "KRG", "LSI", "MAC", "NNN", "OHI", "OUT", "PEB", "REG",
+        # Additional growth-focused mid-caps
+        "ARM", "CAVA", "DUOL", "HUBS", "IOT", "KVYO", "MNDY", "ONON", "RKLB", "TOST",
+    ]
+
+
+def get_sp600_smallcap_tickers() -> list[str]:
+    """
+    Fetch S&P SmallCap 600 tickers from Wikipedia.
+    Quality small-cap stocks with positive earnings requirements.
+    """
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table', {'id': 'constituents'})
+
+        if table is None:
+            table = soup.find('table', {'class': 'wikitable'})
+
+        tickers = []
+        rows = table.find_all('tr')[1:]  # Skip header
+
+        for row in rows:
+            cells = row.find_all('td')
+            if cells:
+                ticker = cells[0].text.strip()
+                ticker = ticker.replace('.', '-')
+                tickers.append(ticker)
+
+        logger.info(f"Fetched {len(tickers)} S&P SmallCap 600 tickers")
+        return tickers
+
+    except Exception as e:
+        logger.warning(f"Could not fetch S&P SmallCap 600 list: {e}")
+        return get_fallback_smallcap_tickers()
+
+
+def get_fallback_smallcap_tickers() -> list[str]:
+    """Fallback list of notable small-cap stocks."""
+    return [
+        # Technology - Small Cap
+        "AAOI", "ADTN", "ALRM", "APPF", "ATEN", "AVNW", "BAND", "CALX", "CASA", "CEVA",
+        "CLPS", "CMBM", "COHU", "CTS", "DGII", "DIOD", "DSGX", "ELSE", "EGHT", "ETNB",
+        "EVTC", "EXTR", "FARO", "FORTY", "FROG", "GSHD", "HLIT", "IIVI", "INTT", "IPGP",
+        "IRTC", "KLIC", "LITE", "LSCC", "LUNA", "MAXN", "MGIC", "MGRC", "MLNK", "MXL",
+        "NEOG", "OLED", "OSPN", "PAYO", "PDFS", "PI", "PLAY", "POWI", "PRFT", "PRGS",
+        "PRLB", "RXT", "SANM", "SCSC", "SITM", "SMTC", "SYNA", "TTEC", "TTMI", "TUFN",
+        # Healthcare - Small Cap
+        "AADI", "ABCL", "ACCD", "ACHV", "ADMA", "ADPT", "AGIO", "AKRO", "ALKS", "AMPH",
+        "ANAB", "ANIK", "ARNA", "ARVN", "ASTH", "ATEC", "AVNS", "AXGN", "BEAT", "BIO-B",
+        "BRKR", "CARA", "CDNA", "CERS", "CHRS", "CNC", "CNMD", "CORT", "CPRI", "CPRX",
+        "CUTR", "DMTK", "DVAX", "EBS", "ENTA", "ENZY", "EVH", "EXAS", "FOLD", "FTRE",
+        "GH", "GMED", "HALO", "HMPT", "HRMY", "HUM", "ICUI", "IMVT", "INCY", "INSP",
+        "IOVA", "IRWD", "ISEE", "ITCI", "KIDS", "KNSA", "KROS", "KRTX", "KURA", "LGND",
+        # Consumer - Small Cap
+        "ACCO", "ANF", "ARCO", "BCPC", "BFAM", "BGS", "BJRI", "BOOT", "CAKE", "CARS",
+        "CHUY", "CMPR", "COOK", "CRAI", "CRVL", "CURV", "DAN", "DENN", "DIN", "FIZZ",
+        "FLXS", "FNKO", "FOSL", "GCO", "GDEN", "GIII", "GOLF", "GPRE", "GRPN", "HBI",
+        "HELE", "HIBB", "HZO", "IMKTA", "IRBT", "JACK", "JJSF", "KELYA", "KTB", "LCII",
+        "LZB", "MBUU", "MCRI", "MOV", "NATH", "NGVC", "OSIS", "OTIC", "OXM", "PLAY",
+        # Industrials - Small Cap
+        "AAON", "ABG", "ABM", "AEIS", "AIMC", "AIR", "AIN", "AJRD", "ALEX", "ALG",
+        "AMSF", "APOG", "ARCB", "ASIX", "ASTE", "ATI", "AVAV", "AVNT", "AWI", "AZZ",
+        "BMI", "BRC", "BWXT", "CAI", "CBZ", "CMCO", "CMP", "CNO", "COHU", "CRS",
+        "CSGS", "CW", "CXW", "DLX", "DY", "EBF", "EE", "EGP", "ELF", "ENS",
+        "EPAC", "ESE", "ESNT", "EXPO", "FBIN", "FCFS", "FIX", "FWRD", "GBX", "GEF",
+        # Financials - Small Cap
+        "ABTX", "ACNB", "AIG", "AINV", "AJRD", "AMAL", "AMERP", "AMSF", "ANAT", "ANCX",
+        "ARI", "ASB", "ATLC", "AUB", "AX", "BANF", "BANR", "BBDC", "BCBP", "BCML",
+        "BFIN", "BHLB", "BHRB", "BKCC", "BKU", "BMRC", "BOCH", "BPOP", "BRKL", "BSRR",
+        "BSVN", "BY", "CACC", "CADE", "CARE", "CARV", "CASH", "CBFV", "CBMB", "CBSH",
+        "CCBG", "CCNE", "CFFN", "CFNB", "CHCO", "CHMG", "CIVB", "CIZN", "CLBK", "COFS",
+        # Energy & Materials - Small Cap
+        "AMRC", "ARCH", "AROC", "BKR", "BOOM", "BRY", "BTU", "CDEV", "CHX", "CLB",
+        "CNK", "CNX", "CPE", "CTRA", "CVI", "DEN", "DNOW", "DO", "DRQ", "EGY",
+        "ERII", "FET", "FLNG", "GEL", "GLNG", "GPP", "HLX", "HP", "HUN", "IOSP",
+        "KOP", "KRA", "KRO", "KWR", "LBRT", "LEU", "LPG", "MARA", "MATX", "METC",
+        # REITs - Small Cap
+        "AAT", "ADC", "AHH", "AIRC", "AKR", "ALEX", "ALX", "APLE", "BDN", "BFS",
+        "BNL", "BPYU", "BRSP", "BRT", "CBL", "CIO", "CLNC", "CLPR", "CMCT", "CPLG",
+        "CSR", "CTO", "CUZ", "DEA", "DHC", "DOC", "EFC", "ELME", "EQC", "ESS",
     ]
 
 
@@ -246,13 +473,36 @@ def get_russell2000_tickers() -> list[str]:
         "SPG", "SRC", "SREA", "STAR", "STAG", "STOR", "SUI", "SVC", "TCO", "TRNO",
         "TRTX", "TWO", "UBA", "UDR", "UE", "UHT", "UMH", "UNIT", "VICI", "VNO",
         "VRE", "VTR", "WPC", "WPG", "WRI", "WSR", "XHR",
+
+        # Additional small/micro caps frequently in portfolios
+        "ZETA", "HUMA", "LCTX", "ONDS", "NANC",  # User portfolio stocks
+        "LUNR", "RKLB", "IONQ", "RGTI", "QBTS",  # Space/quantum computing
+        "PLTR", "SNOW", "NET", "CRWD", "ZS",  # High-growth tech
+        "RIVN", "LCID", "FSR", "NKLA", "GOEV",  # EV
+        "SOFI", "AFRM", "UPST", "HOOD", "COIN",  # Fintech
+        "DKNG", "PENN", "RSI", "GENI", "BETZ",  # Gaming/sports betting
     ]
 
 
 if __name__ == "__main__":
+    print("Fetching ticker lists...")
     sp500 = get_sp500_tickers()
+    midcap400 = get_sp400_midcap_tickers()
+    smallcap600 = get_sp600_smallcap_tickers()
     russell = get_russell2000_tickers()
+    portfolio = get_portfolio_tickers()
     all_tickers = get_all_tickers()
-    print(f"S&P 500: {len(sp500)} tickers")
-    print(f"Russell 2000: {len(russell)} tickers")
-    print(f"Combined (deduplicated): {len(all_tickers)} tickers")
+
+    print(f"\nIndex Breakdown:")
+    print(f"  S&P 500:        {len(sp500):>4} tickers")
+    print(f"  S&P MidCap 400: {len(midcap400):>4} tickers")
+    print(f"  S&P SmallCap 600: {len(smallcap600):>4} tickers")
+    print(f"  Russell 2000:   {len(russell):>4} tickers (curated)")
+    print(f"  Portfolio:      {len(portfolio):>4} tickers")
+    print(f"\nCombined (deduplicated): {len(all_tickers)} tickers")
+
+    # Check for missing portfolio tickers
+    all_set = set(all_tickers)
+    missing = [t for t in portfolio if t not in all_set]
+    if missing:
+        print(f"\nWARNING: Portfolio tickers not in combined list: {missing}")

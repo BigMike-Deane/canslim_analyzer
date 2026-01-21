@@ -313,7 +313,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
               {scannerStatus?.is_scanning ? 'Scanning...' : 'Active'}
               {scannerStatus?.next_run && !scannerStatus?.is_scanning && (
                 <span className="text-dark-400 ml-2">
-                  Next: {new Date(scannerStatus.next_run).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })}
+                  Next: {new Date(scannerStatus.next_run).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
                 </span>
               )}
             </span>
