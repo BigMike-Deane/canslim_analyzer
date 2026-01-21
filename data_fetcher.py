@@ -55,6 +55,189 @@ _cached_data = {}
 _cached_data_lock = threading.Lock()
 MAX_CACHED_TICKERS = 500  # Limit cache size
 
+# DB-backed cache flag
+_db_cache_loaded = False
+_db_cache_lock = threading.Lock()
+
+
+def _get_db_session():
+    """Get a database session for cache operations"""
+    try:
+        from backend.database import SessionLocal
+        return SessionLocal()
+    except Exception:
+        return None
+
+
+def load_cache_from_db():
+    """Load cached data from database into memory on startup"""
+    global _db_cache_loaded
+
+    with _db_cache_lock:
+        if _db_cache_loaded:
+            return
+
+        db = _get_db_session()
+        if not db:
+            logger.warning("Could not connect to DB for cache loading")
+            _db_cache_loaded = True
+            return
+
+        try:
+            from backend.database import StockDataCache
+            cache_records = db.query(StockDataCache).all()
+            loaded_count = 0
+
+            for record in cache_records:
+                ticker = record.ticker
+
+                # Load earnings data
+                if record.quarterly_earnings and record.earnings_updated_at:
+                    set_cached_data(ticker, "earnings", {
+                        "quarterly": record.quarterly_earnings,
+                        "annual": record.annual_earnings
+                    })
+                    with _freshness_lock:
+                        if ticker not in _data_freshness_cache:
+                            _data_freshness_cache[ticker] = {}
+                        _data_freshness_cache[ticker]["earnings"] = record.earnings_updated_at
+
+                # Load revenue data
+                if record.quarterly_revenue and record.revenue_updated_at:
+                    set_cached_data(ticker, "revenue", {
+                        "quarterly": record.quarterly_revenue,
+                        "annual": record.annual_revenue
+                    })
+                    with _freshness_lock:
+                        _data_freshness_cache[ticker]["revenue"] = record.revenue_updated_at
+
+                # Load balance sheet data
+                if record.balance_updated_at:
+                    set_cached_data(ticker, "balance_sheet", {
+                        "total_cash": record.total_cash,
+                        "total_debt": record.total_debt,
+                        "shares_outstanding": record.shares_outstanding
+                    })
+                    with _freshness_lock:
+                        _data_freshness_cache[ticker]["balance_sheet"] = record.balance_updated_at
+
+                # Load analyst data
+                if record.analyst_updated_at:
+                    set_cached_data(ticker, "analyst", {
+                        "target_price": record.analyst_target_price,
+                        "count": record.analyst_count
+                    })
+                    with _freshness_lock:
+                        _data_freshness_cache[ticker]["analyst"] = record.analyst_updated_at
+
+                # Load institutional data
+                if record.institutional_updated_at:
+                    set_cached_data(ticker, "institutional", record.institutional_holders_pct)
+                    with _freshness_lock:
+                        _data_freshness_cache[ticker]["institutional"] = record.institutional_updated_at
+
+                # Load key metrics
+                if record.metrics_updated_at:
+                    set_cached_data(ticker, "key_metrics", {
+                        "roe": record.roe,
+                        "trailing_pe": record.trailing_pe,
+                        "forward_pe": record.forward_pe,
+                        "peg_ratio": record.peg_ratio
+                    })
+                    with _freshness_lock:
+                        _data_freshness_cache[ticker]["key_metrics"] = record.metrics_updated_at
+
+                loaded_count += 1
+
+            logger.info(f"Loaded {loaded_count} tickers from DB cache")
+            _db_cache_loaded = True
+
+        except Exception as e:
+            logger.warning(f"Failed to load DB cache: {e}")
+            _db_cache_loaded = True
+        finally:
+            db.close()
+
+
+def save_ticker_to_db_cache(ticker: str, data_type: str, data):
+    """Save fetched data to database cache for persistence"""
+    db = _get_db_session()
+    if not db:
+        return
+
+    try:
+        from backend.database import StockDataCache
+
+        # Get or create cache record
+        record = db.query(StockDataCache).filter(StockDataCache.ticker == ticker).first()
+        if not record:
+            record = StockDataCache(ticker=ticker)
+            db.add(record)
+
+        now = datetime.now()
+
+        # Update the appropriate fields based on data_type
+        if data_type == "earnings" and isinstance(data, dict):
+            record.quarterly_earnings = data.get("quarterly")
+            record.annual_earnings = data.get("annual")
+            record.earnings_updated_at = now
+
+        elif data_type == "revenue" and isinstance(data, dict):
+            record.quarterly_revenue = data.get("quarterly")
+            record.annual_revenue = data.get("annual")
+            record.revenue_updated_at = now
+
+        elif data_type == "balance_sheet" and isinstance(data, dict):
+            record.total_cash = data.get("total_cash")
+            record.total_debt = data.get("total_debt")
+            record.shares_outstanding = data.get("shares_outstanding")
+            record.balance_updated_at = now
+
+        elif data_type == "analyst" and isinstance(data, dict):
+            record.analyst_target_price = data.get("target_price")
+            record.analyst_count = data.get("count")
+            record.analyst_updated_at = now
+
+        elif data_type == "institutional":
+            record.institutional_holders_pct = data if isinstance(data, (int, float)) else None
+            record.institutional_updated_at = now
+
+        elif data_type == "key_metrics" and isinstance(data, dict):
+            record.roe = data.get("roe")
+            record.trailing_pe = data.get("trailing_pe")
+            record.forward_pe = data.get("forward_pe")
+            record.peg_ratio = data.get("peg_ratio")
+            record.metrics_updated_at = now
+
+        record.updated_at = now
+        db.commit()
+
+    except Exception as e:
+        logger.debug(f"Failed to save {ticker} {data_type} to DB cache: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def compute_data_hash(ticker: str) -> str:
+    """Compute a hash of critical data for delta detection"""
+    import hashlib
+    import json
+
+    with _cached_data_lock:
+        earnings = _cached_data.get(f"{ticker}:earnings", {})
+        revenue = _cached_data.get(f"{ticker}:revenue", {})
+        metrics = _cached_data.get(f"{ticker}:key_metrics", {})
+
+    # Hash the critical scoring data
+    data_str = json.dumps({
+        "quarterly_earnings": earnings.get("quarterly", [])[:4] if isinstance(earnings, dict) else [],
+        "quarterly_revenue": revenue.get("quarterly", [])[:4] if isinstance(revenue, dict) else [],
+        "roe": metrics.get("roe") if isinstance(metrics, dict) else None
+    }, sort_keys=True, default=str)
+
+    return hashlib.md5(data_str.encode()).hexdigest()[:16]
+
 
 def is_data_fresh(ticker: str, data_type: str) -> bool:
     """Check if cached data is still fresh"""
@@ -85,8 +268,8 @@ def get_cached_data(ticker: str, data_type: str):
         return _cached_data.get(key)
 
 
-def set_cached_data(ticker: str, data_type: str, data):
-    """Store data in cache"""
+def set_cached_data(ticker: str, data_type: str, data, persist_to_db: bool = True):
+    """Store data in cache (memory + optionally DB)"""
     with _cached_data_lock:
         # Enforce cache size limit
         if len(_cached_data) >= MAX_CACHED_TICKERS * 10:  # ~10 data types per ticker
@@ -97,6 +280,12 @@ def set_cached_data(ticker: str, data_type: str, data):
 
         key = f"{ticker}:{data_type}"
         _cached_data[key] = data
+
+    # Persist to DB for survival across restarts (async to not slow down)
+    if persist_to_db and data_type in ["earnings", "revenue", "balance_sheet", "analyst", "institutional", "key_metrics"]:
+        # Run DB save in background thread to not block
+        import threading
+        threading.Thread(target=save_ticker_to_db_cache, args=(ticker, data_type, data), daemon=True).start()
 
 
 _cache_hit_count = 0
@@ -111,6 +300,10 @@ def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
     Returns cached data if fresh, otherwise fetches new data.
     """
     global _cache_hit_count, _cache_miss_count
+
+    # Load DB cache on first access
+    if not _db_cache_loaded:
+        load_cache_from_db()
 
     # Skip caching if disabled
     if not CACHING_ENABLED:

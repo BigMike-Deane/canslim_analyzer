@@ -454,3 +454,55 @@ class AIPortfolioSnapshot(Base):
 
     # Keep date for backwards compatibility with existing chart
     date = Column(Date, index=True)  # Date portion for grouping
+
+
+# ============== Data Caching Models ==============
+
+class StockDataCache(Base):
+    """
+    Persistent cache for raw stock data fetched from APIs.
+    Survives container restarts and enables delta checking.
+    """
+    __tablename__ = "stock_data_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, unique=True, index=True, nullable=False)
+
+    # Earnings data (refreshed daily)
+    quarterly_earnings = Column(JSON)  # List of quarterly EPS values
+    annual_earnings = Column(JSON)  # List of annual EPS values
+    earnings_updated_at = Column(DateTime)
+
+    # Revenue data (refreshed daily)
+    quarterly_revenue = Column(JSON)  # List of quarterly revenue values
+    annual_revenue = Column(JSON)  # List of annual revenue values
+    revenue_updated_at = Column(DateTime)
+
+    # Balance sheet data (refreshed daily)
+    total_cash = Column(Float)
+    total_debt = Column(Float)
+    shares_outstanding = Column(Float)
+    balance_updated_at = Column(DateTime)
+
+    # Analyst data (refreshed daily)
+    analyst_target_price = Column(Float)
+    analyst_count = Column(Integer)
+    analyst_updated_at = Column(DateTime)
+
+    # Institutional data (refreshed weekly)
+    institutional_holders_pct = Column(Float)
+    institutional_updated_at = Column(DateTime)
+
+    # Key metrics (refreshed daily)
+    roe = Column(Float)
+    trailing_pe = Column(Float)
+    forward_pe = Column(Float)
+    peg_ratio = Column(Float)
+    metrics_updated_at = Column(DateTime)
+
+    # Hash of critical data for delta detection
+    # If this hasn't changed, we can skip re-scoring
+    data_hash = Column(String)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
