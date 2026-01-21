@@ -886,19 +886,59 @@ async def get_breaking_out_stocks(
     limit: int = Query(10, le=50)
 ):
     """
-    Get stocks that are currently breaking out of base patterns.
+    Get stocks that are currently breaking out or near breakout.
     These are high-probability buy points in CANSLIM methodology.
+
+    Includes:
+    1. Stocks flagged as is_breaking_out (price near pivot with volume)
+    2. Fallback: Stocks within 5% of 52-week high with decent volume/score
     """
-    stocks_raw = db.query(Stock).filter(
+    # First: Get stocks with is_breaking_out flag
+    breakout_stocks = db.query(Stock).filter(
         Stock.is_breaking_out == True,
-        Stock.canslim_score >= 60,
+        Stock.canslim_score >= 55,  # Lowered from 60 for more results
         Stock.current_price > 0
     ).order_by(
         desc(Stock.canslim_score)
     ).limit(limit * 2).all()
 
-    # Filter duplicates (e.g., GOOG/GOOGL) - keep highest scorer
-    stocks = filter_duplicate_stocks(stocks_raw, limit)
+    # Filter duplicates
+    breakout_filtered = filter_duplicate_stocks(breakout_stocks, limit)
+    breakout_tickers = {s.ticker for s in breakout_filtered}
+
+    # If we don't have enough, supplement with "near breakout" stocks
+    # These are stocks within 5% of 52-week high with good scores
+    if len(breakout_filtered) < limit:
+        needed = limit - len(breakout_filtered)
+
+        # Get all stocks and calculate proximity to 52-week high
+        near_breakout_candidates = db.query(Stock).filter(
+            Stock.canslim_score >= 60,
+            Stock.current_price > 0,
+            Stock.week_52_high > 0,
+            Stock.volume_ratio >= 1.0,  # At least average volume
+            ~Stock.ticker.in_(breakout_tickers) if breakout_tickers else True
+        ).all()
+
+        # Calculate and filter by proximity to 52-week high
+        near_breakout = []
+        for s in near_breakout_candidates:
+            if s.week_52_high and s.current_price:
+                pct_from_high = (s.week_52_high - s.current_price) / s.week_52_high
+                # Within 10% of 52-week high
+                if pct_from_high <= 0.10:
+                    near_breakout.append((s, pct_from_high))
+
+        # Sort by proximity to high (closest first), then by score
+        near_breakout.sort(key=lambda x: (x[1], -x[0].canslim_score))
+        near_breakout_stocks = [s for s, _ in near_breakout[:needed * 2]]
+
+        # Filter duplicates and add to results
+        near_breakout_filtered = filter_duplicate_stocks(near_breakout_stocks, needed)
+        breakout_filtered.extend(near_breakout_filtered)
+
+    # Final filter for exact limit
+    stocks = breakout_filtered[:limit]
 
     return {
         "stocks": [{
@@ -911,8 +951,10 @@ async def get_breaking_out_stocks(
             "week_52_high": s.week_52_high,
             "base_type": s.base_type,
             "weeks_in_base": s.weeks_in_base,
-            "breakout_volume_ratio": s.breakout_volume_ratio,
-            "projected_growth": s.projected_growth
+            "breakout_volume_ratio": s.breakout_volume_ratio or s.volume_ratio,
+            "volume_ratio": s.volume_ratio,
+            "projected_growth": s.projected_growth,
+            "is_breaking_out": s.is_breaking_out or False
         } for s in stocks],
         "total": len(stocks)
     }
@@ -1960,17 +2002,32 @@ async def initialize_ai_portfolio_endpoint(
 async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
     """Manually trigger an AI trading cycle (runs in background)"""
     from backend.database import SessionLocal
-    from backend.ai_trader import take_portfolio_snapshot
+    from backend.ai_trader import take_portfolio_snapshot, _trading_cycle_lock, _trading_cycle_started
+    from datetime import datetime
+
+    # Check if a cycle is already running BEFORE launching background task
+    if _trading_cycle_lock and _trading_cycle_started:
+        elapsed = (datetime.now() - _trading_cycle_started).total_seconds()
+        if elapsed < 300:  # 5 minute timeout
+            return {
+                "status": "busy",
+                "message": f"Trading cycle already running ({int(elapsed)}s elapsed). Please wait."
+            }
 
     def run_cycle_background():
         db = SessionLocal()
         try:
             logger.info("Starting AI trading cycle in background...")
             result = run_ai_trading_cycle(db)
-            logger.info(f"AI trading cycle complete: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+            if result.get("status") == "busy":
+                logger.warning(f"Trading cycle was busy: {result.get('message')}")
+            else:
+                logger.info(f"AI trading cycle complete: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
             # Note: run_ai_trading_cycle already calls take_portfolio_snapshot internally
         except Exception as e:
             logger.error(f"AI trading cycle error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             db.close()
 

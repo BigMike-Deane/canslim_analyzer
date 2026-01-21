@@ -877,25 +877,44 @@ class TechnicalAnalyzer:
     @staticmethod
     def is_breaking_out(stock_data: StockData, base_pattern: dict) -> tuple[bool, float]:
         """
-        Check if stock is breaking out of its base.
+        Check if stock is breaking out of its base or near a breakout.
         Returns: (is_breaking_out, volume_ratio)
+
+        Breakout criteria (loosened for more results):
+        - Strong breakout: Price 0-5% above pivot with 40%+ volume surge
+        - Breakout: Price 0-10% above pivot with 25%+ volume surge
+        - Near breakout: Price within 5% below pivot with 20%+ volume surge
         """
+        vol_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
+
         if base_pattern["type"] == "none" or base_pattern["pivot_price"] <= 0:
-            return False, 1.0
+            # Even without a base pattern, check if near 52-week high with volume
+            if stock_data.week_52_high and stock_data.current_price:
+                pct_from_high = (stock_data.week_52_high - stock_data.current_price) / stock_data.week_52_high
+                # Within 5% of 52-week high with decent volume = potential breakout
+                if pct_from_high <= 0.05 and vol_ratio >= 1.2:
+                    return True, vol_ratio
+            return False, vol_ratio
 
         pivot = base_pattern["pivot_price"]
         current = stock_data.current_price
 
-        # Breakout = price within 5% above pivot with elevated volume
         if current > 0 and pivot > 0:
-            pct_above_pivot = (current - pivot) / pivot
+            pct_from_pivot = (current - pivot) / pivot
 
-            if 0 <= pct_above_pivot <= 0.05:  # Within 5% above pivot
-                vol_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
-                if vol_ratio >= 1.4:  # 40%+ above average volume
-                    return True, vol_ratio
+            # Strong breakout: price 0-5% above pivot with 40%+ volume surge
+            if 0 <= pct_from_pivot <= 0.05 and vol_ratio >= 1.4:
+                return True, vol_ratio
 
-        return False, TechnicalAnalyzer.calculate_volume_ratio(stock_data)
+            # Breakout: price 0-10% above pivot with 25%+ volume surge
+            if 0 <= pct_from_pivot <= 0.10 and vol_ratio >= 1.25:
+                return True, vol_ratio
+
+            # Near breakout: price within 5% below pivot with 20%+ volume (building for breakout)
+            if -0.05 <= pct_from_pivot < 0 and vol_ratio >= 1.2:
+                return True, vol_ratio
+
+        return False, vol_ratio
 
 
 if __name__ == "__main__":

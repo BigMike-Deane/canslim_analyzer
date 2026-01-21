@@ -23,6 +23,13 @@ from backend.database import (
 
 logger = logging.getLogger(__name__)
 
+# Lock to prevent concurrent trading cycles
+_trading_cycle_lock = False
+_trading_cycle_started = None  # Track when cycle started for timeout
+
+# Minimum cash reserve as percentage of portfolio (stop buying below this)
+MIN_CASH_RESERVE_PCT = 0.10  # 10%
+
 
 def get_effective_score(stock_or_position, use_current: bool = True) -> float:
     """
@@ -519,47 +526,86 @@ def evaluate_buys(db: Session) -> list:
         effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
         if not effective_score or effective_score < config.min_score_to_buy:
             continue
-        # Calculate momentum score (how close to 52-week high)
+        # Check if stock is breaking out (best buying opportunity)
+        is_breaking_out = getattr(stock, 'is_breaking_out', False)
+        breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
+        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+
+        # Calculate momentum score based on proximity to 52-week high AND breakout status
         momentum_score = 0
+        breakout_bonus = 0
+        at_high_penalty = 0
+
         if stock.week_52_high and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
-            # Prefer stocks within 15% of 52-week high (showing strength)
-            if pct_from_high <= 5:
-                momentum_score = 30  # Near highs = strong momentum
-            elif pct_from_high <= 10:
-                momentum_score = 20
+
+            # BREAKOUT STOCKS get highest priority - buying the pivot point
+            if is_breaking_out:
+                breakout_bonus = 25  # Big bonus for confirmed breakouts
+                if breakout_volume_ratio >= 2.0:
+                    breakout_bonus += 10  # Extra bonus for strong volume breakout
+                momentum_score = 30
+            # Within 5% of high but NOT breaking out - risky entry point
+            elif pct_from_high <= 2:
+                # At the high without breakout = chasing, penalize unless extremely high score
+                if effective_score < 85:
+                    at_high_penalty = -15  # Penalize buying at 52-week high
+                    momentum_score = 5
+                else:
+                    momentum_score = 20  # Very high score justifies the entry
+            # Stocks 5-15% from high with good volume = building base, good entry
             elif pct_from_high <= 15:
-                momentum_score = 10
-            elif pct_from_high > 30:
+                if volume_ratio >= 1.3:  # Accumulation pattern
+                    momentum_score = 25
+                else:
+                    momentum_score = 15
+            elif pct_from_high <= 25:
+                momentum_score = 5  # Still acceptable
+            else:
                 momentum_score = -10  # Too far from highs, may be in downtrend
 
-        # Calculate composite score: 40% growth projection, 40% effective score, 20% momentum
+        # Calculate composite score with breakout weighting
+        # Breakouts get priority: 30% growth, 30% score, 25% momentum, 15% breakout bonus
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
         composite_score = (
-            (growth_projection * 0.4) +
-            (effective_score * 0.4) +
-            (momentum_score * 0.2)
+            (growth_projection * 0.30) +
+            (effective_score * 0.30) +
+            (momentum_score * 0.25) +
+            (breakout_bonus * 0.15) +
+            at_high_penalty
         )
 
         # Skip if composite score is too low
-        if composite_score < 30:
+        if composite_score < 25:
             continue
 
-        # Calculate position size - larger for higher conviction
+        # Calculate position size - MORE DYNAMIC range based on conviction
         portfolio_value = get_portfolio_value(db)["total_value"]
 
         # Check correlation - reduce position for highly correlated sectors
         correlation_status, correlation_detail = check_correlation(db, stock.ticker)
         correlation_penalty = 0.7 if correlation_status == "high_correlation" else 1.0
 
-        # Scale position size by conviction (6-12% based on composite score)
-        conviction_multiplier = min(composite_score / 60, 1.0)  # 0.5 to 1.0
-        position_pct = 6.0 + (conviction_multiplier * 6.0)  # 6% to 12%
-        position_pct *= correlation_penalty  # Reduce for high correlation
+        # Position sizing: 4-20% based on conviction (wider range for more flexibility)
+        # Base: 4% minimum, scale up to 20% for highest conviction picks
+        conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
+        position_pct = 4.0 + (conviction_multiplier * 10.67)  # 4% to ~20%
+
+        # Breakout stocks get larger positions (high confidence entry)
+        if is_breaking_out and breakout_volume_ratio >= 1.5:
+            position_pct *= 1.25  # 25% larger position for confirmed breakouts
+
+        # Apply correlation penalty
+        position_pct *= correlation_penalty
+
+        # Cap at 20% max
+        position_pct = min(position_pct, 20.0)
+
         max_position_value = portfolio_value * (position_pct / 100)
 
-        # Don't exceed available cash
-        position_value = min(max_position_value, config.current_cash * 0.90)
+        # Don't exceed available cash (but allow using more of it for high conviction)
+        cash_limit = config.current_cash * 0.85 if is_breaking_out else config.current_cash * 0.70
+        position_value = min(max_position_value, cash_limit)
 
         # Check sector limits
         adjusted_value, sector_reason = check_sector_limit(db, stock.ticker, position_value)
@@ -573,12 +619,16 @@ def evaluate_buys(db: Session) -> list:
         shares = position_value / stock.current_price
 
         reason_parts = []
+        if is_breaking_out:
+            reason_parts.append(f"🚀 BREAKOUT {breakout_volume_ratio:.1f}x vol")
         if stock.projected_growth and stock.projected_growth > 15:
             reason_parts.append(f"+{stock.projected_growth:.0f}% growth")
         stock_type_label = "Growth" if is_growth else "CANSLIM"
         reason_parts.append(f"{stock_type_label} {effective_score:.0f}")
-        if momentum_score >= 20:
+        if momentum_score >= 20 and not is_breaking_out:
             reason_parts.append("Strong momentum")
+        if volume_ratio >= 1.5 and not is_breaking_out:
+            reason_parts.append(f"Vol {volume_ratio:.1f}x")
 
         buys.append({
             "stock": stock,
@@ -588,15 +638,18 @@ def evaluate_buys(db: Session) -> list:
             "priority": -composite_score,  # Higher composite = lower priority number (buy first)
             "composite_score": composite_score,
             "is_growth_stock": is_growth,
-            "effective_score": effective_score
+            "effective_score": effective_score,
+            "is_breaking_out": is_breaking_out,
+            "position_pct": position_pct
         })
 
     # Sort by composite score (highest first)
     buys.sort(key=lambda x: x["priority"])
 
     # Log first few buy candidates for debugging
-    for b in buys[:3]:
-        logger.info(f"Buy candidate: {b['stock'].ticker}, value=${b['value']:.2f}, shares={b['shares']:.2f}")
+    for b in buys[:5]:
+        breakout_flag = " 🚀BREAKOUT" if b.get('is_breaking_out') else ""
+        logger.info(f"Buy candidate: {b['stock'].ticker}{breakout_flag}, ${b['value']:.0f} ({b['position_pct']:.1f}%), score={b['composite_score']:.1f}")
 
     # Remove duplicates from buy candidates (keep only highest scoring from each group)
     final_buys = []
@@ -632,255 +685,291 @@ def run_ai_trading_cycle(db: Session) -> dict:
     4. Take a portfolio snapshot
     """
     import time
+    global _trading_cycle_lock, _trading_cycle_started
 
-    config = get_or_create_config(db)
-    logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}")
-
-    if not config.is_active:
-        logger.info("AI Portfolio is not active, skipping cycle")
-        return {"status": "inactive", "message": "AI Portfolio is not active"}
-
-    results = {
-        "sells_executed": [],
-        "buys_executed": [],
-        "sells_considered": 0,
-        "buys_considered": 0
-    }
-
-    # Get current positions
-    positions = db.query(AIPortfolioPosition).all()
-    position_count = len(positions)
-    logger.info(f"Current positions: {position_count}")
-
-    # Only fetch live prices for existing positions (skip if none)
-    if position_count > 0:
-        logger.info("Updating existing position prices...")
-        update_position_prices(db, use_live_prices=True)
-
-    # Evaluate and execute sells
-    sells = evaluate_sells(db)
-    results["sells_considered"] = len(sells)
-    logger.info(f"Sells to consider: {len(sells)}")
-
-    for sell in sells:
-        position = sell["position"]
-
-        # Execute the sell with both scores
-        execute_trade(
-            db=db,
-            ticker=position.ticker,
-            action="SELL",
-            shares=position.shares,
-            price=position.current_price,
-            reason=sell["reason"],
-            score=position.current_score,
-            growth_score=position.current_growth_score,
-            is_growth_stock=position.is_growth_stock or False,
-            cost_basis=position.cost_basis,
-            realized_gain=position.gain_loss
-        )
-
-        # Add cash back
-        config.current_cash += position.current_value
-
-        # Remove position
-        db.delete(position)
-        position_count -= 1
-
-        results["sells_executed"].append({
-            "ticker": position.ticker,
-            "shares": position.shares,
-            "price": position.current_price,
-            "gain_loss": position.gain_loss,
-            "is_growth_stock": position.is_growth_stock or False,
-            "reason": sell["reason"]
-        })
-
-    db.commit()
-
-    # Evaluate and execute pyramid trades (add to winners)
-    pyramids = evaluate_pyramids(db)
-    results["pyramids_executed"] = []
-    results["pyramids_considered"] = len(pyramids)
-
-    if pyramids:
-        logger.info(f"Pyramid opportunities found: {len(pyramids)}")
-
-    for pyramid in pyramids[:3]:  # Limit to 3 pyramids per cycle
-        position = pyramid["position"]
-
-        # Fetch live price
-        live_price = fetch_live_price(position.ticker)
-        if not live_price:
-            live_price = position.current_price
-        if not live_price or live_price <= 0:
-            continue
-
-        time.sleep(0.3)
-
-        # Recalculate with live price
-        actual_value = min(pyramid["amount"], config.current_cash * 0.5)
-        if actual_value < 100:
-            continue
-
-        actual_shares = actual_value / live_price
-
-        if config.current_cash < actual_value:
-            continue
-
-        # Execute the pyramid buy with both scores
-        execute_trade(
-            db=db,
-            ticker=position.ticker,
-            action="BUY",
-            shares=actual_shares,
-            price=live_price,
-            reason=f"PYRAMID: {pyramid['reason']}",
-            score=position.current_score,
-            growth_score=position.current_growth_score,
-            is_growth_stock=position.is_growth_stock or False
-        )
-
-        # Deduct cash
-        config.current_cash -= actual_value
-
-        # Update position (add shares, recalculate cost basis)
-        total_cost = (position.shares * position.cost_basis) + actual_value
-        position.shares += actual_shares
-        position.cost_basis = total_cost / position.shares
-        position.current_value = position.shares * live_price
-        position.gain_loss = position.current_value - total_cost
-        position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
-
-        results["pyramids_executed"].append({
-            "ticker": position.ticker,
-            "shares_added": actual_shares,
-            "price": live_price,
-            "value": actual_value,
-            "reason": pyramid["reason"]
-        })
-
-        logger.info(f"PYRAMID {position.ticker}: +{actual_shares:.2f} shares @ ${live_price:.2f}")
-
-    db.commit()
-
-    # Evaluate and execute buys (only if we have room for more positions)
-    if position_count < config.max_positions:
-        logger.info("Evaluating buy candidates from Stock table...")
-        buys = evaluate_buys(db)
-        results["buys_considered"] = len(buys)
-        logger.info(f"Buy candidates found: {len(buys)}")
-
-        if not buys:
-            logger.warning("No buy candidates found! Check if Stock table has data with scores >= 65")
-
-        for buy in buys:
-            if position_count >= config.max_positions:
-                logger.info(f"Max positions ({config.max_positions}) reached, stopping buys")
-                break
-
-            stock = buy["stock"]
-            logger.info(f"Processing buy: {stock.ticker} (score: {stock.canslim_score}, cached price: ${stock.current_price})")
-
-            # Fetch live price for this specific stock
-            live_price = fetch_live_price(stock.ticker)
-            if live_price:
-                logger.info(f"{stock.ticker}: Live price ${live_price:.2f}")
+    # Check if another cycle is already running (with 5-minute timeout)
+    if _trading_cycle_lock:
+        if _trading_cycle_started:
+            elapsed = (datetime.now() - _trading_cycle_started).total_seconds()
+            if elapsed < 300:  # 5 minute timeout
+                logger.warning(f"Trading cycle already in progress (started {elapsed:.0f}s ago), skipping")
+                return {"status": "busy", "message": f"Trading cycle already running ({elapsed:.0f}s elapsed)"}
             else:
-                live_price = stock.current_price  # Fallback to cached
-                logger.warning(f"{stock.ticker}: Using cached price ${live_price} (live fetch failed)")
+                logger.warning(f"Previous cycle timed out after {elapsed:.0f}s, forcing new cycle")
+        else:
+            logger.warning("Lock set but no start time, forcing new cycle")
 
+    # Acquire lock
+    _trading_cycle_lock = True
+    _trading_cycle_started = datetime.now()
+
+    try:
+        config = get_or_create_config(db)
+        logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}")
+
+        if not config.is_active:
+            logger.info("AI Portfolio is not active, skipping cycle")
+            return {"status": "inactive", "message": "AI Portfolio is not active"}
+
+        results = {
+            "sells_executed": [],
+            "buys_executed": [],
+            "sells_considered": 0,
+            "buys_considered": 0
+        }
+
+        # Get current positions
+        positions = db.query(AIPortfolioPosition).all()
+        position_count = len(positions)
+        logger.info(f"Current positions: {position_count}")
+
+        # Only fetch live prices for existing positions (skip if none)
+        if position_count > 0:
+            logger.info("Updating existing position prices...")
+            update_position_prices(db, use_live_prices=True)
+
+        # Evaluate and execute sells
+        sells = evaluate_sells(db)
+        results["sells_considered"] = len(sells)
+        logger.info(f"Sells to consider: {len(sells)}")
+
+        for sell in sells:
+            position = sell["position"]
+
+            # Execute the sell with both scores
+            execute_trade(
+                db=db,
+                ticker=position.ticker,
+                action="SELL",
+                shares=position.shares,
+                price=position.current_price,
+                reason=sell["reason"],
+                score=position.current_score,
+                growth_score=position.current_growth_score,
+                is_growth_stock=position.is_growth_stock or False,
+                cost_basis=position.cost_basis,
+                realized_gain=position.gain_loss
+            )
+
+            # Add cash back
+            config.current_cash += position.current_value
+
+            # Remove position
+            db.delete(position)
+            position_count -= 1
+
+            results["sells_executed"].append({
+                "ticker": position.ticker,
+                "shares": position.shares,
+                "price": position.current_price,
+                "gain_loss": position.gain_loss,
+                "is_growth_stock": position.is_growth_stock or False,
+                "reason": sell["reason"]
+            })
+
+        db.commit()
+
+        # Evaluate and execute pyramid trades (add to winners)
+        pyramids = evaluate_pyramids(db)
+        results["pyramids_executed"] = []
+        results["pyramids_considered"] = len(pyramids)
+
+        if pyramids:
+            logger.info(f"Pyramid opportunities found: {len(pyramids)}")
+
+        for pyramid in pyramids[:3]:  # Limit to 3 pyramids per cycle
+            position = pyramid["position"]
+
+            # Fetch live price
+            live_price = fetch_live_price(position.ticker)
+            if not live_price:
+                live_price = position.current_price
             if not live_price or live_price <= 0:
-                logger.error(f"{stock.ticker}: No valid price, skipping")
                 continue
 
-            time.sleep(0.3)  # Rate limit delay
+            time.sleep(0.3)
 
-            # Recalculate position value and shares with live price
-            logger.info(f"{stock.ticker}: buy_value=${buy['value']:.2f}, cash=${config.current_cash:.2f}")
-            actual_value = min(buy["value"], config.current_cash * 0.95)
+            # Recalculate with live price
+            actual_value = min(pyramid["amount"], config.current_cash * 0.5)
             if actual_value < 100:
-                logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f}), skipping")
                 continue
 
             actual_shares = actual_value / live_price
 
             if config.current_cash < actual_value:
-                logger.info(f"{stock.ticker}: Not enough cash (${config.current_cash:.2f} < ${actual_value:.2f})")
                 continue
 
-            # Get growth stock info from buy candidate
-            is_growth = buy.get("is_growth_stock", False)
-
-            # Execute the buy at live price
+            # Execute the pyramid buy with both scores
             execute_trade(
                 db=db,
-                ticker=stock.ticker,
+                ticker=position.ticker,
                 action="BUY",
                 shares=actual_shares,
                 price=live_price,
-                reason=buy["reason"],
-                score=stock.canslim_score,
-                growth_score=stock.growth_mode_score,
-                is_growth_stock=is_growth
+                reason=f"PYRAMID: {pyramid['reason']}",
+                score=position.current_score,
+                growth_score=position.current_growth_score,
+                is_growth_stock=position.is_growth_stock or False
             )
 
             # Deduct cash
             config.current_cash -= actual_value
 
-            # Create position at live price with both scores
-            new_position = AIPortfolioPosition(
-                ticker=stock.ticker,
-                shares=actual_shares,
-                cost_basis=live_price,
-                purchase_score=stock.canslim_score,
-                current_price=live_price,
-                current_value=actual_value,
-                gain_loss=0,
-                gain_loss_pct=0,
-                current_score=stock.canslim_score,
-                # Growth Mode fields
-                is_growth_stock=is_growth,
-                purchase_growth_score=stock.growth_mode_score,
-                current_growth_score=stock.growth_mode_score
-            )
-            db.add(new_position)
-            position_count += 1
+            # Update position (add shares, recalculate cost basis)
+            total_cost = (position.shares * position.cost_basis) + actual_value
+            position.shares += actual_shares
+            position.cost_basis = total_cost / position.shares
+            position.current_value = position.shares * live_price
+            position.gain_loss = position.current_value - total_cost
+            position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
 
-            stock_type = "Growth" if is_growth else "CANSLIM"
-            effective = buy.get("effective_score", stock.canslim_score)
-            logger.info(f"BOUGHT {stock.ticker}: {actual_shares:.2f} shares @ ${live_price:.2f} = ${actual_value:.2f} ({stock_type} {effective:.0f})")
-
-            results["buys_executed"].append({
-                "ticker": stock.ticker,
-                "shares": actual_shares,
+            results["pyramids_executed"].append({
+                "ticker": position.ticker,
+                "shares_added": actual_shares,
                 "price": live_price,
                 "value": actual_value,
-                "canslim_score": stock.canslim_score,
-                "growth_mode_score": stock.growth_mode_score,
-                "is_growth_stock": is_growth,
-                "reason": buy["reason"]
+                "reason": pyramid["reason"]
             })
-    else:
-        logger.info(f"Already at max positions ({position_count}), skipping buys")
 
-    try:
+            logger.info(f"PYRAMID {position.ticker}: +{actual_shares:.2f} shares @ ${live_price:.2f}")
+
         db.commit()
-        logger.info("Commit successful")
 
-        # Verify positions were saved
-        saved_positions = db.query(AIPortfolioPosition).count()
-        saved_config = db.query(AIPortfolioConfig).first()
-        logger.info(f"After commit: {saved_positions} positions, cash=${saved_config.current_cash:.2f}")
-    except Exception as e:
-        logger.error(f"Commit failed: {e}")
-        db.rollback()
+        # Check cash reserve - stop buying if below 10% of portfolio
+        portfolio = get_portfolio_value(db)
+        min_cash_reserve = portfolio["total_value"] * MIN_CASH_RESERVE_PCT
+        if config.current_cash < min_cash_reserve:
+            logger.info(f"Cash ${config.current_cash:.2f} below 10% reserve (${min_cash_reserve:.2f}), skipping buys")
+        elif position_count < config.max_positions:
+            # Evaluate and execute buys (only if we have room for more positions)
+            logger.info("Evaluating buy candidates from Stock table...")
+            buys = evaluate_buys(db)
+            results["buys_considered"] = len(buys)
+            logger.info(f"Buy candidates found: {len(buys)}")
 
-    # Take daily snapshot
-    take_portfolio_snapshot(db)
+            if not buys:
+                logger.warning("No buy candidates found! Check if Stock table has data with scores >= 65")
 
-    logger.info(f"Trading cycle complete: {len(results['buys_executed'])} buys, {len(results['sells_executed'])} sells")
-    return results
+            for buy in buys:
+                # Re-check cash reserve on each buy
+                portfolio = get_portfolio_value(db)
+                min_cash_reserve = portfolio["total_value"] * MIN_CASH_RESERVE_PCT
+                if config.current_cash < min_cash_reserve:
+                    logger.info(f"Cash ${config.current_cash:.2f} below 10% reserve, stopping buys")
+                    break
+
+                if position_count >= config.max_positions:
+                    logger.info(f"Max positions ({config.max_positions}) reached, stopping buys")
+                    break
+
+                stock = buy["stock"]
+                logger.info(f"Processing buy: {stock.ticker} (score: {stock.canslim_score}, cached price: ${stock.current_price})")
+
+                # Fetch live price for this specific stock
+                live_price = fetch_live_price(stock.ticker)
+                if live_price:
+                    logger.info(f"{stock.ticker}: Live price ${live_price:.2f}")
+                else:
+                    live_price = stock.current_price  # Fallback to cached
+                    logger.warning(f"{stock.ticker}: Using cached price ${live_price} (live fetch failed)")
+
+                if not live_price or live_price <= 0:
+                    logger.error(f"{stock.ticker}: No valid price, skipping")
+                    continue
+
+                time.sleep(0.3)  # Rate limit delay
+
+                # Recalculate position value and shares with live price
+                logger.info(f"{stock.ticker}: buy_value=${buy['value']:.2f}, cash=${config.current_cash:.2f}")
+                actual_value = min(buy["value"], config.current_cash - min_cash_reserve)  # Leave 10% reserve
+                if actual_value < 100:
+                    logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f}), skipping")
+                    continue
+
+                actual_shares = actual_value / live_price
+
+                if config.current_cash < actual_value:
+                    logger.info(f"{stock.ticker}: Not enough cash (${config.current_cash:.2f} < ${actual_value:.2f})")
+                    continue
+
+                # Get growth stock info from buy candidate
+                is_growth = buy.get("is_growth_stock", False)
+
+                # Execute the buy at live price
+                execute_trade(
+                    db=db,
+                    ticker=stock.ticker,
+                    action="BUY",
+                    shares=actual_shares,
+                    price=live_price,
+                    reason=buy["reason"],
+                    score=stock.canslim_score,
+                    growth_score=stock.growth_mode_score,
+                    is_growth_stock=is_growth
+                )
+
+                # Deduct cash
+                config.current_cash -= actual_value
+
+                # Create position at live price with both scores
+                new_position = AIPortfolioPosition(
+                    ticker=stock.ticker,
+                    shares=actual_shares,
+                    cost_basis=live_price,
+                    purchase_score=stock.canslim_score,
+                    current_price=live_price,
+                    current_value=actual_value,
+                    gain_loss=0,
+                    gain_loss_pct=0,
+                    current_score=stock.canslim_score,
+                    # Growth Mode fields
+                    is_growth_stock=is_growth,
+                    purchase_growth_score=stock.growth_mode_score,
+                    current_growth_score=stock.growth_mode_score
+                )
+                db.add(new_position)
+                position_count += 1
+
+                stock_type = "Growth" if is_growth else "CANSLIM"
+                effective = buy.get("effective_score", stock.canslim_score)
+                logger.info(f"BOUGHT {stock.ticker}: {actual_shares:.2f} shares @ ${live_price:.2f} = ${actual_value:.2f} ({stock_type} {effective:.0f})")
+
+                results["buys_executed"].append({
+                    "ticker": stock.ticker,
+                    "shares": actual_shares,
+                    "price": live_price,
+                    "value": actual_value,
+                    "canslim_score": stock.canslim_score,
+                    "growth_mode_score": stock.growth_mode_score,
+                    "is_growth_stock": is_growth,
+                    "reason": buy["reason"]
+                })
+        else:
+            logger.info(f"Already at max positions ({position_count}), skipping buys")
+
+        try:
+            db.commit()
+            logger.info("Commit successful")
+
+            # Verify positions were saved
+            saved_positions = db.query(AIPortfolioPosition).count()
+            saved_config = db.query(AIPortfolioConfig).first()
+            logger.info(f"After commit: {saved_positions} positions, cash=${saved_config.current_cash:.2f}")
+        except Exception as e:
+            logger.error(f"Commit failed: {e}")
+            db.rollback()
+
+        # Take daily snapshot
+        take_portfolio_snapshot(db)
+
+        logger.info(f"Trading cycle complete: {len(results['buys_executed'])} buys, {len(results['sells_executed'])} sells")
+        return results
+
+    finally:
+        # Always release the lock
+        _trading_cycle_lock = False
+        _trading_cycle_started = None
+        logger.info("Trading cycle lock released")
 
 
 def take_portfolio_snapshot(db: Session):
