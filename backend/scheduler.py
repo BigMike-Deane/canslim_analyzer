@@ -111,15 +111,23 @@ def run_continuous_scan():
                 "l_score": canslim_result.l_score,
                 "i_score": canslim_result.i_score,
                 "m_score": canslim_result.m_score,
-                "score_details": canslim_result.details,
+                "score_details": {
+                    "c": canslim_result.c_detail,
+                    "a": canslim_result.a_detail,
+                    "n": canslim_result.n_detail,
+                    "s": canslim_result.s_detail,
+                    "l": canslim_result.l_detail,
+                    "i": canslim_result.i_detail,
+                    "m": canslim_result.m_detail,
+                },
                 "projected_growth": projection.projected_growth_pct,
                 "confidence": projection.confidence,
                 "analyst_target": stock_data.analyst_target_price,
                 "pe_ratio": stock_data.trailing_pe,
                 "week_52_high": stock_data.high_52w,
                 "week_52_low": stock_data.low_52w,
-                "relative_strength": canslim_result.details.get("l", {}).get("rs_rating"),
-                "institutional_ownership": canslim_result.details.get("i", {}).get("inst_ownership"),
+                "relative_strength": None,  # Could parse from l_detail if needed
+                "institutional_ownership": stock_data.institutional_holders_pct,
             }
         except Exception as e:
             logger.error(f"Error analyzing {ticker}: {e}")
