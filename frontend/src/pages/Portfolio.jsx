@@ -716,7 +716,7 @@ export default function Portfolio() {
                 <span className="text-yellow-500" title="Limited analyst data">⚠ Low data</span>
               </div>
             </div>
-            {positions.map(position => (
+            {[...positions].sort((a, b) => a.ticker.localeCompare(b.ticker)).map(position => (
               <PositionRow
                 key={position.id}
                 position={position}
