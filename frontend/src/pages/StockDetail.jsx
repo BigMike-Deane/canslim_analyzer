@@ -43,58 +43,185 @@ function ScoreGauge({ score, label }) {
   )
 }
 
-function ScoreDetailModal({ isOpen, onClose, scoreKey, scoreData, details }) {
+function ScoreDetailModal({ isOpen, onClose, scoreKey, scoreData, details, stock }) {
   if (!isOpen) return null
 
-  // Parse the detail string to extract key metrics
-  const parseDetail = (detail) => {
-    if (!detail) return []
-    // Split by common separators and filter empty
-    return detail.split(/[,|]/).map(s => s.trim()).filter(s => s.length > 0)
-  }
+  // Get the rich detail object (new format) or parse old string format
+  const detailData = details && typeof details === 'object' ? details : null
+  const summaryText = detailData?.summary || (typeof details === 'string' ? details : '')
 
-  const detailItems = parseDetail(details)
+  // Format currency
+  const formatPrice = (val) => val != null ? `$${val.toFixed(2)}` : '-'
+  const formatPct = (val) => val != null ? `${val.toFixed(1)}%` : '-'
+  const formatEps = (val) => val != null ? `$${val.toFixed(2)}` : '-'
 
-  // Get explanations for each score type
-  const explanations = {
-    C: {
-      title: 'Current Quarterly Earnings',
-      description: 'Measures the most recent quarterly earnings growth compared to the same quarter last year. Strong companies show 25%+ EPS growth.',
-      metrics: ['TTM EPS Growth %', 'EPS Acceleration (quarter over quarter)', 'Earnings Surprise vs Estimates']
-    },
-    A: {
-      title: 'Annual Earnings Growth',
-      description: 'Evaluates 3-5 year earnings growth trend and return on equity. Top stocks show consistent 25%+ annual EPS growth.',
-      metrics: ['3-Year CAGR', 'ROE (Return on Equity)', 'Earnings Consistency']
-    },
-    N: {
-      title: 'New Highs',
-      description: 'Looks for stocks making new price highs with strong volume. Stocks within 5-15% of 52-week highs often have more upside.',
-      metrics: ['Distance from 52-Week High', 'Price Trend', 'Volume Confirmation']
-    },
-    S: {
-      title: 'Supply and Demand',
-      description: 'Analyzes trading volume patterns to detect institutional accumulation. Rising prices with increasing volume signals demand.',
-      metrics: ['Volume vs 50-Day Average', 'Price Trend Direction', 'Accumulation Pattern']
-    },
-    L: {
-      title: 'Leader or Laggard',
-      description: 'Relative strength vs the market. Leaders outperform 80%+ of stocks. Uses multi-timeframe analysis (12mo + 3mo).',
-      metrics: ['12-Month Relative Strength', '3-Month Relative Strength', 'Sector Rank']
-    },
-    I: {
-      title: 'Institutional Sponsorship',
-      description: 'Quality institutional ownership (mutual funds, pension funds). Look for increasing institutional positions from quality funds.',
-      metrics: ['Institutional Ownership %', 'Number of Institutions', 'Recent Changes']
-    },
-    M: {
-      title: 'Market Direction',
-      description: 'Overall market trend using SPY, QQQ, and DIA. Only buy when market is in confirmed uptrend above key moving averages.',
-      metrics: ['SPY vs 50/200 MA', 'QQQ vs 50/200 MA', 'Weighted Market Signal']
+  // Render data section based on score type
+  const renderDataSection = () => {
+    switch (scoreKey) {
+      case 'C':
+        const quarterlyEps = detailData?.quarterly_eps || []
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Quarterly EPS (Most Recent First)</div>
+            {quarterlyEps.length > 0 ? (
+              <div className="grid grid-cols-4 gap-2">
+                {quarterlyEps.slice(0, 4).map((eps, i) => (
+                  <div key={i} className="bg-dark-700/50 rounded-lg p-2 text-center">
+                    <div className="text-dark-400 text-xs">Q{i === 0 ? ' (Latest)' : `-${i}`}</div>
+                    <div className={`font-semibold ${eps >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {formatEps(eps)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-dark-500 text-sm">No quarterly data available</div>
+            )}
+            {detailData?.earnings_surprise_pct != null && (
+              <div className="flex justify-between items-center bg-dark-700/50 rounded-lg p-3">
+                <span className="text-dark-400 text-sm">Latest Earnings Surprise</span>
+                <span className={`font-semibold ${detailData.earnings_surprise_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {detailData.earnings_surprise_pct >= 0 ? '+' : ''}{detailData.earnings_surprise_pct.toFixed(1)}%
+                </span>
+              </div>
+            )}
+          </div>
+        )
+
+      case 'A':
+        const annualEps = detailData?.annual_eps || []
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Annual EPS (Most Recent First)</div>
+            {annualEps.length > 0 ? (
+              <div className="grid grid-cols-3 gap-2">
+                {annualEps.slice(0, 3).map((eps, i) => (
+                  <div key={i} className="bg-dark-700/50 rounded-lg p-2 text-center">
+                    <div className="text-dark-400 text-xs">{i === 0 ? 'Latest' : `${i}Y Ago`}</div>
+                    <div className={`font-semibold ${eps >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {formatEps(eps)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-dark-500 text-sm">No annual data available</div>
+            )}
+            {detailData?.roe != null && (
+              <div className="flex justify-between items-center bg-dark-700/50 rounded-lg p-3">
+                <span className="text-dark-400 text-sm">Return on Equity (ROE)</span>
+                <span className={`font-semibold ${detailData.roe >= 17 ? 'text-green-400' : detailData.roe >= 10 ? 'text-yellow-400' : 'text-red-400'}`}>
+                  {(detailData.roe * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
+          </div>
+        )
+
+      case 'N':
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Price Position</div>
+            <div className="bg-dark-700/50 rounded-lg p-3 space-y-2">
+              <div className="flex justify-between">
+                <span className="text-dark-400 text-sm">Current Price</span>
+                <span className="font-semibold">{formatPrice(detailData?.current_price || stock?.current_price)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-dark-400 text-sm">52-Week High</span>
+                <span className="font-semibold">{formatPrice(detailData?.week_52_high || stock?.week_52_high)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-dark-400 text-sm">Distance from High</span>
+                <span className={`font-semibold ${(detailData?.pct_from_high || 0) <= 10 ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {formatPct(detailData?.pct_from_high)} below
+                </span>
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'S':
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Volume & Supply</div>
+            <div className="bg-dark-700/50 rounded-lg p-3 space-y-2">
+              <div className="flex justify-between">
+                <span className="text-dark-400 text-sm">Volume Ratio</span>
+                <span className={`font-semibold ${(detailData?.volume_ratio || 0) >= 1.5 ? 'text-green-400' : 'text-dark-300'}`}>
+                  {detailData?.volume_ratio?.toFixed(2) || '-'}x average
+                </span>
+              </div>
+              {detailData?.avg_volume && (
+                <div className="flex justify-between">
+                  <span className="text-dark-400 text-sm">Avg Daily Volume</span>
+                  <span className="font-semibold">{(detailData.avg_volume / 1e6).toFixed(2)}M</span>
+                </div>
+              )}
+              {detailData?.shares_outstanding && (
+                <div className="flex justify-between">
+                  <span className="text-dark-400 text-sm">Shares Outstanding</span>
+                  <span className="font-semibold">{(detailData.shares_outstanding / 1e9).toFixed(2)}B</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+
+      case 'L':
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Relative Strength</div>
+            <div className="bg-dark-700/50 rounded-lg p-3">
+              <div className="text-dark-300 text-sm">
+                {summaryText || 'Measures how well this stock performs relative to the overall market.'}
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'I':
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Institutional Ownership</div>
+            <div className="bg-dark-700/50 rounded-lg p-3 space-y-2">
+              <div className="flex justify-between">
+                <span className="text-dark-400 text-sm">Institutional Ownership</span>
+                <span className={`font-semibold ${(detailData?.institutional_pct || 0) >= 50 ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {formatPct(detailData?.institutional_pct || stock?.institutional_ownership)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )
+
+      case 'M':
+        return (
+          <div className="space-y-3">
+            <div className="text-dark-400 text-xs uppercase tracking-wide">Market Direction</div>
+            <div className="bg-dark-700/50 rounded-lg p-3">
+              <div className="text-dark-300 text-sm">
+                {summaryText || 'Overall market trend based on SPY, QQQ, and DIA vs their moving averages.'}
+              </div>
+            </div>
+          </div>
+        )
+
+      default:
+        return null
     }
   }
 
-  const info = explanations[scoreKey] || { title: scoreKey, description: '', metrics: [] }
+  // Get title for each score type
+  const titles = {
+    C: 'Current Quarterly Earnings',
+    A: 'Annual Earnings Growth',
+    N: 'New Highs',
+    S: 'Supply and Demand',
+    L: 'Leader or Laggard',
+    I: 'Institutional Sponsorship',
+    M: 'Market Direction'
+  }
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -111,7 +238,7 @@ function ScoreDetailModal({ isOpen, onClose, scoreKey, scoreData, details }) {
               {scoreKey}
             </div>
             <div>
-              <div className="font-semibold">{info.title}</div>
+              <div className="font-semibold">{titles[scoreKey] || scoreKey}</div>
               <div className="text-dark-400 text-sm">
                 {scoreData.value != null ? `${scoreData.value.toFixed(1)}/${scoreData.max} points` : 'No data'}
               </div>
@@ -146,36 +273,15 @@ function ScoreDetailModal({ isOpen, onClose, scoreKey, scoreData, details }) {
             </div>
           </div>
 
-          {/* Description */}
-          <div className="text-dark-300 text-sm">{info.description}</div>
-
-          {/* Analysis Details */}
-          {detailItems.length > 0 && (
-            <div>
-              <div className="text-dark-400 text-xs uppercase tracking-wide mb-2">Analysis Details</div>
-              <div className="bg-dark-700/50 rounded-lg p-3 space-y-2">
-                {detailItems.map((item, i) => (
-                  <div key={i} className="flex items-start gap-2 text-sm">
-                    <span className="text-primary-400 mt-0.5">•</span>
-                    <span>{item}</span>
-                  </div>
-                ))}
-              </div>
+          {/* Summary */}
+          {summaryText && (
+            <div className="bg-primary-500/10 border border-primary-500/20 rounded-lg p-3">
+              <div className="text-primary-400 text-sm font-medium">{summaryText}</div>
             </div>
           )}
 
-          {/* What We Look For */}
-          <div>
-            <div className="text-dark-400 text-xs uppercase tracking-wide mb-2">Key Metrics</div>
-            <div className="space-y-1">
-              {info.metrics.map((metric, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm text-dark-300">
-                  <span className="w-1.5 h-1.5 rounded-full bg-dark-500"></span>
-                  {metric}
-                </div>
-              ))}
-            </div>
-          </div>
+          {/* Data Section */}
+          {renderDataSection()}
         </div>
 
         {/* Footer */}
@@ -232,18 +338,9 @@ function CANSLIMDetail({ stock }) {
               <div className="flex-1">
                 <div className="flex justify-between items-center">
                   <span className="font-medium text-sm">{s.label}</span>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-sm font-semibold ${getScoreClass(normalized)}`}>
-                      {s.value != null ? `${s.value.toFixed(1)}/${s.max}` : '-'}
-                    </span>
-                    {/* Details Button */}
-                    <button
-                      onClick={() => setSelectedScore(s.key)}
-                      className="text-xs text-primary-400 hover:text-primary-300 px-2 py-0.5 rounded bg-primary-500/10 hover:bg-primary-500/20 transition-colors"
-                    >
-                      Details →
-                    </button>
-                  </div>
+                  <span className={`text-sm font-semibold ${getScoreClass(normalized)}`}>
+                    {s.value != null ? `${s.value.toFixed(1)}/${s.max}` : '-'}
+                  </span>
                 </div>
                 <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden mt-1">
                   <div
@@ -278,6 +375,7 @@ function CANSLIMDetail({ stock }) {
             )
           }}
           details={getDetail(selectedScore)}
+          stock={stock}
         />
       )}
     </div>
