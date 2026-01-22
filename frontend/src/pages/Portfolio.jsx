@@ -63,7 +63,7 @@ function PortfolioSummary({ positions }) {
   )
 }
 
-function PositionRow({ position, onDelete }) {
+function PositionRow({ position, onDelete, onEdit }) {
   const gainLoss = position.current_value - (position.cost_basis * position.shares)
   const gainLossPct = position.cost_basis > 0
     ? ((position.current_price / position.cost_basis - 1) * 100)
@@ -158,12 +158,20 @@ function PositionRow({ position, onDelete }) {
             </span>
           )}
         </div>
-        <button
-          onClick={() => onDelete(position.id)}
-          className="text-red-400 text-sm hover:text-red-300"
-        >
-          Remove
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onEdit(position)}
+            className="text-primary-400 text-sm hover:text-primary-300"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => onDelete(position.id)}
+            className="text-red-400 text-sm hover:text-red-300"
+          >
+            Remove
+          </button>
+        </div>
       </div>
 
       {position.notes && (
@@ -402,11 +410,135 @@ function AddPositionModal({ onClose, onAdd }) {
   )
 }
 
+function EditPositionModal({ position, onClose, onSave }) {
+  const [shares, setShares] = useState(position.shares?.toString() || '')
+  const [costBasis, setCostBasis] = useState(position.cost_basis?.toString() || '')
+  const [notes, setNotes] = useState(position.notes || '')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!shares || parseFloat(shares) <= 0) return
+
+    setSaving(true)
+    try {
+      await onSave(position.id, {
+        shares: parseFloat(shares),
+        cost_basis: costBasis ? parseFloat(costBasis) : null,
+        notes: notes || null
+      })
+      onClose()
+    } catch (err) {
+      console.error('Failed to update position:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
+      <div className="bg-dark-800 w-full max-w-lg rounded-t-2xl p-4">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="font-semibold text-lg">Edit {position.ticker}</h2>
+          <button onClick={onClose} className="text-dark-400 text-xl">&times;</button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-dark-400 text-sm">Shares</label>
+              <input
+                type="number"
+                step="0.001"
+                min="0.001"
+                value={shares}
+                onChange={(e) => setShares(e.target.value)}
+                placeholder="10"
+                className="w-full mt-1"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-dark-400 text-sm">Cost per Share</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={costBasis}
+                onChange={(e) => setCostBasis(e.target.value)}
+                placeholder="150.00"
+                className="w-full mt-1"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-dark-400 text-sm">Notes (optional)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Entry reason, target price, etc."
+              className="w-full mt-1"
+            />
+          </div>
+
+          {position.current_price > 0 && shares && costBasis && (
+            <div className="p-3 bg-dark-700 rounded-lg">
+              <div className="text-dark-400 text-xs mb-1">Preview</div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <span className="text-dark-400">Value: </span>
+                  <span className="font-medium">{formatCurrency(parseFloat(shares) * position.current_price)}</span>
+                </div>
+                <div>
+                  <span className="text-dark-400">Cost: </span>
+                  <span className="font-medium">{formatCurrency(parseFloat(shares) * parseFloat(costBasis))}</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-dark-400">Gain/Loss: </span>
+                  {(() => {
+                    const gain = (parseFloat(shares) * position.current_price) - (parseFloat(shares) * parseFloat(costBasis))
+                    const gainPct = ((position.current_price / parseFloat(costBasis)) - 1) * 100
+                    return (
+                      <span className={gain >= 0 ? 'text-green-400' : 'text-red-400'}>
+                        {gain >= 0 ? '+' : ''}{formatCurrency(gain)} ({gainPct >= 0 ? '+' : ''}{gainPct.toFixed(2)}%)
+                      </span>
+                    )
+                  })()}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 btn-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex-1 btn-primary disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 export default function Portfolio() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [positions, setPositions] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
+  const [editingPosition, setEditingPosition] = useState(null)
   const [gameplan, setGameplan] = useState([])
   const [gameplanLoading, setGameplanLoading] = useState(true)
 
@@ -469,6 +601,11 @@ export default function Portfolio() {
     } catch (err) {
       console.error('Failed to delete position:', err)
     }
+  }
+
+  const handleUpdate = async (id, data) => {
+    await api.updatePosition(id, data)
+    await fetchPortfolio()
   }
 
   if (loading) {
@@ -545,6 +682,7 @@ export default function Portfolio() {
                 key={position.id}
                 position={position}
                 onDelete={handleDelete}
+                onEdit={setEditingPosition}
               />
             ))}
           </div>
@@ -557,6 +695,14 @@ export default function Portfolio() {
         <AddPositionModal
           onClose={() => setShowAddModal(false)}
           onAdd={handleAdd}
+        />
+      )}
+
+      {editingPosition && (
+        <EditPositionModal
+          position={editingPosition}
+          onClose={() => setEditingPosition(null)}
+          onSave={handleUpdate}
         />
       )}
 

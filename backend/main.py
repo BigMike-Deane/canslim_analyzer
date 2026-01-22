@@ -46,6 +46,11 @@ class PositionCreate(BaseModel):
     cost_basis: Optional[float] = None
     notes: Optional[str] = None
 
+class PositionUpdate(BaseModel):
+    shares: Optional[float] = None
+    cost_basis: Optional[float] = None
+    notes: Optional[str] = None
+
 class WatchlistCreate(BaseModel):
     ticker: str
     notes: Optional[str] = None
@@ -1452,6 +1457,54 @@ async def remove_position(position_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Removed position in {position.ticker}"}
+
+
+@app.put("/api/portfolio/{position_id}")
+async def update_position(position_id: int, data: PositionUpdate, db: Session = Depends(get_db)):
+    """Update a portfolio position (shares, cost basis, notes)"""
+    position = db.query(PortfolioPosition).filter(
+        PortfolioPosition.id == position_id
+    ).first()
+
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    # Update fields if provided
+    if data.shares is not None:
+        if data.shares <= 0:
+            raise HTTPException(status_code=400, detail="Shares must be greater than 0")
+        position.shares = data.shares
+
+    if data.cost_basis is not None:
+        if data.cost_basis < 0:
+            raise HTTPException(status_code=400, detail="Cost basis cannot be negative")
+        position.cost_basis = data.cost_basis
+
+    if data.notes is not None:
+        position.notes = data.notes
+
+    # Recalculate current value and gain/loss if we have a current price
+    if position.current_price and position.current_price > 0:
+        position.current_value = position.shares * position.current_price
+        if position.cost_basis and position.cost_basis > 0:
+            position.gain_loss = position.current_value - (position.shares * position.cost_basis)
+            position.gain_loss_pct = ((position.current_price / position.cost_basis) - 1) * 100
+
+    db.commit()
+
+    return {
+        "message": f"Updated position in {position.ticker}",
+        "position": {
+            "id": position.id,
+            "ticker": position.ticker,
+            "shares": position.shares,
+            "cost_basis": position.cost_basis,
+            "notes": position.notes,
+            "current_value": position.current_value,
+            "gain_loss": position.gain_loss,
+            "gain_loss_pct": position.gain_loss_pct
+        }
+    }
 
 
 def fetch_price_yahoo_chart(ticker: str) -> float | None:
