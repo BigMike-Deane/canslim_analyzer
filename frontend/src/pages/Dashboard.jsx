@@ -29,13 +29,15 @@ function IndexCard({ ticker, label, weight, price, ma50, ma200, signal }) {
       <div className="text-lg font-bold mb-2">
         {price ? formatCurrency(price) : '-'}
       </div>
-      <div className="flex gap-2 text-xs">
-        <span className={`px-1.5 py-0.5 rounded ${above50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-          50MA {above50 ? '▲' : '▼'}
-        </span>
-        <span className={`px-1.5 py-0.5 rounded ${above200 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-          200MA {above200 ? '▲' : '▼'}
-        </span>
+      <div className="space-y-1 text-xs">
+        <div className={`flex justify-between items-center px-1.5 py-0.5 rounded ${above50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+          <span>50MA</span>
+          <span className="font-medium">{ma50 ? formatCurrency(ma50) : '-'} {above50 ? '▲' : '▼'}</span>
+        </div>
+        <div className={`flex justify-between items-center px-1.5 py-0.5 rounded ${above200 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+          <span>200MA</span>
+          <span className="font-medium">{ma200 ? formatCurrency(ma200) : '-'} {above200 ? '▲' : '▼'}</span>
+        </div>
       </div>
     </div>
   )
