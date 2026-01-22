@@ -183,7 +183,10 @@ function PositionRow({ position, onDelete, onEdit }) {
   )
 }
 
-function GameplanCard({ action }) {
+function GameplanCard({ action, onAddToWatchlist }) {
+  const [adding, setAdding] = useState(false)
+  const [added, setAdded] = useState(false)
+
   const actionStyles = {
     SELL: { bg: 'bg-red-500/10', border: 'border-red-500/30', icon: '🔴', label: 'SELL', textColor: 'text-red-400' },
     TRIM: { bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: '🟠', label: 'TAKE PROFITS', textColor: 'text-orange-400' },
@@ -194,13 +197,28 @@ function GameplanCard({ action }) {
 
   const style = actionStyles[action.action] || actionStyles.WATCH
 
+  const handleAddToWatchlist = async () => {
+    if (adding || added) return
+    setAdding(true)
+    try {
+      await onAddToWatchlist(action.ticker, action.reason)
+      setAdded(true)
+    } catch (err) {
+      console.error('Failed to add to watchlist:', err)
+    } finally {
+      setAdding(false)
+    }
+  }
+
   return (
     <div className={`card mb-3 ${style.bg} border ${style.border}`}>
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-2">
           <span className="text-lg">{style.icon}</span>
           <span className={`font-bold ${style.textColor}`}>{style.label}</span>
-          <span className="font-semibold text-lg">{action.ticker}</span>
+          <Link to={`/stock/${action.ticker}`} className="font-semibold text-lg hover:text-primary-400">
+            {action.ticker}
+          </Link>
         </div>
         {action.estimated_value > 0 && (
           <div className="text-right">
@@ -241,11 +259,25 @@ function GameplanCard({ action }) {
           </div>
         ))}
       </div>
+
+      {action.action === 'WATCH' && onAddToWatchlist && (
+        <button
+          onClick={handleAddToWatchlist}
+          disabled={adding || added}
+          className={`mt-3 w-full py-2 rounded-lg text-sm font-medium transition-colors ${
+            added
+              ? 'bg-green-500/20 text-green-400 cursor-default'
+              : 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-400'
+          }`}
+        >
+          {added ? '✓ Added to Watchlist' : adding ? 'Adding...' : '+ Add to Watchlist'}
+        </button>
+      )}
     </div>
   )
 }
 
-function Gameplan({ gameplan, loading }) {
+function Gameplan({ gameplan, loading, onAddToWatchlist }) {
   if (loading) {
     return (
       <div className="mb-4">
@@ -316,7 +348,7 @@ function Gameplan({ gameplan, loading }) {
         <div className="mb-4">
           <div className="text-purple-400 font-semibold text-sm mb-2">WATCHLIST ({watchActions.length})</div>
           {watchActions.map((action, i) => (
-            <GameplanCard key={`watch-${i}`} action={action} />
+            <GameplanCard key={`watch-${i}`} action={action} onAddToWatchlist={onAddToWatchlist} />
           ))}
         </div>
       )}
@@ -608,6 +640,13 @@ export default function Portfolio() {
     await fetchPortfolio()
   }
 
+  const handleAddToWatchlist = async (ticker, reason) => {
+    await api.addToWatchlist({
+      ticker,
+      notes: reason || `Added from gameplan`
+    })
+  }
+
   if (loading) {
     return (
       <div className="p-4">
@@ -687,7 +726,7 @@ export default function Portfolio() {
             ))}
           </div>
 
-          <Gameplan gameplan={gameplan} loading={gameplanLoading} />
+          <Gameplan gameplan={gameplan} loading={gameplanLoading} onAddToWatchlist={handleAddToWatchlist} />
         </>
       )}
 
