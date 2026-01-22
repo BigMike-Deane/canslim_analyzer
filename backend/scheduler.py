@@ -196,7 +196,7 @@ def run_continuous_scan():
                     "s": {
                         "summary": canslim_result.s_detail,
                         "volume_ratio": volume_ratio,
-                        "avg_volume": stock_data.avg_volume,
+                        "avg_volume": stock_data.avg_volume_50d,
                         "shares_outstanding": stock_data.shares_outstanding,
                     },
                     "l": {
