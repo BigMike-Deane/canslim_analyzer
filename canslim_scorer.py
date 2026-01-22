@@ -1078,9 +1078,34 @@ class TechnicalAnalyzer:
 
     @staticmethod
     def calculate_volume_ratio(stock_data: StockData) -> float:
-        """Calculate current volume vs 50-day average"""
-        if stock_data.avg_volume_50d > 0 and stock_data.current_volume > 0:
-            return stock_data.current_volume / stock_data.avg_volume_50d
+        """
+        Calculate volume ratio vs 50-day average.
+        Uses max(today, yesterday) to avoid misleading partial-day readings.
+        """
+        if stock_data.avg_volume_50d <= 0:
+            return 1.0
+
+        # Get today's volume
+        today_volume = stock_data.current_volume or 0
+
+        # Try to get yesterday's volume from price_history
+        yesterday_volume = 0
+        if hasattr(stock_data, 'price_history') and not stock_data.price_history.empty:
+            try:
+                volumes = stock_data.price_history['Volume'].tolist()
+                if len(volumes) >= 2:
+                    # volumes[-1] is today (possibly partial), volumes[-2] is yesterday (complete)
+                    yesterday_volume = volumes[-2] if volumes[-2] and volumes[-2] > 0 else 0
+            except Exception:
+                pass
+
+        # Use max of today and yesterday to avoid partial-day issues
+        # If today's volume already exceeds yesterday, it's likely a significant move
+        effective_volume = max(today_volume, yesterday_volume)
+
+        if effective_volume > 0:
+            return effective_volume / stock_data.avg_volume_50d
+
         return 1.0
 
     @staticmethod
