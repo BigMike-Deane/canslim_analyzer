@@ -6,6 +6,7 @@ import Portfolio from './pages/Portfolio'
 import Watchlist from './pages/Watchlist'
 import Documentation from './pages/Documentation'
 import AIPortfolio from './pages/AIPortfolio'
+import Breakouts from './pages/Breakouts'
 
 function NavIcon({ icon, label }) {
   return (
@@ -57,6 +58,7 @@ export default function App() {
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/ai-portfolio" element={<AIPortfolio />} />
         <Route path="/watchlist" element={<Watchlist />} />
+        <Route path="/breakouts" element={<Breakouts />} />
         <Route path="/docs" element={<Documentation />} />
       </Routes>
       <BottomNav />

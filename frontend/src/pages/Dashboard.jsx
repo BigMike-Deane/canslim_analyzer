@@ -358,7 +358,10 @@ function BreakingOutStocks({ stocks, loading }) {
         <div className="font-semibold text-sm flex items-center gap-2">
           <span className="text-yellow-400">⚡</span> Breaking Out
         </div>
-        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">Buy Zone</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">Buy Zone</span>
+          <Link to="/breakouts" className="text-primary-500 text-xs">See All</Link>
+        </div>
       </div>
 
       <div className="space-y-1">
