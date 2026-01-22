@@ -68,6 +68,31 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 
 ## Recent Improvements (Jan 2025)
 
+### Bug Fixes + UI Improvements (Jan 21 - Late)
+
+**Fixed Scanner AttributeError (`avg_volume`)**:
+- **Problem**: Scanner was failing with `'StockData' object has no attribute 'avg_volume'` for every stock
+- **Cause**: `backend/scheduler.py:199` referenced `stock_data.avg_volume` but the `StockData` class defines it as `avg_volume_50d`
+- **Fix**: Changed `stock_data.avg_volume` → `stock_data.avg_volume_50d` in scheduler.py
+- **Lesson**: When deploying, ensure `git pull` actually updated files; use `git reset --hard origin/main` if needed
+
+**Fixed UTC Timestamp Display**:
+- **Problem**: "Last updated" times displayed in UTC instead of local timezone
+- **Cause**: Backend returned `.isoformat()` without "Z" suffix, so JavaScript didn't know it was UTC
+- **Fix**: Added "Z" suffix to all `isoformat()` calls in `backend/main.py` (lines 381, 765, 876, 936, 1122)
+- Frontend already had `timeZone: 'America/Chicago'` conversion, now works correctly
+
+**Market Direction Cards - Show MA Values**:
+- Added actual dollar values for 50MA and 200MA under each index (SPY, QQQ, DIA)
+- Users can now see price targets for moving averages
+- File: `frontend/src/pages/Dashboard.jsx` - `IndexCard` component
+
+**Deployment Note**:
+If changes don't apply after `git pull && docker-compose up -d --build`, use:
+```bash
+cd /opt/canslim_analyzer && git fetch origin && git reset --hard origin/main && docker-compose down && docker-compose build --no-cache && docker-compose up -d
+```
+
 ### Scanner Speed + DB-Backed Caching + ZETA Fix (Jan 21)
 
 **Scanner Speed Improvements (8.5x faster)**:
