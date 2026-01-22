@@ -836,7 +836,13 @@ class TechnicalAnalyzer:
     def detect_base_pattern(weekly_data: list) -> dict:
         """
         Detect consolidation base patterns from weekly price data.
-        Returns: {type: 'flat'|'cup'|'none', weeks: int, pivot_price: float}
+        Returns: {type: 'flat'|'cup'|'cup_with_handle'|'double_bottom'|'none',
+                  weeks: int, pivot_price: float, handle_low: float (if applicable)}
+
+        Patterns detected:
+        - Flat base: 5+ consecutive weeks with <15% weekly range
+        - Cup with handle: U-shaped recovery with small pullback forming handle
+        - Double bottom: Two distinct lows at similar levels with recovery between
         """
         if not weekly_data or len(weekly_data) < 5:
             return {"type": "none", "weeks": 0, "pivot_price": 0}
@@ -846,52 +852,229 @@ class TechnicalAnalyzer:
         if len(valid_weeks) < 5:
             return {"type": "none", "weeks": 0, "pivot_price": 0}
 
-        # Calculate weekly ranges (high-low as % of close)
-        weekly_ranges = []
-        for week in valid_weeks[-12:]:  # Last 12 weeks
+        # Try each pattern detection in order of specificity
+
+        # 1. Cup with handle (most specific)
+        cup_handle = TechnicalAnalyzer._detect_cup_with_handle(valid_weeks)
+        if cup_handle["type"] != "none":
+            return cup_handle
+
+        # 2. Double bottom
+        double_bottom = TechnicalAnalyzer._detect_double_bottom(valid_weeks)
+        if double_bottom["type"] != "none":
+            return double_bottom
+
+        # 3. Flat base (check for consecutive tight weeks)
+        flat_base = TechnicalAnalyzer._detect_flat_base(valid_weeks)
+        if flat_base["type"] != "none":
+            return flat_base
+
+        return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+    @staticmethod
+    def _detect_flat_base(valid_weeks: list) -> dict:
+        """
+        Detect flat base pattern: 5+ CONSECUTIVE weeks with tight price action (<15% range).
+        Pivot is the highest high within the actual tight weeks.
+        """
+        recent_weeks = valid_weeks[-12:]  # Look at last 12 weeks
+
+        # Calculate which weeks are "tight" (range < 15%)
+        tight_flags = []
+        for week in recent_weeks:
             if week["close"] > 0:
                 range_pct = (week["high"] - week["low"]) / week["close"]
-                weekly_ranges.append(range_pct)
+                tight_flags.append(range_pct < 0.15)
+            else:
+                tight_flags.append(False)
 
-        if not weekly_ranges:
-            return {"type": "none", "weeks": 0, "pivot_price": 0}
+        # Find longest consecutive run of tight weeks
+        max_consecutive = 0
+        current_consecutive = 0
+        best_start_idx = 0
+        current_start_idx = 0
 
-        # Flat base detection: tight weekly ranges (<15%) for 5+ weeks
-        tight_weeks = sum(1 for r in weekly_ranges if r < 0.15)
+        for i, is_tight in enumerate(tight_flags):
+            if is_tight:
+                if current_consecutive == 0:
+                    current_start_idx = i
+                current_consecutive += 1
+                if current_consecutive > max_consecutive:
+                    max_consecutive = current_consecutive
+                    best_start_idx = current_start_idx
+            else:
+                current_consecutive = 0
 
-        if tight_weeks >= 5:
-            # Find the highest high in the base (pivot point)
-            recent_highs = [w["high"] for w in valid_weeks[-tight_weeks:]]
-            pivot_price = max(recent_highs) if recent_highs else 0
+        # Need at least 5 consecutive tight weeks for a valid flat base
+        if max_consecutive >= 5:
+            # Get the actual tight weeks for pivot calculation
+            tight_weeks_data = recent_weeks[best_start_idx:best_start_idx + max_consecutive]
+            pivot_price = max(w["high"] for w in tight_weeks_data)
             return {
                 "type": "flat",
-                "weeks": tight_weeks,
+                "weeks": max_consecutive,
                 "pivot_price": pivot_price
             }
 
-        # Cup pattern detection (simplified): look for decline, bottom, recovery
-        if len(valid_weeks) >= 10:
-            closes = [w["close"] for w in valid_weeks[-10:]]
-            highs = [w["high"] for w in valid_weeks[-10:]]
+        return {"type": "none", "weeks": 0, "pivot_price": 0}
 
-            # Find the bottom
-            min_idx = closes.index(min(closes))
-            max_before = max(closes[:min_idx+1]) if min_idx > 0 else closes[0]
-            max_after = max(closes[min_idx:]) if min_idx < len(closes) else closes[-1]
+    @staticmethod
+    def _detect_cup_with_handle(valid_weeks: list) -> dict:
+        """
+        Detect cup-with-handle pattern:
+        - Cup: 15%+ decline from left high, then recovery to within 15% of that high
+        - Handle: Small pullback (5-15%) after cup completion, lasting 1-4 weeks
+        - Pivot: Top of the handle (not the cup's highest point)
+        """
+        if len(valid_weeks) < 10:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
 
-            # Check for cup shape: declined 15%+, then recovered most of it
-            decline = (max_before - closes[min_idx]) / max_before if max_before > 0 else 0
-            recovery = (max_after - closes[min_idx]) / closes[min_idx] if closes[min_idx] > 0 else 0
+        # Use more data for longer patterns (up to 26 weeks / 6 months)
+        analysis_weeks = valid_weeks[-26:] if len(valid_weeks) >= 26 else valid_weeks[-10:]
 
-            if decline >= 0.15 and recovery >= decline * 0.8:
-                pivot_price = max(highs)
+        closes = [w["close"] for w in analysis_weeks]
+        highs = [w["high"] for w in analysis_weeks]
+        lows = [w["low"] for w in analysis_weeks]
+
+        # Find the cup's left high (peak before the decline)
+        # Look for highest point in first half of the data
+        first_half = len(closes) // 2
+        left_high_idx = closes[:first_half + 1].index(max(closes[:first_half + 1]))
+        left_high = closes[left_high_idx]
+
+        # Find the cup's bottom (lowest point after left high)
+        bottom_idx = left_high_idx + closes[left_high_idx:].index(min(closes[left_high_idx:]))
+        bottom = closes[bottom_idx]
+
+        # Calculate decline
+        decline = (left_high - bottom) / left_high if left_high > 0 else 0
+
+        # Need at least 15% decline to form a valid cup
+        if decline < 0.15:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Check for recovery after bottom (right side of cup)
+        if bottom_idx >= len(closes) - 2:  # Need at least 2 weeks after bottom
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        post_bottom = closes[bottom_idx:]
+        right_high = max(post_bottom)
+        right_high_idx = bottom_idx + post_bottom.index(right_high)
+
+        # Recovery should bring price back to within 15% of left high
+        recovery_level = right_high / left_high if left_high > 0 else 0
+        if recovery_level < 0.85:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Now look for handle formation (small pullback after right high)
+        if right_high_idx >= len(closes) - 1:
+            # No room for handle, but we have a valid cup - return cup without handle
+            return {
+                "type": "cup",
+                "weeks": len(analysis_weeks),
+                "pivot_price": max(highs[right_high_idx:right_high_idx + 1])
+            }
+
+        # Handle detection: look for pullback of 5-15% after right high
+        handle_weeks = closes[right_high_idx:]
+        if len(handle_weeks) >= 2:
+            handle_low = min(handle_weeks[1:])  # Exclude the high itself
+            handle_low_idx = right_high_idx + 1 + handle_weeks[1:].index(handle_low)
+            handle_decline = (right_high - handle_low) / right_high if right_high > 0 else 0
+
+            # Valid handle: 5-15% pullback, lasting 1-4 weeks
+            handle_length = handle_low_idx - right_high_idx
+            if 0.05 <= handle_decline <= 0.15 and 1 <= handle_length <= 4:
+                # Pivot is the high of the handle (top of consolidation after pullback)
+                handle_highs = highs[right_high_idx:handle_low_idx + 2] if handle_low_idx + 2 <= len(highs) else highs[right_high_idx:]
+                pivot_price = max(handle_highs) if handle_highs else right_high
+
                 return {
-                    "type": "cup",
-                    "weeks": len(valid_weeks),
-                    "pivot_price": pivot_price
+                    "type": "cup_with_handle",
+                    "weeks": len(analysis_weeks),
+                    "pivot_price": pivot_price,
+                    "handle_low": handle_low,
+                    "cup_depth": round(decline * 100, 1),
+                    "handle_depth": round(handle_decline * 100, 1)
                 }
 
-        return {"type": "none", "weeks": 0, "pivot_price": 0}
+        # Valid cup but no handle yet
+        return {
+            "type": "cup",
+            "weeks": len(analysis_weeks),
+            "pivot_price": highs[right_high_idx]
+        }
+
+    @staticmethod
+    def _detect_double_bottom(valid_weeks: list) -> dict:
+        """
+        Detect double-bottom pattern (W pattern):
+        - Two distinct lows within 3% of each other
+        - Recovery of at least 10% between the two lows
+        - Second low should not break below first low significantly
+        - Pivot: The high point between the two lows
+        """
+        if len(valid_weeks) < 8:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        analysis_weeks = valid_weeks[-20:] if len(valid_weeks) >= 20 else valid_weeks
+
+        closes = [w["close"] for w in analysis_weeks]
+        highs = [w["high"] for w in analysis_weeks]
+        lows = [w["low"] for w in analysis_weeks]
+
+        # Find the two lowest points
+        # First, find the absolute lowest
+        first_low_idx = lows.index(min(lows))
+        first_low = lows[first_low_idx]
+
+        # Find second low: must be at least 3 weeks apart from first
+        second_low = float('inf')
+        second_low_idx = -1
+
+        for i, low in enumerate(lows):
+            if abs(i - first_low_idx) >= 3:  # At least 3 weeks separation
+                if low < second_low:
+                    second_low = low
+                    second_low_idx = i
+
+        if second_low_idx == -1:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Ensure first_low_idx < second_low_idx for chronological order
+        if first_low_idx > second_low_idx:
+            first_low_idx, second_low_idx = second_low_idx, first_low_idx
+            first_low, second_low = second_low, first_low
+
+        # Check if lows are within 3% of each other
+        low_diff_pct = abs(first_low - second_low) / first_low if first_low > 0 else 1
+        if low_diff_pct > 0.03:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Find the middle peak (between the two lows)
+        middle_section = closes[first_low_idx:second_low_idx + 1]
+        if len(middle_section) < 3:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        middle_peak = max(middle_section)
+        middle_peak_idx = first_low_idx + middle_section.index(middle_peak)
+
+        # Check for adequate recovery between lows (at least 10%)
+        recovery_pct = (middle_peak - first_low) / first_low if first_low > 0 else 0
+        if recovery_pct < 0.10:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
+
+        # Pivot is the high point between the two lows
+        pivot_price = max(highs[first_low_idx:second_low_idx + 1])
+
+        return {
+            "type": "double_bottom",
+            "weeks": second_low_idx - first_low_idx + 1,
+            "pivot_price": pivot_price,
+            "first_low": first_low,
+            "second_low": second_low,
+            "middle_peak": middle_peak
+        }
 
     @staticmethod
     def calculate_volume_ratio(stock_data: StockData) -> float:
@@ -901,24 +1084,124 @@ class TechnicalAnalyzer:
         return 1.0
 
     @staticmethod
+    def calculate_multiday_volume_confirmation(stock_data: StockData, days: int = 5) -> dict:
+        """
+        Check volume trend over multiple days for stronger breakout confirmation.
+        Returns: {avg_ratio: float, days_above_avg: int, volume_trend: 'increasing'|'stable'|'decreasing'}
+
+        Legitimate breakouts typically show:
+        - Multiple days with above-average volume
+        - Increasing volume trend during the breakout
+        """
+        result = {
+            "avg_ratio": 1.0,
+            "days_above_avg": 0,
+            "volume_trend": "stable",
+            "confirmation_score": 0  # 0-100 score for volume confirmation strength
+        }
+
+        # Try to get daily volume data from price_history DataFrame
+        if hasattr(stock_data, 'price_history') and not stock_data.price_history.empty:
+            try:
+                volumes = stock_data.price_history['Volume'].tail(days).tolist()
+                avg_volume = stock_data.avg_volume_50d
+
+                if avg_volume > 0 and len(volumes) >= 3:
+                    # Calculate ratios for each day
+                    ratios = [v / avg_volume for v in volumes if v and v > 0]
+
+                    if ratios:
+                        result["avg_ratio"] = sum(ratios) / len(ratios)
+                        result["days_above_avg"] = sum(1 for r in ratios if r > 1.0)
+
+                        # Determine volume trend (compare first half to second half)
+                        mid = len(ratios) // 2
+                        if mid > 0:
+                            first_half_avg = sum(ratios[:mid]) / mid
+                            second_half_avg = sum(ratios[mid:]) / len(ratios[mid:])
+
+                            if second_half_avg > first_half_avg * 1.1:
+                                result["volume_trend"] = "increasing"
+                            elif second_half_avg < first_half_avg * 0.9:
+                                result["volume_trend"] = "decreasing"
+
+                        # Calculate confirmation score (0-100)
+                        # Factors: avg ratio, days above average, trend
+                        score = 0
+
+                        # Avg ratio contribution (up to 40 points)
+                        if result["avg_ratio"] >= 2.0:
+                            score += 40
+                        elif result["avg_ratio"] >= 1.5:
+                            score += 30
+                        elif result["avg_ratio"] >= 1.2:
+                            score += 20
+                        elif result["avg_ratio"] >= 1.0:
+                            score += 10
+
+                        # Days above average contribution (up to 30 points)
+                        score += min(result["days_above_avg"] * 6, 30)
+
+                        # Trend contribution (up to 30 points)
+                        if result["volume_trend"] == "increasing":
+                            score += 30
+                        elif result["volume_trend"] == "stable":
+                            score += 15
+                        # Decreasing trend gets 0 points
+
+                        result["confirmation_score"] = min(score, 100)
+
+            except Exception:
+                pass
+
+        # Fallback to weekly data if daily not available
+        elif stock_data.weekly_price_history:
+            recent_weeks = stock_data.weekly_price_history[-4:]  # Last 4 weeks
+            avg_volume = stock_data.avg_volume_50d
+
+            if avg_volume > 0 and recent_weeks:
+                volumes = [w.get("volume", 0) for w in recent_weeks if w.get("volume")]
+                if volumes:
+                    # Weekly volumes are cumulative, so compare to weekly average
+                    weekly_avg = avg_volume * 5  # Approximate weekly volume
+                    ratios = [v / weekly_avg for v in volumes if v > 0]
+
+                    if ratios:
+                        result["avg_ratio"] = sum(ratios) / len(ratios)
+                        result["days_above_avg"] = sum(1 for r in ratios if r > 1.0)
+
+                        # Simple score for weekly data
+                        result["confirmation_score"] = min(int(result["avg_ratio"] * 30) + result["days_above_avg"] * 10, 100)
+
+        return result
+
+    @staticmethod
     def is_breaking_out(stock_data: StockData, base_pattern: dict) -> tuple[bool, float]:
         """
         Check if stock is breaking out of its base or near a breakout.
         Returns: (is_breaking_out, volume_ratio)
 
-        Breakout criteria (loosened for more results):
-        - Strong breakout: Price 0-5% above pivot with 40%+ volume surge
-        - Breakout: Price 0-10% above pivot with 25%+ volume surge
-        - Near breakout: Price within 5% below pivot with 20%+ volume surge
+        Enhanced breakout criteria with multi-day volume confirmation:
+        - Strong breakout: Price 0-5% above pivot with strong volume confirmation
+        - Breakout: Price 0-10% above pivot with good volume confirmation
+        - Near breakout: Price within 5% below pivot building for breakout
         """
         vol_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
+        vol_confirmation = TechnicalAnalyzer.calculate_multiday_volume_confirmation(stock_data)
+
+        # Effective volume score combines single-day and multi-day analysis
+        # Strong single day OR consistent multi-day volume both count
+        effective_vol_score = max(
+            vol_ratio * 50,  # Single day contribution (1.5x = 75 points)
+            vol_confirmation["confirmation_score"]  # Multi-day contribution (0-100)
+        )
 
         if base_pattern["type"] == "none" or base_pattern["pivot_price"] <= 0:
             # Even without a base pattern, check if near 52-week high with volume
             if stock_data.high_52w and stock_data.current_price:
                 pct_from_high = (stock_data.high_52w - stock_data.current_price) / stock_data.high_52w
                 # Within 5% of 52-week high with decent volume = potential breakout
-                if pct_from_high <= 0.05 and vol_ratio >= 1.2:
+                if pct_from_high <= 0.05 and effective_vol_score >= 60:
                     return True, vol_ratio
             return False, vol_ratio
 
@@ -928,17 +1211,28 @@ class TechnicalAnalyzer:
         if current > 0 and pivot > 0:
             pct_from_pivot = (current - pivot) / pivot
 
-            # Strong breakout: price 0-5% above pivot with 40%+ volume surge
-            if 0 <= pct_from_pivot <= 0.05 and vol_ratio >= 1.4:
+            # Strong breakout: price 0-5% above pivot with strong volume
+            # Require either 1.4x single day OR 70+ multi-day score
+            if 0 <= pct_from_pivot <= 0.05 and effective_vol_score >= 70:
                 return True, vol_ratio
 
-            # Breakout: price 0-10% above pivot with 25%+ volume surge
-            if 0 <= pct_from_pivot <= 0.10 and vol_ratio >= 1.25:
+            # Breakout: price 0-10% above pivot with good volume
+            # Require either 1.25x single day OR 60+ multi-day score
+            if 0 <= pct_from_pivot <= 0.10 and effective_vol_score >= 60:
                 return True, vol_ratio
 
-            # Near breakout: price within 5% below pivot with 20%+ volume (building for breakout)
-            if -0.05 <= pct_from_pivot < 0 and vol_ratio >= 1.2:
+            # Near breakout: price within 5% below pivot, building volume
+            # More lenient - looking for accumulation before breakout
+            if -0.05 <= pct_from_pivot < 0 and effective_vol_score >= 50:
                 return True, vol_ratio
+
+            # Special case for cup_with_handle: price near handle high with volume
+            if base_pattern.get("type") == "cup_with_handle":
+                handle_low = base_pattern.get("handle_low", 0)
+                if handle_low > 0:
+                    # Price should be above handle low and approaching pivot
+                    if current > handle_low and pct_from_pivot >= -0.03 and effective_vol_score >= 50:
+                        return True, vol_ratio
 
         return False, vol_ratio
 
