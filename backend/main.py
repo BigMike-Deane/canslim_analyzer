@@ -1078,6 +1078,7 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
             "I": {"score": stock.i_score, "max": 10, "label": "Institutional"},
             "M": {"score": stock.m_score, "max": 15, "label": "Market Direction"},
         },
+        "score_details": stock.score_details,  # Detailed breakdown for each component
 
         "projected_growth": stock.projected_growth,
         "growth_confidence": stock.growth_confidence,
@@ -1098,6 +1099,18 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
         "base_type": stock.base_type,
         "is_breaking_out": stock.is_breaking_out,
         "breakout_volume_ratio": stock.breakout_volume_ratio,
+
+        # Insider trading signals
+        "insider_buy_count": stock.insider_buy_count,
+        "insider_sell_count": stock.insider_sell_count,
+        "insider_net_shares": stock.insider_net_shares,
+        "insider_sentiment": stock.insider_sentiment,
+        "insider_updated_at": stock.insider_updated_at.isoformat() if stock.insider_updated_at else None,
+
+        # Short interest
+        "short_interest_pct": stock.short_interest_pct,
+        "short_ratio": stock.short_ratio,
+        "short_updated_at": stock.short_updated_at.isoformat() if stock.short_updated_at else None,
 
         "score_history": [{
             "date": h.date.isoformat(),
@@ -1924,19 +1937,38 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
     portfolio = get_portfolio_value(db)
     positions = db.query(AIPortfolioPosition).all()
 
-    return {
-        "config": {
-            "starting_cash": config.starting_cash,
-            "max_positions": config.max_positions,
-            "max_position_pct": config.max_position_pct,
-            "min_score_to_buy": config.min_score_to_buy,
-            "sell_score_threshold": config.sell_score_threshold,
-            "take_profit_pct": config.take_profit_pct,
-            "stop_loss_pct": config.stop_loss_pct,
-            "is_active": config.is_active
-        },
-        "summary": portfolio,
-        "positions": [{
+    # Build positions with stock data for insider/short signals
+    positions_data = []
+    for p in positions:
+        stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+
+        # Calculate trailing stop info
+        trailing_stop_info = None
+        if p.peak_price and p.cost_basis and p.current_price:
+            peak_gain_pct = ((p.peak_price / p.cost_basis) - 1) * 100 if p.cost_basis > 0 else 0
+            drop_from_peak = ((p.peak_price - p.current_price) / p.peak_price) * 100 if p.peak_price > 0 else 0
+
+            # Determine threshold
+            if peak_gain_pct >= 50:
+                threshold = 15
+            elif peak_gain_pct >= 30:
+                threshold = 12
+            elif peak_gain_pct >= 20:
+                threshold = 10
+            elif peak_gain_pct >= 10:
+                threshold = 8
+            else:
+                threshold = None
+
+            trailing_stop_info = {
+                "peak_price": p.peak_price,
+                "peak_date": p.peak_date.isoformat() if p.peak_date else None,
+                "drop_from_peak_pct": round(drop_from_peak, 1),
+                "threshold_pct": threshold,
+                "near_stop": threshold and drop_from_peak >= threshold * 0.7  # Within 70% of threshold
+            }
+
+        position_data = {
             "id": p.id,
             "ticker": p.ticker,
             "shares": p.shares,
@@ -1952,8 +1984,29 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
             "is_growth_stock": p.is_growth_stock or False,
             "purchase_growth_score": p.purchase_growth_score,
             "current_growth_score": p.current_growth_score,
-            "purchase_date": p.purchase_date.isoformat() if p.purchase_date else None
-        } for p in positions]
+            "purchase_date": p.purchase_date.isoformat() if p.purchase_date else None,
+            # Trailing stop tracking
+            "trailing_stop": trailing_stop_info,
+            # Insider/Short signals from Stock table
+            "insider_sentiment": stock.insider_sentiment if stock else None,
+            "insider_buy_count": stock.insider_buy_count if stock else None,
+            "short_interest_pct": stock.short_interest_pct if stock else None,
+        }
+        positions_data.append(position_data)
+
+    return {
+        "config": {
+            "starting_cash": config.starting_cash,
+            "max_positions": config.max_positions,
+            "max_position_pct": config.max_position_pct,
+            "min_score_to_buy": config.min_score_to_buy,
+            "sell_score_threshold": config.sell_score_threshold,
+            "take_profit_pct": config.take_profit_pct,
+            "stop_loss_pct": config.stop_loss_pct,
+            "is_active": config.is_active
+        },
+        "summary": portfolio,
+        "positions": positions_data
     }
 
 

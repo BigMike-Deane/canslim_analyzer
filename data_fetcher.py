@@ -48,6 +48,8 @@ DATA_FRESHNESS_INTERVALS = {
     "earnings_surprise": 24 * 3600,  # Once per day
     "weekly_history": 24 * 3600,     # Once per day (for base detection)
     "institutional": 7 * 24 * 3600,  # Once per week
+    "insider_trading": 7 * 24 * 3600,  # Once per week (changes slowly)
+    "short_interest": 24 * 3600,       # Once per day
 }
 
 # Cached data storage (stores the actual fetched data)
@@ -693,6 +695,109 @@ def fetch_fmp_balance_sheet(ticker: str) -> dict:
                 }
     except Exception as e:
         logger.debug(f"FMP balance sheet error for {ticker}: {e}")
+    return {}
+
+
+def fetch_fmp_insider_trading(ticker: str) -> dict:
+    """
+    Fetch insider trading data from FMP API.
+    Returns summary of insider buys/sells in last 3 months.
+
+    API endpoint: /v4/insider-trading?symbol={ticker}
+    """
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        # Use v4 endpoint for insider trading (not in /stable/)
+        url = f"https://financialmodelingprep.com/api/v4/insider-trading?symbol={ticker}&limit=50&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if not data:
+                return {}
+
+            # Filter to last 3 months
+            cutoff_date = datetime.now() - timedelta(days=90)
+            buy_count = 0
+            sell_count = 0
+            net_shares = 0
+
+            for trade in data:
+                # Parse transaction date
+                trade_date_str = trade.get("transactionDate", "")
+                if not trade_date_str:
+                    continue
+
+                try:
+                    trade_date = datetime.strptime(trade_date_str, "%Y-%m-%d")
+                    if trade_date < cutoff_date:
+                        continue
+                except ValueError:
+                    continue
+
+                # Count buys and sells
+                transaction_type = trade.get("transactionType", "").upper()
+                shares = trade.get("securitiesTransacted", 0) or 0
+
+                if "BUY" in transaction_type or "PURCHASE" in transaction_type or transaction_type == "P":
+                    buy_count += 1
+                    net_shares += shares
+                elif "SELL" in transaction_type or "SALE" in transaction_type or transaction_type == "S":
+                    sell_count += 1
+                    net_shares -= shares
+
+            # Determine sentiment
+            if buy_count > sell_count * 1.5:
+                sentiment = "bullish"
+            elif sell_count > buy_count * 1.5:
+                sentiment = "bearish"
+            else:
+                sentiment = "neutral"
+
+            logger.debug(f"{ticker}: Insider trading - {buy_count} buys, {sell_count} sells, net {net_shares:+.0f} shares, {sentiment}")
+
+            return {
+                "buy_count": buy_count,
+                "sell_count": sell_count,
+                "net_shares": net_shares,
+                "sentiment": sentiment
+            }
+
+    except Exception as e:
+        logger.debug(f"FMP insider trading error for {ticker}: {e}")
+
+    return {}
+
+
+def fetch_short_interest(ticker: str) -> dict:
+    """
+    Fetch short interest data from Yahoo Finance.
+    Returns short interest percentage and days to cover (short ratio).
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        if info:
+            short_pct = info.get("shortPercentOfFloat", 0) or 0
+            short_ratio = info.get("shortRatio", 0) or 0
+
+            # Convert to percentage if needed
+            if short_pct > 0 and short_pct < 1:
+                short_pct = short_pct * 100
+
+            logger.debug(f"{ticker}: Short interest - {short_pct:.2f}% of float, {short_ratio:.1f} days to cover")
+
+            return {
+                "short_interest_pct": short_pct,
+                "short_ratio": short_ratio
+            }
+
+    except Exception as e:
+        logger.debug(f"Short interest error for {ticker}: {e}")
+
     return {}
 
 

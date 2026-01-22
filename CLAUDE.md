@@ -107,6 +107,49 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 - `data_fetcher.py` - DB-backed caching functions, Yahoo adjusted EPS fix
 - `backend/requirements.txt` - yfinance>=0.2.40
 
+### AI Trading Enhancements (Jan 21)
+
+**Trailing Stop Loss**:
+- Tracks `peak_price` and `peak_date` for each position
+- Dynamic trailing stop thresholds based on peak gain:
+  - 50%+ gain: 15% trailing stop
+  - 30-50% gain: 12% trailing stop
+  - 20-30% gain: 10% trailing stop
+  - 10-20% gain: 8% trailing stop
+- Protects gains while letting winners run
+
+**Insider Trading Signals**:
+- Fetches last 3 months of insider transactions from FMP API (`/v4/insider-trading`)
+- Tracks: `insider_buy_count`, `insider_sell_count`, `insider_net_shares`, `insider_sentiment`
+- Sentiment: "bullish" (buys > 1.5x sells), "bearish" (sells > 1.5x buys), "neutral"
+- Buy evaluation: +5 bonus for bullish insiders, -3 penalty for bearish
+- Refreshed weekly (slow-changing data)
+
+**Short Interest Tracking**:
+- Fetches from Yahoo Finance: `short_interest_pct` (% of float), `short_ratio` (days to cover)
+- Buy evaluation: -5 penalty for >20% short interest, -2 for >10%
+- Refreshed daily
+
+**Trade Reason Indicators**:
+- `👔 Insiders buying (X)` - shown when bullish insider activity
+- `⚠️ Short X%` - shown when elevated short interest (>15%)
+- `TRAILING STOP: Peak $X → $Y (-Z%)` - for trailing stop sell triggers
+
+**API Updates**:
+- `/api/stocks/{ticker}` - Now includes insider and short interest data
+- `/api/ai-portfolio` - Positions include `trailing_stop` object and stock signals
+
+**Database Changes**:
+- `ai_portfolio_positions`: Added `peak_price`, `peak_date`
+- `stocks`: Added `insider_buy_count`, `insider_sell_count`, `insider_net_shares`, `insider_sentiment`, `insider_updated_at`, `short_interest_pct`, `short_ratio`, `short_updated_at`
+
+**Files Modified**:
+- `backend/database.py` - New columns and migrations
+- `backend/ai_trader.py` - Trailing stop logic, insider/short in buy evaluation
+- `backend/scheduler.py` - Fetch and save insider/short data
+- `data_fetcher.py` - `fetch_fmp_insider_trading()`, `fetch_short_interest()`
+- `backend/main.py` - API responses include new fields
+
 ### Growth Mode Scoring + Dual Portfolio Management (Jan 20)
 
 **Problem Solved**: Pre-revenue growth stocks (like LCTX) scored 0 on CANSLIM because they have no earnings. Now they get properly evaluated.

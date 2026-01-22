@@ -100,7 +100,11 @@ def run_continuous_scan():
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
     from canslim_scorer import CANSLIMScorer, GrowthModeScorer, TechnicalAnalyzer
-    from data_fetcher import DataFetcher, get_cached_market_direction
+    from data_fetcher import (
+        DataFetcher, get_cached_market_direction,
+        fetch_fmp_insider_trading, fetch_short_interest,
+        is_data_fresh, mark_data_fetched
+    )
     from growth_projector import GrowthProjector
 
     # IMPORTANT: Fetch market direction FIRST, before any stock analysis
@@ -142,6 +146,20 @@ def run_continuous_scan():
             base_pattern = TechnicalAnalyzer.detect_base_pattern(stock_data.weekly_price_history)
             volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
             is_breaking_out, breakout_vol = TechnicalAnalyzer.is_breaking_out(stock_data, base_pattern)
+
+            # Insider trading signals (fetch weekly)
+            insider_data = {}
+            if not is_data_fresh(ticker, "insider_trading"):
+                insider_data = fetch_fmp_insider_trading(ticker)
+                if insider_data:
+                    mark_data_fetched(ticker, "insider_trading")
+
+            # Short interest data (fetch daily)
+            short_data = {}
+            if not is_data_fresh(ticker, "short_interest"):
+                short_data = fetch_short_interest(ticker)
+                if short_data:
+                    mark_data_fetched(ticker, "short_interest")
 
             return {
                 "ticker": ticker,
@@ -197,6 +215,14 @@ def run_continuous_scan():
                 "base_type": base_pattern.get("type", "none"),
                 "is_breaking_out": is_breaking_out,
                 "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
+                # Insider trading signals
+                "insider_buy_count": insider_data.get("buy_count"),
+                "insider_sell_count": insider_data.get("sell_count"),
+                "insider_net_shares": insider_data.get("net_shares"),
+                "insider_sentiment": insider_data.get("sentiment"),
+                # Short interest
+                "short_interest_pct": short_data.get("short_interest_pct"),
+                "short_ratio": short_data.get("short_ratio"),
             }
         except Exception as e:
             logger.error(f"Error analyzing {ticker}: {e}")
@@ -274,6 +300,20 @@ def run_continuous_scan():
         stock.base_type = analysis.get("base_type")
         stock.is_breaking_out = analysis.get("is_breaking_out", False)
         stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
+
+        # Insider trading signals (only update if we have data)
+        if analysis.get("insider_sentiment"):
+            stock.insider_buy_count = analysis.get("insider_buy_count")
+            stock.insider_sell_count = analysis.get("insider_sell_count")
+            stock.insider_net_shares = analysis.get("insider_net_shares")
+            stock.insider_sentiment = analysis.get("insider_sentiment")
+            stock.insider_updated_at = datetime.utcnow()
+
+        # Short interest (only update if we have data)
+        if analysis.get("short_interest_pct") is not None:
+            stock.short_interest_pct = analysis.get("short_interest_pct")
+            stock.short_ratio = analysis.get("short_ratio")
+            stock.short_updated_at = datetime.utcnow()
 
         # Save historical score (one per scan for granular backtesting data)
         today = date.today()

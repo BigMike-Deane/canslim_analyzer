@@ -43,7 +43,153 @@ function ScoreGauge({ score, label }) {
   )
 }
 
+function ScoreDetailModal({ isOpen, onClose, scoreKey, scoreData, details }) {
+  if (!isOpen) return null
+
+  // Parse the detail string to extract key metrics
+  const parseDetail = (detail) => {
+    if (!detail) return []
+    // Split by common separators and filter empty
+    return detail.split(/[,|]/).map(s => s.trim()).filter(s => s.length > 0)
+  }
+
+  const detailItems = parseDetail(details)
+
+  // Get explanations for each score type
+  const explanations = {
+    C: {
+      title: 'Current Quarterly Earnings',
+      description: 'Measures the most recent quarterly earnings growth compared to the same quarter last year. Strong companies show 25%+ EPS growth.',
+      metrics: ['TTM EPS Growth %', 'EPS Acceleration (quarter over quarter)', 'Earnings Surprise vs Estimates']
+    },
+    A: {
+      title: 'Annual Earnings Growth',
+      description: 'Evaluates 3-5 year earnings growth trend and return on equity. Top stocks show consistent 25%+ annual EPS growth.',
+      metrics: ['3-Year CAGR', 'ROE (Return on Equity)', 'Earnings Consistency']
+    },
+    N: {
+      title: 'New Highs',
+      description: 'Looks for stocks making new price highs with strong volume. Stocks within 5-15% of 52-week highs often have more upside.',
+      metrics: ['Distance from 52-Week High', 'Price Trend', 'Volume Confirmation']
+    },
+    S: {
+      title: 'Supply and Demand',
+      description: 'Analyzes trading volume patterns to detect institutional accumulation. Rising prices with increasing volume signals demand.',
+      metrics: ['Volume vs 50-Day Average', 'Price Trend Direction', 'Accumulation Pattern']
+    },
+    L: {
+      title: 'Leader or Laggard',
+      description: 'Relative strength vs the market. Leaders outperform 80%+ of stocks. Uses multi-timeframe analysis (12mo + 3mo).',
+      metrics: ['12-Month Relative Strength', '3-Month Relative Strength', 'Sector Rank']
+    },
+    I: {
+      title: 'Institutional Sponsorship',
+      description: 'Quality institutional ownership (mutual funds, pension funds). Look for increasing institutional positions from quality funds.',
+      metrics: ['Institutional Ownership %', 'Number of Institutions', 'Recent Changes']
+    },
+    M: {
+      title: 'Market Direction',
+      description: 'Overall market trend using SPY, QQQ, and DIA. Only buy when market is in confirmed uptrend above key moving averages.',
+      metrics: ['SPY vs 50/200 MA', 'QQQ vs 50/200 MA', 'Weighted Market Signal']
+    }
+  }
+
+  const info = explanations[scoreKey] || { title: scoreKey, description: '', metrics: [] }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-dark-800 rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="p-4 border-b border-dark-700 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl font-bold text-xl flex items-center justify-center ${
+              scoreData.normalized >= 80 ? 'bg-green-500/20 text-green-400' :
+              scoreData.normalized >= 65 ? 'bg-emerald-500/20 text-emerald-400' :
+              scoreData.normalized >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+              scoreData.normalized >= 35 ? 'bg-orange-500/20 text-orange-400' : 'bg-red-500/20 text-red-400'
+            }`}>
+              {scoreKey}
+            </div>
+            <div>
+              <div className="font-semibold">{info.title}</div>
+              <div className="text-dark-400 text-sm">
+                {scoreData.value != null ? `${scoreData.value.toFixed(1)}/${scoreData.max} points` : 'No data'}
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-dark-400 hover:text-white text-xl">×</button>
+        </div>
+
+        {/* Content */}
+        <div className="p-4 space-y-4">
+          {/* Score Bar */}
+          <div>
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-dark-400">Score</span>
+              <span className={`font-semibold ${
+                scoreData.normalized >= 80 ? 'text-green-400' :
+                scoreData.normalized >= 65 ? 'text-emerald-400' :
+                scoreData.normalized >= 50 ? 'text-yellow-400' :
+                scoreData.normalized >= 35 ? 'text-orange-400' : 'text-red-400'
+              }`}>{scoreData.normalized.toFixed(0)}%</span>
+            </div>
+            <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full ${
+                  scoreData.normalized >= 80 ? 'bg-green-500' :
+                  scoreData.normalized >= 65 ? 'bg-emerald-500' :
+                  scoreData.normalized >= 50 ? 'bg-yellow-500' :
+                  scoreData.normalized >= 35 ? 'bg-orange-500' : 'bg-red-500'
+                }`}
+                style={{ width: `${scoreData.normalized}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Description */}
+          <div className="text-dark-300 text-sm">{info.description}</div>
+
+          {/* Analysis Details */}
+          {detailItems.length > 0 && (
+            <div>
+              <div className="text-dark-400 text-xs uppercase tracking-wide mb-2">Analysis Details</div>
+              <div className="bg-dark-700/50 rounded-lg p-3 space-y-2">
+                {detailItems.map((item, i) => (
+                  <div key={i} className="flex items-start gap-2 text-sm">
+                    <span className="text-primary-400 mt-0.5">•</span>
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* What We Look For */}
+          <div>
+            <div className="text-dark-400 text-xs uppercase tracking-wide mb-2">Key Metrics</div>
+            <div className="space-y-1">
+              {info.metrics.map((metric, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm text-dark-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-dark-500"></span>
+                  {metric}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-dark-700">
+          <button onClick={onClose} className="w-full btn-secondary">Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CANSLIMDetail({ stock }) {
+  const [selectedScore, setSelectedScore] = useState(null)
+
   const scores = [
     { key: 'C', label: 'Current Earnings', value: stock.c_score, max: 15, desc: 'Quarterly earnings growth' },
     { key: 'A', label: 'Annual Earnings', value: stock.a_score, max: 15, desc: 'Annual earnings growth' },
@@ -60,6 +206,12 @@ function CANSLIMDetail({ stock }) {
     return (value / max) * 100
   }
 
+  // Get detail for a score key from score_details
+  const getDetail = (key) => {
+    if (!stock.score_details) return null
+    return stock.score_details[key.toLowerCase()] || stock.score_details[key] || null
+  }
+
   return (
     <div className="card mb-4">
       <div className="font-semibold mb-3">CANSLIM Breakdown</div>
@@ -68,15 +220,30 @@ function CANSLIMDetail({ stock }) {
           const normalized = normalizeScore(s.value, s.max)
           return (
             <div key={s.key} className="flex items-center gap-3">
-              <div className={`w-8 h-8 rounded-lg font-bold flex items-center justify-center ${getScoreClass(normalized)}`}>
+              {/* Clickable Letter Badge */}
+              <button
+                onClick={() => setSelectedScore(s.key)}
+                className={`w-10 h-10 rounded-xl font-bold text-lg flex items-center justify-center ${getScoreClass(normalized)} hover:scale-110 active:scale-95 transition-all shadow-lg cursor-pointer`}
+                title={`Click for ${s.label} details`}
+              >
                 {s.key}
-              </div>
+              </button>
+
               <div className="flex-1">
-                <div className="flex justify-between">
+                <div className="flex justify-between items-center">
                   <span className="font-medium text-sm">{s.label}</span>
-                  <span className={`text-sm font-semibold ${getScoreClass(normalized)}`}>
-                    {s.value != null ? `${s.value.toFixed(1)}/${s.max}` : '-'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-semibold ${getScoreClass(normalized)}`}>
+                      {s.value != null ? `${s.value.toFixed(1)}/${s.max}` : '-'}
+                    </span>
+                    {/* Details Button */}
+                    <button
+                      onClick={() => setSelectedScore(s.key)}
+                      className="text-xs text-primary-400 hover:text-primary-300 px-2 py-0.5 rounded bg-primary-500/10 hover:bg-primary-500/20 transition-colors"
+                    >
+                      Details →
+                    </button>
+                  </div>
                 </div>
                 <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden mt-1">
                   <div
@@ -95,6 +262,24 @@ function CANSLIMDetail({ stock }) {
           )
         })}
       </div>
+
+      {/* Score Detail Modal */}
+      {selectedScore && (
+        <ScoreDetailModal
+          isOpen={!!selectedScore}
+          onClose={() => setSelectedScore(null)}
+          scoreKey={selectedScore}
+          scoreData={{
+            value: scores.find(s => s.key === selectedScore)?.value,
+            max: scores.find(s => s.key === selectedScore)?.max,
+            normalized: normalizeScore(
+              scores.find(s => s.key === selectedScore)?.value,
+              scores.find(s => s.key === selectedScore)?.max
+            )
+          }}
+          details={getDetail(selectedScore)}
+        />
+      )}
     </div>
   )
 }
@@ -167,6 +352,93 @@ function ScoreHistory({ history }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  )
+}
+
+function InsiderShortSection({ stock }) {
+  // Only show if we have insider or short data
+  const hasInsider = stock.insider_sentiment || stock.insider_buy_count > 0 || stock.insider_sell_count > 0
+  const hasShort = stock.short_interest_pct != null
+
+  if (!hasInsider && !hasShort) return null
+
+  const getSentimentColor = (sentiment) => {
+    if (sentiment === 'bullish') return 'text-green-400 bg-green-500/20'
+    if (sentiment === 'bearish') return 'text-red-400 bg-red-500/20'
+    return 'text-dark-400 bg-dark-700'
+  }
+
+  const getShortColor = (pct) => {
+    if (pct >= 20) return 'text-red-400'
+    if (pct >= 10) return 'text-orange-400'
+    return 'text-green-400'
+  }
+
+  return (
+    <div className="card mb-4">
+      <div className="font-semibold mb-3">Market Signals</div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {/* Insider Trading */}
+        {hasInsider && (
+          <>
+            <div>
+              <div className="text-dark-400 text-xs">Insider Sentiment</div>
+              <div className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm font-semibold mt-1 ${getSentimentColor(stock.insider_sentiment)}`}>
+                {stock.insider_sentiment === 'bullish' && '👔 '}
+                {stock.insider_sentiment === 'bearish' && '⚠️ '}
+                <span className="capitalize">{stock.insider_sentiment || 'Unknown'}</span>
+              </div>
+            </div>
+            <div>
+              <div className="text-dark-400 text-xs">Insider Activity (3mo)</div>
+              <div className="flex items-center gap-3 mt-1">
+                <span className="text-green-400 font-semibold">
+                  {stock.insider_buy_count || 0} buys
+                </span>
+                <span className="text-red-400 font-semibold">
+                  {stock.insider_sell_count || 0} sells
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Short Interest */}
+        {hasShort && (
+          <>
+            <div>
+              <div className="text-dark-400 text-xs">Short Interest</div>
+              <div className={`font-semibold ${getShortColor(stock.short_interest_pct)}`}>
+                {stock.short_interest_pct?.toFixed(1)}% of float
+              </div>
+            </div>
+            <div>
+              <div className="text-dark-400 text-xs">Days to Cover</div>
+              <div className="font-semibold">
+                {stock.short_ratio?.toFixed(1) || '-'} days
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Warning for high short interest */}
+      {stock.short_interest_pct >= 20 && (
+        <div className="mt-3 pt-3 border-t border-dark-700 flex items-center gap-2 text-sm text-orange-400">
+          <span>⚠️</span>
+          <span>High short interest - stock may be volatile</span>
+        </div>
+      )}
+
+      {/* Positive signal for bullish insiders */}
+      {stock.insider_sentiment === 'bullish' && stock.insider_buy_count >= 3 && (
+        <div className="mt-3 pt-3 border-t border-dark-700 flex items-center gap-2 text-sm text-green-400">
+          <span>👔</span>
+          <span>Strong insider buying - management is confident</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -416,6 +688,8 @@ export default function StockDetail() {
       <GrowthModeSection stock={stock} />
 
       <TechnicalAnalysis stock={stock} />
+
+      <InsiderShortSection stock={stock} />
 
       <CANSLIMDetail stock={stock} />
 

@@ -92,6 +92,21 @@ def run_migrations():
         ("market_snapshots", "dia_200_ma", "FLOAT"),
         ("market_snapshots", "dia_signal", "INTEGER"),
         ("market_snapshots", "weighted_signal", "FLOAT"),
+        # Trailing stop loss tracking (AI Portfolio)
+        ("ai_portfolio_positions", "peak_price", "FLOAT"),
+        ("ai_portfolio_positions", "peak_date", "DATETIME"),
+        # Insider trading signals
+        ("stocks", "insider_buy_count", "INTEGER"),
+        ("stocks", "insider_sell_count", "INTEGER"),
+        ("stocks", "insider_net_shares", "FLOAT"),
+        ("stocks", "insider_sentiment", "TEXT"),
+        ("stocks", "insider_updated_at", "DATETIME"),
+        # Short interest tracking
+        ("stocks", "short_interest_pct", "FLOAT"),
+        ("stocks", "short_ratio", "FLOAT"),
+        ("stocks", "short_updated_at", "DATETIME"),
+        # Score details for clickable breakdown
+        ("stocks", "score_details", "TEXT"),  # JSON stored as TEXT in SQLite
     ]
 
     for table, column, col_type in migrations:
@@ -208,6 +223,7 @@ class Stock(Base):
     l_score = Column(Float)  # Leader/laggard
     i_score = Column(Float)  # Institutional
     m_score = Column(Float)  # Market direction
+    score_details = Column(JSON)  # Detailed breakdown for each component {c: "...", a: "...", etc}
 
     # Growth projection
     projected_growth = Column(Float)
@@ -229,6 +245,18 @@ class Stock(Base):
     base_type = Column(String)  # 'flat', 'cup', 'none'
     is_breaking_out = Column(Boolean, default=False)  # Price breaking out with volume
     breakout_volume_ratio = Column(Float)  # Volume surge on breakout day
+
+    # Insider Trading Signals
+    insider_buy_count = Column(Integer)  # Insider buys in last 3 months
+    insider_sell_count = Column(Integer)  # Insider sells in last 3 months
+    insider_net_shares = Column(Float)  # Net shares bought/sold
+    insider_sentiment = Column(String)  # 'bullish', 'bearish', 'neutral'
+    insider_updated_at = Column(DateTime)
+
+    # Short Interest
+    short_interest_pct = Column(Float)  # Short interest as % of float
+    short_ratio = Column(Float)  # Days to cover
+    short_updated_at = Column(DateTime)
 
     # Metadata
     last_updated = Column(DateTime, default=datetime.utcnow)
@@ -406,6 +434,10 @@ class AIPortfolioPosition(Base):
     is_growth_stock = Column(Boolean, default=False)
     purchase_growth_score = Column(Float)  # Growth Mode score when purchased
     current_growth_score = Column(Float)  # Current Growth Mode score
+
+    # Trailing stop loss tracking
+    peak_price = Column(Float)  # Highest price since purchase (for trailing stop)
+    peak_date = Column(DateTime)  # When peak was reached
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

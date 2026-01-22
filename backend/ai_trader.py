@@ -321,7 +321,9 @@ def fetch_live_price(ticker: str) -> float | None:
 
 
 def update_position_prices(db: Session, use_live_prices: bool = True):
-    """Update all position prices - fetches live prices by default"""
+    """Update all position prices - fetches live prices by default.
+    Also tracks peak price for trailing stop loss.
+    """
     import time
 
     positions = db.query(AIPortfolioPosition).all()
@@ -346,6 +348,17 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
             position.current_value = position.shares * current_price
             position.gain_loss = position.current_value - (position.shares * position.cost_basis)
             position.gain_loss_pct = ((current_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
+
+            # Track peak price for trailing stop loss
+            # Initialize peak_price if not set (new position or migration)
+            if position.peak_price is None:
+                position.peak_price = max(current_price, position.cost_basis)
+                position.peak_date = get_cst_now()
+            elif current_price > position.peak_price:
+                # New high reached
+                position.peak_price = current_price
+                position.peak_date = get_cst_now()
+                logger.debug(f"{position.ticker}: New peak ${current_price:.2f}")
 
             # Update scores from Stock table (this doesn't need to be live)
             stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
@@ -399,7 +412,13 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
 
 
 def evaluate_sells(db: Session) -> list:
-    """Evaluate positions for potential sells - uses effective score based on stock type"""
+    """Evaluate positions for potential sells - uses effective score based on stock type.
+
+    Includes trailing stop loss logic:
+    - Tracks peak price since purchase
+    - Triggers sell when price drops X% from peak
+    - Uses tighter trailing stops for bigger winners
+    """
     config = get_or_create_config(db)
     positions = db.query(AIPortfolioPosition).all()
     sells = []
@@ -424,31 +443,62 @@ def evaluate_sells(db: Session) -> list:
             })
             continue
 
+        # TRAILING STOP LOSS - protect gains from peak
+        # Uses dynamic trailing stop based on how much we're up
+        if position.peak_price and position.peak_price > 0:
+            drop_from_peak = ((position.peak_price - position.current_price) / position.peak_price) * 100
+            peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
+
+            # Dynamic trailing stop thresholds based on peak gain:
+            # - Up 50%+: 15% trailing stop (protect big winner)
+            # - Up 30-50%: 12% trailing stop
+            # - Up 20-30%: 10% trailing stop
+            # - Up 10-20%: 8% trailing stop
+            # - Up 0-10%: No trailing stop (use regular stop loss)
+            trailing_stop_pct = None
+            if peak_gain_pct >= 50:
+                trailing_stop_pct = 15
+            elif peak_gain_pct >= 30:
+                trailing_stop_pct = 12
+            elif peak_gain_pct >= 20:
+                trailing_stop_pct = 10
+            elif peak_gain_pct >= 10:
+                trailing_stop_pct = 8
+
+            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
+                sells.append({
+                    "position": position,
+                    "reason": f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)",
+                    "priority": 2  # High priority - protect gains
+                })
+                logger.info(f"{position.ticker}: Trailing stop triggered - peak ${position.peak_price:.2f}, now ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
+                continue
+
         # Score crashed - sell if score dropped dramatically (>20 points)
         score_drop = purchase_score - score
         if score_drop > 20 and score < 50:
             sells.append({
                 "position": position,
                 "reason": f"SCORE CRASH: {purchase_score:.0f} → {score:.0f}",
-                "priority": 2
+                "priority": 3
             })
             continue
 
-        # For winners, use trailing stop logic
+        # For winners, use additional score-based logic
         if gain_pct >= 20:
             # If up 20%+, only sell if score is weak AND gains are fading
             if score < config.sell_score_threshold:
                 sells.append({
                     "position": position,
                     "reason": f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({score:.0f})",
-                    "priority": 3
+                    "priority": 4
                 })
             # Take partial profits at 40%+ if score is declining
             elif gain_pct >= config.take_profit_pct and score < purchase_score - 10:
                 sells.append({
                     "position": position,
                     "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining",
-                    "priority": 4
+                    "priority": 5
                 })
 
         # For losing or flat positions with weak scores - cut and redeploy capital
@@ -456,10 +506,10 @@ def evaluate_sells(db: Session) -> list:
             sells.append({
                 "position": position,
                 "reason": f"WEAK POSITION: {gain_pct:+.1f}%, score {score:.0f}",
-                "priority": 5
+                "priority": 6
             })
 
-    # Sort by priority (stop losses first, then score crashes, etc.)
+    # Sort by priority (stop losses first, then trailing stops, etc.)
     sells.sort(key=lambda x: x["priority"])
     return sells
 
@@ -531,6 +581,14 @@ def evaluate_buys(db: Session) -> list:
         breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
         volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
 
+        # Insider trading signals
+        insider_sentiment = getattr(stock, 'insider_sentiment', 'neutral') or 'neutral'
+        insider_buy_count = getattr(stock, 'insider_buy_count', 0) or 0
+
+        # Short interest data
+        short_interest_pct = getattr(stock, 'short_interest_pct', 0) or 0
+        short_ratio = getattr(stock, 'short_ratio', 0) or 0
+
         # Calculate momentum score based on proximity to 52-week high AND breakout status
         momentum_score = 0
         breakout_bonus = 0
@@ -564,6 +622,22 @@ def evaluate_buys(db: Session) -> list:
             else:
                 momentum_score = -10  # Too far from highs, may be in downtrend
 
+        # Calculate insider sentiment bonus/penalty
+        insider_bonus = 0
+        if insider_sentiment == "bullish" and insider_buy_count >= 2:
+            insider_bonus = 5  # Insiders buying = good sign
+        elif insider_sentiment == "bearish":
+            insider_bonus = -3  # Insiders selling = caution
+
+        # Calculate short interest adjustment
+        # High short interest can be bullish (short squeeze potential) or bearish (smart money betting against)
+        # For CANSLIM, we prefer lower short interest (less risk)
+        short_penalty = 0
+        if short_interest_pct > 20:
+            short_penalty = -5  # Very high short interest = risky
+        elif short_interest_pct > 10:
+            short_penalty = -2  # Elevated short interest = slight caution
+
         # Calculate composite score with breakout weighting
         # Breakouts get priority: 30% growth, 30% score, 25% momentum, 15% breakout bonus
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
@@ -572,7 +646,9 @@ def evaluate_buys(db: Session) -> list:
             (effective_score * 0.30) +
             (momentum_score * 0.25) +
             (breakout_bonus * 0.15) +
-            at_high_penalty
+            at_high_penalty +
+            insider_bonus +
+            short_penalty
         )
 
         # Skip if composite score is too low
@@ -629,6 +705,10 @@ def evaluate_buys(db: Session) -> list:
             reason_parts.append("Strong momentum")
         if volume_ratio >= 1.5 and not is_breaking_out:
             reason_parts.append(f"Vol {volume_ratio:.1f}x")
+        if insider_sentiment == "bullish" and insider_buy_count >= 2:
+            reason_parts.append(f"👔 Insiders buying ({insider_buy_count})")
+        if short_interest_pct > 15:
+            reason_parts.append(f"⚠️ Short {short_interest_pct:.0f}%")
 
         buys.append({
             "stock": stock,
@@ -925,7 +1005,10 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     # Growth Mode fields
                     is_growth_stock=is_growth,
                     purchase_growth_score=stock.growth_mode_score,
-                    current_growth_score=stock.growth_mode_score
+                    current_growth_score=stock.growth_mode_score,
+                    # Trailing stop loss tracking
+                    peak_price=live_price,
+                    peak_date=get_cst_now()
                 )
                 db.add(new_position)
                 position_count += 1
