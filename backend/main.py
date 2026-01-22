@@ -378,7 +378,7 @@ async def get_market_direction(
         "market_trend": market_data.get("market_trend", "neutral"),
         "weighted_signal": market_data.get("weighted_signal", 0),
         "indexes": market_data.get("indexes", {}),
-        "last_updated": latest_snapshot.timestamp.isoformat() if latest_snapshot and latest_snapshot.timestamp else None,
+        "last_updated": (latest_snapshot.timestamp.isoformat() + "Z") if latest_snapshot and latest_snapshot.timestamp else None,
         "error": market_data.get("error"),
     }
 
@@ -741,7 +741,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "sell_signals": sell_count
         },
 
-        "last_scan": db.query(func.max(Stock.last_updated)).scalar()
+        "last_scan": (lambda dt: dt.isoformat() + "Z" if dt else None)(db.query(func.max(Stock.last_updated)).scalar())
     }
 
 
@@ -762,7 +762,7 @@ async def get_market_data(db: Session = Depends(get_db)):
         "market_score": latest.market_score,
         "market_trend": latest.market_trend,
         "date": latest.date.isoformat(),
-        "last_updated": latest.created_at.isoformat() if latest.created_at else None
+        "last_updated": (latest.created_at.isoformat() + "Z") if latest.created_at else None
     }
 
 
@@ -873,7 +873,7 @@ async def get_stocks(
             "l_score": s.l_score,
             "i_score": s.i_score,
             "m_score": current_m_score,  # Use current market M score
-            "last_updated": s.last_updated.isoformat() if s.last_updated else None
+            "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
         } for s in stocks],
         "total": total,
         "limit": limit,
@@ -933,7 +933,7 @@ async def get_top_growth_stocks(
             "volume_ratio": s.volume_ratio,
             "base_type": s.base_type,
             "weeks_in_base": s.weeks_in_base,
-            "last_updated": s.last_updated.isoformat() if s.last_updated else None
+            "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
         } for s in stocks],
         "total": len(stocks),
         "current_m_score": current_m_score
@@ -1119,7 +1119,7 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
             "projected_growth": h.projected_growth
         } for h in reversed(history)],
 
-        "last_updated": stock.last_updated.isoformat() if stock.last_updated else None
+        "last_updated": (stock.last_updated.isoformat() + "Z") if stock.last_updated else None
     }
 
 
