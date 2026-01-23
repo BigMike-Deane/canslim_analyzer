@@ -34,6 +34,11 @@ COPY portfolio_analyzer.py ./
 COPY portfolio_manager.py ./
 COPY score_history.py ./
 
+# Copy new modules (config system and Redis cache)
+COPY redis_cache.py ./
+COPY config_loader.py ./
+COPY config/ ./config/
+
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
