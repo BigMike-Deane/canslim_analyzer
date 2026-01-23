@@ -97,13 +97,39 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 50, progres
                 "i_score": canslim_result.i_score,
                 "m_score": canslim_result.m_score,
                 "score_details": {
-                    "c": canslim_result.c_detail,
-                    "a": canslim_result.a_detail,
-                    "n": canslim_result.n_detail,
-                    "s": canslim_result.s_detail,
-                    "l": canslim_result.l_detail,
-                    "i": canslim_result.i_detail,
-                    "m": canslim_result.m_detail,
+                    "c": {
+                        "summary": canslim_result.c_detail,
+                        "quarterly_eps": stock_data.quarterly_earnings[:4] if stock_data.quarterly_earnings else [],
+                        "earnings_surprise_pct": stock_data.earnings_surprise_pct,
+                    },
+                    "a": {
+                        "summary": canslim_result.a_detail,
+                        "annual_eps": stock_data.annual_earnings[:3] if stock_data.annual_earnings else [],
+                        "roe": stock_data.roe,
+                    },
+                    "n": {
+                        "summary": canslim_result.n_detail,
+                        "current_price": stock_data.current_price,
+                        "week_52_high": stock_data.high_52w,
+                        "pct_from_high": round(((stock_data.high_52w - stock_data.current_price) / stock_data.high_52w) * 100, 1) if stock_data.high_52w and stock_data.current_price else None,
+                    },
+                    "s": {
+                        "summary": canslim_result.s_detail,
+                        "volume_ratio": volume_ratio,
+                        "avg_volume": stock_data.avg_volume_50d,
+                        "shares_outstanding": stock_data.shares_outstanding,
+                    },
+                    "l": {
+                        "summary": canslim_result.l_detail,
+                        "relative_strength": stock_data.relative_strength if hasattr(stock_data, 'relative_strength') else None,
+                    },
+                    "i": {
+                        "summary": canslim_result.i_detail,
+                        "institutional_pct": stock_data.institutional_holders_pct,
+                    },
+                    "m": {
+                        "summary": canslim_result.m_detail,
+                    },
                 },
                 "projected_growth": projection.projected_growth_pct,
                 "confidence": projection.confidence,
