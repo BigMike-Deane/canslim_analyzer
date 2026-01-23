@@ -1,0 +1,190 @@
+# CANSLIM Analyzer Default Configuration
+# Override these values in development.yaml or production.yaml
+
+# Scanner Settings
+scanner:
+  workers: 8
+  delay_min: 0.5  # seconds between API calls (min)
+  delay_max: 1.0  # seconds between API calls (max)
+  batch_size: 50
+  max_retries: 2
+
+# Cache Settings
+cache:
+  # Redis cache
+  redis:
+    enabled: true
+    host: localhost
+    port: 6379
+    db: 0
+    decode_responses: true
+
+  # Data freshness intervals (seconds)
+  freshness_intervals:
+    price: 0                # Always fetch (real-time)
+    earnings: 86400         # 24 hours
+    revenue: 86400          # 24 hours
+    balance_sheet: 86400    # 24 hours
+    key_metrics: 86400      # 24 hours
+    analyst: 86400          # 24 hours
+    earnings_surprise: 86400  # 24 hours
+    weekly_history: 86400   # 24 hours
+    institutional: 604800   # 7 days (1 week)
+    insider_trading: 604800 # 7 days
+    short_interest: 86400   # 24 hours
+
+  # In-memory cache limits
+  max_cached_tickers: 1000
+  market_cache_duration: 14400  # 4 hours
+
+# CANSLIM Scoring Weights
+scoring:
+  canslim:
+    max_scores:
+      C: 15  # Current Quarterly Earnings
+      A: 15  # Annual Earnings Growth
+      N: 15  # New Highs
+      S: 15  # Supply & Demand
+      L: 15  # Leader vs Laggard
+      I: 10  # Institutional Ownership
+      M: 15  # Market Direction
+
+    # C Score (Current Earnings) weights
+    c_weights:
+      base_max: 10          # TTM growth
+      acceleration_max: 3   # EPS acceleration bonus
+      surprise_max: 2       # Earnings surprise bonus
+
+    # A Score (Annual Earnings) weights
+    a_weights:
+      cagr_max: 12         # 3-year CAGR
+      roe_max: 3           # ROE quality bonus
+
+    # Thresholds
+    thresholds:
+      min_score: 30        # Skip stocks below this score
+      roe_excellent: 25    # ROE >= 25% = excellent
+      roe_good: 17         # ROE >= 17% = good
+      ttm_growth_excellent: 25  # >= 25% TTM growth = max score
+
+  growth_mode:
+    max_scores:
+      R: 20  # Revenue Growth
+      F: 15  # Funding/Financial Health
+      N: 15  # New Highs
+      S: 15  # Supply & Demand
+      L: 15  # Leader vs Laggard
+      I: 10  # Institutional Ownership
+      M: 10  # Market Direction
+
+    # Growth Mode activation criteria
+    criteria:
+      min_revenue_growth: 50  # >= 50% YoY = high growth
+      min_profit_margin: 0.01 # < 1% margin = early stage
+
+# Market Direction Settings
+market:
+  indexes:
+    SPY:
+      weight: 0.50  # S&P 500 - broad market
+      name: "S&P 500"
+    QQQ:
+      weight: 0.30  # NASDAQ 100 - tech/growth
+      name: "NASDAQ 100"
+    DIA:
+      weight: 0.20  # Dow Jones - blue chips
+      name: "Dow Jones"
+
+  # Signal scoring
+  signals:
+    strong_bullish: 2
+    bullish: 1
+    neutral: 0
+    bearish: -1
+
+# AI Trader Settings
+ai_trader:
+  # Trailing stop loss thresholds
+  trailing_stops:
+    gain_50_plus:
+      threshold: 0.50    # 50%+ gain
+      stop_pct: 0.15     # 15% trailing stop
+    gain_30_to_50:
+      threshold: 0.30
+      stop_pct: 0.12     # 12% trailing stop
+    gain_20_to_30:
+      threshold: 0.20
+      stop_pct: 0.10     # 10% trailing stop
+    gain_10_to_20:
+      threshold: 0.10
+      stop_pct: 0.08     # 8% trailing stop
+
+  # Insider trading signal weights
+  insider_signals:
+    bullish_bonus: 5      # +5 points for bullish insiders
+    bearish_penalty: -3   # -3 points for bearish insiders
+    buy_sell_ratio: 1.5   # Buys > 1.5x sells = bullish
+
+  # Short interest penalties
+  short_interest:
+    high_threshold: 0.20  # > 20% short interest
+    high_penalty: -5
+    medium_threshold: 0.10  # > 10% short interest
+    medium_penalty: -2
+
+# Technical Analysis Settings
+technical:
+  # Base pattern detection
+  base_patterns:
+    flat_base:
+      min_weeks: 5
+      max_range_pct: 0.15  # < 15% weekly range
+    cup_with_handle:
+      min_decline_pct: 0.15  # >= 15% decline
+      handle_min_pct: 0.05   # 5-15% handle pullback
+      handle_max_pct: 0.15
+      handle_max_weeks: 4
+    double_bottom:
+      min_recovery_pct: 0.10  # >= 10% recovery between lows
+      low_tolerance_pct: 0.03 # Lows within 3% of each other
+
+  # Breakout detection
+  breakout:
+    volume_threshold: 1.5     # 1.5x average volume
+    pivot_proximity_pct: 0.05  # Within 5% of pivot
+    confirmation_score: 60     # Min volume confirmation score
+
+# Stock Universe Settings
+universe:
+  sources:
+    - sp500        # S&P 500
+    - sp400        # S&P MidCap 400
+    - sp600        # S&P SmallCap 600
+    - russell2000  # Russell 2000
+
+  # Duplicate ticker handling
+  duplicates:
+    GOOG: GOOGL  # Keep GOOGL, filter GOOG
+
+# API Rate Limits
+api:
+  fmp:
+    rate_limit: 300  # calls per minute
+    timeout: 10      # seconds
+  yahoo:
+    delay: 0.3       # seconds between calls
+    timeout: 15      # seconds
+  finviz:
+    delay: 1.0       # seconds between scrapes
+    timeout: 10      # seconds
+
+# Database Settings
+database:
+  # Indexes for optimization
+  indexes:
+    - name: ix_stocks_canslim
+      column: canslim_score
+    - name: ix_stocks_price
+      column: current_price
+    - name: ix_stocks_score_price
+      columns: [canslim_score, current_price]

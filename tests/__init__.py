@@ -1,0 +1,3 @@
+"""
+CANSLIM Analyzer Test Suite
+"""

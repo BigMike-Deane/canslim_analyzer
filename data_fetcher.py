@@ -2,6 +2,7 @@
 Data Fetcher Module
 Wrapper around yfinance with caching and error handling
 Now with Financial Modeling Prep (FMP) API for earnings data
+Includes Redis cache layer for improved performance
 """
 
 import yfinance as yf
@@ -18,6 +19,14 @@ import logging
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
+# Import Redis cache (lazy loaded to allow fallback)
+try:
+    from redis_cache import redis_cache
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    logger.warning("Redis cache module not available")
 
 # FMP API Configuration - using new /stable/ endpoints
 FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
@@ -299,6 +308,7 @@ CACHING_ENABLED = True
 def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
     """
     Wrapper that checks cache freshness before fetching.
+    Cache hierarchy: Memory → Redis → Database → API fetch
     Returns cached data if fresh, otherwise fetches new data.
     """
     global _cache_hit_count, _cache_miss_count
@@ -311,24 +321,45 @@ def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
     if not CACHING_ENABLED:
         return fetch_func(*args, **kwargs)
 
-    # Check if we have fresh cached data
+    # 1. Check in-memory cache first (fastest)
     if is_data_fresh(ticker, data_type):
         cached = get_cached_data(ticker, data_type)
         if cached is not None:
             _cache_hit_count += 1
-            # Log every 100 hits to avoid spam
             if _cache_hit_count % 100 == 0:
                 logger.info(f"Cache stats: {_cache_hit_count} hits, {_cache_miss_count} misses")
             return cached
 
-    # Fetch fresh data
+    # 2. Check Redis cache (fast + persistent)
+    if REDIS_AVAILABLE and redis_cache.enabled:
+        try:
+            redis_cached = redis_cache.get(ticker, data_type)
+            if redis_cached is not None:
+                # Store in memory cache for next time
+                set_cached_data(ticker, data_type, redis_cached, persist_to_db=False)
+                mark_data_fetched(ticker, data_type)
+                _cache_hit_count += 1
+                logger.debug(f"Redis cache hit: {ticker}:{data_type}")
+                return redis_cached
+        except Exception as e:
+            logger.debug(f"Redis cache error: {e}")
+
+    # 3. Fetch fresh data from API
     _cache_miss_count += 1
     data = fetch_func(*args, **kwargs)
 
-    # Cache the result
+    # 4. Cache the result in all layers
     if data:
-        set_cached_data(ticker, data_type, data)
+        # Memory cache
+        set_cached_data(ticker, data_type, data, persist_to_db=True)
         mark_data_fetched(ticker, data_type)
+
+        # Redis cache (with automatic TTL)
+        if REDIS_AVAILABLE and redis_cache.enabled:
+            try:
+                redis_cache.set(ticker, data_type, data)
+            except Exception as e:
+                logger.debug(f"Redis set error: {e}")
 
     return data
 
@@ -345,11 +376,26 @@ def get_cache_stats() -> dict:
     with _cached_data_lock:
         data_count = len(_cached_data)
 
-    return {
-        "tickers_tracked": len(_data_freshness_cache),
-        "freshness_entries": freshness_count,
-        "cached_data_entries": data_count
+    stats = {
+        "memory": {
+            "tickers_tracked": len(_data_freshness_cache),
+            "freshness_entries": freshness_count,
+            "cached_data_entries": data_count
+        },
+        "hits": _cache_hit_count,
+        "misses": _cache_miss_count,
     }
+
+    # Add Redis stats if available
+    if REDIS_AVAILABLE and redis_cache.enabled:
+        try:
+            stats["redis"] = redis_cache.get_stats()
+        except Exception as e:
+            stats["redis"] = {"error": str(e)}
+    else:
+        stats["redis"] = {"enabled": False}
+
+    return stats
 
 
 def get_rate_limit_stats() -> dict:

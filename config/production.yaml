@@ -1,0 +1,21 @@
+# Production Environment Configuration
+# Overrides default.yaml for production deployment
+
+scanner:
+  workers: 8
+  delay_min: 0.5
+  delay_max: 1.0
+  batch_size: 50
+
+cache:
+  redis:
+    enabled: true
+    host: redis    # Docker service name
+    port: 6379
+
+  # Use default intervals from default.yaml
+
+api:
+  fmp:
+    rate_limit: 300
+    timeout: 10
