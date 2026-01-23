@@ -34,10 +34,12 @@ COPY portfolio_analyzer.py ./
 COPY portfolio_manager.py ./
 COPY score_history.py ./
 
-# Copy new modules (config system and Redis cache)
+# Copy new modules (config system, Redis cache, async scanning)
 COPY redis_cache.py ./
 COPY config_loader.py ./
 COPY config/ ./config/
+COPY async_data_fetcher.py ./
+COPY async_scanner.py ./
 
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
