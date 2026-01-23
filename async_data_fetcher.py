@@ -418,6 +418,10 @@ async def get_stock_data_async(ticker: str, session: aiohttp.ClientSession) -> S
             if not stock_data.institutional_holders_pct:
                 inst_pct = info.get('heldPercentInstitutions', 0)
                 stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
+            # Get ROE (critical for A score quality check)
+            if not stock_data.roe:
+                roe = info.get('returnOnEquity')
+                stock_data.roe = (roe * 100) if roe else 0
 
         # ALWAYS get adjusted EPS from earnings_history (critical for scoring!)
         try:
@@ -433,6 +437,20 @@ async def get_stock_data_async(ticker: str, session: aiohttp.ClientSession) -> S
                 if adjusted_eps and len(adjusted_eps) >= 4:
                     stock_data.quarterly_earnings = adjusted_eps[::-1]  # Reverse to oldest-first
                     logger.debug(f"{ticker}: Using Yahoo adjusted EPS: {adjusted_eps[:4]}")
+
+            # If we don't have 5+ quarters, try quarterly_financials for more data
+            if len(stock_data.quarterly_earnings) < 5:
+                try:
+                    quarterly = stock.quarterly_financials
+                    if quarterly is not None and not quarterly.empty and 'Net Income' in quarterly.index:
+                        net_income = quarterly.loc['Net Income'].dropna()
+                        shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
+                        quarterly_eps = (net_income / shares).tolist()[:8]  # Get up to 8 quarters
+                        if len(quarterly_eps) >= 5:
+                            stock_data.quarterly_earnings = quarterly_eps
+                            logger.debug(f"{ticker}: Using quarterly_financials EPS (5+ quarters): {quarterly_eps[:5]}")
+                except Exception as e:
+                    logger.debug(f"{ticker}: Could not get quarterly_financials: {e}")
         except Exception as e:
             logger.debug(f"{ticker}: Could not get Yahoo earnings_history: {e}")
 

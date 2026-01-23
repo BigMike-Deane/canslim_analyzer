@@ -1372,6 +1372,10 @@ class DataFetcher:
                     if not stock_data.institutional_holders_pct:
                         inst_pct = info.get('heldPercentInstitutions', 0)
                         stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
+                    # Get ROE (critical for A score quality check)
+                    if not stock_data.roe:
+                        roe = info.get('returnOnEquity')
+                        stock_data.roe = (roe * 100) if roe else 0
 
                     # Quarterly earnings from yfinance - ALWAYS try earnings_history (actual reported EPS)
                     # This is the ADJUSTED EPS that analysts track, not GAAP EPS
@@ -1398,16 +1402,19 @@ class DataFetcher:
                     except Exception as e:
                         logger.debug(f"{ticker}: earnings_history failed: {e}")
 
-                    # Fallback to Net Income calculation ONLY if we still have no earnings
-                    if not stock_data.quarterly_earnings:
+                    # Fallback to Net Income calculation if we have no earnings OR less than 5 quarters
+                    if not stock_data.quarterly_earnings or len(stock_data.quarterly_earnings) < 5:
                         try:
                             quarterly = stock.quarterly_financials
                             if quarterly is not None and not quarterly.empty:
                                 if 'Net Income' in quarterly.index:
                                     net_income = quarterly.loc['Net Income'].dropna()
                                     shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
-                                    stock_data.quarterly_earnings = (net_income / shares).tolist()[:8]
-                                    logger.debug(f"{ticker}: Using Yahoo calculated EPS from Net Income")
+                                    quarterly_eps = (net_income / shares).tolist()[:8]
+                                    # Only use if we get 5+ quarters
+                                    if len(quarterly_eps) >= 5:
+                                        stock_data.quarterly_earnings = quarterly_eps
+                                        logger.debug(f"{ticker}: Using Yahoo calculated EPS from Net Income (5+ quarters)")
                         except Exception:
                             pass
 
