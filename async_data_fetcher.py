@@ -401,6 +401,57 @@ async def get_stock_data_async(ticker: str, session: aiohttp.ClientSession) -> S
                 stock_data.avg_volume_50d = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
                 stock_data.current_volume = volumes[-1] if volumes[-1] else 0
 
+    # CRITICAL: Get Yahoo Finance adjusted EPS (for C and A scores)
+    # FMP returns GAAP EPS which includes stock-based comp, Yahoo has adjusted EPS
+    # This is what analysts track and what CANSLIM scoring needs
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        # Supplement missing data from Yahoo
+        if info and info.get('regularMarketPrice'):
+            if not stock_data.sector:
+                stock_data.sector = info.get('sector', 'Unknown')
+            if not stock_data.shares_outstanding:
+                stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
+            if not stock_data.institutional_holders_pct:
+                inst_pct = info.get('heldPercentInstitutions', 0)
+                stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
+
+        # ALWAYS get adjusted EPS from earnings_history (critical for scoring!)
+        try:
+            earnings_hist = stock.earnings_history
+            if earnings_hist is not None and not earnings_hist.empty and 'epsActual' in earnings_hist.columns:
+                adjusted_eps = []
+                for _, row in earnings_hist.iterrows():
+                    actual = row.get('epsActual')
+                    if actual is not None and not pd.isna(actual):
+                        adjusted_eps.append(float(actual))
+
+                # Override FMP GAAP EPS with Yahoo adjusted EPS (preferred)
+                if adjusted_eps and len(adjusted_eps) >= 4:
+                    stock_data.quarterly_earnings = adjusted_eps[::-1]  # Reverse to oldest-first
+                    logger.debug(f"{ticker}: Using Yahoo adjusted EPS: {adjusted_eps[:4]}")
+        except Exception as e:
+            logger.debug(f"{ticker}: Could not get Yahoo earnings_history: {e}")
+
+        # Get annual earnings from Yahoo if not already fetched
+        if not stock_data.annual_earnings:
+            try:
+                annual = stock.financials
+                if annual is not None and not annual.empty:
+                    if 'Net Income' in annual.index:
+                        net_income = annual.loc['Net Income'].dropna()
+                        shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
+                        stock_data.annual_earnings = (net_income / shares).tolist()[:5]
+                        logger.debug(f"{ticker}: Yahoo annual EPS: {stock_data.annual_earnings[:3]}")
+            except Exception as e:
+                logger.debug(f"{ticker}: Could not get Yahoo annual earnings: {e}")
+
+    except Exception as e:
+        logger.debug(f"{ticker}: Yahoo Finance fetch failed: {e}")
+
     # Mark as valid if we have basic data
     if stock_data.current_price and not stock_data.price_history.empty:
         stock_data.is_valid = True
