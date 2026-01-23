@@ -67,7 +67,8 @@ class GrowthProjector:
 
         for sector, etf in sector_etfs.items():
             try:
-                data = self.fetcher.get_stock_data(etf)
+                # Use price-only fetch for ETFs (avoids yfinance fundamental errors)
+                data = self.fetcher.get_price_data_only(etf)
                 if data.is_valid and not data.price_history.empty:
                     prices = data.price_history['Close']
                     if len(prices) >= 126:  # ~6 months of trading days

@@ -480,6 +480,50 @@ async def get_stock_data_async(ticker: str, session: aiohttp.ClientSession) -> S
     return stock_data
 
 
+def get_price_data_only(ticker: str) -> StockData:
+    """
+    Fetch ONLY price history for ETFs and indexes (no fundamentals)
+    Synchronous version for use in growth_projector
+
+    Use this for:
+    - ETFs (XLK, XLV, SPY, QQQ, etc.)
+    - Indexes (^GSPC, ^DJI, etc.)
+    - Sector performance calculations
+    """
+    from data_fetcher import fetch_price_from_chart_api
+
+    stock_data = StockData(ticker)
+
+    # Only fetch price history from Yahoo chart API
+    chart_data = fetch_price_from_chart_api(ticker)
+    if chart_data.get("current_price"):
+        stock_data.current_price = chart_data["current_price"]
+        stock_data.high_52w = chart_data.get("high_52w", 0) or 0
+        stock_data.name = chart_data.get("name", ticker)
+
+        close_prices = chart_data.get("close_prices", [])
+        volumes = chart_data.get("volumes", [])
+        timestamps = chart_data.get("timestamps", [])
+
+        if len(close_prices) >= 50:
+            dates = pd.to_datetime(timestamps, unit='s')
+            stock_data.price_history = pd.DataFrame({
+                'Close': close_prices,
+                'Volume': volumes
+            }, index=dates)
+
+            if volumes:
+                recent_volumes = [v for v in volumes[-50:] if v]
+                stock_data.avg_volume_50d = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
+                stock_data.current_volume = volumes[-1] if volumes[-1] else 0
+
+    # Mark as valid if we have price data
+    if stock_data.current_price and not stock_data.price_history.empty:
+        stock_data.is_valid = True
+
+    return stock_data
+
+
 async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[StockData]:
     """
     Fetch multiple stocks concurrently in batches
