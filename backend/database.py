@@ -238,6 +238,9 @@ class Stock(Base):
     eps_acceleration = Column(Boolean)  # True if EPS accelerating quarter over quarter
     earnings_surprise_pct = Column(Float)  # Latest earnings surprise %
     revenue_growth_pct = Column(Float)  # YoY revenue growth %
+    quarterly_earnings = Column(JSON)  # List of quarterly EPS values (last 4-8 quarters)
+    annual_earnings = Column(JSON)  # List of annual EPS values (last 3-5 years)
+    quarterly_revenue = Column(JSON)  # List of quarterly revenue values
 
     # Technical Analysis
     volume_ratio = Column(Float)  # Current volume vs 50-day average

@@ -317,6 +317,9 @@ def run_continuous_scan():
         stock.eps_acceleration = analysis.get("eps_acceleration")
         stock.earnings_surprise_pct = analysis.get("earnings_surprise_pct")
         stock.revenue_growth_pct = analysis.get("revenue_growth_pct")
+        stock.quarterly_earnings = analysis.get("quarterly_earnings")
+        stock.annual_earnings = analysis.get("annual_earnings")
+        stock.quarterly_revenue = analysis.get("quarterly_revenue")
 
         # Technical analysis
         stock.volume_ratio = analysis.get("volume_ratio")

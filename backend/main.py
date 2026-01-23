@@ -1097,6 +1097,9 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
         "eps_acceleration": stock.eps_acceleration,
         "earnings_surprise_pct": stock.earnings_surprise_pct,
         "revenue_growth_pct": stock.revenue_growth_pct,
+        "quarterly_earnings": stock.quarterly_earnings if stock.quarterly_earnings else [],
+        "annual_earnings": stock.annual_earnings if stock.annual_earnings else [],
+        "quarterly_revenue": stock.quarterly_revenue if stock.quarterly_revenue else [],
 
         # Technical analysis
         "volume_ratio": stock.volume_ratio,

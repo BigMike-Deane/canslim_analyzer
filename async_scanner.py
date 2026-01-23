@@ -129,6 +129,9 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 50, progres
                 "eps_acceleration": len(stock_data.quarterly_earnings) >= 5 and canslim_result.c_detail and "+accel" in canslim_result.c_detail,
                 "earnings_surprise_pct": stock_data.earnings_surprise_pct,
                 "revenue_growth_pct": revenue_growth_pct,
+                "quarterly_earnings": stock_data.quarterly_earnings[:8] if stock_data.quarterly_earnings else [],
+                "annual_earnings": stock_data.annual_earnings[:5] if stock_data.annual_earnings else [],
+                "quarterly_revenue": stock_data.quarterly_revenue[:8] if stock_data.quarterly_revenue else [],
                 # Technical
                 "volume_ratio": volume_ratio,
                 "weeks_in_base": base_pattern.get("weeks", 0),
