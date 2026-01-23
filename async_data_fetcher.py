@@ -411,13 +411,14 @@ async def get_stock_data_async(ticker: str, session: aiohttp.ClientSession) -> S
     return stock_data
 
 
-async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 50) -> List[StockData]:
+async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[StockData]:
     """
     Fetch multiple stocks concurrently in batches
 
     Args:
         tickers: List of stock tickers to fetch
         batch_size: Number of stocks to process at once (default 50)
+        progress_callback: Optional callback function(current, total) to report progress
 
     Returns:
         List of StockData objects
@@ -441,6 +442,10 @@ async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 50) -> 
                     results.append(result)
                 elif isinstance(result, Exception):
                     logger.debug(f"Error fetching stock: {result}")
+
+            # Report progress after each batch
+            if progress_callback:
+                progress_callback(len(results), len(tickers))
 
             # Small delay between batches to be nice to the API
             if i + batch_size < len(tickers):

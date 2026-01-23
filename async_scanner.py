@@ -12,13 +12,14 @@ from async_data_fetcher import fetch_stocks_batch_async
 logger = logging.getLogger(__name__)
 
 
-async def analyze_stocks_async(tickers: List[str], batch_size: int = 50) -> List[Dict]:
+async def analyze_stocks_async(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[Dict]:
     """
     Analyze multiple stocks asynchronously
 
     Args:
         tickers: List of stock tickers to analyze
         batch_size: Number of stocks to fetch concurrently (default 50)
+        progress_callback: Optional function to call with progress updates (current_count, total_count)
 
     Returns:
         List of analysis results (dicts with CANSLIM scores, etc.)
@@ -31,7 +32,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 50) -> List
 
     # Fetch all stock data asynchronously in batches
     start_time = datetime.now()
-    stock_data_list = await fetch_stocks_batch_async(tickers, batch_size=batch_size)
+    stock_data_list = await fetch_stocks_batch_async(tickers, batch_size=batch_size, progress_callback=progress_callback)
     fetch_time = (datetime.now() - start_time).total_seconds()
 
     logger.info(f"✓ Fetched {len(stock_data_list)} stocks in {fetch_time:.1f}s "
@@ -155,7 +156,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 50) -> List
     return results
 
 
-def run_async_scan(tickers: List[str], batch_size: int = 50) -> List[Dict]:
+def run_async_scan(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[Dict]:
     """
     Synchronous wrapper for async scanner
     Can be called from non-async code (like the scheduler)
@@ -163,11 +164,12 @@ def run_async_scan(tickers: List[str], batch_size: int = 50) -> List[Dict]:
     Args:
         tickers: List of stock tickers to scan
         batch_size: Number of stocks to process concurrently
+        progress_callback: Optional callback function(current, total) to report progress
 
     Returns:
         List of analysis results
     """
-    return asyncio.run(analyze_stocks_async(tickers, batch_size=batch_size))
+    return asyncio.run(analyze_stocks_async(tickers, batch_size=batch_size, progress_callback=progress_callback))
 
 
 if __name__ == "__main__":

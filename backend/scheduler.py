@@ -370,9 +370,15 @@ def run_continuous_scan():
 
         from async_scanner import run_async_scan
 
+        # Progress callback to update frontend in real-time
+        def update_progress(current, total):
+            _scan_config["stocks_scanned"] = current
+            if current % 100 == 0:  # Log every 100 stocks
+                logger.info(f"Progress: {current}/{total} stocks fetched ({current/total*100:.1f}%)")
+
         # Fetch and analyze all stocks asynchronously (this is the fast part!)
         start_time = time.time()
-        analysis_results = run_async_scan(tickers, batch_size=50)
+        analysis_results = run_async_scan(tickers, batch_size=50, progress_callback=update_progress)
         fetch_time = time.time() - start_time
 
         logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({fetch_time/len(analysis_results):.2f}s per stock)")
