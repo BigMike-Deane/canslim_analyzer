@@ -107,6 +107,10 @@ def run_migrations():
         ("stocks", "short_updated_at", "DATETIME"),
         # Score details for clickable breakdown
         ("stocks", "score_details", "TEXT"),  # JSON stored as TEXT in SQLite
+        # Earnings/Revenue JSON columns
+        ("stocks", "quarterly_earnings", "TEXT"),  # JSON stored as TEXT
+        ("stocks", "annual_earnings", "TEXT"),  # JSON stored as TEXT
+        ("stocks", "quarterly_revenue", "TEXT"),  # JSON stored as TEXT
     ]
 
     for table, column, col_type in migrations:
@@ -184,6 +188,11 @@ def run_migrations():
         ('ix_stock_scores_stock_timestamp', 'stock_scores', 'stock_id, timestamp'),
         ('ix_stocks_growth_mode', 'stocks', 'growth_mode_score'),
         ('ix_stocks_breaking_out', 'stocks', 'is_breaking_out'),
+        # Backtest indexes
+        ('ix_backtest_runs_status', 'backtest_runs', 'status'),
+        ('ix_backtest_snapshots_backtest_date', 'backtest_snapshots', 'backtest_id, date'),
+        ('ix_backtest_trades_backtest_date', 'backtest_trades', 'backtest_id, date'),
+        ('ix_backtest_positions_backtest', 'backtest_positions', 'backtest_id'),
     ]
     for idx_name, table, columns in index_migrations:
         try:
@@ -489,6 +498,144 @@ class AIPortfolioSnapshot(Base):
 
     # Keep date for backwards compatibility with existing chart
     date = Column(Date, index=True)  # Date portion for grouping
+
+
+# ============== Backtesting Models ==============
+
+class BacktestRun(Base):
+    """A single backtest execution with configuration and results"""
+    __tablename__ = "backtest_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)  # User-friendly name
+    status = Column(String, default="pending")  # pending, running, completed, failed
+
+    # Configuration
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    starting_cash = Column(Float, default=25000.0)
+    stock_universe = Column(String, default="sp500")  # sp500, all, custom
+    custom_tickers = Column(JSON)  # If universe is custom
+
+    # AI Config snapshot (frozen at backtest start)
+    max_positions = Column(Integer, default=20)
+    max_position_pct = Column(Float, default=12.0)
+    min_score_to_buy = Column(Integer, default=65)
+    sell_score_threshold = Column(Integer, default=45)
+    stop_loss_pct = Column(Float, default=10.0)
+
+    # Results summary (populated on completion)
+    final_value = Column(Float)
+    total_return_pct = Column(Float)
+    max_drawdown_pct = Column(Float)
+    sharpe_ratio = Column(Float)
+    win_rate = Column(Float)  # % of profitable trades
+    total_trades = Column(Integer)
+
+    # Benchmark comparison
+    spy_final_value = Column(Float)
+    spy_return_pct = Column(Float)
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+    error_message = Column(Text)
+    progress_pct = Column(Float, default=0.0)  # 0-100 progress during run
+
+    # Relationships (cascade delete when backtest is deleted)
+    daily_snapshots = relationship("BacktestSnapshot", back_populates="backtest_run", cascade="all, delete-orphan")
+    trades = relationship("BacktestTrade", back_populates="backtest_run", cascade="all, delete-orphan")
+    positions = relationship("BacktestPosition", back_populates="backtest_run", cascade="all, delete-orphan")
+
+
+class BacktestSnapshot(Base):
+    """Daily portfolio snapshot during backtest for performance chart"""
+    __tablename__ = "backtest_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    backtest_id = Column(Integer, ForeignKey("backtest_runs.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+
+    # Portfolio state
+    total_value = Column(Float)
+    cash = Column(Float)
+    positions_value = Column(Float)
+    positions_count = Column(Integer)
+
+    # Performance metrics
+    daily_return_pct = Column(Float)
+    cumulative_return_pct = Column(Float)
+
+    # Benchmark comparison (SPY buy-and-hold)
+    spy_price = Column(Float)
+    spy_value = Column(Float)  # Value if had bought SPY at start
+    spy_return_pct = Column(Float)
+
+    backtest_run = relationship("BacktestRun", back_populates="daily_snapshots")
+
+    __table_args__ = (
+        Index('ix_backtest_snapshots_backtest_date', 'backtest_id', 'date'),
+    )
+
+
+class BacktestTrade(Base):
+    """Individual trade during backtest"""
+    __tablename__ = "backtest_trades"
+
+    id = Column(Integer, primary_key=True)
+    backtest_id = Column(Integer, ForeignKey("backtest_runs.id"), nullable=False, index=True)
+
+    date = Column(Date, nullable=False, index=True)
+    ticker = Column(String, nullable=False)
+    action = Column(String, nullable=False)  # BUY, SELL, PYRAMID
+    shares = Column(Float)
+    price = Column(Float)
+    total_value = Column(Float)
+    reason = Column(String)
+
+    # Score at time of trade
+    canslim_score = Column(Float)
+    growth_mode_score = Column(Float)
+    is_growth_stock = Column(Boolean, default=False)
+
+    # For sells - realized P&L
+    cost_basis = Column(Float)
+    realized_gain = Column(Float)
+    realized_gain_pct = Column(Float)
+    holding_days = Column(Integer)
+
+    backtest_run = relationship("BacktestRun", back_populates="trades")
+
+    __table_args__ = (
+        Index('ix_backtest_trades_backtest_date', 'backtest_id', 'date'),
+    )
+
+
+class BacktestPosition(Base):
+    """Current positions during backtest simulation (cleared between runs)"""
+    __tablename__ = "backtest_positions"
+
+    id = Column(Integer, primary_key=True)
+    backtest_id = Column(Integer, ForeignKey("backtest_runs.id"), nullable=False, index=True)
+
+    ticker = Column(String, nullable=False)
+    shares = Column(Float)
+    cost_basis = Column(Float)
+    purchase_date = Column(Date)
+    purchase_score = Column(Float)
+
+    # For trailing stop calculation
+    peak_price = Column(Float)
+    peak_date = Column(Date)
+
+    # Growth mode
+    is_growth_stock = Column(Boolean, default=False)
+    purchase_growth_score = Column(Float)
+
+    # Sector for allocation tracking
+    sector = Column(String)
+
+    backtest_run = relationship("BacktestRun", back_populates="positions")
 
 
 # ============== Data Caching Models ==============

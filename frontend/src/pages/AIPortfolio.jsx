@@ -440,10 +440,17 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       <button
         onClick={handleInitialize}
         disabled={initializing}
-        className="w-full py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-dark-300"
+        className="w-full py-2 mb-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-dark-300"
       >
         {initializing ? 'Resetting...' : 'Reset Portfolio ($25k)'}
       </button>
+
+      <Link
+        to="/backtest"
+        className="block w-full py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-center text-primary-400"
+      >
+        Run Historical Backtest
+      </Link>
     </div>
   )
 }

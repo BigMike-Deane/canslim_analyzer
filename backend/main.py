@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from backend.database import (
     init_db, get_db, Stock, StockScore, PortfolioPosition,
     Watchlist, AnalysisJob, MarketSnapshot,
-    AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot
+    AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
+    BacktestRun, BacktestSnapshot, BacktestTrade
 )
 from backend.config import settings
 from pydantic import BaseModel
@@ -2301,6 +2302,218 @@ async def remove_from_watchlist(item_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": f"Removed {item.ticker} from watchlist"}
+
+
+# ============== Backtesting API ==============
+
+class BacktestCreate(BaseModel):
+    """Request model for creating a backtest"""
+    name: Optional[str] = None
+    start_date: date
+    end_date: date
+    starting_cash: float = 25000.0
+    stock_universe: str = "sp500"  # sp500, all, custom
+    custom_tickers: Optional[List[str]] = None
+    max_positions: Optional[int] = None
+    min_score_to_buy: Optional[int] = None
+    stop_loss_pct: Optional[float] = None
+
+
+def run_backtest_background(backtest_id: int):
+    """Background task to run a backtest"""
+    from backend.database import SessionLocal
+    from backend.backtester import run_backtest
+
+    db = SessionLocal()
+    try:
+        run_backtest(db, backtest_id)
+    except Exception as e:
+        logger.error(f"Backtest {backtest_id} failed: {e}")
+        backtest = db.query(BacktestRun).get(backtest_id)
+        if backtest:
+            backtest.status = "failed"
+            backtest.error_message = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/api/backtests")
+async def create_backtest(
+    config: BacktestCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Create and start a new backtest.
+    Returns immediately with backtest ID; simulation runs in background.
+    """
+    # Validate dates
+    if config.end_date <= config.start_date:
+        raise HTTPException(400, "end_date must be after start_date")
+
+    if (config.end_date - config.start_date).days > 400:
+        raise HTTPException(400, "Maximum backtest period is ~1 year (400 days)")
+
+    if config.end_date > date.today():
+        raise HTTPException(400, "end_date cannot be in the future")
+
+    # Create backtest run record
+    backtest = BacktestRun(
+        name=config.name or f"Backtest {config.start_date} to {config.end_date}",
+        start_date=config.start_date,
+        end_date=config.end_date,
+        starting_cash=config.starting_cash,
+        stock_universe=config.stock_universe,
+        custom_tickers=config.custom_tickers,
+        max_positions=config.max_positions or 20,
+        min_score_to_buy=config.min_score_to_buy or 65,
+        stop_loss_pct=config.stop_loss_pct or 10.0,
+        status="pending"
+    )
+    db.add(backtest)
+    db.commit()
+    db.refresh(backtest)
+
+    # Start backtest in background
+    background_tasks.add_task(run_backtest_background, backtest.id)
+
+    return {
+        "id": backtest.id,
+        "status": "pending",
+        "message": "Backtest started"
+    }
+
+
+@app.get("/api/backtests")
+async def list_backtests(
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    """List all backtests, most recent first"""
+    backtests = db.query(BacktestRun).order_by(desc(BacktestRun.created_at)).limit(limit).all()
+
+    return [
+        {
+            "id": b.id,
+            "name": b.name,
+            "status": b.status,
+            "start_date": b.start_date.isoformat() if b.start_date else None,
+            "end_date": b.end_date.isoformat() if b.end_date else None,
+            "starting_cash": b.starting_cash,
+            "final_value": b.final_value,
+            "total_return_pct": b.total_return_pct,
+            "spy_return_pct": b.spy_return_pct,
+            "max_drawdown_pct": b.max_drawdown_pct,
+            "total_trades": b.total_trades,
+            "win_rate": b.win_rate,
+            "sharpe_ratio": b.sharpe_ratio,
+            "progress_pct": b.progress_pct,
+            "created_at": b.created_at.isoformat() + "Z" if b.created_at else None,
+            "completed_at": b.completed_at.isoformat() + "Z" if b.completed_at else None
+        }
+        for b in backtests
+    ]
+
+
+@app.get("/api/backtests/{backtest_id}")
+async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
+    """Get detailed backtest results including performance chart data"""
+    backtest = db.query(BacktestRun).get(backtest_id)
+    if not backtest:
+        raise HTTPException(404, "Backtest not found")
+
+    # Get daily snapshots for chart
+    snapshots = db.query(BacktestSnapshot).filter(
+        BacktestSnapshot.backtest_id == backtest_id
+    ).order_by(BacktestSnapshot.date).all()
+
+    # Get trades
+    trades = db.query(BacktestTrade).filter(
+        BacktestTrade.backtest_id == backtest_id
+    ).order_by(BacktestTrade.date).all()
+
+    return {
+        "backtest": {
+            "id": backtest.id,
+            "name": backtest.name,
+            "status": backtest.status,
+            "start_date": backtest.start_date.isoformat() if backtest.start_date else None,
+            "end_date": backtest.end_date.isoformat() if backtest.end_date else None,
+            "starting_cash": backtest.starting_cash,
+            "final_value": backtest.final_value,
+            "total_return_pct": backtest.total_return_pct,
+            "spy_return_pct": backtest.spy_return_pct,
+            "max_drawdown_pct": backtest.max_drawdown_pct,
+            "total_trades": backtest.total_trades,
+            "win_rate": backtest.win_rate,
+            "sharpe_ratio": backtest.sharpe_ratio,
+            "progress_pct": backtest.progress_pct,
+            "error_message": backtest.error_message,
+            "created_at": backtest.created_at.isoformat() + "Z" if backtest.created_at else None,
+            "completed_at": backtest.completed_at.isoformat() + "Z" if backtest.completed_at else None
+        },
+        "performance_chart": [
+            {
+                "date": s.date.isoformat(),
+                "value": s.total_value,
+                "return_pct": s.cumulative_return_pct,
+                "spy_value": s.spy_value,
+                "spy_return_pct": s.spy_return_pct
+            } for s in snapshots
+        ],
+        "trades": [
+            {
+                "date": t.date.isoformat(),
+                "ticker": t.ticker,
+                "action": t.action,
+                "shares": t.shares,
+                "price": t.price,
+                "value": t.total_value,
+                "reason": t.reason,
+                "score": t.canslim_score,
+                "gain_pct": t.realized_gain_pct,
+                "holding_days": t.holding_days
+            } for t in trades
+        ],
+        "statistics": {
+            "total_buys": len([t for t in trades if t.action == "BUY"]),
+            "total_sells": len([t for t in trades if t.action == "SELL"]),
+            "total_pyramids": len([t for t in trades if t.action == "PYRAMID"]),
+            "avg_holding_days": sum(t.holding_days or 0 for t in trades if t.action == "SELL") / max(1, len([t for t in trades if t.action == "SELL"])),
+            "best_trade": max((t.realized_gain_pct or 0 for t in trades if t.action == "SELL"), default=0),
+            "worst_trade": min((t.realized_gain_pct or 0 for t in trades if t.action == "SELL"), default=0)
+        }
+    }
+
+
+@app.get("/api/backtests/{backtest_id}/status")
+async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
+    """Get backtest progress (for polling during run)"""
+    backtest = db.query(BacktestRun).get(backtest_id)
+    if not backtest:
+        raise HTTPException(404, "Backtest not found")
+
+    return {
+        "id": backtest.id,
+        "status": backtest.status,
+        "progress_pct": backtest.progress_pct,
+        "error": backtest.error_message,
+        "completed_at": backtest.completed_at.isoformat() + "Z" if backtest.completed_at else None
+    }
+
+
+@app.delete("/api/backtests/{backtest_id}")
+async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
+    """Delete a backtest and all associated data"""
+    backtest = db.query(BacktestRun).get(backtest_id)
+    if not backtest:
+        raise HTTPException(404, "Backtest not found")
+
+    db.delete(backtest)  # Cascade deletes snapshots, trades, positions
+    db.commit()
+
+    return {"message": "Backtest deleted"}
 
 
 # ============== Serve Frontend ==============

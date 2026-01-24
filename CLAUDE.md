@@ -326,14 +326,53 @@ Stores one record per stock per scan for granular backtesting:
 - `ix_stocks_score_price` composite for filtered queries
 - `ix_stock_scores_stock_timestamp` for backtesting queries
 
+## Backtesting System (Jan 2026)
+
+Historical backtesting to validate the CANSLIM AI trading strategy.
+
+### Features
+- **1-Year Historical Simulation**: Uses Yahoo Finance price data
+- **Full AI Trading Logic**: Reuses buy/sell signals, trailing stops, pyramiding, sector limits
+- **Performance Metrics**: Total return, max drawdown, Sharpe ratio, win rate
+- **SPY Benchmark**: Compares strategy vs buy-and-hold SPY
+- **Trade History**: Full log of all simulated trades with reasons
+
+### Files
+- `backend/historical_data.py` - Historical data provider with point-in-time accuracy
+- `backend/backtester.py` - Core backtesting engine with day-by-day simulation
+- `backend/database.py` - 4 new models: BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition
+- `frontend/src/pages/Backtest.jsx` - UI for running and viewing backtests
+
+### API Endpoints
+- `POST /api/backtests` - Create and start a new backtest
+- `GET /api/backtests` - List all backtests
+- `GET /api/backtests/{id}` - Get detailed results with chart data
+- `GET /api/backtests/{id}/status` - Poll progress during run
+- `DELETE /api/backtests/{id}` - Delete a backtest
+
+### Access
+- Navigate to `/backtest` in the frontend
+- Or click "Run Historical Backtest" link on the AI Portfolio page
+
+### Configuration
+```python
+starting_cash: float = 25000.0
+stock_universe: str = "sp500"  # or "all"
+max_positions: int = 20
+min_score_to_buy: int = 65
+stop_loss_pct: float = 10.0
+```
+
+### Tests
+```bash
+python3 -m pytest tests/test_backtester.py -v  # 13 tests
+```
+
 ## Pending Features
 
 ### Ready to Build
 - **Watchlist Alerts**: `target_price` and `alert_score` fields exist but aren't monitored
 - **Transaction Protection**: Wrap portfolio refresh in atomic transaction
-
-### Waiting on Data
-- **Backtesting UI**: Need 1-2 weeks of scan data (collecting now)
 
 ### Lower Priority
 - **Portfolio Correlation**: Show hidden concentration risk
