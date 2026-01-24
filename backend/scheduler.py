@@ -362,7 +362,7 @@ def run_continuous_scan():
         )
         db.add(historical_score)
 
-        db.commit()
+        # NOTE: Don't commit here - batched commits happen in the main loop for performance
         return stock
 
     try:
@@ -386,17 +386,32 @@ def run_continuous_scan():
 
         logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({fetch_time/len(analysis_results):.2f}s per stock)")
 
-        # Save results to database (this is fast too)
+        # Save results to database with BATCHED COMMITS for performance
+        # Commit every 50 stocks instead of per-stock (reduces I/O overhead)
+        BATCH_SIZE = 50
         db = SessionLocal()
         successful = 0
-        for analysis in analysis_results:
+        for i, analysis in enumerate(analysis_results):
             try:
                 save_stock_to_db(db, analysis)
                 successful += 1
                 # Update progress in real-time
                 _scan_config["stocks_scanned"] = successful
+
+                # Batch commit every BATCH_SIZE stocks
+                if successful % BATCH_SIZE == 0:
+                    db.commit()
+                    logger.debug(f"DB batch commit: {successful} stocks saved")
             except Exception as e:
                 logger.error(f"Error saving {analysis.get('ticker', 'unknown')}: {e}")
+                db.rollback()  # Rollback on error, continue with next batch
+
+        # Final commit for remaining stocks
+        try:
+            db.commit()
+        except Exception as e:
+            logger.error(f"Final commit error: {e}")
+            db.rollback()
 
         db.close()
 

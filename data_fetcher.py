@@ -47,18 +47,19 @@ _data_freshness_cache = {}
 _freshness_lock = threading.Lock()
 
 # Freshness intervals (in seconds)
+# OPTIMIZED: Extended intervals for slow-changing data to reduce API calls
 DATA_FRESHNESS_INTERVALS = {
-    "price": 0,              # Always fetch (real-time)
-    "earnings": 24 * 3600,   # Once per day (24 hours)
-    "revenue": 24 * 3600,    # Once per day
-    "balance_sheet": 24 * 3600,  # Once per day
-    "key_metrics": 24 * 3600,    # Once per day
-    "analyst": 24 * 3600,        # Once per day
-    "earnings_surprise": 24 * 3600,  # Once per day
-    "weekly_history": 24 * 3600,     # Once per day (for base detection)
-    "institutional": 7 * 24 * 3600,  # Once per week
-    "insider_trading": 7 * 24 * 3600,  # Once per week (changes slowly)
-    "short_interest": 24 * 3600,       # Once per day
+    "price": 0,                       # Always fetch (real-time)
+    "earnings": 7 * 24 * 3600,        # Once per week (only changes quarterly)
+    "revenue": 7 * 24 * 3600,         # Once per week (only changes quarterly)
+    "balance_sheet": 7 * 24 * 3600,   # Once per week (only changes quarterly)
+    "key_metrics": 7 * 24 * 3600,     # Once per week (derived from quarterly data)
+    "analyst": 24 * 3600,             # Once per day (can change with upgrades/downgrades)
+    "earnings_surprise": 7 * 24 * 3600,  # Once per week (only changes quarterly)
+    "weekly_history": 24 * 3600,      # Once per day (for base detection)
+    "institutional": 14 * 24 * 3600,  # Once per 2 weeks (13F filings are quarterly)
+    "insider_trading": 14 * 24 * 3600,  # Once per 2 weeks (changes slowly)
+    "short_interest": 3 * 24 * 3600,    # Once per 3 days (bi-weekly updates)
 }
 
 # Cached data storage (stores the actual fetched data)
