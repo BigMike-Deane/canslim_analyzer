@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { api, formatCurrency, formatPercent } from '../api'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 
@@ -339,36 +339,53 @@ export default function Backtest() {
   const [selectedBacktest, setSelectedBacktest] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [pollingId, setPollingId] = useState(null)
+  const pollingRef = useRef(null)
+
+  const fetchBacktests = useCallback(async () => {
+    try {
+      const response = await fetch('/api/backtests')
+      const data = await response.json()
+      setBacktests(data)
+      return data
+    } catch (err) {
+      console.error('Failed to fetch backtests:', err)
+      return []
+    }
+  }, [])
 
   // Fetch backtests on load
   useEffect(() => {
     fetchBacktests()
-  }, [])
+  }, [fetchBacktests])
 
   // Poll for running backtests
   useEffect(() => {
-    const runningBacktest = backtests.find(b => b.status === 'running' || b.status === 'pending')
-    if (runningBacktest && !pollingId) {
-      const id = setInterval(() => fetchBacktests(), 3000)
-      setPollingId(id)
-    } else if (!runningBacktest && pollingId) {
-      clearInterval(pollingId)
-      setPollingId(null)
-    }
-    return () => {
-      if (pollingId) clearInterval(pollingId)
-    }
-  }, [backtests, pollingId])
+    const hasRunning = backtests.some(b => b.status === 'running' || b.status === 'pending')
 
-  const fetchBacktests = async () => {
-    try {
-      const data = await fetch('/api/backtests').then(r => r.json())
-      setBacktests(data)
-    } catch (err) {
-      console.error('Failed to fetch backtests:', err)
+    if (hasRunning && !pollingRef.current) {
+      console.log('Starting polling for running backtest...')
+      pollingRef.current = setInterval(async () => {
+        const data = await fetchBacktests()
+        const stillRunning = data.some(b => b.status === 'running' || b.status === 'pending')
+        if (!stillRunning && pollingRef.current) {
+          console.log('Backtest completed, stopping polling')
+          clearInterval(pollingRef.current)
+          pollingRef.current = null
+        }
+      }, 2000)
+    } else if (!hasRunning && pollingRef.current) {
+      console.log('No running backtests, stopping polling')
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
     }
-  }
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
+    }
+  }, [backtests, fetchBacktests])
 
   const startBacktest = async (config) => {
     setIsLoading(true)
