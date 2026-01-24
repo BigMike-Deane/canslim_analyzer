@@ -27,7 +27,8 @@ if REDIS_AVAILABLE:
 logger = logging.getLogger(__name__)
 
 # Semaphore to limit concurrent requests (avoid rate limiting)
-MAX_CONCURRENT_REQUESTS = 10
+# Increased from 10 to 30 for better performance on large scans
+MAX_CONCURRENT_REQUESTS = 30
 api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 
@@ -524,13 +525,13 @@ def get_price_data_only(ticker: str) -> StockData:
     return stock_data
 
 
-async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[StockData]:
+async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 100, progress_callback=None) -> List[StockData]:
     """
     Fetch multiple stocks concurrently in batches
 
     Args:
         tickers: List of stock tickers to fetch
-        batch_size: Number of stocks to process at once (default 50)
+        batch_size: Number of stocks to process at once (default 100)
         progress_callback: Optional callback function(current, total) to report progress
 
     Returns:
@@ -562,12 +563,12 @@ async def fetch_stocks_batch_async(tickers: List[str], batch_size: int = 50, pro
 
             # Small delay between batches to be nice to the API
             if i + batch_size < len(tickers):
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
 
     return results
 
 
-def fetch_stocks_async_wrapper(tickers: List[str], batch_size: int = 50) -> List[StockData]:
+def fetch_stocks_async_wrapper(tickers: List[str], batch_size: int = 100) -> List[StockData]:
     """
     Synchronous wrapper for async fetch function
     Can be called from non-async code

@@ -369,7 +369,7 @@ def run_continuous_scan():
         # ASYNC SCANNING: Use async batch processing for 10x performance boost
         # Fetches 50 stocks concurrently, then saves to database
         # Performance: ~10 stocks in 3s vs 30-50s with old method
-        logger.info(f"Starting ASYNC scan of {len(tickers)} stocks (batch_size=50)...")
+        logger.info(f"Starting ASYNC scan of {len(tickers)} stocks (batch_size=100)...")
 
         from async_scanner import run_async_scan
 
@@ -381,7 +381,7 @@ def run_continuous_scan():
 
         # Fetch and analyze all stocks asynchronously (this is the fast part!)
         start_time = time.time()
-        analysis_results = run_async_scan(tickers, batch_size=50, progress_callback=update_progress)
+        analysis_results = run_async_scan(tickers, batch_size=100, progress_callback=update_progress)
         fetch_time = time.time() - start_time
 
         logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({fetch_time/len(analysis_results):.2f}s per stock)")

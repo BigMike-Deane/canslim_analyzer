@@ -12,13 +12,13 @@ from async_data_fetcher import fetch_stocks_batch_async
 logger = logging.getLogger(__name__)
 
 
-async def analyze_stocks_async(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[Dict]:
+async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progress_callback=None) -> List[Dict]:
     """
     Analyze multiple stocks asynchronously
 
     Args:
         tickers: List of stock tickers to analyze
-        batch_size: Number of stocks to fetch concurrently (default 50)
+        batch_size: Number of stocks to fetch concurrently (default 100)
         progress_callback: Optional function to call with progress updates (current_count, total_count)
 
     Returns:
@@ -185,7 +185,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 50, progres
     return results
 
 
-def run_async_scan(tickers: List[str], batch_size: int = 50, progress_callback=None) -> List[Dict]:
+def run_async_scan(tickers: List[str], batch_size: int = 100, progress_callback=None) -> List[Dict]:
     """
     Synchronous wrapper for async scanner
     Can be called from non-async code (like the scheduler)
