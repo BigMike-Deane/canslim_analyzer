@@ -4,25 +4,22 @@ Replaces ThreadPoolExecutor with async batch processing for 5-10x speed boost
 """
 
 import asyncio
-import aiohttp
 import logging
 from datetime import datetime
 from typing import List, Dict
 from async_data_fetcher import (
     fetch_stocks_batch_async,
-    fetch_fmp_insider_trading_async,
+    fetch_insider_trading_async,
     fetch_short_interest_async
 )
 
 logger = logging.getLogger(__name__)
 
 
-async def fetch_insider_short_batch_async(
-    tickers: List[str],
-    session: aiohttp.ClientSession
-) -> Dict[str, Dict]:
+async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]:
     """
     Batch fetch insider trading and short interest data for multiple tickers.
+    Uses Yahoo Finance for both (FMP v4 insider endpoint deprecated Aug 2025).
     Respects freshness intervals to avoid redundant API calls.
 
     Returns dict mapping ticker -> {insider_data, short_data}
@@ -42,7 +39,7 @@ async def fetch_insider_short_batch_async(
         # Check insider data freshness (14 days)
         if not is_data_fresh(ticker, "insider_trading"):
             tickers_needing_insider.append(ticker)
-            insider_tasks.append(fetch_fmp_insider_trading_async(session, ticker))
+            insider_tasks.append(fetch_insider_trading_async(ticker))
         else:
             # Use cached data if available
             cached = get_cached_data(ticker, "insider_trading")
@@ -59,15 +56,19 @@ async def fetch_insider_short_batch_async(
             if cached:
                 results[ticker]["short"] = cached
 
-    # Fetch insider data in parallel
+    # Fetch insider data in parallel (uses executor, so limit concurrency)
     if insider_tasks:
         logger.info(f"Fetching insider trading data for {len(insider_tasks)} tickers...")
-        insider_results = await asyncio.gather(*insider_tasks, return_exceptions=True)
-        for ticker, data in zip(tickers_needing_insider, insider_results):
-            if isinstance(data, dict) and data:
-                results[ticker]["insider"] = data
-                mark_data_fetched(ticker, "insider_trading")
-                set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
+        BATCH_SIZE = 20
+        for i in range(0, len(insider_tasks), BATCH_SIZE):
+            batch = insider_tasks[i:i + BATCH_SIZE]
+            batch_tickers = tickers_needing_insider[i:i + BATCH_SIZE]
+            insider_results = await asyncio.gather(*batch, return_exceptions=True)
+            for ticker, data in zip(batch_tickers, insider_results):
+                if isinstance(data, dict) and data:
+                    results[ticker]["insider"] = data
+                    mark_data_fetched(ticker, "insider_trading")
+                    set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
 
     # Fetch short interest in parallel (uses executor, so limit concurrency)
     if short_tasks:
@@ -113,15 +114,12 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
     logger.info(f"✓ Fetched {len(stock_data_list)} stocks in {fetch_time:.1f}s "
                f"({fetch_time/len(stock_data_list):.2f}s per stock)")
 
-    # Fetch insider/short data for all valid tickers
+    # Fetch insider/short data for all valid tickers (uses Yahoo Finance)
     valid_tickers = [sd.ticker for sd in stock_data_list if sd and sd.is_valid]
     insider_short_data = {}
 
     if valid_tickers:
-        timeout = aiohttp.ClientTimeout(total=60)
-        connector = aiohttp.TCPConnector(limit=50, limit_per_host=25)
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            insider_short_data = await fetch_insider_short_batch_async(valid_tickers, session)
+        insider_short_data = await fetch_insider_short_batch_async(valid_tickers)
 
     # Now analyze each stock (this is fast, no API calls)
     data_fetcher = DataFetcher()

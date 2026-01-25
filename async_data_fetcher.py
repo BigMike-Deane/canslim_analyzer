@@ -362,61 +362,81 @@ async def fetch_fmp_earnings_surprise_async(session: aiohttp.ClientSession, tick
     return {}
 
 
-async def fetch_fmp_insider_trading_async(session: aiohttp.ClientSession, ticker: str) -> dict:
+async def fetch_insider_trading_async(ticker: str) -> dict:
     """
-    Async fetch insider trading data from FMP API.
+    Async fetch insider trading data from Yahoo Finance.
     Returns summary of insider buys/sells in last 3 months.
+    Uses Yahoo instead of FMP (FMP v4 endpoint deprecated Aug 2025).
     """
-    if not FMP_API_KEY:
-        return {}
+    loop = asyncio.get_event_loop()
 
-    url = f"https://financialmodelingprep.com/api/v4/insider-trading?symbol={ticker}&limit=50&apikey={FMP_API_KEY}"
-    data = await fetch_json_async(session, url, timeout=10)
-
-    if not data or not isinstance(data, list):
-        return {}
-
-    # Filter to last 3 months
-    cutoff_date = datetime.now() - timedelta(days=90)
-    buy_count = 0
-    sell_count = 0
-    net_shares = 0
-
-    for trade in data:
-        trade_date_str = trade.get("transactionDate", "")
-        if not trade_date_str:
-            continue
-
+    def _fetch_insider():
         try:
-            trade_date = datetime.strptime(trade_date_str, "%Y-%m-%d")
-            if trade_date < cutoff_date:
-                continue
-        except ValueError:
-            continue
+            import yfinance as yf
+            stock = yf.Ticker(ticker)
 
-        transaction_type = trade.get("transactionType", "").upper()
-        shares = trade.get("securitiesTransacted", 0) or 0
+            # Get insider transactions
+            insider_df = stock.insider_transactions
+            if insider_df is None or insider_df.empty:
+                return {}
 
-        if "BUY" in transaction_type or "PURCHASE" in transaction_type or transaction_type == "P":
-            buy_count += 1
-            net_shares += shares
-        elif "SELL" in transaction_type or "SALE" in transaction_type or transaction_type == "S":
-            sell_count += 1
-            net_shares -= shares
+            # Filter to last 3 months
+            cutoff_date = datetime.now() - timedelta(days=90)
+            buy_count = 0
+            sell_count = 0
+            net_shares = 0
 
-    # Determine sentiment
-    sentiment = "neutral"
-    if buy_count > 0 and buy_count > sell_count * 1.5:
-        sentiment = "bullish"
-    elif sell_count > 0 and sell_count > buy_count * 1.5:
-        sentiment = "bearish"
+            for _, row in insider_df.iterrows():
+                # Parse date
+                start_date = row.get('Start Date')
+                if start_date is None:
+                    continue
 
-    return {
-        "buy_count": buy_count,
-        "sell_count": sell_count,
-        "net_shares": net_shares,
-        "sentiment": sentiment
-    }
+                # Handle different date formats
+                if hasattr(start_date, 'to_pydatetime'):
+                    trade_date = start_date.to_pydatetime()
+                elif isinstance(start_date, str):
+                    try:
+                        trade_date = datetime.strptime(start_date[:10], "%Y-%m-%d")
+                    except:
+                        continue
+                else:
+                    continue
+
+                # Skip if too old (compare without timezone)
+                if trade_date.replace(tzinfo=None) < cutoff_date:
+                    continue
+
+                # Get transaction type and shares
+                transaction = str(row.get('Transaction', '')).upper()
+                shares = abs(row.get('Shares', 0) or 0)
+
+                if 'BUY' in transaction or 'PURCHASE' in transaction:
+                    buy_count += 1
+                    net_shares += shares
+                elif 'SALE' in transaction or 'SELL' in transaction:
+                    sell_count += 1
+                    net_shares -= shares
+
+            # Determine sentiment
+            sentiment = "neutral"
+            if buy_count > 0 and buy_count > sell_count * 1.5:
+                sentiment = "bullish"
+            elif sell_count > 0 and sell_count > buy_count * 1.5:
+                sentiment = "bearish"
+
+            return {
+                "buy_count": buy_count,
+                "sell_count": sell_count,
+                "net_shares": int(net_shares),
+                "sentiment": sentiment
+            }
+
+        except Exception as e:
+            logger.debug(f"{ticker}: Insider trading error: {e}")
+            return {}
+
+    return await loop.run_in_executor(None, _fetch_insider)
 
 
 async def fetch_short_interest_async(ticker: str) -> dict:
