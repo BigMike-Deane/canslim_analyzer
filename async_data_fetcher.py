@@ -362,6 +362,96 @@ async def fetch_fmp_earnings_surprise_async(session: aiohttp.ClientSession, tick
     return {}
 
 
+async def fetch_fmp_insider_trading_async(session: aiohttp.ClientSession, ticker: str) -> dict:
+    """
+    Async fetch insider trading data from FMP API.
+    Returns summary of insider buys/sells in last 3 months.
+    """
+    if not FMP_API_KEY:
+        return {}
+
+    url = f"https://financialmodelingprep.com/api/v4/insider-trading?symbol={ticker}&limit=50&apikey={FMP_API_KEY}"
+    data = await fetch_json_async(session, url, timeout=10)
+
+    if not data or not isinstance(data, list):
+        return {}
+
+    # Filter to last 3 months
+    cutoff_date = datetime.now() - timedelta(days=90)
+    buy_count = 0
+    sell_count = 0
+    net_shares = 0
+
+    for trade in data:
+        trade_date_str = trade.get("transactionDate", "")
+        if not trade_date_str:
+            continue
+
+        try:
+            trade_date = datetime.strptime(trade_date_str, "%Y-%m-%d")
+            if trade_date < cutoff_date:
+                continue
+        except ValueError:
+            continue
+
+        transaction_type = trade.get("transactionType", "").upper()
+        shares = trade.get("securitiesTransacted", 0) or 0
+
+        if "BUY" in transaction_type or "PURCHASE" in transaction_type or transaction_type == "P":
+            buy_count += 1
+            net_shares += shares
+        elif "SELL" in transaction_type or "SALE" in transaction_type or transaction_type == "S":
+            sell_count += 1
+            net_shares -= shares
+
+    # Determine sentiment
+    sentiment = "neutral"
+    if buy_count > 0 and buy_count > sell_count * 1.5:
+        sentiment = "bullish"
+    elif sell_count > 0 and sell_count > buy_count * 1.5:
+        sentiment = "bearish"
+
+    return {
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "net_shares": net_shares,
+        "sentiment": sentiment
+    }
+
+
+async def fetch_short_interest_async(ticker: str) -> dict:
+    """
+    Async fetch short interest data from Yahoo Finance.
+    Wraps sync yfinance call in executor to not block async loop.
+    """
+    loop = asyncio.get_event_loop()
+
+    def _fetch_short():
+        try:
+            import yfinance as yf
+            stock = yf.Ticker(ticker)
+            info = stock.info
+
+            if info:
+                short_pct = info.get("shortPercentOfFloat", 0) or 0
+                short_ratio = info.get("shortRatio", 0) or 0
+
+                # Convert to percentage if needed
+                if short_pct > 0 and short_pct < 1:
+                    short_pct = short_pct * 100
+
+                return {
+                    "short_interest_pct": short_pct,
+                    "short_ratio": short_ratio
+                }
+        except Exception as e:
+            logger.debug(f"{ticker}: Short interest error: {e}")
+
+        return {}
+
+    return await loop.run_in_executor(None, _fetch_short)
+
+
 async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> None:
     """
     Fetch supplemental data from Yahoo Finance ONLY if FMP data is incomplete

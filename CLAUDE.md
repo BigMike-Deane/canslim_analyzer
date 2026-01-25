@@ -69,6 +69,33 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 
 ## Recent Improvements (Jan 2025)
 
+### Async Scanner Insider/Short Data Fix (Jan 25)
+
+**Problem**: Stocks scanned via the async scanner had empty insider sentiment and short interest data. The `async_scanner.py` was using empty placeholder dicts instead of fetching the data.
+
+**Solution**: Added async versions of the insider/short fetchers and integrated them into the async scanner:
+
+1. **New Functions in `async_data_fetcher.py`**:
+   - `fetch_fmp_insider_trading_async()` - Async FMP API call for insider buy/sell data
+   - `fetch_short_interest_async()` - Wraps yfinance in executor to avoid blocking
+
+2. **New Batch Function in `async_scanner.py`**:
+   - `fetch_insider_short_batch_async()` - Fetches insider/short data for all stocks in parallel
+   - Respects freshness intervals (insider: 14 days, short: 3 days)
+   - Uses caching system to avoid redundant API calls
+
+3. **Integration**:
+   - After fetching stock data, creates aiohttp session for insider/short batch fetch
+   - Results merged into analysis output for each ticker
+
+**Files Modified**:
+- `async_data_fetcher.py` - Added async insider/short fetchers
+- `async_scanner.py` - Added batch fetcher, integrated into analysis loop
+
+**Test Results** (10 stocks):
+- Short interest: 10/10 stocks with data
+- Insider data: 0/10 (expected - large caps like AAPL/MSFT have minimal insider trading in last 90 days)
+
 ### Major Performance Optimization v2.0 (Jan 24)
 
 **Scan Time: 25-35 min → 10-12 min (3x faster)**

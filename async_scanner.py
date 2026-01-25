@@ -4,12 +4,87 @@ Replaces ThreadPoolExecutor with async batch processing for 5-10x speed boost
 """
 
 import asyncio
+import aiohttp
 import logging
 from datetime import datetime
 from typing import List, Dict
-from async_data_fetcher import fetch_stocks_batch_async
+from async_data_fetcher import (
+    fetch_stocks_batch_async,
+    fetch_fmp_insider_trading_async,
+    fetch_short_interest_async
+)
 
 logger = logging.getLogger(__name__)
+
+
+async def fetch_insider_short_batch_async(
+    tickers: List[str],
+    session: aiohttp.ClientSession
+) -> Dict[str, Dict]:
+    """
+    Batch fetch insider trading and short interest data for multiple tickers.
+    Respects freshness intervals to avoid redundant API calls.
+
+    Returns dict mapping ticker -> {insider_data, short_data}
+    """
+    from data_fetcher import is_data_fresh, mark_data_fetched, get_cached_data, set_cached_data
+
+    results = {}
+    insider_tasks = []
+    short_tasks = []
+    tickers_needing_insider = []
+    tickers_needing_short = []
+
+    # Check which tickers need fresh data
+    for ticker in tickers:
+        results[ticker] = {"insider": {}, "short": {}}
+
+        # Check insider data freshness (14 days)
+        if not is_data_fresh(ticker, "insider_trading"):
+            tickers_needing_insider.append(ticker)
+            insider_tasks.append(fetch_fmp_insider_trading_async(session, ticker))
+        else:
+            # Use cached data if available
+            cached = get_cached_data(ticker, "insider_trading")
+            if cached:
+                results[ticker]["insider"] = cached
+
+        # Check short interest freshness (3 days)
+        if not is_data_fresh(ticker, "short_interest"):
+            tickers_needing_short.append(ticker)
+            short_tasks.append(fetch_short_interest_async(ticker))
+        else:
+            # Use cached data if available
+            cached = get_cached_data(ticker, "short_interest")
+            if cached:
+                results[ticker]["short"] = cached
+
+    # Fetch insider data in parallel
+    if insider_tasks:
+        logger.info(f"Fetching insider trading data for {len(insider_tasks)} tickers...")
+        insider_results = await asyncio.gather(*insider_tasks, return_exceptions=True)
+        for ticker, data in zip(tickers_needing_insider, insider_results):
+            if isinstance(data, dict) and data:
+                results[ticker]["insider"] = data
+                mark_data_fetched(ticker, "insider_trading")
+                set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
+
+    # Fetch short interest in parallel (uses executor, so limit concurrency)
+    if short_tasks:
+        logger.info(f"Fetching short interest data for {len(short_tasks)} tickers...")
+        # Process in smaller batches to avoid overwhelming the executor
+        BATCH_SIZE = 20
+        for i in range(0, len(short_tasks), BATCH_SIZE):
+            batch = short_tasks[i:i + BATCH_SIZE]
+            batch_tickers = tickers_needing_short[i:i + BATCH_SIZE]
+            short_results = await asyncio.gather(*batch, return_exceptions=True)
+            for ticker, data in zip(batch_tickers, short_results):
+                if isinstance(data, dict) and data:
+                    results[ticker]["short"] = data
+                    mark_data_fetched(ticker, "short_interest")
+                    set_cached_data(ticker, "short_interest", data, persist_to_db=False)
+
+    return results
 
 
 async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progress_callback=None) -> List[Dict]:
@@ -25,7 +100,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
         List of analysis results (dicts with CANSLIM scores, etc.)
     """
     from canslim_scorer import CANSLIMScorer, GrowthModeScorer, TechnicalAnalyzer
-    from data_fetcher import DataFetcher, fetch_fmp_insider_trading, fetch_short_interest, is_data_fresh, mark_data_fetched
+    from data_fetcher import DataFetcher
     from growth_projector import GrowthProjector
 
     logger.info(f"Starting async analysis of {len(tickers)} stocks...")
@@ -37,6 +112,16 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
 
     logger.info(f"✓ Fetched {len(stock_data_list)} stocks in {fetch_time:.1f}s "
                f"({fetch_time/len(stock_data_list):.2f}s per stock)")
+
+    # Fetch insider/short data for all valid tickers
+    valid_tickers = [sd.ticker for sd in stock_data_list if sd and sd.is_valid]
+    insider_short_data = {}
+
+    if valid_tickers:
+        timeout = aiohttp.ClientTimeout(total=60)
+        connector = aiohttp.TCPConnector(limit=50, limit_per_host=25)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            insider_short_data = await fetch_insider_short_batch_async(valid_tickers, session)
 
     # Now analyze each stock (this is fast, no API calls)
     data_fetcher = DataFetcher()
@@ -68,10 +153,10 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
             is_breaking_out, breakout_vol = TechnicalAnalyzer.is_breaking_out(stock_data, base_pattern)
 
-            # For insider/short data, we'll still use sync calls (less critical for performance)
-            # These could be optimized later
-            insider_data = {}
-            short_data = {}
+            # Get pre-fetched insider/short data for this ticker
+            ticker_supplemental = insider_short_data.get(stock_data.ticker, {})
+            insider_data = ticker_supplemental.get("insider", {})
+            short_data = ticker_supplemental.get("short", {})
 
             # Calculate revenue growth
             revenue_growth_pct = None
@@ -164,7 +249,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "base_type": base_pattern.get("type", "none"),
                 "is_breaking_out": is_breaking_out,
                 "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
-                # Insider/Short (placeholders for now)
+                # Insider/Short (fetched asynchronously with caching)
                 "insider_buy_count": insider_data.get("buy_count"),
                 "insider_sell_count": insider_data.get("sell_count"),
                 "insider_net_shares": insider_data.get("net_shares"),
@@ -206,7 +291,7 @@ if __name__ == "__main__":
     test_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "UNH", "JNJ"]
 
     print(f"\n{'='*60}")
-    print("Testing Async Scanner")
+    print("Testing Async Scanner with Insider/Short Data")
     print(f"{'='*60}\n")
 
     import time
@@ -216,9 +301,24 @@ if __name__ == "__main__":
 
     print(f"\n✓ Scanned {len(results)} stocks in {elapsed:.2f} seconds")
     print(f"  Average: {elapsed/len(results):.2f} seconds per stock")
+
     print(f"\nTop 3 by CANSLIM score:")
     sorted_results = sorted(results, key=lambda x: x['canslim_score'], reverse=True)
     for i, result in enumerate(sorted_results[:3], 1):
         print(f"  {i}. {result['ticker']}: {result['canslim_score']:.1f} points")
+
+    print(f"\nInsider/Short Data Sample:")
+    for result in results[:5]:
+        insider = result.get('insider_sentiment', 'N/A')
+        short_pct = result.get('short_interest_pct')
+        short_str = f"{short_pct:.1f}%" if short_pct else "N/A"
+        buys = result.get('insider_buy_count', 0) or 0
+        sells = result.get('insider_sell_count', 0) or 0
+        print(f"  {result['ticker']}: Insider={insider} (B:{buys}/S:{sells}), Short={short_str}")
+
+    # Count how many have data
+    with_insider = sum(1 for r in results if r.get('insider_sentiment'))
+    with_short = sum(1 for r in results if r.get('short_interest_pct'))
+    print(f"\nData Coverage: {with_insider}/{len(results)} with insider data, {with_short}/{len(results)} with short interest")
 
     print(f"\n{'='*60}\n")
