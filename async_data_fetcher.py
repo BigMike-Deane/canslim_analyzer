@@ -32,8 +32,8 @@ if REDIS_AVAILABLE:
 
 logger = logging.getLogger(__name__)
 
-# Semaphore to limit concurrent requests
-MAX_CONCURRENT_REQUESTS = 50  # Increased for batch operations
+# Semaphore to limit concurrent requests (reduced to avoid 429 rate limits)
+MAX_CONCURRENT_REQUESTS = 20  # Conservative to stay under FMP 300/min limit
 api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 # Rate limit tracking

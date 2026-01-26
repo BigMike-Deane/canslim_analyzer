@@ -56,10 +56,10 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
             if cached:
                 results[ticker]["short"] = cached
 
-    # Fetch insider data in parallel (uses executor, so limit concurrency)
+    # Fetch insider data in parallel (uses executor, limit concurrency to avoid rate limits)
     if insider_tasks:
         logger.info(f"Fetching insider trading data for {len(insider_tasks)} tickers...")
-        BATCH_SIZE = 20
+        BATCH_SIZE = 10  # Smaller batches to avoid overwhelming Yahoo Finance
         for i in range(0, len(insider_tasks), BATCH_SIZE):
             batch = insider_tasks[i:i + BATCH_SIZE]
             batch_tickers = tickers_needing_insider[i:i + BATCH_SIZE]
@@ -69,12 +69,12 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
                     results[ticker]["insider"] = data
                     mark_data_fetched(ticker, "insider_trading")
                     set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
+            await asyncio.sleep(0.5)  # Small delay between batches
 
-    # Fetch short interest in parallel (uses executor, so limit concurrency)
+    # Fetch short interest in parallel (uses executor, limit concurrency)
     if short_tasks:
         logger.info(f"Fetching short interest data for {len(short_tasks)} tickers...")
-        # Process in smaller batches to avoid overwhelming the executor
-        BATCH_SIZE = 20
+        BATCH_SIZE = 10  # Smaller batches to avoid overwhelming Yahoo Finance
         for i in range(0, len(short_tasks), BATCH_SIZE):
             batch = short_tasks[i:i + BATCH_SIZE]
             batch_tickers = tickers_needing_short[i:i + BATCH_SIZE]
@@ -84,6 +84,7 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
                     results[ticker]["short"] = data
                     mark_data_fetched(ticker, "short_interest")
                     set_cached_data(ticker, "short_interest", data, persist_to_db=False)
+            await asyncio.sleep(0.5)  # Small delay between batches
 
     return results
 
