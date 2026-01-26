@@ -412,8 +412,12 @@ class CANSLIMScorer:
         if sp500_history.empty:
             return max_score * 0.5, "No benchmark data"
 
-        prices = data.price_history['Close']
-        sp500_prices = sp500_history['Close']
+        # Drop NaN values from price history to avoid calculation errors
+        prices = data.price_history['Close'].dropna()
+        sp500_prices = sp500_history['Close'].dropna()
+
+        if len(prices) < 63 or len(sp500_prices) < 63:
+            return 0, "Insufficient valid price data"
 
         # Calculate 12-month RS (if enough data)
         if len(prices) >= 252 and len(sp500_prices) >= 252:
