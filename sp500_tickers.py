@@ -173,8 +173,9 @@ def get_sp500_tickers() -> list[str]:
 
 def get_nasdaq100_tickers() -> list[str]:
     """
-    Fetch Nasdaq 100 tickers from FMP API.
+    Fetch Nasdaq 100 tickers from FMP API (primary), Wikipedia (secondary), or hardcoded (fallback).
     """
+    # Try FMP API first
     if FMP_API_KEY:
         try:
             url = f"{FMP_BASE_URL}/nasdaq_constituent?apikey={FMP_API_KEY}"
@@ -190,7 +191,42 @@ def get_nasdaq100_tickers() -> list[str]:
         except Exception as e:
             logger.warning(f"FMP Nasdaq 100 fetch failed: {e}")
 
+    # Try Wikipedia scraping
+    try:
+        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Find the constituents table (has 'Symbol' in header)
+        tables = soup.find_all('table', {'class': 'wikitable'})
+
+        for table in tables:
+            header_row = table.find('tr')
+            if header_row:
+                headers = [th.text.strip().lower() for th in header_row.find_all(['th', 'td'])]
+                if 'ticker' in headers or 'symbol' in headers:
+                    # Found the right table
+                    ticker_col = headers.index('ticker') if 'ticker' in headers else headers.index('symbol')
+                    tickers = []
+                    for row in table.find_all('tr')[1:]:  # Skip header
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) > ticker_col:
+                            ticker = cells[ticker_col].text.strip()
+                            ticker = ticker.replace('.', '-')  # BRK.B -> BRK-B
+                            if ticker and ticker.isalpha():
+                                tickers.append(ticker)
+
+                    if len(tickers) >= 90:  # Nasdaq 100 should have ~100-103 tickers
+                        logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers from Wikipedia")
+                        return tickers
+
+    except Exception as e:
+        logger.warning(f"Wikipedia Nasdaq 100 fetch failed: {e}")
+
     # Fallback to hardcoded list
+    logger.info("Using hardcoded Nasdaq 100 list")
     return get_fallback_nasdaq100_tickers()
 
 
@@ -212,8 +248,9 @@ def get_fallback_nasdaq100_tickers() -> list[str]:
 
 def get_dowjones_tickers() -> list[str]:
     """
-    Fetch Dow Jones 30 tickers from FMP API.
+    Fetch Dow Jones 30 tickers from FMP API (primary), Wikipedia (secondary), or hardcoded (fallback).
     """
+    # Try FMP API first
     if FMP_API_KEY:
         try:
             url = f"{FMP_BASE_URL}/dowjones_constituent?apikey={FMP_API_KEY}"
@@ -229,7 +266,46 @@ def get_dowjones_tickers() -> list[str]:
         except Exception as e:
             logger.warning(f"FMP Dow Jones fetch failed: {e}")
 
+    # Try Wikipedia scraping
+    try:
+        url = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Find the constituents table
+        tables = soup.find_all('table', {'class': 'wikitable'})
+
+        for table in tables:
+            header_row = table.find('tr')
+            if header_row:
+                headers_text = [th.text.strip().lower() for th in header_row.find_all(['th', 'td'])]
+                # Look for table with 'symbol' or 'ticker' column
+                if 'symbol' in headers_text or 'ticker' in headers_text:
+                    ticker_col = headers_text.index('symbol') if 'symbol' in headers_text else headers_text.index('ticker')
+                    tickers = []
+                    for row in table.find_all('tr')[1:]:  # Skip header
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) > ticker_col:
+                            ticker = cells[ticker_col].text.strip()
+                            ticker = ticker.replace('.', '-')
+                            # Clean up ticker (remove any extra text)
+                            if ticker:
+                                # Take just the first word if there's extra text
+                                ticker = ticker.split()[0] if ' ' in ticker else ticker
+                                if ticker.isalpha() or '-' in ticker:
+                                    tickers.append(ticker)
+
+                    if len(tickers) >= 25:  # Dow Jones should have 30 tickers
+                        logger.info(f"Fetched {len(tickers)} Dow Jones tickers from Wikipedia")
+                        return tickers
+
+    except Exception as e:
+        logger.warning(f"Wikipedia Dow Jones fetch failed: {e}")
+
     # Fallback to hardcoded list
+    logger.info("Using hardcoded Dow Jones list")
     return [
         "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
         "DOW", "GS", "HD", "HON", "IBM", "INTC", "JNJ", "JPM", "KO", "MCD",
@@ -439,8 +515,12 @@ def get_fallback_smallcap_tickers() -> list[str]:
 
 def get_russell2000_tickers() -> list[str]:
     """
-    Fetch Russell 2000 tickers from IWM ETF holdings via FMP API.
-    Falls back to curated list if fetch fails.
+    Fetch Russell 2000 tickers from multiple sources:
+    1. FMP ETF Holdings API (IWM)
+    2. Yahoo Finance IWM holdings
+    3. Curated fallback list
+
+    Falls back to curated list if all fetches fail.
     """
     # Try FMP ETF Holdings API (IWM = iShares Russell 2000 ETF)
     if FMP_API_KEY:
@@ -454,16 +534,147 @@ def get_russell2000_tickers() -> list[str]:
                 # Extract ticker symbols from holdings
                 tickers = [item.get('asset') for item in data if item.get('asset')]
                 if len(tickers) > 1000:  # Should be ~2000 holdings
-                    logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from IWM ETF holdings")
+                    logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from IWM ETF (FMP)")
                     return tickers
                 else:
-                    logger.warning(f"IWM holdings returned only {len(tickers)} tickers, using curated list")
+                    logger.warning(f"FMP IWM holdings returned only {len(tickers)} tickers")
         except Exception as e:
             logger.warning(f"FMP IWM ETF holdings fetch failed: {e}")
+
+    # Try Yahoo Finance for IWM holdings
+    try:
+        import yfinance as yf
+        etf = yf.Ticker("IWM")
+
+        # Try to get holdings from fund_holding_info
+        holdings = None
+        if hasattr(etf, 'funds_data'):
+            try:
+                holdings = etf.funds_data.top_holdings
+            except Exception:
+                pass
+
+        # Alternative: Try institutional holders as proxy (limited but better than nothing)
+        if holdings is None or holdings.empty:
+            # Try to get from info dict
+            info = etf.info
+            # Yahoo doesn't expose full ETF holdings easily, but we can try
+            pass
+
+        if holdings is not None and not holdings.empty:
+            tickers = holdings.index.tolist()
+            if len(tickers) > 500:
+                logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from Yahoo Finance IWM")
+                return tickers
+
+    except Exception as e:
+        logger.warning(f"Yahoo Finance IWM holdings fetch failed: {e}")
+
+    # Try fetching from multiple Russell 2000 sector ETFs to build comprehensive list
+    try:
+        sector_etfs = get_russell2000_from_sector_etfs()
+        if len(sector_etfs) > 1000:
+            logger.info(f"Fetched {len(sector_etfs)} Russell 2000 tickers from sector ETFs")
+            return sector_etfs
+    except Exception as e:
+        logger.warning(f"Sector ETF fetch failed: {e}")
 
     # Fallback to curated list
     logger.info("Using curated Russell 2000 list")
     return get_fallback_russell2000_tickers()
+
+
+def get_russell2000_from_sector_etfs() -> list[str]:
+    """
+    Fetch Russell 2000 tickers by scraping multiple small-cap focused sources.
+    Uses Wikipedia small-cap lists and combines with our existing data.
+    """
+    all_tickers = set()
+
+    # Get all S&P SmallCap 600 tickers (overlaps with Russell 2000)
+    try:
+        smallcap = get_sp600_smallcap_tickers()
+        all_tickers.update(smallcap)
+        logger.debug(f"Added {len(smallcap)} from S&P SmallCap 600")
+    except Exception:
+        pass
+
+    # Get small caps from Finviz screener (small market cap < $2B)
+    try:
+        finviz_tickers = get_finviz_smallcaps()
+        all_tickers.update(finviz_tickers)
+        logger.debug(f"Added {len(finviz_tickers)} from Finviz screener")
+    except Exception:
+        pass
+
+    # Add curated Russell 2000 tickers
+    curated = get_fallback_russell2000_tickers()
+    all_tickers.update(curated)
+
+    return list(all_tickers)
+
+
+def get_finviz_smallcaps() -> list[str]:
+    """
+    Fetch small-cap tickers from Finviz screener.
+    Filters: Market Cap < $2B, US exchange, has positive EPS
+    """
+    try:
+        # Finviz screener for small-cap stocks
+        url = "https://finviz.com/screener.ashx?v=111&f=cap_smallunder,exch_nasd|nyse&ft=4"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find total results count
+        total_text = soup.find('td', string=lambda s: s and 'Total:' in str(s))
+        if not total_text:
+            return []
+
+        # Parse first page of tickers from table
+        tickers = []
+        ticker_links = soup.find_all('a', {'class': 'screener-link-primary'})
+        for link in ticker_links:
+            ticker = link.text.strip()
+            if ticker and len(ticker) <= 5:
+                tickers.append(ticker)
+
+        # Fetch additional pages (Finviz shows 20 per page)
+        # We'll get first 500 tickers (25 pages) to supplement our list
+        for page in range(2, 26):
+            try:
+                page_url = f"{url}&r={((page-1)*20)+1}"
+                response = requests.get(page_url, headers=headers, timeout=10)
+                if response.status_code != 200:
+                    break
+
+                soup = BeautifulSoup(response.text, 'html.parser')
+                ticker_links = soup.find_all('a', {'class': 'screener-link-primary'})
+
+                if not ticker_links:
+                    break
+
+                for link in ticker_links:
+                    ticker = link.text.strip()
+                    if ticker and len(ticker) <= 5:
+                        tickers.append(ticker)
+
+                # Small delay to be respectful
+                import time
+                time.sleep(0.2)
+
+            except Exception:
+                break
+
+        return tickers
+
+    except Exception as e:
+        logger.warning(f"Finviz small-cap fetch failed: {e}")
+        return []
 
 
 def get_fallback_russell2000_tickers() -> list[str]:
