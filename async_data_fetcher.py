@@ -407,14 +407,18 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
                 if trade_date.replace(tzinfo=None) < cutoff_date:
                     continue
 
-                # Get transaction type and shares
-                transaction = str(row.get('Transaction', '')).upper()
+                # Get transaction type from Text column (e.g., "Sale at price...", "Purchase at price...")
+                text = str(row.get('Text', '')).upper()
                 shares = abs(row.get('Shares', 0) or 0)
 
-                if 'BUY' in transaction or 'PURCHASE' in transaction:
+                # Skip gifts and other non-market transactions
+                if 'GIFT' in text or 'AWARD' in text or 'EXERCISE' in text:
+                    continue
+
+                if 'PURCHASE' in text or 'BUY' in text:
                     buy_count += 1
                     net_shares += shares
-                elif 'SALE' in transaction or 'SELL' in transaction:
+                elif 'SALE' in text or 'SELL' in text:
                     sell_count += 1
                     net_shares -= shares
 
