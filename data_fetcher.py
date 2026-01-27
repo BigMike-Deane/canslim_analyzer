@@ -222,6 +222,23 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
             record.peg_ratio = data.get("peg_ratio")
             record.metrics_updated_at = now
 
+        elif data_type == "yahoo_info" and isinstance(data, dict):
+            # Comprehensive Yahoo data - update all relevant fields
+            if data.get("roe"):
+                record.roe = data.get("roe")
+                record.metrics_updated_at = now
+            if data.get("institutional_holders_pct"):
+                record.institutional_holders_pct = data.get("institutional_holders_pct")
+                record.institutional_updated_at = now
+            if data.get("analyst_target_price"):
+                record.analyst_target_price = data.get("analyst_target_price")
+                record.analyst_count = data.get("num_analyst_opinions")
+                record.analyst_updated_at = now
+            if data.get("cash_and_equivalents") or data.get("total_debt"):
+                record.total_cash = data.get("cash_and_equivalents")
+                record.total_debt = data.get("total_debt")
+                record.balance_updated_at = now
+
         record.updated_at = now
         db.commit()
 
@@ -295,7 +312,7 @@ def set_cached_data(ticker: str, data_type: str, data, persist_to_db: bool = Tru
         _cached_data[key] = data
 
     # Persist to DB for survival across restarts (async to not slow down)
-    if persist_to_db and data_type in ["earnings", "revenue", "balance_sheet", "analyst", "institutional", "key_metrics"]:
+    if persist_to_db and data_type in ["earnings", "revenue", "balance_sheet", "analyst", "institutional", "key_metrics", "yahoo_info"]:
         # Run DB save in background thread to not block
         import threading
         threading.Thread(target=save_ticker_to_db_cache, args=(ticker, data_type, data), daemon=True).start()
