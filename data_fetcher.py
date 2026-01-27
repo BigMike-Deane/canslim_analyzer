@@ -207,19 +207,29 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
             record.balance_updated_at = now
 
         elif data_type == "analyst" and isinstance(data, dict):
-            record.analyst_target_price = data.get("target_price")
-            record.analyst_count = data.get("count")
+            # Only update if we have actual data (don't overwrite with None)
+            if data.get("target_price"):
+                record.analyst_target_price = data.get("target_price")
+            if data.get("count"):
+                record.analyst_count = data.get("count")
             record.analyst_updated_at = now
 
         elif data_type == "institutional":
-            record.institutional_holders_pct = data if isinstance(data, (int, float)) else None
-            record.institutional_updated_at = now
+            # Only update if we have actual data
+            if data and isinstance(data, (int, float)):
+                record.institutional_holders_pct = data
+                record.institutional_updated_at = now
 
         elif data_type == "key_metrics" and isinstance(data, dict):
-            record.roe = data.get("roe")
-            record.trailing_pe = data.get("trailing_pe")
-            record.forward_pe = data.get("forward_pe")
-            record.peg_ratio = data.get("peg_ratio")
+            # Only update fields that have actual values
+            if data.get("roe"):
+                record.roe = data.get("roe")
+            if data.get("trailing_pe"):
+                record.trailing_pe = data.get("trailing_pe")
+            if data.get("forward_pe"):
+                record.forward_pe = data.get("forward_pe")
+            if data.get("peg_ratio"):
+                record.peg_ratio = data.get("peg_ratio")
             record.metrics_updated_at = now
 
         elif data_type == "yahoo_info" and isinstance(data, dict):
