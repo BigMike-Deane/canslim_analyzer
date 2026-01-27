@@ -32,15 +32,24 @@ if REDIS_AVAILABLE:
 
 logger = logging.getLogger(__name__)
 
-# Semaphore to limit concurrent requests (reduced to avoid 429 rate limits)
-MAX_CONCURRENT_REQUESTS = 20  # Conservative to stay under FMP 300/min limit
+# ============== RATE LIMITING CONFIGURATION ==============
+# FMP API limit: 300 calls/minute = 5 calls/second
+# We target 250 calls/minute to leave headroom
+
+MAX_CONCURRENT_REQUESTS = 8  # Reduced from 20 - fewer concurrent requests = more predictable rate
 api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-# Rate limit tracking
-_rate_limit_state = {
+# Global rate limiter - tracks calls per minute
+_rate_limiter = {
+    "calls_this_minute": 0,
+    "minute_start": None,
+    "max_calls_per_minute": 250,  # Target 250, well under 300 limit
     "consecutive_429s": 0,
-    "backoff_until": None
+    "backoff_until": None,
+    "total_calls": 0,
+    "total_429s": 0
 }
+_rate_lock = asyncio.Lock()
 
 # Checkpoint file for progress persistence
 CHECKPOINT_FILE = Path(__file__).parent / "data" / "scan_checkpoint.json"
@@ -86,31 +95,77 @@ def clear_scan_progress():
         pass
 
 
-async def fetch_json_async(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> Optional[dict]:
-    """Async HTTP GET with exponential backoff for rate limits"""
-    global _rate_limit_state
+async def _check_rate_limit():
+    """Check and enforce rate limit before making an API call"""
+    global _rate_limiter
 
-    # Check if we're in backoff period
-    if _rate_limit_state["backoff_until"]:
-        if datetime.now() < _rate_limit_state["backoff_until"]:
-            wait_secs = (_rate_limit_state["backoff_until"] - datetime.now()).total_seconds()
-            logger.debug(f"Rate limit backoff: waiting {wait_secs:.1f}s")
-            await asyncio.sleep(wait_secs)
-        _rate_limit_state["backoff_until"] = None
+    async with _rate_lock:
+        now = datetime.now()
+
+        # Check if we're in backoff period from 429
+        if _rate_limiter["backoff_until"]:
+            if now < _rate_limiter["backoff_until"]:
+                wait_secs = (_rate_limiter["backoff_until"] - now).total_seconds()
+                logger.info(f"Rate limit backoff: waiting {wait_secs:.1f}s")
+                await asyncio.sleep(wait_secs)
+            _rate_limiter["backoff_until"] = None
+
+        # Reset counter if we're in a new minute
+        if _rate_limiter["minute_start"] is None or (now - _rate_limiter["minute_start"]).total_seconds() >= 60:
+            _rate_limiter["calls_this_minute"] = 0
+            _rate_limiter["minute_start"] = now
+
+        # If we're approaching the limit, wait until the next minute
+        if _rate_limiter["calls_this_minute"] >= _rate_limiter["max_calls_per_minute"]:
+            wait_secs = 60 - (now - _rate_limiter["minute_start"]).total_seconds()
+            if wait_secs > 0:
+                logger.info(f"Rate limit reached ({_rate_limiter['calls_this_minute']} calls), waiting {wait_secs:.1f}s for next minute")
+                await asyncio.sleep(wait_secs)
+                _rate_limiter["calls_this_minute"] = 0
+                _rate_limiter["minute_start"] = datetime.now()
+
+        # Increment call counter
+        _rate_limiter["calls_this_minute"] += 1
+        _rate_limiter["total_calls"] += 1
+
+
+def get_rate_limit_stats() -> dict:
+    """Get current rate limit statistics"""
+    return {
+        "calls_this_minute": _rate_limiter["calls_this_minute"],
+        "max_per_minute": _rate_limiter["max_calls_per_minute"],
+        "total_calls": _rate_limiter["total_calls"],
+        "total_429s": _rate_limiter["total_429s"],
+        "consecutive_429s": _rate_limiter["consecutive_429s"]
+    }
+
+
+async def fetch_json_async(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> Optional[dict]:
+    """Async HTTP GET with rate limiting and exponential backoff"""
+    global _rate_limiter
+
+    # Check rate limit before making request
+    await _check_rate_limit()
 
     async with api_semaphore:
         for attempt in range(3):
             try:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
                     if response.status == 200:
-                        _rate_limit_state["consecutive_429s"] = 0
+                        _rate_limiter["consecutive_429s"] = 0
                         return await response.json()
                     elif response.status == 429:
-                        # Rate limited - exponential backoff
-                        _rate_limit_state["consecutive_429s"] += 1
-                        wait_time = min(2 ** attempt * (1 + _rate_limit_state["consecutive_429s"] * 0.5), 30)
-                        logger.warning(f"Rate limited (429), waiting {wait_time:.1f}s (attempt {attempt + 1}/3)")
-                        _rate_limit_state["backoff_until"] = datetime.now() + timedelta(seconds=wait_time)
+                        # Rate limited - exponential backoff with longer waits
+                        _rate_limiter["consecutive_429s"] += 1
+                        _rate_limiter["total_429s"] += 1
+                        # Longer backoff: 5s, 15s, 30s based on attempts and consecutive 429s
+                        base_wait = 5 * (2 ** attempt)
+                        extra_wait = min(_rate_limiter["consecutive_429s"] * 5, 30)
+                        wait_time = min(base_wait + extra_wait, 60)
+                        logger.warning(f"Rate limited (429 #{_rate_limiter['total_429s']}), waiting {wait_time:.1f}s (attempt {attempt + 1}/3)")
+                        _rate_limiter["backoff_until"] = datetime.now() + timedelta(seconds=wait_time)
+                        # Also reduce the per-minute limit temporarily
+                        _rate_limiter["max_calls_per_minute"] = max(150, _rate_limiter["max_calls_per_minute"] - 25)
                         await asyncio.sleep(wait_time)
                         continue
                     else:
@@ -574,31 +629,102 @@ async def get_stock_data_async(
         if not stock_data.high_52w:
             stock_data.high_52w = profile.get("high_52w", 0) or 0
 
-    # Fetch detailed financials (these can't be batched easily)
+    # Fetch detailed financials with caching to reduce API calls
+    # Only fetch data types that aren't fresh in cache
     if FMP_API_KEY:
-        tasks = [
-            fetch_fmp_financials_async(session, ticker),  # CONSOLIDATED: earnings + revenue
-            fetch_fmp_key_metrics_async(session, ticker),
-            fetch_fmp_balance_sheet_async(session, ticker),
-            fetch_fmp_analyst_async(session, ticker),  # CONSOLIDATED: estimates + targets
-            fetch_fmp_earnings_surprise_async(session, ticker),
-        ]
+        tasks = []
+        task_types = []
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Check cache freshness for each data type before making API calls
+        # This dramatically reduces 429 errors on subsequent scans
 
-        # Unpack results
-        financials = results[0] if not isinstance(results[0], Exception) else {}
-        key_metrics = results[1] if not isinstance(results[1], Exception) else {}
-        balance_sheet = results[2] if not isinstance(results[2], Exception) else {}
-        analyst = results[3] if not isinstance(results[3], Exception) else {}
-        earnings_surprise = results[4] if not isinstance(results[4], Exception) else {}
+        if not is_data_fresh(ticker, "earnings"):
+            tasks.append(fetch_fmp_financials_async(session, ticker))
+            task_types.append("financials")
+        else:
+            # Load from cache
+            cached_earnings = get_cached_data(ticker, "earnings")
+            cached_revenue = get_cached_data(ticker, "revenue")
+            if cached_earnings:
+                stock_data.quarterly_earnings = cached_earnings.get("quarterly", [])
+                stock_data.annual_earnings = cached_earnings.get("annual", [])
+            if cached_revenue:
+                stock_data.quarterly_revenue = cached_revenue.get("quarterly", [])
+                stock_data.annual_revenue = cached_revenue.get("annual", [])
 
-        # Apply financials (CONSOLIDATED - earnings + revenue from one call)
+        if not is_data_fresh(ticker, "key_metrics"):
+            tasks.append(fetch_fmp_key_metrics_async(session, ticker))
+            task_types.append("key_metrics")
+        else:
+            cached_metrics = get_cached_data(ticker, "key_metrics")
+            if cached_metrics:
+                stock_data.roe = cached_metrics.get("roe", 0)
+                stock_data.roa = cached_metrics.get("roa", 0)
+                stock_data.roic = cached_metrics.get("roic", 0)
+
+        if not is_data_fresh(ticker, "balance_sheet"):
+            tasks.append(fetch_fmp_balance_sheet_async(session, ticker))
+            task_types.append("balance_sheet")
+        else:
+            cached_balance = get_cached_data(ticker, "balance_sheet")
+            if cached_balance:
+                stock_data.cash_and_equivalents = cached_balance.get("cash_and_equivalents", 0)
+                stock_data.total_debt = cached_balance.get("total_debt", 0)
+
+        if not is_data_fresh(ticker, "analyst"):
+            tasks.append(fetch_fmp_analyst_async(session, ticker))
+            task_types.append("analyst")
+        else:
+            cached_analyst = get_cached_data(ticker, "analyst")
+            if cached_analyst:
+                stock_data.num_analyst_opinions = cached_analyst.get("num_analysts", 0)
+                stock_data.analyst_target_price = cached_analyst.get("target_consensus", 0)
+
+        # Earnings surprise - less critical, can use longer cache
+        if not is_data_fresh(ticker, "earnings"):  # Same freshness as earnings
+            tasks.append(fetch_fmp_earnings_surprise_async(session, ticker))
+            task_types.append("earnings_surprise")
+
+        # Only make API calls if we have tasks
+        financials = {}
+        key_metrics = {}
+        balance_sheet = {}
+        analyst = {}
+        earnings_surprise = {}
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Map results back to their types
+            for i, task_type in enumerate(task_types):
+                result = results[i] if not isinstance(results[i], Exception) else {}
+                if task_type == "financials":
+                    financials = result
+                elif task_type == "key_metrics":
+                    key_metrics = result
+                elif task_type == "balance_sheet":
+                    balance_sheet = result
+                elif task_type == "analyst":
+                    analyst = result
+                elif task_type == "earnings_surprise":
+                    earnings_surprise = result
+
+        # Apply financials and cache for future scans
         if financials:
             stock_data.quarterly_earnings = financials.get("quarterly_eps", [])
             stock_data.annual_earnings = financials.get("annual_eps", [])
             stock_data.quarterly_revenue = financials.get("quarterly_revenue", [])
             stock_data.annual_revenue = financials.get("annual_revenue", [])
+            # Cache earnings and revenue data
+            set_cached_data(ticker, "earnings", {
+                "quarterly": stock_data.quarterly_earnings,
+                "annual": stock_data.annual_earnings
+            }, persist_to_db=True)
+            set_cached_data(ticker, "revenue", {
+                "quarterly": stock_data.quarterly_revenue,
+                "annual": stock_data.annual_revenue
+            }, persist_to_db=True)
+            mark_data_fetched(ticker, "earnings")
 
         if key_metrics:
             stock_data.roe = key_metrics.get("roe", 0)
@@ -606,10 +732,16 @@ async def get_stock_data_async(
             stock_data.roic = key_metrics.get("roic", 0)
             stock_data.earnings_yield = key_metrics.get("earnings_yield", 0)
             stock_data.fcf_yield = key_metrics.get("fcf_yield", 0)
+            # Cache key metrics
+            set_cached_data(ticker, "key_metrics", key_metrics, persist_to_db=True)
+            mark_data_fetched(ticker, "key_metrics")
 
         if balance_sheet:
             stock_data.cash_and_equivalents = balance_sheet.get("cash_and_equivalents", 0)
             stock_data.total_debt = balance_sheet.get("total_debt", 0)
+            # Cache balance sheet
+            set_cached_data(ticker, "balance_sheet", balance_sheet, persist_to_db=True)
+            mark_data_fetched(ticker, "balance_sheet")
 
         if analyst:
             stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
@@ -617,6 +749,9 @@ async def get_stock_data_async(
             stock_data.analyst_target_price = analyst.get("target_consensus", 0) or analyst.get("target_median", 0)
             stock_data.analyst_target_high = analyst.get("target_high", 0)
             stock_data.analyst_target_low = analyst.get("target_low", 0)
+            # Cache analyst data
+            set_cached_data(ticker, "analyst", analyst, persist_to_db=True)
+            mark_data_fetched(ticker, "analyst")
 
         if earnings_surprise:
             stock_data.earnings_surprise_pct = earnings_surprise.get("latest_surprise_pct", 0)
@@ -712,7 +847,8 @@ async def fetch_stocks_batch_async(
         return results
 
     timeout = aiohttp.ClientTimeout(total=60)
-    connector = aiohttp.TCPConnector(limit=100, limit_per_host=50)
+    # Reduced connection limits to prevent overwhelming the API
+    connector = aiohttp.TCPConnector(limit=30, limit_per_host=20)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         # STEP 1: Batch fetch quotes and profiles for ALL tickers (2 API calls total!)
@@ -722,11 +858,13 @@ async def fetch_stocks_batch_async(
         logger.info(f"Fetching batch profiles for {len(tickers)} tickers...")
         batch_profiles = await fetch_fmp_batch_profiles(session, tickers)
 
-        # STEP 2: Process detailed financials in batches
-        logger.info(f"Fetching detailed financials in batches of {batch_size}...")
+        # STEP 2: Process detailed financials in smaller batches with rate limiting
+        # Use smaller batch size (50) to give rate limiter time to work
+        effective_batch_size = min(batch_size, 50)
+        logger.info(f"Fetching detailed financials in batches of {effective_batch_size}...")
 
-        for i in range(0, len(tickers), batch_size):
-            batch = tickers[i:i + batch_size]
+        for i in range(0, len(tickers), effective_batch_size):
+            batch = tickers[i:i + effective_batch_size]
 
             # Fetch all stocks in this batch concurrently
             tasks = [
@@ -748,15 +886,20 @@ async def fetch_stocks_batch_async(
             completed_tickers.extend(batch_completed)
             save_scan_progress(completed_tickers, scan_id)
 
-            # Report progress
+            # Report progress with rate limit stats
             if progress_callback:
                 progress_callback(len(results), len(tickers) + len(load_scan_progress(scan_id)))
 
-            logger.info(f"Progress: {len(results)}/{len(tickers)} stocks ({len(results)/len(tickers)*100:.1f}%)")
+            rate_stats = get_rate_limit_stats()
+            logger.info(f"Progress: {len(results)}/{len(tickers)} stocks ({len(results)/len(tickers)*100:.1f}%) | "
+                       f"API calls: {rate_stats['total_calls']} | 429s: {rate_stats['total_429s']}")
 
-            # Small delay between batches
-            if i + batch_size < len(tickers):
-                await asyncio.sleep(0.1)
+            # Smart delay between batches based on rate limit status
+            if i + effective_batch_size < len(tickers):
+                # Base delay of 2 seconds, increase if we've hit 429s
+                delay = 2.0 + (rate_stats['consecutive_429s'] * 3.0)
+                delay = min(delay, 15.0)  # Cap at 15 seconds
+                await asyncio.sleep(delay)
 
     # Clear checkpoint on successful completion
     clear_scan_progress()
