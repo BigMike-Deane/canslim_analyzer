@@ -629,12 +629,13 @@ class GrowthModeScorer:
                     return True  # Minimal profit margin (early stage)
 
         # Check for high revenue growth (even if profitable)
+        # Threshold: 30%+ YoY growth qualifies as a growth stock
         if len(stock_data.quarterly_revenue) >= 5:
             current_q_rev = stock_data.quarterly_revenue[0]
             prior_year_q_rev = stock_data.quarterly_revenue[4]
             if prior_year_q_rev > 0:
                 rev_growth = ((current_q_rev - prior_year_q_rev) / prior_year_q_rev) * 100
-                if rev_growth >= 50:
+                if rev_growth >= 30:
                     return True  # High-growth company
 
         return False

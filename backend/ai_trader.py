@@ -9,6 +9,7 @@ from datetime import datetime, date, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import logging
+import threading
 
 
 def get_cst_now():
@@ -23,8 +24,8 @@ from backend.database import (
 
 logger = logging.getLogger(__name__)
 
-# Lock to prevent concurrent trading cycles
-_trading_cycle_lock = False
+# Lock to prevent concurrent trading cycles (proper threading lock)
+_trading_cycle_lock = threading.Lock()
 _trading_cycle_started = None  # Track when cycle started for timeout
 
 # Minimum cash reserve as percentage of portfolio (stop buying below this)
@@ -765,22 +766,26 @@ def run_ai_trading_cycle(db: Session) -> dict:
     4. Take a portfolio snapshot
     """
     import time
-    global _trading_cycle_lock, _trading_cycle_started
+    global _trading_cycle_started
 
-    # Check if another cycle is already running (with 5-minute timeout)
-    if _trading_cycle_lock:
+    # Try to acquire lock without blocking
+    if not _trading_cycle_lock.acquire(blocking=False):
+        # Lock is held - check for timeout
         if _trading_cycle_started:
             elapsed = (datetime.now() - _trading_cycle_started).total_seconds()
             if elapsed < 300:  # 5 minute timeout
                 logger.warning(f"Trading cycle already in progress (started {elapsed:.0f}s ago), skipping")
                 return {"status": "busy", "message": f"Trading cycle already running ({elapsed:.0f}s elapsed)"}
             else:
+                # Timeout - force acquire (blocking) to reset
                 logger.warning(f"Previous cycle timed out after {elapsed:.0f}s, forcing new cycle")
+                _trading_cycle_lock.acquire(blocking=True)
         else:
-            logger.warning("Lock set but no start time, forcing new cycle")
+            # Lock held but no start time - force acquire
+            logger.warning("Lock held but no start time, forcing new cycle")
+            _trading_cycle_lock.acquire(blocking=True)
 
-    # Acquire lock
-    _trading_cycle_lock = True
+    # Lock acquired - record start time
     _trading_cycle_started = datetime.now()
 
     try:
@@ -1050,8 +1055,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
     finally:
         # Always release the lock
-        _trading_cycle_lock = False
         _trading_cycle_started = None
+        _trading_cycle_lock.release()
         logger.info("Trading cycle lock released")
 
 

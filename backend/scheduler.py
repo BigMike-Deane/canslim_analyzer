@@ -284,7 +284,7 @@ def run_continuous_scan():
             stock.score_change = None
 
         # Update stock data
-        stock.company_name = analysis.get("company_name")
+        stock.name = analysis.get("company_name")
         stock.sector = analysis.get("sector")
         stock.industry = analysis.get("industry")
         stock.current_price = analysis.get("current_price")

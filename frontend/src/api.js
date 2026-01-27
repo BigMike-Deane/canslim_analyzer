@@ -150,7 +150,19 @@ export const api = {
   // Growth Mode Stocks
   getTopGrowthStocks: (limit = 10) => request(`/api/top-growth-stocks?limit=${limit}`),
 
-  getBreakingOutStocks: (limit = 10) => request(`/api/stocks/breaking-out?limit=${limit}`)
+  getBreakingOutStocks: (limit = 10) => request(`/api/stocks/breaking-out?limit=${limit}`),
+
+  // Backtesting
+  getBacktests: () => request('/api/backtests'),
+
+  createBacktest: (config) => request('/api/backtests', {
+    method: 'POST',
+    body: JSON.stringify(config)
+  }),
+
+  getBacktest: (id) => request(`/api/backtests/${id}`),
+
+  deleteBacktest: (id) => request(`/api/backtests/${id}`, { method: 'DELETE' })
 }
 
 // Formatting utilities

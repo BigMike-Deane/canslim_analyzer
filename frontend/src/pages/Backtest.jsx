@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { api, formatCurrency, formatPercent } from '../api'
+import { api, formatCurrency, formatPercent, APIError } from '../api'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 
 function PerformanceChart({ data, startingCash }) {
@@ -343,8 +343,7 @@ export default function Backtest() {
 
   const fetchBacktests = useCallback(async () => {
     try {
-      const response = await fetch('/api/backtests')
-      const data = await response.json()
+      const data = await api.getBacktests()
       setBacktests(data)
       return data
     } catch (err) {
@@ -391,18 +390,10 @@ export default function Backtest() {
     setIsLoading(true)
     setError(null)
     try {
-      const response = await fetch('/api/backtests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
-      })
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.detail || 'Failed to start backtest')
-      }
+      await api.createBacktest(config)
       fetchBacktests()
     } catch (err) {
-      setError(err.message)
+      setError(err instanceof APIError ? err.message : 'Failed to start backtest')
     } finally {
       setIsLoading(false)
     }
@@ -410,7 +401,7 @@ export default function Backtest() {
 
   const selectBacktest = async (id) => {
     try {
-      const data = await fetch(`/api/backtests/${id}`).then(r => r.json())
+      const data = await api.getBacktest(id)
       setSelectedBacktest(data)
     } catch (err) {
       console.error('Failed to fetch backtest:', err)
@@ -419,7 +410,7 @@ export default function Backtest() {
 
   const deleteBacktest = async (id) => {
     try {
-      await fetch(`/api/backtests/${id}`, { method: 'DELETE' })
+      await api.deleteBacktest(id)
       setBacktests(backtests.filter(b => b.id !== id))
       if (selectedBacktest?.backtest?.id === id) {
         setSelectedBacktest(null)
