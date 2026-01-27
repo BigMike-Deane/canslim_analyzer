@@ -60,6 +60,7 @@ DATA_FRESHNESS_INTERVALS = {
     "institutional": 14 * 24 * 3600,  # Once per 2 weeks (13F filings are quarterly)
     "insider_trading": 14 * 24 * 3600,  # Once per 2 weeks (changes slowly)
     "short_interest": 3 * 24 * 3600,    # Once per 3 days (bi-weekly updates)
+    "yahoo_info": 7 * 24 * 3600,      # Once per week (comprehensive Yahoo data for key metrics, balance, analyst)
 }
 
 # Cached data storage (stores the actual fetched data)

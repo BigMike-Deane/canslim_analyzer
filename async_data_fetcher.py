@@ -531,6 +531,126 @@ async def fetch_short_interest_async(ticker: str) -> dict:
     return await loop.run_in_executor(None, _fetch_short)
 
 
+# ============== YAHOO INFO FETCHER (COMPREHENSIVE) ==============
+# Gets ROE, institutional %, analyst targets, cash/debt, short interest in ONE call
+
+# Semaphore to limit concurrent Yahoo requests (they throttle aggressively)
+_yahoo_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent Yahoo requests
+_yahoo_delay = 0.15  # Delay between Yahoo requests in seconds
+
+async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
+    """
+    Fetch ALL supplementary data from Yahoo Finance in ONE call.
+    This replaces multiple FMP calls (key_metrics, balance_sheet, analyst, short_interest).
+
+    Returns dict with:
+    - roe, roa, roic (key metrics)
+    - cash_and_equivalents, total_debt (balance sheet)
+    - analyst_target_price, num_analyst_opinions (analyst)
+    - short_interest_pct, short_ratio (short interest)
+    - institutional_holders_pct
+    """
+    loop = asyncio.get_event_loop()
+
+    def _fetch_yahoo_info():
+        result = {
+            # Key metrics
+            "roe": 0,
+            "roa": 0,
+            "roic": 0,
+            "earnings_yield": 0,
+            "fcf_yield": 0,
+            # Balance sheet
+            "cash_and_equivalents": 0,
+            "total_debt": 0,
+            # Analyst
+            "analyst_target_price": 0,
+            "analyst_target_high": 0,
+            "analyst_target_low": 0,
+            "num_analyst_opinions": 0,
+            "earnings_growth_estimate": 0,
+            # Short interest
+            "short_interest_pct": 0,
+            "short_ratio": 0,
+            # Institutional
+            "institutional_holders_pct": 0,
+            # Status
+            "success": False
+        }
+
+        try:
+            import yfinance as yf
+            import time
+
+            stock = yf.Ticker(ticker)
+            info = stock.info
+
+            if not info or not info.get('regularMarketPrice'):
+                logger.debug(f"{ticker}: Yahoo info returned no data")
+                return result
+
+            # Key metrics
+            roe = info.get('returnOnEquity')
+            result["roe"] = (roe * 100) if roe and roe > -10 else 0
+
+            roa = info.get('returnOnAssets')
+            result["roa"] = (roa * 100) if roa and roa > -10 else 0
+
+            # ROIC not directly available, estimate from ROE and debt ratio
+            result["roic"] = result["roe"] * 0.8 if result["roe"] > 0 else 0
+
+            # Earnings/FCF yield
+            trailing_pe = info.get('trailingPE')
+            if trailing_pe and trailing_pe > 0:
+                result["earnings_yield"] = 1 / trailing_pe
+
+            fcf = info.get('freeCashflow', 0) or 0
+            market_cap = info.get('marketCap', 0) or 0
+            if market_cap > 0 and fcf:
+                result["fcf_yield"] = fcf / market_cap
+
+            # Balance sheet data
+            result["cash_and_equivalents"] = info.get('totalCash', 0) or 0
+            result["total_debt"] = info.get('totalDebt', 0) or 0
+
+            # Analyst data
+            result["analyst_target_price"] = info.get('targetMeanPrice', 0) or info.get('targetMedianPrice', 0) or 0
+            result["analyst_target_high"] = info.get('targetHighPrice', 0) or 0
+            result["analyst_target_low"] = info.get('targetLowPrice', 0) or 0
+            result["num_analyst_opinions"] = info.get('numberOfAnalystOpinions', 0) or 0
+
+            # Earnings growth estimate
+            growth = info.get('earningsQuarterlyGrowth') or info.get('earningsGrowth')
+            if growth:
+                result["earnings_growth_estimate"] = growth * 100 if abs(growth) < 10 else growth
+
+            # Short interest
+            short_pct = info.get('shortPercentOfFloat', 0) or 0
+            # Convert to percentage if needed (Yahoo sometimes returns as decimal)
+            if 0 < short_pct < 1:
+                short_pct = short_pct * 100
+            result["short_interest_pct"] = short_pct
+            result["short_ratio"] = info.get('shortRatio', 0) or 0
+
+            # Institutional ownership
+            inst_pct = info.get('heldPercentInstitutions', 0) or 0
+            result["institutional_holders_pct"] = (inst_pct * 100) if 0 < inst_pct <= 1 else inst_pct
+
+            result["success"] = True
+            logger.debug(f"{ticker}: Yahoo info fetched successfully")
+
+        except Exception as e:
+            logger.debug(f"{ticker}: Yahoo info error: {e}")
+
+        return result
+
+    # Use semaphore to limit concurrent Yahoo requests
+    async with _yahoo_semaphore:
+        # Small delay to avoid hammering Yahoo
+        await asyncio.sleep(_yahoo_delay)
+        return await loop.run_in_executor(None, _fetch_yahoo_info)
+
+
 async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> None:
     """
     Fetch supplemental data from Yahoo Finance ONLY if FMP data is incomplete
@@ -629,18 +749,15 @@ async def get_stock_data_async(
         if not stock_data.high_52w:
             stock_data.high_52w = profile.get("high_52w", 0) or 0
 
-    # Fetch detailed financials with caching to reduce API calls
-    # Only fetch data types that aren't fresh in cache
+    # ============== HYBRID DATA FETCHING ==============
+    # Strategy: FMP for earnings/revenue (rate-limited), Yahoo for everything else (more lenient)
+    # This reduces FMP calls from 6 to 2 per stock, dramatically reducing 429 errors
+
+    # STEP 1: FMP for earnings and revenue only (the most reliable source for this data)
+    financials = {}
     if FMP_API_KEY:
-        tasks = []
-        task_types = []
-
-        # Check cache freshness for each data type before making API calls
-        # This dramatically reduces 429 errors on subsequent scans
-
         if not is_data_fresh(ticker, "earnings"):
-            tasks.append(fetch_fmp_financials_async(session, ticker))
-            task_types.append("financials")
+            financials = await fetch_fmp_financials_async(session, ticker)
         else:
             # Load from cache
             cached_earnings = get_cached_data(ticker, "earnings")
@@ -652,113 +769,93 @@ async def get_stock_data_async(
                 stock_data.quarterly_revenue = cached_revenue.get("quarterly", [])
                 stock_data.annual_revenue = cached_revenue.get("annual", [])
 
-        if not is_data_fresh(ticker, "key_metrics"):
-            tasks.append(fetch_fmp_key_metrics_async(session, ticker))
-            task_types.append("key_metrics")
-        else:
-            cached_metrics = get_cached_data(ticker, "key_metrics")
-            if cached_metrics:
-                stock_data.roe = cached_metrics.get("roe", 0)
-                stock_data.roa = cached_metrics.get("roa", 0)
-                stock_data.roic = cached_metrics.get("roic", 0)
+    # Apply FMP financials if fetched
+    if financials:
+        stock_data.quarterly_earnings = financials.get("quarterly_eps", [])
+        stock_data.annual_earnings = financials.get("annual_eps", [])
+        stock_data.quarterly_revenue = financials.get("quarterly_revenue", [])
+        stock_data.annual_revenue = financials.get("annual_revenue", [])
+        # Cache earnings and revenue data
+        set_cached_data(ticker, "earnings", {
+            "quarterly": stock_data.quarterly_earnings,
+            "annual": stock_data.annual_earnings
+        }, persist_to_db=True)
+        set_cached_data(ticker, "revenue", {
+            "quarterly": stock_data.quarterly_revenue,
+            "annual": stock_data.annual_revenue
+        }, persist_to_db=True)
+        mark_data_fetched(ticker, "earnings")
 
-        if not is_data_fresh(ticker, "balance_sheet"):
-            tasks.append(fetch_fmp_balance_sheet_async(session, ticker))
-            task_types.append("balance_sheet")
-        else:
-            cached_balance = get_cached_data(ticker, "balance_sheet")
-            if cached_balance:
-                stock_data.cash_and_equivalents = cached_balance.get("cash_and_equivalents", 0)
-                stock_data.total_debt = cached_balance.get("total_debt", 0)
+    # STEP 2: Yahoo for everything else (key metrics, balance sheet, analyst, short interest)
+    # This is ONE call that gets ALL supplementary data
+    yahoo_info = {}
+    if not is_data_fresh(ticker, "yahoo_info"):
+        yahoo_info = await fetch_yahoo_info_comprehensive_async(ticker)
+    else:
+        # Load from cache
+        cached_yahoo = get_cached_data(ticker, "yahoo_info")
+        if cached_yahoo:
+            yahoo_info = cached_yahoo
 
-        if not is_data_fresh(ticker, "analyst"):
-            tasks.append(fetch_fmp_analyst_async(session, ticker))
-            task_types.append("analyst")
-        else:
-            cached_analyst = get_cached_data(ticker, "analyst")
-            if cached_analyst:
-                stock_data.num_analyst_opinions = cached_analyst.get("num_analysts", 0)
-                stock_data.analyst_target_price = cached_analyst.get("target_consensus", 0)
+    # Apply Yahoo info data
+    if yahoo_info and yahoo_info.get("success", False):
+        # Key metrics
+        if yahoo_info.get("roe"):
+            stock_data.roe = yahoo_info["roe"]
+        if yahoo_info.get("roa"):
+            stock_data.roa = yahoo_info["roa"]
+        if yahoo_info.get("roic"):
+            stock_data.roic = yahoo_info["roic"]
+        stock_data.earnings_yield = yahoo_info.get("earnings_yield", 0)
+        stock_data.fcf_yield = yahoo_info.get("fcf_yield", 0)
 
-        # Earnings surprise - less critical, can use longer cache
-        if not is_data_fresh(ticker, "earnings"):  # Same freshness as earnings
-            tasks.append(fetch_fmp_earnings_surprise_async(session, ticker))
-            task_types.append("earnings_surprise")
+        # Balance sheet
+        if yahoo_info.get("cash_and_equivalents"):
+            stock_data.cash_and_equivalents = yahoo_info["cash_and_equivalents"]
+        if yahoo_info.get("total_debt"):
+            stock_data.total_debt = yahoo_info["total_debt"]
 
-        # Only make API calls if we have tasks
-        financials = {}
-        key_metrics = {}
-        balance_sheet = {}
-        analyst = {}
-        earnings_surprise = {}
+        # Analyst data
+        if yahoo_info.get("analyst_target_price"):
+            stock_data.analyst_target_price = yahoo_info["analyst_target_price"]
+        stock_data.analyst_target_high = yahoo_info.get("analyst_target_high", 0)
+        stock_data.analyst_target_low = yahoo_info.get("analyst_target_low", 0)
+        stock_data.num_analyst_opinions = yahoo_info.get("num_analyst_opinions", 0)
+        if yahoo_info.get("earnings_growth_estimate"):
+            stock_data.earnings_growth_estimate = yahoo_info["earnings_growth_estimate"]
 
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Short interest
+        stock_data.short_interest_pct = yahoo_info.get("short_interest_pct", 0)
+        stock_data.short_ratio = yahoo_info.get("short_ratio", 0)
 
-            # Map results back to their types
-            for i, task_type in enumerate(task_types):
-                result = results[i] if not isinstance(results[i], Exception) else {}
-                if task_type == "financials":
-                    financials = result
-                elif task_type == "key_metrics":
-                    key_metrics = result
-                elif task_type == "balance_sheet":
-                    balance_sheet = result
-                elif task_type == "analyst":
-                    analyst = result
-                elif task_type == "earnings_surprise":
-                    earnings_surprise = result
+        # Institutional ownership
+        if yahoo_info.get("institutional_holders_pct"):
+            stock_data.institutional_holders_pct = yahoo_info["institutional_holders_pct"]
 
-        # Apply financials and cache for future scans
-        if financials:
-            stock_data.quarterly_earnings = financials.get("quarterly_eps", [])
-            stock_data.annual_earnings = financials.get("annual_eps", [])
-            stock_data.quarterly_revenue = financials.get("quarterly_revenue", [])
-            stock_data.annual_revenue = financials.get("annual_revenue", [])
-            # Cache earnings and revenue data
-            set_cached_data(ticker, "earnings", {
-                "quarterly": stock_data.quarterly_earnings,
-                "annual": stock_data.annual_earnings
-            }, persist_to_db=True)
-            set_cached_data(ticker, "revenue", {
-                "quarterly": stock_data.quarterly_revenue,
-                "annual": stock_data.annual_revenue
-            }, persist_to_db=True)
-            mark_data_fetched(ticker, "earnings")
+        # Cache Yahoo info (use same freshness as key_metrics - 7 days)
+        set_cached_data(ticker, "yahoo_info", yahoo_info, persist_to_db=True)
+        mark_data_fetched(ticker, "yahoo_info")
 
-        if key_metrics:
-            stock_data.roe = key_metrics.get("roe", 0)
-            stock_data.roa = key_metrics.get("roa", 0)
-            stock_data.roic = key_metrics.get("roic", 0)
-            stock_data.earnings_yield = key_metrics.get("earnings_yield", 0)
-            stock_data.fcf_yield = key_metrics.get("fcf_yield", 0)
-            # Cache key metrics
-            set_cached_data(ticker, "key_metrics", key_metrics, persist_to_db=True)
-            mark_data_fetched(ticker, "key_metrics")
+    # Also cache in the old format for backwards compatibility with other code
+    if yahoo_info and yahoo_info.get("success", False):
+        set_cached_data(ticker, "key_metrics", {
+            "roe": yahoo_info.get("roe", 0),
+            "roa": yahoo_info.get("roa", 0),
+            "roic": yahoo_info.get("roic", 0),
+        }, persist_to_db=True)
+        mark_data_fetched(ticker, "key_metrics")
 
-        if balance_sheet:
-            stock_data.cash_and_equivalents = balance_sheet.get("cash_and_equivalents", 0)
-            stock_data.total_debt = balance_sheet.get("total_debt", 0)
-            # Cache balance sheet
-            set_cached_data(ticker, "balance_sheet", balance_sheet, persist_to_db=True)
-            mark_data_fetched(ticker, "balance_sheet")
+        set_cached_data(ticker, "balance_sheet", {
+            "cash_and_equivalents": yahoo_info.get("cash_and_equivalents", 0),
+            "total_debt": yahoo_info.get("total_debt", 0),
+        }, persist_to_db=True)
+        mark_data_fetched(ticker, "balance_sheet")
 
-        if analyst:
-            stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
-            stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)
-            stock_data.analyst_target_price = analyst.get("target_consensus", 0) or analyst.get("target_median", 0)
-            stock_data.analyst_target_high = analyst.get("target_high", 0)
-            stock_data.analyst_target_low = analyst.get("target_low", 0)
-            # Cache analyst data
-            set_cached_data(ticker, "analyst", analyst, persist_to_db=True)
-            mark_data_fetched(ticker, "analyst")
-
-        if earnings_surprise:
-            stock_data.earnings_surprise_pct = earnings_surprise.get("latest_surprise_pct", 0)
-            stock_data.eps_beat_streak = earnings_surprise.get("beat_streak", 0)
-            adjusted_eps = earnings_surprise.get("quarterly_adjusted_eps", [])
-            if adjusted_eps and len(adjusted_eps) >= 4:
-                stock_data.quarterly_earnings = adjusted_eps
+        set_cached_data(ticker, "analyst", {
+            "target_consensus": yahoo_info.get("analyst_target_price", 0),
+            "num_analysts": yahoo_info.get("num_analyst_opinions", 0),
+        }, persist_to_db=True)
+        mark_data_fetched(ticker, "analyst")
 
     # Get price history from Yahoo chart API (fast, no rate limit)
     chart_data = fetch_price_from_chart_api(ticker)
