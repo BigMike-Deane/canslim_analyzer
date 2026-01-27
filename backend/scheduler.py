@@ -10,6 +10,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
 import logging
 import os
+import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,6 +87,9 @@ def run_continuous_scan():
         if t not in seen:
             seen.add(t)
             tickers.append(t)
+
+    # Shuffle to avoid always hitting same stocks first (Yahoo warmup issues)
+    random.shuffle(tickers)
 
     logger.info(f"Including {len(portfolio_tickers)} portfolio tickers in scan")
 
