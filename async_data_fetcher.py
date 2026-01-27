@@ -535,8 +535,9 @@ async def fetch_short_interest_async(ticker: str) -> dict:
 # Gets ROE, institutional %, analyst targets, cash/debt, short interest in ONE call
 
 # Semaphore to limit concurrent Yahoo requests (they throttle aggressively)
-_yahoo_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent Yahoo requests
-_yahoo_delay = 0.15  # Delay between Yahoo requests in seconds
+_yahoo_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent Yahoo requests
+_yahoo_delay = 0.5  # Delay between Yahoo requests in seconds
+_yahoo_max_retries = 3  # Max retries for rate limits
 
 async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
     """
@@ -638,17 +639,33 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
 
             result["success"] = True
             logger.debug(f"{ticker}: Yahoo info fetched successfully")
+            return result
 
         except Exception as e:
+            error_str = str(e).lower()
+            if "rate" in error_str or "429" in error_str or "too many" in error_str:
+                raise  # Re-raise rate limit errors for retry logic
             logger.debug(f"{ticker}: Yahoo info error: {e}")
+            return result
 
-        return result
-
-    # Use semaphore to limit concurrent Yahoo requests
+    # Use semaphore to limit concurrent Yahoo requests with retry logic
     async with _yahoo_semaphore:
-        # Small delay to avoid hammering Yahoo
-        await asyncio.sleep(_yahoo_delay)
-        return await loop.run_in_executor(None, _fetch_yahoo_info)
+        for attempt in range(_yahoo_max_retries):
+            await asyncio.sleep(_yahoo_delay)
+            try:
+                return await loop.run_in_executor(None, _fetch_yahoo_info)
+            except Exception as e:
+                error_str = str(e).lower()
+                if "rate" in error_str or "429" in error_str or "too many" in error_str:
+                    wait_time = (attempt + 1) * 10  # 10s, 20s, 30s backoff
+                    logger.warning(f"{ticker}: Yahoo rate limited, waiting {wait_time}s (attempt {attempt + 1}/{_yahoo_max_retries})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.debug(f"{ticker}: Yahoo error: {e}")
+                    return {"success": False}
+
+        logger.warning(f"{ticker}: Yahoo failed after {_yahoo_max_retries} retries")
+        return {"success": False}
 
 
 async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> None:
