@@ -69,6 +69,35 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 
 ## Recent Improvements (Jan 2025)
 
+### Redis Security Fix + Healthcheck (Jan 28)
+
+**CERT-Bund Security Alert**: Received alert that Redis (port 6379) was publicly accessible from the internet without authentication.
+
+**Problem**: `docker-compose.yml` had `ports: "6379:6379"` which exposed Redis to all network interfaces (`0.0.0.0`), allowing anyone on the internet to connect.
+
+**Solution**: Removed the port mapping entirely. The app connects via Docker's internal network using the hostname `redis`, so no external port is needed.
+
+**Also Fixed**: Docker healthcheck was using `curl` which isn't installed in the container, causing perpetual "unhealthy" status. Changed to use Python `urllib` instead.
+
+**Files Modified**:
+- `docker-compose.yml` - Removed Redis port exposure, changed healthcheck to use Python
+
+**Verification Commands**:
+```bash
+# Confirm Redis not exposed publicly (should return nothing)
+ss -tlnp | grep 6379
+
+# Confirm both containers healthy
+docker ps | grep canslim
+
+# Test Redis connectivity internally
+docker exec canslim-analyzer python3 -c "import redis; r = redis.Redis(host='redis', port=6379); print('Redis ping:', r.ping())"
+```
+
+**Note**: If you need local Redis access for development, either:
+- Run Redis natively on your machine
+- Use `ports: ["127.0.0.1:6379:6379"]` (localhost only, not public)
+
 ### Async Scanner Insider/Short Data Fix (Jan 25)
 
 **Problem**: Stocks scanned via the async scanner had empty insider sentiment and short interest data. The `async_scanner.py` was using empty placeholder dicts instead of fetching the data.
