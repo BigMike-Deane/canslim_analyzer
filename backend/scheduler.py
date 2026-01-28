@@ -251,6 +251,10 @@ def run_continuous_scan():
                 # Short interest
                 "short_interest_pct": short_data.get("short_interest_pct"),
                 "short_ratio": short_data.get("short_ratio"),
+                # Raw earnings data (needed for database save)
+                "quarterly_earnings": stock_data.quarterly_earnings,
+                "annual_earnings": stock_data.annual_earnings,
+                "quarterly_revenue": stock_data.quarterly_revenue,
             }
         except Exception as e:
             logger.error(f"Error analyzing {ticker}: {e}")
