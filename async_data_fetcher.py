@@ -270,6 +270,8 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
     """
     CONSOLIDATED: Fetch earnings + revenue in ONE call (not two separate calls)
     This eliminates redundant API calls since both come from income-statement endpoint
+
+    If FMP fails after retries, falls back to cached data as LAST RESORT.
     """
     if not FMP_API_KEY:
         return {}
@@ -277,7 +279,8 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
     result = {
         "quarterly_eps": [], "annual_eps": [],
         "quarterly_revenue": [], "annual_revenue": [],
-        "quarterly_net_income": [], "annual_net_income": []
+        "quarterly_net_income": [], "annual_net_income": [],
+        "used_cache_fallback": False
     }
 
     # Fetch quarterly and annual in parallel (but only 2 calls total, not 4)
@@ -290,15 +293,36 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
         return_exceptions=True
     )
 
-    if isinstance(quarterly_data, list) and quarterly_data:
+    got_quarterly = isinstance(quarterly_data, list) and quarterly_data
+    got_annual = isinstance(annual_data, list) and annual_data
+
+    if got_quarterly:
         result["quarterly_eps"] = [q.get("eps", 0) or 0 for q in quarterly_data]
         result["quarterly_revenue"] = [q.get("revenue", 0) or 0 for q in quarterly_data]
         result["quarterly_net_income"] = [q.get("netIncome", 0) or 0 for q in quarterly_data]
 
-    if isinstance(annual_data, list) and annual_data:
+    if got_annual:
         result["annual_eps"] = [a.get("eps", 0) or 0 for a in annual_data]
         result["annual_revenue"] = [a.get("revenue", 0) or 0 for a in annual_data]
         result["annual_net_income"] = [a.get("netIncome", 0) or 0 for a in annual_data]
+
+    # LAST RESORT: If both API calls failed, use cached data
+    if not got_quarterly and not got_annual:
+        cached_earnings = get_cached_data(ticker, "earnings")
+        cached_revenue = get_cached_data(ticker, "revenue")
+
+        if cached_earnings or cached_revenue:
+            logger.warning(f"{ticker}: FMP financials failed, using CACHED data as fallback (last resort)")
+            result["used_cache_fallback"] = True
+
+            if cached_earnings:
+                result["quarterly_eps"] = cached_earnings.get("quarterly", [])
+                result["annual_eps"] = cached_earnings.get("annual", [])
+            if cached_revenue:
+                result["quarterly_revenue"] = cached_revenue.get("quarterly", [])
+                result["annual_revenue"] = cached_revenue.get("annual", [])
+        else:
+            logger.warning(f"{ticker}: FMP financials failed and no cache available")
 
     return result
 
@@ -535,9 +559,9 @@ async def fetch_short_interest_async(ticker: str) -> dict:
 # Gets ROE, institutional %, analyst targets, cash/debt, short interest in ONE call
 
 # Semaphore to limit concurrent Yahoo requests (they throttle aggressively)
-_yahoo_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent Yahoo requests
-_yahoo_delay = 0.5  # Delay between Yahoo requests in seconds
-_yahoo_max_retries = 3  # Max retries for rate limits
+_yahoo_semaphore = asyncio.Semaphore(2)  # Reduced to 2 concurrent Yahoo requests
+_yahoo_delay = 1.0  # Delay between Yahoo requests in seconds (increased from 0.5)
+_yahoo_max_retries = 5  # Increased retries to avoid needing fallback data
 
 async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
     """
@@ -653,18 +677,40 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
         for attempt in range(_yahoo_max_retries):
             await asyncio.sleep(_yahoo_delay)
             try:
-                return await loop.run_in_executor(None, _fetch_yahoo_info)
+                result = await loop.run_in_executor(None, _fetch_yahoo_info)
+                if result.get("success"):
+                    return result
+                # If not successful but no exception, try again with backoff
+                if attempt < _yahoo_max_retries - 1:
+                    wait_time = (attempt + 1) * 5  # 5s, 10s, 15s, 20s backoff
+                    logger.debug(f"{ticker}: Yahoo returned no data, retrying in {wait_time}s (attempt {attempt + 1}/{_yahoo_max_retries})")
+                    await asyncio.sleep(wait_time)
+                    continue
+                return result  # Last attempt, return whatever we got
             except Exception as e:
                 error_str = str(e).lower()
                 if "rate" in error_str or "429" in error_str or "too many" in error_str:
-                    wait_time = (attempt + 1) * 10  # 10s, 20s, 30s backoff
+                    # Exponential backoff: 8s, 16s, 32s, 64s, 120s
+                    wait_time = min(8 * (2 ** attempt), 120)
                     logger.warning(f"{ticker}: Yahoo rate limited, waiting {wait_time}s (attempt {attempt + 1}/{_yahoo_max_retries})")
                     await asyncio.sleep(wait_time)
                 else:
                     logger.debug(f"{ticker}: Yahoo error: {e}")
-                    return {"success": False}
+                    # Don't give up on first error, try again
+                    if attempt < _yahoo_max_retries - 1:
+                        await asyncio.sleep(3)
+                        continue
+                    break
 
-        logger.warning(f"{ticker}: Yahoo failed after {_yahoo_max_retries} retries")
+        # LAST RESORT: Use cached data if available instead of returning empty
+        logger.warning(f"{ticker}: Yahoo failed after {_yahoo_max_retries} retries, checking for cached data...")
+        cached_yahoo = get_cached_data(ticker, "yahoo_info")
+        if cached_yahoo and cached_yahoo.get("success"):
+            logger.info(f"{ticker}: Using CACHED Yahoo data as fallback (last resort)")
+            cached_yahoo["used_cache_fallback"] = True
+            return cached_yahoo
+
+        logger.warning(f"{ticker}: No cached data available - stock will have incomplete data")
         return {"success": False}
 
 

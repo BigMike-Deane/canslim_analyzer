@@ -2,6 +2,39 @@
 
 ## Latest Improvements
 
+### Yahoo/FMP Rate Limit Handling - Complete Data Every Scan
+
+**Problem**: Yahoo Finance rate limiting was causing stocks like UCBI, SNA, MFA to lose all Yahoo data (ROE, short interest, institutional %) during scans, resulting in incomplete CANSLIM scores.
+
+**Goal**: Complete and accurate data set every scan, with cached fallback ONLY as last resort.
+
+**Solution**: Improved retry logic and added cached fallback safety net:
+
+1. **Yahoo Rate Limit Improvements**:
+   - Reduced concurrent Yahoo requests: 3 → 2
+   - Increased delay between requests: 0.5s → 1.0s
+   - Increased retry attempts: 3 → 5
+   - Improved exponential backoff: 8s, 16s, 32s, 64s, 120s (max)
+   - Added retry on empty data (not just rate limit errors)
+
+2. **Last Resort Cached Fallback**:
+   - If ALL retries fail, use cached data from previous successful fetch
+   - Logs clearly: `"Using CACHED Yahoo data as fallback (last resort)"`
+   - Sets `used_cache_fallback: True` flag for tracking
+   - Only triggers after exhausting all retry options
+
+3. **FMP Earnings Fallback**:
+   - Same principle for FMP financials (earnings/revenue)
+   - If API fails after retries, uses cached data as last resort
+   - Logs: `"FMP financials failed, using CACHED data as fallback"`
+
+**Files Changed**:
+- `async_data_fetcher.py` - Improved retry logic, added cached fallbacks
+
+**Key Design**: The goal is to NEVER need fallback data. The improvements to retry/backoff should handle 99%+ of rate limits. Cached fallback is a safety net to prevent data loss, not a primary strategy.
+
+---
+
 ### AI Trading Logic Improvements - Score Crash Protection
 
 **Problem**: AI Portfolio sold $B and $BKR due to "SCORE CRASH" but the frontend showed stable scores. Likely caused by a temporary data blip during scanning.
