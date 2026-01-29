@@ -24,7 +24,8 @@ from data_fetcher import (
     StockData, FMP_API_KEY, FMP_BASE_URL,
     get_cached_data, set_cached_data, mark_data_fetched, is_data_fresh,
     fetch_price_from_chart_api, fetch_weekly_price_history,
-    REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock
+    REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
+    load_cache_from_db
 )
 
 if REDIS_AVAILABLE:
@@ -1051,6 +1052,10 @@ async def fetch_stocks_batch_async(
     """
     results = []
     scan_id = f"scan_{datetime.now().strftime('%Y%m%d')}"
+
+    # Load DB cache on startup to enable freshness checks
+    # This prevents re-fetching data that's already fresh from previous scans
+    load_cache_from_db()
 
     # Reset fallback tracker for this scan
     reset_fallback_tracker()
