@@ -503,7 +503,8 @@ def run_continuous_scan():
             hit_stats = get_cache_hit_stats()
             hit_rate = (hit_stats['hits'] / (hit_stats['hits'] + hit_stats['misses']) * 100) if (hit_stats['hits'] + hit_stats['misses']) > 0 else 0
             logger.info(f"Cache stats: {hit_stats['hits']} hits, {hit_stats['misses']} misses ({hit_rate:.1f}% hit rate)")
-            logger.info(f"Cache size: {cache_stats['tickers_tracked']} tickers, {cache_stats['cached_data_entries']} data entries")
+            mem_stats = cache_stats.get('memory', cache_stats)  # Handle both nested and flat formats
+            logger.info(f"Cache size: {mem_stats.get('tickers_tracked', 0)} tickers, {mem_stats.get('cached_data_entries', 0)} data entries")
 
             reset_rate_limit_stats()  # Reset for next scan
         except Exception as e:
