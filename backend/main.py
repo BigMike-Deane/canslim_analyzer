@@ -2516,6 +2516,28 @@ async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
     return {"message": "Backtest deleted"}
 
 
+@app.post("/api/backtests/{backtest_id}/cancel")
+async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
+    """Request cancellation of a running backtest"""
+    backtest = db.query(BacktestRun).get(backtest_id)
+    if not backtest:
+        raise HTTPException(404, "Backtest not found")
+
+    if backtest.status not in ("pending", "running"):
+        raise HTTPException(400, f"Cannot cancel backtest with status: {backtest.status}")
+
+    backtest.cancel_requested = True
+    db.commit()
+
+    logger.info(f"Cancellation requested for backtest {backtest_id}")
+
+    return {
+        "message": "Cancellation requested",
+        "id": backtest.id,
+        "status": backtest.status
+    }
+
+
 # ============== Serve Frontend ==============
 
 frontend_path = Path(__file__).parent.parent / "frontend" / "dist"

@@ -162,7 +162,9 @@ export const api = {
 
   getBacktest: (id) => request(`/api/backtests/${id}`),
 
-  deleteBacktest: (id) => request(`/api/backtests/${id}`, { method: 'DELETE' })
+  deleteBacktest: (id) => request(`/api/backtests/${id}`, { method: 'DELETE' }),
+
+  cancelBacktest: (id) => request(`/api/backtests/${id}/cancel`, { method: 'POST' })
 }
 
 // Formatting utilities

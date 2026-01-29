@@ -132,6 +132,16 @@ class BacktestEngine:
             # Simulate each trading day
             total_days = len(trading_days)
             for i, current_date in enumerate(trading_days):
+                # Check for cancellation request every 10 days
+                if i % 10 == 0:
+                    self.db.refresh(self.backtest)
+                    if self.backtest.cancel_requested:
+                        logger.info(f"Backtest {self.backtest.id} cancelled by user at {i}/{total_days} days")
+                        self.backtest.status = "cancelled"
+                        self.backtest.error_message = f"Cancelled by user at {progress:.0f}% progress"
+                        self.db.commit()
+                        return self.backtest
+
                 self._simulate_day(current_date)
 
                 # Update progress (30% loading + 70% simulation)

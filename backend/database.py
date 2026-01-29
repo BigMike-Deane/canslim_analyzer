@@ -111,6 +111,8 @@ def run_migrations():
         ("stocks", "quarterly_earnings", "TEXT"),  # JSON stored as TEXT
         ("stocks", "annual_earnings", "TEXT"),  # JSON stored as TEXT
         ("stocks", "quarterly_revenue", "TEXT"),  # JSON stored as TEXT
+        # Backtest cancellation support
+        ("backtest_runs", "cancel_requested", "BOOLEAN DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:
@@ -541,6 +543,7 @@ class BacktestRun(Base):
     completed_at = Column(DateTime)
     error_message = Column(Text)
     progress_pct = Column(Float, default=0.0)  # 0-100 progress during run
+    cancel_requested = Column(Boolean, default=False)  # Flag to request cancellation
 
     # Relationships (cascade delete when backtest is deleted)
     daily_snapshots = relationship("BacktestSnapshot", back_populates="backtest_run", cascade="all, delete-orphan")

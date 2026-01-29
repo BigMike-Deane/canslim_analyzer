@@ -146,7 +146,7 @@ function BacktestForm({ onSubmit, isLoading }) {
   )
 }
 
-function BacktestList({ backtests, onSelect, onDelete }) {
+function BacktestList({ backtests, onSelect, onDelete, onCancel }) {
   if (!backtests || backtests.length === 0) {
     return (
       <div className="card text-center text-dark-400 py-8">
@@ -163,6 +163,8 @@ function BacktestList({ backtests, onSelect, onDelete }) {
         return <span className="text-xs bg-blue-900 text-blue-400 px-2 py-0.5 rounded">Running</span>
       case 'failed':
         return <span className="text-xs bg-red-900 text-red-400 px-2 py-0.5 rounded">Failed</span>
+      case 'cancelled':
+        return <span className="text-xs bg-yellow-900 text-yellow-400 px-2 py-0.5 rounded">Cancelled</span>
       default:
         return <span className="text-xs bg-dark-600 text-dark-300 px-2 py-0.5 rounded">Pending</span>
     }
@@ -186,7 +188,7 @@ function BacktestList({ backtests, onSelect, onDelete }) {
               <div className="text-dark-400 text-xs">
                 {bt.start_date} to {bt.end_date}
               </div>
-              {bt.status === 'running' && (
+              {(bt.status === 'running' || bt.status === 'pending') && (
                 <div className="mt-1">
                   <div className="h-1 bg-dark-600 rounded-full overflow-hidden">
                     <div
@@ -194,7 +196,18 @@ function BacktestList({ backtests, onSelect, onDelete }) {
                       style={{ width: `${bt.progress_pct || 0}%` }}
                     />
                   </div>
-                  <div className="text-xs text-dark-400 mt-1">{(bt.progress_pct || 0).toFixed(0)}%</div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-xs text-dark-400">{(bt.progress_pct || 0).toFixed(0)}%</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onCancel(bt.id)
+                      }}
+                      className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -208,15 +221,16 @@ function BacktestList({ backtests, onSelect, onDelete }) {
                 </div>
               </div>
             )}
-            {bt.status === 'completed' && (
+            {(bt.status === 'completed' || bt.status === 'failed' || bt.status === 'cancelled') && (
               <button
                 onClick={(e) => {
                   e.stopPropagation()
                   onDelete(bt.id)
                 }}
                 className="ml-3 text-dark-400 hover:text-red-400 transition-colors"
+                title="Delete backtest"
               >
-                X
+                ✕
               </button>
             )}
           </div>
@@ -420,6 +434,17 @@ export default function Backtest() {
     }
   }
 
+  const cancelBacktest = async (id) => {
+    try {
+      await api.cancelBacktest(id)
+      // Refresh list to show updated status
+      fetchBacktests()
+    } catch (err) {
+      console.error('Failed to cancel backtest:', err)
+      setError(err.message || 'Failed to cancel backtest')
+    }
+  }
+
   return (
     <div className="p-4 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">CANSLIM Backtesting</h1>
@@ -445,6 +470,7 @@ export default function Backtest() {
             backtests={backtests}
             onSelect={selectBacktest}
             onDelete={deleteBacktest}
+            onCancel={cancelBacktest}
           />
         </>
       )}

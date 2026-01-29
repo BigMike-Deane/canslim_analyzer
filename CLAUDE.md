@@ -449,6 +449,7 @@ Historical backtesting to validate the CANSLIM AI trading strategy.
 - `GET /api/backtests` - List all backtests
 - `GET /api/backtests/{id}` - Get detailed results with chart data
 - `GET /api/backtests/{id}/status` - Poll progress during run
+- `POST /api/backtests/{id}/cancel` - Cancel a running backtest
 - `DELETE /api/backtests/{id}` - Delete a backtest
 
 ### Access

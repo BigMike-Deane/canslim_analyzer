@@ -1,6 +1,44 @@
-# Current Status - Jan 25, 2026
+# Current Status - Jan 29, 2026
 
 ## Latest Improvement Deployed
+
+**Backtest Cancellation Feature**
+
+Added the ability to cancel running/stuck backtests from the UI.
+
+### Changes Made
+1. **Backend (`database.py`)**: Added `cancel_requested` column to `BacktestRun` model
+2. **Backend (`backtester.py`)**: Engine checks for cancellation every 10 simulated days and exits gracefully
+3. **Backend (`main.py`)**: New `POST /api/backtests/{id}/cancel` endpoint
+4. **Frontend (`api.js`)**: Added `cancelBacktest(id)` API function
+5. **Frontend (`Backtest.jsx`)**: Added Cancel button for running/pending backtests, "Cancelled" status badge
+
+### Deployment
+```bash
+ssh root@147.93.72.73 "cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build"
+```
+
+### Fixing Stuck Backtest (Manual)
+If the backtest is stuck at 47% and won't cancel via UI, run this on the VPS:
+```bash
+docker exec canslim-analyzer python3 -c "
+import sys
+sys.path.insert(0, '/app/backend')
+from database import SessionLocal, BacktestRun
+db = SessionLocal()
+# Mark all running backtests as failed
+for bt in db.query(BacktestRun).filter(BacktestRun.status.in_(['running', 'pending'])).all():
+    bt.status = 'failed'
+    bt.error_message = 'Manually cancelled - stuck at 47%'
+db.commit()
+print('Done - stuck backtests marked as failed')
+db.close()
+"
+```
+
+---
+
+## Previous Update - Jan 25, 2026
 
 **Async Scanner Insider/Short Data Fix**
 
