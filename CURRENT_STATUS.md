@@ -24,7 +24,35 @@
 **Files Changed**:
 - `backend/ai_trader.py` - Added `check_score_stability()`, improved logging
 
-**To investigate recent trades on VPS**:
+### Scanner Data Blip Prevention
+
+**Problem**: ARM showed a CANSLIM score of 20 when it should be ~75. API failures during scans caused missing earnings data, leading to artificially low scores being saved.
+
+**Solution**: Added data blip detection in `save_stock_to_db()`:
+
+1. **Detects blips when**:
+   - Score drops > 25 points AND
+   - 3+ component scores are 0 (missing data) OR
+   - No earnings data returned OR
+   - Multiple "Insufficient data" / "No data" in score details
+
+2. **When blip detected**:
+   - **KEEPS the old score** instead of saving the bad one
+   - Preserves non-zero component scores
+   - Logs warning: `DATA BLIP DETECTED for {ticker}...KEEPING OLD SCORE`
+
+**Files Changed**:
+- `backend/scheduler.py` - Added blip detection in `save_stock_to_db()`
+
+**Test Results**:
+```
+Test 1: Clear data blip → Detected ✓
+Test 2: Legitimate drop → Not flagged ✓
+Test 3: Small change → Not flagged ✓
+Test 4: ARM-like scenario → Detected ✓
+```
+
+**To investigate a stock's score on VPS**:
 ```bash
 docker exec canslim-analyzer python3 -c "
 import sys

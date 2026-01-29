@@ -284,7 +284,66 @@ def run_continuous_scan():
         old_score = stock.canslim_score
         new_score = analysis.get("canslim_score")
 
+        # SAFEGUARD: Detect potential data blips before saving
+        # If score dropped dramatically AND key data is missing, keep the old score
         if old_score is not None and new_score is not None:
+            score_drop = old_score - new_score
+
+            # Check for signs of incomplete data
+            has_earnings_data = bool(analysis.get("quarterly_earnings"))
+            has_price_data = analysis.get("current_price") is not None and analysis.get("current_price") > 0
+            has_52w_high = analysis.get("week_52_high") is not None and analysis.get("week_52_high") > 0
+
+            # Count how many component scores are 0 (suspicious if many are 0)
+            component_scores = [
+                analysis.get("c_score", 0),
+                analysis.get("a_score", 0),
+                analysis.get("n_score", 0),
+                analysis.get("s_score", 0),
+                analysis.get("l_score", 0),
+                analysis.get("i_score", 0),
+            ]
+            zero_components = sum(1 for s in component_scores if s == 0)
+
+            # Check score details for "Insufficient data" or "No data" indicators
+            score_details = analysis.get("score_details", {})
+            data_issues = []
+            for component, details in score_details.items():
+                if isinstance(details, dict):
+                    summary = details.get("summary", "")
+                    if any(x in summary.lower() for x in ["insufficient", "no data", "no price", "no volume"]):
+                        data_issues.append(component.upper())
+
+            # BLIP DETECTION: Score dropped >25 points AND looks like missing data
+            is_likely_blip = (
+                score_drop > 25 and  # Big drop
+                (zero_components >= 3 or  # Too many zero components
+                 not has_earnings_data or  # Missing earnings
+                 len(data_issues) >= 2)  # Multiple data issues
+            )
+
+            if is_likely_blip:
+                logger.warning(f"DATA BLIP DETECTED for {analysis['ticker']}: "
+                              f"Score would drop {old_score:.0f} → {new_score:.0f} (-{score_drop:.0f}). "
+                              f"Issues: {data_issues}, Zero components: {zero_components}. "
+                              f"KEEPING OLD SCORE.")
+                # Keep the old score - don't update
+                new_score = old_score
+                analysis["canslim_score"] = old_score
+                # Also preserve component scores if they were non-zero before
+                if stock.c_score and analysis.get("c_score") == 0:
+                    analysis["c_score"] = stock.c_score
+                if stock.a_score and analysis.get("a_score") == 0:
+                    analysis["a_score"] = stock.a_score
+                if stock.n_score and analysis.get("n_score") == 0:
+                    analysis["n_score"] = stock.n_score
+                if stock.s_score and analysis.get("s_score") == 0:
+                    analysis["s_score"] = stock.s_score
+                if stock.l_score and analysis.get("l_score") == 0:
+                    analysis["l_score"] = stock.l_score
+                if stock.i_score and analysis.get("i_score") == 0:
+                    analysis["i_score"] = stock.i_score
+
             stock.previous_score = old_score
             stock.score_change = round(new_score - old_score, 2)
         else:
