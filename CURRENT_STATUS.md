@@ -1,8 +1,53 @@
 # Current Status - Jan 29, 2026
 
-## Latest Improvement Deployed
+## Latest Improvements
 
-**Backtest Cancellation Feature**
+### AI Trading Logic Improvements - Score Crash Protection
+
+**Problem**: AI Portfolio sold $B and $BKR due to "SCORE CRASH" but the frontend showed stable scores. Likely caused by a temporary data blip during scanning.
+
+**Solution**: Added multiple safeguards:
+
+1. **Score Stability Check** (`check_score_stability()`):
+   - Before selling on score crash, checks last 3 scans' scores
+   - If current score is much lower than recent average, flags as potential blip
+   - **SKIPS THE SELL** if detected as a blip, waits for next scan to confirm
+
+2. **Detailed Trade Logging**:
+   - Trade reasons now include component breakdown: `[C:15/A:12/N:8/S:10/L:14/I:7/M:15]`
+   - Shows recent average score for context: `(avg: 72)`
+   - Flags low data confidence: `⚠️ Low data confidence`
+
+3. **Enhanced Execute Trade Logging**:
+   - Sells now log: cost basis, gain %, P/L amount, and full reason
+
+**Files Changed**:
+- `backend/ai_trader.py` - Added `check_score_stability()`, improved logging
+
+**To investigate recent trades on VPS**:
+```bash
+docker exec canslim-analyzer python3 -c "
+import sys
+sys.path.insert(0, '/app/backend')
+from database import SessionLocal, AIPortfolioTrade, Stock, StockScore
+from sqlalchemy import desc
+db = SessionLocal()
+# Recent trades
+for t in db.query(AIPortfolioTrade).order_by(desc(AIPortfolioTrade.executed_at)).limit(10).all():
+    print(f'{t.executed_at}: {t.action} {t.ticker} @ \${t.price:.2f} - {t.reason}')
+print()
+# Check B and BKR current scores
+for ticker in ['B', 'BKR']:
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    if stock:
+        print(f'{ticker}: Score={stock.canslim_score}, C={stock.c_score}, A={stock.a_score}, N={stock.n_score}, S={stock.s_score}, L={stock.l_score}, I={stock.i_score}, M={stock.m_score}')
+db.close()
+"
+```
+
+---
+
+### Backtest Cancellation Feature
 
 Added the ability to cancel running/stuck backtests from the UI.
 

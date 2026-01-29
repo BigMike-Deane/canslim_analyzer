@@ -19,7 +19,7 @@ def get_cst_now():
 
 from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
-    AIPortfolioTrade, AIPortfolioSnapshot
+    AIPortfolioTrade, AIPortfolioSnapshot, StockScore
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,61 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
 MAX_SECTOR_ALLOCATION = 0.30  # 30% max per sector
 MAX_STOCKS_PER_SECTOR = 4  # Max stocks in same sector
 MAX_POSITION_ALLOCATION = 0.15  # 15% max single position (for pyramiding)
+
+
+def check_score_stability(db: Session, ticker: str, current_score: float, threshold: float = 50) -> dict:
+    """
+    Check if a low score is consistent across recent scans (not a one-time blip).
+
+    Returns:
+        dict with:
+        - is_stable: True if score has been consistently low (not a blip)
+        - recent_scores: list of recent scores
+        - avg_score: average of recent scores
+        - warning: any warning message
+    """
+    from datetime import timedelta
+
+    # Get the stock
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    if not stock:
+        return {"is_stable": True, "recent_scores": [], "avg_score": current_score, "warning": "Stock not found"}
+
+    # Get scores from last 3 scans (roughly last 4-5 hours if scanning every 90 min)
+    recent_scores = db.query(StockScore).filter(
+        StockScore.stock_id == stock.id
+    ).order_by(StockScore.timestamp.desc()).limit(3).all()
+
+    if len(recent_scores) < 2:
+        # Not enough history, trust current score
+        return {"is_stable": True, "recent_scores": [current_score], "avg_score": current_score, "warning": "Limited history"}
+
+    scores = [s.total_score for s in recent_scores if s.total_score is not None]
+    if not scores:
+        return {"is_stable": True, "recent_scores": [], "avg_score": current_score, "warning": "No score history"}
+
+    avg_score = sum(scores) / len(scores)
+
+    # Check if current score is significantly lower than average (potential blip)
+    score_variance = abs(current_score - avg_score)
+
+    # If current score is much lower than recent average, it might be a blip
+    is_blip = current_score < threshold and avg_score > threshold + 10 and score_variance > 15
+
+    if is_blip:
+        return {
+            "is_stable": False,
+            "recent_scores": scores,
+            "avg_score": avg_score,
+            "warning": f"Possible data blip: current {current_score:.0f} vs avg {avg_score:.0f}"
+        }
+
+    return {
+        "is_stable": True,
+        "recent_scores": scores,
+        "avg_score": avg_score,
+        "warning": None
+    }
 
 
 def get_sector_allocations(db: Session) -> dict:
@@ -390,7 +445,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,
                   cost_basis: float = None, realized_gain: float = None):
-    """Record a trade in the database"""
+    """Record a trade in the database with detailed logging"""
     trade = AIPortfolioTrade(
         ticker=ticker,
         action=action,
@@ -406,9 +461,20 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         executed_at=get_cst_now()  # Use CST timezone
     )
     db.add(trade)
+
     stock_type = "Growth" if is_growth_stock else "CANSLIM"
     effective = growth_score if is_growth_stock else score
-    logger.info(f"AI Trade: {action} {shares:.2f} shares of {ticker} @ ${price:.2f} ({stock_type} {effective:.0f}) - {reason}")
+
+    # Enhanced logging for sells
+    if action == "SELL":
+        gain_pct = ((price / cost_basis) - 1) * 100 if cost_basis and cost_basis > 0 else 0
+        logger.info(f"AI SELL: {ticker} - {shares:.2f} shares @ ${price:.2f} "
+                    f"(cost: ${cost_basis:.2f}, gain: {gain_pct:+.1f}%, P/L: ${realized_gain:.2f}) "
+                    f"Score: {effective:.0f} - {reason}")
+    else:
+        logger.info(f"AI {action}: {ticker} - {shares:.2f} shares @ ${price:.2f} "
+                    f"({stock_type} {effective:.0f}) - {reason}")
+
     return trade
 
 
@@ -476,13 +542,65 @@ def evaluate_sells(db: Session) -> list:
                 continue
 
         # Score crashed - sell if score dropped dramatically (>20 points)
+        # BUT add safeguards against data blips
         score_drop = purchase_score - score
         if score_drop > 20 and score < 50:
+            # Get the stock to check data quality and component scores
+            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+
+            # SAFEGUARD: Check score stability - is this a consistent low or a one-time blip?
+            stability = check_score_stability(db, position.ticker, score, threshold=50)
+
+            if not stability["is_stable"]:
+                # This looks like a data blip - DON'T SELL, just log warning
+                logger.warning(f"{position.ticker}: SKIPPING SELL - {stability['warning']}. "
+                               f"Recent scores: {stability['recent_scores']}")
+                continue  # Skip this sell, wait for next scan to confirm
+
+            # Build detailed reason with component breakdown
+            reason_parts = [f"SCORE CRASH: {purchase_score:.0f} → {score:.0f}"]
+
+            if stock:
+                # Check data quality - if low confidence, might be a data blip
+                data_quality = getattr(stock, 'growth_confidence', 'unknown')
+
+                # Get component scores for debugging
+                components = []
+                if stock.c_score is not None:
+                    components.append(f"C:{stock.c_score:.0f}")
+                if stock.a_score is not None:
+                    components.append(f"A:{stock.a_score:.0f}")
+                if stock.n_score is not None:
+                    components.append(f"N:{stock.n_score:.0f}")
+                if stock.s_score is not None:
+                    components.append(f"S:{stock.s_score:.0f}")
+                if stock.l_score is not None:
+                    components.append(f"L:{stock.l_score:.0f}")
+                if stock.i_score is not None:
+                    components.append(f"I:{stock.i_score:.0f}")
+                if stock.m_score is not None:
+                    components.append(f"M:{stock.m_score:.0f}")
+
+                if components:
+                    reason_parts.append(f"[{'/'.join(components)}]")
+
+                # Add recent score history for context
+                if stability["recent_scores"]:
+                    reason_parts.append(f"(avg: {stability['avg_score']:.0f})")
+
+                # Flag if data quality is low
+                if data_quality in ('low', 'unknown', None):
+                    reason_parts.append("⚠️ Low data confidence")
+                    logger.warning(f"{position.ticker}: Score crash with low data confidence. "
+                                   f"Score: {score:.0f}, Components: {components}")
+
             sells.append({
                 "position": position,
-                "reason": f"SCORE CRASH: {purchase_score:.0f} → {score:.0f}",
+                "reason": " ".join(reason_parts),
                 "priority": 3
             })
+            logger.info(f"{position.ticker}: Score crash confirmed - {purchase_score:.0f} → {score:.0f}, "
+                        f"recent avg: {stability['avg_score']:.0f}")
             continue
 
         # For winners, use additional score-based logic
