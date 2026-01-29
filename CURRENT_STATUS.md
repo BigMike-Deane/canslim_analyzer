@@ -33,6 +33,14 @@
 
 **Key Design**: The goal is to NEVER need fallback data. The improvements to retry/backoff should handle 99%+ of rate limits. Cached fallback is a safety net to prevent data loss, not a primary strategy.
 
+**Safeguards Against Stale Data**:
+- `MAX_FALLBACK_CACHE_AGE_DAYS = 7` - won't use cached data older than 7 days
+- Tracks stocks using fallback vs stocks with no data available
+- Logs summary at end of each scan:
+  - `FALLBACK SUMMARY: X stocks used cached data: [tickers]`
+  - `DATA GAPS: X stocks have incomplete data: [tickers]`
+  - Or `All stocks fetched fresh data successfully`
+
 ---
 
 ### AI Trading Logic Improvements - Score Crash Protection
