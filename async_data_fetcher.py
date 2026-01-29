@@ -24,13 +24,53 @@ from data_fetcher import (
     StockData, FMP_API_KEY, FMP_BASE_URL,
     get_cached_data, set_cached_data, mark_data_fetched, is_data_fresh,
     fetch_price_from_chart_api, fetch_weekly_price_history,
-    REDIS_AVAILABLE
+    REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock
 )
 
 if REDIS_AVAILABLE:
     from redis_cache import redis_cache
 
 logger = logging.getLogger(__name__)
+
+# ============== FALLBACK TRACKING ==============
+# Track stocks that needed cached fallback for monitoring
+_fallback_tracker = {
+    "stocks_using_fallback": set(),  # Tickers that used cached data this scan
+    "stocks_no_data": set(),  # Tickers with no cache available
+    "last_reset": None
+}
+_fallback_lock = asyncio.Lock()
+
+# Maximum age for fallback data (7 days) - older data is considered too stale
+MAX_FALLBACK_CACHE_AGE_DAYS = 7
+
+
+def get_cache_age_days(ticker: str, data_type: str) -> float:
+    """Get how old the cached data is in days. Returns 999 if unknown."""
+    with _freshness_lock:
+        if ticker in _data_freshness_cache and data_type in _data_freshness_cache[ticker]:
+            cached_time = _data_freshness_cache[ticker][data_type]
+            if cached_time:
+                age = (datetime.now() - cached_time).total_seconds() / 86400
+                return age
+    return 999  # Unknown age = very old
+
+
+def get_fallback_stats() -> dict:
+    """Get statistics about fallback usage for monitoring"""
+    return {
+        "stocks_using_fallback": list(_fallback_tracker["stocks_using_fallback"]),
+        "stocks_no_data": list(_fallback_tracker["stocks_no_data"]),
+        "fallback_count": len(_fallback_tracker["stocks_using_fallback"]),
+        "no_data_count": len(_fallback_tracker["stocks_no_data"])
+    }
+
+
+def reset_fallback_tracker():
+    """Reset fallback tracker at start of new scan"""
+    _fallback_tracker["stocks_using_fallback"] = set()
+    _fallback_tracker["stocks_no_data"] = set()
+    _fallback_tracker["last_reset"] = datetime.now()
 
 # ============== RATE LIMITING CONFIGURATION ==============
 # FMP API limit: 300 calls/minute = 5 calls/second
@@ -306,23 +346,31 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
         result["annual_revenue"] = [a.get("revenue", 0) or 0 for a in annual_data]
         result["annual_net_income"] = [a.get("netIncome", 0) or 0 for a in annual_data]
 
-    # LAST RESORT: If both API calls failed, use cached data
+    # LAST RESORT: If both API calls failed, use cached data if not too old
     if not got_quarterly and not got_annual:
         cached_earnings = get_cached_data(ticker, "earnings")
         cached_revenue = get_cached_data(ticker, "revenue")
+        cache_age = get_cache_age_days(ticker, "earnings")
 
         if cached_earnings or cached_revenue:
-            logger.warning(f"{ticker}: FMP financials failed, using CACHED data as fallback (last resort)")
-            result["used_cache_fallback"] = True
+            if cache_age <= MAX_FALLBACK_CACHE_AGE_DAYS:
+                logger.warning(f"{ticker}: FMP financials failed, using CACHED data ({cache_age:.1f} days old)")
+                result["used_cache_fallback"] = True
+                result["cache_age_days"] = cache_age
+                _fallback_tracker["stocks_using_fallback"].add(ticker)
 
-            if cached_earnings:
-                result["quarterly_eps"] = cached_earnings.get("quarterly", [])
-                result["annual_eps"] = cached_earnings.get("annual", [])
-            if cached_revenue:
-                result["quarterly_revenue"] = cached_revenue.get("quarterly", [])
-                result["annual_revenue"] = cached_revenue.get("annual", [])
+                if cached_earnings:
+                    result["quarterly_eps"] = cached_earnings.get("quarterly", [])
+                    result["annual_eps"] = cached_earnings.get("annual", [])
+                if cached_revenue:
+                    result["quarterly_revenue"] = cached_revenue.get("quarterly", [])
+                    result["annual_revenue"] = cached_revenue.get("annual", [])
+            else:
+                logger.warning(f"{ticker}: FMP cached data too old ({cache_age:.1f} days) - not using stale fallback")
+                _fallback_tracker["stocks_no_data"].add(ticker)
         else:
             logger.warning(f"{ticker}: FMP financials failed and no cache available")
+            _fallback_tracker["stocks_no_data"].add(ticker)
 
     return result
 
@@ -702,15 +750,25 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
                         continue
                     break
 
-        # LAST RESORT: Use cached data if available instead of returning empty
+        # LAST RESORT: Use cached data if available AND not too old
         logger.warning(f"{ticker}: Yahoo failed after {_yahoo_max_retries} retries, checking for cached data...")
         cached_yahoo = get_cached_data(ticker, "yahoo_info")
+        cache_age = get_cache_age_days(ticker, "yahoo_info")
+
         if cached_yahoo and cached_yahoo.get("success"):
-            logger.info(f"{ticker}: Using CACHED Yahoo data as fallback (last resort)")
-            cached_yahoo["used_cache_fallback"] = True
-            return cached_yahoo
+            if cache_age <= MAX_FALLBACK_CACHE_AGE_DAYS:
+                logger.info(f"{ticker}: Using CACHED Yahoo data as fallback ({cache_age:.1f} days old)")
+                cached_yahoo["used_cache_fallback"] = True
+                cached_yahoo["cache_age_days"] = cache_age
+                _fallback_tracker["stocks_using_fallback"].add(ticker)
+                return cached_yahoo
+            else:
+                logger.warning(f"{ticker}: Cached data too old ({cache_age:.1f} days) - not using stale fallback")
+                _fallback_tracker["stocks_no_data"].add(ticker)
+                return {"success": False, "cache_too_old": True, "cache_age_days": cache_age}
 
         logger.warning(f"{ticker}: No cached data available - stock will have incomplete data")
+        _fallback_tracker["stocks_no_data"].add(ticker)
         return {"success": False}
 
 
@@ -994,6 +1052,9 @@ async def fetch_stocks_batch_async(
     results = []
     scan_id = f"scan_{datetime.now().strftime('%Y%m%d')}"
 
+    # Reset fallback tracker for this scan
+    reset_fallback_tracker()
+
     # Resume from checkpoint if available
     completed_tickers = []
     if resume_from_checkpoint:
@@ -1063,6 +1124,15 @@ async def fetch_stocks_batch_async(
 
     # Clear checkpoint on successful completion
     clear_scan_progress()
+
+    # Log fallback statistics
+    fallback_stats = get_fallback_stats()
+    if fallback_stats["fallback_count"] > 0:
+        logger.warning(f"FALLBACK SUMMARY: {fallback_stats['fallback_count']} stocks used cached data: {fallback_stats['stocks_using_fallback']}")
+    if fallback_stats["no_data_count"] > 0:
+        logger.error(f"DATA GAPS: {fallback_stats['no_data_count']} stocks have incomplete data: {fallback_stats['stocks_no_data']}")
+    if fallback_stats["fallback_count"] == 0 and fallback_stats["no_data_count"] == 0:
+        logger.info("All stocks fetched fresh data successfully - no fallbacks needed")
 
     return results
 
