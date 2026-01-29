@@ -2,28 +2,6 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatScore, getScoreClass, formatCurrency, formatPercent } from '../api'
 
-// 7-day trend indicator component
-function WeeklyTrend({ trend, change }) {
-  if (!trend) return null
-
-  const config = {
-    improving: { icon: '↗', color: 'text-green-400', bg: 'bg-green-500/10' },
-    stable: { icon: '→', color: 'text-dark-400', bg: 'bg-dark-600' },
-    deteriorating: { icon: '↘', color: 'text-red-400', bg: 'bg-red-500/10' }
-  }
-
-  const { icon, color, bg } = config[trend] || config.stable
-
-  return (
-    <span
-      className={`text-[10px] px-1.5 py-0.5 rounded ${bg} ${color}`}
-      title={`7-day trend: ${change != null ? (change > 0 ? '+' : '') + change.toFixed(1) : ''} pts`}
-    >
-      {icon} {trend === 'improving' ? 'Up' : trend === 'deteriorating' ? 'Down' : ''}
-    </span>
-  )
-}
-
 function PortfolioSummary({ positions }) {
   if (!positions || positions.length === 0) return null
 
@@ -140,15 +118,6 @@ function PositionRow({ position, onDelete, onEdit }) {
               )}
             </div>
           )}
-          {position.score_change != null && position.score_change !== 0 && (
-            <div
-              className={position.score_change > 0 ? 'text-green-400' : 'text-red-400'}
-              title={`Score changed by ${position.score_change > 0 ? '+' : ''}${position.score_change.toFixed(1)} pts since last scan`}
-            >
-              {position.score_change > 0 ? '↑' : '↓'} {Math.abs(position.score_change).toFixed(1)}
-            </div>
-          )}
-          <WeeklyTrend trend={position.score_trend} change={position.trend_change} />
           {position.data_quality === 'low' && (
             <span
               className="text-yellow-500 text-xs cursor-help"
@@ -711,8 +680,6 @@ export default function Portfolio() {
             <div className="flex justify-between items-center mb-3">
               <div className="font-semibold">Positions</div>
               <div className="flex items-center gap-3 text-[10px] text-dark-400">
-                <span title="Score change since last scan">↑↓ Scan change</span>
-                <span title="7-day score trend">↗↘ 7-day trend</span>
                 <span className="text-yellow-500" title="Limited analyst data">⚠ Low data</span>
               </div>
             </div>

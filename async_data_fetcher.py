@@ -607,9 +607,9 @@ async def fetch_short_interest_async(ticker: str) -> dict:
 # Gets ROE, institutional %, analyst targets, cash/debt, short interest in ONE call
 
 # Semaphore to limit concurrent Yahoo requests (they throttle aggressively)
-_yahoo_semaphore = asyncio.Semaphore(2)  # Reduced to 2 concurrent Yahoo requests
-_yahoo_delay = 1.0  # Delay between Yahoo requests in seconds (increased from 0.5)
-_yahoo_max_retries = 5  # Increased retries to avoid needing fallback data
+_yahoo_semaphore = asyncio.Semaphore(3)  # 3 concurrent Yahoo requests
+_yahoo_delay = 0.6  # Delay between Yahoo requests in seconds
+_yahoo_max_retries = 4  # Retries for rate limits (with exponential backoff)
 
 async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
     """
