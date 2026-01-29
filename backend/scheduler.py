@@ -88,8 +88,13 @@ def run_continuous_scan():
             seen.add(t)
             tickers.append(t)
 
-    # Shuffle to avoid always hitting same stocks first (Yahoo warmup issues)
-    random.shuffle(tickers)
+    # Shuffle ONLY the non-portfolio tickers to avoid Yahoo warmup issues
+    # Keep portfolio tickers at the front (they're most important)
+    num_portfolio = len(portfolio_tickers)
+    portfolio_section = tickers[:num_portfolio]
+    rest_section = tickers[num_portfolio:]
+    random.shuffle(rest_section)
+    tickers = portfolio_section + rest_section
 
     logger.info(f"Including {len(portfolio_tickers)} portfolio tickers in scan")
 
