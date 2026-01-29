@@ -1062,6 +1062,7 @@ async def fetch_stocks_batch_async(
 
     # Resume from checkpoint if available
     completed_tickers = []
+    original_total = len(tickers)  # Store original total BEFORE filtering
     if resume_from_checkpoint:
         completed_tickers = load_scan_progress(scan_id)
         if completed_tickers:
@@ -1114,7 +1115,7 @@ async def fetch_stocks_batch_async(
 
             # Report progress with rate limit stats
             if progress_callback:
-                progress_callback(len(results), len(tickers) + len(load_scan_progress(scan_id)))
+                progress_callback(len(results) + len(completed_tickers), original_total)
 
             rate_stats = get_rate_limit_stats()
             logger.info(f"Progress: {len(results)}/{len(tickers)} stocks ({len(results)/len(tickers)*100:.1f}%) | "
