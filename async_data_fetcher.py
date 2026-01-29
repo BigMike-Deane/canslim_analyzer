@@ -1118,7 +1118,8 @@ async def fetch_stocks_batch_async(
                 progress_callback(len(results) + len(completed_tickers), original_total)
 
             rate_stats = get_rate_limit_stats()
-            logger.info(f"Progress: {len(results)}/{len(tickers)} stocks ({len(results)/len(tickers)*100:.1f}%) | "
+            current_progress = len(results) + len(completed_tickers)
+            logger.info(f"Progress: {current_progress}/{original_total} stocks ({current_progress/original_total*100:.1f}%) | "
                        f"API calls: {rate_stats['total_calls']} | 429s: {rate_stats['total_429s']}")
 
             # Smart delay between batches based on rate limit status
