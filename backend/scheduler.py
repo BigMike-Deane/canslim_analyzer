@@ -448,6 +448,9 @@ def run_continuous_scan():
         # Progress callback to update frontend in real-time
         def update_progress(current, total):
             _scan_config["stocks_scanned"] = current
+            # Also update total if it differs (e.g., from checkpoint resume)
+            if total != _scan_config["total_stocks"]:
+                _scan_config["total_stocks"] = total
             if current % 100 == 0:  # Log every 100 stocks
                 logger.info(f"Progress: {current}/{total} stocks fetched ({current/total*100:.1f}%)")
 

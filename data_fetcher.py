@@ -456,6 +456,95 @@ def _fmp_get(url: str, **kwargs) -> requests.Response:
     return resp
 
 
+# ============== DELISTED TICKER TRACKING ==============
+
+def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = None):
+    """
+    Mark a ticker as delisted/invalid so it's excluded from future scans.
+    Uses database to persist across restarts.
+    """
+    db = _get_db_session()
+    if not db:
+        logger.warning(f"Could not mark {ticker} as delisted - no DB connection")
+        return
+
+    try:
+        from backend.database import DelistedTicker
+        from datetime import timedelta
+
+        existing = db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).first()
+        if existing:
+            existing.failure_count += 1
+            existing.last_failed_at = datetime.now()
+            existing.reason = reason
+            # After 3 failures, don't recheck for 30 days
+            if existing.failure_count >= 3:
+                existing.recheck_after = datetime.now() + timedelta(days=30)
+        else:
+            delisted = DelistedTicker(
+                ticker=ticker,
+                reason=reason,
+                source=source,
+                failure_count=1,
+                recheck_after=datetime.now() + timedelta(days=7)  # Recheck after 7 days initially
+            )
+            db.add(delisted)
+
+        db.commit()
+        logger.info(f"Marked {ticker} as delisted/invalid: {reason}")
+    except Exception as e:
+        logger.debug(f"Failed to mark {ticker} as delisted: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def get_delisted_tickers() -> set:
+    """
+    Get set of tickers that should be excluded from scans.
+    Only returns tickers that are past their recheck date or have high failure counts.
+    """
+    db = _get_db_session()
+    if not db:
+        return set()
+
+    try:
+        from backend.database import DelistedTicker
+
+        # Get tickers that shouldn't be rechecked yet
+        now = datetime.now()
+        delisted = db.query(DelistedTicker.ticker).filter(
+            (DelistedTicker.recheck_after == None) |
+            (DelistedTicker.recheck_after > now) |
+            (DelistedTicker.failure_count >= 5)  # 5+ failures = permanent exclude
+        ).all()
+
+        return {t.ticker for t in delisted}
+    except Exception as e:
+        logger.debug(f"Failed to get delisted tickers: {e}")
+        return set()
+    finally:
+        db.close()
+
+
+def clear_delisted_ticker(ticker: str):
+    """Remove a ticker from the delisted list (e.g., if it starts working again)"""
+    db = _get_db_session()
+    if not db:
+        return
+
+    try:
+        from backend.database import DelistedTicker
+        db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).delete()
+        db.commit()
+        logger.info(f"Removed {ticker} from delisted tickers")
+    except Exception as e:
+        logger.debug(f"Failed to clear delisted ticker {ticker}: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def fetch_fmp_profile(ticker: str) -> dict:
     """Fetch company profile from FMP"""
     if not FMP_API_KEY:

@@ -33,7 +33,7 @@ _ticker_cache = {
 CACHE_DURATION_HOURS = 24  # Refresh lists once per day
 
 
-def get_all_tickers(include_portfolio: bool = True) -> list[str]:
+def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = True) -> list[str]:
     """
     Get combined list of all major index tickers plus portfolio holdings.
 
@@ -45,8 +45,23 @@ def get_all_tickers(include_portfolio: bool = True) -> list[str]:
     - Russell 2000 (small cap) - from ETF holdings or curated
     - Dow Jones 30 (blue chips) - from FMP
     - Portfolio tickers (always scanned first)
+
+    Args:
+        include_portfolio: Include user's portfolio tickers
+        exclude_delisted: Filter out tickers marked as delisted/invalid
     """
-    # Start with portfolio tickers (highest priority)
+    # Get delisted tickers to exclude
+    delisted = set()
+    if exclude_delisted:
+        try:
+            from data_fetcher import get_delisted_tickers
+            delisted = get_delisted_tickers()
+            if delisted:
+                logger.info(f"Excluding {len(delisted)} delisted/invalid tickers from scan")
+        except Exception as e:
+            logger.debug(f"Could not load delisted tickers: {e}")
+
+    # Start with portfolio tickers (highest priority - never excluded)
     combined = []
     if include_portfolio:
         portfolio = get_portfolio_tickers()
@@ -69,12 +84,17 @@ def get_all_tickers(include_portfolio: bool = True) -> list[str]:
     combined.extend(russell2000)
 
     # Remove duplicates while preserving order (portfolio first)
+    # Also filter out delisted tickers (but keep portfolio tickers)
     seen = set()
     unique = []
+    portfolio_set = set(get_portfolio_tickers()) if include_portfolio else set()
+
     for ticker in combined:
         if ticker and ticker not in seen:
             seen.add(ticker)
-            unique.append(ticker)
+            # Keep portfolio tickers even if delisted, filter others
+            if ticker in portfolio_set or ticker not in delisted:
+                unique.append(ticker)
 
     return unique
 

@@ -691,3 +691,22 @@ class StockDataCache(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DelistedTicker(Base):
+    """
+    Tracks tickers that are delisted, invalid, or consistently fail to fetch.
+    These are excluded from future scans to avoid wasting API calls.
+    """
+    __tablename__ = "delisted_tickers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, unique=True, index=True, nullable=False)
+    reason = Column(String)  # "404_not_found", "no_price_data", "delisted", etc.
+    source = Column(String)  # Which index/source it came from
+    failure_count = Column(Integer, default=1)  # Number of consecutive failures
+    first_failed_at = Column(DateTime, default=datetime.utcnow)
+    last_failed_at = Column(DateTime, default=datetime.utcnow)
+
+    # Allow re-checking after some time (ticker might be re-listed or data fixed)
+    recheck_after = Column(DateTime)  # If set, can be rechecked after this date

@@ -25,7 +25,7 @@ from data_fetcher import (
     get_cached_data, set_cached_data, mark_data_fetched, is_data_fresh,
     fetch_price_from_chart_api, fetch_weekly_price_history,
     REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
-    load_cache_from_db
+    load_cache_from_db, mark_ticker_as_delisted
 )
 
 if REDIS_AVAILABLE:
@@ -768,10 +768,14 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             else:
                 logger.warning(f"{ticker}: Cached data too old ({cache_age:.1f} days) - not using stale fallback")
                 _fallback_tracker["stocks_no_data"].add(ticker)
+                # Mark as potentially delisted - hasn't had fresh data in over 7 days
+                mark_ticker_as_delisted(ticker, reason="stale_data", source="async_fetcher")
                 return {"success": False, "cache_too_old": True, "cache_age_days": cache_age}
 
         logger.warning(f"{ticker}: No cached data available - stock will have incomplete data")
         _fallback_tracker["stocks_no_data"].add(ticker)
+        # Mark as potentially delisted for future exclusion
+        mark_ticker_as_delisted(ticker, reason="no_yahoo_data", source="async_fetcher")
         return {"success": False}
 
 
@@ -1026,6 +1030,11 @@ async def get_stock_data_async(
     elif stock_data.current_price:
         stock_data.is_valid = True
         stock_data.error_message = "Limited data available"
+    else:
+        # No price data from any source - likely delisted or invalid ticker
+        mark_ticker_as_delisted(ticker, reason="no_price_data", source="get_stock_data_async")
+        stock_data.is_valid = False
+        stock_data.error_message = "No price data available - ticker may be delisted"
 
     return stock_data
 
@@ -1065,10 +1074,16 @@ async def fetch_stocks_batch_async(
 
     # Resume from checkpoint if available
     completed_tickers = []
+    original_tickers_set = set(tickers)  # Store original ticker set for validation
     original_total = len(tickers)  # Store original total BEFORE filtering
     if resume_from_checkpoint:
-        completed_tickers = load_scan_progress(scan_id)
-        if completed_tickers:
+        checkpoint_tickers = load_scan_progress(scan_id)
+        if checkpoint_tickers:
+            # Only count checkpoint tickers that are in current list (exclude delisted)
+            completed_tickers = [t for t in checkpoint_tickers if t in original_tickers_set]
+            excluded_count = len(checkpoint_tickers) - len(completed_tickers)
+            if excluded_count > 0:
+                logger.info(f"Checkpoint had {excluded_count} tickers no longer in scan list (likely delisted)")
             logger.info(f"Resuming scan: {len(completed_tickers)} tickers already completed")
             tickers = [t for t in tickers if t not in set(completed_tickers)]
 
@@ -1117,11 +1132,13 @@ async def fetch_stocks_batch_async(
             save_scan_progress(completed_tickers, scan_id)
 
             # Report progress with rate limit stats
+            # Note: completed_tickers already includes checkpoint tickers + newly completed,
+            # so we don't need to add len(results) (that would double-count)
             if progress_callback:
-                progress_callback(len(results) + len(completed_tickers), original_total)
+                progress_callback(len(completed_tickers), original_total)
 
             rate_stats = get_rate_limit_stats()
-            current_progress = len(results) + len(completed_tickers)
+            current_progress = len(completed_tickers)
             logger.info(f"Progress: {current_progress}/{original_total} stocks ({current_progress/original_total*100:.1f}%) | "
                        f"API calls: {rate_stats['total_calls']} | 429s: {rate_stats['total_429s']}")
 
