@@ -178,7 +178,135 @@ function PositionsList({ positions }) {
   )
 }
 
+function TradeDetailModal({ trade, onClose }) {
+  if (!trade) return null
+
+  const formatDateTime = (ts) => {
+    if (!ts) return 'N/A'
+    try {
+      const date = new Date(ts)
+      return date.toLocaleString('en-US', {
+        timeZone: 'America/Chicago',
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }) + ' CST'
+    } catch {
+      return ts
+    }
+  }
+
+  const gainPct = trade.action === 'SELL' && trade.cost_basis
+    ? ((trade.price - trade.cost_basis) / trade.cost_basis * 100)
+    : null
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-dark-800 rounded-lg max-w-md w-full p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex justify-between items-start mb-4">
+          <div className="flex items-center gap-3">
+            <span className={`px-3 py-1 rounded font-bold ${
+              trade.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+            }`}>
+              {trade.action}
+            </span>
+            <div>
+              <Link
+                to={`/stock/${trade.ticker}`}
+                className="text-xl font-bold text-primary-400 hover:underline"
+                onClick={onClose}
+              >
+                {trade.ticker}
+              </Link>
+              {trade.is_growth_stock && (
+                <span className="ml-2 px-2 py-0.5 rounded text-xs bg-purple-500/20 text-purple-400">Growth</span>
+              )}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-dark-400 hover:text-white text-xl">&times;</button>
+        </div>
+
+        {/* Trade Details */}
+        <div className="space-y-3 text-sm">
+          <div className="flex justify-between py-2 border-b border-dark-700">
+            <span className="text-dark-400">Date & Time</span>
+            <span className="font-medium">{formatDateTime(trade.executed_at)}</span>
+          </div>
+
+          <div className="flex justify-between py-2 border-b border-dark-700">
+            <span className="text-dark-400">Shares</span>
+            <span className="font-medium">{trade.shares.toFixed(4)}</span>
+          </div>
+
+          <div className="flex justify-between py-2 border-b border-dark-700">
+            <span className="text-dark-400">Price</span>
+            <span className="font-medium">{formatCurrency(trade.price)}</span>
+          </div>
+
+          <div className="flex justify-between py-2 border-b border-dark-700">
+            <span className="text-dark-400">Total Value</span>
+            <span className="font-medium">{formatCurrency(trade.total_value)}</span>
+          </div>
+
+          {trade.action === 'SELL' && trade.cost_basis && (
+            <div className="flex justify-between py-2 border-b border-dark-700">
+              <span className="text-dark-400">Cost Basis</span>
+              <span className="font-medium">{formatCurrency(trade.cost_basis)}/share</span>
+            </div>
+          )}
+
+          {trade.realized_gain != null && (
+            <div className="flex justify-between py-2 border-b border-dark-700">
+              <span className="text-dark-400">Realized Gain/Loss</span>
+              <span className={`font-medium ${trade.realized_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {trade.realized_gain >= 0 ? '+' : ''}{formatCurrency(trade.realized_gain)}
+                {gainPct != null && ` (${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}%)`}
+              </span>
+            </div>
+          )}
+
+          <div className="flex justify-between py-2 border-b border-dark-700">
+            <span className="text-dark-400">CANSLIM Score</span>
+            <span className="font-medium">{trade.canslim_score?.toFixed(1) || 'N/A'}</span>
+          </div>
+
+          {trade.is_growth_stock && trade.growth_mode_score && (
+            <div className="flex justify-between py-2 border-b border-dark-700">
+              <span className="text-dark-400">Growth Mode Score</span>
+              <span className="font-medium">{trade.growth_mode_score.toFixed(1)}</span>
+            </div>
+          )}
+
+          {/* Reason Section */}
+          <div className="pt-2">
+            <div className="text-dark-400 mb-2">Reason</div>
+            <div className="bg-dark-700 rounded p-3 text-sm">
+              {trade.reason || 'No reason recorded'}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded text-sm"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TradeHistory({ trades }) {
+  const [selectedTrade, setSelectedTrade] = useState(null)
+
   if (!trades || trades.length === 0) {
     return null
   }
@@ -190,7 +318,8 @@ function TradeHistory({ trades }) {
         {trades.slice(0, 20).map(trade => (
           <div
             key={trade.id}
-            className="flex justify-between items-center py-2 border-b border-dark-700 last:border-0 text-sm"
+            onClick={() => setSelectedTrade(trade)}
+            className="flex justify-between items-center py-2 border-b border-dark-700 last:border-0 text-sm cursor-pointer hover:bg-dark-700/50 rounded px-2 -mx-2 transition-colors"
           >
             <div className="flex items-center gap-2">
               <span className={`px-2 py-0.5 rounded text-xs font-bold ${
@@ -205,7 +334,7 @@ function TradeHistory({ trades }) {
             </div>
             <div className="text-right">
               <div>{trade.shares.toFixed(2)} @ {formatCurrency(trade.price)}</div>
-              <div className="text-dark-400 text-xs">{trade.reason}</div>
+              <div className="text-dark-400 text-xs truncate max-w-[150px]">{trade.reason}</div>
             </div>
             {trade.realized_gain != null && (
               <div className={`ml-2 text-xs ${trade.realized_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -215,6 +344,11 @@ function TradeHistory({ trades }) {
           </div>
         ))}
       </div>
+
+      {/* Trade Detail Modal */}
+      {selectedTrade && (
+        <TradeDetailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />
+      )}
     </div>
   )
 }

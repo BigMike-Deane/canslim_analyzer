@@ -2157,8 +2157,9 @@ async def get_ai_portfolio_trades(
         "canslim_score": t.canslim_score,
         "growth_mode_score": t.growth_mode_score,
         "is_growth_stock": t.is_growth_stock or False,
+        "cost_basis": t.cost_basis,
         "realized_gain": t.realized_gain,
-        "executed_at": t.executed_at.isoformat() if t.executed_at else None
+        "executed_at": t.executed_at.isoformat() + 'Z' if t.executed_at else None
     } for t in trades]
 
 
