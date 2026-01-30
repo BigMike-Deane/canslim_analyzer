@@ -110,7 +110,7 @@ function ScoreDetailModal({ isOpen, onClose, scoreKey, scoreData, details, stock
             {detailData?.roe != null && (
               <div className="flex justify-between items-center bg-dark-700/50 rounded-lg p-3">
                 <span className="text-dark-400 text-sm">Return on Equity (ROE)</span>
-                <span className={`font-semibold ${detailData.roe >= 17 ? 'text-green-400' : detailData.roe >= 10 ? 'text-yellow-400' : 'text-red-400'}`}>
+                <span className={`font-semibold ${(detailData.roe * 100) >= 17 ? 'text-green-400' : (detailData.roe * 100) >= 10 ? 'text-yellow-400' : 'text-red-400'}`}>
                   {(detailData.roe * 100).toFixed(1)}%
                 </span>
               </div>

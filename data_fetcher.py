@@ -1402,9 +1402,10 @@ class DataFetcher:
                         inst_pct = info.get('heldPercentInstitutions', 0)
                         stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
                     # Get ROE (critical for A score quality check)
+                    # Store as decimal (e.g., 0.05 = 5%) - same format as FMP
                     if not stock_data.roe:
                         roe = info.get('returnOnEquity')
-                        stock_data.roe = (roe * 100) if roe else 0
+                        stock_data.roe = roe if roe else 0
 
                     # Quarterly earnings from yfinance - ALWAYS try earnings_history (actual reported EPS)
                     # This is the ADJUSTED EPS that analysts track, not GAAP EPS
