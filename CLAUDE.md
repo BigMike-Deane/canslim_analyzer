@@ -69,6 +69,62 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 
 ## Recent Improvements (Jan 2025)
 
+### Progress Tracking + Delisted Ticker System (Jan 30)
+
+**Problem**: Scan progress showed >100% (e.g., 3466/2083 at 166%). AMD showed 531% ROE instead of ~5%.
+
+**Root Causes**:
+1. **Double-counting bug**: Progress calculation was `len(results) + len(completed_tickers)` but `completed_tickers` already included new results
+2. **ROE storage bug**: Yahoo returns ROE as decimal (0.05 = 5%), code was multiplying by 100 twice
+3. **Checkpoint pollution**: Checkpoint file included tickers no longer in scan list (delisted)
+
+**Fixes Implemented**:
+
+1. **Progress Tracking** (`async_data_fetcher.py`):
+   - Changed progress to just `len(completed_tickers)` (no double-count)
+   - Filter checkpoint tickers to only include those in current scan list
+   - Scheduler callback now syncs `total_stocks` if it differs
+
+2. **Delisted Ticker Tracking** (new system):
+   - `DelistedTicker` table in `database.py` - tracks invalid tickers
+   - `mark_ticker_as_delisted()` in `data_fetcher.py` - marks failing tickers
+   - `get_delisted_tickers()` - returns set of tickers to exclude
+   - `get_all_tickers()` in `sp500_tickers.py` - filters out delisted tickers
+   - Tickers marked when: Yahoo 404, no price data, stale cache >7 days
+   - After 3 failures, ticker excluded for 30 days before recheck
+
+3. **ROE Fix** (`async_data_fetcher.py`):
+   - Store ROE as decimal from Yahoo (don't multiply by 100)
+   - Frontend handles display multiplication
+
+**Files Modified**:
+- `async_data_fetcher.py` - Progress fix, delisted marking, ROE storage
+- `data_fetcher.py` - `mark_ticker_as_delisted()`, `get_delisted_tickers()`, `clear_delisted_ticker()`
+- `backend/database.py` - Added `DelistedTicker` model
+- `backend/scheduler.py` - Progress callback syncs total
+- `sp500_tickers.py` - Filter delisted in `get_all_tickers()`
+
+**Useful Commands**:
+```bash
+# Check excluded ticker count
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app'); from data_fetcher import get_delisted_tickers; print(f'Excluded: {len(get_delisted_tickers())}')"
+
+# Manually mark tickers as delisted
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app'); from data_fetcher import mark_ticker_as_delisted; [mark_ticker_as_delisted(t, reason='404_not_found', source='manual') for t in ['TICKER1', 'TICKER2']]"
+
+# Check ROE distribution
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, StockDataCache; db = SessionLocal(); stocks = db.query(StockDataCache).filter(StockDataCache.roe != None, StockDataCache.roe > 0).all(); total = len(stocks); over17 = len([s for s in stocks if s.roe >= 0.17]); print(f'ROE >= 17%: {over17}/{total} ({over17/total*100:.1f}%)'); db.close()"
+
+# Clear scan checkpoint (for fresh scan)
+docker exec canslim-analyzer rm -f /app/scan_progress_*.json
+```
+
+**ROE Threshold Analysis**:
+- 17% ROE threshold is working correctly - ~35% of stocks qualify
+- This is intentional: O'Neil's CANSLIM uses 17% as quality filter
+- Distribution: 17%+ (35%), 10%+ (63%), 5%+ (87%)
+- Tech/growth stocks often have lower ROE due to R&D reinvestment
+
 ### Redis Security Fix + Healthcheck (Jan 28)
 
 **CERT-Bund Security Alert**: Received alert that Redis (port 6379) was publicly accessible from the internet without authentication.
