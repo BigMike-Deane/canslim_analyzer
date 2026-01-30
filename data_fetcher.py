@@ -1250,15 +1250,19 @@ class DataFetcher:
                     stock_data.shares_outstanding = int(quote.get("shares_outstanding", 0) or 0)
 
             # Fallback: Calculate 52-week high/low from price history if still missing
+            # Only use if we have ~1 year of data (250+ trading days) to avoid incorrect values
             if (not stock_data.high_52w or not stock_data.low_52w) and not stock_data.price_history.empty:
                 try:
                     closes = stock_data.price_history['Close'].dropna()
-                    if len(closes) > 0:
+                    # Require at least 250 trading days for accurate 52-week calculation
+                    if len(closes) >= 250:
                         if not stock_data.high_52w:
                             stock_data.high_52w = float(closes.max())
                         if not stock_data.low_52w:
                             stock_data.low_52w = float(closes.min())
                         logger.debug(f"Calculated 52w range for {ticker}: ${stock_data.low_52w:.2f} - ${stock_data.high_52w:.2f}")
+                    elif len(closes) > 0:
+                        logger.debug(f"{ticker}: Only {len(closes)} days of data, skipping 52w calculation")
                 except Exception as e:
                     logger.debug(f"Error calculating 52w range for {ticker}: {e}")
 
@@ -1295,13 +1299,14 @@ class DataFetcher:
 
             # 5. Get analyst data from FMP
             # TIERED: Cache for 24 hours
-            price_target = fetch_with_cache(ticker, "analyst", fetch_fmp_price_target, ticker)
+            # NOTE: Using distinct cache keys to avoid collision
+            price_target = fetch_with_cache(ticker, "price_target", fetch_fmp_price_target, ticker)
             if price_target:
                 stock_data.analyst_target_price = price_target.get("target_consensus", 0) or price_target.get("target_median", 0)
                 stock_data.analyst_target_high = price_target.get("target_high", 0)
                 stock_data.analyst_target_low = price_target.get("target_low", 0)
 
-            analyst = fetch_with_cache(ticker, "analyst", fetch_fmp_analyst, ticker)
+            analyst = fetch_with_cache(ticker, "analyst_estimates", fetch_fmp_analyst, ticker)
             if analyst:
                 stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
                 stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)

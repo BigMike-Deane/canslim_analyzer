@@ -663,12 +663,12 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
                 logger.debug(f"{ticker}: Yahoo info returned no data")
                 return result
 
-            # Key metrics
+            # Key metrics - store as decimal (e.g., 0.05 = 5%) for consistency with FMP
             roe = info.get('returnOnEquity')
-            result["roe"] = (roe * 100) if roe and roe > -10 else 0
+            result["roe"] = roe if roe and roe > -10 else 0
 
             roa = info.get('returnOnAssets')
-            result["roa"] = (roa * 100) if roa and roa > -10 else 0
+            result["roa"] = roa if roa and roa > -10 else 0
 
             # ROIC not directly available, estimate from ROE and debt ratio
             result["roic"] = result["roe"] * 0.8 if result["roe"] > 0 else 0
@@ -694,9 +694,11 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             result["num_analyst_opinions"] = info.get('numberOfAnalystOpinions', 0) or 0
 
             # Earnings growth estimate
+            # Yahoo returns as decimal (0.25 = 25%) - convert to percentage
             growth = info.get('earningsQuarterlyGrowth') or info.get('earningsGrowth')
             if growth:
-                result["earnings_growth_estimate"] = growth * 100 if abs(growth) < 10 else growth
+                # If absolute value <= 1, it's likely a decimal (e.g., 0.25 = 25%)
+                result["earnings_growth_estimate"] = growth * 100 if abs(growth) <= 1 else growth
 
             # Short interest
             short_pct = info.get('shortPercentOfFloat', 0) or 0
@@ -793,11 +795,12 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                 if not stock_data.shares_outstanding:
                     stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
                 if not stock_data.institutional_holders_pct:
-                    inst_pct = info.get('heldPercentInstitutions', 0)
-                    stock_data.institutional_holders_pct = (inst_pct * 100) if inst_pct else 0
+                    inst_pct = info.get('heldPercentInstitutions', 0) or 0
+                    # Only multiply if it's a decimal (0-1 range)
+                    stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct <= 1 else inst_pct
                 if not stock_data.roe:
                     roe = info.get('returnOnEquity')
-                    stock_data.roe = (roe * 100) if roe else 0
+                    stock_data.roe = roe if roe else 0  # Store as decimal
 
             # Get adjusted EPS from earnings_history if we don't have good data
             if len(stock_data.quarterly_earnings) < 4:

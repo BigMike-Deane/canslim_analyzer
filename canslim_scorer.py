@@ -88,22 +88,28 @@ class CANSLIMScorer:
         accel_max = 3  # Bonus for acceleration
         surprise_max = 2  # Bonus for earnings surprise
 
+        # Filter out None values from earnings
+        earnings = [e for e in data.quarterly_earnings if e is not None]
+
         # Need at least 8 quarters for TTM vs prior TTM comparison
-        if len(data.quarterly_earnings) < 8:
+        if len(earnings) < 8:
             # Fallback to simpler comparison with anomaly filtering
-            if len(data.quarterly_earnings) >= 4:
+            if len(earnings) >= 4:
                 return self._score_earnings_with_anomaly_filter(data, max_score)
             return 0, "Insufficient data"
 
         # Calculate TTM (sum of last 4 quarters)
-        current_ttm = sum(data.quarterly_earnings[0:4])
-        prior_ttm = sum(data.quarterly_earnings[4:8])
+        current_ttm = sum(earnings[0:4])
+        prior_ttm = sum(earnings[4:8])
 
         # Companies with negative TTM earnings get reduced scores
         # Give partial credit for improving losses (turnaround potential)
         if current_ttm < 0:
             if prior_ttm < 0 and current_ttm > prior_ttm:
                 # Losses shrinking - give partial credit (up to 40% of max)
+                # Guard against division by near-zero
+                if abs(prior_ttm) < 0.01:
+                    return round(max_score * 0.3, 1), "Losses improving"
                 improvement_pct = ((prior_ttm - current_ttm) / abs(prior_ttm)) * 100
                 partial_score = min(max_score * 0.4, (improvement_pct / 50) * max_score * 0.4)
                 return round(partial_score, 1), f"Losses improving ({improvement_pct:+.0f}%)"
@@ -111,7 +117,8 @@ class CANSLIMScorer:
                 # Losses worsening or stable negative
                 return 0, f"TTM loss: ${current_ttm:.2f}"
 
-        if prior_ttm == 0:
+        # Handle zero or near-zero prior TTM (avoid division issues)
+        if abs(prior_ttm) < 0.01:
             if current_ttm > 0:
                 return max_score * 0.8, "Turnaround (TTM)"
             return 0, "No prior TTM earnings"
@@ -188,29 +195,34 @@ class CANSLIMScorer:
         Filters out extreme QoQ swings (>50%) that are likely one-time items.
         IMPORTANT: Companies with negative earnings get penalized regardless of "growth" trend.
         """
-        earnings = data.quarterly_earnings[:4]
+        # Filter out None values first
+        earnings = [e for e in data.quarterly_earnings[:4] if e is not None]
+
+        if len(earnings) < 2:
+            return 0, "Insufficient data"
 
         # Check if earnings are negative (company is losing money)
         # Give partial credit for improving losses, but cap below profitable companies
-        recent_earnings = earnings[:2] if len(earnings) >= 2 else earnings
-        if all(e < 0 for e in recent_earnings if e is not None):
+        recent_earnings = earnings[:2]
+        if all(e < 0 for e in recent_earnings):
             # Company is losing money in recent quarters
-            if len(earnings) >= 2 and earnings[0] < earnings[1]:
+            if earnings[0] < earnings[1]:
                 # Losses are getting WORSE (more negative)
                 return 0, "Losses worsening"
-            elif len(earnings) >= 2:
+            else:
                 # Losses are shrinking - give partial credit (up to 35% of max)
                 # Q0 > Q1 (less negative), so improvement = (Q0 - Q1) / |Q1|
+                # Guard against near-zero division
+                if abs(earnings[1]) < 0.001:
+                    return round(max_score * 0.2, 1), "Losses near zero"
                 improvement = ((earnings[0] - earnings[1]) / abs(earnings[1])) * 100
                 partial_score = min(max_score * 0.35, (improvement / 50) * max_score * 0.35)
                 return round(max(partial_score, max_score * 0.1), 1), f"Losses shrinking ({improvement:+.0f}%)"
-            else:
-                return round(max_score * 0.1, 1), "Negative EPS"
 
         # Calculate growth rates between consecutive quarters
         growth_rates = []
         for i in range(len(earnings) - 1):
-            if earnings[i + 1] != 0 and earnings[i + 1] is not None:
+            if earnings[i + 1] != 0 and abs(earnings[i + 1]) >= 0.001:
                 rate = ((earnings[i] - earnings[i + 1]) / abs(earnings[i + 1])) * 100
                 # Filter anomalies: ignore swings > 100%
                 if abs(rate) <= 100:
@@ -356,16 +368,30 @@ class CANSLIMScorer:
         if data.price_history.empty or data.avg_volume_50d <= 0:
             return 0, "No volume data"
 
-        # Calculate volume ratio
-        recent_vol = data.current_volume if data.current_volume > 0 else data.price_history['Volume'].iloc[-5:].mean()
-        vol_ratio = recent_vol / data.avg_volume_50d
+        # Calculate volume ratio with NaN handling
+        try:
+            if data.current_volume > 0:
+                recent_vol = data.current_volume
+            else:
+                vol_series = data.price_history['Volume'].dropna().iloc[-5:]
+                recent_vol = float(vol_series.mean()) if len(vol_series) > 0 else 0
 
-        # Check price trend (last 20 days)
-        if len(data.price_history) >= 20:
-            recent_prices = data.price_history['Close'].iloc[-20:]
-            price_change = (recent_prices.iloc[-1] - recent_prices.iloc[0]) / recent_prices.iloc[0]
-        else:
-            price_change = 0
+            if recent_vol <= 0 or data.avg_volume_50d <= 0:
+                return 0, "No volume data"
+
+            vol_ratio = recent_vol / data.avg_volume_50d
+        except Exception:
+            return 0, "Volume calc error"
+
+        # Check price trend (last 20 days) with NaN handling
+        price_change = 0
+        try:
+            if len(data.price_history) >= 20:
+                recent_prices = data.price_history['Close'].dropna().iloc[-20:]
+                if len(recent_prices) >= 2 and recent_prices.iloc[0] > 0:
+                    price_change = (recent_prices.iloc[-1] - recent_prices.iloc[0]) / recent_prices.iloc[0]
+        except Exception:
+            pass
 
         # Score based on volume surge with positive price action
         score = 0
@@ -433,9 +459,12 @@ class CANSLIMScorer:
         stock_return_3m = (prices.iloc[-1] / prices.iloc[-lookback_3m]) - 1
         sp500_return_3m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-lookback_3m]) - 1
 
-        # Calculate RS ratios
-        rs_12m = (1 + stock_return_12m) / (1 + sp500_return_12m) if sp500_return_12m != -1 else 1.0
-        rs_3m = (1 + stock_return_3m) / (1 + sp500_return_3m) if sp500_return_3m != -1 else 1.0
+        # Calculate RS ratios with protection against extreme market crashes
+        # Use minimum denominator of 0.1 (90% market crash) to avoid inflated RS values
+        sp500_denom_12m = max(1 + sp500_return_12m, 0.1)
+        sp500_denom_3m = max(1 + sp500_return_3m, 0.1)
+        rs_12m = (1 + stock_return_12m) / sp500_denom_12m
+        rs_3m = (1 + stock_return_3m) / sp500_denom_3m
 
         # Weighted RS: 60% 12-month + 40% 3-month (emphasizes recent momentum)
         weighted_rs = rs_12m * 0.6 + rs_3m * 0.4
