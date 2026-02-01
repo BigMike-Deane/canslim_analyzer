@@ -899,7 +899,7 @@ async def get_stock_data_async(
     """
     stock_data = StockData(ticker)
 
-    # Use batch data if available (much faster!)
+    # Use batch data if available, otherwise fetch individually
     if batch_quotes and ticker in batch_quotes:
         quote = batch_quotes[ticker]
         stock_data.current_price = quote.get("current_price", 0)
@@ -911,6 +911,19 @@ async def get_stock_data_async(
         stock_data.trailing_pe = quote.get("pe", 0) or 0
         stock_data.shares_outstanding = int(quote.get("shares_outstanding", 0) or 0)
         stock_data.name = quote.get("name", ticker)
+    else:
+        # Fetch individual quote from FMP /stable/ endpoint
+        quote = await fetch_fmp_single_quote(session, ticker)
+        if quote:
+            stock_data.current_price = quote.get("current_price", 0)
+            stock_data.high_52w = quote.get("high_52w", 0) or 0
+            stock_data.low_52w = quote.get("low_52w", 0) or 0
+            stock_data.market_cap = quote.get("market_cap", 0)
+            stock_data.avg_volume_50d = quote.get("avg_volume", 0)
+            stock_data.current_volume = quote.get("volume", 0)
+            stock_data.trailing_pe = quote.get("pe", 0) or 0
+            stock_data.shares_outstanding = int(quote.get("shares_outstanding", 0) or 0)
+            stock_data.name = quote.get("name", ticker)
 
     if batch_profiles and ticker in batch_profiles:
         profile = batch_profiles[ticker]
@@ -922,12 +935,26 @@ async def get_stock_data_async(
             stock_data.current_price = profile.get("current_price", 0)
         if not stock_data.high_52w:
             stock_data.high_52w = profile.get("high_52w", 0) or 0
-        # FIX: Use low_52w from profile if not set from batch quotes
         if not stock_data.low_52w:
             stock_data.low_52w = profile.get("low_52w", 0) or 0
-        # FIX: Use market_cap from profile if not set from batch quotes
         if not stock_data.market_cap:
             stock_data.market_cap = profile.get("market_cap", 0) or 0
+    elif not stock_data.sector:
+        # Fetch individual profile from FMP /stable/ endpoint for sector info
+        profile = await fetch_fmp_single_profile(session, ticker)
+        if profile:
+            stock_data.name = profile.get("name") or stock_data.name or ticker
+            stock_data.sector = profile.get("sector", "")
+            if not stock_data.shares_outstanding:
+                stock_data.shares_outstanding = int(profile.get("shares_outstanding", 0) or 0)
+            if not stock_data.current_price:
+                stock_data.current_price = profile.get("current_price", 0)
+            if not stock_data.high_52w:
+                stock_data.high_52w = profile.get("high_52w", 0) or 0
+            if not stock_data.low_52w:
+                stock_data.low_52w = profile.get("low_52w", 0) or 0
+            if not stock_data.market_cap:
+                stock_data.market_cap = profile.get("market_cap", 0) or 0
 
     # ============== HYBRID DATA FETCHING ==============
     # Strategy: FMP for earnings/revenue (rate-limited), Yahoo for everything else (more lenient)
