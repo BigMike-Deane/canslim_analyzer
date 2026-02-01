@@ -284,9 +284,14 @@ async def fetch_fmp_batch_profiles(session: aiohttp.ClientSession, tickers: List
                 ticker = profile.get("symbol")
                 if ticker:
                     high_52w = 0
+                    low_52w = 0
                     if profile.get("range"):
                         try:
-                            high_52w = float(profile.get("range", "").split("-")[-1].strip())
+                            # Range format is "low-high" e.g. "169.21-288.62"
+                            range_parts = profile.get("range", "").split("-")
+                            if len(range_parts) >= 2:
+                                low_52w = float(range_parts[0].strip())
+                                high_52w = float(range_parts[-1].strip())
                         except:
                             pass
 
@@ -297,6 +302,7 @@ async def fetch_fmp_batch_profiles(session: aiohttp.ClientSession, tickers: List
                         "market_cap": profile.get("mktCap", 0),
                         "current_price": profile.get("price", 0),
                         "high_52w": high_52w,
+                        "low_52w": low_52w,
                         "shares_outstanding": profile.get("sharesOutstanding", 0) or 0,
                     }
 
@@ -881,6 +887,9 @@ async def get_stock_data_async(
             stock_data.current_price = profile.get("current_price", 0)
         if not stock_data.high_52w:
             stock_data.high_52w = profile.get("high_52w", 0) or 0
+        # FIX: Use low_52w from profile if not set from batch quotes
+        if not stock_data.low_52w:
+            stock_data.low_52w = profile.get("low_52w", 0) or 0
         # FIX: Use market_cap from profile if not set from batch quotes
         if not stock_data.market_cap:
             stock_data.market_cap = profile.get("market_cap", 0) or 0
