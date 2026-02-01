@@ -978,43 +978,10 @@ async def get_breaking_out_stocks(
         desc(Stock.canslim_score)
     ).limit(limit * 2).all()
 
-    # Filter duplicates
-    breakout_filtered = filter_duplicate_stocks(breakout_stocks, limit)
-    breakout_tickers = {s.ticker for s in breakout_filtered}
-
-    # If we don't have enough, supplement with "near breakout" stocks
-    # These are stocks within 5% of 52-week high with good scores
-    if len(breakout_filtered) < limit:
-        needed = limit - len(breakout_filtered)
-
-        # Get all stocks and calculate proximity to 52-week high
-        near_breakout_candidates = db.query(Stock).filter(
-            Stock.canslim_score >= 60,
-            Stock.current_price > 0,
-            Stock.week_52_high > 0,
-            Stock.volume_ratio >= 1.0,  # At least average volume
-            ~Stock.ticker.in_(breakout_tickers) if breakout_tickers else True
-        ).all()
-
-        # Calculate and filter by proximity to 52-week high
-        near_breakout = []
-        for s in near_breakout_candidates:
-            if s.week_52_high and s.current_price:
-                pct_from_high = (s.week_52_high - s.current_price) / s.week_52_high
-                # Within 10% of 52-week high
-                if pct_from_high <= 0.10:
-                    near_breakout.append((s, pct_from_high))
-
-        # Sort by proximity to high (closest first), then by score
-        near_breakout.sort(key=lambda x: (x[1], -x[0].canslim_score))
-        near_breakout_stocks = [s for s, _ in near_breakout[:needed * 2]]
-
-        # Filter duplicates and add to results
-        near_breakout_filtered = filter_duplicate_stocks(near_breakout_stocks, needed)
-        breakout_filtered.extend(near_breakout_filtered)
-
-    # Final filter for exact limit
-    stocks = breakout_filtered[:limit]
+    # Filter duplicates and return only stocks with is_breaking_out=True
+    # No fallback - the is_breaking_out flag is the source of truth
+    # If there aren't many breakouts, that's accurate (don't pad with extended stocks)
+    stocks = filter_duplicate_stocks(breakout_stocks, limit)
 
     return {
         "stocks": [{
