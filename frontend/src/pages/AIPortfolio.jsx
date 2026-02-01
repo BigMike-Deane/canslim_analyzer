@@ -702,7 +702,11 @@ export default function AIPortfolio() {
       setWaitingForTrades(true)
 
       const result = await api.runAITradingCycle()
-      if (result.status !== 'started') {
+      if (result.status === 'market_closed' || result.status === 'busy') {
+        alert(result.message)
+        setWaitingForTrades(false)
+        fetchData()
+      } else if (result.status !== 'started') {
         setWaitingForTrades(false)
         fetchData()
       }
