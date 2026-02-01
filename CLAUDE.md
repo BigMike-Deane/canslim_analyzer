@@ -123,48 +123,80 @@ curl -s "http://localhost:8001/api/stocks/breaking-out?limit=10" | python3 -c "i
 docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.is_breaking_out == True).limit(5).all(); [print(f'{s.ticker}: base={s.base_type}, score={s.canslim_score:.0f}') for s in stocks]; db.close()"
 ```
 
-### Market Cap & 52-Week Low Fix (Jan 31)
+### Market Cap & 52-Week Low Fix (Feb 1)
 
-**Problem**: All stocks had `market_cap=0` and `week_52_low=0` in the database, which could affect scoring and filtering.
+**Problem**: All stocks had `market_cap=0` and `week_52_low=0` in the database, which affected:
+- Backtester `market_cap >= 10B` filter (excluded ALL stocks)
+- Stock detail page displaying $0 for these fields
+- Screener sorting by market cap
 
-**Root Causes**:
-1. **FMP batch quote response**: The `/stable/quote` endpoint may not reliably return `marketCap` and `yearLow` for all stocks
-2. **Profile market_cap unused**: `fetch_fmp_batch_profiles` retrieved `mktCap` but `get_stock_data_async` never used it
-3. **Yahoo chart API incomplete**: `fetch_price_from_chart_api` only extracted `fiftyTwoWeekHigh`, not `fiftyTwoWeekLow` or `marketCap`
-4. **Yahoo info market_cap unused**: `fetch_yahoo_info_comprehensive_async` fetched `marketCap` but didn't return it
+**Root Causes (Multiple Issues Found)**:
+
+1. **FMP `/stable/` batch endpoints broken**: The `/stable/quote?symbol=A,B,C` format returns empty `[]` for comma-separated symbols. Each ticker works individually, but batches fail silently.
+
+2. **Profile low_52w not extracted**: `fetch_fmp_batch_profiles` extracted `high_52w` from the range field ("169.21-288.62") but NOT `low_52w`
+
+3. **Profile market_cap unused**: Profile has `mktCap` but `get_stock_data_async` never used it as fallback
+
+4. **Yahoo chart API incomplete**: Only extracted `fiftyTwoWeekHigh`, not `fiftyTwoWeekLow`
+
+5. **Yahoo info market_cap not returned**: `fetch_yahoo_info_comprehensive_async` fetched `marketCap` but didn't include it in the result dict
 
 **Fixes Implemented**:
 
-1. **Added Profile market_cap Fallback** (`async_data_fetcher.py`):
+1. **Fixed FMP Batch Endpoints** (`async_data_fetcher.py`):
    ```python
+   # Changed from /stable/ to /api/v3/ for batch support
+   url = f"https://financialmodelingprep.com/api/v3/quote/{symbols}?apikey={FMP_API_KEY}"
+   url = f"https://financialmodelingprep.com/api/v3/profile/{symbols}?apikey={FMP_API_KEY}"
+   ```
+
+2. **Extract low_52w from Profile Range** (`async_data_fetcher.py`):
+   ```python
+   # Range format is "low-high" e.g. "169.21-288.62"
+   range_parts = profile.get("range", "").split("-")
+   if len(range_parts) >= 2:
+       low_52w = float(range_parts[0].strip())
+       high_52w = float(range_parts[-1].strip())
+   ```
+
+3. **Added Profile Fallbacks** (`async_data_fetcher.py`):
+   ```python
+   if not stock_data.low_52w:
+       stock_data.low_52w = profile.get("low_52w", 0) or 0
    if not stock_data.market_cap:
        stock_data.market_cap = profile.get("market_cap", 0) or 0
    ```
 
-2. **Added Yahoo Chart API Fields** (`data_fetcher.py`):
-   - Now extracts `fiftyTwoWeekLow` and `marketCap` from chart API response
+4. **Added Yahoo Chart API Fields** (`data_fetcher.py`):
+   - Now extracts `fiftyTwoWeekLow` from chart API meta
    - Note: Chart API has `fiftyTwoWeekLow` but NOT `marketCap`
 
-3. **Added Yahoo Info market_cap** (`async_data_fetcher.py`):
+5. **Added Yahoo Info market_cap** (`async_data_fetcher.py`):
    - Added `market_cap` to `_fetch_yahoo_info()` result dict
-   - Added fallback: `if not stock_data.market_cap and yahoo_info.get("market_cap")`
+   - Added fallback in `get_stock_data_async`
 
-4. **Data Flow Now**:
-   - **market_cap**: FMP batch quotes → FMP profiles → Yahoo info (fallback chain)
-   - **week_52_low**: FMP batch quotes → Yahoo chart API (fallback)
+**Data Flow (Fallback Chain)**:
+- **market_cap**: FMP v3 batch quotes → FMP v3 profiles (mktCap) → Yahoo info
+- **week_52_low**: FMP v3 batch quotes (yearLow) → FMP v3 profiles (from range) → Yahoo chart API
 
 **Files Modified**:
-- `async_data_fetcher.py` - Profile fallback, Yahoo info market_cap, chart API fallbacks
-- `data_fetcher.py` - Chart API now returns `low_52w` and `market_cap`
+- `async_data_fetcher.py` - Batch endpoint URLs, profile range extraction, all fallbacks
+- `data_fetcher.py` - Chart API returns `low_52w`
 
 **Verification**:
 ```bash
-# Check Yahoo Finance has the data
-python3 -c "import yfinance as yf; info = yf.Ticker('RF').info; print(f'marketCap: {info.get(\"marketCap\")}', f'52wLow: {info.get(\"fiftyTwoWeekLow\")}')"
+# Test FMP v3 batch endpoint works
+docker exec canslim-analyzer python3 -c "import os,requests; key=os.environ.get('FMP_API_KEY',''); r=requests.get(f'https://financialmodelingprep.com/api/v3/quote/AAPL,MSFT,GOOG?apikey={key}'); print(f'Batch returned: {len(r.json())} tickers')"
 
-# After next scan, verify stocks have market_cap and week_52_low
-docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.market_cap > 0).count(); total = db.query(Stock).count(); print(f'Stocks with market_cap: {stocks}/{total}'); db.close()"
+# Check portfolio stocks have data
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock, PortfolioPosition; db = SessionLocal(); tickers = [p.ticker for p in db.query(PortfolioPosition.ticker).distinct().all()]; stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all(); [print(f'{s.ticker}: mktcap={s.market_cap}, 52wLow={s.week_52_low}') for s in stocks]; db.close()"
+
+# Check overall data coverage
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); with_data = db.query(Stock).filter(Stock.market_cap > 0, Stock.week_52_low > 0).count(); total = db.query(Stock).count(); print(f'Stocks with market_cap AND week_52_low: {with_data}/{total} ({with_data/total*100:.1f}%)'); db.close()"
 ```
+
+**Key Lesson**: The FMP `/stable/` endpoints are for single-ticker requests only. Always use `/api/v3/` for batch/comma-separated requests.
 
 ### Progress Tracking + Delisted Ticker System (Jan 30)
 
