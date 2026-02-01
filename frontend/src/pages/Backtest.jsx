@@ -213,11 +213,11 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel }) {
             </div>
             {bt.status === 'completed' && (
               <div className="text-right ml-4">
-                <div className={`font-bold ${bt.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <div className={`font-bold ${(bt.total_return_pct - bt.spy_return_pct) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                   {bt.total_return_pct >= 0 ? '+' : ''}{bt.total_return_pct?.toFixed(1)}%
                 </div>
-                <div className="text-dark-500 text-xs">
-                  vs SPY {bt.spy_return_pct >= 0 ? '+' : ''}{bt.spy_return_pct?.toFixed(1)}%
+                <div className={`text-xs ${(bt.total_return_pct - bt.spy_return_pct) >= 0 ? 'text-green-500' : 'text-red-400'}`}>
+                  vs SPY {(bt.total_return_pct - bt.spy_return_pct) >= 0 ? '+' : ''}{(bt.total_return_pct - bt.spy_return_pct)?.toFixed(1)}%
                 </div>
               </div>
             )}
@@ -258,7 +258,7 @@ function BacktestResults({ backtest, onClose }) {
           label="Total Return"
           value={`${bt.total_return_pct >= 0 ? '+' : ''}${bt.total_return_pct?.toFixed(1)}%`}
           subtext={formatCurrency(bt.final_value)}
-          color={bt.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}
+          color={(bt.total_return_pct - bt.spy_return_pct) >= 0 ? 'text-green-400' : 'text-red-400'}
         />
         <StatCard
           label="vs SPY"

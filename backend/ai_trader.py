@@ -700,6 +700,11 @@ def evaluate_buys(db: Session) -> list:
         breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
         volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
 
+        # Base pattern data for pre-breakout detection
+        base_type = getattr(stock, 'base_type', 'none') or 'none'
+        weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+        has_base = base_type not in ('none', '', None)
+
         # Insider trading signals
         insider_sentiment = getattr(stock, 'insider_sentiment', 'neutral') or 'neutral'
         insider_buy_count = getattr(stock, 'insider_buy_count', 0) or 0
@@ -708,10 +713,30 @@ def evaluate_buys(db: Session) -> list:
         short_interest_pct = getattr(stock, 'short_interest_pct', 0) or 0
         short_ratio = getattr(stock, 'short_ratio', 0) or 0
 
-        # Calculate momentum score based on proximity to 52-week high AND breakout status
+        # Calculate momentum, breakout, pre-breakout, and extended scores
         momentum_score = 0
         breakout_bonus = 0
-        at_high_penalty = 0
+        pre_breakout_bonus = 0
+        extended_penalty = 0
+        base_quality_bonus = 0
+
+        # Base pattern quality bonus (up to 15 points)
+        if has_base:
+            if base_type == "cup_with_handle":
+                base_quality_bonus = 10
+            elif base_type == "cup":
+                base_quality_bonus = 8
+            elif base_type == "double_bottom":
+                base_quality_bonus = 7
+            elif base_type == "flat":
+                base_quality_bonus = 6
+            # Extra bonus for longer consolidation (max +5)
+            if weeks_in_base >= 8:
+                base_quality_bonus += 5
+            elif weeks_in_base >= 6:
+                base_quality_bonus += 3
+            elif weeks_in_base >= 5:
+                base_quality_bonus += 1
 
         if stock.week_52_high and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
@@ -722,20 +747,37 @@ def evaluate_buys(db: Session) -> list:
                 if breakout_volume_ratio >= 2.0:
                     breakout_bonus += 10  # Extra bonus for strong volume breakout
                 momentum_score = 30
-            # Within 5% of high but NOT breaking out - risky entry point
-            elif pct_from_high <= 2:
-                # At the high without breakout = chasing, penalize unless extremely high score
+
+            # PRE-BREAKOUT: 5-15% below 52-week high with valid base pattern
+            # This is often the BEST entry - before the crowd notices
+            elif has_base and 5 <= pct_from_high <= 15:
+                pre_breakout_bonus = 20  # Big bonus for pre-breakout position
+                momentum_score = 25
+                if volume_ratio >= 1.3:
+                    pre_breakout_bonus += 5  # Accumulation volume bonus
+
+            # AT PIVOT ZONE: 0-5% from high with base pattern (ready to break out)
+            elif has_base and pct_from_high < 5:
+                pre_breakout_bonus = 15  # Good entry near pivot
+                momentum_score = 22
+                if volume_ratio >= 1.5:
+                    momentum_score += 5
+
+            # NO BASE PATTERN at high = chasing
+            elif not has_base and pct_from_high <= 2:
                 if effective_score < 85:
-                    at_high_penalty = -15  # Penalize buying at 52-week high
+                    extended_penalty = -15  # Penalize buying at high without base
                     momentum_score = 5
                 else:
-                    momentum_score = 20  # Very high score justifies the entry
-            # Stocks 5-15% from high with good volume = building base, good entry
+                    momentum_score = 15  # Very high score justifies the entry
+
+            # Good zone: 5-15% from high (whether or not has base)
             elif pct_from_high <= 15:
                 if volume_ratio >= 1.3:  # Accumulation pattern
-                    momentum_score = 25
+                    momentum_score = 18
                 else:
-                    momentum_score = 15
+                    momentum_score = 12
+
             elif pct_from_high <= 25:
                 momentum_score = 5  # Still acceptable
             else:
@@ -757,15 +799,16 @@ def evaluate_buys(db: Session) -> list:
         elif short_interest_pct > 10:
             short_penalty = -2  # Elevated short interest = slight caution
 
-        # Calculate composite score with breakout weighting
-        # Breakouts get priority: 30% growth, 30% score, 25% momentum, 15% breakout bonus
+        # Calculate composite score with breakout and pre-breakout weighting
+        # 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
         composite_score = (
-            (growth_projection * 0.30) +
-            (effective_score * 0.30) +
-            (momentum_score * 0.25) +
-            (breakout_bonus * 0.15) +
-            at_high_penalty +
+            (growth_projection * 0.25) +
+            (effective_score * 0.25) +
+            (momentum_score * 0.20) +
+            ((breakout_bonus + pre_breakout_bonus) * 0.20) +
+            (base_quality_bonus * 0.10) +
+            extended_penalty +
             insider_bonus +
             short_penalty
         )
@@ -786,9 +829,11 @@ def evaluate_buys(db: Session) -> list:
         conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
         position_pct = 4.0 + (conviction_multiplier * 10.67)  # 4% to ~20%
 
-        # Breakout stocks get larger positions (high confidence entry)
+        # Breakout and pre-breakout stocks get larger positions (high confidence entry)
         if is_breaking_out and breakout_volume_ratio >= 1.5:
             position_pct *= 1.25  # 25% larger position for confirmed breakouts
+        elif pre_breakout_bonus >= 15 and has_base:
+            position_pct *= 1.15  # 15% larger for pre-breakout with base
 
         # Apply correlation penalty
         position_pct *= correlation_penalty
@@ -798,8 +843,13 @@ def evaluate_buys(db: Session) -> list:
 
         max_position_value = portfolio_value * (position_pct / 100)
 
-        # Don't exceed available cash (but allow using more of it for high conviction)
-        cash_limit = config.current_cash * 0.85 if is_breaking_out else config.current_cash * 0.70
+        # Don't exceed available cash (allow more for high conviction entries)
+        if is_breaking_out:
+            cash_limit = config.current_cash * 0.85
+        elif pre_breakout_bonus >= 15:
+            cash_limit = config.current_cash * 0.80
+        else:
+            cash_limit = config.current_cash * 0.70
         position_value = min(max_position_value, cash_limit)
 
         # Check sector limits
@@ -816,11 +866,17 @@ def evaluate_buys(db: Session) -> list:
         reason_parts = []
         if is_breaking_out:
             reason_parts.append(f"🚀 BREAKOUT {breakout_volume_ratio:.1f}x vol")
+        elif pre_breakout_bonus >= 15:
+            reason_parts.append(f"📈 PRE-BREAKOUT ({base_type}) {pct_from_high:.0f}% from high")
+        elif extended_penalty < 0:
+            reason_parts.append(f"⚠️ At high without base")
         if stock.projected_growth and stock.projected_growth > 15:
             reason_parts.append(f"+{stock.projected_growth:.0f}% growth")
         stock_type_label = "Growth" if is_growth else "CANSLIM"
         reason_parts.append(f"{stock_type_label} {effective_score:.0f}")
-        if momentum_score >= 20 and not is_breaking_out:
+        if has_base and not is_breaking_out and pre_breakout_bonus < 15:
+            reason_parts.append(f"Base: {base_type} {weeks_in_base}w")
+        if momentum_score >= 20 and not is_breaking_out and pre_breakout_bonus < 15:
             reason_parts.append("Strong momentum")
         if volume_ratio >= 1.5 and not is_breaking_out:
             reason_parts.append(f"Vol {volume_ratio:.1f}x")

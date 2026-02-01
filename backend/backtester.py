@@ -267,8 +267,9 @@ class BacktestEngine:
         In a full implementation, this would run CANSLIM scoring.
         For now, we use a simplified scoring based on:
         - Price momentum (relative strength)
-        - Proximity to 52-week high
+        - Proximity to PIVOT POINT (from base pattern) - not just 52-week high
         - Volume trends
+        - Base pattern quality
         """
         scores = {}
 
@@ -284,20 +285,56 @@ class BacktestEngine:
             # Get market direction
             market = self.data_provider.get_market_direction(current_date)
 
-            # Calculate N score (proximity to 52-week high)
+            # Get base pattern for pivot-based scoring
+            base_pattern = self.data_provider.detect_base_pattern(ticker, current_date)
+            has_base = base_pattern["type"] != "none"
+            pivot_price = base_pattern.get("pivot_price", 0) if has_base else high_52w
+            weeks_in_base = base_pattern.get("weeks", 0)
+
+            # Calculate N score based on pivot proximity (not just 52-week high)
+            # Stocks with proper base patterns get scored on pivot, others on 52-week high
             n_score = 0
-            if high_52w > 0:
-                pct_from_high = ((high_52w - price) / high_52w) * 100
-                if pct_from_high <= 5:
-                    n_score = 15
-                elif pct_from_high <= 10:
-                    n_score = 12
-                elif pct_from_high <= 15:
-                    n_score = 10
-                elif pct_from_high <= 25:
-                    n_score = 5
+            pct_from_pivot = 0
+            pct_from_high = ((high_52w - price) / high_52w) * 100 if high_52w > 0 else 100
+
+            if pivot_price > 0:
+                pct_from_pivot = ((pivot_price - price) / pivot_price) * 100
+
+                if has_base:
+                    # Proper base pattern: score based on pivot proximity
+                    # BEST entry: 0-5% BELOW pivot (pre-breakout zone)
+                    if 0 < pct_from_pivot <= 5:
+                        n_score = 15  # Optimal pre-breakout position
+                    # Good entry: at or just above pivot (breakout zone)
+                    elif -3 <= pct_from_pivot <= 0:
+                        n_score = 14  # At the breakout point
+                    # Acceptable: 5-10% below pivot (building toward breakout)
+                    elif 5 < pct_from_pivot <= 10:
+                        n_score = 12
+                    # Extended: 3-8% above pivot (still ok but less ideal)
+                    elif -8 <= pct_from_pivot < -3:
+                        n_score = 10
+                    # Too extended: >8% above pivot (chasing)
+                    elif pct_from_pivot < -8:
+                        n_score = 5
+                    # Too far from pivot: >10% below
+                    elif pct_from_pivot > 10:
+                        n_score = 6
+                    else:
+                        n_score = 4
                 else:
-                    n_score = 0
+                    # No base pattern: use 52-week high but with reduced scores
+                    # Penalize stocks at highs without proper consolidation
+                    if pct_from_high <= 5:
+                        n_score = 10  # Reduced from 15 - no base pattern
+                    elif pct_from_high <= 10:
+                        n_score = 9
+                    elif pct_from_high <= 15:
+                        n_score = 7
+                    elif pct_from_high <= 25:
+                        n_score = 4
+                    else:
+                        n_score = 0
 
             # Calculate L score (relative strength)
             # Weight: 60% 12-month, 40% 3-month
@@ -332,7 +369,7 @@ class BacktestEngine:
             total_score = (raw_score / 45) * 100
 
             # Get breakout status for better buy decisions
-            is_breaking_out, volume_ratio, base_pattern = self.data_provider.is_breaking_out(
+            is_breaking_out, volume_ratio, _ = self.data_provider.is_breaking_out(
                 ticker, current_date
             )
 
@@ -343,11 +380,15 @@ class BacktestEngine:
                 "m_score": m_score,
                 "rs_12m": rs_12m,
                 "rs_3m": rs_3m,
-                "pct_from_high": ((high_52w - price) / high_52w * 100) if high_52w > 0 else 100,
+                "pct_from_high": pct_from_high,
+                "pct_from_pivot": pct_from_pivot,
+                "pivot_price": pivot_price,
+                "has_base_pattern": has_base,
+                "base_pattern": base_pattern,
+                "weeks_in_base": weeks_in_base,
                 "is_growth_stock": False,  # Would need earnings analysis
                 "is_breaking_out": is_breaking_out,
                 "volume_ratio": volume_ratio,
-                "base_pattern": base_pattern,
             }
 
         return scores
@@ -451,12 +492,15 @@ class BacktestEngine:
 
     def _evaluate_buys(self, current_date: date, scores: Dict[str, dict]) -> List[SimulatedTrade]:
         """
-        Evaluate stocks for buys with breakout detection.
+        Evaluate stocks for buys with enhanced breakout and base pattern detection.
 
-        Key improvements over simple score-based buying:
+        Key improvements:
+        - Pre-breakout bonus: +20 for stocks 5-15% below pivot with valid base
         - Breakout bonus: +25 for confirmed breakouts, +35 for strong volume breakouts
-        - Chase penalty: -15 for buying at highs without breakout confirmation
+        - Extended penalty: -10 to -20 for stocks >5% above pivot (chasing)
+        - Chase penalty: -15 for buying at highs without base pattern
         - Volume confirmation: Larger positions for breakouts with strong volume
+        - Base pattern bonus: Extra points for stocks with proper consolidation
         """
         buys = []
         current_tickers = set(self.positions.keys())
@@ -477,6 +521,9 @@ class BacktestEngine:
 
             score = score_data["total_score"]
             pct_from_high = score_data.get("pct_from_high", 100)
+            pct_from_pivot = score_data.get("pct_from_pivot", pct_from_high)
+            has_base = score_data.get("has_base_pattern", False)
+            weeks_in_base = score_data.get("weeks_in_base", 0)
 
             # Check sector limits
             sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
@@ -488,10 +535,31 @@ class BacktestEngine:
             volume_ratio = score_data.get("volume_ratio", 1.0)
             base_pattern = score_data.get("base_pattern", {"type": "none"})
 
-            # Calculate momentum and breakout scores
+            # Calculate momentum, breakout, pre-breakout, and extended scores
             momentum_score = 0
             breakout_bonus = 0
-            at_high_penalty = 0
+            pre_breakout_bonus = 0
+            extended_penalty = 0
+            base_quality_bonus = 0
+
+            # Base pattern quality bonus (up to 10 points)
+            if has_base:
+                base_type = base_pattern.get("type", "none")
+                if base_type == "cup_with_handle":
+                    base_quality_bonus = 10  # Best pattern
+                elif base_type == "cup":
+                    base_quality_bonus = 8
+                elif base_type == "double_bottom":
+                    base_quality_bonus = 7
+                elif base_type == "flat":
+                    base_quality_bonus = 6
+                # Extra bonus for longer consolidation (max +5)
+                if weeks_in_base >= 8:
+                    base_quality_bonus += 5
+                elif weeks_in_base >= 6:
+                    base_quality_bonus += 3
+                elif weeks_in_base >= 5:
+                    base_quality_bonus += 1
 
             # BREAKOUT STOCKS get highest priority - buying the pivot point
             if is_breaking_out:
@@ -499,34 +567,58 @@ class BacktestEngine:
                 if volume_ratio >= 2.0:
                     breakout_bonus += 10  # Extra bonus for strong volume breakout
                 momentum_score = 30
-            # Within 5% of high but NOT breaking out - risky entry point
-            elif pct_from_high <= 2:
-                # At the high without breakout = chasing, penalize unless extremely high score
-                if score < 85:
-                    at_high_penalty = -15  # Penalize buying at 52-week high
+
+            # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
+            # This is often the BEST entry - before the crowd notices
+            elif has_base and 5 <= pct_from_pivot <= 15:
+                pre_breakout_bonus = 20  # Big bonus for pre-breakout position
+                momentum_score = 25
+                if volume_ratio >= 1.3:
+                    pre_breakout_bonus += 5  # Accumulation volume bonus
+
+            # AT PIVOT: 0-5% from pivot with base pattern
+            elif has_base and 0 <= pct_from_pivot < 5:
+                pre_breakout_bonus = 15  # Good entry near pivot
+                momentum_score = 22
+                if volume_ratio >= 1.5:
+                    momentum_score += 5
+
+            # EXTENDED: More than 5% above pivot - the easy money is gone
+            elif pct_from_pivot < -5:
+                if pct_from_pivot < -10:
+                    extended_penalty = -20  # Heavily penalize extended stocks
                     momentum_score = 5
                 else:
-                    momentum_score = 15
-            # 5-10% from high - decent entry
-            elif pct_from_high <= 10:
-                momentum_score = 20
-                if volume_ratio >= 1.5:
-                    momentum_score += 5  # Bonus for accumulation volume
-            # 10-25% from high - pullback zone
-            elif pct_from_high <= 25:
-                momentum_score = 10
-            # More than 25% from high - weak momentum
-            else:
-                momentum_score = -10
+                    extended_penalty = -10  # Moderate penalty
+                    momentum_score = 10
 
-            # Composite score: 30% growth, 30% score, 25% momentum, 15% breakout bonus
+            # NO BASE PATTERN: Use 52-week high with penalties
+            elif not has_base:
+                if pct_from_high <= 2:
+                    # At 52-week high without base = chasing
+                    if score < 85:
+                        extended_penalty = -15
+                        momentum_score = 5
+                    else:
+                        momentum_score = 12
+                elif pct_from_high <= 10:
+                    momentum_score = 15
+                    if volume_ratio >= 1.5:
+                        momentum_score += 3
+                elif pct_from_high <= 25:
+                    momentum_score = 8
+                else:
+                    momentum_score = -5
+
+            # Composite score: 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
             growth_projection = min(score_data.get("projected_growth", score * 0.3), 50)
             composite_score = (
-                (growth_projection * 0.30) +
-                (score * 0.30) +
-                (momentum_score * 0.25) +
-                (breakout_bonus * 0.15) +
-                at_high_penalty
+                (growth_projection * 0.25) +
+                (score * 0.25) +
+                (momentum_score * 0.20) +
+                ((breakout_bonus + pre_breakout_bonus) * 0.20) +
+                (base_quality_bonus * 0.10) +
+                extended_penalty
             )
 
             if composite_score < 25:
@@ -537,14 +629,21 @@ class BacktestEngine:
             position_pct = 4.0 + (conviction_multiplier * 10.67)
             position_pct = min(position_pct, 20.0)
 
-            # Breakout stocks get larger positions (high confidence entry)
+            # Breakout and pre-breakout stocks get larger positions (high confidence entry)
             if is_breaking_out and volume_ratio >= 1.5:
                 position_pct *= 1.25  # 25% larger position for confirmed breakouts
+            elif pre_breakout_bonus >= 15 and has_base:
+                position_pct *= 1.15  # 15% larger for pre-breakout with base
 
             position_value = portfolio_value * (position_pct / 100)
 
-            # Allow more cash for breakout stocks
-            cash_limit = self.cash * 0.85 if is_breaking_out else self.cash * 0.70
+            # Allow more cash for breakout/pre-breakout stocks
+            if is_breaking_out:
+                cash_limit = self.cash * 0.85
+            elif pre_breakout_bonus >= 15:
+                cash_limit = self.cash * 0.80
+            else:
+                cash_limit = self.cash * 0.70
             position_value = min(position_value, cash_limit)
 
             if position_value < 100:
@@ -557,8 +656,15 @@ class BacktestEngine:
             if is_breaking_out:
                 base_type = base_pattern.get("type", "none")
                 reason_parts.append(f"🚀 BREAKOUT ({base_type}) {volume_ratio:.1f}x vol")
+            elif pre_breakout_bonus >= 15:
+                base_type = base_pattern.get("type", "none")
+                reason_parts.append(f"📈 PRE-BREAKOUT ({base_type}) {pct_from_pivot:.0f}% below pivot")
+            elif extended_penalty < 0:
+                reason_parts.append(f"⚠️ Extended {abs(pct_from_pivot):.0f}% above pivot")
             reason_parts.append(f"Score {score:.0f}")
-            if not is_breaking_out:
+            if has_base and not is_breaking_out and pre_breakout_bonus < 15:
+                reason_parts.append(f"Base: {base_pattern.get('type', 'none')} {weeks_in_base}w")
+            if not is_breaking_out and pre_breakout_bonus < 15:
                 reason_parts.append(f"{pct_from_high:.1f}% from high")
             if volume_ratio >= 1.5 and not is_breaking_out:
                 reason_parts.append(f"Vol {volume_ratio:.1f}x")

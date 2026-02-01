@@ -526,6 +526,55 @@ stop_loss_pct: float = 10.0
 python3 -m pytest tests/test_backtester.py -v  # 13 tests
 ```
 
+### Stock Picking Model Improvements (Jan 31, 2026)
+
+**Problem**: Backtesting showed +16.9% vs SPY +19.7% - underperforming the benchmark. The model was correctly identifying stocks doing well but buying them AFTER they broke out (at 52-week highs) rather than BEFORE.
+
+**Key Changes**:
+
+1. **SPY Comparison Display Fix** (`Backtest.jsx`):
+   - Returns now show RED when underperforming SPY (was showing green for any positive return)
+   - Displays the difference vs SPY (e.g., "vs SPY -2.8%")
+
+2. **N Score Refactored** (`backtester.py`, `ai_trader.py`):
+   - Now scores based on proximity to PIVOT POINT (from base pattern), not just 52-week high
+   - Stocks with proper base patterns scored on pivot: 0-5% below pivot = 15 pts (best entry)
+   - Stocks at 52-week high WITHOUT base pattern = reduced score (10 pts max)
+
+3. **Pre-Breakout Bonus** (+20 points):
+   - Stocks 5-15% BELOW pivot with valid base pattern get priority
+   - This is the optimal entry zone - before the crowd notices
+   - Larger position sizing (15% more) for pre-breakout entries
+
+4. **Extended Stock Penalty** (-10 to -20 points):
+   - Stocks more than 5% ABOVE their pivot/breakout point are penalized
+   - 5-10% above pivot: -10 points (moderate penalty)
+   - >10% above pivot: -20 points (heavy penalty - chasing)
+
+5. **Base Pattern Quality Bonus** (up to 15 points):
+   - cup_with_handle: +10 (best pattern)
+   - cup: +8
+   - double_bottom: +7
+   - flat: +6
+   - Longer consolidation (8+ weeks): +5 extra
+
+6. **Revised Composite Score Weights**:
+   ```
+   Old: 30% growth, 30% score, 25% momentum, 15% breakout
+   New: 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
+   ```
+
+**Files Modified**:
+- `frontend/src/pages/Backtest.jsx` - SPY comparison color fix
+- `backend/backtester.py` - N score refactor, pre-breakout/extended logic
+- `backend/ai_trader.py` - Consistent logic for live trading
+
+**Trade Reasons Now Include**:
+- `🚀 BREAKOUT (flat) 1.8x vol` - Confirmed breakout with volume
+- `📈 PRE-BREAKOUT (cup) 8% below pivot` - Pre-breakout entry
+- `⚠️ Extended 12% above pivot` - Warning for extended stocks
+- `Base: flat 6w` - Shows base pattern type and duration
+
 ## Pending Features
 
 ### Ready to Build
