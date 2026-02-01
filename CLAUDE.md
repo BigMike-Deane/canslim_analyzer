@@ -177,18 +177,15 @@ docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/ba
    - Added fallback in `get_stock_data_async`
 
 **Data Flow (Fallback Chain)**:
-- **market_cap**: FMP v3 batch quotes → FMP v3 profiles (mktCap) → Yahoo info
-- **week_52_low**: FMP v3 batch quotes (yearLow) → FMP v3 profiles (from range) → Yahoo chart API
+- **market_cap**: FMP /stable/ quotes → FMP /stable/ profiles (mktCap) → Yahoo info
+- **week_52_low**: FMP /stable/ quotes (yearLow) → FMP /stable/ profiles (from range) → Yahoo chart API
 
 **Files Modified**:
-- `async_data_fetcher.py` - Batch endpoint URLs, profile range extraction, all fallbacks
+- `async_data_fetcher.py` - Individual /stable/ fetches, profile range extraction, all fallbacks
 - `data_fetcher.py` - Chart API returns `low_52w`
 
 **Verification**:
 ```bash
-# Test FMP v3 batch endpoint works
-docker exec canslim-analyzer python3 -c "import os,requests; key=os.environ.get('FMP_API_KEY',''); r=requests.get(f'https://financialmodelingprep.com/api/v3/quote/AAPL,MSFT,GOOG?apikey={key}'); print(f'Batch returned: {len(r.json())} tickers')"
-
 # Check portfolio stocks have data
 docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock, PortfolioPosition; db = SessionLocal(); tickers = [p.ticker for p in db.query(PortfolioPosition.ticker).distinct().all()]; stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all(); [print(f'{s.ticker}: mktcap={s.market_cap}, 52wLow={s.week_52_low}') for s in stocks]; db.close()"
 
@@ -196,7 +193,12 @@ docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/ba
 docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); with_data = db.query(Stock).filter(Stock.market_cap > 0, Stock.week_52_low > 0).count(); total = db.query(Stock).count(); print(f'Stocks with market_cap AND week_52_low: {with_data}/{total} ({with_data/total*100:.1f}%)'); db.close()"
 ```
 
-**Key Lesson**: The FMP `/stable/` endpoints are for single-ticker requests only. Always use `/api/v3/` for batch/comma-separated requests.
+**CRITICAL: FMP API Subscription Tiers** (discovered Feb 2026):
+- `/api/v3/` endpoints are **LEGACY ONLY** - require subscription before Aug 31, 2025
+- `/api/v3/quote/AAPL,MSFT` returns 403 Forbidden for newer accounts
+- `/stable/` endpoints work but **DO NOT support comma-separated batch requests**
+- `/stable/quote?symbol=AAPL,MSFT` returns empty `[]` - must fetch individually
+- Solution: Fetch quotes/profiles individually via `/stable/` in parallel batches of 50
 
 ### Progress Tracking + Delisted Ticker System (Jan 30)
 

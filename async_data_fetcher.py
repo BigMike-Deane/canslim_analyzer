@@ -222,95 +222,126 @@ async def fetch_json_async(session: aiohttp.ClientSession, url: str, timeout: in
         return None
 
 
-# ============== BATCH FMP ENDPOINTS ==============
-# These fetch data for multiple tickers in a single API call
+# ============== FMP QUOTE/PROFILE ENDPOINTS ==============
+# NOTE: /api/v3/ batch endpoints require legacy subscription (before Aug 2025)
+# For newer accounts, we fetch individually via /stable/ endpoints
+
+async def fetch_fmp_single_quote(session: aiohttp.ClientSession, ticker: str) -> Optional[dict]:
+    """Fetch quote for a single ticker using /stable/ endpoint"""
+    if not FMP_API_KEY:
+        return None
+
+    url = f"{FMP_BASE_URL}/quote?symbol={ticker}&apikey={FMP_API_KEY}"
+    data = await fetch_json_async(session, url, timeout=15)
+
+    if data and isinstance(data, list) and len(data) > 0:
+        quote = data[0]
+        return {
+            "current_price": quote.get("price", 0),
+            "high_52w": quote.get("yearHigh", 0),
+            "low_52w": quote.get("yearLow", 0),
+            "volume": quote.get("volume", 0),
+            "avg_volume": quote.get("avgVolume", 0),
+            "market_cap": quote.get("marketCap", 0),
+            "pe": quote.get("pe", 0),
+            "shares_outstanding": quote.get("sharesOutstanding", 0),
+            "name": quote.get("name", ticker),
+        }
+    return None
+
+
+async def fetch_fmp_single_profile(session: aiohttp.ClientSession, ticker: str) -> Optional[dict]:
+    """Fetch profile for a single ticker using /stable/ endpoint"""
+    if not FMP_API_KEY:
+        return None
+
+    url = f"{FMP_BASE_URL}/profile?symbol={ticker}&apikey={FMP_API_KEY}"
+    data = await fetch_json_async(session, url, timeout=15)
+
+    if data and isinstance(data, list) and len(data) > 0:
+        profile = data[0]
+        high_52w = 0
+        low_52w = 0
+        if profile.get("range"):
+            try:
+                # Range format is "low-high" e.g. "169.21-288.62"
+                range_parts = profile.get("range", "").split("-")
+                if len(range_parts) >= 2:
+                    low_52w = float(range_parts[0].strip())
+                    high_52w = float(range_parts[-1].strip())
+            except:
+                pass
+
+        return {
+            "name": profile.get("companyName", ""),
+            "sector": profile.get("sector", ""),
+            "industry": profile.get("industry", ""),
+            "market_cap": profile.get("mktCap", 0),
+            "current_price": profile.get("price", 0),
+            "high_52w": high_52w,
+            "low_52w": low_52w,
+            "shares_outstanding": profile.get("sharesOutstanding", 0) or 0,
+        }
+    return None
+
 
 async def fetch_fmp_batch_quotes(session: aiohttp.ClientSession, tickers: List[str]) -> Dict[str, dict]:
     """
-    Fetch quotes for multiple tickers in ONE API call
-    FMP supports up to 500 tickers per batch request
+    Fetch quotes for multiple tickers.
+    Uses individual /stable/ requests since batch /api/v3/ requires legacy subscription.
+    Fetches in parallel batches to maintain speed.
     """
     if not FMP_API_KEY or not tickers:
         return {}
 
     results = {}
 
-    # Process in chunks of 500 (FMP limit)
-    # NOTE: The /stable/quote endpoint doesn't support batch requests
-    # Must use /api/v3/quote/{symbols} format for batches
-    for i in range(0, len(tickers), 500):
-        chunk = tickers[i:i + 500]
-        symbols = ",".join(chunk)
-        url = f"https://financialmodelingprep.com/api/v3/quote/{symbols}?apikey={FMP_API_KEY}"
+    # Fetch in parallel batches of 50 to avoid overwhelming the API
+    batch_size = 50
+    for i in range(0, len(tickers), batch_size):
+        chunk = tickers[i:i + batch_size]
+        tasks = [fetch_fmp_single_quote(session, t) for t in chunk]
+        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        data = await fetch_json_async(session, url, timeout=30)
+        for ticker, result in zip(chunk, chunk_results):
+            if isinstance(result, dict) and result:
+                results[ticker] = result
 
-        if data and isinstance(data, list):
-            for quote in data:
-                ticker = quote.get("symbol")
-                if ticker:
-                    results[ticker] = {
-                        "current_price": quote.get("price", 0),
-                        "high_52w": quote.get("yearHigh", 0),
-                        "low_52w": quote.get("yearLow", 0),
-                        "volume": quote.get("volume", 0),
-                        "avg_volume": quote.get("avgVolume", 0),
-                        "market_cap": quote.get("marketCap", 0),
-                        "pe": quote.get("pe", 0),
-                        "shares_outstanding": quote.get("sharesOutstanding", 0),
-                        "name": quote.get("name", ticker),
-                    }
+        # Small delay between batches to respect rate limits
+        if i + batch_size < len(tickers):
+            await asyncio.sleep(0.5)
 
-    logger.info(f"Batch quotes: fetched {len(results)}/{len(tickers)} tickers")
+    logger.info(f"FMP quotes: fetched {len(results)}/{len(tickers)} tickers")
     return results
 
 
 async def fetch_fmp_batch_profiles(session: aiohttp.ClientSession, tickers: List[str]) -> Dict[str, dict]:
     """
-    Fetch company profiles for multiple tickers in ONE API call
+    Fetch profiles for multiple tickers.
+    Uses individual /stable/ requests since batch /api/v3/ requires legacy subscription.
+    Fetches in parallel batches to maintain speed.
     """
     if not FMP_API_KEY or not tickers:
         return {}
 
     results = {}
 
-    # NOTE: The /stable/profile endpoint doesn't support batch requests
-    # Must use /api/v3/profile/{symbols} format for batches
-    for i in range(0, len(tickers), 500):
-        chunk = tickers[i:i + 500]
-        symbols = ",".join(chunk)
-        url = f"https://financialmodelingprep.com/api/v3/profile/{symbols}?apikey={FMP_API_KEY}"
+    # Fetch in parallel batches of 50 to avoid overwhelming the API
+    batch_size = 50
+    for i in range(0, len(tickers), batch_size):
+        chunk = tickers[i:i + batch_size]
+        tasks = [fetch_fmp_single_profile(session, t) for t in chunk]
+        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        data = await fetch_json_async(session, url, timeout=30)
+        for ticker, result in zip(chunk, chunk_results):
+            if isinstance(result, dict) and result:
+                results[ticker] = result
 
-        if data and isinstance(data, list):
-            for profile in data:
-                ticker = profile.get("symbol")
-                if ticker:
-                    high_52w = 0
-                    low_52w = 0
-                    if profile.get("range"):
-                        try:
-                            # Range format is "low-high" e.g. "169.21-288.62"
-                            range_parts = profile.get("range", "").split("-")
-                            if len(range_parts) >= 2:
-                                low_52w = float(range_parts[0].strip())
-                                high_52w = float(range_parts[-1].strip())
-                        except:
-                            pass
+        # Small delay between batches to respect rate limits
+        if i + batch_size < len(tickers):
+            await asyncio.sleep(0.5)
 
-                    results[ticker] = {
-                        "name": profile.get("companyName", ""),
-                        "sector": profile.get("sector", ""),
-                        "industry": profile.get("industry", ""),
-                        "market_cap": profile.get("mktCap", 0),
-                        "current_price": profile.get("price", 0),
-                        "high_52w": high_52w,
-                        "low_52w": low_52w,
-                        "shares_outstanding": profile.get("sharesOutstanding", 0) or 0,
-                    }
-
-    logger.info(f"Batch profiles: fetched {len(results)}/{len(tickers)} tickers")
+    logger.info(f"FMP profiles: fetched {len(results)}/{len(tickers)} tickers")
     return results
 
 
