@@ -589,49 +589,53 @@ class HistoricalDataProvider:
 
     def _detect_flat_base(self, weekly_data: List[dict]) -> dict:
         """
-        Detect flat base pattern: 5+ consecutive weeks with tight price action (<15% range).
+        Detect flat base pattern: 5+ weeks where the OVERALL price range is tight (<15%).
+
+        Per O'Neil's CANSLIM methodology:
+        - A flat base is a sideways consolidation with <15% total range
+        - Calculates (highest_high - lowest_low) / lowest_low across the window
+        - Returns the longest valid flat base found
         """
         if len(weekly_data) < 5:
             return {"type": "none", "weeks": 0, "pivot_price": 0.0}
 
-        recent_weeks = weekly_data[-12:]  # Look at last 12 weeks
+        recent_weeks = weekly_data[-15:]  # Look at last 15 weeks for longer bases
 
-        # Find consecutive tight weeks
-        tight_flags = []
-        for week in recent_weeks:
-            if week["close"] > 0:
-                range_pct = (week["high"] - week["low"]) / week["close"]
-                tight_flags.append(range_pct < 0.15)
-            else:
-                tight_flags.append(False)
+        if len(recent_weeks) < 5:
+            return {"type": "none", "weeks": 0, "pivot_price": 0.0}
 
-        # Find longest consecutive run
-        max_consecutive = 0
-        current_consecutive = 0
-        best_start_idx = 0
-        current_start_idx = 0
+        best_base = {"type": "none", "weeks": 0, "pivot_price": 0.0}
 
-        for i, is_tight in enumerate(tight_flags):
-            if is_tight:
-                if current_consecutive == 0:
-                    current_start_idx = i
-                current_consecutive += 1
-                if current_consecutive > max_consecutive:
-                    max_consecutive = current_consecutive
-                    best_start_idx = current_start_idx
-            else:
-                current_consecutive = 0
+        # Try different window sizes from 5 to len(recent_weeks)
+        # Find the longest valid flat base
+        for window_size in range(5, len(recent_weeks) + 1):
+            # Slide the window across recent weeks
+            for start_idx in range(len(recent_weeks) - window_size + 1):
+                window = recent_weeks[start_idx:start_idx + window_size]
 
-        if max_consecutive >= 5:
-            tight_weeks = recent_weeks[best_start_idx:best_start_idx + max_consecutive]
-            pivot_price = max(w["high"] for w in tight_weeks)
-            return {
-                "type": "flat",
-                "weeks": max_consecutive,
-                "pivot_price": pivot_price
-            }
+                # Calculate the OVERALL range across all weeks in the window
+                highest_high = max(w["high"] for w in window)
+                lowest_low = min(w["low"] for w in window)
 
-        return {"type": "none", "weeks": 0, "pivot_price": 0.0}
+                if lowest_low <= 0:
+                    continue
+
+                # Total consolidation range as percentage
+                total_range_pct = (highest_high - lowest_low) / lowest_low
+
+                # A valid flat base has < 15% total range
+                if total_range_pct < 0.15:
+                    # Prefer longer bases (more significant)
+                    if window_size > best_base["weeks"]:
+                        best_base = {
+                            "type": "flat",
+                            "weeks": window_size,
+                            "pivot_price": highest_high,
+                            "base_low": lowest_low,
+                            "base_depth": round(total_range_pct * 100, 1)
+                        }
+
+        return best_base
 
     def _detect_cup_pattern(self, weekly_data: List[dict]) -> dict:
         """
@@ -707,16 +711,18 @@ class HistoricalDataProvider:
             pivot = base_pattern["pivot_price"]
             pct_from_pivot = (price - pivot) / pivot if pivot > 0 else 0
 
-            # Strong breakout: 0-5% above pivot with strong volume
-            if 0 <= pct_from_pivot <= 0.05 and effective_vol_score >= 70:
+            # EXTENDED CHECK: If stock is >5% above pivot, it's NO LONGER a breakout
+            # The buy point has passed - don't chase extended stocks
+            if pct_from_pivot > 0.05:
+                return False, vol_ratio, base_pattern
+
+            # Active breakout: 0-5% above pivot with volume confirmation
+            # This is the optimal buy zone per CANSLIM methodology
+            if 0 <= pct_from_pivot <= 0.05 and effective_vol_score >= 50:
                 return True, vol_ratio, base_pattern
 
-            # Breakout: 0-10% above pivot with good volume
-            if 0 <= pct_from_pivot <= 0.10 and effective_vol_score >= 50:
-                return True, vol_ratio, base_pattern
-
-            # Near breakout: within 5% below pivot, building volume
-            if -0.05 <= pct_from_pivot < 0 and effective_vol_score >= 60:
+            # Pre-breakout: within 3% below pivot, building volume
+            if -0.03 <= pct_from_pivot < 0 and effective_vol_score >= 40:
                 return True, vol_ratio, base_pattern
 
         # Check for breakout near 52-week high (no base pattern)
