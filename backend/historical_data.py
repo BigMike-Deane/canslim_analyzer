@@ -720,11 +720,13 @@ class HistoricalDataProvider:
                 return True, vol_ratio, base_pattern
 
         # Check for breakout near 52-week high (no base pattern)
+        # Be VERY strict - only mark as breakout with exceptional volume at new highs
         high_52w, _ = self.get_52_week_high_low(ticker, as_of_date)
         if high_52w > 0:
             pct_from_high = (high_52w - price) / high_52w
-            # Within 5% of 52-week high with strong volume = potential breakout
-            if pct_from_high <= 0.05 and effective_vol_score >= 60:
+            # Require: within 2% of 52-week high AND exceptional volume (2.5x+)
+            # True breakouts without detected bases should be rare
+            if pct_from_high <= 0.02 and vol_ratio >= 2.5:
                 return True, vol_ratio, base_pattern
 
         return False, vol_ratio, base_pattern

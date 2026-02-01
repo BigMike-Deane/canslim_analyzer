@@ -1256,11 +1256,14 @@ class TechnicalAnalyzer:
         )
 
         if base_pattern["type"] == "none" or base_pattern["pivot_price"] <= 0:
-            # Even without a base pattern, check if near 52-week high with volume
+            # No base pattern detected - be VERY strict about calling this a breakout
+            # Only mark as breakout with exceptional volume (2.5x+) AND at new high
+            # This prevents false positives from stocks just near highs with normal volume surges
             if stock_data.high_52w and stock_data.high_52w > 0 and stock_data.current_price and stock_data.current_price > 0:
                 pct_from_high = (stock_data.high_52w - stock_data.current_price) / stock_data.high_52w
-                # Within 5% of 52-week high with decent volume = potential breakout
-                if pct_from_high <= 0.05 and effective_vol_score >= 60:
+                # Require: within 2% of 52-week high AND exceptional volume (2.5x+)
+                # This is a much higher bar - true breakouts without detected bases are rare
+                if pct_from_high <= 0.02 and vol_ratio >= 2.5:
                     return True, vol_ratio
             return False, vol_ratio
 
