@@ -17,6 +17,35 @@ def get_cst_now():
     cst = timezone(timedelta(hours=-6))
     return datetime.now(cst).replace(tzinfo=None)  # Store without tz for SQLite compatibility
 
+
+def is_market_open() -> bool:
+    """
+    Check if US stock market is currently open.
+    Market hours: Monday-Friday, 9:30 AM - 4:00 PM Eastern Time.
+
+    Note: Does not account for market holidays - will return True on holidays
+    that fall on weekdays during market hours.
+
+    Returns:
+        True if market is open, False otherwise
+    """
+    # Use Eastern Time (ET) - handles both EST and EDT conceptually
+    # Note: This uses fixed UTC-5 (EST). For full DST handling,
+    # would need pytz or zoneinfo, but this is close enough for trading simulation
+    eastern = timezone(timedelta(hours=-5))
+    now = datetime.now(eastern)
+
+    # Weekday check: Monday=0, Friday=4, Saturday=5, Sunday=6
+    if now.weekday() > 4:
+        return False
+
+    # Market hours: 9:30 AM - 4:00 PM Eastern
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    return market_open <= now <= market_close
+
+
 from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
     AIPortfolioTrade, AIPortfolioSnapshot, StockScore

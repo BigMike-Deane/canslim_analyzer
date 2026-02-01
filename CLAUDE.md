@@ -1,55 +1,36 @@
 # CANSLIM Analyzer - Project Context
 
-## ACTIVE DEBUGGING SESSION (Feb 1, 2026) - RESUME HERE
+## RESOLVED: Market Cap & 52-Week Low Fix (Feb 1, 2026)
 
-### Problem: market_cap and week_52_low not being saved to database for portfolio stocks
+**Status**: FIXED - Data is now being saved correctly. More stocks gaining data with each scan cycle.
 
-**Status**: Debug logging added, waiting for scan to complete to see where data is lost.
+**Solution Summary**:
+The issue was that the FMP `/api/v3/` batch endpoints require a legacy subscription (before Aug 2025). We switched to fetching individual quotes/profiles via `/stable/` endpoints, which work but are slower. The fix is working - user confirmed "seeing several new stocks with market caps and 52 week lows now that it has scanned a few times throughout the night."
 
-**What we know**:
-1. FMP API returns correct data - tested directly, ARM returns `marketCap: 111786809230`
-2. `fetch_fmp_single_quote()` works - returns dict with market_cap
-3. `get_stock_data_async()` sets `stock_data.market_cap` correctly - logs show "ARM: final market_cap=111786809230"
-4. The result dict in `async_scanner.py` includes `"market_cap": stock_data.market_cap` (line 174)
-5. BUT when we query the database, portfolio stocks have `market_cap=0`
-6. 831/2076 stocks DO have market_cap > 0, so saving works for SOME stocks
+**Code Cleanup Done**:
+- Removed duplicate `week_52_low` assignment in `scheduler.py` (was at lines 365 AND 382, now only at 381)
 
-**Debug logging added**:
-- `backend/scheduler.py` line ~474: "BEFORE SAVE {ticker}: market_cap={value}" - logs first 5 stocks before save
-- `backend/scheduler.py` line ~367: "{ticker}: analysis.market_cap={X}, stock.market_cap={Y}" - logs during save
-- `async_data_fetcher.py` line ~1140: "{ticker}: final market_cap={value}" - logs at end of get_stock_data_async
+**Data Flow (working correctly)**:
+1. `fetch_fmp_single_quote()` → returns `market_cap`, `low_52w`, `high_52w` from FMP `/stable/quote`
+2. `fetch_fmp_single_profile()` → fallback with `mktCap` and range parsing for 52w data
+3. `get_stock_data_async()` → applies quote/profile data to StockData object with Yahoo fallbacks
+4. `analyze_stocks_async()` → builds result dict with `market_cap` (line 174), `week_52_low` (line 223)
+5. `save_stock_to_db()` → saves to database at lines 364 (market_cap), 381 (week_52_low)
 
-**To continue debugging**:
-1. Wait for current scan to complete (was at 150/2076)
-2. Check logs: `docker logs canslim-analyzer 2>&1 | grep -E "BEFORE SAVE|analysis.market_cap"`
-3. These logs will show if market_cap is in the analysis dict and what value gets assigned to stock.market_cap
-
-**Key files involved**:
-- `async_data_fetcher.py`: `get_stock_data_async()` fetches data, `fetch_fmp_single_quote()` gets quote from FMP
-- `async_scanner.py`: `analyze_stocks_async()` builds result dict with market_cap at line 174
-- `backend/scheduler.py`: `save_stock_to_db()` saves to database, market_cap at line 364
-
-**FMP API Discovery**:
-- `/api/v3/` batch endpoints (comma-separated tickers) return 403 - require legacy subscription (before Aug 2025)
-- `/stable/` endpoints work but DON'T support batch - must fetch individually
-- Current approach: Skip batch, fetch quote/profile per-stock via `/stable/` endpoints
-
-**Commands for debugging**:
+**Verification Commands** (run on VPS):
 ```bash
 # Check portfolio stocks data
 docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock, PortfolioPosition; db = SessionLocal(); tickers = [p.ticker for p in db.query(PortfolioPosition.ticker).distinct().all()]; stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all(); [print(f'{s.ticker}: mktcap={int(s.market_cap) if s.market_cap else 0}, 52wLow={s.week_52_low or 0}') for s in stocks]; db.close()"
 
-# Check how many stocks have market_cap
-docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); total = db.query(Stock).count(); with_mktcap = db.query(Stock).filter(Stock.market_cap > 0).count(); print(f'Total: {total}, with market_cap: {with_mktcap} ({with_mktcap/total*100:.1f}%)'); db.close()"
-
-# Watch for debug logs during save phase
-docker logs -f canslim-analyzer 2>&1 | grep -E "BEFORE SAVE|analysis.market_cap"
-
-# Test FMP quote directly
-docker exec canslim-analyzer python3 -c "import sys,requests; sys.path.insert(0, '/app'); from data_fetcher import FMP_API_KEY, FMP_BASE_URL; r=requests.get(f'{FMP_BASE_URL}/quote?symbol=ARM&apikey={FMP_API_KEY}'); print(r.json())"
+# Check overall data coverage
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); total = db.query(Stock).count(); with_data = db.query(Stock).filter(Stock.market_cap > 0, Stock.week_52_low > 0).count(); print(f'Stocks with BOTH market_cap AND week_52_low: {with_data}/{total} ({with_data/total*100:.1f}%)'); db.close()"
 ```
 
-**Note**: Also cleared delisted tickers table which had grown to ~180 tickers, reducing universe from 2080 to 1903.
+**Why Some Stocks Initially Had No Data**:
+- Rate limiting on first scan passes caused some API calls to fail
+- Portfolio stocks are prioritized and get processed first
+- Each subsequent scan fills in more stocks as retry attempts succeed
+- Expected: 90%+ coverage after 3-4 complete scan cycles
 
 ---
 

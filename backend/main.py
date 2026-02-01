@@ -2200,8 +2200,15 @@ async def initialize_ai_portfolio_endpoint(
 async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
     """Manually trigger an AI trading cycle (runs in background)"""
     from backend.database import SessionLocal
-    from backend.ai_trader import take_portfolio_snapshot, _trading_cycle_lock, _trading_cycle_started
+    from backend.ai_trader import take_portfolio_snapshot, _trading_cycle_lock, _trading_cycle_started, is_market_open
     from datetime import datetime
+
+    # Check if market is open
+    if not is_market_open():
+        return {
+            "status": "market_closed",
+            "message": "Market is closed. Trading only runs during market hours (Mon-Fri 9:30 AM - 4:00 PM Eastern)."
+        }
 
     # Check if a cycle is already running BEFORE launching background task
     if _trading_cycle_lock and _trading_cycle_started:

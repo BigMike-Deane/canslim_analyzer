@@ -362,9 +362,6 @@ def run_continuous_scan():
         stock.industry = analysis.get("industry")
         stock.current_price = analysis.get("current_price")
         stock.market_cap = analysis.get("market_cap")
-        stock.week_52_low = analysis.get("week_52_low")
-        # Debug log for market_cap
-        logger.info(f"{analysis['ticker']}: analysis.market_cap={analysis.get('market_cap')}, stock.market_cap={stock.market_cap}")
         stock.canslim_score = new_score
         stock.c_score = analysis.get("c_score")
         stock.a_score = analysis.get("a_score")
@@ -531,16 +528,20 @@ def run_continuous_scan():
         except Exception as e:
             logger.error(f"Market snapshot error: {e}")
 
-        # Run AI trading cycle after scan completes
+        # Run AI trading cycle after scan completes (only during market hours)
         try:
-            from backend.ai_trader import run_ai_trading_cycle, get_or_create_config, take_portfolio_snapshot
+            from backend.ai_trader import run_ai_trading_cycle, get_or_create_config, take_portfolio_snapshot, is_market_open
             ai_db = SessionLocal()
             config = get_or_create_config(ai_db)
             if config.is_active:
-                logger.info("Running AI trading cycle...")
-                result = run_ai_trading_cycle(ai_db)
-                logger.info(f"AI trading: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
-                # Note: run_ai_trading_cycle already takes a snapshot
+                if is_market_open():
+                    logger.info("Running AI trading cycle...")
+                    result = run_ai_trading_cycle(ai_db)
+                    logger.info(f"AI trading: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+                    # Note: run_ai_trading_cycle already takes a snapshot
+                else:
+                    logger.info("Market closed - skipping AI trading, taking snapshot only")
+                    take_portfolio_snapshot(ai_db)
             else:
                 # Only take snapshot if trading didn't run (trading cycle takes its own)
                 take_portfolio_snapshot(ai_db)
