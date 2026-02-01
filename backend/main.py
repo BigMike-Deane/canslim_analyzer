@@ -1819,16 +1819,42 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
             shares_to_buy = int(max_position_value / stock.current_price) if stock.current_price else 0
             buy_value = shares_to_buy * stock.current_price if shares_to_buy else max_position_value
 
-            # Check if near 52-week high (momentum)
-            near_high = ""
-            if stock.week_52_high and stock.current_price:
+            # Check breakout status and base pattern
+            is_breaking_out = getattr(stock, 'is_breaking_out', False)
+            base_type = getattr(stock, 'base_type', 'none') or 'none'
+            weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+            has_base = base_type not in ('none', '', None)
+
+            # Build entry signal description
+            entry_signal = ""
+            if is_breaking_out and has_base:
+                entry_signal = f"🚀 Breaking out of {base_type} base ({weeks_in_base}w)"
+            elif is_breaking_out:
+                entry_signal = "🚀 Breaking out with volume"
+            elif has_base:
+                if stock.week_52_high and stock.current_price:
+                    pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+                    if pct_from_high <= 15:
+                        entry_signal = f"📈 Pre-breakout: {base_type} base ({weeks_in_base}w), {pct_from_high:.0f}% from pivot"
+                    else:
+                        entry_signal = f"Base forming: {base_type} ({weeks_in_base}w)"
+            elif stock.week_52_high and stock.current_price:
                 pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
                 if pct_from_high <= 10:
-                    near_high = f"Within {pct_from_high:.0f}% of 52-week high"
+                    entry_signal = f"Within {pct_from_high:.0f}% of 52-week high (no base detected)"
+
+            # Adjust priority based on entry quality
+            priority = 2
+            if is_breaking_out and has_base:
+                priority = 1  # Highest priority - confirmed breakout from base
+            elif has_base and stock.week_52_high and stock.current_price:
+                pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+                if pct_from_high <= 15:
+                    priority = 1  # High priority - pre-breakout with base
 
             actions.append({
                 "action": "BUY",
-                "priority": 2,
+                "priority": priority,
                 "ticker": stock.ticker,
                 "shares_action": shares_to_buy,
                 "shares_current": 0,
@@ -1839,8 +1865,8 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
                 "details": [
                     f"{score_type} Score: {effective_score:.0f}/100",
                     f"Projected 6-month growth: +{stock.projected_growth:.0f}%",
+                    entry_signal if entry_signal else f"Current price: ${stock.current_price:.2f}",
                     f"Sector: {stock.sector}",
-                    near_high if near_high else f"Current price: ${stock.current_price:.2f}",
                     f"Suggested position: {shares_to_buy} shares (~${buy_value:,.0f}, 10% of portfolio)"
                 ]
             })
@@ -1932,25 +1958,51 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
         if effective_score >= 70 and stock.week_52_high and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
 
+            # Get base pattern info
+            base_type = getattr(stock, 'base_type', 'none') or 'none'
+            weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+            has_base = base_type not in ('none', '', None)
+
             # Approaching breakout (within 5-15% of high)
+            # Prioritize stocks WITH base patterns
             if 5 <= pct_from_high <= 15:
+                # Set priority based on base pattern quality
+                if has_base and weeks_in_base >= 5:
+                    watch_priority = 3  # Higher priority - proper base forming
+                    watch_reason = f"📈 Pre-breakout setup: {base_type} base ({weeks_in_base}w), {pct_from_high:.0f}% from pivot"
+                elif has_base:
+                    watch_priority = 4
+                    watch_reason = f"Base forming ({base_type}) - {pct_from_high:.0f}% from high"
+                else:
+                    watch_priority = 5  # Lower priority - no base pattern
+                    watch_reason = f"Approaching 52-week high - {pct_from_high:.0f}% away (no base detected)"
+
+                # Build details
+                details = [f"{score_type} Score: {effective_score:.0f}/100"]
+                if has_base:
+                    details.append(f"Base pattern: {base_type} ({weeks_in_base} weeks)")
+                details.extend([
+                    f"52-week high: ${stock.week_52_high:.2f}",
+                    f"Current: ${stock.current_price:.2f} ({pct_from_high:.1f}% below high)",
+                ])
+                if has_base:
+                    details.append("Watch for breakout above pivot on 1.5x+ volume")
+                else:
+                    details.append("⚠️ No base pattern - wait for consolidation")
+                if stock.projected_growth:
+                    details.append(f"Projected growth: +{stock.projected_growth:.0f}%")
+
                 watch_actions.append({
                     "action": "WATCH",
-                    "priority": 4,
+                    "priority": watch_priority,
                     "ticker": stock.ticker,
                     "shares_action": 0,
                     "shares_current": 0,
                     "current_price": stock.current_price,
                     "estimated_value": 0,
                     "is_growth_stock": is_growth,
-                    "reason": f"Approaching breakout - {pct_from_high:.0f}% from 52-week high",
-                    "details": [
-                        f"{score_type} Score: {effective_score:.0f}/100",
-                        f"52-week high: ${stock.week_52_high:.2f}",
-                        f"Current: ${stock.current_price:.2f} ({pct_from_high:.1f}% below high)",
-                        "Watch for breakout above prior high on volume",
-                        f"Projected growth: +{stock.projected_growth:.0f}%" if stock.projected_growth else ""
-                    ]
+                    "reason": watch_reason,
+                    "details": [d for d in details if d]  # Filter empty strings
                 })
 
                 # Mark this duplicate group as watched (if applicable)
