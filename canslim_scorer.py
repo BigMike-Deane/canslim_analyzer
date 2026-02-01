@@ -1239,32 +1239,33 @@ class TechnicalAnalyzer:
     @staticmethod
     def is_breaking_out(stock_data: StockData, base_pattern: dict) -> tuple[bool, float]:
         """
-        Check if stock is breaking out of its base or near a breakout.
+        Check if stock is actively breaking out of its base (actionable buy point).
         Returns: (is_breaking_out, volume_ratio)
 
-        Enhanced breakout criteria with multi-day volume confirmation:
-        - Strong breakout: Price 0-5% above pivot with strong volume confirmation
-        - Breakout: Price 0-10% above pivot with good volume confirmation
-        - Near breakout: Price within 5% below pivot building for breakout
+        STRICT breakout criteria - only marks TRUE breakouts, not extended stocks:
+        - Pre-breakout: Price within 3% BELOW pivot (building for breakout)
+        - Active breakout: Price 0-5% ABOVE pivot with volume confirmation
+        - Extended stocks (>5% above pivot) are NOT marked as breaking out
+          because the optimal entry point has passed
+
+        This ensures the breakout list shows ACTIONABLE opportunities, not
+        stocks that already broke out days/weeks ago.
         """
         vol_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
         vol_confirmation = TechnicalAnalyzer.calculate_multiday_volume_confirmation(stock_data)
 
         # Effective volume score combines single-day and multi-day analysis
-        # Strong single day OR consistent multi-day volume both count
         effective_vol_score = max(
             vol_ratio * 50,  # Single day contribution (1.5x = 75 points)
             vol_confirmation["confirmation_score"]  # Multi-day contribution (0-100)
         )
 
         if base_pattern["type"] == "none" or base_pattern["pivot_price"] <= 0:
-            # No base pattern detected - be VERY strict about calling this a breakout
-            # Only mark as breakout with exceptional volume (2.5x+) AND at new high
-            # This prevents false positives from stocks just near highs with normal volume surges
+            # No base pattern detected - be VERY strict
+            # Only mark as breakout with exceptional volume (2.5x+) AND at new 52-week high
             if stock_data.high_52w and stock_data.high_52w > 0 and stock_data.current_price and stock_data.current_price > 0:
                 pct_from_high = (stock_data.high_52w - stock_data.current_price) / stock_data.high_52w
-                # Require: within 2% of 52-week high AND exceptional volume (2.5x+)
-                # This is a much higher bar - true breakouts without detected bases are rare
+                # Must be within 2% of 52-week high AND have exceptional volume
                 if pct_from_high <= 0.02 and vol_ratio >= 2.5:
                     return True, vol_ratio
             return False, vol_ratio
@@ -1275,27 +1276,30 @@ class TechnicalAnalyzer:
         if current > 0 and pivot > 0:
             pct_from_pivot = (current - pivot) / pivot
 
-            # Strong breakout: price 0-5% above pivot with strong volume
-            # Require either 1.4x single day OR 70+ multi-day score
-            if 0 <= pct_from_pivot <= 0.05 and effective_vol_score >= 70:
-                return True, vol_ratio
+            # EXTENDED CHECK: If stock is >5% above pivot, it's NO LONGER a breakout
+            # The buy point has passed - don't chase extended stocks
+            if pct_from_pivot > 0.05:
+                return False, vol_ratio
 
-            # Breakout: price 0-10% above pivot with good volume
-            # Require either 1.25x single day OR 60+ multi-day score
-            if 0 <= pct_from_pivot <= 0.10 and effective_vol_score >= 60:
-                return True, vol_ratio
+            # Active breakout: price 0-5% above pivot with volume confirmation
+            # This is the optimal buy zone per CANSLIM methodology
+            if 0 <= pct_from_pivot <= 0.05:
+                # Require decent volume (1.2x+ single day OR 50+ multi-day score)
+                if effective_vol_score >= 50:
+                    return True, vol_ratio
 
-            # Near breakout: price within 5% below pivot, building volume
-            # More lenient - looking for accumulation before breakout
-            if -0.05 <= pct_from_pivot < 0 and effective_vol_score >= 50:
-                return True, vol_ratio
+            # Pre-breakout: price within 3% below pivot, building for breakout
+            # Slightly more lenient on volume - looking for accumulation
+            if -0.03 <= pct_from_pivot < 0:
+                if effective_vol_score >= 40:
+                    return True, vol_ratio
 
-            # Special case for cup_with_handle: price near handle high with volume
+            # Special case for cup_with_handle: can be slightly below pivot
             if base_pattern.get("type") == "cup_with_handle":
                 handle_low = base_pattern.get("handle_low", 0)
-                if handle_low > 0:
-                    # Price should be above handle low and approaching pivot
-                    if current > handle_low and pct_from_pivot >= -0.03 and effective_vol_score >= 50:
+                if handle_low > 0 and current > handle_low:
+                    # Price above handle low and within 5% below pivot
+                    if -0.05 <= pct_from_pivot < 0 and effective_vol_score >= 40:
                         return True, vol_ratio
 
         return False, vol_ratio
