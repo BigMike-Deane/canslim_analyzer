@@ -72,6 +72,7 @@ def run_migrations():
         ("stocks", "volume_ratio", "FLOAT"),
         ("stocks", "weeks_in_base", "INTEGER"),
         ("stocks", "base_type", "TEXT"),
+        ("stocks", "pivot_price", "FLOAT"),
         ("stocks", "is_breaking_out", "BOOLEAN"),
         ("stocks", "breakout_volume_ratio", "FLOAT"),
         # AI Portfolio Growth Mode support
@@ -257,6 +258,7 @@ class Stock(Base):
     volume_ratio = Column(Float)  # Current volume vs 50-day average
     weeks_in_base = Column(Integer)  # Weeks of consolidation
     base_type = Column(String)  # 'flat', 'cup', 'none'
+    pivot_price = Column(Float)  # Breakout pivot point from base pattern
     is_breaking_out = Column(Boolean, default=False)  # Price breaking out with volume
     breakout_volume_ratio = Column(Float)  # Volume surge on breakout day
 

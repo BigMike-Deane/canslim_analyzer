@@ -246,6 +246,7 @@ def run_continuous_scan():
                 "volume_ratio": volume_ratio,
                 "weeks_in_base": base_pattern.get("weeks", 0),
                 "base_type": base_pattern.get("type", "none"),
+                "pivot_price": base_pattern.get("pivot_price", 0),
                 "is_breaking_out": is_breaking_out,
                 "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
                 # Insider trading signals
@@ -397,6 +398,7 @@ def run_continuous_scan():
         stock.volume_ratio = analysis.get("volume_ratio")
         stock.weeks_in_base = analysis.get("weeks_in_base")
         stock.base_type = analysis.get("base_type")
+        stock.pivot_price = analysis.get("pivot_price")
         stock.is_breaking_out = analysis.get("is_breaking_out", False)
         stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
 

@@ -703,6 +703,7 @@ def evaluate_buys(db: Session) -> list:
         # Base pattern data for pre-breakout detection
         base_type = getattr(stock, 'base_type', 'none') or 'none'
         weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+        pivot_price = getattr(stock, 'pivot_price', 0) or 0
         has_base = base_type not in ('none', '', None)
 
         # Insider trading signals
@@ -741,6 +742,11 @@ def evaluate_buys(db: Session) -> list:
         if stock.week_52_high and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
 
+            # Calculate pct_from_pivot if we have a valid pivot price
+            pct_from_pivot = 0
+            if pivot_price > 0:
+                pct_from_pivot = ((pivot_price - stock.current_price) / pivot_price) * 100
+
             # BREAKOUT STOCKS get highest priority - buying the pivot point
             if is_breaking_out:
                 breakout_bonus = 25  # Big bonus for confirmed breakouts
@@ -748,20 +754,29 @@ def evaluate_buys(db: Session) -> list:
                     breakout_bonus += 10  # Extra bonus for strong volume breakout
                 momentum_score = 30
 
-            # PRE-BREAKOUT: 5-15% below 52-week high with valid base pattern
+            # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
             # This is often the BEST entry - before the crowd notices
-            elif has_base and 5 <= pct_from_high <= 15:
+            elif has_base and pivot_price > 0 and 5 <= pct_from_pivot <= 15:
                 pre_breakout_bonus = 20  # Big bonus for pre-breakout position
                 momentum_score = 25
                 if volume_ratio >= 1.3:
                     pre_breakout_bonus += 5  # Accumulation volume bonus
 
-            # AT PIVOT ZONE: 0-5% from high with base pattern (ready to break out)
-            elif has_base and pct_from_high < 5:
+            # AT PIVOT ZONE: 0-5% below pivot with base pattern (ready to break out)
+            elif has_base and pivot_price > 0 and 0 <= pct_from_pivot < 5:
                 pre_breakout_bonus = 15  # Good entry near pivot
                 momentum_score = 22
                 if volume_ratio >= 1.5:
                     momentum_score += 5
+
+            # EXTENDED: More than 5% above pivot - the easy money is gone (matches backtester)
+            elif has_base and pivot_price > 0 and pct_from_pivot < -5:
+                if pct_from_pivot < -10:
+                    extended_penalty = -20  # Heavily penalize extended stocks
+                    momentum_score = 5
+                else:
+                    extended_penalty = -10  # Moderate penalty
+                    momentum_score = 10
 
             # NO BASE PATTERN at high = chasing
             elif not has_base and pct_from_high <= 2:
@@ -769,7 +784,7 @@ def evaluate_buys(db: Session) -> list:
                     extended_penalty = -15  # Penalize buying at high without base
                     momentum_score = 5
                 else:
-                    momentum_score = 15  # Very high score justifies the entry
+                    momentum_score = 12  # Very high score justifies the entry
 
             # Good zone: 5-15% from high (whether or not has base)
             elif pct_from_high <= 15:
@@ -867,9 +882,12 @@ def evaluate_buys(db: Session) -> list:
         if is_breaking_out:
             reason_parts.append(f"🚀 BREAKOUT {breakout_volume_ratio:.1f}x vol")
         elif pre_breakout_bonus >= 15:
-            reason_parts.append(f"📈 PRE-BREAKOUT ({base_type}) {pct_from_high:.0f}% from high")
+            reason_parts.append(f"📈 PRE-BREAKOUT ({base_type}) {pct_from_pivot:.0f}% below pivot")
         elif extended_penalty < 0:
-            reason_parts.append(f"⚠️ At high without base")
+            if has_base and pivot_price > 0:
+                reason_parts.append(f"⚠️ Extended {abs(pct_from_pivot):.0f}% above pivot")
+            else:
+                reason_parts.append(f"⚠️ At high without base")
         if stock.projected_growth and stock.projected_growth > 15:
             reason_parts.append(f"+{stock.projected_growth:.0f}% growth")
         stock_type_label = "Growth" if is_growth else "CANSLIM"
