@@ -236,10 +236,12 @@ async def fetch_fmp_batch_quotes(session: aiohttp.ClientSession, tickers: List[s
     results = {}
 
     # Process in chunks of 500 (FMP limit)
+    # NOTE: The /stable/quote endpoint doesn't support batch requests
+    # Must use /api/v3/quote/{symbols} format for batches
     for i in range(0, len(tickers), 500):
         chunk = tickers[i:i + 500]
         symbols = ",".join(chunk)
-        url = f"{FMP_BASE_URL}/quote?symbol={symbols}&apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/quote/{symbols}?apikey={FMP_API_KEY}"
 
         data = await fetch_json_async(session, url, timeout=30)
 
@@ -272,10 +274,12 @@ async def fetch_fmp_batch_profiles(session: aiohttp.ClientSession, tickers: List
 
     results = {}
 
+    # NOTE: The /stable/profile endpoint doesn't support batch requests
+    # Must use /api/v3/profile/{symbols} format for batches
     for i in range(0, len(tickers), 500):
         chunk = tickers[i:i + 500]
         symbols = ",".join(chunk)
-        url = f"{FMP_BASE_URL}/profile?symbol={symbols}&apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/profile/{symbols}?apikey={FMP_API_KEY}"
 
         data = await fetch_json_async(session, url, timeout=30)
 
