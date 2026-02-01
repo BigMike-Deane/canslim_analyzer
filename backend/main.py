@@ -964,11 +964,17 @@ async def get_breaking_out_stocks(
     current_m_score = latest_market.market_score if latest_market else 0
 
     # First: Get stocks with is_breaking_out flag
+    # Filter for valid data: must have market cap, 52-week high, and price
     breakout_stocks = db.query(Stock).filter(
         Stock.is_breaking_out == True,
         Stock.canslim_score >= 55,  # Lowered from 60 for more results
-        Stock.current_price > 0
+        Stock.current_price > 0,
+        Stock.market_cap > 0,  # Must have valid market cap
+        Stock.week_52_high > 0  # Must have valid 52-week data
     ).order_by(
+        # Prioritize stocks WITH base patterns first, then by score
+        desc(Stock.base_type != 'none'),
+        desc(Stock.base_type != None),
         desc(Stock.canslim_score)
     ).limit(limit * 2).all()
 
