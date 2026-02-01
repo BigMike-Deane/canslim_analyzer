@@ -936,7 +936,7 @@ async def get_top_growth_stocks(
             "week_52_high": s.week_52_high,
             "revenue_growth_pct": s.revenue_growth_pct,
             "is_breaking_out": s.is_breaking_out,
-            "volume_ratio": s.volume_ratio,
+            "volume_ratio": s.volume_ratio if s.volume_ratio is not None else 1.0,
             "base_type": s.base_type,
             "weeks_in_base": s.weeks_in_base,
             "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
@@ -1027,8 +1027,8 @@ async def get_breaking_out_stocks(
             "week_52_high": s.week_52_high,
             "base_type": s.base_type,
             "weeks_in_base": s.weeks_in_base,
-            "breakout_volume_ratio": s.breakout_volume_ratio or s.volume_ratio,
-            "volume_ratio": s.volume_ratio,
+            "breakout_volume_ratio": s.breakout_volume_ratio or s.volume_ratio or 1.0,
+            "volume_ratio": s.volume_ratio if s.volume_ratio is not None else 1.0,  # Default to 1.0 for NULL
             "projected_growth": s.projected_growth,
             "is_breaking_out": s.is_breaking_out or False
         } for s in stocks],
@@ -1109,11 +1109,11 @@ async def get_stock(ticker: str, db: Session = Depends(get_db)):
         "quarterly_revenue": stock.quarterly_revenue if stock.quarterly_revenue else [],
 
         # Technical analysis
-        "volume_ratio": stock.volume_ratio,
+        "volume_ratio": stock.volume_ratio if stock.volume_ratio is not None else 1.0,
         "weeks_in_base": stock.weeks_in_base,
         "base_type": stock.base_type,
         "is_breaking_out": stock.is_breaking_out,
-        "breakout_volume_ratio": stock.breakout_volume_ratio,
+        "breakout_volume_ratio": stock.breakout_volume_ratio or stock.volume_ratio or 1.0,
 
         # Insider trading signals
         "insider_buy_count": stock.insider_buy_count,

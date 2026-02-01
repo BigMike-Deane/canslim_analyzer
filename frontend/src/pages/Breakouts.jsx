@@ -42,7 +42,7 @@ function BreakoutRow({ stock }) {
           <span className={`text-sm px-2 py-0.5 rounded ${getScoreClass(stock.canslim_score)}`}>
             {formatScore(stock.canslim_score)}
           </span>
-          {stock.volume_ratio && (
+          {stock.volume_ratio != null && (
             <span className={`text-xs ${stock.volume_ratio >= 1.5 ? 'text-green-400' : 'text-dark-400'}`}>
               {stock.volume_ratio.toFixed(1)}x vol
             </span>
