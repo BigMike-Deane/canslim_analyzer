@@ -363,8 +363,7 @@ def run_continuous_scan():
         stock.current_price = analysis.get("current_price")
         stock.market_cap = analysis.get("market_cap")
         # Debug log for market_cap
-        if analysis.get("market_cap"):
-            logger.debug(f"{analysis['ticker']}: saving market_cap={analysis.get('market_cap')}")
+        logger.info(f"{analysis['ticker']}: market_cap in analysis={analysis.get('market_cap')}, assigned to stock.market_cap")
         stock.canslim_score = new_score
         stock.c_score = analysis.get("c_score")
         stock.a_score = analysis.get("a_score")
