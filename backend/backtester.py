@@ -119,10 +119,42 @@ class BacktestEngine:
             # Load static data (sector, earnings) from database
             self._load_static_data()
 
-            # Get trading days
+            # Filter for survivorship bias: only keep stocks with price data at backtest start
+            # This prevents inflated returns from stocks that didn't exist or weren't tradeable
+            available_tickers = self.data_provider.get_available_tickers()
+            original_count = len(available_tickers)
+
+            # Get the first trading day to check for data availability
             trading_days = self.data_provider.get_trading_days()
             if not trading_days:
                 raise ValueError("No trading days in period")
+
+            # Survivorship bias filter: exclude stocks that don't have price data at the START
+            # of the backtest. This prevents us from trading stocks that IPO'd mid-backtest
+            # or weren't actively traded at the beginning.
+            first_day = trading_days[0]
+            valid_tickers = []
+            excluded_tickers = []
+
+            for ticker in available_tickers:
+                start_price = self.data_provider.get_price_on_date(ticker, first_day)
+                if start_price and start_price > 0:
+                    valid_tickers.append(ticker)
+                else:
+                    excluded_tickers.append(ticker)
+
+            # Update the data provider to only use valid tickers
+            self.data_provider.filter_tickers(valid_tickers)
+
+            excluded_count = len(excluded_tickers)
+            if excluded_count > 0:
+                logger.info(f"Survivorship filter: excluded {excluded_count} stocks without "
+                           f"price data at backtest start ({first_day})")
+                if excluded_count <= 20:
+                    logger.debug(f"Excluded tickers: {excluded_tickers}")
+
+            logger.info(f"Universe after survivorship filter: {len(valid_tickers)} stocks "
+                       f"(was {original_count})")
 
             # Initialize SPY benchmark
             self.spy_start_price = self.data_provider.get_spy_price_on_date(trading_days[0])
@@ -236,7 +268,7 @@ class BacktestEngine:
             self._execute_pyramid(current_date, trade)
 
         # Check cash reserve before buys
-        portfolio_value = self._get_portfolio_value()
+        portfolio_value = self._get_portfolio_value(current_date)
         if self.cash / portfolio_value >= MIN_CASH_RESERVE_PCT:
             # Evaluate and execute buys
             buys = self._evaluate_buys(current_date, scores)
@@ -262,37 +294,94 @@ class BacktestEngine:
 
     def _calculate_scores(self, current_date: date) -> Dict[str, dict]:
         """
-        Calculate simplified scores for all stocks.
+        Calculate full CANSLIM scores for all stocks.
 
-        In a full implementation, this would run CANSLIM scoring.
-        For now, we use a simplified scoring based on:
-        - Price momentum (relative strength)
-        - Proximity to PIVOT POINT (from base pattern) - not just 52-week high
-        - Volume trends
-        - Base pattern quality
+        CANSLIM Components (100 points total):
+        - C (15 pts): Current quarterly earnings growth + acceleration
+        - A (15 pts): Annual earnings growth (3-year CAGR) + ROE quality
+        - N (15 pts): New highs - proximity to pivot/52-week high
+        - S (15 pts): Supply/Demand - volume analysis
+        - L (15 pts): Leader/Laggard - relative strength
+        - I (10 pts): Institutional ownership quality
+        - M (15 pts): Market direction
         """
         scores = {}
+
+        # Get market direction once (same for all stocks)
+        market = self.data_provider.get_market_direction(current_date)
 
         for ticker in self.data_provider.get_available_tickers():
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
                 continue
 
+            # Get historical stock data with point-in-time earnings
+            static_data = self.static_data.get(ticker, {})
+            stock_data = self.data_provider.get_stock_data_on_date(ticker, current_date, static_data)
+
             high_52w, low_52w = self.data_provider.get_52_week_high_low(ticker, current_date)
             rs_12m = self.data_provider.get_relative_strength(ticker, current_date, 12)
             rs_3m = self.data_provider.get_relative_strength(ticker, current_date, 3)
 
-            # Get market direction
-            market = self.data_provider.get_market_direction(current_date)
+            # ===== C SCORE (15 pts): Current Quarterly Earnings =====
+            c_score = 0
+            quarterly_earnings = stock_data.quarterly_earnings or []
+            if len(quarterly_earnings) >= 2:
+                # Calculate YoY growth (compare current quarter to same quarter last year)
+                current_eps = quarterly_earnings[0] if quarterly_earnings else 0
+                year_ago_eps = quarterly_earnings[4] if len(quarterly_earnings) > 4 else 0
 
-            # Get base pattern for pivot-based scoring
+                if year_ago_eps > 0 and current_eps > 0:
+                    eps_growth = ((current_eps - year_ago_eps) / year_ago_eps) * 100
+                    if eps_growth >= 50:
+                        c_score = 15
+                    elif eps_growth >= 25:
+                        c_score = 12
+                    elif eps_growth >= 15:
+                        c_score = 9
+                    elif eps_growth >= 5:
+                        c_score = 6
+                    elif eps_growth > 0:
+                        c_score = 3
+                    # Bonus for acceleration (each quarter better than last)
+                    if len(quarterly_earnings) >= 3:
+                        q1, q2, q3 = quarterly_earnings[0], quarterly_earnings[1], quarterly_earnings[2]
+                        if q1 > q2 > q3 > 0:
+                            c_score = min(15, c_score + 2)
+
+            # ===== A SCORE (15 pts): Annual Earnings Growth =====
+            a_score = 0
+            annual_earnings = stock_data.annual_earnings or []
+            roe = static_data.get("roe", 0)
+
+            if len(annual_earnings) >= 3:
+                # Calculate 3-year CAGR
+                current_annual = annual_earnings[0]
+                three_years_ago = annual_earnings[2] if len(annual_earnings) > 2 else annual_earnings[-1]
+
+                if three_years_ago > 0 and current_annual > 0:
+                    cagr = ((current_annual / three_years_ago) ** (1/3) - 1) * 100
+                    if cagr >= 25:
+                        a_score = 12
+                    elif cagr >= 15:
+                        a_score = 9
+                    elif cagr >= 10:
+                        a_score = 6
+                    elif cagr > 0:
+                        a_score = 3
+
+                    # ROE bonus (17%+ is quality threshold)
+                    if roe >= 0.17:
+                        a_score = min(15, a_score + 3)
+                    elif roe >= 0.12:
+                        a_score = min(15, a_score + 1)
+
+            # ===== N SCORE (15 pts): New Highs / Pivot Proximity =====
             base_pattern = self.data_provider.detect_base_pattern(ticker, current_date)
             has_base = base_pattern["type"] != "none"
             pivot_price = base_pattern.get("pivot_price", 0) if has_base else high_52w
             weeks_in_base = base_pattern.get("weeks", 0)
 
-            # Calculate N score based on pivot proximity (not just 52-week high)
-            # Stocks with proper base patterns get scored on pivot, others on 52-week high
             n_score = 0
             pct_from_pivot = 0
             pct_from_high = ((high_52w - price) / high_52w) * 100 if high_52w > 0 else 100
@@ -301,32 +390,25 @@ class BacktestEngine:
                 pct_from_pivot = ((pivot_price - price) / pivot_price) * 100
 
                 if has_base:
-                    # Proper base pattern: score based on pivot proximity
-                    # BEST entry: 0-5% BELOW pivot (pre-breakout zone)
+                    # Proper base pattern scoring
                     if 0 < pct_from_pivot <= 5:
-                        n_score = 15  # Optimal pre-breakout position
-                    # Good entry: at or just above pivot (breakout zone)
+                        n_score = 15  # Optimal pre-breakout
                     elif -3 <= pct_from_pivot <= 0:
-                        n_score = 14  # At the breakout point
-                    # Acceptable: 5-10% below pivot (building toward breakout)
+                        n_score = 14  # At breakout point
                     elif 5 < pct_from_pivot <= 10:
                         n_score = 12
-                    # Extended: 3-8% above pivot (still ok but less ideal)
                     elif -8 <= pct_from_pivot < -3:
                         n_score = 10
-                    # Too extended: >8% above pivot (chasing)
                     elif pct_from_pivot < -8:
-                        n_score = 5
-                    # Too far from pivot: >10% below
+                        n_score = 5  # Too extended
                     elif pct_from_pivot > 10:
                         n_score = 6
                     else:
                         n_score = 4
                 else:
-                    # No base pattern: use 52-week high but with reduced scores
-                    # Penalize stocks at highs without proper consolidation
+                    # No base pattern: reduced scores
                     if pct_from_high <= 5:
-                        n_score = 10  # Reduced from 15 - no base pattern
+                        n_score = 10
                     elif pct_from_high <= 10:
                         n_score = 9
                     elif pct_from_high <= 15:
@@ -336,8 +418,27 @@ class BacktestEngine:
                     else:
                         n_score = 0
 
-            # Calculate L score (relative strength)
-            # Weight: 60% 12-month, 40% 3-month
+            # ===== S SCORE (15 pts): Supply/Demand (Volume) =====
+            s_score = 0
+            avg_volume = self.data_provider.get_50_day_avg_volume(ticker, current_date)
+            current_volume = self.data_provider.get_volume_on_date(ticker, current_date) or 0
+
+            if avg_volume > 0:
+                volume_ratio = current_volume / avg_volume if current_volume else 1.0
+
+                # Volume surge indicates institutional interest
+                if volume_ratio >= 2.0:
+                    s_score = 15
+                elif volume_ratio >= 1.5:
+                    s_score = 12
+                elif volume_ratio >= 1.2:
+                    s_score = 9
+                elif volume_ratio >= 0.8:
+                    s_score = 6
+                else:
+                    s_score = 3  # Low volume is concerning
+
+            # ===== L SCORE (15 pts): Leader/Laggard (Relative Strength) =====
             combined_rs = (rs_12m * 0.6) + (rs_3m * 0.4)
             if combined_rs >= 1.3:
                 l_score = 15
@@ -350,7 +451,23 @@ class BacktestEngine:
             else:
                 l_score = 0
 
-            # Calculate M score (market direction)
+            # ===== I SCORE (10 pts): Institutional Ownership =====
+            i_score = 0
+            inst_pct = static_data.get("institutional_holders_pct", 0)
+            # Ideal is 30-70% institutional ownership
+            if 0.30 <= inst_pct <= 0.70:
+                i_score = 10
+            elif 0.20 <= inst_pct < 0.30 or 0.70 < inst_pct <= 0.80:
+                i_score = 7
+            elif 0.10 <= inst_pct < 0.20 or 0.80 < inst_pct <= 0.90:
+                i_score = 4
+            elif inst_pct > 0:
+                i_score = 2
+            # If no data, give benefit of doubt with middle score
+            else:
+                i_score = 5
+
+            # ===== M SCORE (15 pts): Market Direction =====
             weighted_signal = market.get("weighted_signal", 0)
             if weighted_signal >= 1.5:
                 m_score = 15
@@ -363,20 +480,34 @@ class BacktestEngine:
             else:
                 m_score = 0
 
-            # Simplified total score (N + L + M only, out of 45 scaled to 100)
-            # In production, would include C, A, S, I scores too
-            raw_score = n_score + l_score + m_score
-            total_score = (raw_score / 45) * 100
+            # ===== TOTAL SCORE (100 pts) =====
+            total_score = c_score + a_score + n_score + s_score + l_score + i_score + m_score
 
-            # Get breakout status for better buy decisions
-            is_breaking_out, volume_ratio, _ = self.data_provider.is_breaking_out(
+            # Get breakout status for buy decisions
+            is_breaking_out, volume_ratio_breakout, _ = self.data_provider.is_breaking_out(
                 ticker, current_date
             )
 
+            # Determine if this is a growth stock (negative/no earnings but high revenue growth)
+            is_growth_stock = False
+            if len(quarterly_earnings) >= 2 and quarterly_earnings[0] <= 0:
+                quarterly_revenue = stock_data.quarterly_revenue or []
+                if len(quarterly_revenue) >= 5:
+                    current_rev = quarterly_revenue[0]
+                    year_ago_rev = quarterly_revenue[4]
+                    if year_ago_rev > 0 and current_rev > 0:
+                        rev_growth = ((current_rev - year_ago_rev) / year_ago_rev) * 100
+                        if rev_growth >= 30:
+                            is_growth_stock = True
+
             scores[ticker] = {
                 "total_score": total_score,
+                "c_score": c_score,
+                "a_score": a_score,
                 "n_score": n_score,
+                "s_score": s_score,
                 "l_score": l_score,
+                "i_score": i_score,
                 "m_score": m_score,
                 "rs_12m": rs_12m,
                 "rs_3m": rs_3m,
@@ -386,9 +517,9 @@ class BacktestEngine:
                 "has_base_pattern": has_base,
                 "base_pattern": base_pattern,
                 "weeks_in_base": weeks_in_base,
-                "is_growth_stock": False,  # Would need earnings analysis
+                "is_growth_stock": is_growth_stock,
                 "is_breaking_out": is_breaking_out,
-                "volume_ratio": volume_ratio,
+                "volume_ratio": volume_ratio_breakout if volume_ratio_breakout else (current_volume / avg_volume if avg_volume > 0 else 1.0),
             }
 
         return scores
@@ -512,7 +643,7 @@ class BacktestEngine:
             and ticker not in current_tickers
         ]
 
-        portfolio_value = self._get_portfolio_value()
+        portfolio_value = self._get_portfolio_value(current_date)
 
         for ticker, score_data in candidates:
             price = self.data_provider.get_price_on_date(ticker, current_date)
@@ -692,7 +823,7 @@ class BacktestEngine:
     def _evaluate_pyramids(self, current_date: date, scores: Dict[str, dict]) -> List[SimulatedTrade]:
         """Evaluate positions for pyramid opportunities, prioritizing breakouts"""
         pyramids = []
-        portfolio_value = self._get_portfolio_value()
+        portfolio_value = self._get_portfolio_value(current_date)
 
         for ticker, position in self.positions.items():
             price = self.data_provider.get_price_on_date(ticker, current_date)
@@ -906,13 +1037,20 @@ class BacktestEngine:
         )
         self.db.add(snapshot)
 
-    def _get_portfolio_value(self) -> float:
-        """Get current portfolio value"""
-        # Use most recent snapshot or calculate from positions
-        positions_value = sum(
-            pos.shares * pos.peak_price  # Use peak as approximation
-            for pos in self.positions.values()
-        )
+    def _get_portfolio_value(self, current_date: date = None) -> float:
+        """Get current portfolio value using actual prices, not peak prices"""
+        if current_date and self.data_provider:
+            # Use actual current prices for accurate valuation
+            positions_value = sum(
+                pos.shares * (self.data_provider.get_price_on_date(pos.ticker, current_date) or pos.cost_basis)
+                for pos in self.positions.values()
+            )
+        else:
+            # Fallback to cost basis if no date provided
+            positions_value = sum(
+                pos.shares * pos.cost_basis
+                for pos in self.positions.values()
+            )
         return self.cash + positions_value
 
     def _check_sector_limit(self, sector: str) -> bool:
@@ -922,8 +1060,8 @@ class BacktestEngine:
 
     def _calculate_final_metrics(self):
         """Calculate final backtest metrics"""
-        # Get final snapshot
-        final_value = self._get_portfolio_value()
+        # Get final snapshot using end date for accurate valuation
+        final_value = self._get_portfolio_value(self.backtest.end_date)
         self.backtest.final_value = final_value
         self.backtest.total_return_pct = ((final_value / self.backtest.starting_cash) - 1) * 100
         self.backtest.max_drawdown_pct = self.max_drawdown_pct

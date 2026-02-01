@@ -465,27 +465,53 @@ class HistoricalDataProvider:
         Filter earnings to only include data that would have been available on as_of_date.
 
         Earnings are typically reported ~45 days after quarter end.
-        For simplicity, we assume earnings become available 45 days after period end.
+        The earnings list is ordered from most recent to oldest (index 0 = most recent).
+        We need to skip earnings that wouldn't have been reported yet on as_of_date.
 
-        For backtesting, we'll use a simplified approach: just return the earnings list
-        assuming it represents the most recent available data. In production, you'd want
-        to track report dates.
+        For quarterly earnings: 4 quarters per year
+        For annual earnings: 1 year per entry
         """
-        # In a full implementation, each earnings entry would have a report_date
-        # and we'd filter based on report_date <= as_of_date
-        # For now, return the list as-is (this is a simplification)
         if not earnings_list:
             return []
 
-        # Only return earnings values (filter out any dict format)
-        result = []
+        # First, extract numeric values from the list
+        numeric_values = []
         for entry in earnings_list:
             if isinstance(entry, (int, float)):
-                result.append(float(entry))
+                numeric_values.append(float(entry))
             elif isinstance(entry, dict) and "eps" in entry:
-                result.append(float(entry["eps"]))
+                numeric_values.append(float(entry["eps"]))
 
-        return result
+        if not numeric_values:
+            return []
+
+        # Calculate how many periods to skip based on the time difference
+        # The database has current earnings - we need to remove recent ones
+        # that wouldn't have been available on as_of_date
+        today = date.today()
+        days_diff = (today - as_of_date).days
+
+        if days_diff <= 0:
+            # as_of_date is today or in the future, return all earnings
+            return numeric_values
+
+        if quarterly:
+            # Quarterly earnings: ~91 days per quarter + 45 days reporting delay
+            # So each quarter's earnings become available ~136 days after the previous
+            # Simplified: skip 1 quarter for every ~90 days in the past
+            periods_to_skip = max(0, (days_diff + EARNINGS_REPORT_DELAY_DAYS) // 91)
+        else:
+            # Annual earnings: 365 days per year + 45-90 days reporting delay
+            # Skip 1 year for every ~365 days in the past
+            periods_to_skip = max(0, (days_diff + EARNINGS_REPORT_DELAY_DAYS) // 365)
+
+        # Skip the most recent entries that wouldn't have been available
+        if periods_to_skip >= len(numeric_values):
+            # No earnings would have been available - return empty
+            return []
+
+        # Return earnings that would have been available (skip recent ones)
+        return numeric_values[periods_to_skip:]
 
     def has_data_for_ticker(self, ticker: str) -> bool:
         """Check if we have price data for a ticker"""
@@ -494,6 +520,17 @@ class HistoricalDataProvider:
     def get_available_tickers(self) -> List[str]:
         """Get list of tickers with available data"""
         return list(self._price_cache.keys())
+
+    def filter_tickers(self, valid_tickers: List[str]):
+        """
+        Filter the price cache to only include specified tickers.
+        Used for survivorship bias filtering - removes stocks that
+        didn't have data at the start of the backtest period.
+        """
+        tickers_to_remove = [t for t in self._price_cache.keys() if t not in valid_tickers]
+        for ticker in tickers_to_remove:
+            del self._price_cache[ticker]
+        logger.debug(f"Filtered price cache: {len(self._price_cache)} tickers remaining")
 
     def get_spy_price_on_date(self, as_of_date: date) -> float:
         """Get SPY price on a specific date (for benchmark calculations)"""

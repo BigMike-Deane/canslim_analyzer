@@ -117,9 +117,9 @@ class TestBacktestEngine:
             sector="Technology"
         )
 
-        # Portfolio value = cash + position value (using peak price as approximation)
+        # Portfolio value = cash + position value (using cost_basis as fallback when no date provided)
         value = engine._get_portfolio_value()
-        assert value == 10000.0 + (100 * 160.0)  # $26,000
+        assert value == 10000.0 + (100 * 150.0)  # $25,000 (uses cost_basis without current_date)
 
     def test_check_sector_limit(self, mock_db):
         """Test sector limit checking"""
