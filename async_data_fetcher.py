@@ -637,6 +637,8 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             # Balance sheet
             "cash_and_equivalents": 0,
             "total_debt": 0,
+            # Market data (fallback if FMP doesn't have it)
+            "market_cap": 0,
             # Analyst
             "analyst_target_price": 0,
             "analyst_target_high": 0,
@@ -682,6 +684,8 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             market_cap = info.get('marketCap', 0) or 0
             if market_cap > 0 and fcf:
                 result["fcf_yield"] = fcf / market_cap
+            # Store market_cap as fallback data
+            result["market_cap"] = market_cap
 
             # Balance sheet data
             result["cash_and_equivalents"] = info.get('totalCash', 0) or 0
@@ -877,6 +881,9 @@ async def get_stock_data_async(
             stock_data.current_price = profile.get("current_price", 0)
         if not stock_data.high_52w:
             stock_data.high_52w = profile.get("high_52w", 0) or 0
+        # FIX: Use market_cap from profile if not set from batch quotes
+        if not stock_data.market_cap:
+            stock_data.market_cap = profile.get("market_cap", 0) or 0
 
     # ============== HYBRID DATA FETCHING ==============
     # Strategy: FMP for earnings/revenue (rate-limited), Yahoo for everything else (more lenient)
@@ -944,6 +951,10 @@ async def get_stock_data_async(
         if yahoo_info.get("total_debt"):
             stock_data.total_debt = yahoo_info["total_debt"]
 
+        # Market cap fallback from Yahoo if not set from FMP
+        if not stock_data.market_cap and yahoo_info.get("market_cap"):
+            stock_data.market_cap = yahoo_info["market_cap"]
+
         # Analyst data
         if yahoo_info.get("analyst_target_price"):
             stock_data.analyst_target_price = yahoo_info["analyst_target_price"]
@@ -993,6 +1004,11 @@ async def get_stock_data_async(
             stock_data.current_price = chart_data["current_price"]
         if not stock_data.high_52w:
             stock_data.high_52w = chart_data.get("high_52w", 0) or 0
+        # FIX: Add fallback for low_52w and market_cap from Yahoo chart API
+        if not stock_data.low_52w:
+            stock_data.low_52w = chart_data.get("low_52w", 0) or 0
+        if not stock_data.market_cap:
+            stock_data.market_cap = chart_data.get("market_cap", 0) or 0
         if not stock_data.name:
             stock_data.name = chart_data.get("name", ticker)
 
@@ -1190,6 +1206,8 @@ def get_price_data_only(ticker: str) -> StockData:
     if chart_data.get("current_price"):
         stock_data.current_price = chart_data["current_price"]
         stock_data.high_52w = chart_data.get("high_52w", 0) or 0
+        stock_data.low_52w = chart_data.get("low_52w", 0) or 0
+        stock_data.market_cap = chart_data.get("market_cap", 0) or 0
         stock_data.name = chart_data.get("name", ticker)
 
         close_prices = chart_data.get("close_prices", [])

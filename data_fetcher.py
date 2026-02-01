@@ -1015,6 +1015,8 @@ def fetch_price_from_chart_api(ticker: str) -> dict:
                 return {
                     "current_price": meta.get("regularMarketPrice") or meta.get("previousClose"),
                     "high_52w": meta.get("fiftyTwoWeekHigh"),
+                    "low_52w": meta.get("fiftyTwoWeekLow"),  # Added 52-week low
+                    "market_cap": meta.get("marketCap"),  # Added market cap from Yahoo
                     "name": meta.get("longName") or meta.get("shortName") or ticker,
                     "close_prices": indicators.get("close", []),
                     "volumes": indicators.get("volume", []),
@@ -1285,6 +1287,8 @@ class DataFetcher:
         if chart_data.get("current_price"):
             stock_data.current_price = chart_data["current_price"]
             stock_data.high_52w = chart_data.get("high_52w", 0) or 0
+            stock_data.low_52w = chart_data.get("low_52w", 0) or 0
+            stock_data.market_cap = chart_data.get("market_cap", 0) or 0
             stock_data.name = chart_data.get("name", ticker)
 
             # Build price history from chart data
@@ -1589,6 +1593,8 @@ class DataFetcher:
         if chart_data.get("current_price"):
             stock_data.current_price = chart_data["current_price"]
             stock_data.high_52w = chart_data.get("high_52w", 0) or 0
+            stock_data.low_52w = chart_data.get("low_52w", 0) or 0
+            stock_data.market_cap = chart_data.get("market_cap", 0) or 0
             stock_data.name = chart_data.get("name", ticker)
 
             close_prices = chart_data.get("close_prices", [])

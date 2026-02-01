@@ -123,6 +123,49 @@ curl -s "http://localhost:8001/api/stocks/breaking-out?limit=10" | python3 -c "i
 docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.is_breaking_out == True).limit(5).all(); [print(f'{s.ticker}: base={s.base_type}, score={s.canslim_score:.0f}') for s in stocks]; db.close()"
 ```
 
+### Market Cap & 52-Week Low Fix (Jan 31)
+
+**Problem**: All stocks had `market_cap=0` and `week_52_low=0` in the database, which could affect scoring and filtering.
+
+**Root Causes**:
+1. **FMP batch quote response**: The `/stable/quote` endpoint may not reliably return `marketCap` and `yearLow` for all stocks
+2. **Profile market_cap unused**: `fetch_fmp_batch_profiles` retrieved `mktCap` but `get_stock_data_async` never used it
+3. **Yahoo chart API incomplete**: `fetch_price_from_chart_api` only extracted `fiftyTwoWeekHigh`, not `fiftyTwoWeekLow` or `marketCap`
+4. **Yahoo info market_cap unused**: `fetch_yahoo_info_comprehensive_async` fetched `marketCap` but didn't return it
+
+**Fixes Implemented**:
+
+1. **Added Profile market_cap Fallback** (`async_data_fetcher.py`):
+   ```python
+   if not stock_data.market_cap:
+       stock_data.market_cap = profile.get("market_cap", 0) or 0
+   ```
+
+2. **Added Yahoo Chart API Fields** (`data_fetcher.py`):
+   - Now extracts `fiftyTwoWeekLow` and `marketCap` from chart API response
+   - Note: Chart API has `fiftyTwoWeekLow` but NOT `marketCap`
+
+3. **Added Yahoo Info market_cap** (`async_data_fetcher.py`):
+   - Added `market_cap` to `_fetch_yahoo_info()` result dict
+   - Added fallback: `if not stock_data.market_cap and yahoo_info.get("market_cap")`
+
+4. **Data Flow Now**:
+   - **market_cap**: FMP batch quotes → FMP profiles → Yahoo info (fallback chain)
+   - **week_52_low**: FMP batch quotes → Yahoo chart API (fallback)
+
+**Files Modified**:
+- `async_data_fetcher.py` - Profile fallback, Yahoo info market_cap, chart API fallbacks
+- `data_fetcher.py` - Chart API now returns `low_52w` and `market_cap`
+
+**Verification**:
+```bash
+# Check Yahoo Finance has the data
+python3 -c "import yfinance as yf; info = yf.Ticker('RF').info; print(f'marketCap: {info.get(\"marketCap\")}', f'52wLow: {info.get(\"fiftyTwoWeekLow\")}')"
+
+# After next scan, verify stocks have market_cap and week_52_low
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.market_cap > 0).count(); total = db.query(Stock).count(); print(f'Stocks with market_cap: {stocks}/{total}'); db.close()"
+```
+
 ### Progress Tracking + Delisted Ticker System (Jan 30)
 
 **Problem**: Scan progress showed >100% (e.g., 3466/2083 at 166%). AMD showed 531% ROE instead of ~5%.
