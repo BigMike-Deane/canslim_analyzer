@@ -1013,6 +1013,12 @@ async def get_stock_data_async(
                     stock_data.avg_volume_50d = sum(recent_volumes) / len(recent_volumes)
                 stock_data.current_volume = volumes[-1] if volumes[-1] else 0
 
+    # Fetch weekly price history for base pattern detection
+    # This is a separate call because we need weekly OHLC data, not daily
+    weekly_data = fetch_weekly_price_history(ticker)
+    if weekly_data:
+        stock_data.weekly_price_history = weekly_data
+
     # OPTIMIZATION: Only call Yahoo if FMP data is incomplete
     has_complete_fmp_data = (
         stock_data.quarterly_earnings and
