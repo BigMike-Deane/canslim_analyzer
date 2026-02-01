@@ -69,6 +69,60 @@ Portfolio tickers are automatically fetched from the database and scanned first,
 
 ## Recent Improvements (Jan 2025)
 
+### Base Pattern Detection & Breakout Fixes (Jan 31)
+
+**Problem**: Breakouts page showed extended stocks (GOLF +16.5%, TTC +19.9% above pivot) that had already broken out weeks ago. These are NOT actionable buy points.
+
+**Root Causes**:
+1. **Flat base detection was wrong**: Checked if individual weeks had tight intraweek ranges (<15%), but a flat base should measure the TOTAL consolidation range across all weeks
+2. **Breakout criteria too loose**: Allowed stocks up to 10% above pivot to be marked as "breaking out"
+3. **Fallback query pollution**: API had a fallback that added stocks within 10% of 52-week high, ignoring the `is_breaking_out` flag
+4. **NULL filter bug**: `Stock.market_cap > 0` filtered out all stocks when `market_cap` was NULL
+
+**Fixes Implemented**:
+
+1. **Fixed Flat Base Detection** (`canslim_scorer.py`):
+   - Now calculates `(highest_high - lowest_low) / lowest_low` across the entire base window
+   - Finds the longest window (5-15 weeks) where total range < 15%
+   - Returns `base_depth` percentage for transparency
+   - Test: NVDA flat 11w (14.7%), MSFT flat 10w (12.9%), GOOG flat 9w (14.7%)
+
+2. **Tightened Breakout Criteria** (`canslim_scorer.py:is_breaking_out()`):
+   - Pre-breakout: -3% to 0% from pivot (building for breakout)
+   - Active breakout: 0% to +5% from pivot (optimal buy zone)
+   - **Extended stocks (>5% above pivot) now return `is_breaking_out = False`**
+   - This ensures breakout list shows actionable opportunities only
+
+3. **Removed Fallback Query** (`backend/main.py`):
+   - Deleted the "near 52-week high" fallback that ignored `is_breaking_out` flag
+   - The scanner's `is_breaking_out` flag is now the sole source of truth
+
+4. **Fixed NULL Filter** (`backend/main.py`):
+   - Removed `market_cap > 0` and `week_52_high > 0` filters that failed on NULL values
+   - API now returns stocks based on `is_breaking_out` flag only
+
+**Files Modified**:
+- `canslim_scorer.py` - `_detect_flat_base()`, `is_breaking_out()`
+- `backend/main.py` - `/api/stocks/breaking-out` endpoint
+
+**Volume Ratio Explained**:
+- `volume_ratio` = current volume ÷ 50-day average
+- 1.5x+ = significant volume surge (green on frontend)
+- Breakouts require 50+ effective volume score (either 1.0x single day OR multi-day confirmation)
+- Stocks with NULL volume_ratio now default to 1.0 in API responses
+
+**Useful Commands**:
+```bash
+# Check how many stocks are breaking out
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); print(f'Breaking out: {db.query(Stock).filter(Stock.is_breaking_out == True).count()}'); db.close()"
+
+# Test the breakouts API
+curl -s "http://localhost:8001/api/stocks/breaking-out?limit=10" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'API returned: {len(d.get(\"stocks\",[]))} stocks'); [print(f'  {s[\"ticker\"]}') for s in d.get('stocks',[])]"
+
+# Verify breakout stock details
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.is_breaking_out == True).limit(5).all(); [print(f'{s.ticker}: base={s.base_type}, score={s.canslim_score:.0f}') for s in stocks]; db.close()"
+```
+
 ### Progress Tracking + Delisted Ticker System (Jan 30)
 
 **Problem**: Scan progress showed >100% (e.g., 3466/2083 at 166%). AMD showed 531% ROE instead of ~5%.
