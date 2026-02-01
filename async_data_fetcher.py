@@ -1162,14 +1162,14 @@ async def fetch_stocks_batch_async(
     connector = aiohttp.TCPConnector(limit=30, limit_per_host=20)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        # STEP 1: Batch fetch quotes and profiles for ALL tickers (2 API calls total!)
-        logger.info(f"Fetching batch quotes for {len(tickers)} tickers...")
-        batch_quotes = await fetch_fmp_batch_quotes(session, tickers)
+        # SKIP batch quotes/profiles - they require legacy FMP subscription for true batching
+        # Individual /stable/ fetches are too slow (1904 tickers * 2 endpoints = ~16 min just waiting on rate limits)
+        # Instead, rely on Yahoo fallbacks in get_stock_data_async which provide market_cap and 52-week data
+        batch_quotes = {}
+        batch_profiles = {}
+        logger.info(f"Skipping FMP batch quotes/profiles (using Yahoo fallbacks for market data)")
 
-        logger.info(f"Fetching batch profiles for {len(tickers)} tickers...")
-        batch_profiles = await fetch_fmp_batch_profiles(session, tickers)
-
-        # STEP 2: Process detailed financials in smaller batches with rate limiting
+        # Process detailed financials in smaller batches with rate limiting
         # Use smaller batch size (50) to give rate limiter time to work
         effective_batch_size = min(batch_size, 50)
         logger.info(f"Fetching detailed financials in batches of {effective_batch_size}...")
