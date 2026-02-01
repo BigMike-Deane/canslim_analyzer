@@ -908,49 +908,51 @@ class TechnicalAnalyzer:
     @staticmethod
     def _detect_flat_base(valid_weeks: list) -> dict:
         """
-        Detect flat base pattern: 5+ CONSECUTIVE weeks with tight price action (<15% range).
-        Pivot is the highest high within the actual tight weeks.
+        Detect flat base pattern: 5+ weeks where the OVERALL price range is tight (<15%).
+
+        Per O'Neil's CANSLIM methodology:
+        - A flat base is a consolidation where the stock trades sideways
+        - The TOTAL range (highest high to lowest low) should be < 15%
+        - Duration: typically 5-15 weeks
+        - Pivot point: the highest high within the base
         """
-        recent_weeks = valid_weeks[-12:]  # Look at last 12 weeks
+        recent_weeks = valid_weeks[-15:]  # Look at last 15 weeks for longer bases
 
-        # Calculate which weeks are "tight" (range < 15%)
-        tight_flags = []
-        for week in recent_weeks:
-            if week["close"] > 0:
-                range_pct = (week["high"] - week["low"]) / week["close"]
-                tight_flags.append(range_pct < 0.15)
-            else:
-                tight_flags.append(False)
+        if len(recent_weeks) < 5:
+            return {"type": "none", "weeks": 0, "pivot_price": 0}
 
-        # Find longest consecutive run of tight weeks
-        max_consecutive = 0
-        current_consecutive = 0
-        best_start_idx = 0
-        current_start_idx = 0
+        best_base = {"type": "none", "weeks": 0, "pivot_price": 0}
 
-        for i, is_tight in enumerate(tight_flags):
-            if is_tight:
-                if current_consecutive == 0:
-                    current_start_idx = i
-                current_consecutive += 1
-                if current_consecutive > max_consecutive:
-                    max_consecutive = current_consecutive
-                    best_start_idx = current_start_idx
-            else:
-                current_consecutive = 0
+        # Try different window sizes from 5 to len(recent_weeks)
+        # Find the longest valid flat base
+        for window_size in range(5, len(recent_weeks) + 1):
+            # Slide the window across recent weeks
+            for start_idx in range(len(recent_weeks) - window_size + 1):
+                window = recent_weeks[start_idx:start_idx + window_size]
 
-        # Need at least 5 consecutive tight weeks for a valid flat base
-        if max_consecutive >= 5:
-            # Get the actual tight weeks for pivot calculation
-            tight_weeks_data = recent_weeks[best_start_idx:best_start_idx + max_consecutive]
-            pivot_price = max(w["high"] for w in tight_weeks_data)
-            return {
-                "type": "flat",
-                "weeks": max_consecutive,
-                "pivot_price": pivot_price
-            }
+                # Calculate the OVERALL range across all weeks in the window
+                highest_high = max(w["high"] for w in window)
+                lowest_low = min(w["low"] for w in window)
 
-        return {"type": "none", "weeks": 0, "pivot_price": 0}
+                if lowest_low <= 0:
+                    continue
+
+                # Total consolidation range as percentage
+                total_range_pct = (highest_high - lowest_low) / lowest_low
+
+                # A valid flat base has < 15% total range
+                if total_range_pct < 0.15:
+                    # Prefer longer bases (more significant)
+                    if window_size > best_base["weeks"]:
+                        best_base = {
+                            "type": "flat",
+                            "weeks": window_size,
+                            "pivot_price": highest_high,
+                            "base_low": lowest_low,
+                            "base_depth": round(total_range_pct * 100, 1)
+                        }
+
+        return best_base
 
     @staticmethod
     def _detect_cup_with_handle(valid_weeks: list) -> dict:
