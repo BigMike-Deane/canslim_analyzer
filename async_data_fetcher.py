@@ -924,6 +924,10 @@ async def get_stock_data_async(
             stock_data.trailing_pe = quote.get("pe", 0) or 0
             stock_data.shares_outstanding = int(quote.get("shares_outstanding", 0) or 0)
             stock_data.name = quote.get("name", ticker)
+            if stock_data.market_cap:
+                logger.debug(f"{ticker}: FMP quote market_cap={stock_data.market_cap}")
+        else:
+            logger.warning(f"{ticker}: FMP quote returned None")
 
     if batch_profiles and ticker in batch_profiles:
         profile = batch_profiles[ticker]
@@ -1128,6 +1132,12 @@ async def get_stock_data_async(
         mark_ticker_as_delisted(ticker, reason="no_price_data", source="get_stock_data_async")
         stock_data.is_valid = False
         stock_data.error_message = "No price data available - ticker may be delisted"
+
+    # Debug: log final market_cap value
+    if stock_data.market_cap:
+        logger.info(f"{ticker}: final market_cap={stock_data.market_cap}")
+    else:
+        logger.warning(f"{ticker}: market_cap is 0 or None at end of get_stock_data_async")
 
     return stock_data
 
