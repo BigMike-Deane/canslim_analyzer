@@ -362,8 +362,9 @@ def run_continuous_scan():
         stock.industry = analysis.get("industry")
         stock.current_price = analysis.get("current_price")
         stock.market_cap = analysis.get("market_cap")
+        stock.week_52_low = analysis.get("week_52_low")
         # Debug log for market_cap
-        logger.info(f"{analysis['ticker']}: market_cap in analysis={analysis.get('market_cap')}, assigned to stock.market_cap")
+        logger.info(f"{analysis['ticker']}: analysis.market_cap={analysis.get('market_cap')}, stock.market_cap={stock.market_cap}")
         stock.canslim_score = new_score
         stock.c_score = analysis.get("c_score")
         stock.a_score = analysis.get("a_score")
@@ -472,6 +473,9 @@ def run_continuous_scan():
         successful = 0
         for i, analysis in enumerate(analysis_results):
             try:
+                # Debug: log first 5 stocks' market_cap before save
+                if i < 5:
+                    logger.info(f"BEFORE SAVE {analysis.get('ticker')}: market_cap={analysis.get('market_cap')}, type={type(analysis.get('market_cap'))}")
                 save_stock_to_db(db, analysis)
                 successful += 1
                 # Update progress in real-time
