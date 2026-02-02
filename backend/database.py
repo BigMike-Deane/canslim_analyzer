@@ -114,6 +114,11 @@ def run_migrations():
         ("stocks", "quarterly_revenue", "TEXT"),  # JSON stored as TEXT
         # Backtest cancellation support
         ("backtest_runs", "cancel_requested", "BOOLEAN DEFAULT 0"),
+        # Relative Strength for momentum confirmation (Feb 2026)
+        ("stocks", "rs_12m", "FLOAT"),
+        ("stocks", "rs_3m", "FLOAT"),
+        # Partial profit taking tracking (Feb 2026)
+        ("ai_portfolio_positions", "partial_profit_taken", "FLOAT DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:
