@@ -752,6 +752,13 @@ def evaluate_buys(db: Session) -> list:
         effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
         if not effective_score or effective_score < config.min_score_to_buy:
             continue
+
+        # P1 Feature: Skip buying stocks 1-3 days before earnings (high volatility risk)
+        days_to_earnings = getattr(stock, 'days_to_earnings', None)
+        if days_to_earnings is not None and 0 < days_to_earnings <= 3:
+            logger.info(f"Skipping {stock.ticker}: {days_to_earnings} days until earnings")
+            continue
+
         # Check if stock is breaking out (best buying opportunity)
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
         breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
@@ -855,10 +862,23 @@ def evaluate_buys(db: Session) -> list:
             else:
                 momentum_score = -10  # Too far from highs, may be in downtrend
 
-        # Calculate insider sentiment bonus/penalty
+        # Calculate insider sentiment bonus/penalty (P1 Feature: Scale by $ value)
         insider_bonus = 0
-        if insider_sentiment == "bullish" and insider_buy_count >= 2:
-            insider_bonus = 5  # Insiders buying = good sign
+        insider_net_value = getattr(stock, 'insider_net_value', 0) or 0
+        insider_largest_buyer_title = getattr(stock, 'insider_largest_buyer_title', '') or ''
+
+        if insider_sentiment == "bullish":
+            # Scale bonus by $ value of net buying
+            if insider_net_value >= 500000:  # $500K+ net buying
+                insider_bonus = 10
+            elif insider_net_value >= 100000:  # $100K+ net buying
+                insider_bonus = 7
+            elif insider_buy_count >= 2:
+                insider_bonus = 5  # Fallback to count-based if no value data
+
+            # Extra +3 for C-suite buying (CEO, CFO, COO, President)
+            if insider_largest_buyer_title.upper() in ('CEO', 'CFO', 'COO', 'PRESIDENT', 'CHIEF EXECUTIVE OFFICER', 'CHIEF FINANCIAL OFFICER'):
+                insider_bonus += 3
         elif insider_sentiment == "bearish":
             insider_bonus = -3  # Insiders selling = caution
 

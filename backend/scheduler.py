@@ -110,6 +110,7 @@ def run_continuous_scan():
     from data_fetcher import (
         DataFetcher, get_cached_market_direction,
         fetch_fmp_insider_trading, fetch_short_interest,
+        fetch_fmp_earnings_calendar, fetch_fmp_analyst_estimates,
         is_data_fresh, mark_data_fetched
     )
     from growth_projector import GrowthProjector
@@ -167,6 +168,20 @@ def run_continuous_scan():
                 short_data = fetch_short_interest(ticker)
                 if short_data:
                     mark_data_fetched(ticker, "short_interest")
+
+            # P1 Feature: Earnings calendar (fetch weekly)
+            earnings_calendar_data = {}
+            if not is_data_fresh(ticker, "earnings_calendar"):
+                earnings_calendar_data = fetch_fmp_earnings_calendar(ticker)
+                if earnings_calendar_data:
+                    mark_data_fetched(ticker, "earnings_calendar")
+
+            # P1 Feature: Analyst estimates (fetch every 3 days)
+            analyst_estimates_data = {}
+            if not is_data_fresh(ticker, "analyst_estimates"):
+                analyst_estimates_data = fetch_fmp_analyst_estimates(ticker)
+                if analyst_estimates_data:
+                    mark_data_fetched(ticker, "analyst_estimates")
 
             return {
                 "ticker": ticker,
@@ -257,6 +272,21 @@ def run_continuous_scan():
                 # Short interest
                 "short_interest_pct": short_data.get("short_interest_pct"),
                 "short_ratio": short_data.get("short_ratio"),
+                # P1 Feature: Earnings Calendar
+                "next_earnings_date": earnings_calendar_data.get("next_earnings_date"),
+                "days_to_earnings": earnings_calendar_data.get("days_to_earnings"),
+                "earnings_beat_streak": earnings_calendar_data.get("earnings_beat_streak"),
+                # P1 Feature: Analyst Estimate Revisions
+                "eps_estimate_current": analyst_estimates_data.get("eps_estimate_current"),
+                "eps_estimate_prior": analyst_estimates_data.get("eps_estimate_prior"),
+                "eps_estimate_revision_pct": analyst_estimates_data.get("eps_estimate_revision_pct"),
+                "estimate_revision_trend": analyst_estimates_data.get("estimate_revision_trend"),
+                # P1 Feature: Insider Value Tracking (from enhanced insider_data)
+                "insider_buy_value": insider_data.get("buy_value"),
+                "insider_sell_value": insider_data.get("sell_value"),
+                "insider_net_value": insider_data.get("net_value"),
+                "insider_largest_buy": insider_data.get("largest_buy"),
+                "insider_largest_buyer_title": insider_data.get("largest_buyer_title"),
                 # Raw earnings data (needed for database save)
                 "quarterly_earnings": stock_data.quarterly_earnings,
                 "annual_earnings": stock_data.annual_earnings,
@@ -409,12 +439,33 @@ def run_continuous_scan():
             stock.insider_net_shares = analysis.get("insider_net_shares")
             stock.insider_sentiment = analysis.get("insider_sentiment")
             stock.insider_updated_at = datetime.utcnow()
+            # P1 Feature: Insider value tracking
+            stock.insider_buy_value = analysis.get("insider_buy_value")
+            stock.insider_sell_value = analysis.get("insider_sell_value")
+            stock.insider_net_value = analysis.get("insider_net_value")
+            stock.insider_largest_buy = analysis.get("insider_largest_buy")
+            stock.insider_largest_buyer_title = analysis.get("insider_largest_buyer_title")
 
         # Short interest (only update if we have data)
         if analysis.get("short_interest_pct") is not None:
             stock.short_interest_pct = analysis.get("short_interest_pct")
             stock.short_ratio = analysis.get("short_ratio")
             stock.short_updated_at = datetime.utcnow()
+
+        # P1 Feature: Earnings calendar (only update if we have data)
+        if analysis.get("next_earnings_date") or analysis.get("earnings_beat_streak"):
+            stock.next_earnings_date = analysis.get("next_earnings_date")
+            stock.days_to_earnings = analysis.get("days_to_earnings")
+            stock.earnings_beat_streak = analysis.get("earnings_beat_streak")
+            stock.earnings_calendar_updated_at = datetime.utcnow()
+
+        # P1 Feature: Analyst estimate revisions (only update if we have data)
+        if analysis.get("eps_estimate_current") is not None:
+            stock.eps_estimate_current = analysis.get("eps_estimate_current")
+            stock.eps_estimate_prior = analysis.get("eps_estimate_prior")
+            stock.eps_estimate_revision_pct = analysis.get("eps_estimate_revision_pct")
+            stock.estimate_revision_trend = analysis.get("estimate_revision_trend")
+            stock.analyst_estimates_updated_at = datetime.utcnow()
 
         # Save historical score (one per scan for granular backtesting data)
         today = date.today()

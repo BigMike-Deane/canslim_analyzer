@@ -217,12 +217,34 @@ class CANSLIMScorer:
         elif earnings_surprise > 0:
             surprise_score = surprise_max * 0.5
 
-        # Extra bonus for consistent beats
+        # Extra bonus for consistent beats (4+ quarters)
+        beat_streak_bonus = 0
+        beat_streak_detail = ""
         if eps_beat_streak >= 4:
-            surprise_score = min(surprise_score + 0.5, surprise_max)
+            # +1 for 4 beats, +2 for 5+ beats (capped at 2)
+            beat_streak_bonus = min(2, eps_beat_streak - 3)
+            beat_streak_detail = f" +{eps_beat_streak}beats"
+            surprise_score = min(surprise_score + beat_streak_bonus, surprise_max)
 
-        total_score = min(base_score + accel_score + surprise_score, max_score)
-        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{surprise_detail}"
+        # Analyst estimate revision bonus/penalty (P1 feature Feb 2026)
+        # Reward stocks where analysts are raising estimates
+        revision_bonus = 0
+        revision_detail = ""
+        estimate_revision_pct = getattr(data, 'eps_estimate_revision_pct', None)
+        if estimate_revision_pct is not None:
+            if estimate_revision_pct >= 10:
+                revision_bonus = 4
+                revision_detail = f" +est↑{estimate_revision_pct:.0f}%"
+            elif estimate_revision_pct >= 5:
+                revision_bonus = 2
+                revision_detail = f" +est↑"
+            elif estimate_revision_pct <= -5:
+                revision_bonus = -2
+                revision_detail = f" est↓"
+
+        total_score = min(base_score + accel_score + surprise_score + revision_bonus, max_score)
+        total_score = max(total_score, 0)  # Don't go below 0
+        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{surprise_detail}{beat_streak_detail}{revision_detail}"
 
     def _score_earnings_with_anomaly_filter(self, data: StockData, max_score: float) -> tuple[float, str]:
         """

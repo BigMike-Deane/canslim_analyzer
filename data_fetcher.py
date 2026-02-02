@@ -61,6 +61,9 @@ DATA_FRESHNESS_INTERVALS = {
     "insider_trading": 14 * 24 * 3600,  # Once per 2 weeks (changes slowly)
     "short_interest": 3 * 24 * 3600,    # Once per 3 days (bi-weekly updates)
     "yahoo_info": 7 * 24 * 3600,      # Once per week (comprehensive Yahoo data for key metrics, balance, analyst)
+    # P1 Features (Feb 2026)
+    "earnings_calendar": 7 * 24 * 3600,  # Once per week (earnings dates don't change frequently)
+    "analyst_estimates": 3 * 24 * 3600,  # Once per 3 days (estimates can change with analyst updates)
 }
 
 # Cached data storage (stores the actual fetched data)
@@ -807,6 +810,110 @@ def fetch_fmp_earnings_surprise(ticker: str) -> dict:
     return {}
 
 
+def fetch_fmp_earnings_calendar(ticker: str) -> dict:
+    """
+    Fetch earnings calendar data from FMP.
+    Returns next earnings date and beat streak from earnings-surprises endpoint.
+
+    API endpoint: /stable/earnings-surprises?symbol={ticker}
+    The response includes historical earnings with dates, which we use to:
+    1. Find the next expected earnings date
+    2. Count consecutive earnings beats
+    """
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/earnings-surprises?symbol={ticker}&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                # Find next earnings date
+                # The endpoint returns historical data sorted by date descending
+                # We need to estimate next earnings (~3 months after last)
+                latest_date_str = data[0].get("date", "")
+                next_earnings_date = None
+                days_to_earnings = None
+
+                if latest_date_str:
+                    try:
+                        from datetime import timedelta
+                        latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
+                        # Estimate next earnings ~90 days after last
+                        next_earnings_date = latest_date + timedelta(days=90)
+                        # If estimated date is in the past, add another quarter
+                        while next_earnings_date < datetime.now():
+                            next_earnings_date += timedelta(days=90)
+                        days_to_earnings = (next_earnings_date - datetime.now()).days
+                    except ValueError:
+                        pass
+
+                # Count consecutive beats (already done in earnings_surprise, reuse logic)
+                beat_streak = 0
+                for record in data[:8]:
+                    estimated = record.get("estimatedEarning", 0)
+                    actual = record.get("actualEarningResult", 0)
+                    if estimated and actual and actual > estimated:
+                        beat_streak += 1
+                    else:
+                        break
+
+                return {
+                    "next_earnings_date": next_earnings_date.strftime("%Y-%m-%d") if next_earnings_date else None,
+                    "days_to_earnings": days_to_earnings,
+                    "beat_streak": beat_streak,
+                }
+    except Exception as e:
+        logger.debug(f"FMP earnings calendar error for {ticker}: {e}")
+    return {}
+
+
+def fetch_fmp_analyst_estimates(ticker: str) -> dict:
+    """
+    Fetch analyst estimate revisions from FMP.
+    Compares current period estimate to prior period to detect revisions.
+
+    API endpoint: /stable/analyst-estimates?symbol={ticker}&limit=2
+    Returns: current estimate, prior estimate, revision %, and trend
+    """
+    if not FMP_API_KEY:
+        return {}
+
+    try:
+        url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) >= 1:
+                current = data[0]
+                prior = data[1] if len(data) > 1 else None
+
+                current_eps = current.get("estimatedEpsAvg", 0) or 0
+                prior_eps = prior.get("estimatedEpsAvg", 0) if prior else 0
+
+                # Calculate revision percentage
+                revision_pct = 0
+                trend = "stable"
+                if prior_eps and prior_eps != 0:
+                    revision_pct = ((current_eps - prior_eps) / abs(prior_eps)) * 100
+                    if revision_pct >= 5:
+                        trend = "up"
+                    elif revision_pct <= -5:
+                        trend = "down"
+
+                return {
+                    "eps_estimate_current": current_eps,
+                    "eps_estimate_prior": prior_eps,
+                    "eps_estimate_revision_pct": round(revision_pct, 2),
+                    "estimate_revision_trend": trend,
+                    "num_analysts": current.get("numberAnalystsEstimatedEps", 0),
+                }
+    except Exception as e:
+        logger.debug(f"FMP analyst estimates error for {ticker}: {e}")
+    return {}
+
+
 def fetch_fmp_revenue(ticker: str) -> dict:
     """Fetch quarterly and annual revenue from FMP income statements"""
     if not FMP_API_KEY:
@@ -865,9 +972,14 @@ def fetch_fmp_balance_sheet(ticker: str) -> dict:
 def fetch_fmp_insider_trading(ticker: str) -> dict:
     """
     Fetch insider trading data from FMP API.
-    Returns summary of insider buys/sells in last 3 months.
+    Returns summary of insider buys/sells in last 3 months with $ values.
 
     API endpoint: /v4/insider-trading?symbol={ticker}
+
+    Now tracks:
+    - buy_value, sell_value, net_value ($ amounts)
+    - largest_buy ($ amount of largest single purchase)
+    - largest_buyer_title (CEO, CFO, etc.)
     """
     if not FMP_API_KEY:
         return {}
@@ -887,6 +999,10 @@ def fetch_fmp_insider_trading(ticker: str) -> dict:
             buy_count = 0
             sell_count = 0
             net_shares = 0
+            buy_value = 0
+            sell_value = 0
+            largest_buy = 0
+            largest_buyer_title = None
 
             for trade in data:
                 # Parse transaction date
@@ -904,29 +1020,69 @@ def fetch_fmp_insider_trading(ticker: str) -> dict:
                 # Count buys and sells
                 transaction_type = trade.get("transactionType", "").upper()
                 shares = trade.get("securitiesTransacted", 0) or 0
+                price = trade.get("price", 0) or 0
+                trade_value = shares * price
+
+                # Get insider title (reportingName often includes title, or use typeOfOwner)
+                insider_title = trade.get("typeOfOwner", "") or ""
+                reporting_name = trade.get("reportingName", "") or ""
 
                 if "BUY" in transaction_type or "PURCHASE" in transaction_type or transaction_type == "P":
                     buy_count += 1
                     net_shares += shares
+                    buy_value += trade_value
+
+                    # Track largest buy
+                    if trade_value > largest_buy:
+                        largest_buy = trade_value
+                        # Try to extract title from reporting name or type
+                        if "CEO" in reporting_name.upper() or "CHIEF EXECUTIVE" in reporting_name.upper():
+                            largest_buyer_title = "CEO"
+                        elif "CFO" in reporting_name.upper() or "CHIEF FINANCIAL" in reporting_name.upper():
+                            largest_buyer_title = "CFO"
+                        elif "COO" in reporting_name.upper() or "CHIEF OPERATING" in reporting_name.upper():
+                            largest_buyer_title = "COO"
+                        elif "PRESIDENT" in reporting_name.upper():
+                            largest_buyer_title = "PRESIDENT"
+                        elif "DIRECTOR" in insider_title.upper() or "DIRECTOR" in reporting_name.upper():
+                            largest_buyer_title = "DIRECTOR"
+                        elif "10%" in insider_title:
+                            largest_buyer_title = "10% OWNER"
+                        else:
+                            largest_buyer_title = insider_title or "OFFICER"
+
                 elif "SELL" in transaction_type or "SALE" in transaction_type or transaction_type == "S":
                     sell_count += 1
                     net_shares -= shares
+                    sell_value += trade_value
 
-            # Determine sentiment
-            if buy_count > sell_count * 1.5:
+            net_value = buy_value - sell_value
+
+            # Determine sentiment based on $ value (more meaningful than count)
+            if net_value >= 100000:
+                sentiment = "bullish"
+            elif net_value <= -100000:
+                sentiment = "bearish"
+            elif buy_count > sell_count * 1.5:
                 sentiment = "bullish"
             elif sell_count > buy_count * 1.5:
                 sentiment = "bearish"
             else:
                 sentiment = "neutral"
 
-            logger.debug(f"{ticker}: Insider trading - {buy_count} buys, {sell_count} sells, net {net_shares:+.0f} shares, {sentiment}")
+            logger.debug(f"{ticker}: Insider trading - {buy_count} buys (${buy_value:,.0f}), {sell_count} sells (${sell_value:,.0f}), net ${net_value:+,.0f}, {sentiment}")
 
             return {
                 "buy_count": buy_count,
                 "sell_count": sell_count,
                 "net_shares": net_shares,
-                "sentiment": sentiment
+                "sentiment": sentiment,
+                # New value tracking fields
+                "buy_value": buy_value,
+                "sell_value": sell_value,
+                "net_value": net_value,
+                "largest_buy": largest_buy,
+                "largest_buyer_title": largest_buyer_title,
             }
 
     except Exception as e:
@@ -1258,6 +1414,25 @@ class StockData:
         self.weekly_price_history: list[dict] = []  # Weekly OHLC for base detection
         self.cash_and_equivalents: float = 0.0  # For growth stock funding analysis
         self.total_debt: float = 0.0  # For growth stock funding analysis
+
+        # P1 Features (Feb 2026)
+        # Earnings Calendar
+        self.next_earnings_date: str = ""  # YYYY-MM-DD format
+        self.days_to_earnings: int = 0  # Days until next earnings
+        self.earnings_beat_streak: int = 0  # Consecutive quarters beating estimates
+
+        # Analyst Estimate Revisions
+        self.eps_estimate_current: float = 0.0
+        self.eps_estimate_prior: float = 0.0
+        self.eps_estimate_revision_pct: float = 0.0
+        self.estimate_revision_trend: str = ""  # 'up', 'down', 'stable'
+
+        # Insider Value Tracking
+        self.insider_buy_value: float = 0.0
+        self.insider_sell_value: float = 0.0
+        self.insider_net_value: float = 0.0
+        self.insider_largest_buy: float = 0.0
+        self.insider_largest_buyer_title: str = ""
 
 
 class DataFetcher:

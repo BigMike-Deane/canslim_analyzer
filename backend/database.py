@@ -119,6 +119,23 @@ def run_migrations():
         ("stocks", "rs_3m", "FLOAT"),
         # Partial profit taking tracking (Feb 2026)
         ("ai_portfolio_positions", "partial_profit_taken", "FLOAT DEFAULT 0"),
+        # Earnings Calendar (Feb 2026)
+        ("stocks", "next_earnings_date", "DATE"),
+        ("stocks", "days_to_earnings", "INTEGER"),
+        ("stocks", "earnings_beat_streak", "INTEGER"),
+        ("stocks", "earnings_calendar_updated_at", "DATETIME"),
+        # Analyst Estimate Revisions (Feb 2026)
+        ("stocks", "eps_estimate_current", "FLOAT"),
+        ("stocks", "eps_estimate_prior", "FLOAT"),
+        ("stocks", "eps_estimate_revision_pct", "FLOAT"),
+        ("stocks", "estimate_revision_trend", "TEXT"),
+        ("stocks", "analyst_estimates_updated_at", "DATETIME"),
+        # Insider Value Tracking (Feb 2026)
+        ("stocks", "insider_buy_value", "FLOAT"),
+        ("stocks", "insider_sell_value", "FLOAT"),
+        ("stocks", "insider_net_value", "FLOAT"),
+        ("stocks", "insider_largest_buy", "FLOAT"),
+        ("stocks", "insider_largest_buyer_title", "TEXT"),
     ]
 
     for table, column, col_type in migrations:
@@ -296,6 +313,26 @@ class Stock(Base):
     short_interest_pct = Column(Float)  # Short interest as % of float
     short_ratio = Column(Float)  # Days to cover
     short_updated_at = Column(DateTime)
+
+    # Earnings Calendar (Feb 2026)
+    next_earnings_date = Column(Date)  # Next expected earnings date
+    days_to_earnings = Column(Integer)  # Days until next earnings
+    earnings_beat_streak = Column(Integer)  # Consecutive quarters beating estimates
+    earnings_calendar_updated_at = Column(DateTime)
+
+    # Analyst Estimate Revisions (Feb 2026)
+    eps_estimate_current = Column(Float)  # Current consensus EPS estimate
+    eps_estimate_prior = Column(Float)  # Prior period EPS estimate
+    eps_estimate_revision_pct = Column(Float)  # % change in estimates
+    estimate_revision_trend = Column(String)  # 'up', 'down', 'stable'
+    analyst_estimates_updated_at = Column(DateTime)
+
+    # Insider Value Tracking (Feb 2026)
+    insider_buy_value = Column(Float)  # Total $ value of insider buys (3 months)
+    insider_sell_value = Column(Float)  # Total $ value of insider sells (3 months)
+    insider_net_value = Column(Float)  # Net $ value (buys - sells)
+    insider_largest_buy = Column(Float)  # Largest single insider purchase $
+    insider_largest_buyer_title = Column(String)  # Title of largest buyer (CEO, CFO, etc.)
 
     # Metadata
     last_updated = Column(DateTime, default=datetime.utcnow)

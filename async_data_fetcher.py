@@ -531,17 +531,108 @@ async def fetch_fmp_earnings_surprise_async(session: aiohttp.ClientSession, tick
     return {}
 
 
+async def fetch_fmp_earnings_calendar_async(session: aiohttp.ClientSession, ticker: str) -> dict:
+    """
+    Async fetch earnings calendar data from FMP.
+    Returns next earnings date and beat streak.
+    """
+    if not FMP_API_KEY:
+        return {}
+
+    url = f"{FMP_BASE_URL}/earnings-surprises?symbol={ticker}&apikey={FMP_API_KEY}"
+    data = await fetch_json_async(session, url)
+
+    if data and len(data) > 0:
+        # Find next earnings date
+        latest_date_str = data[0].get("date", "")
+        next_earnings_date = None
+        days_to_earnings = None
+
+        if latest_date_str:
+            try:
+                latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
+                # Estimate next earnings ~90 days after last
+                next_earnings_date = latest_date + timedelta(days=90)
+                # If estimated date is in the past, add another quarter
+                while next_earnings_date < datetime.now():
+                    next_earnings_date += timedelta(days=90)
+                days_to_earnings = (next_earnings_date - datetime.now()).days
+            except ValueError:
+                pass
+
+        # Count consecutive beats
+        beat_streak = 0
+        for record in data[:8]:
+            estimated = record.get("estimatedEarning", 0)
+            actual = record.get("actualEarningResult", 0)
+            if estimated and actual and actual > estimated:
+                beat_streak += 1
+            else:
+                break
+
+        return {
+            "next_earnings_date": next_earnings_date.strftime("%Y-%m-%d") if next_earnings_date else None,
+            "days_to_earnings": days_to_earnings,
+            "beat_streak": beat_streak,
+        }
+    return {}
+
+
+async def fetch_fmp_analyst_estimates_async(session: aiohttp.ClientSession, ticker: str) -> dict:
+    """
+    Async fetch analyst estimate revisions from FMP.
+    Compares current period estimate to prior period to detect revisions.
+    """
+    if not FMP_API_KEY:
+        return {}
+
+    url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
+    data = await fetch_json_async(session, url)
+
+    if data and len(data) >= 1:
+        current = data[0]
+        prior = data[1] if len(data) > 1 else None
+
+        current_eps = current.get("estimatedEpsAvg", 0) or 0
+        prior_eps = prior.get("estimatedEpsAvg", 0) if prior else 0
+
+        # Calculate revision percentage
+        revision_pct = 0
+        trend = "stable"
+        if prior_eps and prior_eps != 0:
+            revision_pct = ((current_eps - prior_eps) / abs(prior_eps)) * 100
+            if revision_pct >= 5:
+                trend = "up"
+            elif revision_pct <= -5:
+                trend = "down"
+
+        return {
+            "eps_estimate_current": current_eps,
+            "eps_estimate_prior": prior_eps,
+            "eps_estimate_revision_pct": round(revision_pct, 2),
+            "estimate_revision_trend": trend,
+            "num_analysts": current.get("numberAnalystsEstimatedEps", 0),
+        }
+    return {}
+
+
 async def fetch_insider_trading_async(ticker: str) -> dict:
     """
     Async fetch insider trading data from Yahoo Finance.
-    Returns summary of insider buys/sells in last 3 months.
+    Returns summary of insider buys/sells in last 3 months with $ values.
     Uses Yahoo instead of FMP (FMP v4 endpoint deprecated Aug 2025).
+
+    Now tracks:
+    - buy_value, sell_value, net_value ($ amounts)
+    - largest_buy ($ amount of largest single purchase)
+    - largest_buyer_title (CEO, CFO, etc.)
     """
     loop = asyncio.get_event_loop()
 
     def _fetch_insider():
         try:
             import yfinance as yf
+            import re
             stock = yf.Ticker(ticker)
 
             # Get insider transactions
@@ -554,6 +645,10 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
             buy_count = 0
             sell_count = 0
             net_shares = 0
+            buy_value = 0
+            sell_value = 0
+            largest_buy = 0
+            largest_buyer_title = None
 
             for _, row in insider_df.iterrows():
                 # Parse date
@@ -579,6 +674,21 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
                 # Get transaction type from Text column (e.g., "Sale at price...", "Purchase at price...")
                 text = str(row.get('Text', '')).upper()
                 shares = abs(row.get('Shares', 0) or 0)
+                value = abs(row.get('Value', 0) or 0)
+
+                # Try to extract price from Text if Value is missing
+                if value == 0 and shares > 0:
+                    # Pattern: "at price X.XX" or "@ $X.XX"
+                    price_match = re.search(r'(?:AT PRICE|@|\$)\s*(\d+\.?\d*)', text)
+                    if price_match:
+                        try:
+                            price = float(price_match.group(1))
+                            value = shares * price
+                        except:
+                            pass
+
+                # Get insider name/title
+                insider_name = str(row.get('Insider', '')).upper()
 
                 # Skip gifts and other non-market transactions
                 if 'GIFT' in text or 'AWARD' in text or 'EXERCISE' in text:
@@ -587,13 +697,39 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
                 if 'PURCHASE' in text or 'BUY' in text:
                     buy_count += 1
                     net_shares += shares
+                    buy_value += value
+
+                    # Track largest buy
+                    if value > largest_buy:
+                        largest_buy = value
+                        # Determine title from insider name
+                        if 'CEO' in insider_name or 'CHIEF EXECUTIVE' in insider_name:
+                            largest_buyer_title = "CEO"
+                        elif 'CFO' in insider_name or 'CHIEF FINANCIAL' in insider_name:
+                            largest_buyer_title = "CFO"
+                        elif 'COO' in insider_name or 'CHIEF OPERATING' in insider_name:
+                            largest_buyer_title = "COO"
+                        elif 'PRESIDENT' in insider_name:
+                            largest_buyer_title = "PRESIDENT"
+                        elif 'DIRECTOR' in insider_name:
+                            largest_buyer_title = "DIRECTOR"
+                        else:
+                            largest_buyer_title = "OFFICER"
+
                 elif 'SALE' in text or 'SELL' in text:
                     sell_count += 1
                     net_shares -= shares
+                    sell_value += value
 
-            # Determine sentiment
+            net_value = buy_value - sell_value
+
+            # Determine sentiment based on $ value (more meaningful than count)
             sentiment = "neutral"
-            if buy_count > 0 and buy_count > sell_count * 1.5:
+            if net_value >= 100000:
+                sentiment = "bullish"
+            elif net_value <= -100000:
+                sentiment = "bearish"
+            elif buy_count > 0 and buy_count > sell_count * 1.5:
                 sentiment = "bullish"
             elif sell_count > 0 and sell_count > buy_count * 1.5:
                 sentiment = "bearish"
@@ -602,7 +738,13 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
                 "buy_count": buy_count,
                 "sell_count": sell_count,
                 "net_shares": int(net_shares),
-                "sentiment": sentiment
+                "sentiment": sentiment,
+                # New value tracking fields
+                "buy_value": buy_value,
+                "sell_value": sell_value,
+                "net_value": net_value,
+                "largest_buy": largest_buy,
+                "largest_buyer_title": largest_buyer_title,
             }
 
         except Exception as e:
