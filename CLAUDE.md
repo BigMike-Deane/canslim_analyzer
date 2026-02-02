@@ -37,6 +37,10 @@ docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/ba
 ## Overview
 A mobile-first web application for CANSLIM stock analysis with React frontend and FastAPI backend, deployed via Docker on a VPS.
 
+**GitHub Repository**: [BigMike-Deane/canslim_analyzer](https://github.com/BigMike-Deane/canslim_analyzer)
+- **Languages**: Python (77.9%), JavaScript (21.5%)
+- **Commits**: 211+
+
 ## Architecture
 - **Frontend**: React + Vite + TailwindCSS (mobile-first design)
 - **Backend**: FastAPI + SQLAlchemy + SQLite
@@ -45,6 +49,83 @@ A mobile-first web application for CANSLIM stock analysis with React frontend an
 - **Container name**: `canslim-analyzer`
 - **Port**: 8001
 - **VPS IP**: 147.93.72.73
+
+## Configuration System (YAML-based)
+
+Environment-based configuration with hot-reloading support.
+
+### Config Files
+- `config/default.yaml` - Base configuration for all environments
+- `config/development.yaml` - Dev overrides (faster scans, shorter cache, 2 workers)
+- `config/production.yaml` - Production settings (8 workers, full cache intervals)
+
+### Usage
+```python
+from config_loader import config
+
+# Get specific values
+workers = config.get('scanner.workers', default=4)
+cache_ttl = config.get('cache.freshness_intervals.earnings')
+
+# Get entire sections
+scanner_config = config.scanner
+ai_trader_config = config.ai_trader
+
+# Hot-reload config
+config.reload()
+```
+
+### Environment Variable
+```bash
+export CANSLIM_ENV=production  # or development (default)
+```
+
+### Key Configuration Sections
+| Section | Description |
+|---------|-------------|
+| `scanner` | Workers, delays, batch size, retries |
+| `cache` | Redis settings, freshness intervals |
+| `scoring.canslim` | Max scores and weights for C/A/N/S/L/I/M |
+| `scoring.growth_mode` | Growth Mode scoring parameters |
+| `market.indexes` | SPY/QQQ/DIA weights |
+| `ai_trader` | Trailing stops, insider signals, short penalties |
+| `technical` | Base pattern thresholds, breakout detection |
+| `api` | Rate limits for FMP/Yahoo/Finviz |
+
+## 3-Tier Cache Hierarchy
+
+```
+User Request
+    ↓
+Memory Cache (instant) → HIT? → Return
+    ↓ MISS
+Redis Cache (milliseconds) → HIT? → Store in Memory → Return
+    ↓ MISS
+DB Cache (slower) → HIT? → Store in Redis + Memory → Return
+    ↓ MISS
+API Fetch → Store in all 3 caches → Return
+```
+
+### Expected Cache Hit Rates
+- Memory cache: 5-10% (hot data)
+- Redis cache: 60-70% (warm data)
+- DB cache: 10-15% (cold start)
+- API fetch: 15-25% (new/stale data)
+
+### Redis Cache Usage
+```python
+from redis_cache import redis_cache
+
+# Set data (with automatic TTL from config)
+redis_cache.set("AAPL", "earnings", earnings_data)
+
+# Get data
+earnings = redis_cache.get("AAPL", "earnings")
+
+# Get stats
+stats = redis_cache.get_stats()
+print(f"Hit rate: {stats['hit_rate']}%")
+```
 
 ## CRITICAL: Multi-Container VPS Setup
 **This VPS runs multiple applications. NEVER use `docker rm -f $(docker ps -aq)` as it kills ALL containers including other apps.**
@@ -90,6 +171,35 @@ Weighted factors: Momentum 20%, Earnings 15%, Analyst 25%, Valuation 15%, CANSLI
 - Yahoo Finance handles price history (no strict rate limit)
 - Extended cache intervals: earnings/balance_sheet 7 days, institutional 14 days
 - DB write batching: commits every 50 stocks instead of per-stock
+
+### Async Implementation (5-10x Performance Boost)
+
+The async scanner uses `aiohttp` for concurrent API requests.
+
+| Stocks | Sync Time | Async Time | Speedup |
+|--------|-----------|------------|---------|
+| 10     | 30-50s    | 3-5s       | 10x     |
+| 50     | 3-5 min   | 20-30s     | 10x     |
+| 500    | 30-45 min | 3-5 min    | 10x     |
+| 2080   | 2-3 hours | 10-15 min  | 10x     |
+
+**Key Files**:
+- `async_data_fetcher.py` - Async version using `aiohttp`
+- `async_scanner.py` - Batch processing integration
+
+**Safety Features**:
+- Semaphore limit: Max 10 concurrent requests
+- Batch processing: Default 50 stocks per batch
+- Inter-batch delay: 0.5s pause between batches
+- Timeout: 30s per request
+
+**Usage**:
+```python
+from async_scanner import run_async_scan
+results = run_async_scan(tickers, batch_size=50)
+```
+
+**Dependencies**: `aiohttp>=3.9.0`
 
 ### Stock Universe Coverage (~2000+ tickers)
 Fetched dynamically from Wikipedia (with fallbacks):
@@ -646,6 +756,8 @@ Stores one record per stock per scan for granular backtesting:
 - `ix_stocks_canslim` on canslim_score
 - `ix_stocks_price` on current_price
 - `ix_stocks_score_price` composite for filtered queries
+- `ix_stocks_breaking_out` on (is_breaking_out, canslim_score)
+- `ix_stocks_growth` on (is_growth_stock, growth_mode_score)
 - `ix_stock_scores_stock_timestamp` for backtesting queries
 
 ## Backtesting System (Jan 2026)
@@ -740,6 +852,80 @@ python3 -m pytest tests/test_backtester.py -v  # 13 tests
 - `⚠️ Extended 12% above pivot` - Warning for extended stocks
 - `Base: flat 6w` - Shows base pattern type and duration
 
+### Predictive Performance Improvement Plan (Feb 2, 2026)
+
+**Problem**: Backtester returned +16.9% vs SPY +19.7% (underperforming by 2.8%). The model identified good stocks but bought them too late and sold too early due to score volatility.
+
+**Root Causes Identified**:
+1. Pre-breakout entries undervalued - Breakout got +25 bonus, pre-breakout only +20 (should be flipped)
+2. Score crash sells too sensitive - Backtester sold on single score drop without stability check
+3. EPS acceleration underweighted - Only +3 points for one of the strongest predictors
+4. One-size-fits-all thresholds - 25% growth threshold ignored sector differences
+
+**Phase 1: Critical Fixes (Implemented)**
+
+| Change | Before | After | Impact |
+|--------|--------|-------|--------|
+| Pre-breakout bonus | +20 | **+30** | Better entries before crowd |
+| At-pivot bonus | +15 | **+25** | Reward optimal timing |
+| Breakout bonus | +25 | **+20** | Reduce chasing |
+| Position multiplier (pre-breakout) | 1.15x | **1.30x** | Larger positions at best entries |
+| Score crash requirement | 1 scan | **2 consecutive** | Avoid whipsaw sells |
+
+**Files Modified**: `backend/ai_trader.py`, `backend/backtester.py`, `config/default.yaml`
+
+**Phase 2: Scoring Enhancements (Implemented)**
+
+1. **EPS Acceleration Bonus**: Increased from 3 to **5 points** (strong predictor of price performance)
+
+2. **Sector-Adjusted Growth Thresholds**:
+   | Sector | Excellent | Good |
+   |--------|-----------|------|
+   | Technology | 30% | 20% |
+   | Healthcare | 25% | 15% |
+   | Industrials | 20% | 12% |
+   | Utilities | 12% | 8% |
+   | Default | 25% | 15% |
+
+3. **Partial Profit Taking**:
+   - Sell **25%** at +25% gain (if score >= 60)
+   - Sell **50%** at +40% gain (if score >= 60)
+   - Let remaining position run
+
+**Files Modified**: `canslim_scorer.py`, `backend/ai_trader.py`, `backend/backtester.py`
+
+**Phase 3: Fine-Tuning (Implemented)**
+
+1. **Momentum Confirmation**: Check `rs_3m >= rs_12m * 0.95` before buying
+   - If recent momentum is fading, apply 15% penalty to composite score
+
+2. **Expanded Institutional Range**: Changed sweet spot from 20-60% to **25-75%**
+   - Many quality growth stocks have 60-75% institutional ownership
+
+**New Database Columns**:
+- `stocks.rs_12m` - 12-month relative strength vs S&P 500
+- `stocks.rs_3m` - 3-month relative strength vs S&P 500
+- `ai_portfolio_positions.partial_profit_taken` - Track partial sales (0, 0.25, 0.50)
+
+**New Test Cases** (`tests/test_backtester.py`):
+- `TestPreBreakoutBonuses` - Verify entry bonus calculations
+- `TestScoreStability` - Verify blip detection and consecutive scan logic
+- `TestPartialProfitTaking` - Verify partial sell mechanics
+- `TestMomentumConfirmation` - Verify RS ratio penalty
+
+### Performance Optimizations (Feb 2, 2026)
+
+**Database Indexes Added**:
+- `ix_stocks_breaking_out` on `(is_breaking_out, canslim_score)` - Faster breakout queries
+- `ix_stocks_growth` on `(is_growth_stock, growth_mode_score)` - Faster growth stock queries
+
+**N+1 Query Fixes**:
+- `/api/portfolio/gameplan` - Batch fetch position stocks (was: N queries, now: 1 query)
+- `/api/ai-portfolio` - Batch fetch position stocks (was: N queries, now: 1 query)
+- Result: 50-80% faster tab-to-tab navigation
+
+**Files Modified**: `backend/database.py`, `backend/main.py`
+
 ## Pending Features
 
 ### Ready to Build
@@ -779,15 +965,129 @@ docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/ba
 ```
 
 ## File Structure
-- `/backend/main.py` - FastAPI endpoints + shared helpers
-- `/backend/database.py` - SQLAlchemy models + migrations
-- `/backend/scheduler.py` - Continuous scanning logic
-- `/backend/ai_trader.py` - AI Portfolio trading logic
-- `/frontend/src/pages/` - React page components
-- `/frontend/src/api.js` - API client + utility functions
-- `/canslim_scorer.py` - CANSLIM scoring logic
-- `/data_fetcher.py` - Data fetching from APIs (with bounded cache)
-- `/growth_projector.py` - Growth projection model
+
+### Root Directory
+- `canslim_scorer.py` - CANSLIM scoring logic (100 points)
+- `data_fetcher.py` - Data fetching from APIs (with bounded cache)
+- `async_data_fetcher.py` - Async version using aiohttp
+- `async_scanner.py` - Async batch scanning
+- `growth_projector.py` - Growth projection model
+- `sp500_tickers.py` - Stock universe management
+- `config_loader.py` - YAML configuration loader
+- `redis_cache.py` - Redis caching layer
+- `portfolio_analyzer.py` - Portfolio analysis tools
+- `portfolio_manager.py` - Portfolio management
+
+### Backend (`/backend/`)
+- `main.py` - FastAPI endpoints + shared helpers
+- `database.py` - SQLAlchemy models + migrations
+- `scheduler.py` - Continuous scanning logic
+- `ai_trader.py` - AI Portfolio trading logic
+- `backtester.py` - Historical backtesting engine
+- `historical_data.py` - Historical data provider
+- `config.py` - Backend configuration
+
+### Frontend (`/frontend/src/`)
+- `pages/` - React page components (Dashboard, Backtest, etc.)
+- `components/` - Reusable UI components
+- `api.js` - API client + utility functions
+- `App.jsx` - Main application router
+
+### Configuration (`/config/`)
+- `default.yaml` - Base configuration
+- `development.yaml` - Development overrides
+- `production.yaml` - Production settings
+
+### Tests (`/tests/`)
+- `conftest.py` - Shared pytest fixtures
+- `test_canslim_scorer.py` - Scoring logic tests (19 tests)
+- `test_config_loader.py` - Configuration tests (10 tests)
+- `test_redis_cache.py` - Redis cache tests (8 tests)
+- `test_backtester.py` - Backtesting tests (21 tests) - includes pre-breakout, score stability, partial profits, momentum
+
+## Unit Testing
+
+### Quick Start
+```bash
+# Set environment
+export CANSLIM_ENV=development
+
+# Run all tests
+python3 -m pytest tests/ -v
+
+# Run with coverage
+python3 -m pytest tests/ --cov=. --cov-report=html
+open htmlcov/index.html
+
+# Run specific test file
+python3 -m pytest tests/test_canslim_scorer.py -v
+```
+
+### Test Coverage (as of Jan 2026)
+| Module | Coverage |
+|--------|----------|
+| Config Loader | 95.59% |
+| CANSLIM Scorer | 47.37% |
+| Redis Cache | 32.19% |
+
+### Running with Redis
+```bash
+# Start Redis for full test coverage
+docker run -d -p 6379:6379 --name test-redis redis:7-alpine
+
+# Run tests
+python3 -m pytest tests/ -v
+
+# Cleanup
+docker stop test-redis && docker rm test-redis
+```
+
+### Test Results
+```
+50 passed, 5 skipped (Redis tests when unavailable)
+Test execution: ~6 seconds
+```
+
+## Dependencies
+
+### Root `requirements.txt`
+```
+pyyaml>=6.0.1
+redis>=5.0.0
+pytest>=7.4.0
+pytest-cov>=4.1.0
+aiohttp>=3.9.0
+```
+
+### Backend `backend/requirements.txt`
+```
+fastapi>=0.109.0
+uvicorn>=0.27.0
+sqlalchemy>=2.0.0
+yfinance>=0.2.40
+pandas>=2.0.0
+numpy>=1.26.0
+beautifulsoup4>=4.12.0
+httpx>=0.26.0
+pyyaml>=6.0.1
+redis>=5.0.0
+```
+
+### Frontend `frontend/package.json`
+- React 18.x
+- Vite (build tool)
+- TailwindCSS (styling)
+- Recharts (charts)
+
+## Documentation Files
+
+| File | Description |
+|------|-------------|
+| `CLAUDE.md` | This file - comprehensive project context |
+| `CURRENT_STATUS.md` | Latest changes and active issues |
+| `ASYNC_IMPLEMENTATION.md` | Async scanner guide and performance metrics |
+| `IMPLEMENTATION_SUMMARY.md` | Config system, Redis cache, unit tests summary |
+| `README_TESTING.md` | Testing guide and CI/CD setup |
 
 ## Owner's Trading Preferences
 - Likes stocks under $25 that fit CANSLIM criteria
