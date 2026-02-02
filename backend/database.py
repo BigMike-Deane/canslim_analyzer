@@ -262,6 +262,10 @@ class Stock(Base):
     is_breaking_out = Column(Boolean, default=False)  # Price breaking out with volume
     breakout_volume_ratio = Column(Float)  # Volume surge on breakout day
 
+    # Relative Strength (for momentum confirmation)
+    rs_12m = Column(Float)  # 12-month relative strength vs S&P 500
+    rs_3m = Column(Float)  # 3-month relative strength vs S&P 500
+
     # Insider Trading Signals
     insider_buy_count = Column(Integer)  # Insider buys in last 3 months
     insider_sell_count = Column(Integer)  # Insider sells in last 3 months
@@ -454,6 +458,9 @@ class AIPortfolioPosition(Base):
     # Trailing stop loss tracking
     peak_price = Column(Float)  # Highest price since purchase (for trailing stop)
     peak_date = Column(DateTime)  # When peak was reached
+
+    # Partial profit taking tracking
+    partial_profit_taken = Column(Float, default=0)  # Cumulative % of position sold as partial profits
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -52,8 +52,34 @@ scoring:
     # C Score (Current Earnings) weights
     c_weights:
       base_max: 10          # TTM growth
-      acceleration_max: 3   # EPS acceleration bonus
+      acceleration_max: 5   # EPS acceleration bonus (increased - strong predictor)
       surprise_max: 2       # Earnings surprise bonus
+
+    # Sector-adjusted growth thresholds
+    # A 20% growth for Industrial is excellent; for Tech it's mediocre
+    sector_thresholds:
+      Technology:
+        excellent: 30
+        good: 20
+      Healthcare:
+        excellent: 25
+        good: 15
+      Industrials:
+        excellent: 20
+        good: 12
+      Utilities:
+        excellent: 12
+        good: 8
+      default:
+        excellent: 25
+        good: 15
+
+    # Institutional ownership thresholds (expanded from 20-60 to 25-75)
+    institutional:
+      ideal_min: 25
+      ideal_max: 75
+      partial_min: 15
+      partial_max: 85
 
     # A Score (Annual Earnings) weights
     a_weights:
@@ -104,6 +130,41 @@ market:
 
 # AI Trader Settings
 ai_trader:
+  # Entry bonuses - pre-breakout is optimal entry (before the crowd)
+  entry_bonuses:
+    pre_breakout: 30     # 5-15% below pivot with base (best entry)
+    at_pivot: 25         # 0-5% below pivot with base
+    breakout: 20         # 0-5% above pivot (confirmed but slightly extended)
+
+  # Position size multipliers based on entry type
+  position_multipliers:
+    pre_breakout: 1.30   # 30% larger for optimal pre-breakout entry
+    at_pivot: 1.20       # 20% larger for at-pivot entries
+    breakout: 1.15       # 15% larger for confirmed breakouts
+
+  # Score crash sell requirements
+  score_crash:
+    consecutive_required: 2  # Require 2+ consecutive low scans before selling
+    threshold: 50            # Score must be below this threshold
+    drop_required: 20        # Score must have dropped by this much
+
+  # Partial profit taking - lock in gains while letting winners run
+  partial_profits:
+    enabled: true
+    threshold_25pct:
+      gain_pct: 25         # Take partial at 25% gain
+      sell_pct: 25         # Sell 25% of position
+      min_score: 60        # Only if score still strong
+    threshold_40pct:
+      gain_pct: 40         # Take more at 40% gain
+      sell_pct: 50         # Sell 50% total (25% additional)
+      min_score: 60        # Only if score still strong
+
+  # Momentum confirmation
+  momentum_confirmation:
+    rs_ratio_threshold: 0.95  # rs_3m must be >= rs_12m * 0.95
+    penalty: 0.15             # 15% penalty to composite score if fading
+
   # Trailing stop loss thresholds
   trailing_stops:
     gain_50_plus:

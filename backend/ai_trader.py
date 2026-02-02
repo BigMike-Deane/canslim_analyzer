@@ -632,6 +632,34 @@ def evaluate_sells(db: Session) -> list:
                         f"recent avg: {stability['avg_score']:.0f}")
             continue
 
+        # PARTIAL PROFIT TAKING - let winners run while locking in gains
+        # Only take partial profits if score remains decent (>= 60)
+        partial_taken = getattr(position, 'partial_profit_taken', 0) or 0
+
+        # Check for 50% partial at +40% gain (highest priority partial)
+        if gain_pct >= 40 and score >= 60 and partial_taken < 50:
+            take_pct = 50 - partial_taken  # Take what's left to get to 50%
+            if take_pct > 0:
+                sells.append({
+                    "position": position,
+                    "reason": f"PARTIAL PROFIT 50%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
+                    "priority": 4,
+                    "is_partial": True,
+                    "sell_pct": take_pct
+                })
+                continue  # Don't add more sell signals for this position
+
+        # Check for 25% partial at +25% gain
+        elif gain_pct >= 25 and score >= 60 and partial_taken < 25:
+            sells.append({
+                "position": position,
+                "reason": f"PARTIAL PROFIT 25%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
+                "priority": 5,
+                "is_partial": True,
+                "sell_pct": 25
+            })
+            continue  # Don't add more sell signals for this position
+
         # For winners, use additional score-based logic
         if gain_pct >= 20:
             # If up 20%+, only sell if score is weak AND gains are fading
@@ -639,14 +667,14 @@ def evaluate_sells(db: Session) -> list:
                 sells.append({
                     "position": position,
                     "reason": f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({score:.0f})",
-                    "priority": 4
+                    "priority": 6
                 })
-            # Take partial profits at 40%+ if score is declining
-            elif gain_pct >= config.take_profit_pct and score < purchase_score - 10:
+            # Take full profits at 40%+ if score is declining significantly
+            elif gain_pct >= config.take_profit_pct and score < purchase_score - 15:
                 sells.append({
                     "position": position,
-                    "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining",
-                    "priority": 5
+                    "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly",
+                    "priority": 7
                 })
 
         # For losing or flat positions with weak scores - cut and redeploy capital
@@ -776,27 +804,27 @@ def evaluate_buys(db: Session) -> list:
             if pivot_price > 0:
                 pct_from_pivot = ((pivot_price - stock.current_price) / pivot_price) * 100
 
-            # BREAKOUT STOCKS get highest priority - buying the pivot point
-            if is_breaking_out:
-                breakout_bonus = 25  # Big bonus for confirmed breakouts
-                if breakout_volume_ratio >= 2.0:
-                    breakout_bonus += 10  # Extra bonus for strong volume breakout
-                momentum_score = 30
-
             # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
-            # This is often the BEST entry - before the crowd notices
-            elif has_base and pivot_price > 0 and 5 <= pct_from_pivot <= 15:
-                pre_breakout_bonus = 20  # Big bonus for pre-breakout position
-                momentum_score = 25
+            # This is the BEST entry - optimal risk/reward before the crowd notices
+            if has_base and pivot_price > 0 and 5 <= pct_from_pivot <= 15:
+                pre_breakout_bonus = 30  # Highest bonus for pre-breakout position
+                momentum_score = 30
                 if volume_ratio >= 1.3:
                     pre_breakout_bonus += 5  # Accumulation volume bonus
 
             # AT PIVOT ZONE: 0-5% below pivot with base pattern (ready to break out)
             elif has_base and pivot_price > 0 and 0 <= pct_from_pivot < 5:
-                pre_breakout_bonus = 15  # Good entry near pivot
-                momentum_score = 22
+                pre_breakout_bonus = 25  # Strong bonus near pivot
+                momentum_score = 27
                 if volume_ratio >= 1.5:
                     momentum_score += 5
+
+            # BREAKOUT STOCKS - buying after the pivot point (slightly extended)
+            elif is_breaking_out:
+                breakout_bonus = 20  # Good bonus for confirmed breakouts
+                if breakout_volume_ratio >= 2.0:
+                    breakout_bonus += 10  # Extra bonus for strong volume breakout
+                momentum_score = 25
 
             # EXTENDED: More than 5% above pivot - the easy money is gone (matches backtester)
             elif has_base and pivot_price > 0 and pct_from_pivot < -5:
@@ -843,6 +871,15 @@ def evaluate_buys(db: Session) -> list:
         elif short_interest_pct > 10:
             short_penalty = -2  # Elevated short interest = slight caution
 
+        # MOMENTUM CONFIRMATION: Penalize stocks where recent momentum is fading
+        # If 3-month RS is significantly weaker than 12-month RS, momentum is weakening
+        rs_12m = getattr(stock, 'rs_12m', 1.0) or 1.0
+        rs_3m = getattr(stock, 'rs_3m', 1.0) or 1.0
+        momentum_penalty = 0
+        if rs_12m > 0 and rs_3m < rs_12m * 0.95:
+            # Recent momentum fading - apply 15% penalty to composite
+            momentum_penalty = -0.15
+
         # Calculate composite score with breakout and pre-breakout weighting
         # 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
@@ -856,6 +893,10 @@ def evaluate_buys(db: Session) -> list:
             insider_bonus +
             short_penalty
         )
+
+        # Apply momentum penalty after base composite calculation
+        if momentum_penalty < 0:
+            composite_score *= (1 + momentum_penalty)  # Reduce by 15%
 
         # Skip if composite score is too low
         if composite_score < 25:
@@ -873,11 +914,14 @@ def evaluate_buys(db: Session) -> list:
         conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
         position_pct = 4.0 + (conviction_multiplier * 10.67)  # 4% to ~20%
 
-        # Breakout and pre-breakout stocks get larger positions (high confidence entry)
-        if is_breaking_out and breakout_volume_ratio >= 1.5:
-            position_pct *= 1.25  # 25% larger position for confirmed breakouts
-        elif pre_breakout_bonus >= 15 and has_base:
-            position_pct *= 1.15  # 15% larger for pre-breakout with base
+        # Pre-breakout stocks get largest positions (optimal entry point)
+        # Breakout stocks get smaller boost (slightly extended)
+        if pre_breakout_bonus >= 25 and has_base:
+            position_pct *= 1.30  # 30% larger for pre-breakout with base (best entry)
+        elif pre_breakout_bonus >= 20 and has_base:
+            position_pct *= 1.20  # 20% larger for at-pivot entries
+        elif is_breaking_out and breakout_volume_ratio >= 1.5:
+            position_pct *= 1.15  # 15% larger position for confirmed breakouts
 
         # Apply correlation penalty
         position_pct *= correlation_penalty
@@ -1041,37 +1085,85 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
         for sell in sells:
             position = sell["position"]
+            is_partial = sell.get("is_partial", False)
+            sell_pct = sell.get("sell_pct", 100)
 
-            # Execute the sell with both scores
-            execute_trade(
-                db=db,
-                ticker=position.ticker,
-                action="SELL",
-                shares=position.shares,
-                price=position.current_price,
-                reason=sell["reason"],
-                score=position.current_score,
-                growth_score=position.current_growth_score,
-                is_growth_stock=position.is_growth_stock or False,
-                cost_basis=position.cost_basis,
-                realized_gain=position.gain_loss
-            )
+            if is_partial:
+                # PARTIAL SELL - only sell a percentage of shares
+                shares_to_sell = position.shares * (sell_pct / 100)
+                value_to_sell = shares_to_sell * position.current_price
+                realized_gain = (position.current_price - position.cost_basis) * shares_to_sell
 
-            # Add cash back
-            config.current_cash += position.current_value
+                # Execute partial sell
+                execute_trade(
+                    db=db,
+                    ticker=position.ticker,
+                    action="SELL",
+                    shares=shares_to_sell,
+                    price=position.current_price,
+                    reason=sell["reason"],
+                    score=position.current_score,
+                    growth_score=position.current_growth_score,
+                    is_growth_stock=position.is_growth_stock or False,
+                    cost_basis=position.cost_basis,
+                    realized_gain=realized_gain
+                )
 
-            # Remove position
-            db.delete(position)
-            position_count -= 1
+                # Add partial cash back
+                config.current_cash += value_to_sell
 
-            results["sells_executed"].append({
-                "ticker": position.ticker,
-                "shares": position.shares,
-                "price": position.current_price,
-                "gain_loss": position.gain_loss,
-                "is_growth_stock": position.is_growth_stock or False,
-                "reason": sell["reason"]
-            })
+                # Update position (reduce shares, track partial profit taken)
+                position.shares -= shares_to_sell
+                position.current_value = position.shares * position.current_price
+                position.gain_loss = position.current_value - (position.shares * position.cost_basis)
+
+                # Track cumulative partial profit percentage taken
+                current_partial = getattr(position, 'partial_profit_taken', 0) or 0
+                position.partial_profit_taken = current_partial + sell_pct
+
+                logger.info(f"PARTIAL SELL {position.ticker}: {sell_pct}% ({shares_to_sell:.2f} shares) @ ${position.current_price:.2f}")
+
+                results["sells_executed"].append({
+                    "ticker": position.ticker,
+                    "shares": shares_to_sell,
+                    "price": position.current_price,
+                    "gain_loss": realized_gain,
+                    "is_growth_stock": position.is_growth_stock or False,
+                    "reason": sell["reason"],
+                    "is_partial": True,
+                    "remaining_shares": position.shares
+                })
+            else:
+                # FULL SELL - sell entire position
+                execute_trade(
+                    db=db,
+                    ticker=position.ticker,
+                    action="SELL",
+                    shares=position.shares,
+                    price=position.current_price,
+                    reason=sell["reason"],
+                    score=position.current_score,
+                    growth_score=position.current_growth_score,
+                    is_growth_stock=position.is_growth_stock or False,
+                    cost_basis=position.cost_basis,
+                    realized_gain=position.gain_loss
+                )
+
+                # Add cash back
+                config.current_cash += position.current_value
+
+                # Remove position
+                db.delete(position)
+                position_count -= 1
+
+                results["sells_executed"].append({
+                    "ticker": position.ticker,
+                    "shares": position.shares,
+                    "price": position.current_price,
+                    "gain_loss": position.gain_loss,
+                    "is_growth_stock": position.is_growth_stock or False,
+                    "reason": sell["reason"]
+                })
 
         db.commit()
 

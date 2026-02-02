@@ -38,6 +38,7 @@ class SimulatedPosition:
     peak_date: date
     is_growth_stock: bool = False
     sector: str = ""
+    partial_profit_taken: float = 0.0  # Cumulative % of position sold as partial profits
 
 
 @dataclass
@@ -51,6 +52,8 @@ class SimulatedTrade:
     score: float = 0.0
     priority: int = 0
     is_growth_stock: bool = False
+    is_partial: bool = False  # Whether this is a partial sell
+    sell_pct: float = 100.0  # Percentage to sell (for partial sells)
 
 
 class BacktestEngine:
@@ -71,6 +74,9 @@ class BacktestEngine:
         # In-memory portfolio state
         self.cash: float = self.backtest.starting_cash
         self.positions: Dict[str, SimulatedPosition] = {}
+
+        # Score history for stability checks (prevent selling on single score blips)
+        self.score_history: Dict[str, List[float]] = {}
 
         # Static data cache (sector, earnings, etc. from database)
         self.static_data: Dict[str, dict] = {}
@@ -524,9 +530,74 @@ class BacktestEngine:
 
         return scores
 
+    def _update_score_history(self, ticker: str, score: float):
+        """Track score history for stability checks"""
+        if ticker not in self.score_history:
+            self.score_history[ticker] = []
+        self.score_history[ticker].append(score)
+        # Keep last 5 scores (about 5 trading days worth)
+        if len(self.score_history[ticker]) > 5:
+            self.score_history[ticker] = self.score_history[ticker][-5:]
+
+    def _check_score_stability(self, ticker: str, current_score: float, threshold: float = 50) -> dict:
+        """
+        Check if a low score is consistent across recent scans (not a one-time blip).
+        Matches ai_trader.py behavior to prevent whipsaw sells.
+
+        Returns:
+            dict with:
+            - is_stable: True if score has been consistently low (not a blip)
+            - recent_scores: list of recent scores
+            - avg_score: average of recent scores
+            - consecutive_low: count of consecutive low scores
+        """
+        history = self.score_history.get(ticker, [])
+
+        if len(history) < 2:
+            # Not enough history, trust current score
+            return {
+                "is_stable": True,
+                "recent_scores": [current_score],
+                "avg_score": current_score,
+                "consecutive_low": 1 if current_score < threshold else 0
+            }
+
+        # Calculate average of recent scores
+        avg_score = sum(history) / len(history)
+
+        # Count consecutive low scores from most recent
+        consecutive_low = 0
+        for score in reversed(history):
+            if score < threshold:
+                consecutive_low += 1
+            else:
+                break
+
+        # Check if current score is significantly lower than average (potential blip)
+        score_variance = abs(current_score - avg_score)
+
+        # If current score is much lower than recent average, it might be a blip
+        is_blip = (current_score < threshold and
+                   avg_score > threshold + 10 and
+                   score_variance > 15 and
+                   consecutive_low < 2)  # Require 2+ consecutive low scans
+
+        return {
+            "is_stable": not is_blip,
+            "recent_scores": history,
+            "avg_score": avg_score,
+            "consecutive_low": consecutive_low
+        }
+
     def _evaluate_sells(self, current_date: date, scores: Dict[str, dict]) -> List[SimulatedTrade]:
         """Evaluate positions for sells using ai_trader logic"""
         sells = []
+
+        # Update score history for all positions
+        for ticker in self.positions:
+            score_data = scores.get(ticker, {})
+            current_score = score_data.get("total_score", 0)
+            self._update_score_history(ticker, current_score)
 
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
@@ -578,19 +649,74 @@ class BacktestEngine:
                     ))
                     continue
 
-            # Score crash check
+            # Score crash check with stability verification
+            # Require 2+ consecutive low scans to prevent selling on data blips
             score_drop = position.purchase_score - current_score
             if score_drop > 20 and current_score < 50:
+                stability = self._check_score_stability(ticker, current_score, threshold=50)
+
+                if not stability["is_stable"]:
+                    # This looks like a data blip - skip this sell, wait for confirmation
+                    logger.debug(f"{ticker}: SKIPPING SELL - possible blip. "
+                                f"Current: {current_score:.0f}, Avg: {stability['avg_score']:.0f}, "
+                                f"Consecutive low: {stability['consecutive_low']}")
+                    continue
+
+                # Require 2+ consecutive low scores before selling
+                if stability["consecutive_low"] < 2:
+                    logger.debug(f"{ticker}: SKIPPING SELL - only {stability['consecutive_low']} "
+                                f"consecutive low score(s), need 2+")
+                    continue
+
                 sells.append(SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
                     price=price,
-                    reason=f"SCORE CRASH: {position.purchase_score:.0f} -> {current_score:.0f}",
+                    reason=f"SCORE CRASH: {position.purchase_score:.0f} -> {current_score:.0f} "
+                           f"(avg: {stability['avg_score']:.0f}, {stability['consecutive_low']} low scans)",
                     score=current_score,
                     priority=3
                 ))
                 continue
+
+            # PARTIAL PROFIT TAKING - let winners run while locking in gains
+            # Only take partial profits if score remains decent (>= 60)
+            partial_taken = position.partial_profit_taken
+
+            # Check for 50% partial at +40% gain (highest priority partial)
+            if gain_pct >= 40 and current_score >= 60 and partial_taken < 50:
+                take_pct = 50 - partial_taken  # Take what's left to get to 50%
+                if take_pct > 0:
+                    shares_to_sell = position.shares * (take_pct / 100)
+                    sells.append(SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=shares_to_sell,
+                        price=price,
+                        reason=f"PARTIAL PROFIT 50%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
+                        score=current_score,
+                        priority=4,
+                        is_partial=True,
+                        sell_pct=take_pct
+                    ))
+                    continue  # Don't add more sell signals for this position
+
+            # Check for 25% partial at +25% gain
+            elif gain_pct >= 25 and current_score >= 60 and partial_taken < 25:
+                shares_to_sell = position.shares * 0.25
+                sells.append(SimulatedTrade(
+                    ticker=ticker,
+                    action="SELL",
+                    shares=shares_to_sell,
+                    price=price,
+                    reason=f"PARTIAL PROFIT 25%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
+                    score=current_score,
+                    priority=5,
+                    is_partial=True,
+                    sell_pct=25
+                ))
+                continue  # Don't add more sell signals for this position
 
             # Protect gains - winners with weak scores
             if gain_pct >= 20 and current_score < self.backtest.sell_score_threshold:
@@ -601,7 +727,7 @@ class BacktestEngine:
                     price=price,
                     reason=f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({current_score:.0f})",
                     score=current_score,
-                    priority=4
+                    priority=6
                 ))
                 continue
 
@@ -692,27 +818,27 @@ class BacktestEngine:
                 elif weeks_in_base >= 5:
                     base_quality_bonus += 1
 
-            # BREAKOUT STOCKS get highest priority - buying the pivot point
-            if is_breaking_out:
-                breakout_bonus = 25  # Big bonus for confirmed breakouts
-                if volume_ratio >= 2.0:
-                    breakout_bonus += 10  # Extra bonus for strong volume breakout
-                momentum_score = 30
-
             # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
-            # This is often the BEST entry - before the crowd notices
-            elif has_base and 5 <= pct_from_pivot <= 15:
-                pre_breakout_bonus = 20  # Big bonus for pre-breakout position
-                momentum_score = 25
+            # This is the BEST entry - optimal risk/reward before the crowd notices
+            if has_base and 5 <= pct_from_pivot <= 15:
+                pre_breakout_bonus = 30  # Highest bonus for pre-breakout position
+                momentum_score = 30
                 if volume_ratio >= 1.3:
                     pre_breakout_bonus += 5  # Accumulation volume bonus
 
-            # AT PIVOT: 0-5% from pivot with base pattern
+            # AT PIVOT ZONE: 0-5% below pivot with base pattern (ready to break out)
             elif has_base and 0 <= pct_from_pivot < 5:
-                pre_breakout_bonus = 15  # Good entry near pivot
-                momentum_score = 22
+                pre_breakout_bonus = 25  # Strong bonus near pivot
+                momentum_score = 27
                 if volume_ratio >= 1.5:
                     momentum_score += 5
+
+            # BREAKOUT STOCKS - buying after the pivot point (slightly extended)
+            elif is_breaking_out:
+                breakout_bonus = 20  # Good bonus for confirmed breakouts
+                if volume_ratio >= 2.0:
+                    breakout_bonus += 10  # Extra bonus for strong volume breakout
+                momentum_score = 25
 
             # EXTENDED: More than 5% above pivot - the easy money is gone
             elif pct_from_pivot < -5:
@@ -741,6 +867,15 @@ class BacktestEngine:
                 else:
                     momentum_score = -5
 
+            # MOMENTUM CONFIRMATION: Penalize stocks where recent momentum is fading
+            # If 3-month RS is significantly weaker than 12-month RS, momentum is weakening
+            rs_12m = score_data.get("rs_12m", 1.0)
+            rs_3m = score_data.get("rs_3m", 1.0)
+            momentum_penalty = 0
+            if rs_12m > 0 and rs_3m < rs_12m * 0.95:
+                # Recent momentum fading - apply 15% penalty to composite
+                momentum_penalty = -0.15
+
             # Composite score: 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
             growth_projection = min(score_data.get("projected_growth", score * 0.3), 50)
             composite_score = (
@@ -752,6 +887,10 @@ class BacktestEngine:
                 extended_penalty
             )
 
+            # Apply momentum penalty after base composite calculation
+            if momentum_penalty < 0:
+                composite_score *= (1 + momentum_penalty)  # Reduce by 15%
+
             if composite_score < 25:
                 continue
 
@@ -760,11 +899,14 @@ class BacktestEngine:
             position_pct = 4.0 + (conviction_multiplier * 10.67)
             position_pct = min(position_pct, 20.0)
 
-            # Breakout and pre-breakout stocks get larger positions (high confidence entry)
-            if is_breaking_out and volume_ratio >= 1.5:
-                position_pct *= 1.25  # 25% larger position for confirmed breakouts
-            elif pre_breakout_bonus >= 15 and has_base:
-                position_pct *= 1.15  # 15% larger for pre-breakout with base
+            # Pre-breakout stocks get largest positions (optimal entry point)
+            # Breakout stocks get smaller boost (slightly extended)
+            if pre_breakout_bonus >= 25 and has_base:
+                position_pct *= 1.30  # 30% larger for pre-breakout with base (best entry)
+            elif pre_breakout_bonus >= 20 and has_base:
+                position_pct *= 1.20  # 20% larger for at-pivot entries
+            elif is_breaking_out and volume_ratio >= 1.5:
+                position_pct *= 1.15  # 15% larger position for confirmed breakouts
 
             position_value = portfolio_value * (position_pct / 100)
 
@@ -918,17 +1060,27 @@ class BacktestEngine:
         self.trades_executed += 1
 
     def _execute_sell(self, current_date: date, trade: SimulatedTrade):
-        """Execute a sell trade"""
+        """Execute a sell trade (full or partial)"""
         if trade.ticker not in self.positions:
             return
 
         position = self.positions[trade.ticker]
-        total_value = trade.shares * trade.price
         cost_basis = position.cost_basis
+        total_value = trade.shares * trade.price
         realized_gain = total_value - (trade.shares * cost_basis)
 
         self.cash += total_value
-        del self.positions[trade.ticker]
+
+        if trade.is_partial:
+            # PARTIAL SELL - reduce position but don't delete
+            position.shares -= trade.shares
+            position.partial_profit_taken += trade.sell_pct
+
+            logger.debug(f"PARTIAL SELL {trade.ticker}: {trade.sell_pct}% "
+                        f"({trade.shares:.2f} shares), remaining: {position.shares:.2f}")
+        else:
+            # FULL SELL - remove position entirely
+            del self.positions[trade.ticker]
 
         self._record_trade(
             current_date, trade,

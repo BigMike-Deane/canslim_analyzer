@@ -47,10 +47,35 @@ class CANSLIMScorer:
         'M': 15,
     }
 
+    # Sector-adjusted growth thresholds
+    # A 20% growth for Industrial is excellent; for Tech it's mediocre
+    SECTOR_GROWTH_THRESHOLDS = {
+        'Technology': {'excellent': 30, 'good': 20},
+        'Communication Services': {'excellent': 25, 'good': 18},
+        'Consumer Discretionary': {'excellent': 25, 'good': 18},
+        'Healthcare': {'excellent': 25, 'good': 15},
+        'Financials': {'excellent': 20, 'good': 12},
+        'Industrials': {'excellent': 20, 'good': 12},
+        'Consumer Staples': {'excellent': 15, 'good': 10},
+        'Materials': {'excellent': 18, 'good': 12},
+        'Energy': {'excellent': 18, 'good': 10},
+        'Real Estate': {'excellent': 15, 'good': 10},
+        'Utilities': {'excellent': 12, 'good': 8},
+        # Default for unknown sectors
+        'default': {'excellent': 25, 'good': 15},
+    }
+
     def __init__(self, data_fetcher: DataFetcher):
         self.fetcher = data_fetcher
         self._market_score: float | None = None
         self._market_detail: str = ""
+
+    def _get_sector_thresholds(self, sector: str) -> dict:
+        """Get growth thresholds for a given sector"""
+        return self.SECTOR_GROWTH_THRESHOLDS.get(
+            sector,
+            self.SECTOR_GROWTH_THRESHOLDS['default']
+        )
 
     def score_stock(self, stock_data: StockData) -> CANSLIMScore:
         """Calculate complete CANSLIM score for a stock"""
@@ -85,7 +110,7 @@ class CANSLIMScorer:
         """
         max_score = self.MAX_SCORES['C']
         base_max = 10  # Base score for TTM growth
-        accel_max = 3  # Bonus for acceleration
+        accel_max = 5  # Bonus for acceleration (increased from 3 - strong predictor)
         surprise_max = 2  # Bonus for earnings surprise
 
         # Filter out None values from earnings
@@ -132,11 +157,21 @@ class CANSLIMScorer:
             else:
                 ttm_growth = max(-100, min(200, ttm_growth))
 
-        # Base score from TTM growth (up to 10 pts)
-        if ttm_growth >= 25:
+        # Get sector-adjusted thresholds
+        sector = getattr(data, 'sector', None) or 'default'
+        thresholds = self._get_sector_thresholds(sector)
+        excellent_threshold = thresholds['excellent']
+        good_threshold = thresholds['good']
+
+        # Base score from TTM growth (up to 10 pts) - sector adjusted
+        if ttm_growth >= excellent_threshold:
             base_score = base_max
+        elif ttm_growth >= good_threshold:
+            # Scale between good and excellent
+            range_pct = (ttm_growth - good_threshold) / (excellent_threshold - good_threshold)
+            base_score = base_max * (0.6 + 0.4 * range_pct)
         elif ttm_growth >= 0:
-            base_score = (ttm_growth / 25) * base_max
+            base_score = (ttm_growth / good_threshold) * base_max * 0.6
         else:
             base_score = max(0, (1 + ttm_growth / 50) * base_max * 0.3)
 
@@ -272,11 +307,21 @@ class CANSLIMScorer:
 
         cagr = ((recent / older) ** (1 / 3) - 1) * 100
 
-        # Base score from CAGR (up to 12 pts)
-        if cagr >= 25:
+        # Get sector-adjusted thresholds
+        sector = getattr(data, 'sector', None) or 'default'
+        thresholds = self._get_sector_thresholds(sector)
+        excellent_threshold = thresholds['excellent']
+        good_threshold = thresholds['good']
+
+        # Base score from CAGR (up to 12 pts) - sector adjusted
+        if cagr >= excellent_threshold:
             cagr_score = cagr_max
+        elif cagr >= good_threshold:
+            # Scale between good and excellent
+            range_pct = (cagr - good_threshold) / (excellent_threshold - good_threshold)
+            cagr_score = cagr_max * (0.6 + 0.4 * range_pct)
         elif cagr >= 0:
-            cagr_score = (cagr / 25) * cagr_max
+            cagr_score = (cagr / good_threshold) * cagr_max * 0.6
         else:
             cagr_score = 0
 
@@ -499,7 +544,8 @@ class CANSLIMScorer:
     def _score_institutional(self, data: StockData) -> tuple[float, str]:
         """
         I - Institutional Ownership (10 pts max)
-        Sweet spot: 20-60% institutional ownership
+        Sweet spot: 25-75% institutional ownership (expanded from 20-60%)
+        Many quality growth stocks have 60-75% institutional ownership.
         """
         max_score = self.MAX_SCORES['I']
         inst_pct = data.institutional_holders_pct
@@ -509,17 +555,17 @@ class CANSLIMScorer:
             # Most large-cap stocks have 40-80% institutional ownership
             return max_score * 0.5, "No data (neutral)"
 
-        # Ideal range is 20-60%
-        if 20 <= inst_pct <= 60:
+        # Ideal range is 25-75% (expanded to include more quality growth stocks)
+        if 25 <= inst_pct <= 75:
             score = max_score
-        elif 10 <= inst_pct < 20:
+        elif 15 <= inst_pct < 25:
             score = max_score * 0.7
-        elif 60 < inst_pct <= 80:
+        elif 75 < inst_pct <= 85:
             score = max_score * 0.7
-        elif inst_pct < 10:
+        elif inst_pct < 15:
             score = max_score * 0.3  # Too little institutional interest
         else:
-            score = max_score * 0.4  # Too crowded
+            score = max_score * 0.4  # Too crowded (>85%)
 
         return round(score, 1), f"{inst_pct:.0f}% inst."
 
