@@ -10,7 +10,9 @@ from typing import List, Dict
 from async_data_fetcher import (
     fetch_stocks_batch_async,
     fetch_insider_trading_async,
-    fetch_short_interest_async
+    fetch_short_interest_async,
+    fetch_fmp_earnings_calendar_async,
+    fetch_fmp_analyst_estimates_async
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,76 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
     return results
 
 
+async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
+    """
+    Batch fetch P1 feature data: earnings calendar and analyst estimates.
+    Respects freshness intervals to avoid redundant API calls.
+
+    Returns dict mapping ticker -> {earnings_calendar, analyst_estimates}
+    """
+    from data_fetcher import is_data_fresh, mark_data_fetched, get_cached_data, set_cached_data
+
+    results = {}
+    earnings_tasks = []
+    estimates_tasks = []
+    tickers_needing_earnings = []
+    tickers_needing_estimates = []
+
+    # Check which tickers need fresh data
+    for ticker in tickers:
+        results[ticker] = {"earnings_calendar": {}, "analyst_estimates": {}}
+
+        # Check earnings calendar freshness (7 days)
+        if not is_data_fresh(ticker, "earnings_calendar"):
+            tickers_needing_earnings.append(ticker)
+            earnings_tasks.append(fetch_fmp_earnings_calendar_async(ticker))
+        else:
+            cached = get_cached_data(ticker, "earnings_calendar")
+            if cached:
+                results[ticker]["earnings_calendar"] = cached
+
+        # Check analyst estimates freshness (3 days)
+        if not is_data_fresh(ticker, "analyst_estimates"):
+            tickers_needing_estimates.append(ticker)
+            estimates_tasks.append(fetch_fmp_analyst_estimates_async(ticker))
+        else:
+            cached = get_cached_data(ticker, "analyst_estimates")
+            if cached:
+                results[ticker]["analyst_estimates"] = cached
+
+    # Fetch earnings calendar data in parallel
+    if earnings_tasks:
+        logger.info(f"Fetching earnings calendar for {len(earnings_tasks)} tickers...")
+        BATCH_SIZE = 20  # FMP rate limit friendly
+        for i in range(0, len(earnings_tasks), BATCH_SIZE):
+            batch = earnings_tasks[i:i + BATCH_SIZE]
+            batch_tickers = tickers_needing_earnings[i:i + BATCH_SIZE]
+            earnings_results = await asyncio.gather(*batch, return_exceptions=True)
+            for ticker, data in zip(batch_tickers, earnings_results):
+                if isinstance(data, dict) and data:
+                    results[ticker]["earnings_calendar"] = data
+                    mark_data_fetched(ticker, "earnings_calendar")
+                    set_cached_data(ticker, "earnings_calendar", data, persist_to_db=False)
+            await asyncio.sleep(0.3)  # Small delay between batches
+
+    # Fetch analyst estimates in parallel
+    if estimates_tasks:
+        logger.info(f"Fetching analyst estimates for {len(estimates_tasks)} tickers...")
+        BATCH_SIZE = 20
+        for i in range(0, len(estimates_tasks), BATCH_SIZE):
+            batch = estimates_tasks[i:i + BATCH_SIZE]
+            batch_tickers = tickers_needing_estimates[i:i + BATCH_SIZE]
+            estimates_results = await asyncio.gather(*batch, return_exceptions=True)
+            for ticker, data in zip(batch_tickers, estimates_results):
+                if isinstance(data, dict) and data:
+                    results[ticker]["analyst_estimates"] = data
+                    mark_data_fetched(ticker, "analyst_estimates")
+                    set_cached_data(ticker, "analyst_estimates", data, persist_to_db=False)
+            await asyncio.sleep(0.3)
+
+    return results
+
+
 async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progress_callback=None) -> List[Dict]:
     """
     Analyze multiple stocks asynchronously
@@ -118,9 +190,12 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
     # Fetch insider/short data for all valid tickers (uses Yahoo Finance)
     valid_tickers = [sd.ticker for sd in stock_data_list if sd and sd.is_valid]
     insider_short_data = {}
+    p1_data = {}
 
     if valid_tickers:
         insider_short_data = await fetch_insider_short_batch_async(valid_tickers)
+        # P1 Features: Fetch earnings calendar and analyst estimates
+        p1_data = await fetch_p1_data_batch_async(valid_tickers)
 
     # Now analyze each stock (this is fast, no API calls)
     data_fetcher = DataFetcher()
@@ -156,6 +231,11 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             ticker_supplemental = insider_short_data.get(stock_data.ticker, {})
             insider_data = ticker_supplemental.get("insider", {})
             short_data = ticker_supplemental.get("short", {})
+
+            # Get P1 feature data for this ticker
+            ticker_p1 = p1_data.get(stock_data.ticker, {})
+            earnings_calendar_data = ticker_p1.get("earnings_calendar", {})
+            analyst_estimates_data = ticker_p1.get("analyst_estimates", {})
 
             # Calculate revenue growth
             revenue_growth_pct = None
@@ -255,6 +335,21 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "insider_sentiment": insider_data.get("sentiment"),
                 "short_interest_pct": short_data.get("short_interest_pct"),
                 "short_ratio": short_data.get("short_ratio"),
+                # P1 Feature: Insider Value Tracking
+                "insider_buy_value": insider_data.get("buy_value"),
+                "insider_sell_value": insider_data.get("sell_value"),
+                "insider_net_value": insider_data.get("net_value"),
+                "insider_largest_buy": insider_data.get("largest_buy"),
+                "insider_largest_buyer_title": insider_data.get("largest_buyer_title"),
+                # P1 Feature: Earnings Calendar
+                "next_earnings_date": earnings_calendar_data.get("next_earnings_date"),
+                "days_to_earnings": earnings_calendar_data.get("days_to_earnings"),
+                "earnings_beat_streak": earnings_calendar_data.get("earnings_beat_streak"),
+                # P1 Feature: Analyst Estimate Revisions
+                "eps_estimate_current": analyst_estimates_data.get("eps_estimate_current"),
+                "eps_estimate_prior": analyst_estimates_data.get("eps_estimate_prior"),
+                "eps_estimate_revision_pct": analyst_estimates_data.get("eps_estimate_revision_pct"),
+                "estimate_revision_trend": analyst_estimates_data.get("estimate_revision_trend"),
             }
 
             results.append(result)
