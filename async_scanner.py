@@ -98,11 +98,10 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
 
     Returns dict mapping ticker -> {earnings_calendar, analyst_estimates}
     """
+    import aiohttp
     from data_fetcher import is_data_fresh, mark_data_fetched, get_cached_data, set_cached_data
 
     results = {}
-    earnings_tasks = []
-    estimates_tasks = []
     tickers_needing_earnings = []
     tickers_needing_estimates = []
 
@@ -113,7 +112,6 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
         # Check earnings calendar freshness (7 days)
         if not is_data_fresh(ticker, "earnings_calendar"):
             tickers_needing_earnings.append(ticker)
-            earnings_tasks.append(fetch_fmp_earnings_calendar_async(ticker))
         else:
             cached = get_cached_data(ticker, "earnings_calendar")
             if cached:
@@ -122,41 +120,43 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
         # Check analyst estimates freshness (3 days)
         if not is_data_fresh(ticker, "analyst_estimates"):
             tickers_needing_estimates.append(ticker)
-            estimates_tasks.append(fetch_fmp_analyst_estimates_async(ticker))
         else:
             cached = get_cached_data(ticker, "analyst_estimates")
             if cached:
                 results[ticker]["analyst_estimates"] = cached
 
-    # Fetch earnings calendar data in parallel
-    if earnings_tasks:
-        logger.info(f"Fetching earnings calendar for {len(earnings_tasks)} tickers...")
-        BATCH_SIZE = 20  # FMP rate limit friendly
-        for i in range(0, len(earnings_tasks), BATCH_SIZE):
-            batch = earnings_tasks[i:i + BATCH_SIZE]
-            batch_tickers = tickers_needing_earnings[i:i + BATCH_SIZE]
-            earnings_results = await asyncio.gather(*batch, return_exceptions=True)
-            for ticker, data in zip(batch_tickers, earnings_results):
-                if isinstance(data, dict) and data:
-                    results[ticker]["earnings_calendar"] = data
-                    mark_data_fetched(ticker, "earnings_calendar")
-                    set_cached_data(ticker, "earnings_calendar", data, persist_to_db=False)
-            await asyncio.sleep(0.3)  # Small delay between batches
+    # Create aiohttp session for FMP API calls
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Fetch earnings calendar data in parallel
+        if tickers_needing_earnings:
+            logger.info(f"Fetching earnings calendar for {len(tickers_needing_earnings)} tickers...")
+            BATCH_SIZE = 20  # FMP rate limit friendly
+            for i in range(0, len(tickers_needing_earnings), BATCH_SIZE):
+                batch_tickers = tickers_needing_earnings[i:i + BATCH_SIZE]
+                tasks = [fetch_fmp_earnings_calendar_async(session, t) for t in batch_tickers]
+                earnings_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for ticker, data in zip(batch_tickers, earnings_results):
+                    if isinstance(data, dict) and data:
+                        results[ticker]["earnings_calendar"] = data
+                        mark_data_fetched(ticker, "earnings_calendar")
+                        set_cached_data(ticker, "earnings_calendar", data, persist_to_db=False)
+                await asyncio.sleep(0.3)  # Small delay between batches
 
-    # Fetch analyst estimates in parallel
-    if estimates_tasks:
-        logger.info(f"Fetching analyst estimates for {len(estimates_tasks)} tickers...")
-        BATCH_SIZE = 20
-        for i in range(0, len(estimates_tasks), BATCH_SIZE):
-            batch = estimates_tasks[i:i + BATCH_SIZE]
-            batch_tickers = tickers_needing_estimates[i:i + BATCH_SIZE]
-            estimates_results = await asyncio.gather(*batch, return_exceptions=True)
-            for ticker, data in zip(batch_tickers, estimates_results):
-                if isinstance(data, dict) and data:
-                    results[ticker]["analyst_estimates"] = data
-                    mark_data_fetched(ticker, "analyst_estimates")
-                    set_cached_data(ticker, "analyst_estimates", data, persist_to_db=False)
-            await asyncio.sleep(0.3)
+        # Fetch analyst estimates in parallel
+        if tickers_needing_estimates:
+            logger.info(f"Fetching analyst estimates for {len(tickers_needing_estimates)} tickers...")
+            BATCH_SIZE = 20
+            for i in range(0, len(tickers_needing_estimates), BATCH_SIZE):
+                batch_tickers = tickers_needing_estimates[i:i + BATCH_SIZE]
+                tasks = [fetch_fmp_analyst_estimates_async(session, t) for t in batch_tickers]
+                estimates_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for ticker, data in zip(batch_tickers, estimates_results):
+                    if isinstance(data, dict) and data:
+                        results[ticker]["analyst_estimates"] = data
+                        mark_data_fetched(ticker, "analyst_estimates")
+                        set_cached_data(ticker, "analyst_estimates", data, persist_to_db=False)
+                await asyncio.sleep(0.3)
 
     return results
 
