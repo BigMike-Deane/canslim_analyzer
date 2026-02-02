@@ -128,6 +128,20 @@ def run_migrations():
         except sqlite3.OperationalError:
             pass
 
+    # Create indexes for performance (Feb 2026)
+    indexes = [
+        ("ix_stocks_breaking_out", "stocks", "is_breaking_out, canslim_score"),
+        ("ix_stocks_growth", "stocks", "is_growth_stock, growth_mode_score"),
+    ]
+    for idx_name, table, columns in indexes:
+        try:
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({columns})")
+            logger.info(f"Migration: Created index {idx_name}")
+        except sqlite3.OperationalError as e:
+            logger.debug(f"Index {idx_name} already exists or failed: {e}")
+
+    conn.commit()
+
     # Fix: Remove unique constraint on ai_portfolio_snapshots.date
     # Check if the old unique index exists
     cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='ix_ai_portfolio_snapshots_date' AND sql LIKE '%UNIQUE%'")
@@ -294,6 +308,8 @@ class Stock(Base):
         Index('ix_stocks_canslim', 'canslim_score'),
         Index('ix_stocks_price', 'current_price'),
         Index('ix_stocks_score_price', 'canslim_score', 'current_price'),  # Composite for filtered queries
+        Index('ix_stocks_breaking_out', 'is_breaking_out', 'canslim_score'),  # For breakout queries
+        Index('ix_stocks_growth', 'is_growth_stock', 'growth_mode_score'),  # For growth stock queries
     )
 
 
