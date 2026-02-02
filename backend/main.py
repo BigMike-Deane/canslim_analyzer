@@ -1655,11 +1655,18 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
     # Get tickers we already own (including duplicates like GOOG/GOOGL)
     owned_tickers = expand_tickers_with_duplicates({p.ticker for p in positions})
 
+    # Batch fetch all stocks for positions (avoid N+1 queries)
+    position_tickers = [p.ticker for p in positions]
+    stocks_by_ticker = {}
+    if position_tickers:
+        position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in position_stocks}
+
     actions = []
 
     # === SELL ACTIONS ===
     for p in positions:
-        stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+        stock = stocks_by_ticker.get(p.ticker)
 
         # Use effective score based on stock type
         is_growth = stock.is_growth_stock if stock else False
@@ -2017,10 +2024,17 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
     portfolio = get_portfolio_value(db)
     positions = db.query(AIPortfolioPosition).all()
 
+    # Batch fetch all stocks for positions (avoid N+1 queries)
+    position_tickers = [p.ticker for p in positions]
+    stocks_by_ticker = {}
+    if position_tickers:
+        position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in position_stocks}
+
     # Build positions with stock data for insider/short signals
     positions_data = []
     for p in positions:
-        stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+        stock = stocks_by_ticker.get(p.ticker)
 
         # Calculate trailing stop info
         trailing_stop_info = None
