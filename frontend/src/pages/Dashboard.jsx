@@ -571,7 +571,15 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
               </div>
               <div className="flex justify-between text-xs text-dark-400 mt-1">
                 <span>{scannerStatus.stocks_scanned} / {scannerStatus.total_stocks} stocks</span>
-                <span>{Math.round(scannerStatus.stocks_scanned / scannerStatus.total_stocks * 100)}%</span>
+                <span>
+                  {scannerStatus.last_scan_start && (() => {
+                    const elapsed = Math.floor((Date.now() - new Date(scannerStatus.last_scan_start).getTime()) / 1000);
+                    const mins = Math.floor(elapsed / 60);
+                    const secs = elapsed % 60;
+                    return `${mins}:${secs.toString().padStart(2, '0')} - `;
+                  })()}
+                  {Math.round(scannerStatus.stocks_scanned / scannerStatus.total_stocks * 100)}%
+                </span>
               </div>
             </div>
           )}
