@@ -812,58 +812,77 @@ def fetch_fmp_earnings_surprise(ticker: str) -> dict:
 
 def fetch_fmp_earnings_calendar(ticker: str) -> dict:
     """
-    Fetch earnings calendar data using Yahoo Finance.
-    Returns next earnings date and beat streak from earnings history.
+    Fetch earnings calendar data from FMP.
+    Returns next earnings date and beat streak.
 
-    Uses yfinance:
-    - ticker.calendar for next earnings date
-    - ticker.earnings_history for beat streak calculation
+    Uses FMP /stable/earnings endpoint which has historical epsActual vs epsEstimated.
+    Note: /stable/earnings-calendar only has 1 record per ticker, so we use /stable/earnings
+    which has full historical data for calculating beat streaks.
     """
-    try:
-        import yfinance as yf
-        from datetime import date as date_type
+    if not FMP_API_KEY:
+        return {}
 
-        stock = yf.Ticker(ticker)
+    try:
+        from datetime import date as date_type, timedelta
+
+        # Fetch from FMP earnings (has full historical data for beat streak calculation)
+        url = f"{FMP_BASE_URL}/earnings?symbol={ticker}&apikey={FMP_API_KEY}"
+        resp = _fmp_get(url, timeout=15)
+
+        if resp.status_code != 200:
+            return {}
+
+        all_data = resp.json()
+        if not all_data:
+            return {}
+
+        # Filter for this ticker and sort by date descending
+        data = [item for item in all_data if item.get('symbol') == ticker]
+        data.sort(key=lambda x: x.get('date', ''), reverse=True)
+
+        if not data:
+            return {}
 
         next_earnings_date = None
         days_to_earnings = None
         beat_streak = 0
+        today = date_type.today()
 
-        # Get next earnings date from calendar
-        try:
-            cal = stock.calendar
-            if cal and 'Earnings Date' in cal:
-                earnings_dates = cal['Earnings Date']
-                if earnings_dates:
-                    # Can be a list or single date
-                    if isinstance(earnings_dates, list) and len(earnings_dates) > 0:
-                        next_date = earnings_dates[0]
-                    else:
-                        next_date = earnings_dates
+        # Find next earnings (where epsActual is None) and calculate beat streak
+        for item in data:
+            item_date_str = item.get('date')
+            actual = item.get('epsActual')
+            estimated = item.get('epsEstimated')
 
-                    if isinstance(next_date, date_type):
-                        next_earnings_date = next_date.strftime("%Y-%m-%d")
-                        days_to_earnings = (next_date - date_type.today()).days
-        except Exception as e:
-            logger.debug(f"Error getting calendar for {ticker}: {e}")
+            if not item_date_str:
+                continue
 
-        # Get beat streak from earnings history
-        try:
-            earnings_hist = stock.earnings_history
-            if earnings_hist is not None and not earnings_hist.empty:
-                # Sort by quarter descending (most recent first)
-                earnings_hist = earnings_hist.sort_index(ascending=False)
+            item_date = datetime.strptime(item_date_str, '%Y-%m-%d').date()
 
-                for idx, row in earnings_hist.iterrows():
-                    actual = row.get('epsActual')
-                    estimated = row.get('epsEstimate')
-                    if actual is not None and estimated is not None and estimated > 0:
-                        if actual > estimated:
-                            beat_streak += 1
-                        else:
-                            break  # Stop at first non-beat
-        except Exception as e:
-            logger.debug(f"Error getting earnings history for {ticker}: {e}")
+            # Future earnings (no actual yet)
+            if actual is None and item_date >= today:
+                next_earnings_date = item_date_str
+                days_to_earnings = (item_date - today).days
+                continue
+
+            # Past earnings - calculate beat streak
+            if actual is not None and estimated is not None:
+                if actual > estimated:
+                    beat_streak += 1
+                else:
+                    break  # Stop at first non-beat
+
+        # If no future earnings found, estimate from last earnings date
+        if not next_earnings_date and data:
+            last_date_str = data[0].get('date')
+            if last_date_str:
+                last_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+                # Estimate next earnings ~90 days after last
+                est_next = last_date + timedelta(days=90)
+                while est_next <= today:
+                    est_next += timedelta(days=90)
+                next_earnings_date = est_next.strftime('%Y-%m-%d')
+                days_to_earnings = (est_next - today).days
 
         if next_earnings_date or beat_streak > 0:
             return {
@@ -872,7 +891,7 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
                 "earnings_beat_streak": beat_streak,
             }
     except Exception as e:
-        logger.debug(f"Earnings calendar error for {ticker}: {e}")
+        logger.debug(f"FMP earnings calendar error for {ticker}: {e}")
     return {}
 
 
