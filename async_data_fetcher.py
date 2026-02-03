@@ -535,17 +535,15 @@ async def fetch_fmp_earnings_calendar_async(session: aiohttp.ClientSession, tick
     """
     Async fetch earnings calendar data using Yahoo Finance.
     Returns next earnings date and beat streak from earnings history.
-    Uses executor since yfinance is synchronous.
+    Uses default executor since yfinance is synchronous.
     """
     import asyncio
-    from concurrent.futures import ThreadPoolExecutor
     from data_fetcher import fetch_fmp_earnings_calendar
 
-    # Run sync function in executor to not block event loop
+    # Run sync function in default executor (shared thread pool)
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        result = await loop.run_in_executor(executor, fetch_fmp_earnings_calendar, ticker)
-    return result
+    result = await loop.run_in_executor(None, fetch_fmp_earnings_calendar, ticker)
+    return result or {}
 
 
 async def fetch_fmp_analyst_estimates_async(session: aiohttp.ClientSession, ticker: str) -> dict:
