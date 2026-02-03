@@ -812,85 +812,112 @@ def fetch_fmp_earnings_surprise(ticker: str) -> dict:
 
 def fetch_fmp_earnings_calendar(ticker: str) -> dict:
     """
-    Fetch earnings calendar data from FMP.
-    Returns next earnings date and beat streak from earnings-surprises endpoint.
+    Fetch earnings calendar data using Yahoo Finance.
+    Returns next earnings date and beat streak from earnings history.
 
-    API endpoint: /stable/earnings-surprises?symbol={ticker}
-    The response includes historical earnings with dates, which we use to:
-    1. Find the next expected earnings date
-    2. Count consecutive earnings beats
+    Uses yfinance:
+    - ticker.calendar for next earnings date
+    - ticker.earnings_history for beat streak calculation
     """
-    if not FMP_API_KEY:
-        return {}
-
     try:
-        url = f"{FMP_BASE_URL}/earnings-surprises?symbol={ticker}&apikey={FMP_API_KEY}"
-        resp = _fmp_get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and len(data) > 0:
-                # Find next earnings date
-                # The endpoint returns historical data sorted by date descending
-                # We need to estimate next earnings (~3 months after last)
-                latest_date_str = data[0].get("date", "")
-                next_earnings_date = None
-                days_to_earnings = None
+        import yfinance as yf
+        from datetime import date as date_type
 
-                if latest_date_str:
-                    try:
-                        from datetime import timedelta
-                        latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
-                        # Estimate next earnings ~90 days after last
-                        next_earnings_date = latest_date + timedelta(days=90)
-                        # If estimated date is in the past, add another quarter
-                        while next_earnings_date < datetime.now():
-                            next_earnings_date += timedelta(days=90)
-                        days_to_earnings = (next_earnings_date - datetime.now()).days
-                    except ValueError:
-                        pass
+        stock = yf.Ticker(ticker)
 
-                # Count consecutive beats (already done in earnings_surprise, reuse logic)
-                beat_streak = 0
-                for record in data[:8]:
-                    estimated = record.get("estimatedEarning", 0)
-                    actual = record.get("actualEarningResult", 0)
-                    if estimated and actual and actual > estimated:
-                        beat_streak += 1
+        next_earnings_date = None
+        days_to_earnings = None
+        beat_streak = 0
+
+        # Get next earnings date from calendar
+        try:
+            cal = stock.calendar
+            if cal and 'Earnings Date' in cal:
+                earnings_dates = cal['Earnings Date']
+                if earnings_dates:
+                    # Can be a list or single date
+                    if isinstance(earnings_dates, list) and len(earnings_dates) > 0:
+                        next_date = earnings_dates[0]
                     else:
-                        break
+                        next_date = earnings_dates
 
-                return {
-                    "next_earnings_date": next_earnings_date.strftime("%Y-%m-%d") if next_earnings_date else None,
-                    "days_to_earnings": days_to_earnings,
-                    "beat_streak": beat_streak,
-                }
+                    if isinstance(next_date, date_type):
+                        next_earnings_date = next_date.strftime("%Y-%m-%d")
+                        days_to_earnings = (next_date - date_type.today()).days
+        except Exception as e:
+            logger.debug(f"Error getting calendar for {ticker}: {e}")
+
+        # Get beat streak from earnings history
+        try:
+            earnings_hist = stock.earnings_history
+            if earnings_hist is not None and not earnings_hist.empty:
+                # Sort by quarter descending (most recent first)
+                earnings_hist = earnings_hist.sort_index(ascending=False)
+
+                for idx, row in earnings_hist.iterrows():
+                    actual = row.get('epsActual')
+                    estimated = row.get('epsEstimate')
+                    if actual is not None and estimated is not None and estimated > 0:
+                        if actual > estimated:
+                            beat_streak += 1
+                        else:
+                            break  # Stop at first non-beat
+        except Exception as e:
+            logger.debug(f"Error getting earnings history for {ticker}: {e}")
+
+        if next_earnings_date or beat_streak > 0:
+            return {
+                "next_earnings_date": next_earnings_date,
+                "days_to_earnings": days_to_earnings,
+                "earnings_beat_streak": beat_streak,
+            }
     except Exception as e:
-        logger.debug(f"FMP earnings calendar error for {ticker}: {e}")
+        logger.debug(f"Earnings calendar error for {ticker}: {e}")
     return {}
 
 
 def fetch_fmp_analyst_estimates(ticker: str) -> dict:
     """
     Fetch analyst estimate revisions from FMP.
-    Compares current period estimate to prior period to detect revisions.
+    Compares current fiscal year estimate to prior year for revision tracking.
 
-    API endpoint: /stable/analyst-estimates?symbol={ticker}&limit=2
+    API endpoint: /stable/analyst-estimates?symbol={ticker}&period=annual
     Returns: current estimate, prior estimate, revision %, and trend
     """
     if not FMP_API_KEY:
         return {}
 
     try:
-        url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
+        # Use period=annual (period=quarter requires premium)
+        url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&period=annual&apikey={FMP_API_KEY}"
         resp = _fmp_get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            if data and len(data) >= 1:
-                current = data[0]
-                prior = data[1] if len(data) > 1 else None
+            if data and len(data) >= 2:
+                # Find current year and prior year estimates
+                from datetime import date
+                current_year = date.today().year
 
-                current_eps = current.get("estimatedEpsAvg", 0) or 0
-                prior_eps = prior.get("estimatedEpsAvg", 0) if prior else 0
+                current = None
+                prior = None
+
+                for item in data:
+                    item_date = item.get("date", "")
+                    if item_date:
+                        item_year = int(item_date[:4])
+                        if item_year == current_year and current is None:
+                            current = item
+                        elif item_year == current_year - 1 and prior is None:
+                            prior = item
+
+                if not current:
+                    current = data[0]  # Fallback to first record
+                if not prior:
+                    prior = data[1] if len(data) > 1 else None
+
+                # Use epsAvg (not estimatedEpsAvg) based on actual API response
+                current_eps = current.get("epsAvg", 0) or 0
+                prior_eps = prior.get("epsAvg", 0) if prior else 0
 
                 # Calculate revision percentage
                 revision_pct = 0

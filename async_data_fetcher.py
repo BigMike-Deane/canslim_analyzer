@@ -533,68 +533,57 @@ async def fetch_fmp_earnings_surprise_async(session: aiohttp.ClientSession, tick
 
 async def fetch_fmp_earnings_calendar_async(session: aiohttp.ClientSession, ticker: str) -> dict:
     """
-    Async fetch earnings calendar data from FMP.
-    Returns next earnings date and beat streak.
+    Async fetch earnings calendar data using Yahoo Finance.
+    Returns next earnings date and beat streak from earnings history.
+    Uses executor since yfinance is synchronous.
     """
-    if not FMP_API_KEY:
-        return {}
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from data_fetcher import fetch_fmp_earnings_calendar
 
-    url = f"{FMP_BASE_URL}/earnings-surprises?symbol={ticker}&apikey={FMP_API_KEY}"
-    data = await fetch_json_async(session, url)
-
-    if data and len(data) > 0:
-        # Find next earnings date
-        latest_date_str = data[0].get("date", "")
-        next_earnings_date = None
-        days_to_earnings = None
-
-        if latest_date_str:
-            try:
-                latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
-                # Estimate next earnings ~90 days after last
-                next_earnings_date = latest_date + timedelta(days=90)
-                # If estimated date is in the past, add another quarter
-                while next_earnings_date < datetime.now():
-                    next_earnings_date += timedelta(days=90)
-                days_to_earnings = (next_earnings_date - datetime.now()).days
-            except ValueError:
-                pass
-
-        # Count consecutive beats
-        beat_streak = 0
-        for record in data[:8]:
-            estimated = record.get("estimatedEarning", 0)
-            actual = record.get("actualEarningResult", 0)
-            if estimated and actual and actual > estimated:
-                beat_streak += 1
-            else:
-                break
-
-        return {
-            "next_earnings_date": next_earnings_date.strftime("%Y-%m-%d") if next_earnings_date else None,
-            "days_to_earnings": days_to_earnings,
-            "beat_streak": beat_streak,
-        }
-    return {}
+    # Run sync function in executor to not block event loop
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = await loop.run_in_executor(executor, fetch_fmp_earnings_calendar, ticker)
+    return result
 
 
 async def fetch_fmp_analyst_estimates_async(session: aiohttp.ClientSession, ticker: str) -> dict:
     """
     Async fetch analyst estimate revisions from FMP.
-    Compares current period estimate to prior period to detect revisions.
+    Compares current fiscal year estimate to prior year for revision tracking.
+    Uses period=annual (period=quarter requires premium).
     """
     if not FMP_API_KEY:
         return {}
 
-    url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
+    url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&period=annual&apikey={FMP_API_KEY}"
     data = await fetch_json_async(session, url)
 
-    if data and len(data) >= 1:
-        current = data[0]
-        prior = data[1] if len(data) > 1 else None
+    if data and len(data) >= 2:
+        from datetime import date
+        current_year = date.today().year
 
-        current_eps = current.get("estimatedEpsAvg", 0) or 0
-        prior_eps = prior.get("estimatedEpsAvg", 0) if prior else 0
+        current = None
+        prior = None
+
+        for item in data:
+            item_date = item.get("date", "")
+            if item_date:
+                item_year = int(item_date[:4])
+                if item_year == current_year and current is None:
+                    current = item
+                elif item_year == current_year - 1 and prior is None:
+                    prior = item
+
+        if not current:
+            current = data[0]
+        if not prior:
+            prior = data[1] if len(data) > 1 else None
+
+        # Use epsAvg (not estimatedEpsAvg) based on actual API response
+        current_eps = current.get("epsAvg", 0) or 0
+        prior_eps = prior.get("epsAvg", 0) if prior else 0
 
         # Calculate revision percentage
         revision_pct = 0
@@ -611,7 +600,7 @@ async def fetch_fmp_analyst_estimates_async(session: aiohttp.ClientSession, tick
             "eps_estimate_prior": prior_eps,
             "eps_estimate_revision_pct": round(revision_pct, 2),
             "estimate_revision_trend": trend,
-            "num_analysts": current.get("numberAnalystsEstimatedEps", 0),
+            "num_analysts": current.get("numAnalystsEps", 0),
         }
     return {}
 
