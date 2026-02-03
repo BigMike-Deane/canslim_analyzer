@@ -195,7 +195,14 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
     if valid_tickers:
         insider_short_data = await fetch_insider_short_batch_async(valid_tickers)
         # P1 Features: Fetch earnings calendar and analyst estimates
-        p1_data = await fetch_p1_data_batch_async(valid_tickers)
+        try:
+            logger.info(f"Starting P1 data fetch for {len(valid_tickers)} tickers...")
+            p1_data = await fetch_p1_data_batch_async(valid_tickers)
+            logger.info(f"P1 data fetch complete. Got data for {len([t for t in p1_data if p1_data[t].get('earnings_calendar')])} tickers with earnings calendar")
+        except Exception as e:
+            logger.error(f"P1 data fetch failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     # Now analyze each stock (this is fast, no API calls)
     data_fetcher = DataFetcher()
