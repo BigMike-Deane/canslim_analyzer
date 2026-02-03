@@ -59,11 +59,11 @@ DATA_FRESHNESS_INTERVALS = {
     "weekly_history": 24 * 3600,      # Once per day (for base detection)
     "institutional": 14 * 24 * 3600,  # Once per 2 weeks (13F filings are quarterly)
     "insider_trading": 14 * 24 * 3600,  # Once per 2 weeks (changes slowly)
-    "short_interest": 3 * 24 * 3600,    # Once per 3 days (bi-weekly updates)
+    "short_interest": 7 * 24 * 3600,    # Once per week (bi-weekly FINRA updates)
     "yahoo_info": 7 * 24 * 3600,      # Once per week (comprehensive Yahoo data for key metrics, balance, analyst)
     # P1 Features (Feb 2026)
     "earnings_calendar": 7 * 24 * 3600,  # Once per week (earnings dates don't change frequently)
-    "analyst_estimates": 3 * 24 * 3600,  # Once per 3 days (estimates can change with analyst updates)
+    "analyst_estimates": 7 * 24 * 3600,  # Once per week (revisions happen weekly, not daily)
 }
 
 # Cached data storage (stores the actual fetched data)

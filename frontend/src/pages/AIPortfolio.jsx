@@ -4,6 +4,8 @@ import { api, formatCurrency, formatPercent, formatScore, getScoreClass } from '
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine } from 'recharts'
 
 function PerformanceChart({ history, startingCash }) {
+  const [timeRange, setTimeRange] = useState('all')
+
   if (!history || history.length < 2) {
     return (
       <div className="card mb-4 h-48 flex items-center justify-center text-dark-400">
@@ -12,8 +14,21 @@ function PerformanceChart({ history, startingCash }) {
     )
   }
 
-  const latestValue = history[history.length - 1]?.total_value || startingCash
-  const isPositive = latestValue >= startingCash
+  // Filter history based on selected time range
+  const filterHistory = (data, range) => {
+    if (range === 'all') return data
+    const now = new Date()
+    const cutoff = new Date()
+    if (range === '24h') cutoff.setHours(now.getHours() - 24)
+    else if (range === '7d') cutoff.setDate(now.getDate() - 7)
+    else if (range === '30d') cutoff.setDate(now.getDate() - 30)
+    return data.filter(d => new Date(d.timestamp || d.date) >= cutoff)
+  }
+
+  const filteredHistory = filterHistory(history, timeRange)
+  const latestValue = filteredHistory[filteredHistory.length - 1]?.total_value || startingCash
+  const firstValue = filteredHistory[0]?.total_value || startingCash
+  const isPositive = latestValue >= firstValue
 
   // Format timestamp for tooltip - convert to CST
   const formatTimestamp = (ts) => {
@@ -32,21 +47,45 @@ function PerformanceChart({ history, startingCash }) {
     }
   }
 
+  const timeRanges = [
+    { value: '24h', label: '24H' },
+    { value: '7d', label: '7D' },
+    { value: '30d', label: '30D' },
+    { value: 'all', label: 'All' },
+  ]
+
   return (
     <div className="card mb-4">
       <div className="flex justify-between items-center mb-2">
         <div className="text-dark-400 text-xs">Performance</div>
-        <div className="text-dark-500 text-xs">{history.length} data points</div>
+        <div className="flex items-center gap-2">
+          <div className="flex bg-dark-800 rounded-lg p-0.5">
+            {timeRanges.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setTimeRange(value)}
+                className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                  timeRange === value
+                    ? 'bg-primary-500 text-white'
+                    : 'text-dark-400 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="text-dark-500 text-xs">{filteredHistory.length} pts</div>
+        </div>
       </div>
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={history}>
+          <LineChart data={filteredHistory}>
             <Line
               type="monotone"
               dataKey="total_value"
               stroke={isPositive ? '#34c759' : '#ff3b30'}
               strokeWidth={2}
-              dot={history.length <= 50}
+              dot={filteredHistory.length <= 50}
               activeDot={{ r: 4, fill: isPositive ? '#34c759' : '#ff3b30' }}
             />
             <ReferenceLine

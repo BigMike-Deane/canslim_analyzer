@@ -61,7 +61,7 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
     # Fetch insider data in parallel (uses executor, limit concurrency to avoid rate limits)
     if insider_tasks:
         logger.info(f"Fetching insider trading data for {len(insider_tasks)} tickers...")
-        BATCH_SIZE = 10  # Smaller batches to avoid overwhelming Yahoo Finance
+        BATCH_SIZE = 25  # Larger batches for efficiency
         for i in range(0, len(insider_tasks), BATCH_SIZE):
             batch = insider_tasks[i:i + BATCH_SIZE]
             batch_tickers = tickers_needing_insider[i:i + BATCH_SIZE]
@@ -71,12 +71,12 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
                     results[ticker]["insider"] = data
                     mark_data_fetched(ticker, "insider_trading")
                     set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
-            await asyncio.sleep(0.5)  # Small delay between batches
+            await asyncio.sleep(0.2)  # Reduced delay
 
     # Fetch short interest in parallel (uses executor, limit concurrency)
     if short_tasks:
         logger.info(f"Fetching short interest data for {len(short_tasks)} tickers...")
-        BATCH_SIZE = 10  # Smaller batches to avoid overwhelming Yahoo Finance
+        BATCH_SIZE = 25  # Larger batches for efficiency
         for i in range(0, len(short_tasks), BATCH_SIZE):
             batch = short_tasks[i:i + BATCH_SIZE]
             batch_tickers = tickers_needing_short[i:i + BATCH_SIZE]
@@ -86,7 +86,7 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
                     results[ticker]["short"] = data
                     mark_data_fetched(ticker, "short_interest")
                     set_cached_data(ticker, "short_interest", data, persist_to_db=False)
-            await asyncio.sleep(0.5)  # Small delay between batches
+            await asyncio.sleep(0.2)  # Reduced delay
 
     return results
 
@@ -131,7 +131,7 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
         # Fetch earnings calendar data in parallel
         if tickers_needing_earnings:
             logger.info(f"Fetching earnings calendar for {len(tickers_needing_earnings)} tickers...")
-            BATCH_SIZE = 20  # FMP rate limit friendly
+            BATCH_SIZE = 30  # Larger batches for efficiency
             for i in range(0, len(tickers_needing_earnings), BATCH_SIZE):
                 batch_tickers = tickers_needing_earnings[i:i + BATCH_SIZE]
                 tasks = [fetch_fmp_earnings_calendar_async(session, t) for t in batch_tickers]
@@ -141,12 +141,12 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
                         results[ticker]["earnings_calendar"] = data
                         mark_data_fetched(ticker, "earnings_calendar")
                         set_cached_data(ticker, "earnings_calendar", data, persist_to_db=False)
-                await asyncio.sleep(0.3)  # Small delay between batches
+                await asyncio.sleep(0.2)  # Reduced delay
 
         # Fetch analyst estimates in parallel
         if tickers_needing_estimates:
             logger.info(f"Fetching analyst estimates for {len(tickers_needing_estimates)} tickers...")
-            BATCH_SIZE = 20
+            BATCH_SIZE = 30  # Larger batches for efficiency
             for i in range(0, len(tickers_needing_estimates), BATCH_SIZE):
                 batch_tickers = tickers_needing_estimates[i:i + BATCH_SIZE]
                 tasks = [fetch_fmp_analyst_estimates_async(session, t) for t in batch_tickers]
@@ -156,7 +156,7 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
                         results[ticker]["analyst_estimates"] = data
                         mark_data_fetched(ticker, "analyst_estimates")
                         set_cached_data(ticker, "analyst_estimates", data, persist_to_db=False)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)  # Reduced delay
 
     return results
 
