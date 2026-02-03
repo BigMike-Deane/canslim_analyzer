@@ -1,5 +1,49 @@
 # CANSLIM Analyzer - Project Context
 
+## READY TO DEPLOY: P1 Features Fix (Feb 2, 2026)
+
+**Status**: FIX COMMITTED & PUSHED - Deploy tomorrow to verify
+
+**Problem**: P1 data (earnings beat_streak, days_to_earnings, analyst revisions) wasn't populating on VPS scans. Beat streak was always 0 or 1.
+
+**Root Causes Found**:
+1. FMP `/stable/earnings-calendar` only returns 1 record per ticker - can't calculate beat streaks
+2. Yahoo Finance `earnings_history` works locally but rate limits on VPS with 2000+ stocks
+
+**Fix Applied** (commit `6ce5dfe`):
+- Changed `fetch_fmp_earnings_calendar()` to use `/stable/earnings` endpoint
+- This endpoint has full historical data (100+ records per ticker)
+- Allows proper beat streak calculation
+
+**Local Testing Verified**:
+```
+AAPL: beat_streak=12, days_to_earnings=83
+MSFT: beat_streak=14, days_to_earnings=86
+NVDA: beat_streak=12, days_to_earnings=23
+Analyst estimates: AAPL +14.1%, MSFT +21.8%, NVDA +58.6%
+All 18 P1 tests passing
+```
+
+**To Deploy**:
+```bash
+cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build
+```
+
+**After Deployment - Verify P1 Data**:
+```bash
+# Check beat streaks populated
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.earnings_beat_streak > 0).limit(10).all(); [print(f'{s.ticker}: beat_streak={s.earnings_beat_streak}, days={s.days_to_earnings}, revision={s.eps_estimate_revision_pct}') for s in stocks]; db.close()"
+```
+
+**FMP Endpoint Reference**:
+| Endpoint | Use Case |
+|----------|----------|
+| `/stable/earnings?symbol=AAPL` | Historical earnings with beat/miss (use this) |
+| `/stable/earnings-calendar` | Only 1 record per ticker (don't use) |
+| `/stable/analyst-estimates?symbol=AAPL&period=annual` | EPS estimate revisions |
+
+---
+
 ## RESOLVED: Market Cap & 52-Week Low Fix (Feb 1, 2026)
 
 **Status**: FIXED - Data is now being saved correctly. More stocks gaining data with each scan cycle.
