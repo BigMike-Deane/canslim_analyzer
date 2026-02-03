@@ -27,7 +27,9 @@ _scan_config = {
     "last_scan_end": None,
     "stocks_scanned": 0,
     "total_stocks": 0,
-    "is_scanning": False
+    "is_scanning": False,
+    "phase": None,  # Current phase: "scanning", "p1_data", "saving", "ai_trading", None
+    "phase_detail": None  # Additional detail like "Fetching earnings calendar..."
 }
 
 
@@ -60,6 +62,8 @@ def run_continuous_scan():
     _scan_config["last_scan_start"] = datetime.utcnow().isoformat() + 'Z'
     _scan_config["stocks_scanned"] = 0
     _scan_config["total_stocks"] = 0
+    _scan_config["phase"] = "scanning"
+    _scan_config["phase_detail"] = "Initializing scan..."
 
     logger.info(f"Starting continuous scan ({_scan_config['source']})...")
 
@@ -501,6 +505,10 @@ def run_continuous_scan():
 
         from async_scanner import run_async_scan
 
+        # Phase 1: Scanning stocks
+        _scan_config["phase"] = "scanning"
+        _scan_config["phase_detail"] = "Fetching stock data & P1 metrics..."
+
         # Progress callback to update frontend in real-time
         def update_progress(current, total):
             _scan_config["stocks_scanned"] = current
@@ -516,6 +524,11 @@ def run_continuous_scan():
         fetch_time = time.time() - start_time
 
         logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({fetch_time/len(analysis_results):.2f}s per stock)")
+
+        # Phase 2: Saving to database
+        _scan_config["phase"] = "saving"
+        _scan_config["phase_detail"] = f"Saving {len(analysis_results)} stocks to database..."
+        _scan_config["stocks_scanned"] = 0  # Reset for save progress
 
         # Save results to database with BATCHED COMMITS for performance
         # Commit every 50 stocks instead of per-stock (reduces I/O overhead)
@@ -582,6 +595,10 @@ def run_continuous_scan():
         except Exception as e:
             logger.error(f"Market snapshot error: {e}")
 
+        # Phase 3: AI Trading
+        _scan_config["phase"] = "ai_trading"
+        _scan_config["phase_detail"] = "Running AI trading cycle..."
+
         # Run AI trading cycle after scan completes (only during market hours)
         try:
             from backend.ai_trader import run_ai_trading_cycle, get_or_create_config, take_portfolio_snapshot, is_market_open
@@ -608,6 +625,8 @@ def run_continuous_scan():
     finally:
         _scan_config["is_scanning"] = False
         _scan_config["last_scan_end"] = datetime.utcnow().isoformat() + 'Z'
+        _scan_config["phase"] = None
+        _scan_config["phase_detail"] = None
 
 
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):

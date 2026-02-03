@@ -551,7 +551,11 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
           <div className="flex items-center gap-2 text-green-400 text-sm">
             <span className="animate-pulse">●</span>
             <span>
-              {scannerStatus?.is_scanning ? 'Scanning...' : 'Active'}
+              {scannerStatus?.is_scanning ? (
+                scannerStatus?.phase === 'saving' ? 'Saving to database...' :
+                scannerStatus?.phase === 'ai_trading' ? 'Running AI trader...' :
+                'Scanning...'
+              ) : 'Active'}
               {scannerStatus?.next_run && !scannerStatus?.is_scanning && (
                 <span className="text-dark-400 ml-2">
                   Next: {new Date(scannerStatus.next_run).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
@@ -581,6 +585,19 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
                   {Math.round(scannerStatus.stocks_scanned / scannerStatus.total_stocks * 100)}%
                 </span>
               </div>
+              {/* Phase indicator */}
+              {scannerStatus.phase && (
+                <div className="mt-2 text-xs text-green-300 flex items-center gap-2">
+                  <span className="font-medium">
+                    {scannerStatus.phase === 'scanning' && 'Phase 1: Scanning'}
+                    {scannerStatus.phase === 'saving' && 'Phase 2: Saving'}
+                    {scannerStatus.phase === 'ai_trading' && 'Phase 3: AI Trading'}
+                  </span>
+                  {scannerStatus.phase_detail && (
+                    <span className="text-dark-400">— {scannerStatus.phase_detail}</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
