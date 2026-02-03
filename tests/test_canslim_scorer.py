@@ -29,16 +29,18 @@ class TestCANSLIMScorer:
         assert score <= 15, "C score should not exceed max (15 points)"
 
     def test_score_current_earnings_negative(self, mock_stock_data, mock_data_fetcher):
-        """Test C score with negative earnings"""
+        """Test C score with negative earnings that are worsening"""
         scorer = CANSLIMScorer(mock_data_fetcher)
 
-        # Set all earnings to negative and worsening
-        mock_stock_data.quarterly_earnings = [-0.10, -0.15, -0.20, -0.25, -0.30, -0.35, -0.40, -0.45]
+        # Set all earnings to negative and WORSENING (losses getting bigger over time)
+        # Most recent quarters have larger losses than older quarters
+        # TTM current (-0.45+-0.40+-0.35+-0.30 = -1.50) worse than TTM prior (-0.25+-0.20+-0.15+-0.10 = -0.70)
+        mock_stock_data.quarterly_earnings = [-0.45, -0.40, -0.35, -0.30, -0.25, -0.20, -0.15, -0.10]
 
         score, detail = scorer._score_current_earnings(mock_stock_data)
 
-        # Score can be negative for worsening losses or 0
-        assert score <= 0, "Worsening losses should result in 0 or negative score"
+        # Score should be 0 for worsening losses (no partial credit for deteriorating)
+        assert score == 0, f"Worsening losses should result in 0 score, got {score}"
         assert "loss" in detail.lower(), "Detail should mention losses"
 
     def test_score_annual_earnings_good_cagr(self, mock_stock_data, mock_data_fetcher):

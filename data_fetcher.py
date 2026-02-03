@@ -51,6 +51,7 @@ _freshness_lock = threading.Lock()
 DATA_FRESHNESS_INTERVALS = {
     "price": 0,                       # Always fetch (real-time)
     "earnings": 7 * 24 * 3600,        # Once per week (only changes quarterly)
+    "adjusted_eps": 7 * 24 * 3600,    # Once per week (Yahoo adjusted EPS - matches Fidelity/analysts)
     "revenue": 7 * 24 * 3600,         # Once per week (only changes quarterly)
     "balance_sheet": 7 * 24 * 3600,   # Once per week (only changes quarterly)
     "key_metrics": 7 * 24 * 3600,     # Once per week (derived from quarterly data)
@@ -1726,33 +1727,42 @@ class DataFetcher:
                         roe = info.get('returnOnEquity')
                         stock_data.roe = roe if roe else 0
 
-                    # Quarterly earnings from yfinance - ALWAYS try earnings_history (actual reported EPS)
-                    # This is the ADJUSTED EPS that analysts track, not GAAP EPS
-                    # IMPORTANT: Yahoo earnings_history is preferred over FMP income-statement GAAP EPS
-                    # because GAAP includes stock-based compensation which distorts growth metrics
-                    try:
-                        earnings_hist = stock.earnings_history
-                        if earnings_hist is not None and not earnings_hist.empty and 'epsActual' in earnings_hist.columns:
-                            eps_actual = earnings_hist['epsActual'].dropna().tolist()
-                            if eps_actual and len(eps_actual) >= 4:
-                                # Reverse to get most recent first
-                                yahoo_eps = eps_actual[::-1][:8]
-                                # Only use Yahoo if it looks like adjusted EPS (different from GAAP)
-                                # or if we don't have any earnings yet
-                                if not stock_data.quarterly_earnings or yahoo_eps != stock_data.quarterly_earnings[:len(yahoo_eps)]:
-                                    logger.info(f"{ticker}: Using Yahoo earnings_history ADJUSTED EPS: {yahoo_eps[:4]}")
+                    # Get adjusted EPS from Yahoo - this is what analysts track (matches Fidelity)
+                    # FMP returns GAAP EPS which includes stock-based comp and distorts growth metrics
+                    # Check cache first to avoid excessive Yahoo calls
+                    cached_adjusted = get_cached_data(ticker, "adjusted_eps")
+                    if cached_adjusted and is_data_fresh(ticker, "adjusted_eps"):
+                        # Use cached adjusted EPS
+                        stock_data.quarterly_earnings = cached_adjusted
+                        logger.debug(f"{ticker}: Using CACHED adjusted EPS: {cached_adjusted[:4]}")
+                    else:
+                        # Fetch fresh adjusted EPS from Yahoo
+                        try:
+                            earnings_hist = stock.earnings_history
+                            if earnings_hist is not None and not earnings_hist.empty and 'epsActual' in earnings_hist.columns:
+                                eps_actual = earnings_hist['epsActual'].dropna().tolist()
+                                if eps_actual and len(eps_actual) >= 4:
+                                    # Reverse to get most recent first
+                                    yahoo_eps = eps_actual[::-1][:8]
+                                    old_eps = stock_data.quarterly_earnings[:4] if stock_data.quarterly_earnings else []
+                                    # ALWAYS prefer Yahoo adjusted EPS over FMP GAAP EPS
                                     stock_data.quarterly_earnings = yahoo_eps
+                                    # Cache the adjusted EPS for 7 days
+                                    set_cached_data(ticker, "adjusted_eps", yahoo_eps)
+                                    mark_data_fetched(ticker, "adjusted_eps")
+                                    logger.info(f"{ticker}: Using Yahoo ADJUSTED EPS {yahoo_eps[:4]} (was GAAP: {old_eps})")
 
-                                # Also get earnings surprise data
-                                if 'surprisePercent' in earnings_hist.columns and not stock_data.earnings_surprise_pct:
-                                    latest_surprise = earnings_hist['surprisePercent'].iloc[-1]
-                                    if pd.notna(latest_surprise):
-                                        stock_data.earnings_surprise_pct = latest_surprise * 100
-                    except Exception as e:
-                        logger.debug(f"{ticker}: earnings_history failed: {e}")
+                                    # Also get earnings surprise data
+                                    if 'surprisePercent' in earnings_hist.columns and not stock_data.earnings_surprise_pct:
+                                        latest_surprise = earnings_hist['surprisePercent'].iloc[-1]
+                                        if pd.notna(latest_surprise):
+                                            stock_data.earnings_surprise_pct = latest_surprise * 100
+                        except Exception as e:
+                            logger.debug(f"{ticker}: earnings_history failed: {e}")
 
-                    # Fallback to Net Income calculation if we have no earnings OR less than 5 quarters
-                    if not stock_data.quarterly_earnings or len(stock_data.quarterly_earnings) < 5:
+                    # Fallback to Net Income calculation ONLY if we have NO earnings data at all
+                    # Don't overwrite adjusted EPS with GAAP-based Net Income calculation
+                    if not stock_data.quarterly_earnings:
                         try:
                             quarterly = stock.quarterly_financials
                             if quarterly is not None and not quarterly.empty:
@@ -1760,10 +1770,9 @@ class DataFetcher:
                                     net_income = quarterly.loc['Net Income'].dropna()
                                     shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
                                     quarterly_eps = (net_income / shares).tolist()[:8]
-                                    # Only use if we get 5+ quarters
-                                    if len(quarterly_eps) >= 5:
+                                    if len(quarterly_eps) >= 4:
                                         stock_data.quarterly_earnings = quarterly_eps
-                                        logger.debug(f"{ticker}: Using Yahoo calculated EPS from Net Income (5+ quarters)")
+                                        logger.debug(f"{ticker}: Fallback to Yahoo Net Income EPS (no other data): {quarterly_eps[:4]}")
                         except Exception:
                             pass
 

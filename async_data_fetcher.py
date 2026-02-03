@@ -980,8 +980,16 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                     roe = info.get('returnOnEquity')
                     stock_data.roe = roe if roe else 0  # Store as decimal
 
-            # Get adjusted EPS from earnings_history if we don't have good data
-            if len(stock_data.quarterly_earnings) < 4:
+            # Get adjusted EPS from Yahoo - this is what analysts track (matches Fidelity)
+            # FMP returns GAAP EPS which includes stock-based comp and distorts growth metrics
+            # Check cache first to avoid excessive Yahoo calls
+            cached_adjusted = get_cached_data(ticker, "adjusted_eps")
+            if cached_adjusted and is_data_fresh(ticker, "adjusted_eps"):
+                # Use cached adjusted EPS
+                stock_data.quarterly_earnings = cached_adjusted
+                logger.debug(f"{ticker}: Using CACHED adjusted EPS: {cached_adjusted[:4]}")
+            else:
+                # Fetch fresh adjusted EPS from Yahoo
                 try:
                     earnings_hist = stock.earnings_history
                     if earnings_hist is not None and not earnings_hist.empty and 'epsActual' in earnings_hist.columns:
@@ -992,8 +1000,13 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                                 adjusted_eps.append(float(actual))
 
                         if adjusted_eps and len(adjusted_eps) >= 4:
-                            stock_data.quarterly_earnings = adjusted_eps[::-1]
-                            logger.debug(f"{ticker}: Yahoo adjusted EPS: {adjusted_eps[:4]}")
+                            # Always prefer Yahoo adjusted EPS over FMP GAAP EPS
+                            old_eps = stock_data.quarterly_earnings[:4] if stock_data.quarterly_earnings else []
+                            stock_data.quarterly_earnings = adjusted_eps[::-1][:8]  # Reverse to newest first, limit to 8
+                            # Cache the adjusted EPS for 7 days
+                            set_cached_data(ticker, "adjusted_eps", stock_data.quarterly_earnings)
+                            mark_data_fetched(ticker, "adjusted_eps")
+                            logger.info(f"{ticker}: Using Yahoo ADJUSTED EPS {stock_data.quarterly_earnings[:4]} (was GAAP: {old_eps})")
                 except Exception as e:
                     logger.debug(f"{ticker}: Yahoo earnings_history error: {e}")
 
@@ -1239,16 +1252,10 @@ async def get_stock_data_async(
     if weekly_data:
         stock_data.weekly_price_history = weekly_data
 
-    # OPTIMIZATION: Only call Yahoo if FMP data is incomplete
-    has_complete_fmp_data = (
-        stock_data.quarterly_earnings and
-        len(stock_data.quarterly_earnings) >= 4 and
-        stock_data.roe != 0 and
-        stock_data.sector
-    )
-
-    if not has_complete_fmp_data:
-        await fetch_yahoo_supplement_async(ticker, stock_data)
+    # ALWAYS call Yahoo to get adjusted EPS (FMP only has GAAP EPS which distorts growth metrics)
+    # Yahoo earnings_history.epsActual matches what Fidelity and analyst estimates use
+    # Also fills in missing sector, ROE, institutional data
+    await fetch_yahoo_supplement_async(ticker, stock_data)
 
     # Mark as valid if we have basic data
     if stock_data.current_price and not stock_data.price_history.empty:
