@@ -583,7 +583,7 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
 def get_delisted_tickers() -> set:
     """
     Get set of tickers that should be excluded from scans.
-    Only returns tickers that are past their recheck date or have high failure counts.
+    Only excludes tickers with multiple confirmed failures to avoid false positives.
     """
     db = _get_db_session()
     if not db:
@@ -592,12 +592,10 @@ def get_delisted_tickers() -> set:
     try:
         from backend.database import DelistedTicker
 
-        # Get tickers that shouldn't be rechecked yet
-        now = datetime.now()
+        # Only exclude tickers with 3+ failures (multiple confirmed issues)
+        # This prevents temporary API issues from excluding valid stocks
         delisted = db.query(DelistedTicker.ticker).filter(
-            (DelistedTicker.recheck_after == None) |
-            (DelistedTicker.recheck_after > now) |
-            (DelistedTicker.failure_count >= 5)  # 5+ failures = permanent exclude
+            DelistedTicker.failure_count >= 3
         ).all()
 
         return {t.ticker for t in delisted}

@@ -25,7 +25,7 @@ from data_fetcher import (
     get_cached_data, set_cached_data, mark_data_fetched, is_data_fresh,
     fetch_price_from_chart_api, fetch_weekly_price_history,
     REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
-    load_cache_from_db, mark_ticker_as_delisted
+    load_cache_from_db, mark_ticker_as_delisted, clear_delisted_ticker
 )
 
 if REDIS_AVAILABLE:
@@ -1313,9 +1313,13 @@ async def get_stock_data_async(
     # Mark as valid if we have basic data
     if stock_data.current_price and not stock_data.price_history.empty:
         stock_data.is_valid = True
+        # Self-healing: if ticker was previously marked as delisted but now works, clear it
+        clear_delisted_ticker(ticker)
     elif stock_data.current_price:
         stock_data.is_valid = True
         stock_data.error_message = "Limited data available"
+        # Self-healing: ticker has price, so it's not delisted
+        clear_delisted_ticker(ticker)
     else:
         # No price data from any source - likely delisted or invalid ticker
         mark_ticker_as_delisted(ticker, reason="no_price_data", source="get_stock_data_async")
