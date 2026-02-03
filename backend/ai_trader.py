@@ -470,6 +470,138 @@ def refresh_ai_portfolio(db: Session) -> dict:
     }
 
 
+def check_and_execute_stop_losses(db: Session) -> dict:
+    """
+    Check stop loss conditions and execute sells if triggered.
+    This runs independently of the full trading cycle for faster stop loss response.
+
+    Only evaluates:
+    - Fixed stop loss (e.g., -10%)
+    - Trailing stop loss (protect gains from peak)
+
+    Does NOT evaluate:
+    - Score-based sells
+    - Take profit sells
+    - Partial profit taking
+    """
+    from backend.database import Stock
+
+    config = get_or_create_config(db)
+    positions = db.query(AIPortfolioPosition).all()
+
+    if not positions:
+        return {"message": "No positions to check", "sells_executed": []}
+
+    # First update prices to get current values
+    logger.info(f"Checking stop losses for {len(positions)} positions...")
+    update_position_prices(db, use_live_prices=True)
+
+    sells_executed = []
+
+    for position in positions:
+        if not position.current_price:
+            continue
+
+        gain_pct = position.gain_loss_pct or 0
+
+        # Check fixed stop loss
+        if gain_pct <= -config.stop_loss_pct:
+            logger.warning(f"{position.ticker}: STOP LOSS TRIGGERED at {gain_pct:.1f}%")
+
+            # Execute the sell
+            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            score = stock.canslim_score if stock else 0
+            growth_score = stock.growth_mode_score if stock else None
+
+            execute_trade(
+                db=db,
+                ticker=position.ticker,
+                action="SELL",
+                shares=position.shares,
+                price=position.current_price,
+                reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%",
+                score=score,
+                growth_score=growth_score,
+                is_growth_stock=position.is_growth_stock or False,
+                cost_basis=position.cost_basis,
+                realized_gain=position.gain_loss
+            )
+
+            # Update cash and remove position
+            config.current_cash += position.current_value
+            sells_executed.append({
+                "ticker": position.ticker,
+                "shares": position.shares,
+                "price": position.current_price,
+                "gain_loss": position.gain_loss,
+                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%"
+            })
+            db.delete(position)
+            continue
+
+        # Check trailing stop loss
+        if position.peak_price and position.peak_price > 0:
+            drop_from_peak = ((position.peak_price - position.current_price) / position.peak_price) * 100
+            peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
+
+            # Dynamic trailing stop thresholds
+            trailing_stop_pct = None
+            if peak_gain_pct >= 50:
+                trailing_stop_pct = 15
+            elif peak_gain_pct >= 30:
+                trailing_stop_pct = 12
+            elif peak_gain_pct >= 20:
+                trailing_stop_pct = 10
+            elif peak_gain_pct >= 10:
+                trailing_stop_pct = 8
+
+            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
+                logger.warning(f"{position.ticker}: TRAILING STOP TRIGGERED - Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
+
+                # Execute the sell
+                stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+                score = stock.canslim_score if stock else 0
+                growth_score = stock.growth_mode_score if stock else None
+
+                execute_trade(
+                    db=db,
+                    ticker=position.ticker,
+                    action="SELL",
+                    shares=position.shares,
+                    price=position.current_price,
+                    reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)",
+                    score=score,
+                    growth_score=growth_score,
+                    is_growth_stock=position.is_growth_stock or False,
+                    cost_basis=position.cost_basis,
+                    realized_gain=position.gain_loss
+                )
+
+                # Update cash and remove position
+                config.current_cash += position.current_value
+                sells_executed.append({
+                    "ticker": position.ticker,
+                    "shares": position.shares,
+                    "price": position.current_price,
+                    "gain_loss": position.gain_loss,
+                    "reason": f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)"
+                })
+                db.delete(position)
+
+    db.commit()
+
+    if sells_executed:
+        logger.info(f"Stop loss check complete: {len(sells_executed)} sells executed")
+        take_portfolio_snapshot(db)
+    else:
+        logger.info("Stop loss check complete: no stops triggered")
+
+    return {
+        "message": f"Checked {len(positions)} positions, {len(sells_executed)} stop losses triggered",
+        "sells_executed": sells_executed
+    }
+
+
 def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,

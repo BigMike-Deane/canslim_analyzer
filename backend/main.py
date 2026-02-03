@@ -2152,25 +2152,34 @@ async def get_ai_portfolio_history(
 
 
 @app.post("/api/ai-portfolio/refresh")
-async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks):
-    """Refresh position prices without executing trades (runs in background)"""
+async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, check_stops: bool = True):
+    """Refresh position prices and check stop losses (runs in background)"""
     from backend.database import SessionLocal
-    from backend.ai_trader import take_portfolio_snapshot
+    from backend.ai_trader import take_portfolio_snapshot, check_and_execute_stop_losses
 
     def refresh_background():
         db = SessionLocal()
         try:
             logger.info("Refreshing AI portfolio prices in background...")
-            result = refresh_ai_portfolio(db)
+            if check_stops:
+                # Check stop losses and execute sells if triggered
+                result = check_and_execute_stop_losses(db)
+                sells = result.get("sells_executed", [])
+                if sells:
+                    logger.info(f"STOP LOSS ALERT: {len(sells)} positions sold: {[s['ticker'] for s in sells]}")
+            else:
+                # Just refresh prices without checking stops
+                result = refresh_ai_portfolio(db)
             logger.info(f"AI portfolio refresh complete: {result.get('message')}")
-            # Note: refresh_ai_portfolio already calls take_portfolio_snapshot internally
         except Exception as e:
             logger.error(f"AI portfolio refresh error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             db.close()
 
     background_tasks.add_task(refresh_background)
-    return {"status": "started", "message": "Price refresh started. Refresh page in 10-15 seconds."}
+    return {"status": "started", "message": "Price refresh + stop loss check started. Refresh page in 10-15 seconds."}
 
 
 @app.get("/api/ai-portfolio/trades")
