@@ -14,15 +14,20 @@ from async_data_fetcher import (
     fetch_fmp_earnings_calendar_async,
     fetch_fmp_analyst_estimates_async
 )
+from data_fetcher import mark_ticker_as_delisted
 
 logger = logging.getLogger(__name__)
 
 
-async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]:
+async def fetch_insider_short_batch_async(tickers: List[str], progress_callback=None) -> Dict[str, Dict]:
     """
     Batch fetch insider trading and short interest data for multiple tickers.
     Uses Yahoo Finance for both (FMP v4 insider endpoint deprecated Aug 2025).
     Respects freshness intervals to avoid redundant API calls.
+
+    Args:
+        tickers: List of stock tickers
+        progress_callback: Optional callback function(current, total, phase) to report progress
 
     Returns dict mapping ticker -> {insider_data, short_data}
     """
@@ -58,6 +63,9 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
             if cached:
                 results[ticker]["short"] = cached
 
+    total_tasks = len(insider_tasks) + len(short_tasks)
+    completed = 0
+
     # Fetch insider data in parallel (uses executor, limit concurrency to avoid rate limits)
     if insider_tasks:
         logger.info(f"Fetching insider trading data for {len(insider_tasks)} tickers...")
@@ -71,6 +79,9 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
                     results[ticker]["insider"] = data
                     mark_data_fetched(ticker, "insider_trading")
                     set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
+                completed += 1
+            if progress_callback:
+                progress_callback(completed, total_tasks, "insider_short")
             await asyncio.sleep(0.2)  # Reduced delay
 
     # Fetch short interest in parallel (uses executor, limit concurrency)
@@ -85,16 +96,23 @@ async def fetch_insider_short_batch_async(tickers: List[str]) -> Dict[str, Dict]
                 if isinstance(data, dict) and data:
                     results[ticker]["short"] = data
                     mark_data_fetched(ticker, "short_interest")
-                    set_cached_data(ticker, "short_interest", data, persist_to_db=False)
+                    set_cached_data(ticker, "short_interest", data, persist_to_db=True)
+                completed += 1
+            if progress_callback:
+                progress_callback(completed, total_tasks, "insider_short")
             await asyncio.sleep(0.2)  # Reduced delay
 
     return results
 
 
-async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
+async def fetch_p1_data_batch_async(tickers: List[str], progress_callback=None) -> Dict[str, Dict]:
     """
     Batch fetch P1 feature data: earnings calendar and analyst estimates.
     Respects freshness intervals to avoid redundant API calls.
+
+    Args:
+        tickers: List of stock tickers
+        progress_callback: Optional callback function(current, total, phase) to report progress
 
     Returns dict mapping ticker -> {earnings_calendar, analyst_estimates}
     """
@@ -125,6 +143,9 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
             if cached:
                 results[ticker]["analyst_estimates"] = cached
 
+    total_tasks = len(tickers_needing_earnings) + len(tickers_needing_estimates)
+    completed = 0
+
     # Create aiohttp session for FMP API calls
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -140,7 +161,15 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
                     if isinstance(data, dict) and data:
                         results[ticker]["earnings_calendar"] = data
                         mark_data_fetched(ticker, "earnings_calendar")
-                        set_cached_data(ticker, "earnings_calendar", data, persist_to_db=False)
+                        set_cached_data(ticker, "earnings_calendar", data, persist_to_db=True)
+                    elif isinstance(data, Exception):
+                        # Exception during fetch - may indicate delisted/invalid ticker
+                        error_str = str(data).lower()
+                        if "404" in error_str or "not found" in error_str:
+                            mark_ticker_as_delisted(ticker, reason="p1_fetch_404", source="async_scanner")
+                    completed += 1
+                if progress_callback:
+                    progress_callback(completed, total_tasks, "p1_data")
                 await asyncio.sleep(0.2)  # Reduced delay
 
         # Fetch analyst estimates in parallel
@@ -155,7 +184,15 @@ async def fetch_p1_data_batch_async(tickers: List[str]) -> Dict[str, Dict]:
                     if isinstance(data, dict) and data:
                         results[ticker]["analyst_estimates"] = data
                         mark_data_fetched(ticker, "analyst_estimates")
-                        set_cached_data(ticker, "analyst_estimates", data, persist_to_db=False)
+                        set_cached_data(ticker, "analyst_estimates", data, persist_to_db=True)
+                    elif isinstance(data, Exception):
+                        # Exception during fetch - may indicate delisted/invalid ticker
+                        error_str = str(data).lower()
+                        if "404" in error_str or "not found" in error_str:
+                            mark_ticker_as_delisted(ticker, reason="p1_fetch_404", source="async_scanner")
+                    completed += 1
+                if progress_callback:
+                    progress_callback(completed, total_tasks, "p1_data")
                 await asyncio.sleep(0.2)  # Reduced delay
 
     return results
@@ -193,11 +230,18 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
     p1_data = {}
 
     if valid_tickers:
-        insider_short_data = await fetch_insider_short_batch_async(valid_tickers)
+        # Signal start of insider/short phase
+        if progress_callback:
+            progress_callback(0, len(valid_tickers), "insider_short")
+        insider_short_data = await fetch_insider_short_batch_async(valid_tickers, progress_callback)
+
         # P1 Features: Fetch earnings calendar and analyst estimates
         try:
             logger.info(f"Starting P1 data fetch for {len(valid_tickers)} tickers...")
-            p1_data = await fetch_p1_data_batch_async(valid_tickers)
+            # Signal start of P1 data phase
+            if progress_callback:
+                progress_callback(0, len(valid_tickers), "p1_data")
+            p1_data = await fetch_p1_data_batch_async(valid_tickers, progress_callback)
             logger.info(f"P1 data fetch complete. Got data for {len([t for t in p1_data if p1_data[t].get('earnings_calendar')])} tickers with earnings calendar")
         except Exception as e:
             logger.error(f"P1 data fetch failed: {e}")

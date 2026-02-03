@@ -136,6 +136,18 @@ def run_migrations():
         ("stocks", "insider_net_value", "FLOAT"),
         ("stocks", "insider_largest_buy", "FLOAT"),
         ("stocks", "insider_largest_buyer_title", "TEXT"),
+        # P1 Cache Fields (Feb 2026) - StockDataCache
+        ("stock_data_cache", "next_earnings_date", "DATE"),
+        ("stock_data_cache", "days_to_earnings", "INTEGER"),
+        ("stock_data_cache", "earnings_beat_streak", "INTEGER"),
+        ("stock_data_cache", "earnings_calendar_updated_at", "DATETIME"),
+        ("stock_data_cache", "eps_estimate_current", "FLOAT"),
+        ("stock_data_cache", "eps_estimate_prior", "FLOAT"),
+        ("stock_data_cache", "eps_estimate_revision_pct", "FLOAT"),
+        ("stock_data_cache", "analyst_estimates_updated_at", "DATETIME"),
+        ("stock_data_cache", "short_interest_pct", "FLOAT"),
+        ("stock_data_cache", "short_ratio", "FLOAT"),
+        ("stock_data_cache", "short_updated_at", "DATETIME"),
     ]
 
     for table, column, col_type in migrations:
@@ -755,6 +767,24 @@ class StockDataCache(Base):
     # Hash of critical data for delta detection
     # If this hasn't changed, we can skip re-scoring
     data_hash = Column(String)
+
+    # P1 Cache Fields (Feb 2026)
+    # Earnings Calendar
+    next_earnings_date = Column(Date)
+    days_to_earnings = Column(Integer)
+    earnings_beat_streak = Column(Integer)
+    earnings_calendar_updated_at = Column(DateTime)
+
+    # Analyst Estimates
+    eps_estimate_current = Column(Float)
+    eps_estimate_prior = Column(Float)
+    eps_estimate_revision_pct = Column(Float)
+    analyst_estimates_updated_at = Column(DateTime)
+
+    # Short Interest
+    short_interest_pct = Column(Float)
+    short_ratio = Column(Float)
+    short_updated_at = Column(DateTime)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

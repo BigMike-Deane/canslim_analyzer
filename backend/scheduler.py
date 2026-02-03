@@ -510,13 +510,22 @@ def run_continuous_scan():
         _scan_config["phase_detail"] = "Fetching stock data & P1 metrics..."
 
         # Progress callback to update frontend in real-time
-        def update_progress(current, total):
+        def update_progress(current, total, phase="stocks"):
             _scan_config["stocks_scanned"] = current
             # Also update total if it differs (e.g., from checkpoint resume)
-            if total != _scan_config["total_stocks"]:
+            if _scan_config["total_stocks"] != total:
                 _scan_config["total_stocks"] = total
-            if current % 100 == 0:  # Log every 100 stocks
-                logger.info(f"Progress: {current}/{total} stocks fetched ({current/total*100:.1f}%)")
+
+            # Update phase detail for different phases
+            if phase == "stocks":
+                _scan_config["phase_detail"] = f"Fetching stock data ({current}/{total})..."
+            elif phase == "insider_short":
+                _scan_config["phase_detail"] = f"Fetching insider/short data ({current}/{total})..."
+            elif phase == "p1_data":
+                _scan_config["phase_detail"] = f"Fetching P1 data ({current}/{total})..."
+
+            if current % 100 == 0:  # Log every 100 items
+                logger.info(f"Progress ({phase}): {current}/{total} ({current/total*100:.1f}%)")
 
         # Fetch and analyze all stocks asynchronously (this is the fast part!)
         start_time = time.time()

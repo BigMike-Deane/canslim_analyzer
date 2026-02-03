@@ -247,6 +247,9 @@ async def fetch_fmp_single_quote(session: aiohttp.ClientSession, ticker: str) ->
             "shares_outstanding": quote.get("sharesOutstanding", 0),
             "name": quote.get("name", ticker),
         }
+    # Empty response or 404 - mark as potentially delisted
+    if data is not None and isinstance(data, list) and len(data) == 0:
+        mark_ticker_as_delisted(ticker, reason="fmp_quote_empty", source="async_data_fetcher")
     return None
 
 
@@ -745,6 +748,7 @@ async def fetch_short_interest_async(ticker: str) -> dict:
     """
     Async fetch short interest data from Yahoo Finance.
     Wraps sync yfinance call in executor to not block async loop.
+    Includes retry logic for "Invalid Crumb" 401 errors.
     """
     loop = asyncio.get_event_loop()
 
@@ -767,7 +771,31 @@ async def fetch_short_interest_async(ticker: str) -> dict:
                     "short_ratio": short_ratio
                 }
         except Exception as e:
-            logger.debug(f"{ticker}: Short interest error: {e}")
+            error_str = str(e).lower()
+            # Handle "Invalid Crumb" 401 errors by clearing yfinance cache and retrying
+            if "401" in error_str or "crumb" in error_str or "unauthorized" in error_str:
+                logger.debug(f"{ticker}: Invalid crumb error, clearing cache and retrying...")
+                try:
+                    # Clear yfinance session cache
+                    import yfinance as yf
+                    if hasattr(yf, 'cache') and hasattr(yf.cache, 'clear'):
+                        yf.cache.clear()
+                    # Retry with fresh session
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    if info:
+                        short_pct = info.get("shortPercentOfFloat", 0) or 0
+                        short_ratio = info.get("shortRatio", 0) or 0
+                        if short_pct > 0 and short_pct < 1:
+                            short_pct = short_pct * 100
+                        return {
+                            "short_interest_pct": short_pct,
+                            "short_ratio": short_ratio
+                        }
+                except Exception as retry_e:
+                    logger.debug(f"{ticker}: Retry after crumb clear failed: {retry_e}")
+            else:
+                logger.debug(f"{ticker}: Short interest error: {e}")
 
         return {}
 
@@ -833,6 +861,8 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
 
             if not info or not info.get('regularMarketPrice'):
                 logger.debug(f"{ticker}: Yahoo info returned no data")
+                # Mark as potentially delisted if Yahoo returns no price
+                mark_ticker_as_delisted(ticker, reason="yahoo_no_price", source="async_data_fetcher")
                 return result
 
             # Key metrics - store as decimal (e.g., 0.05 = 5%) for consistency with FMP
@@ -894,6 +924,29 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             error_str = str(e).lower()
             if "rate" in error_str or "429" in error_str or "too many" in error_str:
                 raise  # Re-raise rate limit errors for retry logic
+            # Handle "Invalid Crumb" 401 errors by clearing yfinance cache and retrying
+            if "401" in error_str or "crumb" in error_str or "unauthorized" in error_str:
+                logger.debug(f"{ticker}: Invalid crumb error, clearing cache and retrying...")
+                try:
+                    import yfinance as yf
+                    if hasattr(yf, 'cache') and hasattr(yf.cache, 'clear'):
+                        yf.cache.clear()
+                    # Retry with fresh session
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    if info and info.get('regularMarketPrice'):
+                        # Re-extract all data (simplified retry)
+                        result["roe"] = info.get('returnOnEquity') or 0
+                        result["analyst_target_price"] = info.get('targetMeanPrice', 0) or 0
+                        result["short_interest_pct"] = info.get('shortPercentOfFloat', 0) or 0
+                        result["institutional_holders_pct"] = (info.get('heldPercentInstitutions', 0) or 0) * 100
+                        result["success"] = True
+                        return result
+                except Exception as retry_e:
+                    logger.debug(f"{ticker}: Retry after crumb clear failed: {retry_e}")
+            # Check for 404 or "not found" errors indicating delisted ticker
+            if "404" in error_str or "not found" in error_str:
+                mark_ticker_as_delisted(ticker, reason="yahoo_404", source="async_data_fetcher")
             logger.debug(f"{ticker}: Yahoo info error: {e}")
             return result
 
