@@ -34,3 +34,4 @@ portfolio_history.json
 *.egg-info/
 dist/
 build/
+CLAUDE.local.md
