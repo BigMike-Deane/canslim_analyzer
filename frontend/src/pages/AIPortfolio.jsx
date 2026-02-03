@@ -636,6 +636,13 @@ export default function AIPortfolio() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [waitingForTrades, setWaitingForTrades] = useState(false)
   const [waitingCash, setWaitingCash] = useState(null)
+  const [autoRefresh, setAutoRefresh] = useState(() => {
+    // Persist auto-refresh preference in localStorage
+    const saved = localStorage.getItem('aiPortfolioAutoRefresh')
+    return saved === 'true'
+  })
+  const [lastPriceRefresh, setLastPriceRefresh] = useState(null)
+  const [isRefreshingPrices, setIsRefreshingPrices] = useState(false)
 
   const fetchData = async (showLoading = true) => {
     try {
@@ -699,6 +706,51 @@ export default function AIPortfolio() {
     }
   }, [waitingForTrades])
 
+  // Auto-refresh prices every 5 minutes when enabled
+  useEffect(() => {
+    if (!autoRefresh) return
+
+    const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000 // 5 minutes
+
+    const refreshPrices = async () => {
+      // Check if market is likely open (rough check - M-F 8:30am-4pm CST)
+      const now = new Date()
+      const cstHour = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' })).getHours()
+      const dayOfWeek = now.getDay()
+      const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5
+      const isMarketHours = cstHour >= 8 && cstHour < 16
+
+      if (!isWeekday || !isMarketHours) {
+        console.log('Auto-refresh skipped: market closed')
+        return
+      }
+
+      console.log('Auto-refreshing prices...')
+      setIsRefreshingPrices(true)
+      try {
+        await api.refreshAIPortfolio()
+        setLastPriceRefresh(new Date())
+        // Fetch updated data after refresh completes
+        setTimeout(() => fetchData(false), 10000)
+        setTimeout(() => setIsRefreshingPrices(false), 12000)
+      } catch (err) {
+        console.error('Auto-refresh failed:', err)
+        setIsRefreshingPrices(false)
+      }
+    }
+
+    // Refresh immediately on enable, then every 5 minutes
+    refreshPrices()
+    const interval = setInterval(refreshPrices, AUTO_REFRESH_INTERVAL)
+
+    return () => clearInterval(interval)
+  }, [autoRefresh])
+
+  // Persist auto-refresh preference
+  useEffect(() => {
+    localStorage.setItem('aiPortfolioAutoRefresh', autoRefresh.toString())
+  }, [autoRefresh])
+
   const handleUpdateConfig = async (config) => {
     try {
       await api.updateAIPortfolioConfig(config)
@@ -718,18 +770,23 @@ export default function AIPortfolio() {
   }
 
   const handleRefresh = async () => {
+    setIsRefreshingPrices(true)
     try {
       const result = await api.refreshAIPortfolio()
+      setLastPriceRefresh(new Date())
       // Poll more frequently after triggering a refresh
       if (result.status === 'started') {
         setTimeout(() => fetchData(false), 4000)
         setTimeout(() => fetchData(false), 8000)
         setTimeout(() => fetchData(false), 12000)
+        setTimeout(() => setIsRefreshingPrices(false), 12000)
       } else {
         fetchData()
+        setIsRefreshingPrices(false)
       }
     } catch (err) {
       console.error('Failed to refresh:', err)
+      setIsRefreshingPrices(false)
     }
   }
 
@@ -779,10 +836,42 @@ export default function AIPortfolio() {
           </div>
           {lastUpdated && (
             <div className="text-dark-500 text-xs">
-              Updated: {lastUpdated.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
+              Data: {lastUpdated.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
+            </div>
+          )}
+          {lastPriceRefresh && (
+            <div className="text-dark-500 text-xs">
+              Prices: {lastPriceRefresh.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
             </div>
           )}
         </div>
+      </div>
+
+      {/* Auto-refresh toggle */}
+      <div className="card mb-4 p-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className={`text-lg ${isRefreshingPrices ? 'animate-spin' : ''}`}>
+            {isRefreshingPrices ? '⟳' : '💹'}
+          </span>
+          <div>
+            <div className="text-sm font-medium">Auto-Refresh Prices</div>
+            <div className="text-xs text-dark-400">
+              {autoRefresh ? 'Every 5 min during market hours' : 'Disabled'}
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={() => setAutoRefresh(!autoRefresh)}
+          className={`relative w-12 h-6 rounded-full transition-colors ${
+            autoRefresh ? 'bg-green-500' : 'bg-dark-600'
+          }`}
+        >
+          <span
+            className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
+              autoRefresh ? 'translate-x-7' : 'translate-x-1'
+            }`}
+          />
+        </button>
       </div>
 
       {waitingForTrades && (
