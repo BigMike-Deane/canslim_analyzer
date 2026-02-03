@@ -1004,24 +1004,47 @@ async def get_breaking_out_stocks(
 # ============== Single Stock Analysis ==============
 
 @app.get("/api/stocks/{ticker}")
-async def get_stock(ticker: str, db: Session = Depends(get_db)):
-    """Get detailed stock analysis"""
+async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
+    """Get detailed stock analysis with background refresh for stale data"""
+    from backend.database import SessionLocal
+
     ticker = ticker.upper()
 
     # Check cache first
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
 
-    # If not cached or stale, analyze fresh
+    # Determine if cache is stale
     cache_stale = not stock or (
         stock.last_updated and
         (datetime.utcnow() - stock.last_updated).total_seconds() > settings.SCORE_CACHE_HOURS * 3600
     )
 
     if cache_stale:
-        analysis = analyze_stock(ticker)
-        if not analysis:
-            raise HTTPException(status_code=404, detail=f"Could not analyze stock {ticker}")
-        stock = save_stock_to_db(db, analysis)
+        if stock and background_tasks:
+            # STALE: Return cached data immediately, refresh in background
+            logger.info(f"Cache stale for {ticker}, triggering background refresh")
+
+            def refresh_stock_background():
+                refresh_db = SessionLocal()
+                try:
+                    analysis = analyze_stock(ticker)
+                    if analysis:
+                        save_stock_to_db(refresh_db, analysis)
+                        refresh_db.commit()
+                        logger.info(f"Background refresh completed for {ticker}")
+                except Exception as e:
+                    logger.error(f"Background refresh failed for {ticker}: {e}")
+                finally:
+                    refresh_db.close()
+
+            background_tasks.add_task(refresh_stock_background)
+            # Continue to return stale data below
+        else:
+            # MISSING: Must block and fetch (no cached data to return)
+            analysis = analyze_stock(ticker)
+            if not analysis:
+                raise HTTPException(status_code=404, detail=f"Could not analyze stock {ticker}")
+            stock = save_stock_to_db(db, analysis)
 
     # Get score history
     history = db.query(StockScore).filter(

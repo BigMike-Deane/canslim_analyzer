@@ -1,4 +1,32 @@
+import { cache } from './cache'
+
 const API_BASE = ''
+
+// Cache TTL configuration (seconds)
+const CACHE_TTL = {
+  '/api/dashboard': 180,           // 3 min
+  '/api/stocks': 300,              // 5 min (list)
+  '/api/stocks/': 600,             // 10 min (individual stock)
+  '/api/stocks/breaking-out': 300,
+  '/api/top-growth-stocks': 300,
+  '/api/portfolio': 300,
+  '/api/portfolio/gameplan': 300,
+  '/api/watchlist': 600,
+  '/api/scanner/status': 30,       // 30 sec (fast polling)
+  '/api/market-direction': 300,
+  '/api/ai-portfolio': 120,        // 2 min (price sensitive)
+  '/api/backtests': 600,
+}
+
+function getCacheTTL(endpoint) {
+  // Check exact matches first
+  if (CACHE_TTL[endpoint]) return CACHE_TTL[endpoint]
+  // Check prefix matches (e.g., /api/stocks/AAPL matches /api/stocks/)
+  for (const [pattern, ttl] of Object.entries(CACHE_TTL)) {
+    if (endpoint.startsWith(pattern)) return ttl
+  }
+  return 300 // Default 5 min
+}
 
 class APIError extends Error {
   constructor(message, status, code) {
@@ -11,6 +39,16 @@ class APIError extends Error {
 
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`
+  const method = options.method || 'GET'
+
+  // Only cache GET requests
+  if (method === 'GET') {
+    const cached = cache.get(endpoint)
+    if (cached) {
+      console.debug(`[Cache HIT] ${endpoint}`)
+      return cached
+    }
+  }
 
   const config = {
     headers: {
@@ -31,7 +69,15 @@ async function request(endpoint, options = {}) {
     )
   }
 
-  return response.json()
+  const data = await response.json()
+
+  // Cache GET responses
+  if (method === 'GET') {
+    cache.set(endpoint, {}, data, getCacheTTL(endpoint))
+    console.debug(`[Cache SET] ${endpoint} (TTL: ${getCacheTTL(endpoint)}s)`)
+  }
+
+  return data
 }
 
 export const api = {
@@ -55,7 +101,14 @@ export const api = {
 
   getStock: (ticker) => request(`/api/stocks/${ticker}`),
 
-  refreshStock: (ticker) => request(`/api/stocks/${ticker}/refresh`, { method: 'POST' }),
+  refreshStock: async (ticker) => {
+    const result = await request(`/api/stocks/${ticker}/refresh`, { method: 'POST' })
+    // Invalidate caches after refresh
+    cache.invalidate(`/api/stocks/${ticker}`)
+    cache.invalidate('/api/stocks')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
   // Analysis jobs
   startScan: (tickers = null, source = 'sp500') => {
@@ -73,55 +126,97 @@ export const api = {
   // Portfolio
   getPortfolio: () => request('/api/portfolio'),
 
-  addPosition: (position) => request('/api/portfolio', {
-    method: 'POST',
-    body: JSON.stringify(position)
-  }),
+  addPosition: async (position) => {
+    const result = await request('/api/portfolio', {
+      method: 'POST',
+      body: JSON.stringify(position)
+    })
+    // Invalidate portfolio-related caches
+    cache.invalidate('/api/portfolio')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
-  updatePosition: (id, data) => request(`/api/portfolio/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify(data)
-  }),
+  updatePosition: async (id, data) => {
+    const result = await request(`/api/portfolio/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    })
+    cache.invalidate('/api/portfolio')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
-  deletePosition: (id) => request(`/api/portfolio/${id}`, { method: 'DELETE' }),
+  deletePosition: async (id) => {
+    const result = await request(`/api/portfolio/${id}`, { method: 'DELETE' })
+    cache.invalidate('/api/portfolio')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
-  refreshPortfolio: () => request('/api/portfolio/refresh', { method: 'POST' }),
+  refreshPortfolio: async () => {
+    const result = await request('/api/portfolio/refresh', { method: 'POST' })
+    cache.invalidate('/api/portfolio')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
   getGameplan: () => request('/api/portfolio/gameplan'),
 
   // Watchlist
   getWatchlist: () => request('/api/watchlist'),
 
-  addToWatchlist: (item) => request('/api/watchlist', {
-    method: 'POST',
-    body: JSON.stringify(item)
-  }),
+  addToWatchlist: async (item) => {
+    const result = await request('/api/watchlist', {
+      method: 'POST',
+      body: JSON.stringify(item)
+    })
+    cache.invalidate('/api/watchlist')
+    return result
+  },
 
-  removeFromWatchlist: (id) => request(`/api/watchlist/${id}`, { method: 'DELETE' }),
+  removeFromWatchlist: async (id) => {
+    const result = await request(`/api/watchlist/${id}`, { method: 'DELETE' })
+    cache.invalidate('/api/watchlist')
+    return result
+  },
 
   // Continuous Scanner
   getScannerStatus: () => request('/api/scanner/status'),
 
-  startScanner: (source = 'sp500', interval = 15) => {
+  startScanner: async (source = 'sp500', interval = 15) => {
     const params = new URLSearchParams()
     params.set('source', source)
     params.set('interval', interval)
-    return request(`/api/scanner/start?${params}`, { method: 'POST' })
+    const result = await request(`/api/scanner/start?${params}`, { method: 'POST' })
+    cache.invalidate('/api/scanner')
+    return result
   },
 
-  stopScanner: () => request('/api/scanner/stop', { method: 'POST' }),
+  stopScanner: async () => {
+    const result = await request('/api/scanner/stop', { method: 'POST' })
+    cache.invalidate('/api/scanner')
+    return result
+  },
 
-  updateScannerConfig: (source, interval) => {
+  updateScannerConfig: async (source, interval) => {
     const params = new URLSearchParams()
     if (source) params.set('source', source)
     if (interval) params.set('interval', interval)
-    return request(`/api/scanner/config?${params}`, { method: 'PATCH' })
+    const result = await request(`/api/scanner/config?${params}`, { method: 'PATCH' })
+    cache.invalidate('/api/scanner')
+    return result
   },
 
   // Market Data
   getMarket: () => request('/api/market-direction'),
 
-  refreshMarket: () => request('/api/market-direction/refresh', { method: 'POST' }),
+  refreshMarket: async () => {
+    const result = await request('/api/market-direction/refresh', { method: 'POST' })
+    cache.invalidate('/api/market-direction')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
   // AI Portfolio
   getAIPortfolio: () => request('/api/ai-portfolio'),
@@ -130,21 +225,35 @@ export const api = {
 
   getAIPortfolioTrades: (limit = 50) => request(`/api/ai-portfolio/trades?limit=${limit}`),
 
-  initializeAIPortfolio: (startingCash = 25000) =>
-    request(`/api/ai-portfolio/initialize?starting_cash=${startingCash}`, { method: 'POST' }),
+  initializeAIPortfolio: async (startingCash = 25000) => {
+    const result = await request(`/api/ai-portfolio/initialize?starting_cash=${startingCash}`, { method: 'POST' })
+    cache.invalidate('/api/ai-portfolio')
+    return result
+  },
 
-  refreshAIPortfolio: () => request('/api/ai-portfolio/refresh', { method: 'POST' }),
+  refreshAIPortfolio: async () => {
+    const result = await request('/api/ai-portfolio/refresh', { method: 'POST' })
+    cache.invalidate('/api/ai-portfolio')
+    return result
+  },
 
-  runAITradingCycle: () => request('/api/ai-portfolio/run-cycle', { method: 'POST' }),
+  runAITradingCycle: async () => {
+    const result = await request('/api/ai-portfolio/run-cycle', { method: 'POST' })
+    cache.invalidate('/api/ai-portfolio')
+    cache.invalidate('/api/dashboard')
+    return result
+  },
 
-  updateAIPortfolioConfig: (config) => {
+  updateAIPortfolioConfig: async (config) => {
     const params = new URLSearchParams()
     Object.entries(config).forEach(([key, value]) => {
       if (value !== null && value !== undefined) {
         params.set(key, value)
       }
     })
-    return request(`/api/ai-portfolio/config?${params}`, { method: 'PATCH' })
+    const result = await request(`/api/ai-portfolio/config?${params}`, { method: 'PATCH' })
+    cache.invalidate('/api/ai-portfolio')
+    return result
   },
 
   // Growth Mode Stocks
@@ -155,16 +264,28 @@ export const api = {
   // Backtesting
   getBacktests: () => request('/api/backtests'),
 
-  createBacktest: (config) => request('/api/backtests', {
-    method: 'POST',
-    body: JSON.stringify(config)
-  }),
+  createBacktest: async (config) => {
+    const result = await request('/api/backtests', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    })
+    cache.invalidate('/api/backtests')
+    return result
+  },
 
   getBacktest: (id) => request(`/api/backtests/${id}`),
 
-  deleteBacktest: (id) => request(`/api/backtests/${id}`, { method: 'DELETE' }),
+  deleteBacktest: async (id) => {
+    const result = await request(`/api/backtests/${id}`, { method: 'DELETE' })
+    cache.invalidate('/api/backtests')
+    return result
+  },
 
-  cancelBacktest: (id) => request(`/api/backtests/${id}/cancel`, { method: 'POST' })
+  cancelBacktest: async (id) => {
+    const result = await request(`/api/backtests/${id}/cancel`, { method: 'POST' })
+    cache.invalidate('/api/backtests')
+    return result
+  }
 }
 
 // Formatting utilities
@@ -215,4 +336,4 @@ export function formatMarketCap(value) {
   return formatCurrency(value)
 }
 
-export { APIError }
+export { APIError, cache }

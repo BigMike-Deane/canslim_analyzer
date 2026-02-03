@@ -8,6 +8,7 @@ Stays within FMP API rate limits (300 calls/min).
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
+from sqlalchemy.orm import Session
 import logging
 import os
 import random
@@ -31,6 +32,52 @@ _scan_config = {
     "phase": None,  # Current phase: "scanning", "p1_data", "saving", "ai_trading", None
     "phase_detail": None  # Additional detail like "Fetching earnings calendar..."
 }
+
+
+def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
+    """Delete StockScore records older than N days to prevent database bloat."""
+    from datetime import timedelta
+    from sqlalchemy import text
+    from backend.database import StockScore
+
+    cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+
+    # Count before delete
+    count_before = db.query(StockScore).filter(StockScore.timestamp < cutoff_date).count()
+
+    if count_before == 0:
+        logger.info("StockScore cleanup: No old records to delete")
+        return 0
+
+    logger.info(f"StockScore cleanup: Deleting {count_before} records older than {days_to_keep} days")
+
+    # Delete in batches to avoid memory issues
+    batch_size = 5000
+    total_deleted = 0
+    while True:
+        # Use subquery to get IDs first, then delete by ID (more compatible)
+        subquery = db.query(StockScore.id).filter(
+            StockScore.timestamp < cutoff_date
+        ).limit(batch_size).subquery()
+
+        deleted = db.query(StockScore).filter(
+            StockScore.id.in_(subquery)
+        ).delete(synchronize_session='fetch')
+
+        db.commit()
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    # VACUUM to reclaim disk space (SQLite specific)
+    try:
+        db.execute(text("VACUUM"))
+        db.commit()
+    except Exception as e:
+        logger.debug(f"VACUUM skipped: {e}")
+
+    logger.info(f"StockScore cleanup complete: {total_deleted} records deleted")
+    return total_deleted
 
 
 def get_scan_status():
@@ -628,6 +675,17 @@ def run_continuous_scan():
             ai_db.close()
         except Exception as e:
             logger.error(f"AI trading error: {e}")
+
+        # Phase 4: Cleanup old StockScore records
+        _scan_config["phase"] = "cleanup"
+        _scan_config["phase_detail"] = "Cleaning up old score records..."
+
+        try:
+            cleanup_db = SessionLocal()
+            cleanup_old_stock_scores(cleanup_db, days_to_keep=30)
+            cleanup_db.close()
+        except Exception as e:
+            logger.error(f"StockScore cleanup failed: {e}")
 
     except Exception as e:
         logger.error(f"Scan error: {e}")
