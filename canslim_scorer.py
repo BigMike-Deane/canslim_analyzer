@@ -135,8 +135,10 @@ class CANSLIMScorer:
                 # Guard against division by near-zero
                 if abs(prior_ttm) < 0.01:
                     return round(max_score * 0.3, 1), "Losses improving"
-                improvement_pct = ((prior_ttm - current_ttm) / abs(prior_ttm)) * 100
-                partial_score = min(max_score * 0.4, (improvement_pct / 50) * max_score * 0.4)
+                # Formula: how much did losses shrink as % of prior loss
+                # e.g., prior=-10, current=-5: improvement = 50% (losses cut in half)
+                improvement_pct = ((current_ttm - prior_ttm) / abs(prior_ttm)) * 100
+                partial_score = max(0, min(max_score * 0.4, (improvement_pct / 50) * max_score * 0.4))
                 return round(partial_score, 1), f"Losses improving ({improvement_pct:+.0f}%)"
             else:
                 # Losses worsening or stable negative
@@ -273,7 +275,7 @@ class CANSLIMScorer:
                 if abs(earnings[1]) < 0.001:
                     return round(max_score * 0.2, 1), "Losses near zero"
                 improvement = ((earnings[0] - earnings[1]) / abs(earnings[1])) * 100
-                partial_score = min(max_score * 0.35, (improvement / 50) * max_score * 0.35)
+                partial_score = max(0, min(max_score * 0.35, (improvement / 50) * max_score * 0.35))
                 return round(max(partial_score, max_score * 0.1), 1), f"Losses shrinking ({improvement:+.0f}%)"
 
         # Calculate growth rates between consecutive quarters
