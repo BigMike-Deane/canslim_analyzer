@@ -206,7 +206,7 @@ async def fetch_json_async(session: aiohttp.ClientSession, url: str, timeout: in
                         logger.warning(f"Rate limited (429 #{_rate_limiter['total_429s']}), waiting {wait_time:.1f}s (attempt {attempt + 1}/3)")
                         _rate_limiter["backoff_until"] = datetime.now() + timedelta(seconds=wait_time)
                         # Also reduce the per-minute limit temporarily
-                        _rate_limiter["max_calls_per_minute"] = max(150, _rate_limiter["max_calls_per_minute"] - 25)
+                        _rate_limiter["max_calls_per_minute"] = max(200, _rate_limiter["max_calls_per_minute"] - 25)
                         await asyncio.sleep(wait_time)
                         continue
                     else:
