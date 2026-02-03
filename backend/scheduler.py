@@ -454,7 +454,10 @@ def run_continuous_scan():
 
         # P1 Feature: Earnings calendar (only update if we have data)
         if analysis.get("next_earnings_date") or analysis.get("earnings_beat_streak"):
-            stock.next_earnings_date = analysis.get("next_earnings_date")
+            # Convert string date to Python date object for SQLite
+            next_earnings_str = analysis.get("next_earnings_date")
+            if next_earnings_str:
+                stock.next_earnings_date = datetime.strptime(next_earnings_str, '%Y-%m-%d').date()
             stock.days_to_earnings = analysis.get("days_to_earnings")
             stock.earnings_beat_streak = analysis.get("earnings_beat_streak")
             stock.earnings_calendar_updated_at = datetime.utcnow()
