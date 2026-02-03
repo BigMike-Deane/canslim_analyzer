@@ -216,6 +216,19 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             if not stock_data or not stock_data.is_valid:
                 continue
 
+            # Inject P1 data into stock_data BEFORE scoring so C score can use it
+            ticker_p1 = p1_data.get(stock_data.ticker, {})
+            earnings_calendar_data = ticker_p1.get("earnings_calendar", {})
+            analyst_estimates_data = ticker_p1.get("analyst_estimates", {})
+
+            # Set beat streak for C score bonus (uses eps_beat_streak attribute)
+            if earnings_calendar_data.get("earnings_beat_streak"):
+                stock_data.eps_beat_streak = earnings_calendar_data.get("earnings_beat_streak")
+
+            # Set estimate revision for C score bonus/penalty
+            if analyst_estimates_data.get("eps_estimate_revision_pct") is not None:
+                stock_data.eps_estimate_revision_pct = analyst_estimates_data.get("eps_estimate_revision_pct")
+
             # Score the stock (fast - no API calls)
             canslim_result = canslim_scorer.score_stock(stock_data)
             projection = growth_projector.project_growth(
@@ -239,10 +252,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             insider_data = ticker_supplemental.get("insider", {})
             short_data = ticker_supplemental.get("short", {})
 
-            # Get P1 feature data for this ticker
-            ticker_p1 = p1_data.get(stock_data.ticker, {})
-            earnings_calendar_data = ticker_p1.get("earnings_calendar", {})
-            analyst_estimates_data = ticker_p1.get("analyst_estimates", {})
+            # P1 data already fetched earlier (before scoring) - reuse those variables
 
             # Calculate revenue growth
             revenue_growth_pct = None
