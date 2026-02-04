@@ -1028,8 +1028,10 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             result["short_ratio"] = info.get('shortRatio', 0) or 0
 
             # Institutional ownership
+            # Yahoo returns decimal (0.65 = 65%, 1.00002 = 100.002%)
+            # Convert to percentage if value looks like a decimal (< 1.5)
             inst_pct = info.get('heldPercentInstitutions', 0) or 0
-            result["institutional_holders_pct"] = (inst_pct * 100) if 0 < inst_pct <= 1 else inst_pct
+            result["institutional_holders_pct"] = (inst_pct * 100) if 0 < inst_pct <= 1.5 else inst_pct
 
             result["success"] = True
             logger.debug(f"{ticker}: Yahoo info fetched successfully")
@@ -1126,8 +1128,8 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                     stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
                 if not stock_data.institutional_holders_pct:
                     inst_pct = info.get('heldPercentInstitutions', 0) or 0
-                    # Only multiply if it's a decimal (0-1 range)
-                    stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct <= 1 else inst_pct
+                    # Convert decimal to percentage (Yahoo returns 0.65 = 65%, 1.00002 = 100.002%)
+                    stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct <= 1.5 else inst_pct
                 if not stock_data.roe:
                     roe = info.get('returnOnEquity')
                     stock_data.roe = roe if roe else 0  # Store as decimal
