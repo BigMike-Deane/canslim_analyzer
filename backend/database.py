@@ -359,6 +359,8 @@ class Stock(Base):
         Index('ix_stocks_score_price', 'canslim_score', 'current_price'),  # Composite for filtered queries
         Index('ix_stocks_breaking_out', 'is_breaking_out', 'canslim_score'),  # For breakout queries
         Index('ix_stocks_growth', 'is_growth_stock', 'growth_mode_score'),  # For growth stock queries
+        Index('ix_stocks_sector_score', 'sector', 'canslim_score'),  # For sector-based filtering
+        Index('ix_stocks_price_growth', 'current_price', 'is_growth_stock'),  # For price + growth filtering
     )
 
 
@@ -392,6 +394,7 @@ class StockScore(Base):
     __table_args__ = (
         Index('ix_stock_scores_stock_date', 'stock_id', 'date'),
         Index('ix_stock_scores_stock_timestamp', 'stock_id', 'timestamp'),
+        Index('ix_stock_scores_date', 'date'),  # For date-range queries across all stocks
     )
 
 

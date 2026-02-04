@@ -117,6 +117,39 @@ def adjust_score_for_market(stock, current_m_score: float) -> Optional[float]:
     return round(stock.canslim_score - stored_m + current_m_score, 1)
 
 
+def get_data_freshness(last_updated: datetime) -> dict:
+    """
+    Calculate data freshness information for display.
+    Returns dict with age_minutes, age_text, and is_stale flag.
+    """
+    if not last_updated:
+        return {"age_minutes": None, "age_text": "Unknown", "is_stale": True}
+
+    age_seconds = (datetime.utcnow() - last_updated).total_seconds()
+    age_minutes = int(age_seconds / 60)
+
+    # Determine staleness (>4 hours = stale based on SCORE_CACHE_HOURS)
+    is_stale = age_seconds > settings.SCORE_CACHE_HOURS * 3600
+
+    # Human-readable age
+    if age_minutes < 1:
+        age_text = "Just now"
+    elif age_minutes < 60:
+        age_text = f"{age_minutes}m ago"
+    elif age_minutes < 1440:  # Less than 24 hours
+        hours = age_minutes // 60
+        age_text = f"{hours}h ago"
+    else:
+        days = age_minutes // 1440
+        age_text = f"{days}d ago"
+
+    return {
+        "age_minutes": age_minutes,
+        "age_text": age_text,
+        "is_stale": is_stale
+    }
+
+
 def expand_tickers_with_duplicates(tickers: set) -> set:
     """Expand a set of tickers to include all related duplicates"""
     expanded = set(tickers)
@@ -747,7 +780,10 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "sell_signals": sell_count
         },
 
-        "last_scan": (lambda dt: dt.isoformat() + "Z" if dt else None)(db.query(func.max(Stock.last_updated)).scalar())
+        "last_scan": (lambda dt: dt.isoformat() + "Z" if dt else None)(db.query(func.max(Stock.last_updated)).scalar()),
+
+        # Data freshness summary
+        "data_freshness": get_data_freshness(db.query(func.max(Stock.last_updated)).scalar())
     }
 
 
@@ -1122,7 +1158,10 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
             "projected_growth": h.projected_growth
         } for h in reversed(history)],
 
-        "last_updated": (stock.last_updated.isoformat() + "Z") if stock.last_updated else None
+        "last_updated": (stock.last_updated.isoformat() + "Z") if stock.last_updated else None,
+
+        # Data freshness indicators
+        "data_freshness": get_data_freshness(stock.last_updated)
     }
 
 

@@ -33,6 +33,139 @@ if REDIS_AVAILABLE:
 
 logger = logging.getLogger(__name__)
 
+# ============== YFINANCE SESSION MANAGEMENT ==============
+# Track yfinance session state for handling Invalid Crumb errors
+_yf_session_lock = asyncio.Lock()
+_yf_session_state = {
+    "last_refresh": None,
+    "consecutive_errors": 0,
+    "total_refreshes": 0
+}
+
+def refresh_yfinance_session():
+    """
+    Refresh yfinance session to handle Invalid Crumb errors.
+    Clears internal caches and forces new session creation.
+    """
+    import yfinance as yf
+
+    try:
+        # Clear yfinance's internal caches
+        if hasattr(yf, 'shared') and hasattr(yf.shared, '_CACHEMGR'):
+            yf.shared._CACHEMGR.clear()
+
+        # Clear any module-level cache
+        if hasattr(yf, 'cache'):
+            if hasattr(yf.cache, 'clear'):
+                yf.cache.clear()
+
+        # For newer yfinance versions, clear the session
+        if hasattr(yf, 'utils') and hasattr(yf.utils, 'get_json'):
+            # Force new session by clearing cookies
+            import requests
+            yf.utils.get_json.cache_clear() if hasattr(yf.utils.get_json, 'cache_clear') else None
+
+        _yf_session_state["last_refresh"] = datetime.now()
+        _yf_session_state["total_refreshes"] += 1
+        _yf_session_state["consecutive_errors"] = 0
+
+        logger.info(f"Refreshed yfinance session (total refreshes: {_yf_session_state['total_refreshes']})")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to refresh yfinance session: {e}")
+        return False
+
+
+def get_yf_ticker_with_retry(ticker: str, max_retries: int = 2):
+    """
+    Get a yfinance Ticker object with retry logic for Invalid Crumb errors.
+
+    Args:
+        ticker: Stock ticker symbol
+        max_retries: Maximum number of retries on auth errors
+
+    Returns:
+        yfinance Ticker object or None if all retries fail
+    """
+    import yfinance as yf
+
+    for attempt in range(max_retries + 1):
+        try:
+            stock = yf.Ticker(ticker)
+            # Test if the ticker is valid by accessing a property
+            _ = stock.info
+            _yf_session_state["consecutive_errors"] = 0
+            return stock
+        except Exception as e:
+            error_str = str(e).lower()
+            is_auth_error = any(x in error_str for x in ["401", "crumb", "unauthorized", "invalid"])
+
+            if is_auth_error and attempt < max_retries:
+                _yf_session_state["consecutive_errors"] += 1
+                logger.debug(f"{ticker}: Auth error (attempt {attempt + 1}), refreshing session...")
+                refresh_yfinance_session()
+                continue
+            elif is_auth_error:
+                logger.warning(f"{ticker}: Auth error persists after {max_retries} retries")
+                return None
+            else:
+                # Non-auth error, don't retry
+                raise
+
+    return None
+
+
+def yf_safe_call(ticker: str, func_name: str, default=None, max_retries: int = 2):
+    """
+    Safely call a yfinance Ticker method with retry logic for Invalid Crumb errors.
+
+    Args:
+        ticker: Stock ticker symbol
+        func_name: Name of the Ticker property/method to call (e.g., 'info', 'insider_transactions')
+        default: Default value to return on failure
+        max_retries: Maximum number of retries on auth errors
+
+    Returns:
+        Result of the yfinance call or default on failure
+    """
+    import yfinance as yf
+
+    for attempt in range(max_retries + 1):
+        try:
+            stock = yf.Ticker(ticker)
+            result = getattr(stock, func_name)
+            # If it's callable (method), call it
+            if callable(result):
+                result = result()
+            _yf_session_state["consecutive_errors"] = 0
+            return result
+        except Exception as e:
+            error_str = str(e).lower()
+            is_auth_error = any(x in error_str for x in ["401", "crumb", "unauthorized", "invalid"])
+            is_rate_limit = any(x in error_str for x in ["429", "rate", "too many"])
+
+            if is_rate_limit:
+                # Don't retry rate limits, just fail
+                logger.debug(f"{ticker}: Rate limited on {func_name}")
+                return default
+            elif is_auth_error and attempt < max_retries:
+                _yf_session_state["consecutive_errors"] += 1
+                logger.debug(f"{ticker}: Auth error on {func_name} (attempt {attempt + 1}), refreshing session...")
+                refresh_yfinance_session()
+                import time
+                time.sleep(0.5)  # Small delay after refresh
+                continue
+            elif is_auth_error:
+                logger.debug(f"{ticker}: Auth error on {func_name} persists after {max_retries} retries")
+                return default
+            else:
+                # Non-auth, non-rate error
+                logger.debug(f"{ticker}: Error on {func_name}: {e}")
+                return default
+
+    return default
+
+
 # ============== FALLBACK TRACKING ==============
 # Track stocks that needed cached fallback for monitoring
 _fallback_tracker = {
@@ -621,13 +754,11 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
 
     def _fetch_insider():
         try:
-            import yfinance as yf
             import re
-            stock = yf.Ticker(ticker)
 
-            # Get insider transactions
-            insider_df = stock.insider_transactions
-            if insider_df is None or insider_df.empty:
+            # Use retry-enabled helper for yfinance calls
+            insider_df = yf_safe_call(ticker, 'insider_transactions', default=None, max_retries=2)
+            if insider_df is None or (hasattr(insider_df, 'empty') and insider_df.empty):
                 return {}
 
             # Filter to last 3 months
@@ -748,54 +879,26 @@ async def fetch_short_interest_async(ticker: str) -> dict:
     """
     Async fetch short interest data from Yahoo Finance.
     Wraps sync yfinance call in executor to not block async loop.
-    Includes retry logic for "Invalid Crumb" 401 errors.
+    Uses centralized retry logic for "Invalid Crumb" 401 errors.
     """
     loop = asyncio.get_event_loop()
 
     def _fetch_short():
-        try:
-            import yfinance as yf
-            stock = yf.Ticker(ticker)
-            info = stock.info
+        # Use retry-enabled helper for yfinance calls
+        info = yf_safe_call(ticker, 'info', default=None, max_retries=2)
 
-            if info:
-                short_pct = info.get("shortPercentOfFloat", 0) or 0
-                short_ratio = info.get("shortRatio", 0) or 0
+        if info:
+            short_pct = info.get("shortPercentOfFloat", 0) or 0
+            short_ratio = info.get("shortRatio", 0) or 0
 
-                # Convert to percentage if needed
-                if short_pct > 0 and short_pct < 1:
-                    short_pct = short_pct * 100
+            # Convert to percentage if needed
+            if short_pct > 0 and short_pct < 1:
+                short_pct = short_pct * 100
 
-                return {
-                    "short_interest_pct": short_pct,
-                    "short_ratio": short_ratio
-                }
-        except Exception as e:
-            error_str = str(e).lower()
-            # Handle "Invalid Crumb" 401 errors by clearing yfinance cache and retrying
-            if "401" in error_str or "crumb" in error_str or "unauthorized" in error_str:
-                logger.debug(f"{ticker}: Invalid crumb error, clearing cache and retrying...")
-                try:
-                    # Clear yfinance session cache
-                    import yfinance as yf
-                    if hasattr(yf, 'cache') and hasattr(yf.cache, 'clear'):
-                        yf.cache.clear()
-                    # Retry with fresh session
-                    stock = yf.Ticker(ticker)
-                    info = stock.info
-                    if info:
-                        short_pct = info.get("shortPercentOfFloat", 0) or 0
-                        short_ratio = info.get("shortRatio", 0) or 0
-                        if short_pct > 0 and short_pct < 1:
-                            short_pct = short_pct * 100
-                        return {
-                            "short_interest_pct": short_pct,
-                            "short_ratio": short_ratio
-                        }
-                except Exception as retry_e:
-                    logger.debug(f"{ticker}: Retry after crumb clear failed: {retry_e}")
-            else:
-                logger.debug(f"{ticker}: Short interest error: {e}")
+            return {
+                "short_interest_pct": short_pct,
+                "short_ratio": short_ratio
+            }
 
         return {}
 
@@ -853,11 +956,8 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
         }
 
         try:
-            import yfinance as yf
-            import time
-
-            stock = yf.Ticker(ticker)
-            info = stock.info
+            # Use retry-enabled helper for yfinance calls
+            info = yf_safe_call(ticker, 'info', default=None, max_retries=2)
 
             if not info or not info.get('regularMarketPrice'):
                 logger.debug(f"{ticker}: Yahoo info returned no data")
@@ -923,30 +1023,11 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
         except Exception as e:
             error_str = str(e).lower()
             if "rate" in error_str or "429" in error_str or "too many" in error_str:
-                raise  # Re-raise rate limit errors for retry logic
-            # Handle "Invalid Crumb" 401 errors by clearing yfinance cache and retrying
-            if "401" in error_str or "crumb" in error_str or "unauthorized" in error_str:
-                logger.debug(f"{ticker}: Invalid crumb error, clearing cache and retrying...")
-                try:
-                    import yfinance as yf
-                    if hasattr(yf, 'cache') and hasattr(yf.cache, 'clear'):
-                        yf.cache.clear()
-                    # Retry with fresh session
-                    stock = yf.Ticker(ticker)
-                    info = stock.info
-                    if info and info.get('regularMarketPrice'):
-                        # Re-extract all data (simplified retry)
-                        result["roe"] = info.get('returnOnEquity') or 0
-                        result["analyst_target_price"] = info.get('targetMeanPrice', 0) or 0
-                        result["short_interest_pct"] = info.get('shortPercentOfFloat', 0) or 0
-                        result["institutional_holders_pct"] = (info.get('heldPercentInstitutions', 0) or 0) * 100
-                        result["success"] = True
-                        return result
-                except Exception as retry_e:
-                    logger.debug(f"{ticker}: Retry after crumb clear failed: {retry_e}")
+                raise  # Re-raise rate limit errors for outer retry logic
             # Check for 404 or "not found" errors indicating delisted ticker
             if "404" in error_str or "not found" in error_str:
                 mark_ticker_as_delisted(ticker, reason="yahoo_404", source="async_data_fetcher")
+            # Auth errors already handled by yf_safe_call
             logger.debug(f"{ticker}: Yahoo info error: {e}")
             return result
 
@@ -1016,8 +1097,9 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
     def _fetch_yahoo():
         try:
             import yfinance as yf
-            stock = yf.Ticker(ticker)
-            info = stock.info
+
+            # Use retry-enabled helper for yfinance calls
+            info = yf_safe_call(ticker, 'info', default=None, max_retries=2)
 
             if info and info.get('regularMarketPrice'):
                 # Only fill in missing data
@@ -1044,7 +1126,8 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
             else:
                 # Fetch fresh adjusted EPS from Yahoo
                 try:
-                    earnings_hist = stock.earnings_history
+                    # Use retry-enabled helper for earnings_history
+                    earnings_hist = yf_safe_call(ticker, 'earnings_history', default=None, max_retries=2)
                     if earnings_hist is not None and not earnings_hist.empty and 'epsActual' in earnings_hist.columns:
                         adjusted_eps = []
                         for _, row in earnings_hist.iterrows():

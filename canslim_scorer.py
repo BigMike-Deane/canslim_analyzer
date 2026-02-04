@@ -229,17 +229,26 @@ class CANSLIMScorer:
             surprise_score = min(surprise_score + beat_streak_bonus, surprise_max)
 
         # Analyst estimate revision bonus/penalty (P1 feature Feb 2026)
-        # Reward stocks where analysts are raising estimates
+        # Reward stocks where analysts are raising estimates - scaled by magnitude
         revision_bonus = 0
         revision_detail = ""
         estimate_revision_pct = getattr(data, 'eps_estimate_revision_pct', None)
         if estimate_revision_pct is not None:
-            if estimate_revision_pct >= 10:
+            if estimate_revision_pct >= 20:
+                revision_bonus = 8  # Strong upward revision
+                revision_detail = f" +est↑↑{estimate_revision_pct:.0f}%"
+            elif estimate_revision_pct >= 15:
+                revision_bonus = 6
+                revision_detail = f" +est↑{estimate_revision_pct:.0f}%"
+            elif estimate_revision_pct >= 10:
                 revision_bonus = 4
                 revision_detail = f" +est↑{estimate_revision_pct:.0f}%"
             elif estimate_revision_pct >= 5:
                 revision_bonus = 2
                 revision_detail = f" +est↑"
+            elif estimate_revision_pct <= -10:
+                revision_bonus = -4  # Strong downward revision
+                revision_detail = f" est↓↓"
             elif estimate_revision_pct <= -5:
                 revision_bonus = -2
                 revision_detail = f" est↓"
