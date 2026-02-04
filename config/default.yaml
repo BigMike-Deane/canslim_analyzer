@@ -217,6 +217,12 @@ coiled_spring:
     max_institutional_pct: 75   # Room for institutions to buy (relaxed from 50)
     min_l_score: 6              # Rising relative strength (relaxed from 8)
 
+  # Relaxed thresholds for PRE-BREAKOUT candidates (haven't had catalyst yet)
+  pre_breakout_thresholds:
+    min_c_score: 5              # Lower C requirement (catalyst hasn't happened)
+    min_total_score: 48         # Lower total (will improve after earnings)
+    min_beat_streak: 3          # Same consistency requirement
+
   # Earnings timing
   earnings_window:
     alert_days: 14              # Start tracking 14 days out

@@ -2192,25 +2192,54 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
 
     cs_config = config.get('coiled_spring', {})
     thresholds = cs_config.get('thresholds', {})
+    pre_breakout_thresholds = cs_config.get('pre_breakout_thresholds', {})
     earnings_window = cs_config.get('earnings_window', {})
     ranking_weights = cs_config.get('ranking_weights', {})
 
-    # Query stocks that might qualify (using relaxed thresholds)
-    query = db.query(Stock).filter(
+    # Base filters for all candidates
+    base_filters = [
         Stock.weeks_in_base >= thresholds.get('min_weeks_in_base', 15),
-        Stock.canslim_score >= thresholds.get('min_total_score', 55),
-        Stock.c_score >= thresholds.get('min_c_score', 10),
         Stock.l_score >= thresholds.get('min_l_score', 6),
         Stock.days_to_earnings != None,
         Stock.days_to_earnings > earnings_window.get('block_days', 1),
         Stock.days_to_earnings <= earnings_window.get('alert_days', 14)
+    ]
+
+    candidates = []
+
+    if not pre_breakout_only:
+        # Query breakout candidates with standard thresholds
+        breakout_query = db.query(Stock).filter(
+            *base_filters,
+            Stock.canslim_score >= thresholds.get('min_total_score', 55),
+            Stock.c_score >= thresholds.get('min_c_score', 10),
+            Stock.is_breaking_out == True
+        )
+        candidates.extend(breakout_query.all())
+
+    # Query PRE-BREAKOUT candidates with RELAXED thresholds
+    # (they haven't had their catalyst yet, so C score may be lower)
+    pre_breakout_min_score = pre_breakout_thresholds.get('min_total_score', thresholds.get('min_total_score', 55))
+    pre_breakout_min_c = pre_breakout_thresholds.get('min_c_score', thresholds.get('min_c_score', 10))
+    pre_breakout_min_beats = pre_breakout_thresholds.get('min_beat_streak', thresholds.get('min_beat_streak', 3))
+
+    pre_breakout_query = db.query(Stock).filter(
+        *base_filters,
+        Stock.canslim_score >= pre_breakout_min_score,
+        Stock.c_score >= pre_breakout_min_c,
+        Stock.is_breaking_out == False,
+        Stock.earnings_beat_streak >= pre_breakout_min_beats
     )
+    candidates.extend(pre_breakout_query.all())
 
-    # Optional: filter to pre-breakout only
-    if pre_breakout_only:
-        query = query.filter(Stock.is_breaking_out == False)
-
-    candidates = query.all()
+    # Deduplicate (shouldn't happen but just in case)
+    seen = set()
+    unique_candidates = []
+    for c in candidates:
+        if c.ticker not in seen:
+            seen.add(c.ticker)
+            unique_candidates.append(c)
+    candidates = unique_candidates
 
     # Filter by institutional ownership and beat streak
     qualified = []
