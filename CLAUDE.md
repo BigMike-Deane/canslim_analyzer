@@ -1,6 +1,88 @@
 # CANSLIM Analyzer - Project Context
 
-## Session Summary: Feb 4, 2026
+## Session Summary: Feb 4, 2026 (Evening)
+
+### A Score = 0 Bug - FIXED
+
+**Problem**: All stocks showing A=0 or A=N/A, AI Portfolio scores dropped 10-15 points.
+
+**Root Causes** (4 layers):
+1. Cache limit too small (500 vs 2500 needed)
+2. Cache key mismatch: `load_cache_from_db()` used "quarterly"/"annual" but code expected "quarterly_eps"/"annual_eps"
+3. `main.py analyze_stock()` wasn't including annual_eps in score_details
+4. `save_stock_to_db()` missing line to save score_details
+
+**Files Fixed**: `data_fetcher.py`, `async_data_fetcher.py`, `backend/main.py`, `config/default.yaml`
+
+### Individual Scores = 0 Bug - FIXED (`ce2b9cc`)
+
+**Problem**: Frontend showed all C/A/N/S/L/I scores as 0, but total score was correct.
+
+**Root Cause**: Case mismatch - score_result used lowercase keys ("c", "a") but code accessed uppercase ("C", "A").
+
+**Fix**: Changed lines 514-520 in `backend/main.py` to use lowercase keys.
+
+### Coiled Spring Improvements - PRE-BREAKOUT FOCUS
+
+**Problem**: CS was catching stocks AFTER they spiked (like SLAB with 16x volume), not before.
+
+**Solution**: Added pre-breakout preference and relaxed thresholds.
+
+**New Commits**: `ce2b9cc`, `7784782`, `7bbad04`, `a38824a`
+
+**Standard Thresholds** (for BREAKING_OUT stocks):
+- `min_weeks_in_base: 15`, `min_beat_streak: 3`, `min_c_score: 10`
+- `min_total_score: 55`, `max_institutional_pct: 75`, `min_l_score: 6`
+
+**Pre-Breakout Thresholds** (relaxed - catalyst hasn't happened):
+- `min_c_score: 5` (lower C ok - earnings catalyst pending)
+- `min_total_score: 48` (will improve after earnings)
+
+**Quality Ranking Bonuses/Penalties**:
+- `pre_breakout_bonus: +15` - Ideal entry, hasn't moved yet
+- `extended_penalty: -20` - Already spiked (>2x volume at high)
+- `low_inst_bonus: +10` - Room to run if inst < 30%
+
+**Entry Status Categories**:
+- **PRE-BREAKOUT**: Ideal entry (gets +15 bonus)
+- **BREAKING_OUT**: Active breakout with normal volume
+- **EXTENDED**: Already spiked (penalized -20)
+
+**Success Tracking Endpoints**:
+- `GET /api/coiled-spring/history` - View past alerts with win rates
+- `POST /api/coiled-spring/record?ticker=XYZ` - Record alert for tracking
+- `POST /api/coiled-spring/update-outcomes` - Update outcomes after earnings
+
+**Current Top Candidates** (Feb 4):
+1. CROX (166.4) - PRE-BREAKOUT, 26w cup_w_handle, 22 beats, -29.9% from high
+2. MRNA (140.3) - PRE-BREAKOUT, 26w cup_w_handle, 11 beats, -24.0% from high
+3. OI (125.5) - PRE-BREAKOUT, 26w cup, 4 beats, -0.9% from high
+4. RSI (116.2) - PRE-BREAKOUT, 26w cup, 3 beats, -22.9% from high
+5. STNG (115.2) - BREAKING_OUT, 26w cup, 9 beats
+6. KO (108.7) - PRE-BREAKOUT, 15w dbl_btm, 7 beats
+
+### Diagnostic Commands
+
+```bash
+# Check CS candidates (ranked by quality)
+curl -s "http://100.104.189.36:8001/api/coiled-spring/candidates?limit=10" | python3 -m json.tool
+
+# Pre-breakout only (ideal entries)
+curl -s "http://100.104.189.36:8001/api/coiled-spring/candidates?pre_breakout_only=true" | python3 -m json.tool
+
+# Check CS history and success rates
+curl -s "http://100.104.189.36:8001/api/coiled-spring/history" | python3 -m json.tool
+
+# Record a CS alert for tracking
+curl -X POST "http://100.104.189.36:8001/api/coiled-spring/record?ticker=CROX"
+
+# Update outcomes after earnings
+curl -X POST "http://100.104.189.36:8001/api/coiled-spring/update-outcomes"
+```
+
+---
+
+## Session Summary: Feb 4, 2026 (Earlier)
 
 ### Coiled Spring / Earnings Catalyst Feature - DEPLOYED
 
@@ -21,22 +103,7 @@
 - `frontend/src/api.js` - Added `getCoiledSpringAlerts()` and `getCoiledSpringCandidates()`
 - `tests/test_coiled_spring.py` - 23 unit tests
 
-**CS Qualification Criteria** (ALL 7 must pass):
-1. `weeks_in_base >= 15` - Long consolidation = stored energy
-2. `earnings_beat_streak >= 3` - Track record of execution
-3. `c_score >= 12` - Strong current earnings
-4. `total_score >= 55` - Quality stock (lowered from 65 to catch more)
-5. `institutional_holders_pct <= 50` - Room for big buyers (raised from 40)
-6. `l_score >= 8` - Rising relative strength
-7. `1 < days_to_earnings <= 14` - Upcoming catalyst
-
-**Current State** (after full scan):
-- P1 data populated: 2059 stocks with `days_to_earnings` and `earnings_beat_streak`
-- 522 stocks have earnings in next 1-14 days
-- With lowered thresholds, more stocks qualify (SSD, GXO now pass)
-- Near-misses still fail on institutional ownership (CINF: 71%, STNG: 74%)
-
-### Bug Fixes
+### Earlier Bug Fixes
 
 **1. Scan Session Timeout** - FIXED (`94e6b15`)
 - Problem: Scans stopped at ~100-130 stocks instead of completing all 1917
@@ -54,42 +121,6 @@
 - Problem: `days_to_earnings`, `earnings_beat_streak`, `institutional_holders_pct` not returned by stock APIs
 - Fix: Added fields to `/api/stocks` list and `/api/stocks/{ticker}` detail endpoints
 - File: `backend/main.py`
-
-### Diagnostic Commands
-
-```bash
-# Check CS candidates
-curl -s http://100.104.189.36:8001/api/coiled-spring/candidates | python3 -m json.tool
-
-# Check P1 data coverage
-ssh root@100.104.189.36 "docker exec canslim-analyzer python3 -c \"
-import sys; sys.path.insert(0, '/app/backend')
-from database import SessionLocal, Stock
-db = SessionLocal()
-with_days = db.query(Stock).filter(Stock.days_to_earnings != None).count()
-with_beats = db.query(Stock).filter(Stock.earnings_beat_streak != None).count()
-print(f'days_to_earnings: {with_days}')
-print(f'earnings_beat_streak: {with_beats}')
-db.close()
-\""
-
-# Clear scan checkpoint (forces fresh scan)
-ssh root@100.104.189.36 "docker exec canslim-analyzer rm -f /app/scan_progress_*.json"
-
-# Find near-miss CS candidates
-ssh root@100.104.189.36 "docker exec canslim-analyzer python3 -c \"
-import sys; sys.path.insert(0, '/app/backend')
-from database import SessionLocal, Stock
-db = SessionLocal()
-stocks = db.query(Stock).filter(Stock.days_to_earnings > 1, Stock.days_to_earnings <= 14).all()
-for s in stocks:
-    if (s.weeks_in_base or 0) >= 15 and (s.earnings_beat_streak or 0) >= 3:
-        inst = (s.score_details or {}).get('i', {}).get('institutional_pct', 100)
-        if inst <= 40:
-            print(f'{s.ticker}: Score {s.canslim_score:.0f}, {s.weeks_in_base}w, {s.earnings_beat_streak} beats, {s.days_to_earnings}d')
-db.close()
-\""
-```
 
 ---
 
