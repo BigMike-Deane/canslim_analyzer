@@ -63,8 +63,9 @@ async def fetch_insider_short_batch_async(tickers: List[str], progress_callback=
             if cached:
                 results[ticker]["short"] = cached
 
-    total_tasks = len(insider_tasks) + len(short_tasks)
-    completed = 0
+    # Track unique tickers processed for clearer progress display
+    total_tickers = len(tickers)
+    tickers_processed = set()
 
     # Fetch insider data in parallel (uses executor, limit concurrency to avoid rate limits)
     if insider_tasks:
@@ -79,9 +80,9 @@ async def fetch_insider_short_batch_async(tickers: List[str], progress_callback=
                     results[ticker]["insider"] = data
                     mark_data_fetched(ticker, "insider_trading")
                     set_cached_data(ticker, "insider_trading", data, persist_to_db=False)
-                completed += 1
+                tickers_processed.add(ticker)
             if progress_callback:
-                progress_callback(completed, total_tasks, "insider_short")
+                progress_callback(len(tickers_processed), total_tickers, "insider_short")
             await asyncio.sleep(0.2)  # Reduced delay
 
     # Fetch short interest in parallel (uses executor, limit concurrency)
@@ -97,9 +98,9 @@ async def fetch_insider_short_batch_async(tickers: List[str], progress_callback=
                     results[ticker]["short"] = data
                     mark_data_fetched(ticker, "short_interest")
                     set_cached_data(ticker, "short_interest", data, persist_to_db=True)
-                completed += 1
+                tickers_processed.add(ticker)
             if progress_callback:
-                progress_callback(completed, total_tasks, "insider_short")
+                progress_callback(len(tickers_processed), total_tickers, "insider_short")
             await asyncio.sleep(0.2)  # Reduced delay
 
     return results
@@ -143,8 +144,9 @@ async def fetch_p1_data_batch_async(tickers: List[str], progress_callback=None) 
             if cached:
                 results[ticker]["analyst_estimates"] = cached
 
-    total_tasks = len(tickers_needing_earnings) + len(tickers_needing_estimates)
-    completed = 0
+    # Track unique tickers processed for clearer progress display
+    total_tickers = len(tickers)
+    tickers_processed = set()
 
     # Create aiohttp session for FMP API calls
     timeout = aiohttp.ClientTimeout(total=30)
@@ -167,9 +169,9 @@ async def fetch_p1_data_batch_async(tickers: List[str], progress_callback=None) 
                         error_str = str(data).lower()
                         if "404" in error_str or "not found" in error_str:
                             mark_ticker_as_delisted(ticker, reason="p1_fetch_404", source="async_scanner")
-                    completed += 1
+                    tickers_processed.add(ticker)
                 if progress_callback:
-                    progress_callback(completed, total_tasks, "p1_data")
+                    progress_callback(len(tickers_processed), total_tickers, "p1_data")
                 await asyncio.sleep(0.2)  # Reduced delay
 
         # Fetch analyst estimates in parallel
@@ -190,9 +192,9 @@ async def fetch_p1_data_batch_async(tickers: List[str], progress_callback=None) 
                         error_str = str(data).lower()
                         if "404" in error_str or "not found" in error_str:
                             mark_ticker_as_delisted(ticker, reason="p1_fetch_404", source="async_scanner")
-                    completed += 1
+                    tickers_processed.add(ticker)
                 if progress_callback:
-                    progress_callback(completed, total_tasks, "p1_data")
+                    progress_callback(len(tickers_processed), total_tickers, "p1_data")
                 await asyncio.sleep(0.2)  # Reduced delay
 
     return results
