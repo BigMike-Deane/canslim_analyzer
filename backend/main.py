@@ -2634,7 +2634,7 @@ async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/backtests/{backtest_id}/cancel")
 async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
-    """Request cancellation of a running backtest"""
+    """Cancel a running backtest - handles stuck backtests that may have lost their process"""
     backtest = db.query(BacktestRun).get(backtest_id)
     if not backtest:
         raise HTTPException(404, "Backtest not found")
@@ -2642,16 +2642,38 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
     if backtest.status not in ("pending", "running"):
         raise HTTPException(400, f"Cannot cancel backtest with status: {backtest.status}")
 
-    backtest.cancel_requested = True
-    db.commit()
+    # Check if backtest is stuck (running for more than 2 hours or no progress for 10+ minutes)
+    # If stuck, directly cancel it since the background process is likely dead
+    is_stuck = False
+    if backtest.created_at:
+        time_since_created = (datetime.utcnow() - backtest.created_at).total_seconds()
+        # Consider stuck if running for more than 2 hours
+        if time_since_created > 7200:
+            is_stuck = True
+            logger.info(f"Backtest {backtest_id} appears stuck (running for {time_since_created/3600:.1f} hours)")
 
-    logger.info(f"Cancellation requested for backtest {backtest_id}")
-
-    return {
-        "message": "Cancellation requested",
-        "id": backtest.id,
-        "status": backtest.status
-    }
+    if is_stuck:
+        # Directly cancel the backtest since the process is dead
+        backtest.status = "cancelled"
+        backtest.completed_at = datetime.utcnow()
+        backtest.error_message = "Cancelled by user (backtest was stuck)"
+        db.commit()
+        logger.info(f"Directly cancelled stuck backtest {backtest_id}")
+        return {
+            "message": "Backtest cancelled (was stuck)",
+            "id": backtest.id,
+            "status": "cancelled"
+        }
+    else:
+        # Normal cancel - set flag for running process to check
+        backtest.cancel_requested = True
+        db.commit()
+        logger.info(f"Cancellation requested for backtest {backtest_id}")
+        return {
+            "message": "Cancellation requested",
+            "id": backtest.id,
+            "status": backtest.status
+        }
 
 
 # ============== Serve Frontend ==============

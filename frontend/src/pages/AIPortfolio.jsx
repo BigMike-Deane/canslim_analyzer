@@ -867,8 +867,8 @@ export default function AIPortfolio() {
           }`}
         >
           <span
-            className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
-              autoRefresh ? 'translate-x-7' : 'translate-x-1'
+            className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-200 ${
+              autoRefresh ? 'translate-x-6' : ''
             }`}
           />
         </button>
