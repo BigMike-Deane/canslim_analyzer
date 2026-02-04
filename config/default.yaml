@@ -212,10 +212,10 @@ coiled_spring:
   thresholds:
     min_weeks_in_base: 15       # Long consolidation = stored energy
     min_beat_streak: 3          # Consistent execution
-    min_c_score: 12             # Strong current earnings (out of 15)
-    min_total_score: 55         # Quality stock (lowered from 65 to catch more near-misses)
-    max_institutional_pct: 50   # Room for institutions to buy (raised from 40)
-    min_l_score: 8              # Rising relative strength
+    min_c_score: 10             # Strong current earnings (relaxed from 12)
+    min_total_score: 55         # Quality stock
+    max_institutional_pct: 75   # Room for institutions to buy (relaxed from 50)
+    min_l_score: 6              # Rising relative strength (relaxed from 8)
 
   # Earnings timing
   earnings_window:
@@ -230,10 +230,18 @@ coiled_spring:
     strong_beat_bonus: 5        # Extra for 5+ consecutive beats
     max_bonus: 35               # Cap total CS bonus
 
+  # Quality ranking weights (used to rank candidates, higher = better)
+  ranking_weights:
+    weeks_in_base: 1.5          # Longer base = more stored energy
+    beat_streak: 3.0            # Consistency is key
+    l_score: 2.0                # Relative strength momentum
+    total_score: 0.5            # Overall quality
+    low_inst_bonus: 10          # Bonus if inst < 30% (room to run)
+
   # Alert settings (prevent overload)
   alerts:
     enabled: true
-    max_per_day: 3              # Maximum alerts per day
+    max_per_day: 5              # Maximum alerts per day (increased from 3)
     cooldown_hours: 8           # Hours between alerts for same ticker
     include_in_email: true
 

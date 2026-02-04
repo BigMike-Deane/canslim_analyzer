@@ -833,10 +833,32 @@ def calculate_coiled_spring_score(data, score, config: dict = None) -> dict:
         if days_to_earnings is not None and days_to_earnings > block_days:
             result["allow_pre_earnings_buy"] = True
 
+        # Calculate quality ranking score (higher = better candidate)
+        # Used to rank and prioritize CS candidates
+        ranking_weights = config.get('ranking_weights', {})
+        w_base = ranking_weights.get('weeks_in_base', 1.5)
+        w_beats = ranking_weights.get('beat_streak', 3.0)
+        w_l = ranking_weights.get('l_score', 2.0)
+        w_total = ranking_weights.get('total_score', 0.5)
+        low_inst_bonus = ranking_weights.get('low_inst_bonus', 10)
+
+        quality_rank = (
+            weeks_in_base * w_base +           # Longer base = more stored energy
+            earnings_beat_streak * w_beats +   # More consistency = better
+            l_score * w_l +                    # Strong RS = momentum
+            total_score * w_total              # Overall quality
+        )
+        # Bonus for truly low institutional (< 30%)
+        if institutional_pct < 30:
+            quality_rank += low_inst_bonus
+
+        result["quality_rank"] = round(quality_rank, 1)
+
     else:
         # Not a coiled spring - store what failed for debugging
         factors["criteria_failed"] = criteria_failed
         result["cs_details"] = f"Not CS: {criteria_failed[0]}"
+        result["quality_rank"] = 0
 
     return result
 

@@ -2178,24 +2178,25 @@ async def get_coiled_spring_alerts(
 
 
 @app.get("/api/coiled-spring/candidates")
-async def get_coiled_spring_candidates(db: Session = Depends(get_db)):
+async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int = 10):
     """
     Get current stocks that qualify as Coiled Spring candidates.
-    These are stocks that meet CS criteria based on current data.
+    These are stocks that meet CS criteria based on current data,
+    ranked by quality (best candidates first).
     """
-    from canslim_scorer import calculate_coiled_spring_score
     from config_loader import config
 
     cs_config = config.get('coiled_spring', {})
     thresholds = cs_config.get('thresholds', {})
     earnings_window = cs_config.get('earnings_window', {})
+    ranking_weights = cs_config.get('ranking_weights', {})
 
-    # Query stocks that might qualify
+    # Query stocks that might qualify (using relaxed thresholds)
     candidates = db.query(Stock).filter(
         Stock.weeks_in_base >= thresholds.get('min_weeks_in_base', 15),
-        Stock.canslim_score >= thresholds.get('min_total_score', 65),
-        Stock.c_score >= thresholds.get('min_c_score', 12),
-        Stock.l_score >= thresholds.get('min_l_score', 8),
+        Stock.canslim_score >= thresholds.get('min_total_score', 55),
+        Stock.c_score >= thresholds.get('min_c_score', 10),
+        Stock.l_score >= thresholds.get('min_l_score', 6),
         Stock.days_to_earnings != None,
         Stock.days_to_earnings > earnings_window.get('block_days', 1),
         Stock.days_to_earnings <= earnings_window.get('alert_days', 14)
@@ -2208,7 +2209,7 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db)):
         inst_pct = (stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0
         beat_streak = getattr(stock, 'earnings_beat_streak', 0) or 0
 
-        if (inst_pct <= thresholds.get('max_institutional_pct', 40) and
+        if (inst_pct <= thresholds.get('max_institutional_pct', 75) and
             beat_streak >= thresholds.get('min_beat_streak', 3)):
 
             # Calculate CS bonus
@@ -2219,6 +2220,23 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db)):
             if beat_streak >= 5:
                 cs_bonus += scoring.get('strong_beat_bonus', 5)
             cs_bonus = min(cs_bonus, scoring.get('max_bonus', 35))
+
+            # Calculate quality ranking score (higher = better candidate)
+            w_base = ranking_weights.get('weeks_in_base', 1.5)
+            w_beats = ranking_weights.get('beat_streak', 3.0)
+            w_l = ranking_weights.get('l_score', 2.0)
+            w_total = ranking_weights.get('total_score', 0.5)
+            low_inst_bonus = ranking_weights.get('low_inst_bonus', 10)
+
+            quality_rank = (
+                (stock.weeks_in_base or 0) * w_base +
+                beat_streak * w_beats +
+                (stock.l_score or 0) * w_l +
+                (stock.canslim_score or 0) * w_total
+            )
+            # Bonus for truly low institutional (< 30%)
+            if inst_pct < 30:
+                quality_rank += low_inst_bonus
 
             qualified.append({
                 "ticker": stock.ticker,
@@ -2232,17 +2250,22 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db)):
                 "days_to_earnings": stock.days_to_earnings,
                 "institutional_holders_pct": inst_pct,
                 "cs_bonus": cs_bonus,
+                "quality_rank": round(quality_rank, 1),
                 "current_price": stock.current_price,
                 "is_breaking_out": stock.is_breaking_out
             })
 
-    # Sort by CS bonus + total score
-    qualified.sort(key=lambda x: (x['cs_bonus'], x['canslim_score']), reverse=True)
+    # Sort by quality_rank (best candidates first)
+    qualified.sort(key=lambda x: x['quality_rank'], reverse=True)
+
+    # Limit results
+    qualified = qualified[:limit]
 
     return {
         "candidates": qualified,
         "total": len(qualified),
-        "thresholds": thresholds
+        "thresholds": thresholds,
+        "ranking_weights": ranking_weights
     }
 
 
