@@ -1,5 +1,103 @@
 # CANSLIM Analyzer - Project Context
 
+## Session Summary: Feb 4, 2026
+
+### Coiled Spring / Earnings Catalyst Feature - DEPLOYED
+
+**Purpose**: Identify stocks with explosive earnings potential BEFORE they move - long bases + beat streaks + approaching earnings.
+
+**Commits**: `6fb1f75`, `b0daf14`, `7f0154c`, `d9d4e54`, `94e6b15`
+
+**Files Modified**:
+- `config/default.yaml` - Added `coiled_spring:` configuration section
+- `canslim_scorer.py` - Added `calculate_coiled_spring_score()` function
+- `backend/database.py` - Added `CoiledSpringAlert` model
+- `backend/ai_trader.py` - CS detection, bonus scoring, position sizing, alert recording
+- `backend/backtester.py` - Mirrored CS logic for historical testing
+- `backend/main.py` - Added `/api/coiled-spring/alerts` and `/api/coiled-spring/candidates` endpoints
+- `email_report.py` - Added CS alerts section to email reports
+- `frontend/src/pages/Dashboard.jsx` - Added `CoiledSpringAlerts` component (purple card)
+- `frontend/src/pages/AIPortfolio.jsx` - Added collapsible CS alerts section
+- `frontend/src/api.js` - Added `getCoiledSpringAlerts()` and `getCoiledSpringCandidates()`
+- `tests/test_coiled_spring.py` - 23 unit tests
+
+**CS Qualification Criteria** (ALL 7 must pass):
+1. `weeks_in_base >= 15` - Long consolidation = stored energy
+2. `earnings_beat_streak >= 3` - Track record of execution
+3. `c_score >= 12` - Strong current earnings
+4. `total_score >= 65` - Quality stock overall
+5. `institutional_holders_pct <= 40` - Room for big buyers
+6. `l_score >= 8` - Rising relative strength
+7. `1 < days_to_earnings <= 14` - Upcoming catalyst
+
+**Current State** (after full scan):
+- P1 data populated: 2059 stocks with `days_to_earnings` and `earnings_beat_streak`
+- 522 stocks have earnings in next 1-14 days
+- Only **SLAB** fully qualifies (Score 78, 26w cup, 3 beats, 7d to earnings, 1% inst)
+- Near-misses fail mostly on `score < 65` (SSD: 58, GXO: 57) or `inst > 40%` (CINF: 71%, STNG: 74%)
+
+**Potential Tuning** (if more candidates desired):
+- Lower `min_total_score` from 65 to 55-60
+- Extend `alert_days` from 14 to 21-30
+- Lower `min_beat_streak` from 3 to 2
+
+### Bug Fixes
+
+**1. Scan Session Timeout** - FIXED (`94e6b15`)
+- Problem: Scans stopped at ~100-130 stocks instead of completing all 1917
+- Root cause: `aiohttp.ClientTimeout(total=60)` timed out the ENTIRE session after 60 seconds
+- Fix: Changed to per-request timeouts: `total=None, connect=30, sock_read=60`
+- File: `async_data_fetcher.py` line 1471
+
+**2. institutional_holders_pct AttributeError** - FIXED (`d9d4e54`)
+- Problem: Growth stocks API returned 500 error
+- Root cause: Stock model doesn't have `institutional_holders_pct` column - data is in `score_details` JSON
+- Fix: Extract from `(stock.score_details or {}).get('i', {}).get('institutional_pct')`
+- File: `backend/main.py`
+
+**3. P1 Fields Missing from API** - FIXED (`b0daf14`)
+- Problem: `days_to_earnings`, `earnings_beat_streak`, `institutional_holders_pct` not returned by stock APIs
+- Fix: Added fields to `/api/stocks` list and `/api/stocks/{ticker}` detail endpoints
+- File: `backend/main.py`
+
+### Diagnostic Commands
+
+```bash
+# Check CS candidates
+curl -s http://100.104.189.36:8001/api/coiled-spring/candidates | python3 -m json.tool
+
+# Check P1 data coverage
+ssh root@100.104.189.36 "docker exec canslim-analyzer python3 -c \"
+import sys; sys.path.insert(0, '/app/backend')
+from database import SessionLocal, Stock
+db = SessionLocal()
+with_days = db.query(Stock).filter(Stock.days_to_earnings != None).count()
+with_beats = db.query(Stock).filter(Stock.earnings_beat_streak != None).count()
+print(f'days_to_earnings: {with_days}')
+print(f'earnings_beat_streak: {with_beats}')
+db.close()
+\""
+
+# Clear scan checkpoint (forces fresh scan)
+ssh root@100.104.189.36 "docker exec canslim-analyzer rm -f /app/scan_progress_*.json"
+
+# Find near-miss CS candidates
+ssh root@100.104.189.36 "docker exec canslim-analyzer python3 -c \"
+import sys; sys.path.insert(0, '/app/backend')
+from database import SessionLocal, Stock
+db = SessionLocal()
+stocks = db.query(Stock).filter(Stock.days_to_earnings > 1, Stock.days_to_earnings <= 14).all()
+for s in stocks:
+    if (s.weeks_in_base or 0) >= 15 and (s.earnings_beat_streak or 0) >= 3:
+        inst = (s.score_details or {}).get('i', {}).get('institutional_pct', 100)
+        if inst <= 40:
+            print(f'{s.ticker}: Score {s.canslim_score:.0f}, {s.weeks_in_base}w, {s.earnings_beat_streak} beats, {s.days_to_earnings}d')
+db.close()
+\""
+```
+
+---
+
 ## Session Summary: Feb 3, 2026
 
 ### Bug Fixes Deployed (commit `17437a6`)
