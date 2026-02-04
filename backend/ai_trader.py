@@ -60,8 +60,9 @@ def is_market_open() -> bool:
 
 from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
-    AIPortfolioTrade, AIPortfolioSnapshot, StockScore
+    AIPortfolioTrade, AIPortfolioSnapshot, StockScore, CoiledSpringAlert
 )
+from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,112 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
 MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
 MAX_STOCKS_PER_SECTOR = config.get('ai_trader.allocation.max_stocks_per_sector', default=4)
 MAX_POSITION_ALLOCATION = config.get('ai_trader.allocation.max_single_position', default=0.15)
+
+
+def calculate_coiled_spring_score_for_stock(stock: Stock) -> dict:
+    """
+    Calculate Coiled Spring score for a database Stock object.
+
+    Builds a mock StockData and CANSLIMScore from the Stock model fields
+    and calls the calculate_coiled_spring_score function.
+
+    Returns dict with:
+    - is_coiled_spring: bool
+    - cs_score: float (bonus points)
+    - cs_details: str (explanation)
+    - allow_pre_earnings_buy: bool
+    """
+    # Create a simple namespace to hold data fields (simulates StockData)
+    class MockData:
+        pass
+
+    data = MockData()
+    data.weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+    data.earnings_beat_streak = getattr(stock, 'earnings_beat_streak', 0) or 0
+    data.days_to_earnings = getattr(stock, 'days_to_earnings', None)
+    data.institutional_holders_pct = getattr(stock, 'institutional_holders_pct', 0) or 0
+
+    # Create a mock score object
+    class MockScore:
+        pass
+
+    score = MockScore()
+    score.c_score = getattr(stock, 'c_score', 0) or 0
+    score.l_score = getattr(stock, 'l_score', 0) or 0
+    score.total_score = getattr(stock, 'canslim_score', 0) or 0
+
+    # Get config
+    cs_config = config.get('coiled_spring', {})
+
+    return calculate_coiled_spring_score(data, score, cs_config)
+
+
+def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock: Stock) -> bool:
+    """
+    Record a Coiled Spring alert, respecting daily limits and cooldown.
+
+    Args:
+        db: Database session
+        ticker: Stock ticker
+        cs_result: Result from calculate_coiled_spring_score
+        stock: Stock model with current data
+
+    Returns:
+        True if alert was recorded, False if limits exceeded
+    """
+    today = date.today()
+
+    # Get config limits
+    cs_config = config.get('coiled_spring', {})
+    alerts_config = cs_config.get('alerts', {})
+    max_per_day = alerts_config.get('max_per_day', 3)
+    cooldown_hours = alerts_config.get('cooldown_hours', 8)
+
+    if not alerts_config.get('enabled', True):
+        return False
+
+    # Check daily limit
+    today_count = db.query(CoiledSpringAlert).filter(
+        CoiledSpringAlert.alert_date == today
+    ).count()
+
+    if today_count >= max_per_day:
+        logger.debug(f"CS alert limit reached ({today_count}/{max_per_day}), skipping {ticker}")
+        return False
+
+    # Check cooldown for this ticker
+    cutoff = datetime.utcnow() - timedelta(hours=cooldown_hours)
+    recent = db.query(CoiledSpringAlert).filter(
+        CoiledSpringAlert.ticker == ticker,
+        CoiledSpringAlert.created_at >= cutoff
+    ).first()
+
+    if recent:
+        logger.debug(f"CS cooldown active for {ticker}, skipping")
+        return False
+
+    # Record the alert
+    alert = CoiledSpringAlert(
+        ticker=ticker,
+        alert_date=today,
+        days_to_earnings=getattr(stock, 'days_to_earnings', None),
+        weeks_in_base=getattr(stock, 'weeks_in_base', 0) or 0,
+        beat_streak=getattr(stock, 'earnings_beat_streak', 0) or 0,
+        c_score=getattr(stock, 'c_score', 0) or 0,
+        total_score=getattr(stock, 'canslim_score', 0) or 0,
+        cs_bonus=cs_result.get('cs_score', 0),
+        price_at_alert=getattr(stock, 'current_price', 0) or 0,
+        base_type=getattr(stock, 'base_type', None),
+        institutional_pct=getattr(stock, 'institutional_holders_pct', 0) or 0,
+        l_score=getattr(stock, 'l_score', 0) or 0,
+        email_sent=False
+    )
+
+    db.add(alert)
+    db.commit()
+
+    logger.info(f"COILED SPRING ALERT: {ticker} - {cs_result.get('cs_details', '')}")
+    return True
 
 
 def check_score_stability(db: Session, ticker: str, current_score: float, threshold: float = 50) -> dict:
@@ -913,11 +1020,31 @@ def evaluate_buys(db: Session) -> list:
         if not effective_score or effective_score < config.min_score_to_buy:
             continue
 
-        # P1 Feature: Skip buying stocks 1-3 days before earnings (high volatility risk)
+        # Earnings proximity check with Coiled Spring exception
         days_to_earnings = getattr(stock, 'days_to_earnings', None)
-        if days_to_earnings is not None and 0 < days_to_earnings <= 3:
-            logger.info(f"Skipping {stock.ticker}: {days_to_earnings} days until earnings")
-            continue
+        cs_config = config.get('coiled_spring', {})
+        allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
+        block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
+
+        # Initialize CS result
+        cs_result = None
+
+        if days_to_earnings is not None and 0 < days_to_earnings <= allow_buy_days:
+            # Check for Coiled Spring qualification
+            cs_result = calculate_coiled_spring_score_for_stock(stock)
+
+            if cs_result["is_coiled_spring"] and days_to_earnings > block_days:
+                # ALLOW - high conviction earnings catalyst
+                logger.info(f"COILED SPRING: {stock.ticker} ({cs_result['cs_details']})")
+                # Attach CS result for scoring bonus and alert recording
+                stock._cs_result = cs_result
+                # Record alert (respects daily limits)
+                record_coiled_spring_alert(db, stock.ticker, cs_result, stock)
+            else:
+                # Standard block for stocks without CS qualification (within 3 days)
+                if days_to_earnings <= 3:
+                    logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified)")
+                    continue
 
         # Check if stock is breaking out (best buying opportunity)
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
@@ -1060,6 +1187,11 @@ def evaluate_buys(db: Session) -> list:
             # Recent momentum fading - apply 15% penalty to composite
             momentum_penalty = -0.15
 
+        # Coiled Spring bonus (from earlier calculation)
+        coiled_spring_bonus = 0
+        if hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring'):
+            coiled_spring_bonus = stock._cs_result.get('cs_score', 0)
+
         # Calculate composite score with breakout and pre-breakout weighting
         # 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
@@ -1071,7 +1203,8 @@ def evaluate_buys(db: Session) -> list:
             (base_quality_bonus * 0.10) +
             extended_penalty +
             insider_bonus +
-            short_penalty
+            short_penalty +
+            coiled_spring_bonus  # Earnings catalyst bonus
         )
 
         # Apply momentum penalty after base composite calculation
@@ -1103,6 +1236,11 @@ def evaluate_buys(db: Session) -> list:
         elif is_breaking_out and breakout_volume_ratio >= 1.5:
             position_pct *= 1.15  # 15% larger position for confirmed breakouts
 
+        # Coiled Spring position boost
+        if hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring'):
+            cs_multiplier = cs_config.get('position_multiplier', 1.25)
+            position_pct *= cs_multiplier
+
         # Apply correlation penalty
         position_pct *= correlation_penalty
 
@@ -1132,6 +1270,10 @@ def evaluate_buys(db: Session) -> list:
         shares = position_value / stock.current_price
 
         reason_parts = []
+        # Coiled Spring indicator (highest priority)
+        if hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring'):
+            days_to_earn = getattr(stock, 'days_to_earnings', 0) or 0
+            reason_parts.append(f"🌀 COILED SPRING ({days_to_earn}d to earnings)")
         if is_breaking_out:
             reason_parts.append(f"🚀 BREAKOUT {breakout_volume_ratio:.1f}x vol")
         elif pre_breakout_bonus >= 15:

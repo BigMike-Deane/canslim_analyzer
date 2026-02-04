@@ -201,6 +201,45 @@ ai_trader:
     medium_threshold: 0.10  # > 10% short interest
     medium_penalty: -2
 
+# Coiled Spring / Earnings Catalyst Detection
+# Identifies stocks with explosive earnings potential based on:
+# - Long consolidation (stored energy)
+# - Consistent earnings beats
+# - Low institutional ownership (room to buy)
+# - Rising relative strength
+coiled_spring:
+  # ALL criteria must be met to qualify
+  thresholds:
+    min_weeks_in_base: 15       # Long consolidation = stored energy
+    min_beat_streak: 3          # Consistent execution
+    min_c_score: 12             # Strong current earnings (out of 15)
+    min_total_score: 65         # Overall quality stock
+    max_institutional_pct: 40   # Room for institutions to buy
+    min_l_score: 8              # Rising relative strength
+
+  # Earnings timing
+  earnings_window:
+    alert_days: 14              # Start tracking 14 days out
+    allow_buy_days: 7           # Allow buys up to 7 days before (override 3-day block)
+    block_days: 1               # Never buy within 1 day of earnings
+
+  # Scoring bonus
+  scoring:
+    base_bonus: 20              # Base bonus when criteria met
+    long_base_bonus: 10         # Extra for 20+ week base
+    strong_beat_bonus: 5        # Extra for 5+ consecutive beats
+    max_bonus: 35               # Cap total CS bonus
+
+  # Alert settings (prevent overload)
+  alerts:
+    enabled: true
+    max_per_day: 3              # Maximum alerts per day
+    cooldown_hours: 8           # Hours between alerts for same ticker
+    include_in_email: true
+
+  # Position sizing
+  position_multiplier: 1.25     # 25% larger position for CS plays
+
 # Technical Analysis Settings
 technical:
   # Base pattern detection

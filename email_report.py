@@ -39,6 +39,18 @@ from portfolio_analyzer import (
 )
 from score_history import record_score, get_score_delta, get_biggest_movers
 
+# Database imports for Coiled Spring alerts
+import sys
+sys.path.insert(0, str(Path(__file__).parent / 'backend'))
+try:
+    from backend.database import SessionLocal, CoiledSpringAlert
+    from config_loader import config as app_config
+except ImportError:
+    # Running outside container, database may not be available
+    SessionLocal = None
+    CoiledSpringAlert = None
+    app_config = None
+
 
 # ============ CONFIGURATION ============
 GMAIL_ADDRESS = os.environ.get('CANSLIM_EMAIL', 'your-email@gmail.com')
@@ -142,6 +154,55 @@ def generate_portfolio_card_html(analysis: PositionAnalysis, score_delta: dict =
     </div>
     """
     return html
+
+
+def get_coiled_spring_alerts() -> list:
+    """Get today's Coiled Spring alerts for the email report"""
+    if not SessionLocal or not CoiledSpringAlert:
+        return []
+
+    try:
+        db = SessionLocal()
+        today = datetime.now().date()
+
+        # Get today's alerts that haven't been emailed yet
+        alerts = db.query(CoiledSpringAlert).filter(
+            CoiledSpringAlert.alert_date == today,
+            CoiledSpringAlert.email_sent == False
+        ).order_by(CoiledSpringAlert.cs_bonus.desc()).limit(3).all()
+
+        # Mark as emailed
+        for alert in alerts:
+            alert.email_sent = True
+
+        db.commit()
+        db.close()
+
+        return alerts
+    except Exception as e:
+        print(f"Error getting CS alerts: {e}")
+        return []
+
+
+def generate_cs_alert_card_html(alert) -> str:
+    """Generate HTML for a Coiled Spring alert card"""
+    return f"""
+    <div class="stock-card" style="border-left: 4px solid #e74c3c; background: #fff5f5;">
+        <div class="stock-header">
+            <div>
+                <span class="ticker" style="color: #e74c3c;">{alert.ticker}</span>
+                <span style="background: #e74c3c; color: white; padding: 3px 8px; border-radius: 3px; margin-left: 10px; font-size: 0.8em;">COILED SPRING</span>
+            </div>
+            <span class="score">{alert.total_score:.0f}/100</span>
+        </div>
+        <div class="details">
+            <p><strong>Price:</strong> ${alert.price_at_alert:.2f} | <strong>Days to Earnings:</strong> {alert.days_to_earnings}</p>
+            <p><strong>Base:</strong> {alert.base_type or 'N/A'} ({alert.weeks_in_base}w) | <strong>Beat Streak:</strong> {alert.beat_streak} quarters</p>
+            <p><strong>C Score:</strong> {alert.c_score:.0f}/15 | <strong>L Score:</strong> {alert.l_score:.0f}/15 | <strong>Inst:</strong> {alert.institutional_pct:.0f}%</p>
+            <p style="color: #e74c3c; font-weight: bold;">CS Bonus: +{alert.cs_bonus:.0f} points</p>
+        </div>
+    </div>
+    """
 
 
 def generate_html_report(under20_results: list[AnalysisResult],
@@ -254,6 +315,16 @@ def generate_html_report(under20_results: list[AnalysisResult],
         for analysis in sorted_portfolio:
             delta = portfolio_deltas.get(analysis.position.ticker, {})
             html += generate_portfolio_card_html(analysis, delta)
+
+    # Coiled Spring alerts section
+    cs_alerts = get_coiled_spring_alerts()
+    if cs_alerts:
+        html += """
+        <h2 style="color: #e74c3c;">Coiled Spring Alerts</h2>
+        <p class="section-desc">High-conviction earnings catalyst plays - stocks with explosive potential approaching earnings</p>
+        """
+        for alert in cs_alerts:
+            html += generate_cs_alert_card_html(alert)
 
     html += """
         <div class="disclaimer">
@@ -391,6 +462,25 @@ Score Changes: {improving_count} improving | {degrading_count} degrading
     Gain/Loss: ${analysis.gain_loss:+,.2f} ({analysis.gain_loss_pct:+.1f}%)
     CANSLIM: {analysis.canslim_score.total_score:.0f}/100{delta_str} | Projection: {analysis.growth_projection.projected_growth_pct:+.1f}%
     {analysis.recommendation_reason}
+{'-' * 60}
+"""
+
+    # Coiled Spring alerts section
+    cs_alerts = get_coiled_spring_alerts()
+    if cs_alerts:
+        text += f"""
+{'=' * 60}
+COILED SPRING ALERTS
+High-conviction earnings catalyst plays
+{'=' * 60}
+"""
+        for alert in cs_alerts:
+            text += f"""
+[COILED SPRING] {alert.ticker}
+    Price: ${alert.price_at_alert:.2f} | Days to Earnings: {alert.days_to_earnings}
+    Base: {alert.base_type or 'N/A'} ({alert.weeks_in_base}w) | Beat Streak: {alert.beat_streak}Q
+    Score: {alert.total_score:.0f}/100 | C: {alert.c_score:.0f}/15 | L: {alert.l_score:.0f}/15
+    Institutional: {alert.institutional_pct:.0f}% | CS Bonus: +{alert.cs_bonus:.0f}
 {'-' * 60}
 """
 

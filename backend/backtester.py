@@ -22,6 +22,7 @@ from backend.database import (
     BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, Stock
 )
 from backend.historical_data import HistoricalDataProvider, HistoricalStockData
+from canslim_scorer import calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
 
@@ -252,14 +253,51 @@ class BacktestEngine:
             self.static_data[stock.ticker] = {
                 "sector": stock.sector or "Unknown",
                 "name": stock.name or stock.ticker,
-                "institutional_holders_pct": 0.0,  # Would need historical data
+                "institutional_holders_pct": getattr(stock, 'institutional_holders_pct', 0) or 0,
                 "roe": 0.0,
                 "analyst_target_price": 0.0,
                 "num_analyst_opinions": 0,
                 "quarterly_earnings": stock.quarterly_earnings or [],
                 "annual_earnings": stock.annual_earnings or [],
                 "quarterly_revenue": stock.quarterly_revenue or [],
+                # Coiled Spring fields
+                "weeks_in_base": getattr(stock, 'weeks_in_base', 0) or 0,
+                "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', 0) or 0,
+                "days_to_earnings": getattr(stock, 'days_to_earnings', None),
             }
+
+    def _calculate_coiled_spring_for_backtest(self, ticker: str, score_data: dict, static_data: dict, cs_config: dict) -> dict:
+        """
+        Calculate Coiled Spring score for backtesting using score_data and static_data dicts.
+
+        This is a simplified version that uses the pre-calculated score data from
+        _calculate_scores() rather than live Stock objects.
+
+        Returns dict with:
+        - is_coiled_spring: bool
+        - cs_score: float (bonus points)
+        - cs_details: str (explanation)
+        - allow_pre_earnings_buy: bool
+        """
+        # Create mock objects for calculate_coiled_spring_score
+        class MockData:
+            pass
+
+        class MockScore:
+            pass
+
+        data = MockData()
+        data.weeks_in_base = static_data.get('weeks_in_base', 0)
+        data.earnings_beat_streak = static_data.get('earnings_beat_streak', 0)
+        data.days_to_earnings = static_data.get('days_to_earnings')
+        data.institutional_holders_pct = static_data.get('institutional_holders_pct', 0)
+
+        score = MockScore()
+        score.c_score = score_data.get('c_score', 0)
+        score.l_score = score_data.get('l_score', 0)
+        score.total_score = score_data.get('total_score', 0)
+
+        return calculate_coiled_spring_score(data, score, cs_config)
 
     def _simulate_day(self, current_date: date):
         """Simulate one trading day"""
@@ -793,6 +831,30 @@ class BacktestEngine:
             if not self._check_sector_limit(sector):
                 continue
 
+            # Earnings proximity check with Coiled Spring exception
+            static_data = self.static_data.get(ticker, {})
+            days_to_earnings = static_data.get('days_to_earnings')
+            cs_config = config.get('coiled_spring', {})
+            allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
+            block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
+
+            # Initialize CS result
+            cs_result = None
+            coiled_spring_bonus = 0
+
+            if days_to_earnings is not None and 0 < days_to_earnings <= allow_buy_days:
+                # Check for Coiled Spring qualification using static_data
+                cs_result = self._calculate_coiled_spring_for_backtest(ticker, score_data, static_data, cs_config)
+
+                if cs_result["is_coiled_spring"] and days_to_earnings > block_days:
+                    # ALLOW - high conviction earnings catalyst
+                    coiled_spring_bonus = cs_result.get('cs_score', 0)
+                    logger.debug(f"Backtest CS: {ticker} ({cs_result['cs_details']})")
+                else:
+                    # Standard block for stocks without CS qualification (within 3 days)
+                    if days_to_earnings <= 3:
+                        continue
+
             # Get breakout status and volume ratio from cached scores
             is_breaking_out = score_data.get("is_breaking_out", False)
             volume_ratio = score_data.get("volume_ratio", 1.0)
@@ -890,7 +952,8 @@ class BacktestEngine:
                 (momentum_score * 0.20) +
                 ((breakout_bonus + pre_breakout_bonus) * 0.20) +
                 (base_quality_bonus * 0.10) +
-                extended_penalty
+                extended_penalty +
+                coiled_spring_bonus  # Earnings catalyst bonus
             )
 
             # Apply momentum penalty after base composite calculation
@@ -914,6 +977,11 @@ class BacktestEngine:
             elif is_breaking_out and volume_ratio >= 1.5:
                 position_pct *= 1.15  # 15% larger position for confirmed breakouts
 
+            # Coiled Spring position boost
+            if coiled_spring_bonus > 0:
+                cs_multiplier = cs_config.get('position_multiplier', 1.25)
+                position_pct *= cs_multiplier
+
             position_value = portfolio_value * (position_pct / 100)
 
             # Allow more cash for breakout/pre-breakout stocks
@@ -932,6 +1000,10 @@ class BacktestEngine:
 
             # Build reason string
             reason_parts = []
+            # Coiled Spring indicator (highest priority)
+            if coiled_spring_bonus > 0:
+                days_to_earn = static_data.get('days_to_earnings', 0) or 0
+                reason_parts.append(f"🌀 COILED SPRING ({days_to_earn}d to earnings)")
             if is_breaking_out:
                 base_type = base_pattern.get("type", "none")
                 reason_parts.append(f"🚀 BREAKOUT ({base_type}) {volume_ratio:.1f}x vol")

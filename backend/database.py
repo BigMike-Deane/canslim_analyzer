@@ -3,8 +3,7 @@ Database models for CANSLIM Analyzer Web App
 """
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, Index, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from datetime import datetime, date
 from pathlib import Path
 
@@ -244,6 +243,9 @@ def run_migrations():
         ('ix_backtest_snapshots_backtest_date', 'backtest_snapshots', 'backtest_id, date'),
         ('ix_backtest_trades_backtest_date', 'backtest_trades', 'backtest_id, date'),
         ('ix_backtest_positions_backtest', 'backtest_positions', 'backtest_id'),
+        # Coiled Spring indexes
+        ('ix_coiled_spring_alerts_ticker_date', 'coiled_spring_alerts', 'ticker, alert_date'),
+        ('ix_coiled_spring_alerts_date', 'coiled_spring_alerts', 'alert_date'),
     ]
     for idx_name, table, columns in index_migrations:
         try:
@@ -434,6 +436,53 @@ class Watchlist(Base):
     notes = Column(Text)
     target_price = Column(Float)  # Alert when reaches this price
     alert_score = Column(Float)  # Alert when CANSLIM score reaches this
+
+
+class CoiledSpringAlert(Base):
+    """
+    Track Coiled Spring earnings catalyst alerts for analysis and limiting.
+
+    A Coiled Spring setup identifies stocks with explosive earnings potential:
+    - Long consolidation (stored energy)
+    - Consistent earnings beats
+    - Low institutional ownership (room to buy)
+    - Rising relative strength
+    - Approaching earnings
+    """
+    __tablename__ = "coiled_spring_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    alert_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Snapshot at alert time
+    days_to_earnings = Column(Integer)
+    weeks_in_base = Column(Integer)
+    beat_streak = Column(Integer)
+    c_score = Column(Float)
+    total_score = Column(Float)
+    cs_bonus = Column(Float)
+    price_at_alert = Column(Float)
+
+    # Additional context
+    base_type = Column(String)  # flat, cup, cup_with_handle, etc.
+    institutional_pct = Column(Float)
+    l_score = Column(Float)
+
+    # Outcome tracking (filled after earnings)
+    price_after_earnings = Column(Float)
+    price_change_pct = Column(Float)
+    outcome = Column(String)  # 'big_win', 'win', 'flat', 'loss'
+    outcome_updated_at = Column(DateTime)
+
+    # Alert status
+    email_sent = Column(Boolean, default=False)
+
+    __table_args__ = (
+        Index('ix_coiled_spring_alerts_ticker_date', 'ticker', 'alert_date'),
+        Index('ix_coiled_spring_alerts_date', 'alert_date'),
+    )
 
 
 class AnalysisJob(Base):

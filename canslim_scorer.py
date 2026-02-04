@@ -661,6 +661,186 @@ class CANSLIMScorer:
         return self._market_score, self._market_detail
 
 
+def calculate_coiled_spring_score(data, score, config: dict = None) -> dict:
+    """
+    Detect "Coiled Spring" earnings catalyst setup.
+
+    A Coiled Spring setup identifies stocks with explosive earnings potential:
+    - Long consolidation (15+ weeks in base = stored energy)
+    - Consistent earnings beats (3+ consecutive)
+    - Strong current earnings (C score >= 12)
+    - Quality stock overall (total score >= 65)
+    - Low institutional ownership (room for institutions to buy)
+    - Rising relative strength (L score >= 8)
+    - Approaching earnings (1-14 days out)
+
+    Args:
+        data: StockData object with stock fundamentals
+        score: CANSLIMScore object with scoring breakdown
+        config: Optional config dict (defaults loaded from config_loader)
+
+    Returns dict with:
+    - is_coiled_spring: bool
+    - cs_score: float (bonus points to add to composite)
+    - cs_details: str (explanation for logs/alerts)
+    - allow_pre_earnings_buy: bool (override earnings block)
+    - factors: dict (detailed breakdown for debugging)
+    """
+    # Load config if not provided
+    if config is None:
+        try:
+            from config_loader import config as app_config
+            config = app_config.get('coiled_spring', {})
+        except ImportError:
+            config = {}
+
+    # Get thresholds with defaults
+    thresholds = config.get('thresholds', {})
+    min_weeks_in_base = thresholds.get('min_weeks_in_base', 15)
+    min_beat_streak = thresholds.get('min_beat_streak', 3)
+    min_c_score = thresholds.get('min_c_score', 12)
+    min_total_score = thresholds.get('min_total_score', 65)
+    max_institutional_pct = thresholds.get('max_institutional_pct', 40)
+    min_l_score = thresholds.get('min_l_score', 8)
+
+    # Get earnings window settings
+    earnings_window = config.get('earnings_window', {})
+    alert_days = earnings_window.get('alert_days', 14)
+    allow_buy_days = earnings_window.get('allow_buy_days', 7)
+    block_days = earnings_window.get('block_days', 1)
+
+    # Get scoring settings
+    scoring = config.get('scoring', {})
+    base_bonus = scoring.get('base_bonus', 20)
+    long_base_bonus = scoring.get('long_base_bonus', 10)
+    strong_beat_bonus = scoring.get('strong_beat_bonus', 5)
+    max_bonus = scoring.get('max_bonus', 35)
+
+    # Initialize result
+    result = {
+        "is_coiled_spring": False,
+        "cs_score": 0,
+        "cs_details": "",
+        "allow_pre_earnings_buy": False,
+        "factors": {}
+    }
+
+    # Extract data fields
+    weeks_in_base = getattr(data, 'weeks_in_base', 0) or 0
+    earnings_beat_streak = getattr(data, 'earnings_beat_streak', 0) or 0
+    days_to_earnings = getattr(data, 'days_to_earnings', None)
+    institutional_pct = getattr(data, 'institutional_holders_pct', 0) or 0
+
+    # Get scores
+    c_score = score.c_score if hasattr(score, 'c_score') else 0
+    l_score = score.l_score if hasattr(score, 'l_score') else 0
+    total_score = score.total_score if hasattr(score, 'total_score') else 0
+
+    # Store factors for debugging
+    factors = {
+        "weeks_in_base": weeks_in_base,
+        "earnings_beat_streak": earnings_beat_streak,
+        "days_to_earnings": days_to_earnings,
+        "institutional_pct": institutional_pct,
+        "c_score": c_score,
+        "l_score": l_score,
+        "total_score": total_score,
+        "thresholds": {
+            "min_weeks_in_base": min_weeks_in_base,
+            "min_beat_streak": min_beat_streak,
+            "min_c_score": min_c_score,
+            "min_total_score": min_total_score,
+            "max_institutional_pct": max_institutional_pct,
+            "min_l_score": min_l_score,
+        }
+    }
+    result["factors"] = factors
+
+    # Check ALL criteria (must all pass)
+    criteria_met = []
+    criteria_failed = []
+
+    # 1. Long consolidation
+    if weeks_in_base >= min_weeks_in_base:
+        criteria_met.append(f"{weeks_in_base}w base")
+    else:
+        criteria_failed.append(f"weeks_in_base ({weeks_in_base} < {min_weeks_in_base})")
+
+    # 2. Consistent earnings beats
+    if earnings_beat_streak >= min_beat_streak:
+        criteria_met.append(f"{earnings_beat_streak} beats")
+    else:
+        criteria_failed.append(f"beat_streak ({earnings_beat_streak} < {min_beat_streak})")
+
+    # 3. Strong current earnings
+    if c_score >= min_c_score:
+        criteria_met.append(f"C:{c_score:.0f}")
+    else:
+        criteria_failed.append(f"c_score ({c_score:.1f} < {min_c_score})")
+
+    # 4. Quality stock overall
+    if total_score >= min_total_score:
+        criteria_met.append(f"score:{total_score:.0f}")
+    else:
+        criteria_failed.append(f"total_score ({total_score:.1f} < {min_total_score})")
+
+    # 5. Low institutional ownership (room to buy)
+    if institutional_pct <= max_institutional_pct:
+        criteria_met.append(f"{institutional_pct:.0f}% inst")
+    else:
+        criteria_failed.append(f"institutional ({institutional_pct:.0f}% > {max_institutional_pct}%)")
+
+    # 6. Rising relative strength
+    if l_score >= min_l_score:
+        criteria_met.append(f"L:{l_score:.0f}")
+    else:
+        criteria_failed.append(f"l_score ({l_score:.1f} < {min_l_score})")
+
+    # 7. Approaching earnings (within alert window)
+    if days_to_earnings is not None and block_days < days_to_earnings <= alert_days:
+        criteria_met.append(f"earnings {days_to_earnings}d")
+    else:
+        if days_to_earnings is None:
+            criteria_failed.append("no earnings date")
+        elif days_to_earnings <= block_days:
+            criteria_failed.append(f"too close to earnings ({days_to_earnings}d <= {block_days}d)")
+        else:
+            criteria_failed.append(f"earnings too far ({days_to_earnings}d > {alert_days}d)")
+
+    # All criteria must pass
+    if len(criteria_failed) == 0:
+        result["is_coiled_spring"] = True
+
+        # Calculate bonus score
+        cs_score = base_bonus
+
+        # Extra bonus for very long consolidation (20+ weeks)
+        if weeks_in_base >= 20:
+            cs_score += long_base_bonus
+
+        # Extra bonus for strong beat streak (5+)
+        if earnings_beat_streak >= 5:
+            cs_score += strong_beat_bonus
+
+        # Cap at max bonus
+        cs_score = min(cs_score, max_bonus)
+        result["cs_score"] = cs_score
+
+        # Build details string
+        result["cs_details"] = f"CS: {', '.join(criteria_met)}"
+
+        # Allow pre-earnings buy if beyond the hard block
+        if days_to_earnings is not None and days_to_earnings > block_days:
+            result["allow_pre_earnings_buy"] = True
+
+    else:
+        # Not a coiled spring - store what failed for debugging
+        factors["criteria_failed"] = criteria_failed
+        result["cs_details"] = f"Not CS: {criteria_failed[0]}"
+
+    return result
+
+
 @dataclass
 class GrowthModeScore:
     """Container for Growth Mode scores (alternative for pre-revenue companies)"""
