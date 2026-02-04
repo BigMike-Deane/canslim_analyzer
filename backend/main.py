@@ -509,15 +509,15 @@ def analyze_stock(ticker: str) -> dict:
             "week_52_high": getattr(stock_data, 'high_52w', 0),
             "week_52_low": getattr(stock_data, 'low_52w', 0),
 
-            # CANSLIM scores
+            # CANSLIM scores (use lowercase keys to match score_result structure)
             "canslim_score": score_result.get("total_score", 0),
-            "c_score": score_result.get("C", {}).get("score", 0),
-            "a_score": score_result.get("A", {}).get("score", 0),
-            "n_score": score_result.get("N", {}).get("score", 0),
-            "s_score": score_result.get("S", {}).get("score", 0),
-            "l_score": score_result.get("L", {}).get("score", 0),
-            "i_score": score_result.get("I", {}).get("score", 0),
-            "m_score": score_result.get("M", {}).get("score", 0),
+            "c_score": score_result.get("c", {}).get("score", 0),
+            "a_score": score_result.get("a", {}).get("score", 0),
+            "n_score": score_result.get("n", {}).get("score", 0),
+            "s_score": score_result.get("s", {}).get("score", 0),
+            "l_score": score_result.get("l", {}).get("score", 0),
+            "i_score": score_result.get("i", {}).get("score", 0),
+            "m_score": score_result.get("m", {}).get("score", 0),
 
             # Score details for display (using lowercase keys to match scheduler format)
             "score_details": {
