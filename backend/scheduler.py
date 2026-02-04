@@ -558,10 +558,14 @@ def run_continuous_scan():
 
         # Progress callback to update frontend in real-time
         def update_progress(current, total, phase="stocks"):
-            _scan_config["stocks_scanned"] = current
-            # Also update total if it differs (e.g., from checkpoint resume)
-            if _scan_config["total_stocks"] != total:
-                _scan_config["total_stocks"] = total
+            # Only update stocks_scanned and total_stocks for the main "stocks" phase
+            # Other phases (insider_short, p1_data) have different totals that shouldn't
+            # overwrite the main stock count
+            if phase == "stocks":
+                _scan_config["stocks_scanned"] = current
+                # Also update total if it differs (e.g., from checkpoint resume)
+                if _scan_config["total_stocks"] != total:
+                    _scan_config["total_stocks"] = total
 
             # Update phase detail for different phases
             if phase == "stocks":
