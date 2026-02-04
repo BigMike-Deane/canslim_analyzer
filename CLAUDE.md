@@ -1,5 +1,95 @@
 # CANSLIM Analyzer - Project Context
 
+## Session Summary: Feb 4, 2026 (Late Night)
+
+### Watchlist Alerts Feature - DEPLOYED
+
+**Purpose**: Email notifications when watchlist stocks hit target price or CANSLIM score thresholds.
+
+**Commits**: `3b6dc17`, `0f32e6c`, `e0f1636`
+
+**Files Modified**:
+- `backend/database.py` - Added Watchlist alert tracking fields (`alert_triggered_at`, `alert_sent`, `last_check_price`)
+- `backend/scheduler.py` - Added `check_watchlist_alerts()` function, integrated into scan workflow
+- `email_report.py` - Added `send_watchlist_alert_email()` function
+- `config/default.yaml` - Added `watchlist.alerts` configuration section
+
+**Configuration** (`config/default.yaml`):
+```yaml
+watchlist:
+  alerts:
+    enabled: true
+    check_after_scan: true
+    cooldown_hours: 24
+```
+
+**How It Works**:
+1. Add stocks to watchlist with `target_price` and/or `alert_score`
+2. After each scan, `check_watchlist_alerts()` runs
+3. If price >= target OR score >= threshold, email is sent
+4. 24-hour cooldown prevents duplicate alerts
+
+### Coiled Spring Performance Dashboard - DEPLOYED
+
+**Enhanced `/api/coiled-spring/history` endpoint** with cumulative stats:
+- `total_alerts_all_time` - Total alerts ever recorded
+- `overall_win_rate` - Win rate across all alerts (not just current page)
+- `by_base_type` - Breakdown by pattern type with win rates per pattern
+
+**Frontend Component**: `CoiledSpringStats` in Dashboard.jsx shows:
+- Overall win rate, wins, losses, big wins
+- Best performing base pattern
+
+### Institutional Percentage Bug - FIXED
+
+**Problem**: Some stocks showed 1% institutional when they should show 100%+.
+
+**Root Cause**: Yahoo's `heldPercentInstitutions` returns decimals (0.65 = 65%, 1.00002 = 100.002%). The condition `inst_pct <= 1` failed to convert edge cases like 1.00002.
+
+**Fix**: Changed threshold from `<= 1` to `<= 1.5` in:
+- `async_data_fetcher.py` (lines 1032, 1132)
+- `data_fetcher.py` (line 1801)
+
+**Data Migration**: Fixed 528 stocks in database with bad institutional_pct values.
+
+### GOOG/GOOGL Deduplication - FIXED
+
+**Problem**: Both GOOG and GOOGL appeared in `/api/stocks` results.
+
+**Fix**: Added `filter_duplicate_stocks()` call to `/api/stocks` endpoint in `backend/main.py`.
+
+**Verified Working** on all endpoints:
+- `/api/stocks` - GOOGL only
+- `/api/dashboard` - GOOGL only
+- `/api/top-growth-stocks` - GOOGL only
+- `/api/stocks/breaking-out` - GOOGL only
+
+### Scanner Checkpoint Logging - IMPROVED
+
+**Problem**: Scanner only processed 263/1916 stocks due to stale checkpoint.
+
+**Fix**: Enhanced logging in `async_data_fetcher.py`:
+- `load_scan_progress()` now logs checkpoint scan_id, completed count, and age
+- `clear_scan_progress()` now logs success/failure instead of silent pass
+
+### Test Coverage - ADDED
+
+**New File**: `tests/test_watchlist_alerts.py` (17 tests)
+- Price alert trigger conditions
+- Score alert trigger conditions
+- Cooldown prevention
+- Alert_sent flag handling
+- Email content generation
+- Institutional percentage extraction from score_details
+
+### Verified Existing Features
+
+**StockScore Cleanup**: Working - 0 records older than 30 days (auto-cleanup after scans)
+
+**Frontend API Caching**: Working - TTL-based cache with invalidation on mutations
+
+---
+
 ## Session Summary: Feb 4, 2026 (Evening)
 
 ### A Score = 0 Bug - FIXED
