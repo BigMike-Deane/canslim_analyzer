@@ -952,8 +952,11 @@ async def get_stocks(
     # Get total count
     total = query.count()
 
-    # Apply pagination
-    stocks = query.offset(offset).limit(limit).all()
+    # Apply pagination - fetch extra to allow for duplicate filtering
+    stocks_raw = query.offset(offset).limit(limit + 10).all()
+
+    # Filter duplicate tickers (GOOG/GOOGL) - keep highest scorer
+    stocks = filter_duplicate_stocks(stocks_raw, limit)
 
     return {
         "stocks": [{
