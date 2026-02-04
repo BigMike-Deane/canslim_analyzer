@@ -408,6 +408,86 @@ function BreakingOutStocks({ stocks, loading }) {
   )
 }
 
+function CoiledSpringAlerts({ candidates, loading }) {
+  if (loading) {
+    return (
+      <div className="card mb-3 border border-purple-500/30 bg-purple-500/5">
+        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
+          <span className="text-purple-400">🌀</span> Coiled Spring Alerts
+        </div>
+        <div className="animate-pulse space-y-2">
+          {[1,2,3].map(i => <div key={i} className="h-6 bg-dark-700 rounded" />)}
+        </div>
+      </div>
+    )
+  }
+
+  if (!candidates || candidates.length === 0) {
+    return null  // Don't show empty section - only show when there are candidates
+  }
+
+  return (
+    <div className="card mb-3 border border-purple-500/30 bg-purple-500/5">
+      <div className="flex justify-between items-center mb-2">
+        <div className="font-semibold text-sm flex items-center gap-2">
+          <span className="text-purple-400">🌀</span> Coiled Spring Alerts
+          <span className="text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
+            {candidates.length} found
+          </span>
+        </div>
+        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">
+          Pre-Earnings Catalyst
+        </span>
+      </div>
+
+      <div className="space-y-1">
+        {candidates.slice(0, 5).map((stock, index) => (
+          <Link
+            key={stock.ticker}
+            to={`/stock/${stock.ticker}`}
+            className="flex justify-between items-center py-1.5 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 text-[10px] rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold">
+                {index + 1}
+              </div>
+              <div>
+                <div className="flex items-center gap-1">
+                  <span className="font-medium text-sm">{stock.ticker}</span>
+                  {stock.base_type && stock.base_type !== 'none' && (
+                    <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1 rounded">
+                      {stock.weeks_in_base}w {stock.base_type}
+                    </span>
+                  )}
+                </div>
+                <div className="text-dark-500 text-[10px] flex gap-2">
+                  <span>{stock.earnings_beat_streak} beats</span>
+                  <span>•</span>
+                  <span>{stock.days_to_earnings}d to earn</span>
+                  <span>•</span>
+                  <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${getScoreClass(stock.canslim_score)}`}>
+                {formatScore(stock.canslim_score)}
+              </div>
+              <div className="text-[10px] text-purple-400 font-medium">
+                +{stock.cs_bonus} CS
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      <div className="text-[10px] text-dark-500 mt-2 pt-2 border-t border-dark-700">
+        Stocks with long bases, earnings beat streaks, approaching earnings - high conviction setups
+      </div>
+    </div>
+  )
+}
+
 function QuickStats({ stats }) {
   if (!stats) return null
 
@@ -707,28 +787,34 @@ export default function Dashboard() {
   const [growthLoading, setGrowthLoading] = useState(true)
   const [breakoutStocks, setBreakoutStocks] = useState(null)
   const [breakoutLoading, setBreakoutLoading] = useState(true)
+  const [csAlerts, setCsAlerts] = useState(null)
+  const [csLoading, setCsLoading] = useState(true)
 
   const fetchData = async () => {
     try {
       setLoading(true)
       setGrowthLoading(true)
       setBreakoutLoading(true)
-      const [dashboard, scanner, growth, breakouts] = await Promise.all([
+      setCsLoading(true)
+      const [dashboard, scanner, growth, breakouts, coiledSpring] = await Promise.all([
         api.getDashboard(),
         api.getScannerStatus().catch(() => null),
         api.getTopGrowthStocks(10).catch(() => ({ stocks: [] })),
-        api.getBreakingOutStocks(10).catch(() => ({ stocks: [] }))
+        api.getBreakingOutStocks(10).catch(() => ({ stocks: [] })),
+        api.getCoiledSpringCandidates().catch(() => ({ candidates: [] }))
       ])
       setData(dashboard)
       setScannerStatus(scanner)
       setGrowthStocks(growth?.stocks || [])
       setBreakoutStocks(breakouts?.stocks || [])
+      setCsAlerts(coiledSpring?.candidates || [])
     } catch (err) {
       console.error('Failed to fetch dashboard:', err)
     } finally {
       setLoading(false)
       setGrowthLoading(false)
       setBreakoutLoading(false)
+      setCsLoading(false)
     }
   }
 
@@ -860,6 +946,8 @@ export default function Dashboard() {
       </div>
 
       <MarketStatus market={data?.market} onRefresh={handleMarketRefresh} />
+
+      <CoiledSpringAlerts candidates={csAlerts} loading={csLoading} />
 
       <QuickStats stats={data?.stats} />
 

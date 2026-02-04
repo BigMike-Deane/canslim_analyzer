@@ -24,7 +24,7 @@ from backend.database import (
     init_db, get_db, Stock, StockScore, PortfolioPosition,
     Watchlist, AnalysisJob, MarketSnapshot,
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
-    BacktestRun, BacktestSnapshot, BacktestTrade
+    BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert
 )
 from backend.config import settings
 from pydantic import BaseModel
@@ -2088,6 +2088,128 @@ from backend.ai_trader import (
     run_ai_trading_cycle, take_portfolio_snapshot, initialize_ai_portfolio,
     refresh_ai_portfolio
 )
+
+
+# ============== Coiled Spring Alerts ==============
+
+@app.get("/api/coiled-spring/alerts")
+async def get_coiled_spring_alerts(
+    db: Session = Depends(get_db),
+    days: int = Query(7, ge=1, le=30, description="Number of days to look back")
+):
+    """
+    Get Coiled Spring alerts - high-conviction earnings catalyst plays.
+
+    These are stocks meeting ALL criteria:
+    - 15+ weeks in base (long consolidation)
+    - 3+ consecutive earnings beats
+    - C score >= 12, L score >= 8, Total >= 65
+    - Institutional ownership <= 40%
+    - 1-14 days to earnings
+    """
+    cutoff_date = date.today() - timedelta(days=days)
+
+    alerts = db.query(CoiledSpringAlert).filter(
+        CoiledSpringAlert.alert_date >= cutoff_date
+    ).order_by(desc(CoiledSpringAlert.alert_date), desc(CoiledSpringAlert.cs_bonus)).all()
+
+    # Get current stock data for each alert
+    alert_tickers = [a.ticker for a in alerts]
+    stocks_by_ticker = {}
+    if alert_tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(alert_tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in stocks}
+
+    return {
+        "alerts": [{
+            "id": a.id,
+            "ticker": a.ticker,
+            "alert_date": a.alert_date.isoformat(),
+            "days_to_earnings": a.days_to_earnings,
+            "weeks_in_base": a.weeks_in_base,
+            "beat_streak": a.beat_streak,
+            "c_score": a.c_score,
+            "total_score": a.total_score,
+            "cs_bonus": a.cs_bonus,
+            "price_at_alert": a.price_at_alert,
+            "current_price": stocks_by_ticker.get(a.ticker, {}).current_price if stocks_by_ticker.get(a.ticker) else None,
+            "base_type": stocks_by_ticker.get(a.ticker, {}).base_type if stocks_by_ticker.get(a.ticker) else None,
+            "outcome": a.outcome,
+            "price_change_pct": a.price_change_pct,
+            "email_sent": a.email_sent
+        } for a in alerts],
+        "total": len(alerts),
+        "today_count": sum(1 for a in alerts if a.alert_date == date.today())
+    }
+
+
+@app.get("/api/coiled-spring/candidates")
+async def get_coiled_spring_candidates(db: Session = Depends(get_db)):
+    """
+    Get current stocks that qualify as Coiled Spring candidates.
+    These are stocks that meet CS criteria based on current data.
+    """
+    from canslim_scorer import calculate_coiled_spring_score
+    from config_loader import config
+
+    cs_config = config.get('coiled_spring', {})
+    thresholds = cs_config.get('thresholds', {})
+    earnings_window = cs_config.get('earnings_window', {})
+
+    # Query stocks that might qualify
+    candidates = db.query(Stock).filter(
+        Stock.weeks_in_base >= thresholds.get('min_weeks_in_base', 15),
+        Stock.canslim_score >= thresholds.get('min_total_score', 65),
+        Stock.c_score >= thresholds.get('min_c_score', 12),
+        Stock.l_score >= thresholds.get('min_l_score', 8),
+        Stock.days_to_earnings != None,
+        Stock.days_to_earnings > earnings_window.get('block_days', 1),
+        Stock.days_to_earnings <= earnings_window.get('alert_days', 14)
+    ).all()
+
+    # Filter by institutional ownership and beat streak
+    qualified = []
+    for stock in candidates:
+        inst_pct = stock.institutional_holders_pct or 0
+        beat_streak = stock.earnings_beat_streak or 0
+
+        if (inst_pct <= thresholds.get('max_institutional_pct', 40) and
+            beat_streak >= thresholds.get('min_beat_streak', 3)):
+
+            # Calculate CS bonus
+            scoring = cs_config.get('scoring', {})
+            cs_bonus = scoring.get('base_bonus', 20)
+            if stock.weeks_in_base and stock.weeks_in_base >= 20:
+                cs_bonus += scoring.get('long_base_bonus', 10)
+            if beat_streak >= 5:
+                cs_bonus += scoring.get('strong_beat_bonus', 5)
+            cs_bonus = min(cs_bonus, scoring.get('max_bonus', 35))
+
+            qualified.append({
+                "ticker": stock.ticker,
+                "name": stock.name,
+                "canslim_score": stock.canslim_score,
+                "c_score": stock.c_score,
+                "l_score": stock.l_score,
+                "weeks_in_base": stock.weeks_in_base,
+                "base_type": stock.base_type,
+                "earnings_beat_streak": beat_streak,
+                "days_to_earnings": stock.days_to_earnings,
+                "institutional_holders_pct": inst_pct,
+                "cs_bonus": cs_bonus,
+                "current_price": stock.current_price,
+                "is_breaking_out": stock.is_breaking_out
+            })
+
+    # Sort by CS bonus + total score
+    qualified.sort(key=lambda x: (x['cs_bonus'], x['canslim_score']), reverse=True)
+
+    return {
+        "candidates": qualified,
+        "total": len(qualified),
+        "thresholds": thresholds
+    }
+
 
 @app.get("/api/ai-portfolio")
 async def get_ai_portfolio(db: Session = Depends(get_db)):

@@ -261,6 +261,10 @@ export const api = {
 
   getBreakingOutStocks: (limit = 10) => request(`/api/stocks/breaking-out?limit=${limit}`),
 
+  // Coiled Spring Alerts
+  getCoiledSpringAlerts: (days = 7) => request(`/api/coiled-spring/alerts?days=${days}`),
+  getCoiledSpringCandidates: () => request('/api/coiled-spring/candidates'),
+
   // Backtesting
   getBacktests: () => request('/api/backtests'),
 

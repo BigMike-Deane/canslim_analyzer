@@ -643,18 +643,22 @@ export default function AIPortfolio() {
   })
   const [lastPriceRefresh, setLastPriceRefresh] = useState(null)
   const [isRefreshingPrices, setIsRefreshingPrices] = useState(false)
+  const [csAlerts, setCsAlerts] = useState([])
+  const [csExpanded, setCsExpanded] = useState(true)
 
   const fetchData = async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true)
-      const [portfolioData, historyData, tradesData] = await Promise.all([
+      const [portfolioData, historyData, tradesData, csData] = await Promise.all([
         api.getAIPortfolio(),
         api.getAIPortfolioHistory(90),
-        api.getAIPortfolioTrades(50)
+        api.getAIPortfolioTrades(50),
+        api.getCoiledSpringCandidates().catch(() => ({ candidates: [] }))
       ])
       setPortfolio(portfolioData)
       setHistory(historyData)
       setTrades(tradesData)
+      setCsAlerts(csData?.candidates || [])
       setLastUpdated(new Date())
 
       // Check if data changed while waiting for trades
@@ -881,6 +885,70 @@ export default function AIPortfolio() {
             <span className="font-medium">Executing trades... This may take up to 2 minutes.</span>
           </div>
           <div className="text-dark-400 text-xs mt-1">Page will auto-update when complete.</div>
+        </div>
+      )}
+
+      {/* Coiled Spring Alerts */}
+      {csAlerts && csAlerts.length > 0 && (
+        <div className="card mb-4 border border-purple-500/30 bg-purple-500/5">
+          <button
+            onClick={() => setCsExpanded(!csExpanded)}
+            className="w-full flex justify-between items-center"
+          >
+            <div className="font-semibold text-sm flex items-center gap-2">
+              <span className="text-purple-400">🌀</span>
+              Coiled Spring Alerts
+              <span className="text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
+                {csAlerts.length} candidates
+              </span>
+            </div>
+            <span className="text-dark-400">{csExpanded ? '▼' : '▶'}</span>
+          </button>
+
+          {csExpanded && (
+            <div className="mt-3 space-y-2">
+              <div className="text-[10px] text-dark-400 mb-2">
+                High-conviction pre-earnings plays: long bases + beat streaks + approaching earnings
+              </div>
+              {csAlerts.map((stock) => (
+                <Link
+                  key={stock.ticker}
+                  to={`/stock/${stock.ticker}`}
+                  className="flex justify-between items-center py-2 px-2 -mx-2 rounded hover:bg-dark-700/50 transition-colors border-b border-dark-700 last:border-0"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{stock.ticker}</span>
+                      {stock.base_type && stock.base_type !== 'none' && (
+                        <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1 rounded">
+                          {stock.weeks_in_base}w {stock.base_type}
+                        </span>
+                      )}
+                      {stock.is_breaking_out && (
+                        <span className="text-[9px] bg-yellow-500/20 text-yellow-400 px-1 rounded">
+                          Breakout
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-dark-400 flex gap-2 mt-0.5">
+                      <span>C:{stock.c_score?.toFixed(0)}</span>
+                      <span>L:{stock.l_score?.toFixed(1)}</span>
+                      <span>•</span>
+                      <span>{stock.earnings_beat_streak} beats</span>
+                      <span>•</span>
+                      <span className="text-yellow-400">{stock.days_to_earnings}d to earnings</span>
+                      <span>•</span>
+                      <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium">{stock.canslim_score?.toFixed(0)}</div>
+                    <div className="text-[10px] text-purple-400">+{stock.cs_bonus} bonus</div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
