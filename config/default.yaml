@@ -266,6 +266,13 @@ coiled_spring:
       loss_pct: -5       # <= -5% = loss
       # Between -5% and +5% = flat
 
+# Watchlist Alerts
+watchlist:
+  alerts:
+    enabled: true
+    check_after_scan: true       # Check alerts after each scan completes
+    cooldown_hours: 24           # Don't re-alert for same item within 24h
+
 # Technical Analysis Settings
 technical:
   # Base pattern detection

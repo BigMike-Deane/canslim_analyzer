@@ -80,6 +80,104 @@ def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
     return total_deleted
 
 
+def check_watchlist_alerts():
+    """Check watchlist items against target_price and alert_score thresholds"""
+    from backend.database import SessionLocal, Watchlist, Stock
+    from config_loader import config
+    from datetime import timedelta
+
+    # Check if alerts are enabled
+    watchlist_config = config.get('watchlist', {}).get('alerts', {})
+    if not watchlist_config.get('enabled', True):
+        logger.debug("Watchlist alerts disabled in config")
+        return
+
+    cooldown_hours = watchlist_config.get('cooldown_hours', 24)
+
+    db = SessionLocal()
+    alerts_sent = 0
+
+    try:
+        # Get watchlist items with alerts set (either target_price or alert_score)
+        items = db.query(Watchlist).filter(
+            (Watchlist.target_price != None) | (Watchlist.alert_score != None)
+        ).all()
+
+        if not items:
+            logger.debug("No watchlist items with alerts configured")
+            db.close()
+            return
+
+        logger.info(f"Checking {len(items)} watchlist items for alerts...")
+
+        for item in items:
+            stock = db.query(Stock).filter(Stock.ticker == item.ticker).first()
+            if not stock or not stock.current_price:
+                continue
+
+            triggered = False
+            reasons = []
+
+            # Check price alert (crosses above target)
+            if item.target_price and stock.current_price:
+                if stock.current_price >= item.target_price:
+                    # Only trigger if we didn't already know it was above target
+                    if not item.last_check_price or item.last_check_price < item.target_price:
+                        triggered = True
+                        reasons.append(f"Price ${stock.current_price:.2f} >= target ${item.target_price:.2f}")
+
+            # Check score alert (crosses above threshold)
+            if item.alert_score and stock.canslim_score:
+                if stock.canslim_score >= item.alert_score:
+                    triggered = True
+                    reasons.append(f"CANSLIM score {stock.canslim_score:.0f} >= target {item.alert_score:.0f}")
+
+            # Update last check price
+            item.last_check_price = stock.current_price
+
+            if triggered:
+                # Check cooldown - don't re-alert if recently sent
+                if item.alert_triggered_at:
+                    time_since_last = datetime.utcnow() - item.alert_triggered_at
+                    if time_since_last < timedelta(hours=cooldown_hours):
+                        logger.debug(f"Skipping {item.ticker} alert - within {cooldown_hours}h cooldown")
+                        continue
+
+                # Check if alert was already sent (and not reset)
+                if item.alert_sent:
+                    logger.debug(f"Skipping {item.ticker} alert - already sent")
+                    continue
+
+                # Send the alert
+                try:
+                    # Import email function
+                    import sys
+                    from pathlib import Path
+                    sys.path.insert(0, str(Path(__file__).parent.parent))
+                    from email_report import send_watchlist_alert_email
+
+                    if send_watchlist_alert_email(item, stock, reasons):
+                        item.alert_triggered_at = datetime.utcnow()
+                        item.alert_sent = True
+                        alerts_sent += 1
+                        logger.info(f"Watchlist alert sent for {item.ticker}: {', '.join(reasons)}")
+                    else:
+                        logger.warning(f"Failed to send watchlist alert for {item.ticker}")
+                except Exception as e:
+                    logger.error(f"Error sending watchlist alert for {item.ticker}: {e}")
+
+        db.commit()
+
+        if alerts_sent > 0:
+            logger.info(f"Sent {alerts_sent} watchlist alerts")
+
+    except Exception as e:
+        logger.error(f"Watchlist alert check failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def get_scan_status():
     """Get current scheduler status"""
     next_run = None
@@ -862,6 +960,14 @@ def run_continuous_scan():
             cleanup_db.close()
         except Exception as e:
             logger.error(f"StockScore cleanup failed: {e}")
+
+        # Phase 5: Check watchlist alerts
+        _scan_config["phase_detail"] = "Checking watchlist alerts..."
+
+        try:
+            check_watchlist_alerts()
+        except Exception as e:
+            logger.error(f"Watchlist alert check failed: {e}")
 
     except Exception as e:
         logger.error(f"Scan error: {e}")

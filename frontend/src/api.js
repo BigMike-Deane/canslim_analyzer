@@ -264,6 +264,7 @@ export const api = {
   // Coiled Spring Alerts
   getCoiledSpringAlerts: (days = 7) => request(`/api/coiled-spring/alerts?days=${days}`),
   getCoiledSpringCandidates: () => request('/api/coiled-spring/candidates'),
+  getCoiledSpringHistory: (page = 1, pageSize = 50) => request(`/api/coiled-spring/history?page=${page}&page_size=${pageSize}`),
 
   // Backtesting
   getBacktests: () => request('/api/backtests'),

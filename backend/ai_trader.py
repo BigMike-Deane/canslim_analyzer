@@ -168,7 +168,7 @@ def calculate_coiled_spring_score_for_stock(stock: Stock) -> dict:
     data.weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
     data.earnings_beat_streak = getattr(stock, 'earnings_beat_streak', 0) or 0
     data.days_to_earnings = getattr(stock, 'days_to_earnings', None)
-    data.institutional_holders_pct = getattr(stock, 'institutional_holders_pct', 0) or 0
+    data.institutional_holders_pct = (stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0
 
     # Create a mock score object
     class MockScore:
@@ -241,7 +241,7 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
         cs_bonus=cs_result.get('cs_score', 0),
         price_at_alert=getattr(stock, 'current_price', 0) or 0,
         base_type=getattr(stock, 'base_type', None),
-        institutional_pct=getattr(stock, 'institutional_holders_pct', 0) or 0,
+        institutional_pct=(stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0,
         l_score=getattr(stock, 'l_score', 0) or 0,
         email_sent=False
     )

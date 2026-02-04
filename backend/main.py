@@ -2352,8 +2352,10 @@ async def get_coiled_spring_history(
     """
     Get historical Coiled Spring alerts with outcomes for success rate tracking.
     Supports pagination with page and page_size parameters.
+    Includes cumulative stats across all alerts (not just current page).
     """
     from backend.database import CoiledSpringAlert
+    from sqlalchemy import func
 
     # Get total count for pagination
     total = db.query(CoiledSpringAlert).count()
@@ -2363,20 +2365,56 @@ async def get_coiled_spring_history(
         CoiledSpringAlert.alert_date.desc()
     ).offset((page - 1) * page_size).limit(page_size).all()
 
-    # Calculate success stats (on current page only for performance)
-    total_with_outcome = 0
-    wins = 0
-    big_wins = 0
+    # Calculate page stats (current page only - for quick reference)
+    page_with_outcome = 0
+    page_wins = 0
+    page_big_wins = 0
     for a in alerts:
         if a.outcome:
-            total_with_outcome += 1
+            page_with_outcome += 1
             if a.outcome in ('win', 'big_win'):
-                wins += 1
+                page_wins += 1
             if a.outcome == 'big_win':
-                big_wins += 1
+                page_big_wins += 1
 
-    win_rate = (wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
-    big_win_rate = (big_wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
+    page_win_rate = (page_wins / page_with_outcome * 100) if page_with_outcome > 0 else 0
+    page_big_win_rate = (page_big_wins / page_with_outcome * 100) if page_with_outcome > 0 else 0
+
+    # Calculate CUMULATIVE stats (all alerts)
+    all_alerts = db.query(CoiledSpringAlert).all()
+    total_with_outcome = sum(1 for a in all_alerts if a.outcome)
+    total_wins = sum(1 for a in all_alerts if a.outcome in ('win', 'big_win'))
+    total_big_wins = sum(1 for a in all_alerts if a.outcome == 'big_win')
+    total_losses = sum(1 for a in all_alerts if a.outcome == 'loss')
+    total_flat = sum(1 for a in all_alerts if a.outcome == 'flat')
+
+    overall_win_rate = (total_wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
+    overall_big_win_rate = (total_big_wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
+
+    # Group by base_type for pattern analysis
+    by_base_type = {}
+    for a in all_alerts:
+        base = a.base_type or 'unknown'
+        if base not in by_base_type:
+            by_base_type[base] = {'total': 0, 'with_outcome': 0, 'wins': 0, 'big_wins': 0}
+        by_base_type[base]['total'] += 1
+        if a.outcome:
+            by_base_type[base]['with_outcome'] += 1
+            if a.outcome in ('win', 'big_win'):
+                by_base_type[base]['wins'] += 1
+            if a.outcome == 'big_win':
+                by_base_type[base]['big_wins'] += 1
+
+    # Calculate win rates per base type
+    for base, stats in by_base_type.items():
+        if stats['with_outcome'] > 0:
+            stats['win_rate'] = round(stats['wins'] / stats['with_outcome'] * 100, 1)
+        else:
+            stats['win_rate'] = 0
+
+    # Group by entry status (based on whether stock was breaking out at alert time)
+    # Note: We don't have entry_status stored directly, but we can infer from price position
+    # For now, we'll track alerts that have the data
 
     return {
         "alerts": [{
@@ -2399,11 +2437,22 @@ async def get_coiled_spring_history(
             "total": total,
             "pages": (total + page_size - 1) // page_size
         },
-        "stats": {
+        "page_stats": {
             "total_alerts": len(alerts),
+            "with_outcome": page_with_outcome,
+            "win_rate": round(page_win_rate, 1),
+            "big_win_rate": round(page_big_win_rate, 1)
+        },
+        "cumulative_stats": {
+            "total_alerts_all_time": total,
             "with_outcome": total_with_outcome,
-            "win_rate": round(win_rate, 1),
-            "big_win_rate": round(big_win_rate, 1)
+            "wins": total_wins,
+            "big_wins": total_big_wins,
+            "losses": total_losses,
+            "flat": total_flat,
+            "overall_win_rate": round(overall_win_rate, 1),
+            "overall_big_win_rate": round(overall_big_win_rate, 1),
+            "by_base_type": by_base_type
         }
     }
 

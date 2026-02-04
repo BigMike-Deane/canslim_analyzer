@@ -250,13 +250,27 @@ def load_scan_progress(scan_id: str = "default") -> List[str]:
         if CHECKPOINT_FILE.exists():
             with open(CHECKPOINT_FILE) as f:
                 checkpoint = json.load(f)
+            checkpoint_scan_id = checkpoint.get("scan_id")
+            checkpoint_completed = checkpoint.get("completed", [])
+            ts = datetime.fromisoformat(checkpoint["timestamp"])
+            age_minutes = (datetime.now() - ts).total_seconds() / 60
+
+            logger.info(f"Checkpoint found: scan_id={checkpoint_scan_id}, "
+                       f"completed={len(checkpoint_completed)}, age={age_minutes:.1f}min")
+
             # Only use checkpoint if it's from the same scan and less than 1 hour old
-            if checkpoint.get("scan_id") == scan_id:
-                ts = datetime.fromisoformat(checkpoint["timestamp"])
+            if checkpoint_scan_id == scan_id:
                 if datetime.now() - ts < timedelta(hours=1):
-                    return checkpoint.get("completed", [])
+                    logger.info(f"Using checkpoint: {len(checkpoint_completed)} tickers already completed")
+                    return checkpoint_completed
+                else:
+                    logger.info(f"Checkpoint too old ({age_minutes:.1f}min), ignoring")
+            else:
+                logger.info(f"Checkpoint scan_id mismatch: {checkpoint_scan_id} vs {scan_id}, ignoring")
+        else:
+            logger.debug("No checkpoint file found")
     except Exception as e:
-        logger.debug(f"Could not load checkpoint: {e}")
+        logger.warning(f"Could not load checkpoint: {e}")
     return []
 
 
@@ -265,8 +279,9 @@ def clear_scan_progress():
     try:
         if CHECKPOINT_FILE.exists():
             CHECKPOINT_FILE.unlink()
-    except (OSError, IOError):
-        pass  # File deletion failed - not critical
+            logger.info("Checkpoint file cleared successfully")
+    except (OSError, IOError) as e:
+        logger.error(f"Failed to clear checkpoint file: {e}")
 
 
 async def _check_rate_limit():

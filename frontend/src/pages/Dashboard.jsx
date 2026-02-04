@@ -488,6 +488,84 @@ function CoiledSpringAlerts({ candidates, loading }) {
   )
 }
 
+function CoiledSpringStats({ stats, loading }) {
+  if (loading) {
+    return (
+      <div className="card mb-3 border border-purple-500/20 bg-purple-500/5">
+        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
+          <span className="text-purple-400">📊</span> CS Performance
+        </div>
+        <div className="animate-pulse h-16 bg-dark-700 rounded" />
+      </div>
+    )
+  }
+
+  if (!stats) return null
+
+  const { cumulative_stats } = stats
+  if (!cumulative_stats || cumulative_stats.with_outcome === 0) {
+    return null  // Don't show if no outcomes tracked yet
+  }
+
+  const winRateColor = cumulative_stats.overall_win_rate >= 60 ? 'text-green-400' :
+                       cumulative_stats.overall_win_rate >= 40 ? 'text-yellow-400' : 'text-red-400'
+
+  // Get top performing base type
+  const baseTypes = cumulative_stats.by_base_type || {}
+  const sortedBases = Object.entries(baseTypes)
+    .filter(([_, data]) => data.with_outcome >= 3)  // Only show if enough data
+    .sort((a, b) => b[1].win_rate - a[1].win_rate)
+
+  return (
+    <div className="card mb-3 border border-purple-500/20 bg-purple-500/5">
+      <div className="flex justify-between items-center mb-3">
+        <div className="font-semibold text-sm flex items-center gap-2">
+          <span className="text-purple-400">📊</span> CS Performance
+        </div>
+        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">
+          {cumulative_stats.total_alerts_all_time} alerts tracked
+        </span>
+      </div>
+
+      {/* Main Stats Row */}
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        <div className="text-center">
+          <div className={`text-lg font-bold ${winRateColor}`}>
+            {cumulative_stats.overall_win_rate}%
+          </div>
+          <div className="text-[10px] text-dark-400">Win Rate</div>
+        </div>
+        <div className="text-center">
+          <div className="text-lg font-bold text-green-400">
+            {cumulative_stats.wins}
+          </div>
+          <div className="text-[10px] text-dark-400">Wins</div>
+        </div>
+        <div className="text-center">
+          <div className="text-lg font-bold text-red-400">
+            {cumulative_stats.losses}
+          </div>
+          <div className="text-[10px] text-dark-400">Losses</div>
+        </div>
+        <div className="text-center">
+          <div className="text-lg font-bold text-blue-400">
+            {cumulative_stats.big_wins}
+          </div>
+          <div className="text-[10px] text-dark-400">Big Wins</div>
+        </div>
+      </div>
+
+      {/* Best Pattern */}
+      {sortedBases.length > 0 && (
+        <div className="text-[10px] text-dark-500 pt-2 border-t border-dark-700">
+          <span className="font-medium text-purple-400">Best pattern: </span>
+          {sortedBases[0][0].replace('_', ' ')} ({sortedBases[0][1].win_rate}% win rate, {sortedBases[0][1].with_outcome} samples)
+        </div>
+      )}
+    </div>
+  )
+}
+
 function QuickStats({ stats }) {
   if (!stats) return null
 
@@ -789,6 +867,8 @@ export default function Dashboard() {
   const [breakoutLoading, setBreakoutLoading] = useState(true)
   const [csAlerts, setCsAlerts] = useState(null)
   const [csLoading, setCsLoading] = useState(true)
+  const [csStats, setCsStats] = useState(null)
+  const [csStatsLoading, setCsStatsLoading] = useState(true)
 
   const fetchData = async () => {
     try {
@@ -796,18 +876,21 @@ export default function Dashboard() {
       setGrowthLoading(true)
       setBreakoutLoading(true)
       setCsLoading(true)
-      const [dashboard, scanner, growth, breakouts, coiledSpring] = await Promise.all([
+      setCsStatsLoading(true)
+      const [dashboard, scanner, growth, breakouts, coiledSpring, coiledSpringStats] = await Promise.all([
         api.getDashboard(),
         api.getScannerStatus().catch(() => null),
         api.getTopGrowthStocks(10).catch(() => ({ stocks: [] })),
         api.getBreakingOutStocks(10).catch(() => ({ stocks: [] })),
-        api.getCoiledSpringCandidates().catch(() => ({ candidates: [] }))
+        api.getCoiledSpringCandidates().catch(() => ({ candidates: [] })),
+        api.getCoiledSpringHistory(1, 100).catch(() => null)
       ])
       setData(dashboard)
       setScannerStatus(scanner)
       setGrowthStocks(growth?.stocks || [])
       setBreakoutStocks(breakouts?.stocks || [])
       setCsAlerts(coiledSpring?.candidates || [])
+      setCsStats(coiledSpringStats)
     } catch (err) {
       console.error('Failed to fetch dashboard:', err)
     } finally {
@@ -815,6 +898,7 @@ export default function Dashboard() {
       setGrowthLoading(false)
       setBreakoutLoading(false)
       setCsLoading(false)
+      setCsStatsLoading(false)
     }
   }
 
@@ -948,6 +1032,8 @@ export default function Dashboard() {
       <MarketStatus market={data?.market} onRefresh={handleMarketRefresh} />
 
       <CoiledSpringAlerts candidates={csAlerts} loading={csLoading} />
+
+      <CoiledSpringStats stats={csStats} loading={csStatsLoading} />
 
       <QuickStats stats={data?.stats} />
 

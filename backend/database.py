@@ -437,6 +437,11 @@ class Watchlist(Base):
     target_price = Column(Float)  # Alert when reaches this price
     alert_score = Column(Float)  # Alert when CANSLIM score reaches this
 
+    # Alert tracking fields
+    alert_triggered_at = Column(DateTime)  # When alert was triggered
+    alert_sent = Column(Boolean, default=False)  # Has email been sent
+    last_check_price = Column(Float)  # Price at last check (for comparison)
+
 
 class CoiledSpringAlert(Base):
     """
