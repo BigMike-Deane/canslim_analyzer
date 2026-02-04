@@ -975,9 +975,9 @@ async def get_top_growth_stocks(
             "volume_ratio": s.volume_ratio if s.volume_ratio is not None else 1.0,
             "base_type": s.base_type,
             "weeks_in_base": s.weeks_in_base,
-            "days_to_earnings": s.days_to_earnings,
-            "earnings_beat_streak": s.earnings_beat_streak,
-            "institutional_holders_pct": s.institutional_holders_pct,
+            "days_to_earnings": getattr(s, 'days_to_earnings', None),
+            "earnings_beat_streak": getattr(s, 'earnings_beat_streak', None),
+            "institutional_holders_pct": (s.score_details or {}).get('i', {}).get('institutional_pct') if s.score_details else None,
             "c_score": s.c_score,
             "l_score": s.l_score,
             "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
@@ -1145,9 +1145,9 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
         "breakout_volume_ratio": stock.breakout_volume_ratio or stock.volume_ratio or 1.0,
 
         # Earnings catalyst / Coiled Spring data
-        "days_to_earnings": stock.days_to_earnings,
-        "earnings_beat_streak": stock.earnings_beat_streak,
-        "institutional_holders_pct": stock.institutional_holders_pct,
+        "days_to_earnings": getattr(stock, 'days_to_earnings', None),
+        "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', None),
+        "institutional_holders_pct": (stock.score_details or {}).get('i', {}).get('institutional_pct') if stock.score_details else None,
 
         # Insider trading signals
         "insider_buy_count": stock.insider_buy_count,
@@ -2170,8 +2170,9 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db)):
     # Filter by institutional ownership and beat streak
     qualified = []
     for stock in candidates:
-        inst_pct = stock.institutional_holders_pct or 0
-        beat_streak = stock.earnings_beat_streak or 0
+        # Extract institutional_pct from score_details JSON
+        inst_pct = (stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0
+        beat_streak = getattr(stock, 'earnings_beat_streak', 0) or 0
 
         if (inst_pct <= thresholds.get('max_institutional_pct', 40) and
             beat_streak >= thresholds.get('min_beat_streak', 3)):
