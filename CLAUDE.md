@@ -25,21 +25,16 @@
 1. `weeks_in_base >= 15` - Long consolidation = stored energy
 2. `earnings_beat_streak >= 3` - Track record of execution
 3. `c_score >= 12` - Strong current earnings
-4. `total_score >= 65` - Quality stock overall
-5. `institutional_holders_pct <= 40` - Room for big buyers
+4. `total_score >= 55` - Quality stock (lowered from 65 to catch more)
+5. `institutional_holders_pct <= 50` - Room for big buyers (raised from 40)
 6. `l_score >= 8` - Rising relative strength
 7. `1 < days_to_earnings <= 14` - Upcoming catalyst
 
 **Current State** (after full scan):
 - P1 data populated: 2059 stocks with `days_to_earnings` and `earnings_beat_streak`
 - 522 stocks have earnings in next 1-14 days
-- Only **SLAB** fully qualifies (Score 78, 26w cup, 3 beats, 7d to earnings, 1% inst)
-- Near-misses fail mostly on `score < 65` (SSD: 58, GXO: 57) or `inst > 40%` (CINF: 71%, STNG: 74%)
-
-**Potential Tuning** (if more candidates desired):
-- Lower `min_total_score` from 65 to 55-60
-- Extend `alert_days` from 14 to 21-30
-- Lower `min_beat_streak` from 3 to 2
+- With lowered thresholds, more stocks qualify (SSD, GXO now pass)
+- Near-misses still fail on institutional ownership (CINF: 71%, STNG: 74%)
 
 ### Bug Fixes
 
