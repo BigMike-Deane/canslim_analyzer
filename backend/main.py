@@ -2178,11 +2178,15 @@ async def get_coiled_spring_alerts(
 
 
 @app.get("/api/coiled-spring/candidates")
-async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int = 10):
+async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int = 10, pre_breakout_only: bool = False):
     """
     Get current stocks that qualify as Coiled Spring candidates.
     These are stocks that meet CS criteria based on current data,
     ranked by quality (best candidates first).
+
+    Args:
+        limit: Max candidates to return (default 10)
+        pre_breakout_only: If True, only return stocks NOT already breaking out
     """
     from config_loader import config
 
@@ -2192,7 +2196,7 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
     ranking_weights = cs_config.get('ranking_weights', {})
 
     # Query stocks that might qualify (using relaxed thresholds)
-    candidates = db.query(Stock).filter(
+    query = db.query(Stock).filter(
         Stock.weeks_in_base >= thresholds.get('min_weeks_in_base', 15),
         Stock.canslim_score >= thresholds.get('min_total_score', 55),
         Stock.c_score >= thresholds.get('min_c_score', 10),
@@ -2200,7 +2204,13 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
         Stock.days_to_earnings != None,
         Stock.days_to_earnings > earnings_window.get('block_days', 1),
         Stock.days_to_earnings <= earnings_window.get('alert_days', 14)
-    ).all()
+    )
+
+    # Optional: filter to pre-breakout only
+    if pre_breakout_only:
+        query = query.filter(Stock.is_breaking_out == False)
+
+    candidates = query.all()
 
     # Filter by institutional ownership and beat streak
     qualified = []
@@ -2221,12 +2231,20 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
                 cs_bonus += scoring.get('strong_beat_bonus', 5)
             cs_bonus = min(cs_bonus, scoring.get('max_bonus', 35))
 
+            # Calculate % from 52-week high
+            high_52w = stock.week_52_high or 0
+            price = stock.current_price or 0
+            pct_from_high = ((price - high_52w) / high_52w * 100) if high_52w > 0 else 0
+            volume_ratio = stock.volume_ratio or 1.0
+
             # Calculate quality ranking score (higher = better candidate)
             w_base = ranking_weights.get('weeks_in_base', 1.5)
             w_beats = ranking_weights.get('beat_streak', 3.0)
             w_l = ranking_weights.get('l_score', 2.0)
             w_total = ranking_weights.get('total_score', 0.5)
             low_inst_bonus = ranking_weights.get('low_inst_bonus', 10)
+            pre_breakout_bonus = ranking_weights.get('pre_breakout_bonus', 15)
+            extended_penalty = ranking_weights.get('extended_penalty', -20)
 
             quality_rank = (
                 (stock.weeks_in_base or 0) * w_base +
@@ -2234,9 +2252,21 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
                 (stock.l_score or 0) * w_l +
                 (stock.canslim_score or 0) * w_total
             )
+
             # Bonus for truly low institutional (< 30%)
             if inst_pct < 30:
                 quality_rank += low_inst_bonus
+
+            # Bonus for PRE-BREAKOUT (hasn't broken out yet - ideal entry)
+            if not stock.is_breaking_out:
+                quality_rank += pre_breakout_bonus
+                entry_status = "PRE-BREAKOUT"
+            # Penalty for EXTENDED (already at high with volume surge)
+            elif pct_from_high > -2 and volume_ratio > 2.0:
+                quality_rank += extended_penalty
+                entry_status = "EXTENDED"
+            else:
+                entry_status = "BREAKING_OUT"
 
             qualified.append({
                 "ticker": stock.ticker,
@@ -2252,6 +2282,9 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
                 "cs_bonus": cs_bonus,
                 "quality_rank": round(quality_rank, 1),
                 "current_price": stock.current_price,
+                "pct_from_high": round(pct_from_high, 1),
+                "volume_ratio": round(volume_ratio, 1),
+                "entry_status": entry_status,
                 "is_breaking_out": stock.is_breaking_out
             })
 
@@ -2267,6 +2300,151 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
         "thresholds": thresholds,
         "ranking_weights": ranking_weights
     }
+
+
+@app.get("/api/coiled-spring/history")
+async def get_coiled_spring_history(db: Session = Depends(get_db), limit: int = 50):
+    """
+    Get historical Coiled Spring alerts with outcomes for success rate tracking.
+    """
+    from database import CoiledSpringAlert
+
+    alerts = db.query(CoiledSpringAlert).order_by(
+        CoiledSpringAlert.alert_date.desc()
+    ).limit(limit).all()
+
+    # Calculate success stats
+    total_with_outcome = 0
+    wins = 0
+    big_wins = 0
+    for a in alerts:
+        if a.outcome:
+            total_with_outcome += 1
+            if a.outcome in ('win', 'big_win'):
+                wins += 1
+            if a.outcome == 'big_win':
+                big_wins += 1
+
+    win_rate = (wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
+    big_win_rate = (big_wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
+
+    return {
+        "alerts": [{
+            "id": a.id,
+            "ticker": a.ticker,
+            "alert_date": a.alert_date.isoformat() if a.alert_date else None,
+            "days_to_earnings": a.days_to_earnings,
+            "weeks_in_base": a.weeks_in_base,
+            "beat_streak": a.beat_streak,
+            "price_at_alert": a.price_at_alert,
+            "price_after_earnings": a.price_after_earnings,
+            "price_change_pct": a.price_change_pct,
+            "outcome": a.outcome,
+            "base_type": a.base_type,
+            "institutional_pct": a.institutional_pct
+        } for a in alerts],
+        "stats": {
+            "total_alerts": len(alerts),
+            "with_outcome": total_with_outcome,
+            "win_rate": round(win_rate, 1),
+            "big_win_rate": round(big_win_rate, 1)
+        }
+    }
+
+
+@app.post("/api/coiled-spring/record")
+async def record_coiled_spring_alert(ticker: str, db: Session = Depends(get_db)):
+    """
+    Record a Coiled Spring alert for tracking.
+    Called when a CS candidate is identified for the watchlist.
+    """
+    from database import CoiledSpringAlert
+    from datetime import date
+
+    # Get current stock data
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    if not stock:
+        raise HTTPException(status_code=404, detail=f"Stock {ticker} not found")
+
+    # Check if already recorded today
+    today = date.today()
+    existing = db.query(CoiledSpringAlert).filter(
+        CoiledSpringAlert.ticker == ticker,
+        CoiledSpringAlert.alert_date == today
+    ).first()
+    if existing:
+        return {"status": "already_recorded", "id": existing.id}
+
+    # Extract data
+    inst_pct = (stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0
+
+    alert = CoiledSpringAlert(
+        ticker=ticker,
+        alert_date=today,
+        days_to_earnings=stock.days_to_earnings,
+        weeks_in_base=stock.weeks_in_base,
+        beat_streak=stock.earnings_beat_streak,
+        c_score=stock.c_score,
+        total_score=stock.canslim_score,
+        price_at_alert=stock.current_price,
+        base_type=stock.base_type,
+        institutional_pct=inst_pct,
+        l_score=stock.l_score
+    )
+    db.add(alert)
+    db.commit()
+
+    return {"status": "recorded", "id": alert.id}
+
+
+@app.post("/api/coiled-spring/update-outcomes")
+async def update_coiled_spring_outcomes(db: Session = Depends(get_db)):
+    """
+    Update outcomes for past CS alerts where earnings have occurred.
+    Compares price_at_alert to current price.
+    """
+    from database import CoiledSpringAlert
+    from datetime import date, datetime
+
+    # Find alerts without outcomes where earnings should have passed
+    alerts = db.query(CoiledSpringAlert).filter(
+        CoiledSpringAlert.outcome == None,
+        CoiledSpringAlert.price_at_alert != None
+    ).all()
+
+    updated = 0
+    for alert in alerts:
+        # Get current stock price
+        stock = db.query(Stock).filter(Stock.ticker == alert.ticker).first()
+        if not stock or not stock.current_price:
+            continue
+
+        # Check if enough time has passed (alert_date + days_to_earnings + 1 day buffer)
+        days_since_alert = (date.today() - alert.alert_date).days
+        if alert.days_to_earnings and days_since_alert < (alert.days_to_earnings + 1):
+            continue  # Earnings haven't happened yet
+
+        # Calculate outcome
+        price_change_pct = ((stock.current_price - alert.price_at_alert) / alert.price_at_alert) * 100
+
+        if price_change_pct >= 15:
+            outcome = "big_win"
+        elif price_change_pct >= 5:
+            outcome = "win"
+        elif price_change_pct >= -5:
+            outcome = "flat"
+        else:
+            outcome = "loss"
+
+        alert.price_after_earnings = stock.current_price
+        alert.price_change_pct = round(price_change_pct, 2)
+        alert.outcome = outcome
+        alert.outcome_updated_at = datetime.utcnow()
+        updated += 1
+
+    db.commit()
+
+    return {"status": "success", "updated": updated}
 
 
 @app.get("/api/ai-portfolio")

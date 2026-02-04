@@ -237,6 +237,8 @@ coiled_spring:
     l_score: 2.0                # Relative strength momentum
     total_score: 0.5            # Overall quality
     low_inst_bonus: 10          # Bonus if inst < 30% (room to run)
+    pre_breakout_bonus: 15      # Bonus if NOT already breaking out (ideal entry)
+    extended_penalty: -20       # Penalty if already extended (>5% above pivot with high volume)
 
   # Alert settings (prevent overload)
   alerts:
