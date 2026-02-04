@@ -41,25 +41,51 @@ logger = logging.getLogger(__name__)
 
 # ============== Request Models ==============
 
+from pydantic import Field, field_validator
+import re
+
 class PositionCreate(BaseModel):
-    ticker: str
-    shares: float
-    cost_basis: Optional[float] = None
-    notes: Optional[str] = None
+    ticker: str = Field(..., min_length=1, max_length=10)
+    shares: float = Field(..., gt=0, le=1_000_000_000)
+    cost_basis: Optional[float] = Field(None, ge=0, le=1_000_000)
+    notes: Optional[str] = Field(None, max_length=500)
+
+    @field_validator('ticker')
+    @classmethod
+    def validate_ticker(cls, v: str) -> str:
+        v = v.upper().strip()
+        if not re.match(r'^[A-Z0-9.\-]+$', v):
+            raise ValueError('Ticker must contain only letters, numbers, dots, or hyphens')
+        return v
 
 class PositionUpdate(BaseModel):
-    shares: Optional[float] = None
-    cost_basis: Optional[float] = None
-    notes: Optional[str] = None
+    shares: Optional[float] = Field(None, gt=0, le=1_000_000_000)
+    cost_basis: Optional[float] = Field(None, ge=0, le=1_000_000)
+    notes: Optional[str] = Field(None, max_length=500)
 
 class WatchlistCreate(BaseModel):
-    ticker: str
-    notes: Optional[str] = None
-    target_price: Optional[float] = None
-    alert_score: Optional[float] = None
+    ticker: str = Field(..., min_length=1, max_length=10)
+    notes: Optional[str] = Field(None, max_length=500)
+    target_price: Optional[float] = Field(None, gt=0, le=1_000_000)
+    alert_score: Optional[float] = Field(None, ge=0, le=100)
+
+    @field_validator('ticker')
+    @classmethod
+    def validate_ticker(cls, v: str) -> str:
+        v = v.upper().strip()
+        if not re.match(r'^[A-Z0-9.\-]+$', v):
+            raise ValueError('Ticker must contain only letters, numbers, dots, or hyphens')
+        return v
 
 class ScanRequest(BaseModel):
-    tickers: Optional[List[str]] = None
+    tickers: Optional[List[str]] = Field(None, max_length=500)
+
+    @field_validator('tickers')
+    @classmethod
+    def validate_tickers(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        return [t.upper().strip() for t in v if t and len(t) <= 10]
 
 
 # ============== Lifespan ==============
@@ -1474,24 +1500,10 @@ async def get_portfolio(db: Session = Depends(get_db)):
 @app.post("/api/portfolio")
 async def add_position(data: PositionCreate, db: Session = Depends(get_db)):
     """Add a new portfolio position"""
-    ticker = data.ticker.upper().strip()
+    # Pydantic validators handle input validation (ticker format, shares > 0, cost_basis limits)
+    ticker = data.ticker  # Already uppercase from validator
     shares = data.shares
     cost_basis = data.cost_basis
-
-    # Input validation
-    if not ticker or len(ticker) > 10:
-        raise HTTPException(status_code=400, detail="Invalid ticker symbol")
-    if not ticker.replace('.', '').replace('-', '').isalnum():
-        raise HTTPException(status_code=400, detail="Ticker must contain only letters, numbers, dots, or hyphens")
-    if shares is None or shares <= 0:
-        raise HTTPException(status_code=400, detail="Shares must be a positive number")
-    if shares > 1_000_000_000:
-        raise HTTPException(status_code=400, detail="Share count exceeds maximum allowed")
-    if cost_basis is not None:
-        if cost_basis < 0:
-            raise HTTPException(status_code=400, detail="Cost basis cannot be negative")
-        if cost_basis > 1_000_000:
-            raise HTTPException(status_code=400, detail="Cost basis exceeds reasonable limit")
 
     # Check if position already exists
     existing = db.query(PortfolioPosition).filter(
@@ -2332,17 +2344,26 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
 
 
 @app.get("/api/coiled-spring/history")
-async def get_coiled_spring_history(db: Session = Depends(get_db), limit: int = 50):
+async def get_coiled_spring_history(
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200)
+):
     """
     Get historical Coiled Spring alerts with outcomes for success rate tracking.
+    Supports pagination with page and page_size parameters.
     """
-    from database import CoiledSpringAlert
+    from backend.database import CoiledSpringAlert
 
+    # Get total count for pagination
+    total = db.query(CoiledSpringAlert).count()
+
+    # Apply pagination
     alerts = db.query(CoiledSpringAlert).order_by(
         CoiledSpringAlert.alert_date.desc()
-    ).limit(limit).all()
+    ).offset((page - 1) * page_size).limit(page_size).all()
 
-    # Calculate success stats
+    # Calculate success stats (on current page only for performance)
     total_with_outcome = 0
     wins = 0
     big_wins = 0
@@ -2372,6 +2393,12 @@ async def get_coiled_spring_history(db: Session = Depends(get_db), limit: int = 
             "base_type": a.base_type,
             "institutional_pct": a.institutional_pct
         } for a in alerts],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "pages": (total + page_size - 1) // page_size
+        },
         "stats": {
             "total_alerts": len(alerts),
             "with_outcome": total_with_outcome,
@@ -2387,7 +2414,7 @@ async def record_coiled_spring_alert(ticker: str, db: Session = Depends(get_db))
     Record a Coiled Spring alert for tracking.
     Called when a CS candidate is identified for the watchlist.
     """
-    from database import CoiledSpringAlert
+    from backend.database import CoiledSpringAlert
     from datetime import date
 
     # Get current stock data
@@ -2432,7 +2459,7 @@ async def update_coiled_spring_outcomes(db: Session = Depends(get_db)):
     Update outcomes for past CS alerts where earnings have occurred.
     Compares price_at_alert to current price.
     """
-    from database import CoiledSpringAlert
+    from backend.database import CoiledSpringAlert
     from datetime import date, datetime
 
     # Find alerts without outcomes where earnings should have passed

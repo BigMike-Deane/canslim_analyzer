@@ -468,8 +468,8 @@ class CANSLIMScorer:
                 recent_prices = data.price_history['Close'].dropna().iloc[-20:]
                 if len(recent_prices) >= 2 and recent_prices.iloc[0] > 0:
                     price_change = (recent_prices.iloc[-1] - recent_prices.iloc[0]) / recent_prices.iloc[0]
-        except Exception:
-            pass
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass  # Expected when price_history is incomplete or malformed
 
         # Score based on volume surge with positive price action
         score = 0
@@ -1413,8 +1413,8 @@ class TechnicalAnalyzer:
                 if len(volumes) >= 2:
                     # volumes[-1] is today (possibly partial), volumes[-2] is yesterday (complete)
                     yesterday_volume = volumes[-2] if volumes[-2] and volumes[-2] > 0 else 0
-            except Exception:
-                pass
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass  # Expected when price_history lacks Volume column or has insufficient data
 
         # Use max of today and yesterday to avoid partial-day issues
         # If today's volume already exceeds yesterday, it's likely a significant move
@@ -1493,8 +1493,8 @@ class TechnicalAnalyzer:
 
                         result["confirmation_score"] = min(score, 100)
 
-            except Exception:
-                pass
+            except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+                pass  # Expected when price_history lacks Volume column or has insufficient data
 
         # Fallback to weekly data if daily not available
         elif stock_data.weekly_price_history:

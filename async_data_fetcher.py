@@ -265,8 +265,8 @@ def clear_scan_progress():
     try:
         if CHECKPOINT_FILE.exists():
             CHECKPOINT_FILE.unlink()
-    except Exception:
-        pass
+    except (OSError, IOError):
+        pass  # File deletion failed - not critical
 
 
 async def _check_rate_limit():
@@ -1156,8 +1156,8 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                         net_income = annual.loc['Net Income'].dropna()
                         shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
                         stock_data.annual_earnings = (net_income / shares).tolist()[:5]
-                except Exception:
-                    pass
+                except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
+                    pass  # Annual earnings calculation failed - use available data
 
         except Exception as e:
             logger.debug(f"{ticker}: Yahoo fetch error: {e}")

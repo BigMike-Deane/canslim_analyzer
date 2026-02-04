@@ -1302,8 +1302,8 @@ def fetch_price_from_chart_api(ticker: str) -> dict:
                     "volumes": indicators.get("volume", []),
                     "timestamps": timestamps
                 }
-    except Exception:
-        pass
+    except (requests.RequestException, KeyError, IndexError, ValueError) as e:
+        logger.debug(f"Yahoo chart API fallback failed for {ticker}: {e}")
     return {}
 
 
@@ -1780,7 +1780,7 @@ class DataFetcher:
                         if not stock_data.earnings_growth_estimate:
                             growth = yf_info.get('earningsQuarterlyGrowth', 0) or yf_info.get('earningsGrowth', 0)
                             stock_data.earnings_growth_estimate = growth or 0
-                except Exception:
+                except (KeyError, TypeError, ValueError, AttributeError):
                     pass  # Silent fallback failure - FMP data is primary
 
         # 3. Use yfinance to supplement/override FMP data
@@ -1851,8 +1851,8 @@ class DataFetcher:
                                     if len(quarterly_eps) >= 4:
                                         stock_data.quarterly_earnings = quarterly_eps
                                         logger.debug(f"{ticker}: Fallback to Yahoo Net Income EPS (no other data): {quarterly_eps[:4]}")
-                        except Exception:
-                            pass
+                        except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
+                            pass  # Fallback earnings calculation failed - use available data
 
                     # Annual earnings from yfinance
                     if not stock_data.annual_earnings:
@@ -1863,8 +1863,8 @@ class DataFetcher:
                                     net_income = annual.loc['Net Income'].dropna()
                                     shares = stock_data.shares_outstanding if stock_data.shares_outstanding > 0 else 1
                                     stock_data.annual_earnings = (net_income / shares).tolist()[:5]
-                        except Exception:
-                            pass
+                        except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
+                            pass  # Annual earnings calculation failed - use available data
 
             except Exception as e:
                 stock_data.error_message = str(e)

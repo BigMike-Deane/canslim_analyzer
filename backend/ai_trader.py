@@ -309,20 +309,26 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
 
 
 def get_sector_allocations(db: Session) -> dict:
-    """Calculate current allocation by sector"""
+    """Calculate current allocation by sector (batch optimized)"""
     positions = db.query(AIPortfolioPosition).all()
     portfolio_value = get_portfolio_value(db)["total_value"]
 
     if portfolio_value <= 0:
         return {}
 
+    # Batch fetch all stocks in one query (fixes N+1)
+    tickers = [pos.ticker for pos in positions]
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        ticker_to_sector = {s.ticker: s.sector for s in stocks}
+    else:
+        ticker_to_sector = {}
+
     sector_values = {}
     sector_counts = {}
 
     for position in positions:
-        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
-        sector = stock.sector if stock and stock.sector else "Unknown"
-
+        sector = ticker_to_sector.get(position.ticker) or "Unknown"
         sector_values[sector] = sector_values.get(sector, 0) + (position.current_value or 0)
         sector_counts[sector] = sector_counts.get(sector, 0) + 1
 
@@ -401,6 +407,14 @@ def evaluate_pyramids(db: Session) -> list:
     portfolio = get_portfolio_value(db)
     portfolio_value = portfolio["total_value"]
 
+    # Batch fetch all stocks in one query (fixes N+1)
+    tickers = [pos.ticker for pos in positions]
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        ticker_to_stock = {s.ticker: s for s in stocks}
+    else:
+        ticker_to_stock = {}
+
     pyramids = []
 
     for position in positions:
@@ -425,8 +439,8 @@ def evaluate_pyramids(db: Session) -> list:
         if config.current_cash < 200:
             continue
 
-        # Get stock data for additional checks
-        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+        # Get stock data for additional checks (from batch-fetched dict)
+        stock = ticker_to_stock.get(position.ticker)
         if not stock:
             continue
 
@@ -549,6 +563,14 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
     positions = db.query(AIPortfolioPosition).all()
     updated = 0
 
+    # Batch fetch all stocks in one query (fixes N+1)
+    tickers = [pos.ticker for pos in positions]
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        ticker_to_stock = {s.ticker: s for s in stocks}
+    else:
+        ticker_to_stock = {}
+
     for position in positions:
         current_price = None
 
@@ -557,11 +579,10 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
             current_price = fetch_live_price(position.ticker)
             time.sleep(0.5)  # Delay to stay under FMP 300 calls/min limit
 
-        # Fallback to Stock table if live fetch fails
+        # Fallback to Stock table if live fetch fails (from batch-fetched dict)
         if not current_price:
-            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
-            if stock and stock.current_price:
-                current_price = stock.current_price
+            stock = ticker_to_stock.get(position.ticker)
+            current_price = stock.current_price if stock else None
 
         if current_price:
             position.current_price = current_price
@@ -580,8 +601,8 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
                 position.peak_date = get_cst_now()
                 logger.debug(f"{position.ticker}: New peak ${current_price:.2f}")
 
-            # Update scores from Stock table (this doesn't need to be live)
-            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            # Update scores from Stock table (from batch-fetched dict)
+            stock = ticker_to_stock.get(position.ticker)
             if stock:
                 position.current_score = stock.canslim_score
                 position.current_growth_score = stock.growth_mode_score
@@ -631,6 +652,14 @@ def check_and_execute_stop_losses(db: Session) -> dict:
     logger.info(f"Checking stop losses for {len(positions)} positions...")
     update_position_prices(db, use_live_prices=True)
 
+    # Batch fetch all stocks in one query (fixes N+1)
+    tickers = [pos.ticker for pos in positions]
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        ticker_to_stock = {s.ticker: s for s in stocks}
+    else:
+        ticker_to_stock = {}
+
     sells_executed = []
 
     for position in positions:
@@ -643,8 +672,8 @@ def check_and_execute_stop_losses(db: Session) -> dict:
         if gain_pct <= -config.stop_loss_pct:
             logger.warning(f"{position.ticker}: STOP LOSS TRIGGERED at {gain_pct:.1f}%")
 
-            # Execute the sell
-            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            # Execute the sell (from batch-fetched dict)
+            stock = ticker_to_stock.get(position.ticker)
             score = stock.canslim_score if stock else 0
             growth_score = stock.growth_mode_score if stock else None
 
@@ -693,8 +722,8 @@ def check_and_execute_stop_losses(db: Session) -> dict:
             if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
                 logger.warning(f"{position.ticker}: TRAILING STOP TRIGGERED - Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
 
-                # Execute the sell
-                stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+                # Execute the sell (from batch-fetched dict)
+                stock = ticker_to_stock.get(position.ticker)
                 score = stock.canslim_score if stock else 0
                 growth_score = stock.growth_mode_score if stock else None
 
@@ -786,6 +815,14 @@ def evaluate_sells(db: Session) -> list:
     positions = db.query(AIPortfolioPosition).all()
     sells = []
 
+    # Batch fetch all stocks in one query (fixes N+1 for score crash checks)
+    tickers = [pos.ticker for pos in positions]
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        ticker_to_stock = {s.ticker: s for s in stocks}
+    else:
+        ticker_to_stock = {}
+
     for position in positions:
         # Use effective score based on stock type
         score = get_effective_score(position, use_current=True)
@@ -841,8 +878,8 @@ def evaluate_sells(db: Session) -> list:
         # BUT add safeguards against data blips
         score_drop = purchase_score - score
         if score_drop > 20 and score < 50:
-            # Get the stock to check data quality and component scores
-            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            # Get the stock to check data quality and component scores (from batch-fetched dict)
+            stock = ticker_to_stock.get(position.ticker)
 
             # SAFEGUARD: Check score stability - is this a consistent low or a one-time blip?
             stability = check_score_stability(db, position.ticker, score, threshold=50)

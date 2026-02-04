@@ -256,6 +256,16 @@ coiled_spring:
   # Position sizing
   position_multiplier: 1.25     # 25% larger position for CS plays
 
+  # Outcome tracking (auto-update CS alert outcomes after earnings)
+  outcome_tracking:
+    enabled: true
+    check_days_after_earnings: 3   # Days to wait after earnings to check outcome
+    thresholds:
+      big_win_pct: 15    # >= 15% gain = big_win
+      win_pct: 5         # >= 5% gain = win
+      loss_pct: -5       # <= -5% = loss
+      # Between -5% and +5% = flat
+
 # Technical Analysis Settings
 technical:
   # Base pattern detection
@@ -301,6 +311,29 @@ api:
   finviz:
     delay: 1.0       # seconds between scrapes
     timeout: 10      # seconds
+
+# API Response Limits
+api_limits:
+  default_page_size: 50
+  max_page_size: 500
+  default_history_days: 30
+  max_history_days: 365
+
+# Scoring Defaults
+scoring_defaults:
+  min_displayable_score: 30
+  default_market_score: 10
+
+# Retry Settings
+retry:
+  max_attempts: 3
+  base_delay_seconds: 1
+  max_delay_seconds: 30
+
+# Alert Thresholds
+alerts:
+  price_change_significant_pct: 5
+  volume_spike_ratio: 2.0
 
 # Database Settings
 database:

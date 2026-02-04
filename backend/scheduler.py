@@ -95,6 +95,161 @@ def get_scan_status():
     }
 
 
+def auto_record_coiled_spring_alerts():
+    """
+    Automatically check for and record Coiled Spring alerts after each scan.
+    Uses the same criteria as the CS detection but auto-records to the alert table.
+    """
+    from backend.database import SessionLocal, Stock, CoiledSpringAlert
+    from backend.ai_trader import calculate_coiled_spring_score_for_stock, record_coiled_spring_alert
+    from config_loader import config
+    from datetime import date, datetime, timedelta
+
+    cs_config = config.get('coiled_spring', {})
+    if not cs_config.get('alerts', {}).get('enabled', True):
+        logger.info("CS auto-recording disabled in config")
+        return
+
+    db = SessionLocal()
+    try:
+        # Get thresholds from config (relaxed for pre-breakout detection)
+        thresholds = cs_config.get('pre_breakout_thresholds', cs_config.get('thresholds', {}))
+        min_weeks = thresholds.get('min_weeks_in_base', 15)
+        min_beat_streak = thresholds.get('min_beat_streak', 3)
+        min_c_score = thresholds.get('min_c_score', 5)
+        min_total_score = thresholds.get('min_total_score', 48)
+        max_inst_pct = cs_config.get('thresholds', {}).get('max_institutional_pct', 75)
+
+        # Query candidates with basic filters
+        candidates = db.query(Stock).filter(
+            Stock.weeks_in_base >= min_weeks,
+            Stock.earnings_beat_streak >= min_beat_streak,
+            Stock.c_score >= min_c_score,
+            Stock.canslim_score >= min_total_score,
+            Stock.days_to_earnings != None,
+            Stock.days_to_earnings > 0,
+            Stock.days_to_earnings <= 14  # Within 2 weeks of earnings
+        ).all()
+
+        if not candidates:
+            logger.info("No CS candidates found in this scan")
+            return
+
+        logger.info(f"Found {len(candidates)} potential CS candidates, checking each...")
+
+        recorded = 0
+        for stock in candidates:
+            # Full CS check with all criteria
+            cs_result = calculate_coiled_spring_score_for_stock(stock)
+
+            if cs_result and cs_result.get('is_coiled_spring'):
+                # Try to record (respects daily limits and cooldown)
+                if record_coiled_spring_alert(db, stock.ticker, cs_result, stock):
+                    recorded += 1
+                    logger.info(f"Auto-recorded CS alert: {stock.ticker} ({cs_result.get('cs_details', '')})")
+
+        if recorded > 0:
+            logger.info(f"Auto-recorded {recorded} Coiled Spring alerts")
+        else:
+            logger.info("No new CS alerts to record (limits may have been reached)")
+
+    except Exception as e:
+        logger.error(f"CS auto-recording error: {e}")
+    finally:
+        db.close()
+
+
+def update_coiled_spring_outcomes():
+    """
+    Automatically update outcomes for CS alerts that have passed earnings.
+    Runs after each scan to track success/failure of CS predictions.
+    """
+    from backend.database import SessionLocal, Stock, CoiledSpringAlert
+    from config_loader import config
+    from datetime import date, timedelta
+
+    cs_config = config.get('coiled_spring', {})
+    outcome_config = cs_config.get('outcome_tracking', {})
+
+    if not outcome_config.get('enabled', True):
+        logger.debug("CS outcome tracking disabled in config")
+        return
+
+    db = SessionLocal()
+    try:
+        # Get thresholds from config
+        check_days = outcome_config.get('check_days_after_earnings', 3)
+        thresholds = outcome_config.get('thresholds', {})
+        big_win_pct = thresholds.get('big_win_pct', 15)
+        win_pct = thresholds.get('win_pct', 5)
+        loss_pct = thresholds.get('loss_pct', -5)
+
+        # Find alerts without outcomes that are old enough to evaluate
+        # Alert must be at least (days_to_earnings + check_days) old
+        cutoff_date = date.today() - timedelta(days=check_days)
+
+        alerts_to_update = db.query(CoiledSpringAlert).filter(
+            CoiledSpringAlert.outcome.is_(None),
+            CoiledSpringAlert.alert_date <= cutoff_date
+        ).all()
+
+        if not alerts_to_update:
+            logger.debug("No CS alerts to update outcomes for")
+            return
+
+        logger.info(f"Checking outcomes for {len(alerts_to_update)} CS alerts...")
+
+        updated = 0
+        for alert in alerts_to_update:
+            # Get current stock price
+            stock = db.query(Stock).filter(Stock.ticker == alert.ticker).first()
+            if not stock or not stock.current_price:
+                continue
+
+            # Check if enough time has passed since alert (should be past earnings)
+            # If days_to_earnings was recorded, wait that many days plus check_days
+            days_since_alert = (date.today() - alert.alert_date).days
+            days_needed = (alert.days_to_earnings or 7) + check_days
+
+            if days_since_alert < days_needed:
+                # Not enough time has passed
+                continue
+
+            # Calculate price change
+            if not alert.price_at_alert or alert.price_at_alert <= 0:
+                continue
+
+            price_change_pct = ((stock.current_price - alert.price_at_alert) / alert.price_at_alert) * 100
+
+            # Determine outcome
+            if price_change_pct >= big_win_pct:
+                outcome = 'big_win'
+            elif price_change_pct >= win_pct:
+                outcome = 'win'
+            elif price_change_pct <= loss_pct:
+                outcome = 'loss'
+            else:
+                outcome = 'flat'
+
+            # Update alert
+            alert.price_after_earnings = stock.current_price
+            alert.price_change_pct = round(price_change_pct, 2)
+            alert.outcome = outcome
+            updated += 1
+
+            logger.info(f"CS outcome {alert.ticker}: {outcome} ({price_change_pct:+.1f}%)")
+
+        if updated > 0:
+            db.commit()
+            logger.info(f"Updated {updated} CS alert outcomes")
+
+    except Exception as e:
+        logger.error(f"CS outcome tracking error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def run_continuous_scan():
     """Execute a scan of the configured stock universe"""
     from backend.database import SessionLocal, Stock
@@ -654,6 +809,23 @@ def run_continuous_scan():
             logger.info("Market snapshot updated")
         except Exception as e:
             logger.error(f"Market snapshot error: {e}")
+
+        # Phase 2.5: Auto-record Coiled Spring alerts
+        _scan_config["phase"] = "coiled_spring"
+        _scan_config["phase_detail"] = "Checking for Coiled Spring candidates..."
+
+        try:
+            auto_record_coiled_spring_alerts()
+        except Exception as e:
+            logger.error(f"Coiled Spring auto-record error: {e}")
+
+        # Phase 2.6: Update CS alert outcomes
+        _scan_config["phase_detail"] = "Updating CS alert outcomes..."
+
+        try:
+            update_coiled_spring_outcomes()
+        except Exception as e:
+            logger.error(f"CS outcome tracking error: {e}")
 
         # Phase 3: AI Trading
         _scan_config["phase"] = "ai_trading"
