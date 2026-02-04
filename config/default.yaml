@@ -34,7 +34,7 @@ cache:
     short_interest: 86400   # 24 hours
 
   # In-memory cache limits
-  max_cached_tickers: 1000
+  max_cached_tickers: 2500  # Need room for ~2100 tickers × ~10 data types
   market_cache_duration: 14400  # 4 hours
 
 # CANSLIM Scoring Weights

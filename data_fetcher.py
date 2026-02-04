@@ -70,7 +70,7 @@ DATA_FRESHNESS_INTERVALS = {
 # Cached data storage (stores the actual fetched data)
 _cached_data = {}
 _cached_data_lock = threading.Lock()
-MAX_CACHED_TICKERS = 500  # Limit cache size
+MAX_CACHED_TICKERS = 2500  # Limit cache size (2500 tickers × ~10 data types = 25,000 entries)
 
 # DB-backed cache flag
 _db_cache_loaded = False
