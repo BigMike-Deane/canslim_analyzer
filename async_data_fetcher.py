@@ -1468,7 +1468,9 @@ async def fetch_stocks_batch_async(
         logger.info("All tickers already scanned (from checkpoint)")
         return results
 
-    timeout = aiohttp.ClientTimeout(total=60)
+    # Timeout per individual request, not for the entire session
+    # Full scans can take 15-20 minutes, so we use per-request timeout only
+    timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=60)
     # Reduced connection limits to prevent overwhelming the API
     connector = aiohttp.TCPConnector(limit=30, limit_per_host=20)
 
