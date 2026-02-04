@@ -576,6 +576,7 @@ def save_stock_to_db(db: Session, analysis: dict):
 
     stock.projected_growth = analysis["projected_growth"]
     stock.growth_confidence = analysis["growth_confidence"]
+    stock.score_details = analysis.get("score_details")  # Save detailed breakdown with annual_eps, roe, etc.
     stock.last_updated = datetime.utcnow()
 
     db.flush()
