@@ -312,7 +312,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "ticker": stock_data.ticker,
                 "company_name": stock_data.name,
                 "sector": stock_data.sector,
-                "industry": None,
+                "industry": stock_data.industry or None,
                 "current_price": stock_data.current_price,
                 "market_cap": stock_data.market_cap,
                 "canslim_score": canslim_result.total_score,

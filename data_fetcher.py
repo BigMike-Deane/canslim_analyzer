@@ -310,7 +310,7 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
             if next_date and isinstance(next_date, str):
                 try:
                     record.next_earnings_date = datetime.strptime(next_date, '%Y-%m-%d').date()
-                except:
+                except (ValueError, TypeError):
                     record.next_earnings_date = None
             else:
                 record.next_earnings_date = next_date
@@ -1494,6 +1494,7 @@ class StockData:
         self.ticker = ticker
         self.name: str = ""
         self.sector: str = ""
+        self.industry: str = ""  # Industry group (more specific than sector)
         self.current_price: float = 0.0
         self.price_history: pd.DataFrame = pd.DataFrame()
         self.quarterly_earnings: list[float] = []
@@ -1618,7 +1619,7 @@ class DataFetcher:
                 if not stock_data.high_52w:
                     try:
                         stock_data.high_52w = float(profile.get("high_52w", 0) or 0)
-                    except:
+                    except (ValueError, TypeError):
                         pass
 
             quote = fetch_fmp_quote(ticker)

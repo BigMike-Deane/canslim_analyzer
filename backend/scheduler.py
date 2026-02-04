@@ -238,7 +238,7 @@ def run_continuous_scan():
                 "ticker": ticker,
                 "company_name": stock_data.name,
                 "sector": stock_data.sector,
-                "industry": None,  # StockData doesn't have industry
+                "industry": stock_data.industry or None,
                 "current_price": stock_data.current_price,
                 "market_cap": stock_data.market_cap,
                 "canslim_score": canslim_result.total_score,

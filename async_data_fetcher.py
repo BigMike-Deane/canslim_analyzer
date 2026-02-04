@@ -405,7 +405,7 @@ async def fetch_fmp_single_profile(session: aiohttp.ClientSession, ticker: str) 
                 if len(range_parts) >= 2:
                     low_52w = float(range_parts[0].strip())
                     high_52w = float(range_parts[-1].strip())
-            except:
+            except (ValueError, TypeError, AttributeError):
                 pass
 
         return {
@@ -783,7 +783,7 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
                 elif isinstance(start_date, str):
                     try:
                         trade_date = datetime.strptime(start_date[:10], "%Y-%m-%d")
-                    except:
+                    except (ValueError, TypeError):
                         continue
                 else:
                     continue
@@ -805,7 +805,7 @@ async def fetch_insider_trading_async(ticker: str) -> dict:
                         try:
                             price = float(price_match.group(1))
                             value = shares * price
-                        except:
+                        except (ValueError, TypeError):
                             pass
 
                 # Get insider name/title
@@ -1105,6 +1105,8 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                 # Only fill in missing data
                 if not stock_data.sector:
                     stock_data.sector = info.get('sector', 'Unknown')
+                if not stock_data.industry:
+                    stock_data.industry = info.get('industry', '')
                 if not stock_data.shares_outstanding:
                     stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
                 if not stock_data.institutional_holders_pct:
@@ -1211,6 +1213,7 @@ async def get_stock_data_async(
         profile = batch_profiles[ticker]
         stock_data.name = profile.get("name") or stock_data.name or ticker
         stock_data.sector = profile.get("sector", "")
+        stock_data.industry = profile.get("industry", "")
         if not stock_data.shares_outstanding:
             stock_data.shares_outstanding = int(profile.get("shares_outstanding", 0) or 0)
         if not stock_data.current_price:
@@ -1227,6 +1230,7 @@ async def get_stock_data_async(
         if profile:
             stock_data.name = profile.get("name") or stock_data.name or ticker
             stock_data.sector = profile.get("sector", "")
+            stock_data.industry = profile.get("industry", "")
             if not stock_data.shares_outstanding:
                 stock_data.shares_outstanding = int(profile.get("shares_outstanding", 0) or 0)
             if not stock_data.current_price:

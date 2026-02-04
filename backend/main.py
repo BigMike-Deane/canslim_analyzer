@@ -470,7 +470,7 @@ def analyze_stock(ticker: str) -> dict:
             "ticker": ticker,
             "name": getattr(stock_data, 'name', ticker),
             "sector": getattr(stock_data, 'sector', "Unknown"),
-            "industry": getattr(stock_data, 'sector', "Unknown"),  # StockData doesn't have industry
+            "industry": getattr(stock_data, 'industry', "") or getattr(stock_data, 'sector', "Unknown"),
             "current_price": getattr(stock_data, 'current_price', 0),
             "market_cap": getattr(stock_data, 'market_cap', 0) or (getattr(stock_data, 'shares_outstanding', 0) * getattr(stock_data, 'current_price', 0)),
             "week_52_high": getattr(stock_data, 'high_52w', 0),

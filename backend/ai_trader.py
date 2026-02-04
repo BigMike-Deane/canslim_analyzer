@@ -6,16 +6,31 @@ Makes buy/sell decisions after each scan cycle.
 """
 
 from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import logging
 import threading
+import sys
+import os
+
+# Add parent directory to path for config_loader import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config_loader import config
+
+# Timezone constants - use zoneinfo for proper DST handling
+EASTERN_TZ = ZoneInfo("America/New_York")
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 
 def get_cst_now():
-    """Get current time in CST (UTC-6)"""
-    cst = timezone(timedelta(hours=-6))
-    return datetime.now(cst).replace(tzinfo=None)  # Store without tz for SQLite compatibility
+    """Get current time in Central Time (handles CST/CDT automatically)"""
+    return datetime.now(CENTRAL_TZ).replace(tzinfo=None)  # Store without tz for SQLite compatibility
+
+
+def get_eastern_now():
+    """Get current time in Eastern Time (handles EST/EDT automatically)"""
+    return datetime.now(EASTERN_TZ)
 
 
 def is_market_open() -> bool:
@@ -29,11 +44,8 @@ def is_market_open() -> bool:
     Returns:
         True if market is open, False otherwise
     """
-    # Use Eastern Time (ET) - handles both EST and EDT conceptually
-    # Note: This uses fixed UTC-5 (EST). For full DST handling,
-    # would need pytz or zoneinfo, but this is close enough for trading simulation
-    eastern = timezone(timedelta(hours=-5))
-    now = datetime.now(eastern)
+    # Use zoneinfo for proper DST handling (EST/EDT automatic)
+    now = datetime.now(EASTERN_TZ)
 
     # Weekday check: Monday=0, Friday=4, Saturday=5, Sunday=6
     if now.weekday() > 4:
@@ -53,12 +65,28 @@ from backend.database import (
 
 logger = logging.getLogger(__name__)
 
-# Lock to prevent concurrent trading cycles (proper threading lock)
-_trading_cycle_lock = threading.Lock()
+# Lock to prevent concurrent trading cycles
+# Use RLock so we can safely acquire multiple times if needed
+_trading_cycle_lock = threading.RLock()
 _trading_cycle_started = None  # Track when cycle started for timeout
+_trading_cycle_meta_lock = threading.Lock()  # Protects access to _trading_cycle_started
 
 # Minimum cash reserve as percentage of portfolio (stop buying below this)
-MIN_CASH_RESERVE_PCT = 0.10  # 10%
+# Trading allocation limits - loaded from config with fallbacks
+MIN_CASH_RESERVE_PCT = config.get('ai_trader.allocation.min_cash_reserve_pct', default=0.10)
+
+
+def _get_cycle_started():
+    """Thread-safe getter for cycle start time"""
+    with _trading_cycle_meta_lock:
+        return _trading_cycle_started
+
+
+def _set_cycle_started(value):
+    """Thread-safe setter for cycle start time"""
+    global _trading_cycle_started
+    with _trading_cycle_meta_lock:
+        _trading_cycle_started = value
 
 
 def get_effective_score(stock_or_position, use_current: bool = True) -> float:
@@ -112,10 +140,10 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
     return config
 
 
-# Sector concentration and correlation settings
-MAX_SECTOR_ALLOCATION = 0.30  # 30% max per sector
-MAX_STOCKS_PER_SECTOR = 4  # Max stocks in same sector
-MAX_POSITION_ALLOCATION = 0.15  # 15% max single position (for pyramiding)
+# Sector concentration and correlation settings - loaded from config
+MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
+MAX_STOCKS_PER_SECTOR = config.get('ai_trader.allocation.max_stocks_per_sector', default=4)
+MAX_POSITION_ALLOCATION = config.get('ai_trader.allocation.max_single_position', default=0.15)
 
 
 def check_score_stability(db: Session, ticker: str, current_score: float, threshold: float = 50) -> dict:
@@ -1183,13 +1211,13 @@ def run_ai_trading_cycle(db: Session) -> dict:
     4. Take a portfolio snapshot
     """
     import time
-    global _trading_cycle_started
 
     # Try to acquire lock without blocking
     if not _trading_cycle_lock.acquire(blocking=False):
-        # Lock is held - check for timeout
-        if _trading_cycle_started:
-            elapsed = (datetime.now() - _trading_cycle_started).total_seconds()
+        # Lock is held - check for timeout using thread-safe accessor
+        cycle_started = _get_cycle_started()
+        if cycle_started:
+            elapsed = (datetime.now() - cycle_started).total_seconds()
             if elapsed < 300:  # 5 minute timeout
                 logger.warning(f"Trading cycle already in progress (started {elapsed:.0f}s ago), skipping")
                 return {"status": "busy", "message": f"Trading cycle already running ({elapsed:.0f}s elapsed)"}
@@ -1202,8 +1230,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
             logger.warning("Lock held but no start time, forcing new cycle")
             _trading_cycle_lock.acquire(blocking=True)
 
-    # Lock acquired - record start time
-    _trading_cycle_started = datetime.now()
+    # Lock acquired - record start time using thread-safe setter
+    _set_cycle_started(datetime.now())
 
     try:
         config = get_or_create_config(db)
@@ -1519,8 +1547,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
         return results
 
     finally:
-        # Always release the lock
-        _trading_cycle_started = None
+        # Always release the lock - clear timestamp first using thread-safe setter
+        _set_cycle_started(None)
         _trading_cycle_lock.release()
         logger.info("Trading cycle lock released")
 

@@ -7,10 +7,16 @@ Runs day-by-day simulation over a historical period.
 
 import logging
 import math
+import sys
+import os
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
+
+# Add parent directory to path for config_loader import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config_loader import config
 
 from backend.database import (
     BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, Stock
@@ -19,11 +25,11 @@ from backend.historical_data import HistoricalDataProvider, HistoricalStockData
 
 logger = logging.getLogger(__name__)
 
-# Trading thresholds (matching ai_trader.py)
-MIN_CASH_RESERVE_PCT = 0.10
-MAX_SECTOR_ALLOCATION = 0.30
-MAX_STOCKS_PER_SECTOR = 4
-MAX_POSITION_ALLOCATION = 0.15
+# Trading thresholds - loaded from config to match ai_trader.py
+MIN_CASH_RESERVE_PCT = config.get('ai_trader.allocation.min_cash_reserve_pct', default=0.10)
+MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
+MAX_STOCKS_PER_SECTOR = config.get('ai_trader.allocation.max_stocks_per_sector', default=4)
+MAX_POSITION_ALLOCATION = config.get('ai_trader.allocation.max_single_position', default=0.15)
 
 
 @dataclass
@@ -474,7 +480,7 @@ class BacktestEngine:
                 i_score = 5
 
             # ===== M SCORE (15 pts): Market Direction =====
-            weighted_signal = market.get("weighted_signal", 0)
+            weighted_signal = market.get("weighted_signal", 0) if market else 0
             if weighted_signal >= 1.5:
                 m_score = 15
             elif weighted_signal >= 1.0:
