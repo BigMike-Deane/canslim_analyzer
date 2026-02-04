@@ -1249,7 +1249,9 @@ async def get_stock_data_async(
     # STEP 1: FMP for earnings and revenue only (the most reliable source for this data)
     financials = {}
     if FMP_API_KEY:
-        if not is_data_fresh(ticker, "earnings"):
+        earnings_fresh = is_data_fresh(ticker, "earnings")
+        if not earnings_fresh:
+            logger.debug(f"{ticker}: Earnings not fresh, fetching from FMP")
             financials = await fetch_fmp_financials_async(session, ticker)
         else:
             # Load from cache
@@ -1258,6 +1260,9 @@ async def get_stock_data_async(
             if cached_earnings:
                 stock_data.quarterly_earnings = cached_earnings.get("quarterly", [])
                 stock_data.annual_earnings = cached_earnings.get("annual", [])
+                logger.debug(f"{ticker}: Loaded earnings from cache - quarterly={len(stock_data.quarterly_earnings)}, annual={len(stock_data.annual_earnings)}")
+            else:
+                logger.warning(f"{ticker}: is_data_fresh=True but get_cached_data returned None")
             if cached_revenue:
                 stock_data.quarterly_revenue = cached_revenue.get("quarterly", [])
                 stock_data.annual_revenue = cached_revenue.get("annual", [])
