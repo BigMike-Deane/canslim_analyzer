@@ -1,46 +1,74 @@
 # CANSLIM Analyzer - Project Context
 
-## READY TO DEPLOY: P1 Features Fix (Feb 2, 2026)
+## Session Summary: Feb 3, 2026
 
-**Status**: FIX COMMITTED & PUSHED - Deploy tomorrow to verify
+### Bug Fixes Deployed (commit `17437a6`)
 
-**Problem**: P1 data (earnings beat_streak, days_to_earnings, analyst revisions) wasn't populating on VPS scans. Beat streak was always 0 or 1.
+**1. Stuck Backtest Cancel Button** - FIXED
+- Problem: Backtest stuck at 30% with non-functional cancel button
+- Root cause: Cancel endpoint only set a `cancel_requested` flag, but orphaned processes never checked it
+- Fix: Cancel endpoint now detects stuck backtests (running >2 hours) and directly marks them as cancelled
+- File: `backend/main.py` lines 2634-2676
 
-**Root Causes Found**:
-1. FMP `/stable/earnings-calendar` only returns 1 record per ticker - can't calculate beat streaks
-2. Yahoo Finance `earnings_history` works locally but rate limits on VPS with 2000+ stocks
+**2. Auto-Refresh Toggle UI** - FIXED
+- Problem: Toggle appeared in "on" position but showed "Disabled" text
+- Root cause: CSS positioning used `translate-x-1`/`translate-x-7` without explicit `left` anchor
+- Fix: Added `left-1` base position, changed to `translate-x-6`/`''` for proper knob positioning
+- File: `frontend/src/pages/AIPortfolio.jsx` lines 863-875
 
-**Fix Applied** (commit `6ce5dfe`):
-- Changed `fetch_fmp_earnings_calendar()` to use `/stable/earnings` endpoint
-- This endpoint has full historical data (100+ records per ticker)
-- Allows proper beat streak calculation
+**3. Progress Counter Showing Wrong Totals** - FIXED
+- Problem: Scan showed 263/1917 then jumped to 3/3
+- Root cause: `update_progress()` callback was overwriting `total_stocks` for all phases (stocks, insider_short, p1_data)
+- Fix: Only update `stocks_scanned` and `total_stocks` when `phase == "stocks"`
+- File: `backend/scheduler.py`
 
-**Local Testing Verified**:
-```
-AAPL: beat_streak=12, days_to_earnings=83
-MSFT: beat_streak=14, days_to_earnings=86
-NVDA: beat_streak=12, days_to_earnings=23
-Analyst estimates: AAPL +14.1%, MSFT +21.8%, NVDA +58.6%
-All 18 P1 tests passing
-```
+**4. Insider/Short Progress Showing 3175 Instead of 1917** - FIXED
+- Problem: Progress was counting combined API tasks (insider + short) instead of unique tickers
+- Fix: Track unique tickers processed using a set instead of task count
+- Files: `async_scanner.py` - `fetch_insider_short_batch_async()` and `fetch_p1_data_batch_async()`
 
-**To Deploy**:
+### Verifications Completed
+
+**Stock Count Verified**: 1917 stocks is accurate
+- 167 delisted tickers are legitimately acquired/privatized companies
+- Examples: JNPR (acquired by HPE), SAGE (acquired by Supernus), SQSP (acquired by Permira)
+- Self-healing mechanism working: false delistings auto-corrected
+
+**Scan Health Verified**: Completed scan showed healthy metrics
+- 1917/1917 stocks scanned
+- 0 rate limits hit
+- 383 "Invalid Crumb" errors handled gracefully (Yahoo session refresh working)
+
+### Performance Optimization Plan (Planned, Not Yet Implemented)
+
+A detailed plan exists at `/home/bayer/.claude/plans/curried-imagining-balloon.md` for:
+1. **StockScore Cleanup** - Delete records >30 days old to prevent DB bloat (400K+ records)
+2. **Stock Detail Background Refresh** - Return stale cache immediately, refresh in background
+3. **Frontend API Caching** - Memory cache with TTL for GET requests
+
+### Quick Reference Commands
+
 ```bash
-cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build
+# Check scanner status
+curl -s http://100.104.189.36:8001/api/scanner/status | python3 -m json.tool
+
+# Cancel a stuck backtest
+curl -X POST http://100.104.189.36:8001/api/backtests/{id}/cancel
+
+# Check for running backtests
+docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, BacktestRun; db = SessionLocal(); [print(f'ID {b.id}: {b.status}') for b in db.query(BacktestRun).filter(BacktestRun.status.in_(['running','pending'])).all()]; db.close()"
+
+# Standard deploy
+ssh root@100.104.189.36 "cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build"
 ```
 
-**After Deployment - Verify P1 Data**:
-```bash
-# Check beat streaks populated
-docker exec canslim-analyzer python3 -c "import sys; sys.path.insert(0, '/app/backend'); from database import SessionLocal, Stock; db = SessionLocal(); stocks = db.query(Stock).filter(Stock.earnings_beat_streak > 0).limit(10).all(); [print(f'{s.ticker}: beat_streak={s.earnings_beat_streak}, days={s.days_to_earnings}, revision={s.eps_estimate_revision_pct}') for s in stocks]; db.close()"
-```
+---
 
-**FMP Endpoint Reference**:
-| Endpoint | Use Case |
-|----------|----------|
-| `/stable/earnings?symbol=AAPL` | Historical earnings with beat/miss (use this) |
-| `/stable/earnings-calendar` | Only 1 record per ticker (don't use) |
-| `/stable/analyst-estimates?symbol=AAPL&period=annual` | EPS estimate revisions |
+## RESOLVED: P1 Features Fix (Feb 2, 2026)
+
+**Status**: DEPLOYED & VERIFIED
+
+P1 data (earnings beat_streak, days_to_earnings, analyst revisions) now populating correctly using FMP `/stable/earnings` endpoint instead of `/stable/earnings-calendar`.
 
 ---
 
