@@ -109,22 +109,22 @@ def load_cache_from_db():
             for record in cache_records:
                 ticker = record.ticker
                 try:
-                    # Load earnings data
+                    # Load earnings data (keys must match fetch_fmp_earnings format)
                     if record.quarterly_earnings and record.earnings_updated_at:
                         set_cached_data(ticker, "earnings", {
-                            "quarterly": record.quarterly_earnings,
-                            "annual": record.annual_earnings
+                            "quarterly_eps": record.quarterly_earnings,
+                            "annual_eps": record.annual_earnings
                         }, persist_to_db=False)
                         with _freshness_lock:
                             if ticker not in _data_freshness_cache:
                                 _data_freshness_cache[ticker] = {}
                             _data_freshness_cache[ticker]["earnings"] = record.earnings_updated_at
 
-                    # Load revenue data
+                    # Load revenue data (keys must match fetch_fmp_revenue format)
                     if record.quarterly_revenue and record.revenue_updated_at:
                         set_cached_data(ticker, "revenue", {
-                            "quarterly": record.quarterly_revenue,
-                            "annual": record.annual_revenue
+                            "quarterly_revenue": record.quarterly_revenue,
+                            "annual_revenue": record.annual_revenue
                         }, persist_to_db=False)
                         with _freshness_lock:
                             if ticker not in _data_freshness_cache:
@@ -245,13 +245,15 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
 
         # Update the appropriate fields based on data_type
         if data_type == "earnings" and isinstance(data, dict):
-            record.quarterly_earnings = data.get("quarterly")
-            record.annual_earnings = data.get("annual")
+            # Support both old ("quarterly") and new ("quarterly_eps") key formats
+            record.quarterly_earnings = data.get("quarterly_eps") or data.get("quarterly")
+            record.annual_earnings = data.get("annual_eps") or data.get("annual")
             record.earnings_updated_at = now
 
         elif data_type == "revenue" and isinstance(data, dict):
-            record.quarterly_revenue = data.get("quarterly")
-            record.annual_revenue = data.get("annual")
+            # Support both old ("quarterly") and new ("quarterly_revenue") key formats
+            record.quarterly_revenue = data.get("quarterly_revenue") or data.get("quarterly")
+            record.annual_revenue = data.get("annual_revenue") or data.get("annual")
             record.revenue_updated_at = now
 
         elif data_type == "balance_sheet" and isinstance(data, dict):

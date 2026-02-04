@@ -538,11 +538,11 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
                 _fallback_tracker["stocks_using_fallback"].add(ticker)
 
                 if cached_earnings:
-                    result["quarterly_eps"] = cached_earnings.get("quarterly", [])
-                    result["annual_eps"] = cached_earnings.get("annual", [])
+                    result["quarterly_eps"] = cached_earnings.get("quarterly_eps") or cached_earnings.get("quarterly", [])
+                    result["annual_eps"] = cached_earnings.get("annual_eps") or cached_earnings.get("annual", [])
                 if cached_revenue:
-                    result["quarterly_revenue"] = cached_revenue.get("quarterly", [])
-                    result["annual_revenue"] = cached_revenue.get("annual", [])
+                    result["quarterly_revenue"] = cached_revenue.get("quarterly_revenue") or cached_revenue.get("quarterly", [])
+                    result["annual_revenue"] = cached_revenue.get("annual_revenue") or cached_revenue.get("annual", [])
             else:
                 logger.warning(f"{ticker}: FMP cached data too old ({cache_age:.1f} days) - not using stale fallback")
                 _fallback_tracker["stocks_no_data"].add(ticker)
@@ -1258,14 +1258,14 @@ async def get_stock_data_async(
             cached_earnings = get_cached_data(ticker, "earnings")
             cached_revenue = get_cached_data(ticker, "revenue")
             if cached_earnings:
-                stock_data.quarterly_earnings = cached_earnings.get("quarterly", [])
-                stock_data.annual_earnings = cached_earnings.get("annual", [])
+                stock_data.quarterly_earnings = cached_earnings.get("quarterly_eps") or cached_earnings.get("quarterly", [])
+                stock_data.annual_earnings = cached_earnings.get("annual_eps") or cached_earnings.get("annual", [])
                 logger.info(f"{ticker}: CACHE HIT - quarterly={len(stock_data.quarterly_earnings)}, annual={len(stock_data.annual_earnings)}")
             else:
                 logger.warning(f"{ticker}: is_data_fresh=True but get_cached_data returned None")
             if cached_revenue:
-                stock_data.quarterly_revenue = cached_revenue.get("quarterly", [])
-                stock_data.annual_revenue = cached_revenue.get("annual", [])
+                stock_data.quarterly_revenue = cached_revenue.get("quarterly_revenue") or cached_revenue.get("quarterly", [])
+                stock_data.annual_revenue = cached_revenue.get("annual_revenue") or cached_revenue.get("annual", [])
 
     # Apply FMP financials if fetched
     if financials:
