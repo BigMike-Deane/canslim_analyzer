@@ -451,16 +451,49 @@ def analyze_stock(ticker: str) -> dict:
         if not score_obj:
             return None
 
-        # Convert score object to dict for easier handling
+        # Convert score object to dict with enhanced details (matching scheduler format)
+        volume_ratio = getattr(stock_data, 'volume_ratio', 1.0) or 1.0
+        inst_pct = getattr(stock_data, 'institutional_holders_pct', 0) or 0
+
         score_result = {
             "total_score": score_obj.total_score,
-            "C": {"score": score_obj.c_score, "detail": score_obj.c_detail},
-            "A": {"score": score_obj.a_score, "detail": score_obj.a_detail},
-            "N": {"score": score_obj.n_score, "detail": score_obj.n_detail},
-            "S": {"score": score_obj.s_score, "detail": score_obj.s_detail},
-            "L": {"score": score_obj.l_score, "detail": score_obj.l_detail},
-            "I": {"score": score_obj.i_score, "detail": score_obj.i_detail},
-            "M": {"score": score_obj.m_score, "detail": score_obj.m_detail},
+            "c": {
+                "score": score_obj.c_score,
+                "summary": score_obj.c_detail,
+                "quarterly_eps": stock_data.quarterly_earnings[:4] if stock_data.quarterly_earnings else [],
+                "earnings_surprise_pct": getattr(stock_data, 'earnings_surprise_pct', 0),
+            },
+            "a": {
+                "score": score_obj.a_score,
+                "summary": score_obj.a_detail,
+                "annual_eps": stock_data.annual_earnings[:3] if stock_data.annual_earnings else [],
+                "roe": getattr(stock_data, 'roe', 0) or 0,
+            },
+            "n": {
+                "score": score_obj.n_score,
+                "summary": score_obj.n_detail,
+                "current_price": stock_data.current_price,
+                "week_52_high": getattr(stock_data, 'high_52w', 0),
+            },
+            "s": {
+                "score": score_obj.s_score,
+                "summary": score_obj.s_detail,
+                "volume_ratio": volume_ratio,
+                "avg_volume": getattr(stock_data, 'avg_volume_50d', 0),
+            },
+            "l": {
+                "score": score_obj.l_score,
+                "summary": score_obj.l_detail,
+            },
+            "i": {
+                "score": score_obj.i_score,
+                "summary": score_obj.i_detail,
+                "institutional_pct": inst_pct,
+            },
+            "m": {
+                "score": score_obj.m_score,
+                "summary": score_obj.m_detail,
+            },
         }
 
         # Get growth projection (pass StockData and CANSLIMScore objects)
@@ -486,15 +519,15 @@ def analyze_stock(ticker: str) -> dict:
             "i_score": score_result.get("I", {}).get("score", 0),
             "m_score": score_result.get("M", {}).get("score", 0),
 
-            # Score details for display
+            # Score details for display (using lowercase keys to match scheduler format)
             "score_details": {
-                "C": score_result.get("C", {}),
-                "A": score_result.get("A", {}),
-                "N": score_result.get("N", {}),
-                "S": score_result.get("S", {}),
-                "L": score_result.get("L", {}),
-                "I": score_result.get("I", {}),
-                "M": score_result.get("M", {}),
+                "c": score_result.get("c", {}),
+                "a": score_result.get("a", {}),
+                "n": score_result.get("n", {}),
+                "s": score_result.get("s", {}),
+                "l": score_result.get("l", {}),
+                "i": score_result.get("i", {}),
+                "m": score_result.get("m", {}),
             },
 
             # Growth projection
