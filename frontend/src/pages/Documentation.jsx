@@ -370,6 +370,84 @@ export default function Documentation() {
 
       <div className="my-6 border-t border-dark-700" />
 
+      <div className="card mb-4 bg-purple-500/10 border border-purple-500/30">
+        <h2 className="font-semibold text-purple-400 mb-2">Coiled Spring Alerts</h2>
+        <p className="text-dark-300 text-sm mb-3">
+          "Coiled Spring" stocks have stored energy ready to release on an earnings catalyst. These are stocks with
+          long consolidation patterns, consistent earnings beats, and low institutional ownership approaching earnings.
+          Think of a spring being compressed - the longer the base, the more explosive the potential move.
+        </p>
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Qualification Criteria (ALL must pass)</h3>
+        <div className="space-y-2 text-sm mb-4">
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">Weeks in base</span>
+            <span className="text-purple-400 font-medium">&ge; 15 weeks</span>
+          </div>
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">Earnings beat streak</span>
+            <span className="text-purple-400 font-medium">&ge; 3 consecutive</span>
+          </div>
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">C Score (current earnings)</span>
+            <span className="text-purple-400 font-medium">&ge; 12 / 15</span>
+          </div>
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">Total CANSLIM score</span>
+            <span className="text-purple-400 font-medium">&ge; 55 / 100</span>
+          </div>
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">L Score (relative strength)</span>
+            <span className="text-purple-400 font-medium">&ge; 8 / 15</span>
+          </div>
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">Institutional ownership</span>
+            <span className="text-purple-400 font-medium">&le; 50%</span>
+          </div>
+          <div className="flex justify-between items-center bg-dark-800 rounded p-2">
+            <span className="text-dark-300">Days to earnings</span>
+            <span className="text-purple-400 font-medium">1 - 14 days</span>
+          </div>
+        </div>
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Bonus Scoring</h3>
+        <p className="text-dark-400 text-sm mb-2">
+          Stocks that qualify receive bonus points added to their composite score:
+        </p>
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-dark-400">Base bonus (qualifies)</span>
+            <span className="text-green-400">+20 points</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Long base bonus (20+ weeks)</span>
+            <span className="text-green-400">+10 points</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Strong beat bonus (5+ consecutive)</span>
+            <span className="text-green-400">+5 points</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-dark-400">Maximum CS bonus</span>
+            <span className="text-dark-300">35 points (capped)</span>
+          </div>
+        </div>
+
+        <h3 className="font-medium text-dark-200 text-sm mt-4 mb-2">Why This Works</h3>
+        <ul className="text-dark-400 text-sm space-y-1 list-disc list-inside">
+          <li><span className="text-purple-400">Long base</span> = institutions quietly accumulating, price coiled</li>
+          <li><span className="text-purple-400">Beat streak</span> = management executing, likely to beat again</li>
+          <li><span className="text-purple-400">Low institutional</span> = room for big buyers to pile in post-earnings</li>
+          <li><span className="text-purple-400">Strong RS</span> = already outperforming, momentum on its side</li>
+        </ul>
+        <p className="text-dark-500 text-xs mt-3">
+          The CS alerts card appears on the Dashboard and AI Portfolio when qualifying stocks are found.
+          These are pre-earnings plays - the goal is to identify explosive setups BEFORE they move.
+        </p>
+      </div>
+
+      <div className="my-6 border-t border-dark-700" />
+
       <h2 className="text-lg font-semibold mb-3">Technical Analysis</h2>
       <p className="text-dark-400 text-sm mb-4">
         O'Neil emphasized buying stocks breaking out of proper base patterns. The app detects these patterns automatically.
