@@ -975,6 +975,11 @@ async def get_top_growth_stocks(
             "volume_ratio": s.volume_ratio if s.volume_ratio is not None else 1.0,
             "base_type": s.base_type,
             "weeks_in_base": s.weeks_in_base,
+            "days_to_earnings": s.days_to_earnings,
+            "earnings_beat_streak": s.earnings_beat_streak,
+            "institutional_holders_pct": s.institutional_holders_pct,
+            "c_score": s.c_score,
+            "l_score": s.l_score,
             "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
         } for s in stocks],
         "total": len(stocks),
@@ -1138,6 +1143,11 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
         "base_type": stock.base_type,
         "is_breaking_out": stock.is_breaking_out,
         "breakout_volume_ratio": stock.breakout_volume_ratio or stock.volume_ratio or 1.0,
+
+        # Earnings catalyst / Coiled Spring data
+        "days_to_earnings": stock.days_to_earnings,
+        "earnings_beat_streak": stock.earnings_beat_streak,
+        "institutional_holders_pct": stock.institutional_holders_pct,
 
         # Insider trading signals
         "insider_buy_count": stock.insider_buy_count,
