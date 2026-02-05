@@ -150,11 +150,7 @@ def check_watchlist_alerts():
 
                 # Send the alert
                 try:
-                    # Import email function
-                    import sys
-                    from pathlib import Path
-                    sys.path.insert(0, str(Path(__file__).parent.parent))
-                    from email_report import send_watchlist_alert_email
+                    from email_utils import send_watchlist_alert_email
 
                     if send_watchlist_alert_email(item, stock, reasons):
                         item.alert_triggered_at = datetime.utcnow()
