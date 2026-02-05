@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Load .env file if it exists
 def load_env():
     env_path = Path(__file__).parent / '.env'
-    if env_path.exists():
+    if env_path.exists() and env_path.is_file():
         with open(env_path) as f:
             for line in f:
                 line = line.strip()
