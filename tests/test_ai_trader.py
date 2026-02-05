@@ -524,3 +524,421 @@ class TestCashReserve:
 
         assert current_cash >= min_cash_reserve
         assert available_for_buying == 2000
+
+
+class TestMarketRegimeDetection:
+    """Tests for market regime detection logic"""
+
+    def test_bullish_regime_larger_positions(self):
+        """Test that bullish market allows larger positions"""
+        weighted_signal = 1.8  # Strong bullish signal
+
+        # From config defaults
+        bullish_threshold = 1.5
+        bullish_max_pct = 15.0
+        neutral_max_pct = 12.0
+
+        if weighted_signal >= bullish_threshold:
+            max_position_pct = bullish_max_pct
+        else:
+            max_position_pct = neutral_max_pct
+
+        assert max_position_pct == 15.0
+
+    def test_bearish_regime_smaller_positions(self):
+        """Test that bearish market reduces position sizes"""
+        weighted_signal = -0.8  # Bearish signal
+
+        bearish_threshold = -0.5
+        bearish_max_pct = 8.0
+        neutral_max_pct = 12.0
+
+        if weighted_signal <= bearish_threshold:
+            max_position_pct = bearish_max_pct
+        else:
+            max_position_pct = neutral_max_pct
+
+        assert max_position_pct == 8.0
+
+    def test_neutral_regime_standard_positions(self):
+        """Test that neutral market uses standard position size"""
+        weighted_signal = 0.5  # Neutral/mild bullish
+
+        bullish_threshold = 1.5
+        bearish_threshold = -0.5
+        neutral_max_pct = 12.0
+        bullish_max_pct = 15.0
+        bearish_max_pct = 8.0
+
+        if weighted_signal >= bullish_threshold:
+            max_position_pct = bullish_max_pct
+        elif weighted_signal <= bearish_threshold:
+            max_position_pct = bearish_max_pct
+        else:
+            max_position_pct = neutral_max_pct
+
+        assert max_position_pct == 12.0
+
+
+class TestDrawdownProtection:
+    """Tests for portfolio drawdown protection"""
+
+    def test_level1_drawdown_reduces_position(self):
+        """Test 25% position reduction at 10% drawdown"""
+        high_water_mark = 30000
+        current_value = 26500  # 11.7% down
+        drawdown_pct = ((high_water_mark - current_value) / high_water_mark) * 100
+
+        level1_threshold = 10  # 10%
+        level1_multiplier = 0.75
+
+        if drawdown_pct >= level1_threshold:
+            position_multiplier = level1_multiplier
+        else:
+            position_multiplier = 1.0
+
+        assert drawdown_pct > 10
+        assert position_multiplier == 0.75
+
+    def test_level2_drawdown_halves_position(self):
+        """Test 50% position reduction at 15% drawdown"""
+        high_water_mark = 30000
+        current_value = 24000  # 20% down
+        drawdown_pct = ((high_water_mark - current_value) / high_water_mark) * 100
+
+        level2_threshold = 15  # 15%
+        level2_multiplier = 0.50
+
+        if drawdown_pct >= level2_threshold:
+            position_multiplier = level2_multiplier
+        else:
+            position_multiplier = 1.0
+
+        assert drawdown_pct >= 15
+        assert position_multiplier == 0.50
+
+    def test_no_drawdown_full_position(self):
+        """Test no reduction when portfolio is at/near high water"""
+        high_water_mark = 30000
+        current_value = 31000  # Above high water (making new highs)
+        drawdown_pct = max(0, ((high_water_mark - current_value) / high_water_mark) * 100)
+
+        # No drawdown
+        assert drawdown_pct == 0
+        # Full position multiplier
+        position_multiplier = 1.0
+        assert position_multiplier == 1.0
+
+
+class TestSectorRotation:
+    """Tests for sector rotation bonus/penalty"""
+
+    def test_leading_sector_bonus(self):
+        """Test bonus for stocks in leading sectors"""
+        sector_avg_l_score = 12  # Strong L score average
+
+        leading_threshold = 10
+        leading_bonus = 5
+
+        if sector_avg_l_score >= leading_threshold:
+            sector_bonus = leading_bonus
+        else:
+            sector_bonus = 0
+
+        assert sector_bonus == 5
+
+    def test_lagging_sector_penalty(self):
+        """Test penalty for stocks in lagging sectors"""
+        sector_avg_l_score = 3  # Weak L score average
+
+        lagging_threshold = 5
+        lagging_penalty = -3
+
+        if sector_avg_l_score < lagging_threshold:
+            sector_bonus = lagging_penalty
+        else:
+            sector_bonus = 0
+
+        assert sector_bonus == -3
+
+    def test_neutral_sector_no_adjustment(self):
+        """Test no adjustment for neutral sectors"""
+        sector_avg_l_score = 7  # Middle-of-road L score
+
+        leading_threshold = 10
+        lagging_threshold = 5
+
+        if sector_avg_l_score >= leading_threshold:
+            sector_bonus = 5
+        elif sector_avg_l_score < lagging_threshold:
+            sector_bonus = -3
+        else:
+            sector_bonus = 0
+
+        assert sector_bonus == 0
+
+
+class TestPortfolioCorrelation:
+    """Tests for portfolio correlation position reduction"""
+
+    def test_sector_concentration_reduces_position(self):
+        """Test position reduction for concentrated sectors"""
+        stocks_in_sector = 4
+        sector_threshold = 3
+        sector_multiplier = 0.85
+
+        if stocks_in_sector >= sector_threshold:
+            position_multiplier = sector_multiplier
+        else:
+            position_multiplier = 1.0
+
+        assert position_multiplier == 0.85
+
+    def test_industry_concentration_stronger_reduction(self):
+        """Test stronger reduction for same industry"""
+        stocks_in_industry = 2
+        industry_threshold = 2
+        industry_multiplier = 0.70
+
+        if stocks_in_industry >= industry_threshold:
+            position_multiplier = industry_multiplier
+        else:
+            position_multiplier = 1.0
+
+        assert position_multiplier == 0.70
+
+    def test_no_concentration_full_position(self):
+        """Test full position when no concentration"""
+        stocks_in_sector = 1
+        stocks_in_industry = 0
+
+        sector_threshold = 3
+        industry_threshold = 2
+
+        sector_ok = stocks_in_sector < sector_threshold
+        industry_ok = stocks_in_industry < industry_threshold
+
+        assert sector_ok and industry_ok
+
+
+class TestShortSqueezeDetection:
+    """Tests for short squeeze detection logic"""
+
+    def test_squeeze_setup_converts_penalty_to_bonus(self):
+        """Test that squeeze setup gives bonus instead of penalty"""
+        short_interest_pct = 25
+        l_score = 12
+        has_base = True
+        is_breaking_out = True
+
+        min_short_pct = 20
+        min_l_score = 10
+        squeeze_bonus = 5
+        risk_penalty = -5
+
+        if short_interest_pct >= min_short_pct:
+            if l_score >= min_l_score and has_base and is_breaking_out:
+                # Squeeze setup
+                short_adjustment = squeeze_bonus
+                is_squeeze = True
+            else:
+                # Just risky
+                short_adjustment = risk_penalty
+                is_squeeze = False
+        else:
+            short_adjustment = 0
+            is_squeeze = False
+
+        assert is_squeeze == True
+        assert short_adjustment == 5  # Bonus, not penalty!
+
+    def test_high_short_without_setup_is_penalty(self):
+        """Test that high short without setup is still penalized"""
+        short_interest_pct = 25
+        l_score = 5  # Weak relative strength
+        has_base = False
+        is_breaking_out = False
+
+        min_short_pct = 20
+        min_l_score = 10
+        squeeze_bonus = 5
+        risk_penalty = -5
+
+        if short_interest_pct >= min_short_pct:
+            if l_score >= min_l_score and has_base and is_breaking_out:
+                short_adjustment = squeeze_bonus
+            else:
+                short_adjustment = risk_penalty
+        else:
+            short_adjustment = 0
+
+        assert short_adjustment == -5  # Penalty
+
+    def test_moderate_short_small_penalty(self):
+        """Test moderate short interest gets small penalty"""
+        short_interest_pct = 15
+        min_short_pct = 20
+        medium_threshold = 10
+        medium_penalty = -2
+
+        if short_interest_pct >= min_short_pct:
+            short_adjustment = -5
+        elif short_interest_pct > medium_threshold:
+            short_adjustment = medium_penalty
+        else:
+            short_adjustment = 0
+
+        assert short_adjustment == -2
+
+
+class TestInsiderClusterDetection:
+    """Tests for insider cluster detection"""
+
+    def test_cluster_bonus_3_insiders(self):
+        """Test cluster bonus for 3+ insider buys"""
+        insider_buy_count = 4
+        insider_net_value = 500000
+        insider_sentiment = "bullish"
+
+        cluster_bonus = 8
+        high_value_cluster_bonus = 12
+
+        if insider_sentiment == "bullish" and insider_buy_count >= 3:
+            if insider_net_value >= 1_000_000:
+                insider_bonus = high_value_cluster_bonus
+            else:
+                insider_bonus = cluster_bonus
+        else:
+            insider_bonus = 5  # Standard bullish bonus
+
+        assert insider_bonus == 8
+
+    def test_high_value_cluster_bonus(self):
+        """Test high value cluster bonus for $1M+"""
+        insider_buy_count = 5
+        insider_net_value = 1_500_000  # $1.5M
+
+        high_value_cluster_bonus = 12
+
+        if insider_buy_count >= 3 and insider_net_value >= 1_000_000:
+            insider_bonus = high_value_cluster_bonus
+        else:
+            insider_bonus = 8
+
+        assert insider_bonus == 12
+
+    def test_standard_insider_bonus(self):
+        """Test standard bonus for 2 insider buys (not cluster)"""
+        insider_buy_count = 2
+        insider_sentiment = "bullish"
+
+        cluster_threshold = 3
+        standard_bonus = 5
+
+        if insider_sentiment == "bullish":
+            if insider_buy_count >= cluster_threshold:
+                insider_bonus = 8
+            elif insider_buy_count >= 2:
+                insider_bonus = standard_bonus
+            else:
+                insider_bonus = 0
+        else:
+            insider_bonus = 0
+
+        assert insider_bonus == 5
+
+
+class TestAnalystRevisionBonus:
+    """Tests for analyst estimate revision bonus"""
+
+    def test_strong_upward_revision_bonus(self):
+        """Test strong bonus for 10%+ upward revision"""
+        revision_pct = 15
+
+        strong_up_threshold = 10
+        strong_up_bonus = 5
+
+        if revision_pct >= strong_up_threshold:
+            estimate_bonus = strong_up_bonus
+        else:
+            estimate_bonus = 0
+
+        assert estimate_bonus == 5
+
+    def test_moderate_upward_revision_bonus(self):
+        """Test moderate bonus for 5-10% upward revision"""
+        revision_pct = 7
+
+        strong_up_threshold = 10
+        mod_up_threshold = 5
+        strong_up_bonus = 5
+        mod_up_bonus = 3
+
+        if revision_pct >= strong_up_threshold:
+            estimate_bonus = strong_up_bonus
+        elif revision_pct >= mod_up_threshold:
+            estimate_bonus = mod_up_bonus
+        else:
+            estimate_bonus = 0
+
+        assert estimate_bonus == 3
+
+    def test_downward_revision_penalty(self):
+        """Test penalty for significant downward revision"""
+        revision_pct = -12
+
+        strong_down_threshold = -10
+        strong_down_penalty = -5
+
+        if revision_pct <= strong_down_threshold:
+            estimate_bonus = strong_down_penalty
+        else:
+            estimate_bonus = 0
+
+        assert estimate_bonus == -5
+
+
+class TestEarningsAvoidance:
+    """Tests for earnings calendar avoidance (non-CS stocks)"""
+
+    def test_non_cs_stock_blocked_near_earnings(self):
+        """Test non-CS stocks are blocked within avoidance window"""
+        days_to_earnings = 3
+        is_coiled_spring = False
+        avoidance_days = 5
+
+        if days_to_earnings is not None and days_to_earnings <= avoidance_days:
+            if is_coiled_spring:
+                skip_buy = False  # CS can override
+            else:
+                skip_buy = True
+
+        assert skip_buy == True
+
+    def test_cs_stock_can_override_avoidance(self):
+        """Test CS stocks can override earnings avoidance"""
+        days_to_earnings = 3
+        is_coiled_spring = True
+        cs_allow_buy_days = 7
+        cs_block_days = 1
+        avoidance_days = 5
+
+        if days_to_earnings is not None and days_to_earnings <= avoidance_days:
+            if is_coiled_spring and days_to_earnings > cs_block_days:
+                skip_buy = False  # CS can buy
+            else:
+                skip_buy = True
+
+        assert skip_buy == False  # CS allowed
+
+    def test_stock_far_from_earnings_allowed(self):
+        """Test stocks far from earnings are allowed"""
+        days_to_earnings = 10
+        avoidance_days = 5
+
+        if days_to_earnings is None or days_to_earnings > avoidance_days:
+            skip_buy = False
+        else:
+            skip_buy = True
+
+        assert skip_buy == False

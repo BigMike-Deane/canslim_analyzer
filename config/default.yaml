@@ -138,6 +138,56 @@ ai_trader:
     max_single_position: 0.15     # Max 15% in single stock
     min_score_to_buy: 65          # Minimum CANSLIM score to buy
 
+  # Earnings calendar avoidance for non-CS stocks
+  # CS stocks use their own allow_buy_days from coiled_spring config
+  earnings:
+    avoidance_days: 5             # Block non-CS stocks within 5 days of earnings
+    cs_override: true             # Allow CS stocks to override avoidance
+
+  # Analyst revision bonus (estimate revisions)
+  analyst_revisions:
+    enabled: true
+    strong_up_threshold: 10       # >= 10% revision = strong up
+    strong_up_bonus: 5            # +5 points
+    mod_up_bonus: 3               # 5-10% revision = +3 points
+    strong_down_threshold: -10    # <= -10% revision = strong down
+    strong_down_penalty: -5       # -5 points
+    mod_down_penalty: -2          # -5 to -10% revision = -2 points
+
+  # Market regime detection (adjusts position sizes based on market conditions)
+  market_regime:
+    enabled: true
+    bullish_threshold: 1.5        # weighted_signal >= this = bullish
+    bearish_threshold: -0.5       # weighted_signal <= this = bearish
+    bullish_max_position_pct: 15.0  # Allow larger positions in bull market
+    neutral_max_position_pct: 12.0  # Standard position sizing
+    bearish_max_position_pct: 8.0   # Smaller positions in bear market
+    bearish_min_score_adj: 5       # Require 5 more points in bear market
+
+  # Drawdown protection (reduce position sizes when portfolio is down)
+  drawdown_protection:
+    enabled: true
+    level_1_threshold: 10         # >= 10% drawdown = reduce 25%
+    level_1_multiplier: 0.75
+    level_2_threshold: 15         # >= 15% drawdown = reduce 50%
+    level_2_multiplier: 0.50
+
+  # Sector rotation (bonus for leading sectors, penalty for lagging)
+  sector_rotation:
+    enabled: true
+    leading_l_score: 10           # Avg L >= 10 = leading sector
+    lagging_l_score: 5            # Avg L < 5 = lagging sector
+    leading_bonus: 5              # +5 points for leading sectors
+    lagging_penalty: -3           # -3 points for lagging sectors
+
+  # Portfolio correlation (reduce position for concentrated sectors/industries)
+  correlation:
+    enabled: true
+    sector_threshold: 3           # >= 3 stocks in sector = reduce position
+    sector_multiplier: 0.85       # 15% smaller if same sector
+    industry_threshold: 2         # >= 2 stocks in same industry = reduce more
+    industry_multiplier: 0.70     # 30% smaller if same industry
+
   # Entry bonuses - pre-breakout is optimal entry (before the crowd)
   entry_bonuses:
     pre_breakout: 30     # 5-15% below pivot with base (best entry)
@@ -193,13 +243,25 @@ ai_trader:
     bullish_bonus: 5      # +5 points for bullish insiders
     bearish_penalty: -3   # -3 points for bearish insiders
     buy_sell_ratio: 1.5   # Buys > 1.5x sells = bullish
+    # Insider cluster detection (multiple insiders buying)
+    cluster_bonus: 8               # Bonus for 3+ insider buys
+    high_value_cluster_bonus: 12   # Bonus for 3+ buys totaling $1M+
+    csuite_bonus: 3                # Extra bonus for C-suite buying
 
-  # Short interest penalties
+  # Short interest settings
   short_interest:
     high_threshold: 0.20  # > 20% short interest
     high_penalty: -5
     medium_threshold: 0.10  # > 10% short interest
     medium_penalty: -2
+
+  # Short squeeze detection
+  # High short interest can be opportunity with right setup
+  short_squeeze:
+    enabled: true
+    min_short_pct: 20             # Min short interest to consider squeeze
+    min_l_score: 10               # Must have strong relative strength
+    squeeze_bonus: 5              # Bonus for squeeze setup (instead of penalty)
 
 # Coiled Spring / Earnings Catalyst Detection
 # Identifies stocks with explosive earnings potential based on:
@@ -341,6 +403,22 @@ retry:
 alerts:
   price_change_significant_pct: 5
   volume_spike_ratio: 2.0
+
+# Notifications
+notifications:
+  # Webhook notifications (push notifications via ntfy.sh, Pushover, etc.)
+  webhook:
+    enabled: true
+    # Set CANSLIM_WEBHOOK_URL environment variable to enable
+    # Example: https://ntfy.sh/your-topic
+    url_env_var: "CANSLIM_WEBHOOK_URL"
+    priority: "high"             # Priority for CS alerts
+
+  # Weekly performance email (sent Saturday 9 AM)
+  weekly_email:
+    enabled: true
+    day_of_week: "sat"           # Day to send (mon, tue, wed, thu, fri, sat, sun)
+    hour: 9                      # Hour to send (0-23)
 
 # Database Settings
 database:

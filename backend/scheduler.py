@@ -444,6 +444,9 @@ def run_continuous_scan():
                 canslim_score=canslim_result
             )
 
+            # Extract RS values for persistence
+            rs_values = canslim_scorer.extract_rs_values(stock_data)
+
             # Calculate Growth Mode score if applicable
             growth_mode_result = None
             is_growth_stock = growth_mode_scorer.should_use_growth_mode(stock_data)
@@ -524,6 +527,8 @@ def run_continuous_scan():
                     "l": {
                         "summary": canslim_result.l_detail,
                         "relative_strength": stock_data.relative_strength if hasattr(stock_data, 'relative_strength') else None,
+                        "rs_12m": rs_values.get("rs_12m"),
+                        "rs_3m": rs_values.get("rs_3m"),
                     },
                     "i": {
                         "summary": canslim_result.i_detail,
@@ -541,6 +546,9 @@ def run_continuous_scan():
                 "week_52_low": stock_data.low_52w,
                 "relative_strength": None,  # Could parse from l_detail if needed
                 "institutional_ownership": stock_data.institutional_holders_pct,
+                # RS values for persistence
+                "rs_12m": rs_values.get("rs_12m"),
+                "rs_3m": rs_values.get("rs_3m"),
                 # Growth Mode scoring
                 "is_growth_stock": is_growth_stock,
                 "growth_mode_score": growth_mode_result.total_score if growth_mode_result else None,
@@ -710,6 +718,10 @@ def run_continuous_scan():
         stock.relative_strength = analysis.get("relative_strength")
         stock.institutional_ownership = analysis.get("institutional_ownership")
         stock.last_updated = datetime.utcnow()
+
+        # RS values for momentum confirmation
+        stock.rs_12m = analysis.get("rs_12m")
+        stock.rs_3m = analysis.get("rs_3m")
 
         # Growth Mode scoring
         stock.growth_mode_score = analysis.get("growth_mode_score")
@@ -996,6 +1008,17 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     if not scheduler.running:
         scheduler.start()
 
+    # Also start the weekly email job if configured
+    try:
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from config_loader import config
+        if config.get('notifications.weekly_email.enabled', True):
+            start_weekly_email_job()
+    except Exception as e:
+        logger.warning(f"Failed to start weekly email job: {e}")
+
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
     # Run first scan immediately
@@ -1031,3 +1054,211 @@ def update_scan_config(source: str = None, interval_minutes: int = None):
         )
 
     return get_scan_status()
+
+
+def send_weekly_performance_email():
+    """
+    Send weekly performance summary email comparing portfolio to SPY.
+    Scheduled to run every Saturday at 9 AM.
+    """
+    from backend.database import SessionLocal, AIPortfolioSnapshot, AIPortfolioTrade
+    from email_utils import send_email
+    from datetime import timedelta
+
+    # Check if weekly email is enabled
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config_loader import config
+
+    email_config = config.get('notifications.weekly_email', {})
+    if not email_config.get('enabled', True):
+        logger.info("Weekly email disabled in config")
+        return
+
+    db = SessionLocal()
+    try:
+        # Get snapshots for the past week
+        one_week_ago = datetime.utcnow() - timedelta(days=7)
+
+        # Get first and last snapshots of the week
+        first_snapshot = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.timestamp >= one_week_ago
+        ).order_by(AIPortfolioSnapshot.timestamp.asc()).first()
+
+        last_snapshot = db.query(AIPortfolioSnapshot).order_by(
+            AIPortfolioSnapshot.timestamp.desc()
+        ).first()
+
+        if not first_snapshot or not last_snapshot:
+            logger.warning("Not enough snapshots for weekly email")
+            return
+
+        # Calculate portfolio return
+        start_value = first_snapshot.total_value
+        end_value = last_snapshot.total_value
+        portfolio_return = ((end_value - start_value) / start_value) * 100 if start_value > 0 else 0
+
+        # Get SPY return for comparison (from last snapshot if available)
+        spy_return = getattr(last_snapshot, 'spy_weekly_return', None)
+        if spy_return is None:
+            # Try to calculate from market data
+            try:
+                import yfinance as yf
+                spy = yf.Ticker("SPY")
+                hist = spy.history(period="7d")
+                if len(hist) >= 2:
+                    spy_return = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
+            except:
+                spy_return = None
+
+        # Get trades from the week
+        trades = db.query(AIPortfolioTrade).filter(
+            AIPortfolioTrade.executed_at >= one_week_ago
+        ).order_by(AIPortfolioTrade.executed_at.desc()).all()
+
+        # Calculate stats
+        buy_trades = [t for t in trades if t.trade_type == "buy"]
+        sell_trades = [t for t in trades if t.trade_type == "sell"]
+        total_realized = sum(t.realized_gain_loss or 0 for t in sell_trades)
+        winning_sells = len([t for t in sell_trades if (t.realized_gain_loss or 0) > 0])
+        win_rate = (winning_sells / len(sell_trades) * 100) if sell_trades else 0
+
+        # Build email content
+        vs_spy = ""
+        if spy_return is not None:
+            diff = portfolio_return - spy_return
+            diff_color = "green" if diff > 0 else "red"
+            vs_spy = f"""
+            <div style="margin: 10px 0;">
+                <span style="color: #666;">SPY Return:</span>
+                <span style="font-weight: bold;">{spy_return:+.2f}%</span>
+            </div>
+            <div style="margin: 10px 0;">
+                <span style="color: #666;">vs SPY:</span>
+                <span style="font-weight: bold; color: {diff_color};">{diff:+.2f}%</span>
+            </div>
+            """
+
+        trades_html = ""
+        if trades:
+            trades_html = """
+            <h3>Recent Trades</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <tr style="background: #f5f5f5;">
+                    <th style="padding: 8px; text-align: left;">Ticker</th>
+                    <th style="padding: 8px; text-align: left;">Action</th>
+                    <th style="padding: 8px; text-align: right;">Shares</th>
+                    <th style="padding: 8px; text-align: right;">P/L</th>
+                </tr>
+            """
+            for trade in trades[:10]:  # Limit to 10 most recent
+                pl_str = ""
+                if trade.realized_gain_loss:
+                    color = "green" if trade.realized_gain_loss > 0 else "red"
+                    pl_str = f'<span style="color: {color};">${trade.realized_gain_loss:+,.0f}</span>'
+                trades_html += f"""
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 8px;">{trade.ticker}</td>
+                    <td style="padding: 8px;">{trade.trade_type.upper()}</td>
+                    <td style="padding: 8px; text-align: right;">{trade.shares:.0f}</td>
+                    <td style="padding: 8px; text-align: right;">{pl_str}</td>
+                </tr>
+                """
+            trades_html += "</table>"
+
+        portfolio_color = "green" if portfolio_return > 0 else "red"
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+                .stats {{ background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; }}
+                .stat-value {{ font-size: 1.5em; font-weight: bold; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h2 style="margin: 0;">Weekly Performance Summary</h2>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">AI Portfolio Report</p>
+            </div>
+
+            <div class="stats">
+                <div style="margin: 10px 0;">
+                    <span style="color: #666;">Portfolio Value:</span>
+                    <span class="stat-value">${end_value:,.0f}</span>
+                </div>
+                <div style="margin: 10px 0;">
+                    <span style="color: #666;">Weekly Return:</span>
+                    <span class="stat-value" style="color: {portfolio_color};">{portfolio_return:+.2f}%</span>
+                </div>
+                {vs_spy}
+                <div style="margin: 10px 0;">
+                    <span style="color: #666;">Realized P/L:</span>
+                    <span style="font-weight: bold;">${total_realized:+,.0f}</span>
+                </div>
+                <div style="margin: 10px 0;">
+                    <span style="color: #666;">Win Rate:</span>
+                    <span>{win_rate:.0f}% ({winning_sells}/{len(sell_trades)} trades)</span>
+                </div>
+            </div>
+
+            {trades_html}
+
+            <p style="color: #666; font-size: 0.9em; margin-top: 20px;">
+                Generated by CANSLIM Analyzer
+            </p>
+        </body>
+        </html>
+        """
+
+        text_content = f"""Weekly AI Portfolio Performance Summary
+
+Portfolio Value: ${end_value:,.0f}
+Weekly Return: {portfolio_return:+.2f}%
+{f'SPY Return: {spy_return:+.2f}%' if spy_return else ''}
+Realized P/L: ${total_realized:+,.0f}
+Win Rate: {win_rate:.0f}%
+
+Trades: {len(buy_trades)} buys, {len(sell_trades)} sells
+"""
+
+        subject = f"CANSLIM Weekly: {portfolio_return:+.2f}%{f' (vs SPY {spy_return:+.2f}%)' if spy_return else ''}"
+
+        if send_email(subject, html_content, text_content):
+            logger.info(f"Weekly performance email sent: {portfolio_return:+.2f}%")
+        else:
+            logger.warning("Failed to send weekly performance email")
+
+    except Exception as e:
+        logger.error(f"Weekly performance email failed: {e}")
+    finally:
+        db.close()
+
+
+def start_weekly_email_job():
+    """Start the weekly performance email job (Saturday 9 AM)"""
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "weekly_performance_email"
+
+    # Remove existing job if any
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    # Add the job - Saturday at 9 AM
+    scheduler.add_job(
+        send_weekly_performance_email,
+        CronTrigger(day_of_week='sat', hour=9, minute=0),
+        id=job_id,
+        name="Weekly Performance Email",
+        replace_existing=True
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Weekly performance email job scheduled for Saturday 9 AM")

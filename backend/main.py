@@ -2896,6 +2896,68 @@ async def remove_from_watchlist(item_id: int, db: Session = Depends(get_db)):
     return {"message": f"Removed {item.ticker} from watchlist"}
 
 
+class WatchlistBulkImport(BaseModel):
+    """Request model for bulk watchlist import"""
+    tickers: str  # Comma or whitespace separated list of tickers
+
+
+@app.post("/api/watchlist/bulk")
+async def bulk_add_to_watchlist(data: WatchlistBulkImport, db: Session = Depends(get_db)):
+    """
+    Bulk import tickers to watchlist.
+
+    Accepts a string of tickers separated by commas, spaces, or newlines.
+    Skips tickers that already exist in the watchlist.
+
+    Returns:
+        added: List of tickers successfully added
+        skipped: List of tickers that were already in watchlist
+        invalid: List of tickers that failed validation
+    """
+    import re
+
+    # Split by commas, spaces, or newlines
+    ticker_list = re.split(r'[,\s\n]+', data.tickers.upper().strip())
+    # Remove empty strings and duplicates while preserving order
+    ticker_list = list(dict.fromkeys(t.strip() for t in ticker_list if t.strip()))
+
+    added = []
+    skipped = []
+    invalid = []
+
+    # Get existing watchlist tickers
+    existing_tickers = set(
+        item.ticker for item in db.query(Watchlist.ticker).all()
+    )
+
+    for ticker in ticker_list:
+        # Basic ticker validation (1-5 uppercase letters)
+        if not re.match(r'^[A-Z]{1,5}$', ticker):
+            invalid.append(ticker)
+            continue
+
+        if ticker in existing_tickers:
+            skipped.append(ticker)
+            continue
+
+        # Add to watchlist
+        item = Watchlist(ticker=ticker)
+        db.add(item)
+        added.append(ticker)
+        existing_tickers.add(ticker)  # Track for duplicate detection in same batch
+
+    if added:
+        db.commit()
+
+    return {
+        "message": f"Added {len(added)} tickers to watchlist",
+        "added": added,
+        "skipped": skipped,
+        "invalid": invalid,
+        "total_processed": len(ticker_list)
+    }
+
+
 # ============== Backtesting API ==============
 
 class BacktestCreate(BaseModel):

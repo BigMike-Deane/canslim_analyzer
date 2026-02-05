@@ -18,6 +18,17 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import config
 
+# Import email utils with fallback for testing
+try:
+    from email_utils import send_coiled_spring_alert_webhook
+except ImportError:
+    try:
+        from backend.email_utils import send_coiled_spring_alert_webhook
+    except ImportError:
+        # Function not available (e.g., in tests without backend context)
+        def send_coiled_spring_alert_webhook(*args, **kwargs):
+            return False
+
 # Timezone constants - use zoneinfo for proper DST handling
 EASTERN_TZ = ZoneInfo("America/New_York")
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -62,7 +73,7 @@ from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
     AIPortfolioTrade, AIPortfolioSnapshot, StockScore, CoiledSpringAlert
 )
-from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore
+from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore, TechnicalAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +156,197 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
 MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
 MAX_STOCKS_PER_SECTOR = config.get('ai_trader.allocation.max_stocks_per_sector', default=4)
 MAX_POSITION_ALLOCATION = config.get('ai_trader.allocation.max_single_position', default=0.15)
+
+
+def get_portfolio_drawdown(db: Session) -> dict:
+    """
+    Calculate current drawdown from portfolio high water mark.
+    Returns dict with:
+    - drawdown_pct: current drawdown from peak (0 = at peak, 15 = down 15%)
+    - position_multiplier: 0.5 to 1.0 (reduce positions when in drawdown)
+    - high_water_mark: highest portfolio value ever
+    - detail: explanation string
+    """
+    from sqlalchemy import func
+
+    drawdown_config = config.get('ai_trader.drawdown_protection', {})
+    if not drawdown_config.get('enabled', True):
+        return {
+            "drawdown_pct": 0,
+            "position_multiplier": 1.0,
+            "high_water_mark": 0,
+            "detail": "Drawdown protection disabled"
+        }
+
+    # Get current portfolio value
+    portfolio = get_portfolio_value(db)
+    current_value = portfolio["total_value"]
+
+    # Get high water mark from snapshots
+    high_water_mark = db.query(func.max(AIPortfolioSnapshot.total_value)).scalar()
+
+    if not high_water_mark or high_water_mark <= 0:
+        return {
+            "drawdown_pct": 0,
+            "position_multiplier": 1.0,
+            "high_water_mark": current_value,
+            "detail": "No historical data for drawdown"
+        }
+
+    # Calculate drawdown
+    drawdown_pct = 0
+    if current_value < high_water_mark:
+        drawdown_pct = ((high_water_mark - current_value) / high_water_mark) * 100
+
+    # Get thresholds from config
+    level_1_threshold = drawdown_config.get('level_1_threshold', 10)  # 10% drawdown
+    level_2_threshold = drawdown_config.get('level_2_threshold', 15)  # 15% drawdown
+    level_1_multiplier = drawdown_config.get('level_1_multiplier', 0.75)
+    level_2_multiplier = drawdown_config.get('level_2_multiplier', 0.50)
+
+    # Determine position multiplier based on drawdown level
+    if drawdown_pct >= level_2_threshold:
+        position_multiplier = level_2_multiplier
+        detail = f"Level 2 drawdown: {drawdown_pct:.1f}% from peak (50% smaller positions)"
+    elif drawdown_pct >= level_1_threshold:
+        position_multiplier = level_1_multiplier
+        detail = f"Level 1 drawdown: {drawdown_pct:.1f}% from peak (25% smaller positions)"
+    else:
+        position_multiplier = 1.0
+        detail = f"No significant drawdown ({drawdown_pct:.1f}%)"
+
+    return {
+        "drawdown_pct": round(drawdown_pct, 2),
+        "position_multiplier": position_multiplier,
+        "high_water_mark": high_water_mark,
+        "current_value": current_value,
+        "detail": detail
+    }
+
+
+def calculate_sector_momentum(db: Session) -> dict:
+    """
+    Calculate average L score by sector to identify leading/lagging sectors.
+    Returns dict with sector -> {avg_l_score, is_leading, is_lagging, stock_count}
+    """
+    from sqlalchemy import func
+
+    sector_config = config.get('ai_trader.sector_rotation', {})
+    if not sector_config.get('enabled', True):
+        return {}
+
+    leading_threshold = sector_config.get('leading_threshold', 10)
+    lagging_threshold = sector_config.get('lagging_threshold', 5)
+
+    # Calculate average L score by sector
+    sector_stats = db.query(
+        Stock.sector,
+        func.avg(Stock.l_score).label('avg_l'),
+        func.count(Stock.id).label('count')
+    ).filter(
+        Stock.l_score.isnot(None),
+        Stock.sector.isnot(None)
+    ).group_by(Stock.sector).all()
+
+    result = {}
+    for sector, avg_l, count in sector_stats:
+        if not sector or count < 5:  # Skip small sectors
+            continue
+
+        avg_l_score = float(avg_l) if avg_l else 0
+        result[sector] = {
+            "avg_l_score": round(avg_l_score, 2),
+            "is_leading": avg_l_score >= leading_threshold,
+            "is_lagging": avg_l_score < lagging_threshold,
+            "stock_count": count
+        }
+
+    return result
+
+
+def get_sector_rotation_bonus(db: Session, sector: str) -> tuple[int, str]:
+    """
+    Get sector rotation bonus/penalty for a specific sector.
+    Returns (bonus_points, detail_string)
+    """
+    sector_config = config.get('ai_trader.sector_rotation', {})
+    if not sector_config.get('enabled', True):
+        return 0, ""
+
+    leading_bonus = sector_config.get('leading_bonus', 5)
+    lagging_penalty = sector_config.get('lagging_penalty', -3)
+
+    sector_momentum = calculate_sector_momentum(db)
+    sector_info = sector_momentum.get(sector, {})
+
+    if sector_info.get("is_leading"):
+        return leading_bonus, f"Leading sector (L avg: {sector_info['avg_l_score']:.1f})"
+    elif sector_info.get("is_lagging"):
+        return lagging_penalty, f"Lagging sector (L avg: {sector_info['avg_l_score']:.1f})"
+
+    return 0, ""
+
+
+def get_market_regime(db: Session = None) -> dict:
+    """
+    Determine current market regime based on multi-index weighted signal.
+    Returns dict with:
+    - regime: "bullish", "neutral", or "bearish"
+    - max_position_pct: adjusted max position size (8-15%)
+    - min_score_adjustment: adjustment to min_score_to_buy threshold
+    - detail: explanation string
+    """
+    from data_fetcher import get_cached_market_direction
+
+    market_data = get_cached_market_direction()
+    regime_config = config.get('ai_trader.market_regime', {})
+
+    if not regime_config.get('enabled', True):
+        return {
+            "regime": "neutral",
+            "max_position_pct": 12.0,
+            "min_score_adjustment": 0,
+            "detail": "Regime detection disabled"
+        }
+
+    if not market_data.get("success"):
+        return {
+            "regime": "neutral",
+            "max_position_pct": 12.0,
+            "min_score_adjustment": 0,
+            "detail": "No market data available"
+        }
+
+    weighted_signal = market_data.get("weighted_signal", 0)
+
+    # Thresholds from config
+    bullish_threshold = regime_config.get('bullish_threshold', 1.5)
+    bearish_threshold = regime_config.get('bearish_threshold', -0.5)
+    bullish_max_pct = regime_config.get('bullish_max_position_pct', 15.0)
+    bearish_max_pct = regime_config.get('bearish_max_position_pct', 8.0)
+    neutral_max_pct = regime_config.get('neutral_max_position_pct', 12.0)
+
+    if weighted_signal >= bullish_threshold:
+        return {
+            "regime": "bullish",
+            "max_position_pct": bullish_max_pct,
+            "min_score_adjustment": -5,  # Slightly lower threshold in bull markets
+            "detail": f"Bullish regime (signal: {weighted_signal:.2f})"
+        }
+    elif weighted_signal <= bearish_threshold:
+        return {
+            "regime": "bearish",
+            "max_position_pct": bearish_max_pct,
+            "min_score_adjustment": 5,  # Higher quality required in bear markets
+            "detail": f"Bearish regime (signal: {weighted_signal:.2f})"
+        }
+    else:
+        return {
+            "regime": "neutral",
+            "max_position_pct": neutral_max_pct,
+            "min_score_adjustment": 0,
+            "detail": f"Neutral regime (signal: {weighted_signal:.2f})"
+        }
 
 
 def calculate_coiled_spring_score_for_stock(stock: Stock) -> dict:
@@ -250,6 +452,15 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
     db.commit()
 
     logger.info(f"COILED SPRING ALERT: {ticker} - {cs_result.get('cs_details', '')}")
+
+    # Send webhook notification if configured
+    try:
+        webhook_config = config.get('notifications.webhook', {})
+        if webhook_config.get('enabled', True):
+            send_coiled_spring_alert_webhook(stock, cs_result)
+    except Exception as e:
+        logger.warning(f"Failed to send CS webhook for {ticker}: {e}")
+
     return True
 
 
@@ -389,6 +600,90 @@ def check_correlation(db: Session, ticker: str) -> tuple[str, str]:
         return "high_correlation", f"Already own {current_count} stocks in {sector}"
 
     return "ok", ""
+
+
+def check_portfolio_correlation(db: Session, ticker: str) -> dict:
+    """
+    Enhanced correlation check that evaluates both sector AND industry concentration.
+    Returns dict with:
+    - status: "ok", "sector_concentrated", "industry_concentrated", "both_concentrated"
+    - position_multiplier: 0.5 to 1.0 (reduce position for high correlation)
+    - detail: explanation string
+    """
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    if not stock:
+        return {"status": "ok", "position_multiplier": 1.0, "detail": "Stock not found"}
+
+    sector = stock.sector if stock.sector else "Unknown"
+    industry = stock.industry if stock.industry else "Unknown"
+
+    positions = db.query(AIPortfolioPosition).all()
+    if not positions:
+        return {"status": "ok", "position_multiplier": 1.0, "detail": "No existing positions"}
+
+    # Batch fetch all stocks in one query
+    position_tickers = [pos.ticker for pos in positions]
+    position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all()
+    ticker_to_stock = {s.ticker: s for s in position_stocks}
+
+    # Count positions by sector and industry
+    sector_count = 0
+    industry_count = 0
+    sector_value = 0
+    industry_value = 0
+    total_value = sum(pos.current_value or 0 for pos in positions)
+
+    for pos in positions:
+        pos_stock = ticker_to_stock.get(pos.ticker)
+        if not pos_stock:
+            continue
+
+        if pos_stock.sector == sector:
+            sector_count += 1
+            sector_value += pos.current_value or 0
+
+        if pos_stock.industry == industry and industry != "Unknown":
+            industry_count += 1
+            industry_value += pos.current_value or 0
+
+    # Determine correlation level and position multiplier
+    position_multiplier = 1.0
+    issues = []
+
+    # Sector concentration check (more than 30% in same sector or 4+ stocks)
+    sector_pct = (sector_value / total_value * 100) if total_value > 0 else 0
+    if sector_count >= 4 or sector_pct >= 30:
+        position_multiplier *= 0.7  # 30% reduction
+        issues.append(f"Sector: {sector_count} stocks, {sector_pct:.0f}%")
+
+    # Industry concentration check (2+ stocks in same industry is risky)
+    if industry_count >= 2 and industry != "Unknown":
+        industry_pct = (industry_value / total_value * 100) if total_value > 0 else 0
+        position_multiplier *= 0.8  # Additional 20% reduction
+        issues.append(f"Industry: {industry_count} stocks, {industry_pct:.0f}%")
+
+    # Determine status
+    if sector_count >= 4 and industry_count >= 2:
+        status = "both_concentrated"
+    elif sector_count >= 4 or sector_pct >= 30:
+        status = "sector_concentrated"
+    elif industry_count >= 2:
+        status = "industry_concentrated"
+    else:
+        status = "ok"
+
+    # Cap minimum multiplier at 0.5
+    position_multiplier = max(position_multiplier, 0.5)
+
+    return {
+        "status": status,
+        "position_multiplier": position_multiplier,
+        "detail": "; ".join(issues) if issues else "Low correlation",
+        "sector": sector,
+        "sector_count": sector_count,
+        "industry": industry,
+        "industry_count": industry_count
+    }
 
 
 def evaluate_pyramids(db: Session) -> list:
@@ -1058,29 +1353,37 @@ def evaluate_buys(db: Session) -> list:
             continue
 
         # Earnings proximity check with Coiled Spring exception
+        # CS stocks EMBRACE earnings (catalyst), non-CS stocks AVOID earnings (binary risk)
         days_to_earnings = getattr(stock, 'days_to_earnings', None)
         cs_config = config.get('coiled_spring', {})
+        earnings_config = config.get('ai_trader.earnings', {})
+
+        # CS-specific settings
         allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
         block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
+
+        # Non-CS earnings avoidance settings
+        avoidance_days = earnings_config.get('avoidance_days', 5)
+        cs_override_enabled = earnings_config.get('cs_override', True)
 
         # Initialize CS result
         cs_result = None
 
-        if days_to_earnings is not None and 0 < days_to_earnings <= allow_buy_days:
+        if days_to_earnings is not None and 0 < days_to_earnings <= max(allow_buy_days, avoidance_days):
             # Check for Coiled Spring qualification
             cs_result = calculate_coiled_spring_score_for_stock(stock)
 
-            if cs_result["is_coiled_spring"] and days_to_earnings > block_days:
-                # ALLOW - high conviction earnings catalyst
+            if cs_result["is_coiled_spring"] and days_to_earnings > block_days and cs_override_enabled:
+                # ALLOW - high conviction earnings catalyst (CS stocks embrace earnings)
                 logger.info(f"COILED SPRING: {stock.ticker} ({cs_result['cs_details']})")
                 # Attach CS result for scoring bonus and alert recording
                 stock._cs_result = cs_result
                 # Record alert (respects daily limits)
                 record_coiled_spring_alert(db, stock.ticker, cs_result, stock)
             else:
-                # Standard block for stocks without CS qualification (within 3 days)
-                if days_to_earnings <= 3:
-                    logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified)")
+                # NON-CS: Skip if within avoidance window (binary earnings risk)
+                if days_to_earnings <= avoidance_days:
+                    logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified, avoidance={avoidance_days}d)")
                     continue
 
         # Check if stock is breaking out (best buying opportunity)
@@ -1191,9 +1494,20 @@ def evaluate_buys(db: Session) -> list:
         insider_net_value = getattr(stock, 'insider_net_value', 0) or 0
         insider_largest_buyer_title = getattr(stock, 'insider_largest_buyer_title', '') or ''
 
+        # Get insider signal config
+        insider_config = config.get('ai_trader.insider_signals', {})
+        cluster_bonus = insider_config.get('cluster_bonus', 8)
+        high_value_cluster_bonus = insider_config.get('high_value_cluster_bonus', 12)
+
         if insider_sentiment == "bullish":
-            # Scale bonus by $ value of net buying
-            if insider_net_value >= 500000:  # $500K+ net buying
+            # INSIDER CLUSTER DETECTION: Multiple insiders buying is stronger signal
+            if insider_buy_count >= 3:
+                # Cluster of insider buying - very bullish signal
+                if insider_net_value >= 1_000_000:  # $1M+ cluster
+                    insider_bonus = high_value_cluster_bonus
+                else:
+                    insider_bonus = cluster_bonus
+            elif insider_net_value >= 500000:  # $500K+ net buying
                 insider_bonus = 10
             elif insider_net_value >= 100000:  # $100K+ net buying
                 insider_bonus = 7
@@ -1206,14 +1520,39 @@ def evaluate_buys(db: Session) -> list:
         elif insider_sentiment == "bearish":
             insider_bonus = -3  # Insiders selling = caution
 
-        # Calculate short interest adjustment
+        # ACCUMULATION/DISTRIBUTION: Proxy using volume_ratio and L score
+        # High volume with rising RS suggests institutional accumulation
+        accum_bonus = 0
+        l_score = getattr(stock, 'l_score', 0) or 0
+        if volume_ratio >= 1.5 and l_score >= 10:
+            accum_bonus = 5  # Strong volume with strong RS = accumulation
+        elif volume_ratio >= 1.3 and l_score >= 8:
+            accum_bonus = 3  # Moderate accumulation signal
+        elif volume_ratio >= 2.0 and l_score < 5:
+            accum_bonus = -3  # High volume with weak RS = possible distribution
+
+        # SHORT SQUEEZE DETECTION
         # High short interest can be bullish (short squeeze potential) or bearish (smart money betting against)
-        # For CANSLIM, we prefer lower short interest (less risk)
-        short_penalty = 0
-        if short_interest_pct > 20:
-            short_penalty = -5  # Very high short interest = risky
+        # Squeeze setup: high short + strong RS + base pattern + breaking out or pre-breakout
+        short_adjustment = 0
+        is_squeeze_setup = False
+        squeeze_config = config.get('ai_trader.short_squeeze', {})
+        squeeze_enabled = squeeze_config.get('enabled', True)
+        min_short_pct = squeeze_config.get('min_short_pct', 20)
+        min_l_for_squeeze = squeeze_config.get('min_l_score', 10)
+        squeeze_bonus = squeeze_config.get('squeeze_bonus', 5)
+
+        if short_interest_pct >= min_short_pct:
+            # Check if this is a squeeze OPPORTUNITY (not just risk)
+            if squeeze_enabled and l_score >= min_l_for_squeeze and has_base and (is_breaking_out or pre_breakout_bonus >= 15):
+                # Squeeze setup: high short with strong technicals = potential squeeze
+                short_adjustment = squeeze_bonus
+                is_squeeze_setup = True
+            else:
+                # Just high short interest without setup = risky
+                short_adjustment = -5
         elif short_interest_pct > 10:
-            short_penalty = -2  # Elevated short interest = slight caution
+            short_adjustment = -2  # Elevated short interest = slight caution
 
         # MOMENTUM CONFIRMATION: Penalize stocks where recent momentum is fading
         # If 3-month RS is significantly weaker than 12-month RS, momentum is weakening
@@ -1224,10 +1563,34 @@ def evaluate_buys(db: Session) -> list:
             # Recent momentum fading - apply 15% penalty to composite
             momentum_penalty = -0.15
 
+        # ANALYST REVISION BONUS: Reward stocks where analysts are raising estimates
+        estimate_revision_bonus = 0
+        revision_pct = getattr(stock, 'eps_estimate_revision_pct', None)
+        revision_config = config.get('ai_trader.analyst_revisions', {})
+        if revision_pct is not None:
+            strong_up_threshold = revision_config.get('strong_up_threshold', 10)
+            strong_up_bonus = revision_config.get('strong_up_bonus', 5)
+            mod_up_bonus = revision_config.get('mod_up_bonus', 3)
+            strong_down_penalty = revision_config.get('strong_down_penalty', -5)
+            mod_down_penalty = revision_config.get('mod_down_penalty', -2)
+
+            if revision_pct >= strong_up_threshold:
+                estimate_revision_bonus = strong_up_bonus
+            elif revision_pct >= 5:
+                estimate_revision_bonus = mod_up_bonus
+            elif revision_pct <= -10:
+                estimate_revision_bonus = strong_down_penalty
+            elif revision_pct <= -5:
+                estimate_revision_bonus = mod_down_penalty
+
         # Coiled Spring bonus (from earlier calculation)
         coiled_spring_bonus = 0
         if hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring'):
             coiled_spring_bonus = stock._cs_result.get('cs_score', 0)
+
+        # SECTOR ROTATION: Bonus for leading sectors, penalty for lagging
+        sector = getattr(stock, 'sector', None)
+        sector_bonus, sector_detail = get_sector_rotation_bonus(db, sector) if sector else (0, "")
 
         # Calculate composite score with breakout and pre-breakout weighting
         # 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
@@ -1240,7 +1603,10 @@ def evaluate_buys(db: Session) -> list:
             (base_quality_bonus * 0.10) +
             extended_penalty +
             insider_bonus +
-            short_penalty +
+            short_adjustment +  # Short squeeze potential (+) or risk (-)
+            accum_bonus +  # Accumulation/distribution signal
+            estimate_revision_bonus +  # Analyst estimate revisions
+            sector_bonus +  # Sector rotation signal
             coiled_spring_bonus  # Earnings catalyst bonus
         )
 
@@ -1255,14 +1621,22 @@ def evaluate_buys(db: Session) -> list:
         # Calculate position size - MORE DYNAMIC range based on conviction
         portfolio_value = get_portfolio_value(db)["total_value"]
 
-        # Check correlation - reduce position for highly correlated sectors
-        correlation_status, correlation_detail = check_correlation(db, stock.ticker)
-        correlation_penalty = 0.7 if correlation_status == "high_correlation" else 1.0
+        # Check correlation - reduce position for highly correlated sectors/industries
+        correlation_info = check_portfolio_correlation(db, stock.ticker)
+        correlation_multiplier = correlation_info["position_multiplier"]
 
-        # Position sizing: 4-20% based on conviction (wider range for more flexibility)
-        # Base: 4% minimum, scale up to 20% for highest conviction picks
+        # Get market regime for position size limits
+        market_regime = get_market_regime(db)
+        regime_max_pct = market_regime["max_position_pct"]
+
+        # Get drawdown protection multiplier
+        drawdown_info = get_portfolio_drawdown(db)
+        drawdown_multiplier = drawdown_info["position_multiplier"]
+
+        # Position sizing: 4-regime_max_pct based on conviction
+        # Base: 4% minimum, scale up to regime_max_pct for highest conviction picks
         conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
-        position_pct = 4.0 + (conviction_multiplier * 10.67)  # 4% to ~20%
+        position_pct = 4.0 + (conviction_multiplier * (regime_max_pct - 4) / 1.5)  # Dynamic range
 
         # Pre-breakout stocks get largest positions (optimal entry point)
         # Breakout stocks get smaller boost (slightly extended)
@@ -1279,10 +1653,13 @@ def evaluate_buys(db: Session) -> list:
             position_pct *= cs_multiplier
 
         # Apply correlation penalty
-        position_pct *= correlation_penalty
+        position_pct *= correlation_multiplier
 
-        # Cap at 20% max
-        position_pct = min(position_pct, 20.0)
+        # Apply drawdown protection (reduce positions when portfolio is down)
+        position_pct *= drawdown_multiplier
+
+        # Cap at market regime max (varies by market conditions)
+        position_pct = min(position_pct, regime_max_pct)
 
         max_position_value = portfolio_value * (position_pct / 100)
 
@@ -1331,9 +1708,23 @@ def evaluate_buys(db: Session) -> list:
         if volume_ratio >= 1.5 and not is_breaking_out:
             reason_parts.append(f"Vol {volume_ratio:.1f}x")
         if insider_sentiment == "bullish" and insider_buy_count >= 2:
-            reason_parts.append(f"👔 Insiders buying ({insider_buy_count})")
+            if insider_buy_count >= 3:
+                # Insider cluster indicator
+                if insider_net_value >= 1_000_000:
+                    reason_parts.append(f"👔💰 Insider cluster ({insider_buy_count}, ${insider_net_value/1_000_000:.1f}M)")
+                else:
+                    reason_parts.append(f"👔 Insider cluster ({insider_buy_count})")
+            else:
+                reason_parts.append(f"👔 Insiders buying ({insider_buy_count})")
         if short_interest_pct > 15:
-            reason_parts.append(f"⚠️ Short {short_interest_pct:.0f}%")
+            if is_squeeze_setup:
+                reason_parts.append(f"⚡ Squeeze ({short_interest_pct:.0f}%)")
+            else:
+                reason_parts.append(f"⚠️ Short {short_interest_pct:.0f}%")
+        if estimate_revision_bonus >= 5:
+            reason_parts.append(f"📊 Est↑ {revision_pct:+.0f}%")
+        elif estimate_revision_bonus <= -5:
+            reason_parts.append(f"📉 Est↓ {revision_pct:+.0f}%")
 
         buys.append({
             "stock": stock,

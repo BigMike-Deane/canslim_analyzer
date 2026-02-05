@@ -574,6 +574,47 @@ class CANSLIMScorer:
         trend_indicator = "↑" if rs_improving else "↓" if rs_3m < rs_12m * 0.95 else "→"
         return round(score, 1), f"RS: {weighted_rs:.2f} {trend_indicator}"
 
+    def extract_rs_values(self, data: StockData) -> dict:
+        """
+        Extract RS (relative strength) values for persistence.
+        Returns dict with rs_12m, rs_3m for saving to database.
+        """
+        if data.price_history.empty or len(data.price_history) < 63:
+            return {"rs_12m": None, "rs_3m": None}
+
+        sp500_history = self.fetcher.get_sp500_history()
+        if sp500_history.empty:
+            return {"rs_12m": None, "rs_3m": None}
+
+        prices = data.price_history['Close'].dropna()
+        sp500_prices = sp500_history['Close'].dropna()
+
+        if len(prices) < 63 or len(sp500_prices) < 63:
+            return {"rs_12m": None, "rs_3m": None}
+
+        # Calculate 12-month RS
+        if len(prices) >= 252 and len(sp500_prices) >= 252:
+            stock_return_12m = (prices.iloc[-1] / prices.iloc[-252]) - 1
+            sp500_return_12m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-252]) - 1
+        else:
+            stock_return_12m = (prices.iloc[-1] / prices.iloc[0]) - 1
+            sp500_return_12m = (sp500_prices.iloc[-1] / sp500_prices.iloc[0]) - 1
+
+        # Calculate 3-month RS
+        lookback_3m = min(63, len(prices) - 1, len(sp500_prices) - 1)
+        stock_return_3m = (prices.iloc[-1] / prices.iloc[-lookback_3m]) - 1
+        sp500_return_3m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-lookback_3m]) - 1
+
+        sp500_denom_12m = max(1 + sp500_return_12m, 0.1)
+        sp500_denom_3m = max(1 + sp500_return_3m, 0.1)
+        rs_12m = (1 + stock_return_12m) / sp500_denom_12m
+        rs_3m = (1 + stock_return_3m) / sp500_denom_3m
+
+        return {
+            "rs_12m": round(rs_12m, 4),
+            "rs_3m": round(rs_3m, 4)
+        }
+
     def _score_institutional(self, data: StockData) -> tuple[float, str]:
         """
         I - Institutional Ownership (10 pts max)
@@ -1584,6 +1625,88 @@ class TechnicalAnalyzer:
                         return True, vol_ratio
 
         return False, vol_ratio
+
+    @staticmethod
+    def calculate_accumulation_distribution(stock_data, days: int = 20) -> dict:
+        """
+        Calculate up-day vs down-day volume ratio to detect institutional accumulation.
+        Returns dict with:
+        - rating: "A" (strong accum) to "E" (strong distrib)
+        - score_bonus: -5 to +10 points for composite scoring
+        - up_down_ratio: ratio of up-day volume to down-day volume
+        - detail: explanation string
+        """
+        if stock_data.price_history.empty or len(stock_data.price_history) < days:
+            return {
+                "rating": "C",
+                "score_bonus": 0,
+                "up_down_ratio": 1.0,
+                "detail": "Insufficient data"
+            }
+
+        try:
+            # Get recent price/volume data
+            recent = stock_data.price_history.tail(days)
+            closes = recent['Close'].values
+            volumes = recent['Volume'].values
+
+            # Calculate daily price changes
+            up_volume = 0
+            down_volume = 0
+
+            for i in range(1, len(closes)):
+                if closes[i] is None or closes[i-1] is None or volumes[i] is None:
+                    continue
+
+                price_change = closes[i] - closes[i-1]
+                volume = volumes[i]
+
+                if price_change > 0:
+                    up_volume += volume
+                elif price_change < 0:
+                    down_volume += volume
+
+            if down_volume == 0:
+                up_down_ratio = 2.0 if up_volume > 0 else 1.0
+            else:
+                up_down_ratio = up_volume / down_volume
+
+            # Determine rating and score bonus
+            if up_down_ratio >= 1.8:
+                rating = "A"
+                score_bonus = 10
+                detail = f"Strong accumulation ({up_down_ratio:.2f}x)"
+            elif up_down_ratio >= 1.4:
+                rating = "B"
+                score_bonus = 5
+                detail = f"Accumulation ({up_down_ratio:.2f}x)"
+            elif up_down_ratio >= 0.9:
+                rating = "C"
+                score_bonus = 0
+                detail = f"Neutral ({up_down_ratio:.2f}x)"
+            elif up_down_ratio >= 0.7:
+                rating = "D"
+                score_bonus = -3
+                detail = f"Distribution ({up_down_ratio:.2f}x)"
+            else:
+                rating = "E"
+                score_bonus = -5
+                detail = f"Strong distribution ({up_down_ratio:.2f}x)"
+
+            return {
+                "rating": rating,
+                "score_bonus": score_bonus,
+                "up_down_ratio": round(up_down_ratio, 2),
+                "detail": detail
+            }
+
+        except Exception as e:
+            return {
+                "rating": "C",
+                "score_bonus": 0,
+                "up_down_ratio": 1.0,
+                "detail": f"Error: {str(e)}"
+            }
 
 
 if __name__ == "__main__":

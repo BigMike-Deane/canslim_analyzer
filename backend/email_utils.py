@@ -6,6 +6,7 @@ Handles watchlist alerts and other email notifications
 import smtplib
 import os
 import logging
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -134,3 +135,105 @@ CANSLIM Score: {stock.canslim_score:.0f}
 """
 
     return send_email(subject, html_content, text_content)
+
+
+# Webhook configuration
+WEBHOOK_URL = os.environ.get('CANSLIM_WEBHOOK_URL', '')
+
+
+def send_webhook_notification(title: str, message: str, priority: str = "normal", data: dict = None) -> bool:
+    """Send push notification via webhook (e.g., ntfy.sh, Pushover, or custom)
+
+    The webhook receives a JSON payload with:
+    - title: Notification title
+    - message: Notification body
+    - priority: "normal", "high", or "low"
+    - data: Optional extra data dict
+
+    Compatible with ntfy.sh, Pushover, Discord webhooks, and custom endpoints.
+
+    Args:
+        title: Notification title
+        message: Notification body text
+        priority: Priority level ("normal", "high", "low")
+        data: Optional extra data to include in payload
+
+    Returns:
+        True if notification sent successfully, False otherwise
+    """
+    if not WEBHOOK_URL:
+        logger.debug("Webhook URL not configured, skipping notification")
+        return False
+
+    payload = {
+        "title": title,
+        "message": message,
+        "priority": priority,
+    }
+    if data:
+        payload["data"] = data
+
+    # Handle different webhook formats
+    try:
+        # Check for ntfy.sh style (topic-based URL)
+        if "ntfy" in WEBHOOK_URL:
+            # ntfy.sh uses a different format
+            headers = {
+                "Title": title,
+                "Priority": "high" if priority == "high" else "default",
+            }
+            response = requests.post(WEBHOOK_URL, data=message.encode('utf-8'), headers=headers, timeout=10)
+        else:
+            # Standard JSON webhook (Pushover, Discord, custom)
+            response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+
+        if response.status_code in (200, 201, 204):
+            logger.info(f"Webhook notification sent: {title}")
+            return True
+        else:
+            logger.warning(f"Webhook returned status {response.status_code}: {response.text[:200]}")
+            return False
+
+    except requests.exceptions.Timeout:
+        logger.error("Webhook request timed out")
+        return False
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Webhook request failed: {e}")
+        return False
+
+
+def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
+    """Send webhook notification for Coiled Spring alerts
+
+    Args:
+        stock: Stock model instance
+        cs_result: Coiled Spring calculation result dict
+
+    Returns:
+        True if notification sent successfully, False otherwise
+    """
+    days_to_earnings = cs_result.get('days_to_earnings', 'N/A')
+    base_type = cs_result.get('base_type', 'unknown')
+    weeks = cs_result.get('weeks_in_base', 0)
+    beat_streak = cs_result.get('beat_streak', 0)
+
+    title = f"🌀 Coiled Spring: {stock.ticker}"
+    message = (
+        f"{stock.ticker} - {getattr(stock, 'name', 'Unknown')}\n"
+        f"Price: ${stock.current_price:.2f}\n"
+        f"Score: {stock.canslim_score:.0f}\n"
+        f"Earnings in {days_to_earnings} days\n"
+        f"Base: {base_type} ({weeks}w), {beat_streak} beat streak"
+    )
+
+    data = {
+        "ticker": stock.ticker,
+        "price": stock.current_price,
+        "score": stock.canslim_score,
+        "days_to_earnings": days_to_earnings,
+        "base_type": base_type,
+        "weeks_in_base": weeks,
+        "beat_streak": beat_streak,
+    }
+
+    return send_webhook_notification(title, message, priority="high", data=data)
