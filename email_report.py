@@ -8,12 +8,15 @@ Runs two analyses and sends combined results via email:
 
 import smtplib
 import os
+import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from io import StringIO
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Load .env file if it exists
 def load_env():
@@ -161,8 +164,8 @@ def get_coiled_spring_alerts() -> list:
     if not SessionLocal or not CoiledSpringAlert:
         return []
 
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         today = datetime.now().date()
 
         # Get today's alerts that haven't been emailed yet
@@ -176,12 +179,13 @@ def get_coiled_spring_alerts() -> list:
             alert.email_sent = True
 
         db.commit()
-        db.close()
-
         return alerts
     except Exception as e:
-        print(f"Error getting CS alerts: {e}")
+        logger.error(f"Error getting CS alerts: {e}")
+        db.rollback()
         return []
+    finally:
+        db.close()
 
 
 def generate_cs_alert_card_html(alert) -> str:

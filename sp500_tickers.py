@@ -114,13 +114,14 @@ def get_portfolio_tickers() -> list[str]:
         from database import SessionLocal, PortfolioPosition
 
         db = SessionLocal()
-        positions = db.query(PortfolioPosition.ticker).distinct().all()
-        tickers = [p.ticker for p in positions]
-        db.close()
-
-        if tickers:
-            logger.info(f"Loaded {len(tickers)} portfolio tickers from database")
-            return tickers
+        try:
+            positions = db.query(PortfolioPosition.ticker).distinct().all()
+            tickers = [p.ticker for p in positions]
+            if tickers:
+                logger.info(f"Loaded {len(tickers)} portfolio tickers from database")
+                return tickers
+        finally:
+            db.close()
     except Exception as e:
         logger.debug(f"Could not load portfolio from database: {e}")
 

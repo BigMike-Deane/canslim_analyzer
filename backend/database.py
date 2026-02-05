@@ -246,6 +246,10 @@ def run_migrations():
         # Coiled Spring indexes
         ('ix_coiled_spring_alerts_ticker_date', 'coiled_spring_alerts', 'ticker, alert_date'),
         ('ix_coiled_spring_alerts_date', 'coiled_spring_alerts', 'alert_date'),
+        # Performance indexes for common query patterns (Feb 2026)
+        ('ix_stocks_cs_candidates', 'stocks',
+         'days_to_earnings, weeks_in_base, earnings_beat_streak, canslim_score'),
+        ('ix_stocks_earnings', 'stocks', 'days_to_earnings, canslim_score'),
     ]
     for idx_name, table, columns in index_migrations:
         try:
