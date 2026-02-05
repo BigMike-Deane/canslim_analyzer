@@ -5,19 +5,54 @@ This folder contains legacy code that is no longer actively used but preserved f
 ## Files
 
 ### `email_report_legacy.py` (archived Feb 5, 2026)
-
 **Original**: `email_report.py`
 
-**Reason**: This was a standalone CLI script for sending daily CANSLIM email reports. It was from the first iteration of the project before the web application existed.
+Standalone CLI script for sending daily CANSLIM email reports. From v1 of the project before the web application existed. Imported from root `main.py` causing `ModuleNotFoundError` in container.
 
-**Issues**:
-- Imported from root `main.py` (not `backend/main.py`) causing `ModuleNotFoundError` in container
-- Daily report functionality was never integrated with the web app
-- Contained separate stock analysis logic that duplicated the web API
+**Preserved functions**: `send_watchlist_alert_email()` and `send_email()` were extracted to `backend/email_utils.py`
 
-**What was preserved**:
-- `send_watchlist_alert_email()` and `send_email()` functions were extracted to `backend/email_utils.py`
-- These functions ARE actively used by `backend/scheduler.py` for watchlist price/score alerts
+---
 
-**If you need daily email reports in the future**:
-Consider building a new integration that uses the existing `/api/` endpoints rather than running duplicate analysis.
+### `main.py` (archived Feb 5, 2026)
+**Original**: `main.py` (root)
+
+CLI version of the CANSLIM analyzer with argparse interface. Replaced by `backend/main.py` (FastAPI web app). Was only imported by `email_report_legacy.py`.
+
+---
+
+### `score_history.py` (archived Feb 5, 2026)
+
+Module for tracking score changes over time via JSON files. Was used by the legacy email report for "biggest movers" section. The web app uses the `StockScore` database table instead.
+
+---
+
+### `portfolio_analyzer.py` (archived Feb 5, 2026)
+
+Portfolio analysis module that loaded positions from CSV files and generated recommendations. Was used by the legacy email report. The web app has its own portfolio management via database (`PortfolioPosition` model) and `/api/portfolio/*` endpoints.
+
+---
+
+### `portfolio_manager.py` (archived Feb 5, 2026)
+
+Portfolio management utilities. Never imported by any active code.
+
+---
+
+### `fix_missing_targets.py` (archived Feb 5, 2026)
+
+One-time maintenance script to fix missing analyst price targets for major stocks. Run manually after scans if needed. Not part of the web application.
+
+---
+
+### `send_demo_email.py` (archived Feb 5, 2026)
+
+Demo script for testing email format with sample data. Used during development to verify email templates.
+
+---
+
+## If You Need These Features
+
+- **Daily email reports**: Build a new integration using existing `/api/` endpoints rather than running duplicate analysis
+- **Score history/trends**: Use `GET /api/stocks/{ticker}` which includes `score_history` from the database
+- **Portfolio analysis**: Use `/api/portfolio/gameplan` endpoint
+- **Maintenance scripts**: Can still be run manually from this archive folder if needed

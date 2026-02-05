@@ -24,16 +24,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code
 COPY backend/ ./backend/
 
-# Copy existing analysis modules
+# Copy analysis modules
 COPY canslim_scorer.py ./
 COPY data_fetcher.py ./
 COPY growth_projector.py ./
 COPY sp500_tickers.py ./
-COPY portfolio_analyzer.py ./
-COPY portfolio_manager.py ./
-COPY score_history.py ./
-
-# Copy new modules (config system, Redis cache, async scanning)
 COPY redis_cache.py ./
 COPY config_loader.py ./
 COPY config/ ./config/
