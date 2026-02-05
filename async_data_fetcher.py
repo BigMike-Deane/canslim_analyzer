@@ -211,7 +211,11 @@ def reset_fallback_tracker():
 # We target 250 calls/minute to leave headroom
 
 MAX_CONCURRENT_REQUESTS = 8  # Reduced from 20 - fewer concurrent requests = more predictable rate
-api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+# These will be initialized per-scan to avoid event loop binding issues
+# When asyncio.run() creates a new event loop, module-level asyncio objects become invalid
+api_semaphore = None
+_rate_lock = None
 
 # Global rate limiter - tracks calls per minute
 _rate_limiter = {
@@ -223,7 +227,19 @@ _rate_limiter = {
     "total_calls": 0,
     "total_429s": 0
 }
-_rate_lock = asyncio.Lock()
+
+def _init_async_primitives():
+    """Initialize asyncio primitives for the current event loop and reset rate limiter"""
+    global api_semaphore, _rate_lock, _rate_limiter
+    api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    _rate_lock = asyncio.Lock()
+    # Reset rate limiter state for fresh scan
+    _rate_limiter["calls_this_minute"] = 0
+    _rate_limiter["minute_start"] = None
+    _rate_limiter["consecutive_429s"] = 0
+    _rate_limiter["backoff_until"] = None
+    _rate_limiter["total_calls"] = 0
+    _rate_limiter["total_429s"] = 0
 
 # Checkpoint file for progress persistence
 CHECKPOINT_FILE = Path(__file__).parent / "data" / "scan_checkpoint.json"
@@ -1461,6 +1477,10 @@ async def fetch_stocks_batch_async(
     Returns:
         List of StockData objects
     """
+    # Initialize asyncio primitives for this event loop
+    # This fixes "Semaphore bound to different event loop" errors on subsequent scans
+    _init_async_primitives()
+
     results = []
     scan_id = f"scan_{datetime.now().strftime('%Y%m%d')}"
 
