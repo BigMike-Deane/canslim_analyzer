@@ -288,6 +288,9 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             if is_growth_stock:
                 growth_mode_result = growth_mode_scorer.score_stock(stock_data)
 
+            # Extract RS values for persistence
+            rs_values = canslim_scorer.extract_rs_values(stock_data)
+
             # Technical analysis (fast)
             base_pattern = TechnicalAnalyzer.detect_base_pattern(stock_data.weekly_price_history)
             volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
@@ -349,6 +352,8 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                     "l": {
                         "summary": canslim_result.l_detail,
                         "relative_strength": stock_data.relative_strength if hasattr(stock_data, 'relative_strength') else None,
+                        "rs_12m": rs_values.get("rs_12m"),
+                        "rs_3m": rs_values.get("rs_3m"),
                     },
                     "i": {
                         "summary": canslim_result.i_detail,
@@ -366,6 +371,9 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "week_52_low": stock_data.low_52w,
                 "relative_strength": None,
                 "institutional_ownership": stock_data.institutional_holders_pct,
+                # RS values for momentum confirmation
+                "rs_12m": rs_values.get("rs_12m"),
+                "rs_3m": rs_values.get("rs_3m"),
                 # Growth Mode
                 "is_growth_stock": is_growth_stock,
                 "growth_mode_score": growth_mode_result.total_score if growth_mode_result else None,
