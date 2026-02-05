@@ -963,32 +963,40 @@ class GrowthModeScorer:
     def should_use_growth_mode(self, stock_data: StockData) -> bool:
         """
         Determine if a stock should be scored using Growth Mode.
-        Criteria:
-        - Pre-revenue or negative earnings (last 4 quarters)
-        - High revenue growth (50%+ YoY) even if profitable
+
+        Growth Mode is for companies where CANSLIM scoring doesn't work well:
+        - Pre-revenue or consistently negative earnings (C score can't be calculated)
+        - Minimal profit margin < 1% (early-stage companies reinvesting everything)
+
+        Profitable companies with positive earnings should use CANSLIM, even if
+        they have high revenue growth. CANSLIM's C and A scores already reward
+        earnings growth.
         """
-        # Check if company has negative or no earnings
-        if stock_data.quarterly_earnings:
-            recent_earnings = stock_data.quarterly_earnings[:4]
-            if all(e <= 0 for e in recent_earnings if e is not None):
-                return True  # Pre-revenue or loss-making
-            # Check for very low earnings relative to revenue
-            if stock_data.quarterly_revenue and recent_earnings:
-                revenue_sum = sum(stock_data.quarterly_revenue[:4])
-                earnings_sum = sum(recent_earnings)
-                if revenue_sum > 0 and earnings_sum / revenue_sum < 0.01:
-                    return True  # Minimal profit margin (early stage)
+        if not stock_data.quarterly_earnings:
+            return True  # No earnings data - use growth mode
 
-        # Check for high revenue growth (even if profitable)
-        # Threshold: 30%+ YoY growth qualifies as a growth stock
-        if len(stock_data.quarterly_revenue) >= 5:
-            current_q_rev = stock_data.quarterly_revenue[0]
-            prior_year_q_rev = stock_data.quarterly_revenue[4]
-            if prior_year_q_rev > 0:
-                rev_growth = ((current_q_rev - prior_year_q_rev) / prior_year_q_rev) * 100
-                if rev_growth >= 30:
-                    return True  # High-growth company
+        recent_earnings = stock_data.quarterly_earnings[:4]
+        if not recent_earnings:
+            return True  # No recent earnings data
 
+        # Filter out None values
+        valid_earnings = [e for e in recent_earnings if e is not None]
+        if not valid_earnings:
+            return True  # No valid earnings
+
+        # Pre-revenue or loss-making: ALL recent quarters are negative or zero
+        if all(e <= 0 for e in valid_earnings):
+            return True
+
+        # Early-stage with minimal profit margin (< 1% of revenue)
+        # These companies are reinvesting everything and C/A scores don't reflect true potential
+        if stock_data.quarterly_revenue and len(stock_data.quarterly_revenue) >= 4:
+            revenue_sum = sum(stock_data.quarterly_revenue[:4])
+            earnings_sum = sum(valid_earnings)
+            if revenue_sum > 0 and earnings_sum / revenue_sum < 0.01:
+                return True
+
+        # Profitable companies with positive earnings should use CANSLIM
         return False
 
     def score_stock(self, stock_data: StockData) -> GrowthModeScore:
