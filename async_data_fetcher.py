@@ -228,9 +228,15 @@ _rate_limiter = {
     "total_429s": 0
 }
 
-def _init_async_primitives():
-    """Initialize asyncio primitives for the current event loop and reset rate limiter"""
+async def _init_async_primitives():
+    """Initialize asyncio primitives for the current event loop and reset rate limiter.
+
+    MUST be called as an async function to properly bind primitives to the current event loop.
+    This fixes 'Semaphore bound to a different event loop' errors.
+    """
     global api_semaphore, _rate_lock, _rate_limiter
+    # Get current running loop to ensure primitives bind to it
+    loop = asyncio.get_running_loop()
     api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     _rate_lock = asyncio.Lock()
     # Reset rate limiter state for fresh scan
@@ -1479,7 +1485,7 @@ async def fetch_stocks_batch_async(
     """
     # Initialize asyncio primitives for this event loop
     # This fixes "Semaphore bound to different event loop" errors on subsequent scans
-    _init_async_primitives()
+    await _init_async_primitives()
 
     results = []
     scan_id = f"scan_{datetime.now().strftime('%Y%m%d')}"
