@@ -28,7 +28,6 @@ COPY backend/ ./backend/
 COPY canslim_scorer.py ./
 COPY data_fetcher.py ./
 COPY growth_projector.py ./
-COPY email_report.py ./
 COPY sp500_tickers.py ./
 COPY portfolio_analyzer.py ./
 COPY portfolio_manager.py ./
