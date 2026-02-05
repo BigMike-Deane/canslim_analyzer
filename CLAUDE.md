@@ -1,5 +1,52 @@
 # CANSLIM Analyzer - Project Context
 
+## Session Summary: Feb 5, 2026
+
+### Scanner Only Processing 12% of Stocks - FIXED
+
+**Problem**: Scans were only completing 238/1916 stocks (12.4% success rate) instead of all stocks.
+
+**Symptoms**:
+- Most stocks showed "CACHE HIT" for earnings data
+- But stocks silently failed before returning valid StockData
+- No visible errors (failures logged at DEBUG level)
+
+**Root Cause**: Module-level `asyncio.Semaphore` and `asyncio.Lock` in `async_data_fetcher.py` were bound to the event loop that existed when the module loaded. When `asyncio.run()` creates a new event loop for each scan, these objects became invalid:
+```
+RuntimeError: <asyncio.locks.Semaphore object at 0x...> is bound to a different event loop
+```
+
+**Fix** (`ad5b8fb`): Initialize asyncio primitives at the START of each scan:
+```python
+def _init_async_primitives():
+    """Initialize asyncio primitives for the current event loop"""
+    global api_semaphore, _rate_lock
+    api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    _rate_lock = asyncio.Lock()
+    # Reset rate limiter state for fresh scan
+    _rate_limiter["calls_this_minute"] = 0
+    # ... etc
+```
+
+Called at start of `fetch_stocks_batch_async()`.
+
+**Diagnostic Logging Added** (`1eb7522`): Batch exceptions now logged at WARNING level:
+```python
+if isinstance(result, Exception):
+    logger.warning(f"BATCH EXCEPTION for {batch[j]}: {type(result).__name__}: {result}")
+```
+
+**Result**: Scans now complete 93-100% of stocks with 0 asyncio exceptions. Remaining failures are legitimately invalid tickers (return 404 from Yahoo).
+
+**Files Modified**:
+- `async_data_fetcher.py` - Added `_init_async_primitives()`, diagnostic logging
+
+**Verification**:
+- Self-healing mechanism working: 2,176 tickers auto-removed from delisted list when they started working
+- 171 delisted tickers are legitimately invalid (all return HTTP 404 from Yahoo)
+
+---
+
 ## Session Summary: Feb 4, 2026 (Late Night)
 
 ### Watchlist Alerts Feature - DEPLOYED
