@@ -1519,14 +1519,24 @@ async def fetch_stocks_batch_async(
             ]
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Process results
+            # Process results with diagnostic logging
             batch_completed = []
+            exception_count = 0
+            other_count = 0
             for j, result in enumerate(batch_results):
                 if isinstance(result, StockData):
                     results.append(result)
                     batch_completed.append(batch[j])
                 elif isinstance(result, Exception):
-                    logger.debug(f"Error fetching {batch[j]}: {result}")
+                    exception_count += 1
+                    logger.warning(f"BATCH EXCEPTION for {batch[j]}: {type(result).__name__}: {result}")
+                else:
+                    other_count += 1
+                    logger.warning(f"BATCH UNEXPECTED TYPE for {batch[j]}: {type(result)} = {result}")
+
+            # Log batch summary if there were failures
+            if exception_count > 0 or other_count > 0:
+                logger.warning(f"Batch {i//effective_batch_size + 1}: {len(batch_completed)} succeeded, {exception_count} exceptions, {other_count} other")
 
             # Save progress checkpoint
             completed_tickers.extend(batch_completed)
