@@ -988,13 +988,9 @@ class GrowthModeScorer:
         if all(e <= 0 for e in valid_earnings):
             return True
 
-        # Early-stage with minimal profit margin (< 1% of revenue)
-        # These companies are reinvesting everything and C/A scores don't reflect true potential
-        if stock_data.quarterly_revenue and len(stock_data.quarterly_revenue) >= 4:
-            revenue_sum = sum(stock_data.quarterly_revenue[:4])
-            earnings_sum = sum(valid_earnings)
-            if revenue_sum > 0 and earnings_sum / revenue_sum < 0.01:
-                return True
+        # Note: Removed profit margin check - it compared EPS (per-share) to total
+        # revenue, which are incompatible units. The "all earnings <= 0" check above
+        # correctly identifies loss-making companies.
 
         # Profitable companies with positive earnings should use CANSLIM
         return False
