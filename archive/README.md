@@ -50,6 +50,24 @@ Demo script for testing email format with sample data. Used during development t
 
 ---
 
+## Archived Documentation (Feb 5, 2026)
+
+These docs are superseded by `CLAUDE.md` which contains comprehensive, up-to-date project context.
+
+### `CURRENT_STATUS.md`
+Status updates from Jan 29, 2026. Now outdated.
+
+### `IMPLEMENTATION_SUMMARY.md`
+Describes the initial config system, Redis cache, and unit test implementation from Jan 23.
+
+### `ASYNC_IMPLEMENTATION.md`
+Guide for the async scanner implementation from Jan 23. Performance numbers and patterns are now in CLAUDE.md.
+
+### `README_TESTING.md`
+Testing guide from Jan 23. Test commands and patterns are now in CLAUDE.md.
+
+---
+
 ## If You Need These Features
 
 - **Daily email reports**: Build a new integration using existing `/api/` endpoints rather than running duplicate analysis
