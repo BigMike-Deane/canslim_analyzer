@@ -93,6 +93,7 @@ class BacktestEngine:
         self.max_drawdown_pct: float = 0.0
         self.daily_returns: List[float] = []
         self.trades_executed: int = 0
+        self.sells_executed: int = 0  # Track sells separately for accurate win rate
         self.profitable_trades: int = 0
 
         # SPY tracking for benchmark
@@ -887,26 +888,30 @@ class BacktestEngine:
                     base_quality_bonus += 1
 
             # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
-            # This is the BEST entry - optimal risk/reward before the crowd notices
+            # This is the BEST entry - optimal risk/reward BEFORE the crowd notices
+            # PREDICTIVE: We want to catch stocks before they move
             if has_base and 5 <= pct_from_pivot <= 15:
-                pre_breakout_bonus = 30  # Highest bonus for pre-breakout position
-                momentum_score = 30
+                pre_breakout_bonus = 40  # Highest bonus - ideal entry point
+                momentum_score = 35
                 if volume_ratio >= 1.3:
                     pre_breakout_bonus += 5  # Accumulation volume bonus
+                if weeks_in_base >= 10:
+                    pre_breakout_bonus += 5  # Longer base = more stored energy
 
             # AT PIVOT ZONE: 0-5% below pivot with base pattern (ready to break out)
             elif has_base and 0 <= pct_from_pivot < 5:
-                pre_breakout_bonus = 25  # Strong bonus near pivot
-                momentum_score = 27
+                pre_breakout_bonus = 35  # Strong bonus near pivot
+                momentum_score = 30
                 if volume_ratio >= 1.5:
                     momentum_score += 5
 
-            # BREAKOUT STOCKS - buying after the pivot point (slightly extended)
+            # BREAKOUT STOCKS - buying AFTER the pivot point (already moved - less ideal)
+            # Once a stock has broken out, the easy money is made - we're late to the party
             elif is_breaking_out:
-                breakout_bonus = 20  # Good bonus for confirmed breakouts
+                breakout_bonus = 10  # Reduced bonus - we prefer pre-breakout entries
                 if volume_ratio >= 2.0:
-                    breakout_bonus += 10  # Extra bonus for strong volume breakout
-                momentum_score = 25
+                    breakout_bonus += 5  # Small bonus for strong volume
+                momentum_score = 15  # Lower score - already extended
 
             # EXTENDED: More than 5% above pivot - the easy money is gone
             elif pct_from_pivot < -5:
@@ -968,14 +973,14 @@ class BacktestEngine:
             position_pct = 4.0 + (conviction_multiplier * 10.67)
             position_pct = min(position_pct, 20.0)
 
-            # Pre-breakout stocks get largest positions (optimal entry point)
-            # Breakout stocks get smaller boost (slightly extended)
-            if pre_breakout_bonus >= 25 and has_base:
-                position_pct *= 1.30  # 30% larger for pre-breakout with base (best entry)
-            elif pre_breakout_bonus >= 20 and has_base:
-                position_pct *= 1.20  # 20% larger for at-pivot entries
+            # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
+            # These are the ideal entries - before the crowd notices
+            if pre_breakout_bonus >= 35 and has_base:
+                position_pct *= 1.40  # 40% larger for best pre-breakout entries
+            elif pre_breakout_bonus >= 25 and has_base:
+                position_pct *= 1.30  # 30% larger for good pre-breakout entries
             elif is_breaking_out and volume_ratio >= 1.5:
-                position_pct *= 1.15  # 15% larger position for confirmed breakouts
+                position_pct *= 1.0   # No boost - already extended, entry is late
 
             # Coiled Spring position boost
             if coiled_spring_bonus > 0:
@@ -1167,6 +1172,7 @@ class BacktestEngine:
         )
 
         self.trades_executed += 1
+        self.sells_executed += 1  # Track sells for win rate calculation
         if realized_gain > 0:
             self.profitable_trades += 1
 
@@ -1297,9 +1303,9 @@ class BacktestEngine:
         self.backtest.max_drawdown_pct = self.max_drawdown_pct
         self.backtest.total_trades = self.trades_executed
 
-        # Win rate
-        if self.trades_executed > 0:
-            self.backtest.win_rate = (self.profitable_trades / self.trades_executed) * 100
+        # Win rate - calculated from sells only (not all trades including buys)
+        if self.sells_executed > 0:
+            self.backtest.win_rate = (self.profitable_trades / self.sells_executed) * 100
         else:
             self.backtest.win_rate = 0
 

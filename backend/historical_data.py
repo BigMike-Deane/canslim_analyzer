@@ -740,7 +740,8 @@ class HistoricalDataProvider:
             above_avg_days = sum(1 for v in recent_vols if v > avg_vol)
             multi_day_vol_score = above_avg_days * 25  # 0, 25, 50, or 75
 
-        # Effective volume score
+        # Effective volume score - RAISED thresholds to avoid false breakouts
+        # We want CONFIRMED breakouts with strong volume, not weak entries
         effective_vol_score = max(vol_ratio * 50, multi_day_vol_score)
 
         # Check breakout from base pattern
@@ -753,23 +754,23 @@ class HistoricalDataProvider:
             if pct_from_pivot > 0.05:
                 return False, vol_ratio, base_pattern
 
-            # Active breakout: 0-5% above pivot with volume confirmation
-            # This is the optimal buy zone per CANSLIM methodology
-            if 0 <= pct_from_pivot <= 0.05 and effective_vol_score >= 50:
+            # Active breakout: 0-5% above pivot with STRONG volume confirmation
+            # Raised from 50 to 75 (requires 1.5x volume) to avoid false breakouts
+            if 0 <= pct_from_pivot <= 0.05 and effective_vol_score >= 75:
                 return True, vol_ratio, base_pattern
 
-            # Pre-breakout: within 3% below pivot, building volume
-            if -0.03 <= pct_from_pivot < 0 and effective_vol_score >= 40:
-                return True, vol_ratio, base_pattern
+            # Near pivot but weak volume - NOT a confirmed breakout
+            # Don't mark as breakout without volume confirmation
+            # The stock may be building, but it hasn't broken out yet
 
         # Check for breakout near 52-week high (no base pattern)
         # Be VERY strict - only mark as breakout with exceptional volume at new highs
         high_52w, _ = self.get_52_week_high_low(ticker, as_of_date)
         if high_52w > 0:
             pct_from_high = (high_52w - price) / high_52w
-            # Require: within 2% of 52-week high AND exceptional volume (2.5x+)
-            # True breakouts without detected bases should be rare
-            if pct_from_high <= 0.02 and vol_ratio >= 2.5:
+            # Require: within 2% of 52-week high AND exceptional volume (3x+)
+            # Raised from 2.5x to 3x - true breakouts have explosive volume
+            if pct_from_high <= 0.02 and vol_ratio >= 3.0:
                 return True, vol_ratio, base_pattern
 
         return False, vol_ratio, base_pattern
