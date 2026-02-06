@@ -7,7 +7,7 @@ Stays within FMP API rate limits (300 calls/min).
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import logging
 import os
@@ -40,7 +40,7 @@ def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
     from sqlalchemy import text
     from backend.database import StockScore
 
-    cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
 
     # Count before delete
     count_before = db.query(StockScore).filter(StockScore.timestamp < cutoff_date).count()
@@ -138,7 +138,7 @@ def check_watchlist_alerts():
             if triggered:
                 # Check cooldown - don't re-alert if recently sent
                 if item.alert_triggered_at:
-                    time_since_last = datetime.utcnow() - item.alert_triggered_at
+                    time_since_last = datetime.now(timezone.utc) - item.alert_triggered_at
                     if time_since_last < timedelta(hours=cooldown_hours):
                         logger.debug(f"Skipping {item.ticker} alert - within {cooldown_hours}h cooldown")
                         continue
@@ -153,7 +153,7 @@ def check_watchlist_alerts():
                     from email_utils import send_watchlist_alert_email
 
                     if send_watchlist_alert_email(item, stock, reasons):
-                        item.alert_triggered_at = datetime.utcnow()
+                        item.alert_triggered_at = datetime.now(timezone.utc)
                         item.alert_sent = True
                         alerts_sent += 1
                         logger.info(f"Watchlist alert sent for {item.ticker}: {', '.join(reasons)}")
@@ -187,6 +187,33 @@ def get_scan_status():
         "scheduler_running": scheduler.running,
         "next_run": next_run
     }
+
+
+def should_rescan_stock(stock, min_age_minutes: int = 30) -> bool:
+    """
+    Check if a stock should be re-scanned based on freshness.
+
+    Args:
+        stock: Stock model instance
+        min_age_minutes: Minimum minutes since last update to allow rescan
+
+    Returns:
+        True if stock should be rescanned, False if still fresh
+    """
+    if stock is None or stock.last_updated is None:
+        return True
+
+    # Handle both timezone-aware and naive datetimes
+    last_updated = stock.last_updated
+    now = datetime.now(timezone.utc)
+
+    # If last_updated is naive, assume it's UTC
+    if last_updated.tzinfo is None:
+        from datetime import timezone as tz
+        last_updated = last_updated.replace(tzinfo=tz.utc)
+
+    age = now - last_updated
+    return age > timedelta(minutes=min_age_minutes)
 
 
 def auto_record_coiled_spring_alerts():
@@ -355,7 +382,7 @@ def run_continuous_scan():
         return
 
     _scan_config["is_scanning"] = True
-    _scan_config["last_scan_start"] = datetime.utcnow().isoformat() + 'Z'
+    _scan_config["last_scan_start"] = datetime.now(timezone.utc).isoformat() + 'Z'
     _scan_config["stocks_scanned"] = 0
     _scan_config["total_stocks"] = 0
     _scan_config["phase"] = "scanning"
@@ -717,7 +744,7 @@ def run_continuous_scan():
         stock.week_52_low = analysis.get("week_52_low")
         stock.relative_strength = analysis.get("relative_strength")
         stock.institutional_ownership = analysis.get("institutional_ownership")
-        stock.last_updated = datetime.utcnow()
+        stock.last_updated = datetime.now(timezone.utc)
 
         # RS values for momentum confirmation
         stock.rs_12m = analysis.get("rs_12m")
@@ -750,7 +777,7 @@ def run_continuous_scan():
             stock.insider_sell_count = analysis.get("insider_sell_count")
             stock.insider_net_shares = analysis.get("insider_net_shares")
             stock.insider_sentiment = analysis.get("insider_sentiment")
-            stock.insider_updated_at = datetime.utcnow()
+            stock.insider_updated_at = datetime.now(timezone.utc)
             # P1 Feature: Insider value tracking
             stock.insider_buy_value = analysis.get("insider_buy_value")
             stock.insider_sell_value = analysis.get("insider_sell_value")
@@ -762,7 +789,7 @@ def run_continuous_scan():
         if analysis.get("short_interest_pct") is not None:
             stock.short_interest_pct = analysis.get("short_interest_pct")
             stock.short_ratio = analysis.get("short_ratio")
-            stock.short_updated_at = datetime.utcnow()
+            stock.short_updated_at = datetime.now(timezone.utc)
 
         # P1 Feature: Earnings calendar (only update if we have data)
         if analysis.get("next_earnings_date") or analysis.get("earnings_beat_streak"):
@@ -772,7 +799,7 @@ def run_continuous_scan():
                 stock.next_earnings_date = datetime.strptime(next_earnings_str, '%Y-%m-%d').date()
             stock.days_to_earnings = analysis.get("days_to_earnings")
             stock.earnings_beat_streak = analysis.get("earnings_beat_streak")
-            stock.earnings_calendar_updated_at = datetime.utcnow()
+            stock.earnings_calendar_updated_at = datetime.now(timezone.utc)
 
         # P1 Feature: Analyst estimate revisions (only update if we have data)
         if analysis.get("eps_estimate_current") is not None:
@@ -780,13 +807,13 @@ def run_continuous_scan():
             stock.eps_estimate_prior = analysis.get("eps_estimate_prior")
             stock.eps_estimate_revision_pct = analysis.get("eps_estimate_revision_pct")
             stock.estimate_revision_trend = analysis.get("estimate_revision_trend")
-            stock.analyst_estimates_updated_at = datetime.utcnow()
+            stock.analyst_estimates_updated_at = datetime.now(timezone.utc)
 
         # Save historical score (one per scan for granular backtesting data)
         today = date.today()
         historical_score = StockScore(
             stock_id=stock.id,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             date=today,
             total_score=new_score,
             c_score=analysis.get("c_score"),
@@ -981,7 +1008,7 @@ def run_continuous_scan():
         logger.error(f"Scan error: {e}")
     finally:
         _scan_config["is_scanning"] = False
-        _scan_config["last_scan_end"] = datetime.utcnow().isoformat() + 'Z'
+        _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat() + 'Z'
         _scan_config["phase"] = None
         _scan_config["phase_detail"] = None
 
@@ -1079,7 +1106,7 @@ def send_weekly_performance_email():
     db = SessionLocal()
     try:
         # Get snapshots for the past week
-        one_week_ago = datetime.utcnow() - timedelta(days=7)
+        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
         # Get first and last snapshots of the week
         first_snapshot = db.query(AIPortfolioSnapshot).filter(

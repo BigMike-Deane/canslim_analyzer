@@ -6,8 +6,10 @@ scanner:
   workers: 8
   delay_min: 0.5  # seconds between API calls (min)
   delay_max: 1.0  # seconds between API calls (max)
-  batch_size: 50
+  batch_size: 75  # Increased from 50 for better throughput
   max_retries: 2
+  skip_fresh_stocks: true  # Skip stocks scanned within freshness_minutes
+  freshness_minutes: 30  # Minimum age before re-scanning a stock
 
 # Cache Settings
 cache:
@@ -314,6 +316,7 @@ coiled_spring:
     max_per_day: 5              # Maximum alerts per day (increased from 3)
     cooldown_hours: 8           # Hours between alerts for same ticker
     include_in_email: true
+    min_price_change_pct: 3     # Require 3% price move from previous alert to re-alert same ticker
 
   # Position sizing
   position_multiplier: 1.25     # 25% larger position for CS plays

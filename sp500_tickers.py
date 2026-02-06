@@ -28,9 +28,43 @@ _ticker_cache = {
     'midcap400': None,
     'smallcap600': None,
     'russell2000': None,
-    'last_fetch': None
+    'last_fetch': {}  # Track last fetch time per key
 }
 CACHE_DURATION_HOURS = 24  # Refresh lists once per day
+
+
+def _is_cache_valid(cache_key: str) -> bool:
+    """Check if cached data is still fresh (within CACHE_DURATION_HOURS)"""
+    from datetime import datetime, timedelta
+
+    if _ticker_cache.get(cache_key) is None:
+        return False
+
+    last_fetch = _ticker_cache.get('last_fetch', {})
+    if not isinstance(last_fetch, dict):
+        # Handle legacy format
+        _ticker_cache['last_fetch'] = {}
+        return False
+
+    key_fetch_time = last_fetch.get(cache_key)
+    if key_fetch_time is None:
+        return False
+
+    age = datetime.now() - key_fetch_time
+    return age < timedelta(hours=CACHE_DURATION_HOURS)
+
+
+def _update_cache(cache_key: str, data: list) -> None:
+    """Update cache with new data and timestamp"""
+    from datetime import datetime
+
+    _ticker_cache[cache_key] = data
+
+    if not isinstance(_ticker_cache.get('last_fetch'), dict):
+        _ticker_cache['last_fetch'] = {}
+
+    _ticker_cache['last_fetch'][cache_key] = datetime.now()
+    logger.debug(f"Cached {len(data)} tickers for {cache_key}")
 
 
 def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = True) -> list[str]:
@@ -144,7 +178,13 @@ def get_portfolio_tickers() -> list[str]:
 def get_sp500_tickers() -> list[str]:
     """
     Fetch S&P 500 tickers from FMP API (primary) or Wikipedia (fallback).
+    Uses cache to avoid redundant API calls.
     """
+    # Check cache first
+    if _is_cache_valid('sp500'):
+        logger.debug("Using cached S&P 500 tickers")
+        return _ticker_cache['sp500']
+
     # Try FMP API first (most reliable and up-to-date)
     if FMP_API_KEY:
         try:
@@ -157,6 +197,7 @@ def get_sp500_tickers() -> list[str]:
                 tickers = [item.get('symbol') for item in data if item.get('symbol')]
                 if tickers:
                     logger.info(f"Fetched {len(tickers)} S&P 500 tickers from FMP")
+                    _update_cache('sp500', tickers)
                     return tickers
         except Exception as e:
             logger.warning(f"FMP S&P 500 fetch failed: {e}")
@@ -185,17 +226,26 @@ def get_sp500_tickers() -> list[str]:
                 tickers.append(ticker)
 
         logger.info(f"Fetched {len(tickers)} S&P 500 tickers from Wikipedia")
+        _update_cache('sp500', tickers)
         return tickers
 
     except Exception as e:
         logger.warning(f"Wikipedia S&P 500 fetch failed: {e}")
-        return get_fallback_tickers()
+        fallback = get_fallback_tickers()
+        _update_cache('sp500', fallback)
+        return fallback
 
 
 def get_nasdaq100_tickers() -> list[str]:
     """
     Fetch Nasdaq 100 tickers from FMP API (primary), Wikipedia (secondary), or hardcoded (fallback).
+    Uses cache to avoid redundant API calls.
     """
+    # Check cache first
+    if _is_cache_valid('nasdaq100'):
+        logger.debug("Using cached Nasdaq 100 tickers")
+        return _ticker_cache['nasdaq100']
+
     # Try FMP API first
     if FMP_API_KEY:
         try:
@@ -208,6 +258,7 @@ def get_nasdaq100_tickers() -> list[str]:
                 tickers = [item.get('symbol') for item in data if item.get('symbol')]
                 if tickers:
                     logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers from FMP")
+                    _update_cache('nasdaq100', tickers)
                     return tickers
         except Exception as e:
             logger.warning(f"FMP Nasdaq 100 fetch failed: {e}")
@@ -241,6 +292,7 @@ def get_nasdaq100_tickers() -> list[str]:
 
                     if len(tickers) >= 90:  # Nasdaq 100 should have ~100-103 tickers
                         logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers from Wikipedia")
+                        _update_cache('nasdaq100', tickers)
                         return tickers
 
     except Exception as e:
@@ -248,7 +300,9 @@ def get_nasdaq100_tickers() -> list[str]:
 
     # Fallback to hardcoded list
     logger.info("Using hardcoded Nasdaq 100 list")
-    return get_fallback_nasdaq100_tickers()
+    fallback = get_fallback_nasdaq100_tickers()
+    _update_cache('nasdaq100', fallback)
+    return fallback
 
 
 def get_fallback_nasdaq100_tickers() -> list[str]:
@@ -270,7 +324,13 @@ def get_fallback_nasdaq100_tickers() -> list[str]:
 def get_dowjones_tickers() -> list[str]:
     """
     Fetch Dow Jones 30 tickers from FMP API (primary), Wikipedia (secondary), or hardcoded (fallback).
+    Uses cache to avoid redundant API calls.
     """
+    # Check cache first
+    if _is_cache_valid('dowjones'):
+        logger.debug("Using cached Dow Jones tickers")
+        return _ticker_cache['dowjones']
+
     # Try FMP API first
     if FMP_API_KEY:
         try:
@@ -283,6 +343,7 @@ def get_dowjones_tickers() -> list[str]:
                 tickers = [item.get('symbol') for item in data if item.get('symbol')]
                 if tickers:
                     logger.info(f"Fetched {len(tickers)} Dow Jones tickers from FMP")
+                    _update_cache('dowjones', tickers)
                     return tickers
         except Exception as e:
             logger.warning(f"FMP Dow Jones fetch failed: {e}")
@@ -320,6 +381,7 @@ def get_dowjones_tickers() -> list[str]:
 
                     if len(tickers) >= 25:  # Dow Jones should have 30 tickers
                         logger.info(f"Fetched {len(tickers)} Dow Jones tickers from Wikipedia")
+                        _update_cache('dowjones', tickers)
                         return tickers
 
     except Exception as e:
@@ -327,11 +389,13 @@ def get_dowjones_tickers() -> list[str]:
 
     # Fallback to hardcoded list
     logger.info("Using hardcoded Dow Jones list")
-    return [
+    fallback = [
         "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
         "DOW", "GS", "HD", "HON", "IBM", "INTC", "JNJ", "JPM", "KO", "MCD",
         "MMM", "MRK", "MSFT", "NKE", "NVDA", "PG", "TRV", "UNH", "V", "WMT",
     ]
+    _update_cache('dowjones', fallback)
+    return fallback
 
 
 def get_fallback_tickers() -> list[str]:

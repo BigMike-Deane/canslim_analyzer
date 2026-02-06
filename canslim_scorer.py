@@ -1697,11 +1697,27 @@ class TechnicalAnalyzer:
                 score_bonus = -5
                 detail = f"Strong distribution ({up_down_ratio:.2f}x)"
 
+            # Volume dry-up detection (bullish in consolidating base)
+            # Recent 10-day avg volume < 70% of 50-day avg = volume drying up
+            recent_vol_avg = volumes[-10:].mean() if len(volumes) >= 10 else volumes.mean()
+            baseline_vol_avg = volumes.mean()
+            volume_dry_up = recent_vol_avg < baseline_vol_avg * 0.7
+
+            # Institutional accumulation signal
+            # High up/down ratio + above average volume = institutions buying
+            volume_trend = "above_avg" if recent_vol_avg > baseline_vol_avg * 1.2 else (
+                "below_avg" if recent_vol_avg < baseline_vol_avg * 0.8 else "normal"
+            )
+            institutional_accumulation = up_down_ratio > 1.5 and volume_trend == "above_avg"
+
             return {
                 "rating": rating,
                 "score_bonus": score_bonus,
                 "up_down_ratio": round(up_down_ratio, 2),
-                "detail": detail
+                "detail": detail,
+                "volume_dry_up": volume_dry_up,
+                "institutional_accumulation": institutional_accumulation,
+                "volume_trend": volume_trend
             }
 
         except Exception as e:
@@ -1709,7 +1725,10 @@ class TechnicalAnalyzer:
                 "rating": "C",
                 "score_bonus": 0,
                 "up_down_ratio": 1.0,
-                "detail": f"Error: {str(e)}"
+                "detail": f"Error: {str(e)}",
+                "volume_dry_up": False,
+                "institutional_accumulation": False,
+                "volume_trend": "unknown"
             }
 
 

@@ -4,7 +4,7 @@ Database models for CANSLIM Analyzer Web App
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, Index, JSON
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 # Database setup
@@ -147,6 +147,9 @@ def run_migrations():
         ("stock_data_cache", "short_interest_pct", "FLOAT"),
         ("stock_data_cache", "short_ratio", "FLOAT"),
         ("stock_data_cache", "short_updated_at", "DATETIME"),
+        # Volume Profile Analysis (Feb 2026)
+        ("stocks", "volume_dry_up", "BOOLEAN DEFAULT 0"),
+        ("stocks", "institutional_accumulation", "BOOLEAN DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:
@@ -320,6 +323,10 @@ class Stock(Base):
     rs_12m = Column(Float)  # 12-month relative strength vs S&P 500
     rs_3m = Column(Float)  # 3-month relative strength vs S&P 500
 
+    # Volume Profile Analysis (Feb 2026)
+    volume_dry_up = Column(Boolean, default=False)  # Recent volume < 70% of baseline (bullish in base)
+    institutional_accumulation = Column(Boolean, default=False)  # High up/down ratio with above-avg volume
+
     # Insider Trading Signals
     insider_buy_count = Column(Integer)  # Insider buys in last 3 months
     insider_sell_count = Column(Integer)  # Insider sells in last 3 months
@@ -353,7 +360,7 @@ class Stock(Base):
     insider_largest_buyer_title = Column(String)  # Title of largest buyer (CEO, CFO, etc.)
 
     # Metadata
-    last_updated = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     scores = relationship("StockScore", back_populates="stock", cascade="all, delete-orphan")
@@ -376,7 +383,7 @@ class StockScore(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     date = Column(Date, nullable=False, index=True)  # Kept for easy daily grouping
 
     # CANSLIM breakdown
@@ -426,8 +433,8 @@ class PortfolioPosition(Base):
     canslim_score = Column(Float)
     score_change = Column(Float)  # vs last check
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Watchlist(Base):
@@ -436,7 +443,7 @@ class Watchlist(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String, nullable=False, index=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     notes = Column(Text)
     target_price = Column(Float)  # Alert when reaches this price
     alert_score = Column(Float)  # Alert when CANSLIM score reaches this
@@ -463,7 +470,7 @@ class CoiledSpringAlert(Base):
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String, nullable=False, index=True)
     alert_date = Column(Date, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Snapshot at alert time
     days_to_earnings = Column(Integer)
@@ -506,7 +513,7 @@ class AnalysisJob(Base):
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     error_message = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class MarketSnapshot(Base):
@@ -515,7 +522,7 @@ class MarketSnapshot(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     date = Column(Date, unique=True, index=True, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     # S&P 500 data (SPY) - 50% weight
     spy_price = Column(Float)
@@ -540,7 +547,7 @@ class MarketSnapshot(Base):
     market_trend = Column(String)  # bullish, neutral, bearish
     weighted_signal = Column(Float)  # Combined weighted signal
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # ============== AI Portfolio Models ==============
@@ -559,8 +566,8 @@ class AIPortfolioConfig(Base):
     take_profit_pct = Column(Float, default=25.0)  # Take profits at this gain %
     stop_loss_pct = Column(Float, default=15.0)  # Stop loss at this loss %
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AIPortfolioPosition(Base):
@@ -571,7 +578,7 @@ class AIPortfolioPosition(Base):
     ticker = Column(String, nullable=False, index=True)
     shares = Column(Float, nullable=False)
     cost_basis = Column(Float, nullable=False)  # Price per share when bought
-    purchase_date = Column(DateTime, default=datetime.utcnow)
+    purchase_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     purchase_score = Column(Float)  # CANSLIM score when purchased
 
     # Current values (updated on each scan)
@@ -593,8 +600,8 @@ class AIPortfolioPosition(Base):
     # Partial profit taking tracking
     partial_profit_taken = Column(Float, default=0)  # Cumulative % of position sold as partial profits
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AIPortfolioTrade(Base):
@@ -616,7 +623,7 @@ class AIPortfolioTrade(Base):
     cost_basis = Column(Float)  # Original cost basis for sells
     realized_gain = Column(Float)  # Profit/loss on the trade
 
-    executed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class AIPortfolioSnapshot(Base):
@@ -624,7 +631,7 @@ class AIPortfolioSnapshot(Base):
     __tablename__ = "ai_portfolio_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, index=True, nullable=False, default=datetime.utcnow)
+    timestamp = Column(DateTime, index=True, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     total_value = Column(Float, nullable=False)  # Cash + positions
     cash = Column(Float, nullable=False)
@@ -679,7 +686,7 @@ class BacktestRun(Base):
     spy_return_pct = Column(Float)
 
     # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime)
     error_message = Column(Text)
     progress_pct = Column(Float, default=0.0)  # 0-100 progress during run
@@ -847,8 +854,8 @@ class StockDataCache(Base):
     short_ratio = Column(Float)
     short_updated_at = Column(DateTime)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class DelistedTicker(Base):
@@ -863,8 +870,8 @@ class DelistedTicker(Base):
     reason = Column(String)  # "404_not_found", "no_price_data", "delisted", etc.
     source = Column(String)  # Which index/source it came from
     failure_count = Column(Integer, default=1)  # Number of consecutive failures
-    first_failed_at = Column(DateTime, default=datetime.utcnow)
-    last_failed_at = Column(DateTime, default=datetime.utcnow)
+    first_failed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_failed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Allow re-checking after some time (ticker might be re-listed or data fixed)
     recheck_after = Column(DateTime)  # If set, can be rechecked after this date

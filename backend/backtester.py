@@ -9,7 +9,7 @@ import logging
 import math
 import sys
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
@@ -199,7 +199,7 @@ class BacktestEngine:
             self._calculate_final_metrics()
 
             self.backtest.status = "completed"
-            self.backtest.completed_at = datetime.utcnow()
+            self.backtest.completed_at = datetime.now(timezone.utc)
             self.backtest.progress_pct = 100
             self.db.commit()
 

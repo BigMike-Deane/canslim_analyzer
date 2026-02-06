@@ -5,7 +5,7 @@ Tests for watchlist alert functionality.
 import pytest
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch, MagicMock
 
 # Add parent directory to path so we can import modules
@@ -105,12 +105,12 @@ class TestWatchlistAlerts:
     def test_alert_cooldown_prevents_duplicate(self, mock_watchlist_item):
         """Test that cooldown period prevents duplicate alerts."""
         # Set alert_triggered_at to 12 hours ago
-        mock_watchlist_item.alert_triggered_at = datetime.utcnow() - timedelta(hours=12)
+        mock_watchlist_item.alert_triggered_at = datetime.now(timezone.utc) - timedelta(hours=12)
         cooldown_hours = 24
 
         within_cooldown = False
         if mock_watchlist_item.alert_triggered_at:
-            time_since_last = datetime.utcnow() - mock_watchlist_item.alert_triggered_at
+            time_since_last = datetime.now(timezone.utc) - mock_watchlist_item.alert_triggered_at
             if time_since_last < timedelta(hours=cooldown_hours):
                 within_cooldown = True
 
@@ -119,12 +119,12 @@ class TestWatchlistAlerts:
     def test_alert_sent_after_cooldown(self, mock_watchlist_item):
         """Test that alert can be sent after cooldown expires."""
         # Set alert_triggered_at to 25 hours ago (beyond 24h cooldown)
-        mock_watchlist_item.alert_triggered_at = datetime.utcnow() - timedelta(hours=25)
+        mock_watchlist_item.alert_triggered_at = datetime.now(timezone.utc) - timedelta(hours=25)
         cooldown_hours = 24
 
         within_cooldown = False
         if mock_watchlist_item.alert_triggered_at:
-            time_since_last = datetime.utcnow() - mock_watchlist_item.alert_triggered_at
+            time_since_last = datetime.now(timezone.utc) - mock_watchlist_item.alert_triggered_at
             if time_since_last < timedelta(hours=cooldown_hours):
                 within_cooldown = True
 

@@ -379,6 +379,12 @@ async def fetch_json_async(session: aiohttp.ClientSession, url: str, timeout: in
                         _rate_limiter["max_calls_per_minute"] = max(200, _rate_limiter["max_calls_per_minute"] - 25)
                         await asyncio.sleep(wait_time)
                         continue
+                    elif response.status in {500, 502, 503, 504}:
+                        # Server error - retry with exponential backoff
+                        wait_time = min(2 ** attempt, 10)  # 1s, 2s, 4s (max 10s)
+                        logger.warning(f"HTTP {response.status} for {url[:60]}... retrying in {wait_time}s (attempt {attempt + 1}/3)")
+                        await asyncio.sleep(wait_time)
+                        continue
                     else:
                         logger.debug(f"HTTP {response.status} for {url[:100]}...")
                         return None

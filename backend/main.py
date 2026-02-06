@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text, case
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List
 import logging
 
@@ -151,7 +151,7 @@ def get_data_freshness(last_updated: datetime) -> dict:
     if not last_updated:
         return {"age_minutes": None, "age_text": "Unknown", "is_stale": True}
 
-    age_seconds = (datetime.utcnow() - last_updated).total_seconds()
+    age_seconds = (datetime.now(timezone.utc) - last_updated).total_seconds()
     age_minutes = int(age_seconds / 60)
 
     # Determine staleness (>4 hours = stale based on SCORE_CACHE_HOURS)
@@ -377,7 +377,7 @@ def update_market_snapshot(db: Session, force_refresh: bool = False):
             db.add(snapshot)
 
         # Update timestamp
-        snapshot.timestamp = datetime.utcnow()
+        snapshot.timestamp = datetime.now(timezone.utc)
 
         # Extract index data
         indexes = market_data.get("indexes", {})
@@ -567,7 +567,7 @@ def analyze_stock(ticker: str) -> dict:
                 "analyst_upside": getattr(growth_obj, 'analyst_upside', 0),
             } if growth_obj else {},
 
-            "analyzed_at": datetime.utcnow().isoformat()
+            "analyzed_at": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
         logger.error(f"Error analyzing {ticker}: {e}")
@@ -603,14 +603,14 @@ def save_stock_to_db(db: Session, analysis: dict):
     stock.projected_growth = analysis["projected_growth"]
     stock.growth_confidence = analysis["growth_confidence"]
     stock.score_details = analysis.get("score_details")  # Save detailed breakdown with annual_eps, roe, etc.
-    stock.last_updated = datetime.utcnow()
+    stock.last_updated = datetime.now(timezone.utc)
 
     db.flush()
 
     # Save score history (one per scan for granular backtesting)
     score_history = StockScore(
         stock_id=stock.id,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         date=date.today(),
         total_score=analysis["canslim_score"],
         c_score=analysis["c_score"],
@@ -671,7 +671,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         should_refresh = True
     elif latest_market.created_at:
         # Refresh if data is older than 5 minutes
-        age_seconds = (datetime.utcnow() - latest_market.created_at).total_seconds()
+        age_seconds = (datetime.now(timezone.utc) - latest_market.created_at).total_seconds()
         if age_seconds > 300:  # 5 minutes
             should_refresh = True
 
@@ -1120,7 +1120,7 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
     # Determine if cache is stale
     cache_stale = not stock or (
         stock.last_updated and
-        (datetime.utcnow() - stock.last_updated).total_seconds() > settings.SCORE_CACHE_HOURS * 3600
+        (datetime.now(timezone.utc) - stock.last_updated).total_seconds() > settings.SCORE_CACHE_HOURS * 3600
     )
 
     if cache_stale:
@@ -1283,7 +1283,7 @@ async def start_scan(
         job_type=f"scan_{source}",
         status="running",
         tickers_total=len(tickers),
-        started_at=datetime.utcnow()
+        started_at=datetime.now(timezone.utc)
     )
     db.add(job)
     db.commit()
@@ -1350,7 +1350,7 @@ async def start_scan(
             # Mark complete
             scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
             scan_job.status = "completed"
-            scan_job.completed_at = datetime.utcnow()
+            scan_job.completed_at = datetime.now(timezone.utc)
             scan_db.commit()
 
         except Exception as e:
@@ -2547,7 +2547,7 @@ async def update_coiled_spring_outcomes(db: Session = Depends(get_db)):
         alert.price_after_earnings = stock.current_price
         alert.price_change_pct = round(price_change_pct, 2)
         alert.outcome = outcome
-        alert.outcome_updated_at = datetime.utcnow()
+        alert.outcome_updated_at = datetime.now(timezone.utc)
         updated += 1
 
     db.commit()
@@ -3184,7 +3184,7 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
     # If stuck, directly cancel it since the background process is likely dead
     is_stuck = False
     if backtest.created_at:
-        time_since_created = (datetime.utcnow() - backtest.created_at).total_seconds()
+        time_since_created = (datetime.now(timezone.utc) - backtest.created_at).total_seconds()
         # Consider stuck if running for more than 2 hours
         if time_since_created > 7200:
             is_stuck = True
@@ -3193,7 +3193,7 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
     if is_stuck:
         # Directly cancel the backtest since the process is dead
         backtest.status = "cancelled"
-        backtest.completed_at = datetime.utcnow()
+        backtest.completed_at = datetime.now(timezone.utc)
         backtest.error_message = "Cancelled by user (backtest was stuck)"
         db.commit()
         logger.info(f"Directly cancelled stuck backtest {backtest_id}")

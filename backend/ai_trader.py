@@ -421,7 +421,7 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
         return False
 
     # Check cooldown for this ticker
-    cutoff = datetime.utcnow() - timedelta(hours=cooldown_hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
     recent = db.query(CoiledSpringAlert).filter(
         CoiledSpringAlert.ticker == ticker,
         CoiledSpringAlert.created_at >= cutoff
@@ -430,6 +430,21 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
     if recent:
         logger.debug(f"CS cooldown active for {ticker}, skipping")
         return False
+
+    # Price stability check - require minimum price movement to re-alert
+    # This prevents duplicate alerts when price hasn't moved significantly
+    min_price_change_pct = alerts_config.get('min_price_change_pct', 3)
+    most_recent_alert = db.query(CoiledSpringAlert).filter(
+        CoiledSpringAlert.ticker == ticker
+    ).order_by(CoiledSpringAlert.created_at.desc()).first()
+
+    if most_recent_alert and most_recent_alert.price_at_alert:
+        current_price = getattr(stock, 'current_price', 0) or 0
+        if current_price > 0 and most_recent_alert.price_at_alert > 0:
+            price_change_pct = abs(current_price - most_recent_alert.price_at_alert) / most_recent_alert.price_at_alert * 100
+            if price_change_pct < min_price_change_pct:
+                logger.debug(f"CS alert skipped for {ticker}: price only moved {price_change_pct:.1f}% (need {min_price_change_pct}%)")
+                return False
 
     # Record the alert
     alert = CoiledSpringAlert(
