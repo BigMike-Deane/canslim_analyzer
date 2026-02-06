@@ -14,15 +14,39 @@ function PerformanceChart({ history, startingCash }) {
     )
   }
 
-  // Filter history based on selected time range
+  // Check if timestamp is during market hours (9:30 AM - 4:00 PM ET, Mon-Fri)
+  const isDuringMarketHours = (timestamp) => {
+    if (!timestamp) return false
+    const date = new Date(timestamp)
+    // Convert to Eastern Time for market hours check
+    const etOptions = { timeZone: 'America/New_York', hour: 'numeric', minute: 'numeric', hour12: false }
+    const etTime = date.toLocaleString('en-US', etOptions)
+    const [hours, minutes] = etTime.split(':').map(Number)
+    const timeInMinutes = hours * 60 + minutes
+
+    // Market hours: 9:30 AM (570 min) to 4:00 PM (960 min)
+    const marketOpen = 9 * 60 + 30  // 9:30 AM = 570
+    const marketClose = 16 * 60     // 4:00 PM = 960
+
+    // Check if weekday (0 = Sunday, 6 = Saturday)
+    const dayOfWeek = date.getDay()
+    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5
+
+    return isWeekday && timeInMinutes >= marketOpen && timeInMinutes <= marketClose
+  }
+
+  // Filter history based on selected time range and market hours
   const filterHistory = (data, range) => {
-    if (range === 'all') return data
+    // First filter to market hours only
+    let filtered = data.filter(d => isDuringMarketHours(d.timestamp || d.date))
+
+    if (range === 'all') return filtered
     const now = new Date()
     const cutoff = new Date()
     if (range === '24h') cutoff.setHours(now.getHours() - 24)
     else if (range === '7d') cutoff.setDate(now.getDate() - 7)
     else if (range === '30d') cutoff.setDate(now.getDate() - 30)
-    return data.filter(d => new Date(d.timestamp || d.date) >= cutoff)
+    return filtered.filter(d => new Date(d.timestamp || d.date) >= cutoff)
   }
 
   const filteredHistory = filterHistory(history, timeRange)
