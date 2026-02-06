@@ -95,6 +95,21 @@ async def lifespan(app: FastAPI):
     """Initialize on startup, cleanup on shutdown"""
     logger.info("Starting CANSLIM Analyzer API...")
     init_db()
+
+    # Auto-start scanner after a short delay to allow full startup
+    import asyncio
+    async def auto_start_scanner():
+        await asyncio.sleep(5)  # Wait for app to fully initialize
+        try:
+            from backend.scheduler import start_continuous_scanning
+            logger.info("Auto-starting scanner: source=all, interval=30 minutes")
+            start_continuous_scanning(source="all", interval_minutes=30)
+            logger.info("Scanner auto-started successfully")
+        except Exception as e:
+            logger.error(f"Failed to auto-start scanner: {e}")
+
+    asyncio.create_task(auto_start_scanner())
+
     yield
     logger.info("Shutting down...")
 
