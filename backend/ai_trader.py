@@ -972,15 +972,35 @@ def check_and_execute_stop_losses(db: Session) -> dict:
 
     sells_executed = []
 
+    # Get market condition for market-aware stop losses
+    from data_fetcher import get_cached_market_direction
+    market_data = get_cached_market_direction()
+    is_bearish_market = False
+    if market_data.get("success"):
+        spy_data = market_data.get("spy", {})
+        spy_price = spy_data.get("price", 0)
+        spy_ma_50 = spy_data.get("ma_50", 0)
+        is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
+
+    # Get stop loss config
+    from config_loader import config as yaml_config
+    stop_loss_config = yaml_config.get('ai_trader.stops', {})
+    normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', config.stop_loss_pct)
+    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+
+    # Use wider stop loss in bearish market
+    effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
+
     for position in positions:
         if not position.current_price:
             continue
 
         gain_pct = position.gain_loss_pct or 0
 
-        # Check fixed stop loss
-        if gain_pct <= -config.stop_loss_pct:
-            logger.warning(f"{position.ticker}: STOP LOSS TRIGGERED at {gain_pct:.1f}%")
+        # Market-aware stop loss check
+        if gain_pct <= -effective_stop_loss_pct:
+            market_note = " (bearish market)" if is_bearish_market else ""
+            logger.warning(f"{position.ticker}: STOP LOSS TRIGGERED at {gain_pct:.1f}%{market_note}")
 
             # Execute the sell (from batch-fetched dict)
             stock = ticker_to_stock.get(position.ticker)
@@ -993,7 +1013,7 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                 action="SELL",
                 shares=position.shares,
                 price=position.current_price,
-                reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%",
+                reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}",
                 score=score,
                 growth_score=growth_score,
                 is_growth_stock=position.is_growth_stock or False,
@@ -1008,7 +1028,7 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                 "shares": position.shares,
                 "price": position.current_price,
                 "gain_loss": position.gain_loss,
-                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%"
+                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}"
             })
             db.delete(position)
             continue
@@ -1116,12 +1136,12 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
 def evaluate_sells(db: Session) -> list:
     """Evaluate positions for potential sells - uses effective score based on stock type.
 
-    Includes trailing stop loss logic:
-    - Tracks peak price since purchase
-    - Triggers sell when price drops X% from peak
-    - Uses tighter trailing stops for bigger winners
+    Includes:
+    - Market-aware stop losses (wider in bearish markets)
+    - Trailing stop loss (protects gains from peak)
+    - Score crash detection with profitability exception
     """
-    config = get_or_create_config(db)
+    portfolio_config = get_or_create_config(db)
     positions = db.query(AIPortfolioPosition).all()
     sells = []
 
@@ -1132,6 +1152,25 @@ def evaluate_sells(db: Session) -> list:
         ticker_to_stock = {s.ticker: s for s in stocks}
     else:
         ticker_to_stock = {}
+
+    # Get market condition for market-aware stop losses
+    from data_fetcher import get_cached_market_direction
+    market_data = get_cached_market_direction()
+    is_bearish_market = False
+    if market_data.get("success"):
+        spy_data = market_data.get("spy", {})
+        spy_price = spy_data.get("price", 0)
+        spy_ma_50 = spy_data.get("ma_50", 0)
+        is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
+
+    # Get stop loss config from YAML
+    from config_loader import config as yaml_config
+    stop_loss_config = yaml_config.get('ai_trader.stops', {})
+    normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', portfolio_config.stop_loss_pct)
+    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+
+    # Use wider stop loss in bearish market
+    effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
 
     for position in positions:
         # Use effective score based on stock type
@@ -1144,11 +1183,12 @@ def evaluate_sells(db: Session) -> list:
         gain_pct = position.gain_loss_pct or 0
         stock_type = "Growth" if position.is_growth_stock else "CANSLIM"
 
-        # Stop loss - sell if down more than threshold (tight stops)
-        if gain_pct <= -config.stop_loss_pct:
+        # Market-aware stop loss
+        if gain_pct <= -effective_stop_loss_pct:
+            market_note = " (bearish market)" if is_bearish_market else ""
             sells.append({
                 "position": position,
-                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%",
+                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}",
                 "priority": 1  # High priority - cut losers fast
             })
             continue
@@ -1184,21 +1224,41 @@ def evaluate_sells(db: Session) -> list:
                 logger.info(f"{position.ticker}: Trailing stop triggered - peak ${position.peak_price:.2f}, now ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
                 continue
 
-        # Score crashed - sell if score dropped dramatically (>20 points)
-        # BUT add safeguards against data blips
+        # Score crashed - sell if score dropped dramatically
+        # WITH safeguards: profitability exception + consecutive requirement
+        # Get score crash config
+        score_crash_config = yaml_config.get('ai_trader.score_crash', {})
+        consecutive_required = score_crash_config.get('consecutive_required', 3)
+        score_threshold = score_crash_config.get('threshold', 50)
+        drop_required = score_crash_config.get('drop_required', 20)
+        ignore_if_profitable_pct = score_crash_config.get('ignore_if_profitable_pct', 10)
+
         score_drop = purchase_score - score
-        if score_drop > 20 and score < 50:
+        if score_drop > drop_required and score < score_threshold:
+            # Skip score crash sell if position is profitable enough
+            if gain_pct >= ignore_if_profitable_pct:
+                logger.debug(f"{position.ticker}: SKIP score crash - profitable (+{gain_pct:.1f}%)")
+                continue
+
             # Get the stock to check data quality and component scores (from batch-fetched dict)
             stock = ticker_to_stock.get(position.ticker)
 
             # SAFEGUARD: Check score stability - is this a consistent low or a one-time blip?
-            stability = check_score_stability(db, position.ticker, score, threshold=50)
+            stability = check_score_stability(db, position.ticker, score, threshold=score_threshold)
 
             if not stability["is_stable"]:
                 # This looks like a data blip - DON'T SELL, just log warning
                 logger.warning(f"{position.ticker}: SKIPPING SELL - {stability['warning']}. "
                                f"Recent scores: {stability['recent_scores']}")
                 continue  # Skip this sell, wait for next scan to confirm
+
+            # Require N consecutive low scores before selling (configurable, default 3)
+            recent_scores = stability.get("recent_scores", [])
+            consecutive_low = sum(1 for s in recent_scores if s < score_threshold)
+            if consecutive_low < consecutive_required:
+                logger.debug(f"{position.ticker}: SKIPPING SELL - only {consecutive_low} "
+                            f"consecutive low score(s), need {consecutive_required}+")
+                continue
 
             # Build detailed reason with component breakdown
             reason_parts = [f"SCORE CRASH: {purchase_score:.0f} → {score:.0f}"]
@@ -1229,7 +1289,7 @@ def evaluate_sells(db: Session) -> list:
 
                 # Add recent score history for context
                 if stability["recent_scores"]:
-                    reason_parts.append(f"(avg: {stability['avg_score']:.0f})")
+                    reason_parts.append(f"(avg: {stability['avg_score']:.0f}, {consecutive_low} low scans)")
 
                 # Flag if data quality is low
                 if data_quality in ('low', 'unknown', None):
@@ -1243,7 +1303,7 @@ def evaluate_sells(db: Session) -> list:
                 "priority": 3
             })
             logger.info(f"{position.ticker}: Score crash confirmed - {purchase_score:.0f} → {score:.0f}, "
-                        f"recent avg: {stability['avg_score']:.0f}")
+                        f"recent avg: {stability['avg_score']:.0f}, {consecutive_low} low scans")
             continue
 
         # PARTIAL PROFIT TAKING - let winners run while locking in gains
@@ -1277,14 +1337,14 @@ def evaluate_sells(db: Session) -> list:
         # For winners, use additional score-based logic
         if gain_pct >= 20:
             # If up 20%+, only sell if score is weak AND gains are fading
-            if score < config.sell_score_threshold:
+            if score < portfolio_config.sell_score_threshold:
                 sells.append({
                     "position": position,
                     "reason": f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({score:.0f})",
                     "priority": 6
                 })
             # Take full profits at 40%+ if score is declining significantly
-            elif gain_pct >= config.take_profit_pct and score < purchase_score - 15:
+            elif gain_pct >= portfolio_config.take_profit_pct and score < purchase_score - 15:
                 sells.append({
                     "position": position,
                     "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly",
@@ -1292,7 +1352,7 @@ def evaluate_sells(db: Session) -> list:
                 })
 
         # For losing or flat positions with weak scores - cut and redeploy capital
-        elif gain_pct < 10 and score < config.sell_score_threshold:
+        elif gain_pct < 10 and score < portfolio_config.sell_score_threshold:
             sells.append({
                 "position": position,
                 "reason": f"WEAK POSITION: {gain_pct:+.1f}%, score {score:.0f}",

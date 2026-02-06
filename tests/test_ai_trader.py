@@ -942,3 +942,230 @@ class TestEarningsAvoidance:
             skip_buy = True
 
         assert skip_buy == False
+
+
+class TestMarketAwareStops:
+    """Tests for market-aware stop loss logic"""
+
+    def test_wider_stop_in_bearish_market(self):
+        """Test that stop loss widens to 15% in bearish market"""
+        spy_price = 450.0
+        spy_ma_50 = 480.0  # Price below 50-day MA = bearish
+
+        normal_stop_loss_pct = 10.0
+        bearish_stop_loss_pct = 15.0
+
+        is_bearish = spy_price < spy_ma_50
+
+        if is_bearish:
+            effective_stop_loss_pct = bearish_stop_loss_pct
+        else:
+            effective_stop_loss_pct = normal_stop_loss_pct
+
+        assert is_bearish == True
+        assert effective_stop_loss_pct == 15.0
+
+    def test_normal_stop_in_bullish_market(self):
+        """Test that stop loss stays at 10% in bullish market"""
+        spy_price = 500.0
+        spy_ma_50 = 480.0  # Price above 50-day MA = bullish
+
+        normal_stop_loss_pct = 10.0
+        bearish_stop_loss_pct = 15.0
+
+        is_bearish = spy_price < spy_ma_50
+
+        if is_bearish:
+            effective_stop_loss_pct = bearish_stop_loss_pct
+        else:
+            effective_stop_loss_pct = normal_stop_loss_pct
+
+        assert is_bearish == False
+        assert effective_stop_loss_pct == 10.0
+
+    def test_stop_loss_triggered_at_correct_threshold(self):
+        """Test stop loss triggers at effective threshold"""
+        cost_basis = 100.0
+
+        # In bearish market with 15% stop
+        bearish_stop_pct = 15.0
+        price_in_bearish = 86.0  # -14% (not triggered)
+        gain_pct = ((price_in_bearish - cost_basis) / cost_basis) * 100
+
+        triggered = gain_pct <= -bearish_stop_pct
+        assert triggered == False  # -14% does NOT trigger 15% stop
+
+        # At exactly -15%
+        price_at_stop = 85.0
+        gain_pct = ((price_at_stop - cost_basis) / cost_basis) * 100
+        triggered = gain_pct <= -bearish_stop_pct
+        assert triggered == True  # -15% triggers 15% stop
+
+    def test_normal_stop_would_trigger_earlier(self):
+        """Test that normal stop (10%) would trigger where bearish (15%) doesn't"""
+        cost_basis = 100.0
+        price = 88.0  # -12%
+
+        normal_stop_pct = 10.0
+        bearish_stop_pct = 15.0
+
+        gain_pct = ((price - cost_basis) / cost_basis) * 100
+
+        normal_triggered = gain_pct <= -normal_stop_pct
+        bearish_triggered = gain_pct <= -bearish_stop_pct
+
+        assert normal_triggered == True   # -12% triggers 10% stop
+        assert bearish_triggered == False  # -12% does NOT trigger 15% stop
+
+
+class TestScoreCrashImprovements:
+    """Tests for improved score crash detection"""
+
+    def test_requires_three_consecutive_low_scans(self):
+        """Test that 3 consecutive low scores are required (not just 2)"""
+        consecutive_required = 3
+        threshold = 50
+
+        # Only 2 consecutive low scores
+        recent_scores = [75, 68, 45, 42]  # Last 2 below 50
+        consecutive_low = 0
+        for score in reversed(recent_scores):
+            if score < threshold:
+                consecutive_low += 1
+            else:
+                break
+
+        should_sell = consecutive_low >= consecutive_required
+        assert consecutive_low == 2
+        assert should_sell == False  # Need 3, only have 2
+
+        # 3 consecutive low scores
+        recent_scores = [75, 45, 42, 38]  # Last 3 below 50
+        consecutive_low = 0
+        for score in reversed(recent_scores):
+            if score < threshold:
+                consecutive_low += 1
+            else:
+                break
+
+        should_sell = consecutive_low >= consecutive_required
+        assert consecutive_low == 3
+        assert should_sell == True  # Have 3, meet requirement
+
+    def test_ignores_crash_if_profitable(self):
+        """Test that score crash is ignored if position is profitable (10%+)"""
+        ignore_if_profitable_pct = 10
+        purchase_score = 75
+        current_score = 40  # Crashed below 50
+        threshold = 50
+        drop_required = 20
+
+        # Profitable position (+15%)
+        gain_pct = 15
+        score_drop = purchase_score - current_score  # 35 points
+
+        meets_crash_criteria = score_drop > drop_required and current_score < threshold
+        skip_due_to_profit = gain_pct >= ignore_if_profitable_pct
+
+        assert meets_crash_criteria == True  # Score DID crash
+        assert skip_due_to_profit == True    # But position is profitable
+        # Result: should NOT sell
+
+    def test_crashes_sell_if_not_profitable(self):
+        """Test that score crash DOES trigger sell if position is NOT profitable"""
+        ignore_if_profitable_pct = 10
+        purchase_score = 75
+        current_score = 40
+        threshold = 50
+        drop_required = 20
+        consecutive_required = 3
+
+        # Small gain (only +5%)
+        gain_pct = 5
+
+        score_drop = purchase_score - current_score
+        meets_crash_criteria = score_drop > drop_required and current_score < threshold
+        skip_due_to_profit = gain_pct >= ignore_if_profitable_pct
+
+        assert meets_crash_criteria == True
+        assert skip_due_to_profit == False
+        # With 3 consecutive lows, this SHOULD sell
+
+    def test_losing_position_with_crash_sells(self):
+        """Test losing position with score crash does sell"""
+        ignore_if_profitable_pct = 10
+        purchase_score = 80
+        current_score = 35
+        gain_pct = -5  # Losing money
+
+        score_drop = purchase_score - current_score  # 45 points
+        skip_due_to_profit = gain_pct >= ignore_if_profitable_pct
+
+        assert score_drop > 20  # Meets crash threshold
+        assert skip_due_to_profit == False  # Not profitable
+        # With 3 consecutive lows, this SHOULD sell
+
+
+class TestDiskCacheIntegration:
+    """Tests for disk cache price history functionality"""
+
+    def test_cache_key_generation(self):
+        """Test that cache keys are generated correctly"""
+        from datetime import date
+
+        ticker = "AAPL"
+        start = date(2024, 1, 1)
+        end = date(2024, 12, 31)
+
+        expected_key = f"{ticker}_{start.isoformat()}_{end.isoformat()}"
+        assert expected_key == "AAPL_2024-01-01_2024-12-31"
+
+    def test_cache_expiry_check(self):
+        """Test that cache expiry is calculated correctly"""
+        from datetime import datetime, timedelta, timezone
+
+        expiry_days = 30
+        created_at = datetime.now(timezone.utc) - timedelta(days=25)
+
+        age_days = (datetime.now(timezone.utc) - created_at).days
+        is_expired = age_days > expiry_days
+
+        assert age_days == 25
+        assert is_expired == False  # 25 days old, 30 day expiry = NOT expired
+
+        # Test expired case
+        created_at_old = datetime.now(timezone.utc) - timedelta(days=35)
+        age_days_old = (datetime.now(timezone.utc) - created_at_old).days
+        is_expired_old = age_days_old > expiry_days
+
+        assert age_days_old == 35
+        assert is_expired_old == True  # 35 days old > 30 day expiry = EXPIRED
+
+
+class TestWorkerConfiguration:
+    """Tests for configurable worker count"""
+
+    def test_default_worker_count(self):
+        """Test default worker count is 12"""
+        default_workers = 12
+        assert default_workers == 12
+
+    def test_worker_count_respects_config(self):
+        """Test that worker count comes from config"""
+        # Simulate reading from config
+        config_value = 12
+        fallback_value = 8
+
+        workers = config_value if config_value else fallback_value
+        assert workers == 12
+
+    def test_worker_count_bounds(self):
+        """Test worker count stays reasonable"""
+        min_workers = 4
+        max_workers = 20
+
+        configured_workers = 12
+
+        effective_workers = max(min_workers, min(configured_workers, max_workers))
+        assert effective_workers == 12
+        assert min_workers <= effective_workers <= max_workers

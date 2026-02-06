@@ -6,6 +6,8 @@ Key principle: Only use data that would have been available on each historical d
 """
 
 import logging
+import os
+import sys
 import requests
 import pandas as pd
 import numpy as np
@@ -13,6 +15,9 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Add parent directory for config_loader import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +88,33 @@ class HistoricalDataProvider:
         # Preloaded flag
         self._is_loaded = False
 
+        # Disk cache for price history (speeds up repeated backtests)
+        self._disk_cache = None
+        self._disk_cache_enabled = True
+
+        # Initialize disk cache
+        self._init_disk_cache()
+
+    def _init_disk_cache(self):
+        """Initialize disk cache from config."""
+        try:
+            from config_loader import config
+            self._disk_cache_enabled = config.get('backtester.disk_cache.enabled', default=True)
+
+            if self._disk_cache_enabled:
+                from backend.price_cache import get_price_cache
+                self._disk_cache = get_price_cache()
+                logger.info("Disk cache enabled for historical data")
+        except ImportError:
+            # Fall back to creating cache directly
+            try:
+                from backend.price_cache import PriceHistoryCache
+                self._disk_cache = PriceHistoryCache()
+                logger.info("Disk cache enabled (default config)")
+            except ImportError:
+                logger.warning("Disk cache not available")
+                self._disk_cache_enabled = False
+
     def preload_data(self, start_date: date, end_date: date,
                      progress_callback=None) -> bool:
         """
@@ -108,7 +140,7 @@ class HistoricalDataProvider:
 
         # Load market indexes first (needed for M score)
         for index in MARKET_INDEXES:
-            df = self._fetch_price_history(index, lookback_start, end_date)
+            df = self._fetch_price_history_cached(index, lookback_start, end_date)
             if df is not None and not df.empty:
                 self._index_cache[index] = df
                 logger.debug(f"Loaded {len(df)} days of {index} history")
@@ -116,10 +148,17 @@ class HistoricalDataProvider:
             if progress_callback:
                 progress_callback(loaded / total_tickers * 100)
 
+        # Get worker count from config
+        try:
+            from config_loader import config
+            workers = config.get('backtester.workers', default=12)
+        except ImportError:
+            workers = 12
+
         # Load stock price history in parallel
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_ticker = {
-                executor.submit(self._fetch_price_history, ticker, lookback_start, end_date): ticker
+                executor.submit(self._fetch_price_history_cached, ticker, lookback_start, end_date): ticker
                 for ticker in self.tickers
             }
 
@@ -207,6 +246,43 @@ class HistoricalDataProvider:
         except Exception as e:
             logger.debug(f"Error fetching {ticker}: {e}")
             return None
+
+    def _fetch_price_history_cached(self, ticker: str, start_date: date,
+                                     end_date: date) -> Optional[pd.DataFrame]:
+        """
+        Fetch price history with disk caching.
+
+        Checks disk cache first, falls back to Yahoo Finance if not cached.
+        Stores successful fetches in disk cache for future use.
+
+        Args:
+            ticker: Stock ticker
+            start_date: Start date for price history
+            end_date: End date for price history
+
+        Returns:
+            DataFrame with price history or None
+        """
+        # Try disk cache first
+        if self._disk_cache_enabled and self._disk_cache is not None:
+            cached = self._disk_cache.get(ticker, start_date, end_date)
+            if cached is not None:
+                return cached
+
+        # Fetch from Yahoo Finance
+        df = self._fetch_price_history(ticker, start_date, end_date)
+
+        # Store in disk cache for future use
+        if df is not None and not df.empty and self._disk_cache_enabled and self._disk_cache is not None:
+            self._disk_cache.set(ticker, start_date, end_date, df)
+
+        return df
+
+    def get_cache_stats(self) -> dict:
+        """Get disk cache statistics."""
+        if self._disk_cache is not None:
+            return self._disk_cache.get_stats()
+        return {"enabled": False}
 
     def get_trading_days(self) -> List[date]:
         """Get list of trading days in the backtest period"""

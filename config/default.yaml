@@ -204,9 +204,10 @@ ai_trader:
 
   # Score crash sell requirements
   score_crash:
-    consecutive_required: 2  # Require 2+ consecutive low scans before selling
-    threshold: 50            # Score must be below this threshold
-    drop_required: 20        # Score must have dropped by this much
+    consecutive_required: 3           # Require 3+ consecutive low scans before selling (was 2)
+    threshold: 50                     # Score must be below this threshold
+    drop_required: 20                 # Score must have dropped by this much
+    ignore_if_profitable_pct: 10      # Skip score crash sell if position is up this much %
 
   # Partial profit taking - lock in gains while letting winners run
   partial_profits:
@@ -224,6 +225,11 @@ ai_trader:
   momentum_confirmation:
     rs_ratio_threshold: 0.95  # rs_3m must be >= rs_12m * 0.95
     penalty: 0.15             # 15% penalty to composite score if fading
+
+  # Stop loss settings
+  stops:
+    normal_stop_loss_pct: 10.0        # Normal stop loss percentage
+    bearish_stop_loss_pct: 15.0       # Wider stop loss when SPY < 50-day MA
 
   # Trailing stop loss thresholds
   trailing_stops:
@@ -433,3 +439,11 @@ database:
       column: current_price
     - name: ix_stocks_score_price
       columns: [canslim_score, current_price]
+
+# Backtester Settings
+backtester:
+  workers: 12                         # Number of parallel workers for fetching price history
+  disk_cache:
+    enabled: true                     # Enable disk caching for price history
+    database: null                    # Path to cache database (null = default: data/price_cache.db)
+    expiry_days: 30                   # Days before cached data expires

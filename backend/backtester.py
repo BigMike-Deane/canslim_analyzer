@@ -644,6 +644,19 @@ class BacktestEngine:
             current_score = score_data.get("total_score", 0)
             self._update_score_history(ticker, current_score)
 
+        # Get market condition for market-aware stop losses
+        market = self.data_provider.get_market_direction(current_date)
+        spy_data = market.get('spy', {})
+        is_bearish_market = spy_data.get('price', 0) < spy_data.get('ma_50', 0)
+
+        # Get stop loss config
+        stop_loss_config = config.get('ai_trader.stops', {})
+        normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', self.backtest.stop_loss_pct)
+        bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+
+        # Use wider stop loss in bearish market
+        effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
+
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
@@ -653,14 +666,15 @@ class BacktestEngine:
             score_data = scores.get(ticker, {})
             current_score = score_data.get("total_score", 0)
 
-            # Stop loss check
-            if gain_pct <= -self.backtest.stop_loss_pct:
+            # Market-aware stop loss check
+            if gain_pct <= -effective_stop_loss_pct:
+                market_note = " (bearish market)" if is_bearish_market else ""
                 sells.append(SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
                     price=price,
-                    reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%",
+                    reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}",
                     score=current_score,
                     priority=1
                 ))
@@ -694,11 +708,22 @@ class BacktestEngine:
                     ))
                     continue
 
-            # Score crash check with stability verification
-            # Require 2+ consecutive low scans to prevent selling on data blips
+            # Score crash check with stability verification and profitability exception
+            # Get score crash config
+            score_crash_config = config.get('ai_trader.score_crash', {})
+            consecutive_required = score_crash_config.get('consecutive_required', 3)
+            score_threshold = score_crash_config.get('threshold', 50)
+            drop_required = score_crash_config.get('drop_required', 20)
+            ignore_if_profitable_pct = score_crash_config.get('ignore_if_profitable_pct', 10)
+
             score_drop = position.purchase_score - current_score
-            if score_drop > 20 and current_score < 50:
-                stability = self._check_score_stability(ticker, current_score, threshold=50)
+            if score_drop > drop_required and current_score < score_threshold:
+                # Skip score crash sell if position is profitable enough
+                if gain_pct >= ignore_if_profitable_pct:
+                    logger.debug(f"{ticker}: SKIP score crash - profitable (+{gain_pct:.1f}%)")
+                    continue
+
+                stability = self._check_score_stability(ticker, current_score, threshold=score_threshold)
 
                 if not stability["is_stable"]:
                     # This looks like a data blip - skip this sell, wait for confirmation
@@ -707,10 +732,10 @@ class BacktestEngine:
                                 f"Consecutive low: {stability['consecutive_low']}")
                     continue
 
-                # Require 2+ consecutive low scores before selling
-                if stability["consecutive_low"] < 2:
+                # Require N consecutive low scores before selling (configurable, default 3)
+                if stability["consecutive_low"] < consecutive_required:
                     logger.debug(f"{ticker}: SKIPPING SELL - only {stability['consecutive_low']} "
-                                f"consecutive low score(s), need 2+")
+                                f"consecutive low score(s), need {consecutive_required}+")
                     continue
 
                 sells.append(SimulatedTrade(
