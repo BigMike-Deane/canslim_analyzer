@@ -385,7 +385,7 @@ def run_continuous_scan():
         return
 
     _scan_config["is_scanning"] = True
-    _scan_config["last_scan_start"] = datetime.now(timezone.utc).isoformat() + 'Z'
+    _scan_config["last_scan_start"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     _scan_config["stocks_scanned"] = 0
     _scan_config["total_stocks"] = 0
     _scan_config["phase"] = "scanning"
@@ -1011,7 +1011,7 @@ def run_continuous_scan():
         logger.error(f"Scan error: {e}")
     finally:
         _scan_config["is_scanning"] = False
-        _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat() + 'Z'
+        _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         _scan_config["phase"] = None
         _scan_config["phase_detail"] = None
 
