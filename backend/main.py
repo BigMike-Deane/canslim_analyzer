@@ -2701,7 +2701,7 @@ async def get_ai_portfolio_history(
     snapshots = sorted(snapshots, key=sort_key)
 
     return [{
-        "timestamp": s.timestamp.isoformat() if s.timestamp else None,  # Stored in CST
+        "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else None,  # UTC timestamp
         "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
         "total_value": s.total_value,
         "cash": s.cash,
