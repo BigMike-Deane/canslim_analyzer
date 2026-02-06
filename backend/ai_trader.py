@@ -1370,8 +1370,9 @@ def evaluate_buys(db: Session) -> list:
         # Earnings proximity check with Coiled Spring exception
         # CS stocks EMBRACE earnings (catalyst), non-CS stocks AVOID earnings (binary risk)
         days_to_earnings = getattr(stock, 'days_to_earnings', None)
-        cs_config = config.get('coiled_spring', {})
-        earnings_config = config.get('ai_trader.earnings', {})
+        from config_loader import config as yaml_config
+        cs_config = yaml_config.get('coiled_spring', {})
+        earnings_config = yaml_config.get('ai_trader.earnings', {})
 
         # CS-specific settings
         allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
