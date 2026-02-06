@@ -151,6 +151,10 @@ def get_data_freshness(last_updated: datetime) -> dict:
     if not last_updated:
         return {"age_minutes": None, "age_text": "Unknown", "is_stale": True}
 
+    # Handle timezone-naive datetimes from database (assume UTC)
+    if last_updated.tzinfo is None:
+        last_updated = last_updated.replace(tzinfo=timezone.utc)
+
     age_seconds = (datetime.now(timezone.utc) - last_updated).total_seconds()
     age_minutes = int(age_seconds / 60)
 
@@ -671,7 +675,10 @@ async def get_dashboard(db: Session = Depends(get_db)):
         should_refresh = True
     elif latest_market.created_at:
         # Refresh if data is older than 5 minutes
-        age_seconds = (datetime.now(timezone.utc) - latest_market.created_at).total_seconds()
+        created_at = latest_market.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
         if age_seconds > 300:  # 5 minutes
             should_refresh = True
 
@@ -1118,10 +1125,13 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
 
     # Determine if cache is stale
-    cache_stale = not stock or (
-        stock.last_updated and
-        (datetime.now(timezone.utc) - stock.last_updated).total_seconds() > settings.SCORE_CACHE_HOURS * 3600
-    )
+    def is_cache_stale(last_updated):
+        if not last_updated:
+            return False
+        lu = last_updated if last_updated.tzinfo else last_updated.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - lu).total_seconds() > settings.SCORE_CACHE_HOURS * 3600
+
+    cache_stale = not stock or is_cache_stale(stock.last_updated)
 
     if cache_stale:
         if stock and background_tasks:
@@ -3184,7 +3194,10 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
     # If stuck, directly cancel it since the background process is likely dead
     is_stuck = False
     if backtest.created_at:
-        time_since_created = (datetime.now(timezone.utc) - backtest.created_at).total_seconds()
+        created_at = backtest.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        time_since_created = (datetime.now(timezone.utc) - created_at).total_seconds()
         # Consider stuck if running for more than 2 hours
         if time_since_created > 7200:
             is_stuck = True

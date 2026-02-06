@@ -138,7 +138,10 @@ def check_watchlist_alerts():
             if triggered:
                 # Check cooldown - don't re-alert if recently sent
                 if item.alert_triggered_at:
-                    time_since_last = datetime.now(timezone.utc) - item.alert_triggered_at
+                    alert_at = item.alert_triggered_at
+                    if alert_at.tzinfo is None:
+                        alert_at = alert_at.replace(tzinfo=timezone.utc)
+                    time_since_last = datetime.now(timezone.utc) - alert_at
                     if time_since_last < timedelta(hours=cooldown_hours):
                         logger.debug(f"Skipping {item.ticker} alert - within {cooldown_hours}h cooldown")
                         continue
