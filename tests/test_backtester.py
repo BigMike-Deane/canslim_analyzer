@@ -1000,11 +1000,13 @@ class TestReEntryCooldown:
         assert "DAN" not in engine.recently_sold
 
 
-class TestBearMarketRegime:
-    """Tests for bearish regime score adjustment and bear market exception"""
+class TestFlatScoreThreshold:
+    """Tests for flat min_score threshold — M score handles regime naturally"""
 
-    def test_bearish_raises_min_score(self):
-        """Verify +10 adjustment applied in bearish regime"""
+    def test_flat_threshold_in_bearish_market(self):
+        """Score threshold should NOT change during bearish markets.
+        The M score (0-15) in the total already accounts for market direction,
+        so adding regime adjustments would double-penalize."""
         from backend.backtester import BacktestEngine
 
         mock_session, mock_backtest = make_mock_db(min_score=72)
@@ -1012,17 +1014,16 @@ class TestBearMarketRegime:
 
         engine.data_provider = MagicMock()
         engine.data_provider.get_price_on_date.return_value = 95.0
-        # Bearish market: weighted_signal = -1.0
         engine.data_provider.get_market_direction.return_value = {
             "weighted_signal": -1.0, "spy": {"price": 400, "ma_50": 450}
         }
 
         engine.static_data = {"TEST": {"sector": "Technology"}}
 
-        # Score 78 is above base 72 but below bearish threshold 72+10=82
+        # Score 75 passes flat threshold of 72 even in bear market
         scores = {
             "TEST": {
-                "total_score": 78, "c_score": 12, "l_score": 10,
+                "total_score": 75, "c_score": 12, "l_score": 10,
                 "has_base_pattern": True, "base_pattern": {"type": "flat"},
                 "pct_from_pivot": 8, "pct_from_high": 8, "is_breaking_out": False,
                 "volume_ratio": 1.5, "weeks_in_base": 8, "rs_12m": 1.2, "rs_3m": 1.15,
@@ -1031,11 +1032,11 @@ class TestBearMarketRegime:
         }
 
         buys = engine._evaluate_buys(date.today(), scores)
-        # Score 78 < 82 (bearish threshold) -> should NOT qualify
-        assert len(buys) == 0
+        # Score 75 >= 72 -> should qualify (no regime penalty)
+        assert len(buys) >= 1
 
-    def test_bullish_lowers_min_score(self):
-        """Verify -5 adjustment applied in bullish regime"""
+    def test_flat_threshold_in_bullish_market(self):
+        """Score threshold should NOT be lowered during bullish markets."""
         from backend.backtester import BacktestEngine
 
         mock_session, mock_backtest = make_mock_db(min_score=72)
@@ -1043,14 +1044,13 @@ class TestBearMarketRegime:
 
         engine.data_provider = MagicMock()
         engine.data_provider.get_price_on_date.return_value = 95.0
-        # Strong bullish market: weighted_signal = 2.0
         engine.data_provider.get_market_direction.return_value = {
             "weighted_signal": 2.0, "spy": {"price": 500, "ma_50": 490}
         }
 
         engine.static_data = {"TEST": {"sector": "Technology"}}
 
-        # Score 68 is below base 72 but above bullish threshold 72-5=67
+        # Score 68 is below 72 — should NOT qualify even in bull market
         scores = {
             "TEST": {
                 "total_score": 68, "c_score": 12, "l_score": 10,
@@ -1062,13 +1062,11 @@ class TestBearMarketRegime:
         }
 
         buys = engine._evaluate_buys(date.today(), scores)
-        # Score 68 >= 67 (bullish threshold) -> should qualify as candidate
-        # It may be filtered by other checks (composite score, etc.)
-        # but at least it passes the min_score filter
-        assert len(buys) >= 0
+        # Score 68 < 72 -> should NOT qualify (no bullish discount)
+        assert len(buys) == 0
 
-    def test_bear_exception_high_cal(self):
-        """C+A+L >= 35 bypasses bearish adjustment"""
+    def test_score_at_threshold_passes(self):
+        """Stock scoring exactly at min_score should qualify"""
         from backend.backtester import BacktestEngine
 
         mock_session, mock_backtest = make_mock_db(min_score=72)
@@ -1076,32 +1074,27 @@ class TestBearMarketRegime:
 
         engine.data_provider = MagicMock()
         engine.data_provider.get_price_on_date.return_value = 95.0
-        # Bearish market
         engine.data_provider.get_market_direction.return_value = {
-            "weighted_signal": -1.0, "spy": {"price": 400, "ma_50": 450}
+            "weighted_signal": 0.5, "spy": {"price": 450, "ma_50": 445}
         }
 
-        engine.static_data = {"STRONG": {"sector": "Technology"}}
+        engine.static_data = {"TEST": {"sector": "Technology"}}
 
-        # Score 75 is below bearish threshold (82) but C+A+L = 15+12+12 = 39 >= 35
         scores = {
-            "STRONG": {
-                "total_score": 75, "c_score": 15, "a_score": 12, "l_score": 12,
+            "TEST": {
+                "total_score": 72, "c_score": 12, "l_score": 10,
                 "has_base_pattern": True, "base_pattern": {"type": "flat"},
                 "pct_from_pivot": 8, "pct_from_high": 8, "is_breaking_out": False,
                 "volume_ratio": 1.5, "weeks_in_base": 8, "rs_12m": 1.2, "rs_3m": 1.15,
-                "is_growth_stock": False,
+                "is_growth_stock": False, "a_score": 10,
             }
         }
 
         buys = engine._evaluate_buys(date.today(), scores)
-        # Should qualify via bear exception (C+A+L >= 35)
-        # Check that bear_market_entry flag was set
-        if buys:
-            assert scores["STRONG"].get("_bear_market_entry") is True
+        assert len(buys) >= 1
 
-    def test_bear_exception_reduced_size(self):
-        """Bear exception entries should get 50% position size"""
+    def test_score_below_threshold_rejected(self):
+        """Stock scoring below min_score should be rejected regardless of market"""
         from backend.backtester import BacktestEngine
 
         mock_session, mock_backtest = make_mock_db(min_score=72)
@@ -1109,27 +1102,21 @@ class TestBearMarketRegime:
 
         engine.data_provider = MagicMock()
         engine.data_provider.get_price_on_date.return_value = 95.0
-        # Bearish market
         engine.data_provider.get_market_direction.return_value = {
-            "weighted_signal": -1.0, "spy": {"price": 400, "ma_50": 450}
+            "weighted_signal": 2.0, "spy": {"price": 500, "ma_50": 490}
         }
 
-        engine.static_data = {"STRONG": {"sector": "Technology"}}
+        engine.static_data = {"TEST": {"sector": "Technology"}}
 
-        # Create a stock that qualifies for bear exception
         scores = {
-            "STRONG": {
-                "total_score": 75, "c_score": 15, "a_score": 12, "l_score": 12,
+            "TEST": {
+                "total_score": 71, "c_score": 12, "l_score": 10,
                 "has_base_pattern": True, "base_pattern": {"type": "flat"},
                 "pct_from_pivot": 8, "pct_from_high": 8, "is_breaking_out": False,
                 "volume_ratio": 1.5, "weeks_in_base": 8, "rs_12m": 1.2, "rs_3m": 1.15,
-                "is_growth_stock": False,
+                "is_growth_stock": False, "a_score": 10,
             }
         }
 
         buys = engine._evaluate_buys(date.today(), scores)
-        # If a buy was generated via bear exception, the _bear_market_entry flag
-        # would have been set, which applies the 0.5x position multiplier
-        if buys:
-            # Bear exception entries are flagged
-            assert scores["STRONG"].get("_bear_market_entry") is True
+        assert len(buys) == 0
