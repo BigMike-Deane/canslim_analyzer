@@ -370,16 +370,21 @@ class BacktestEngine:
         if not scores:
             return
 
+        # Use relaxed thresholds for seeding — we're establishing initial exposure,
+        # not making high-conviction breakout entries. The M score drags down totals
+        # during corrections, so we lower the bar by 7 points.
+        seed_min_score = self.backtest.min_score_to_buy - 7  # e.g., 65 instead of 72
+
         quality_config = config.get('ai_trader.quality_filters', {})
-        min_c_score = quality_config.get('min_c_score', 10)
-        min_l_score = quality_config.get('min_l_score', 8)
+        min_c_score = quality_config.get('min_c_score', 10) - 2  # Relax C by 2 (e.g., 8)
+        min_l_score = quality_config.get('min_l_score', 8) - 2   # Relax L by 2 (e.g., 6)
         skip_growth = quality_config.get('skip_in_growth_mode', True)
 
-        # Filter by quality and min score, rank by total score
+        # Filter by relaxed quality and score, rank by total score
         candidates = []
         for ticker, data in scores.items():
             total_score = data.get("total_score", 0)
-            if total_score < self.backtest.min_score_to_buy:
+            if total_score < seed_min_score:
                 continue
 
             c_score = data.get('c', 0) or data.get('c_score', 0)

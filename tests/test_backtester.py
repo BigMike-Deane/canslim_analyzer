@@ -1147,16 +1147,16 @@ class TestInitialSeeding:
         engine.cash = 25000.0
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 53.0
+        engine.data_provider.get_price_on_date.return_value = 50.0
         engine.data_provider.get_market_direction.return_value = {
-            "weighted_signal": 1.6, "spy": {"price": 500, "ma_50": 490}
+            "weighted_signal": 0.5, "spy": {"price": 450, "ma_50": 445}
         }
         engine.data_provider.get_available_tickers.return_value = ["A", "B", "C", "D"]
         engine.data_provider.get_52_week_high_low.return_value = (55.0, 30.0)
-        engine.data_provider.get_relative_strength.return_value = 1.3
+        engine.data_provider.get_relative_strength.return_value = 1.2
         engine.data_provider.get_50_day_avg_volume.return_value = 500000
-        engine.data_provider.get_volume_on_date.return_value = 800000
-        engine.data_provider.is_breaking_out.return_value = (False, 1.6, 54.0)
+        engine.data_provider.get_volume_on_date.return_value = 600000
+        engine.data_provider.is_breaking_out.return_value = (False, 1.2, 52.0)
         engine.data_provider.get_atr.return_value = 2.5
         engine.data_provider.get_stock_data_on_date.return_value = MagicMock(
             quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4],
@@ -1166,14 +1166,14 @@ class TestInitialSeeding:
             market_cap=5e9,
         )
         engine.data_provider.detect_base_pattern.return_value = {
-            "type": "flat", "weeks": 10, "depth_pct": 12
+            "type": "flat", "weeks": 10, "depth_pct": 12, "pivot_price": 52.0
         }
 
         engine.static_data = {
-            "A": {"sector": "Technology"},
-            "B": {"sector": "Healthcare"},
-            "C": {"sector": "Finance"},
-            "D": {"sector": "Energy"},
+            "A": {"sector": "Technology", "roe": 0.20, "institutional_holders_pct": 0.45},
+            "B": {"sector": "Healthcare", "roe": 0.20, "institutional_holders_pct": 0.45},
+            "C": {"sector": "Finance", "roe": 0.20, "institutional_holders_pct": 0.45},
+            "D": {"sector": "Energy", "roe": 0.20, "institutional_holders_pct": 0.45},
         }
 
         first_day = date(2025, 2, 7)
