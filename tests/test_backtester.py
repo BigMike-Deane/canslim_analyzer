@@ -1133,3 +1133,92 @@ class TestBearMarketRegime:
         if buys:
             # Bear exception entries are flagged
             assert scores["STRONG"].get("_bear_market_entry") is True
+
+
+class TestInitialSeeding:
+    """Tests for initial portfolio seeding on day 1"""
+
+    def test_seeds_top_stocks_on_day_1(self):
+        """Should buy top-scoring stocks on the first trading day"""
+        from backend.backtester import BacktestEngine
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 25000.0
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 53.0
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 1.6, "spy": {"price": 500, "ma_50": 490}
+        }
+        engine.data_provider.get_available_tickers.return_value = ["A", "B", "C", "D"]
+        engine.data_provider.get_52_week_high_low.return_value = (55.0, 30.0)
+        engine.data_provider.get_relative_strength.return_value = 1.3
+        engine.data_provider.get_50_day_avg_volume.return_value = 500000
+        engine.data_provider.get_volume_on_date.return_value = 800000
+        engine.data_provider.is_breaking_out.return_value = (False, 1.6, 54.0)
+        engine.data_provider.get_atr.return_value = 2.5
+        engine.data_provider.get_stock_data_on_date.return_value = MagicMock(
+            quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4],
+            annual_earnings=[5.0, 3.5, 2.5],
+            institutional_holders=100,
+            institutional_pct=45.0,
+            market_cap=5e9,
+        )
+        engine.data_provider.detect_base_pattern.return_value = {
+            "type": "flat", "weeks": 10, "depth_pct": 12
+        }
+
+        engine.static_data = {
+            "A": {"sector": "Technology"},
+            "B": {"sector": "Healthcare"},
+            "C": {"sector": "Finance"},
+            "D": {"sector": "Energy"},
+        }
+
+        first_day = date(2025, 2, 7)
+        engine._seed_initial_positions(first_day)
+
+        # Should have opened positions (up to 3)
+        assert len(engine.positions) > 0
+        assert len(engine.positions) <= 3
+        # Should have spent some cash
+        assert engine.cash < 25000.0
+
+    def test_no_seed_if_no_qualifying_stocks(self):
+        """Should not seed if no stocks meet quality thresholds"""
+        from backend.backtester import BacktestEngine
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 25000.0
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 50.0
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 0.5, "spy": {"price": 450, "ma_50": 445}
+        }
+        engine.data_provider.get_available_tickers.return_value = ["LOW"]
+        engine.data_provider.get_52_week_high_low.return_value = (55.0, 30.0)
+        engine.data_provider.get_relative_strength.return_value = 0.8
+        engine.data_provider.get_50_day_avg_volume.return_value = 100000
+        engine.data_provider.get_volume_on_date.return_value = 100000
+        engine.data_provider.is_breaking_out.return_value = (False, 1.0, 50.0)
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_stock_data_on_date.return_value = MagicMock(
+            quarterly_earnings=[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+            annual_earnings=[2.0, 2.0, 2.0],
+            institutional_holders=50,
+            institutional_pct=30.0,
+            market_cap=1e9,
+        )
+        engine.data_provider.detect_base_pattern.return_value = {"type": "none"}
+
+        engine.static_data = {"LOW": {"sector": "Technology"}}
+
+        first_day = date(2025, 2, 7)
+        engine._seed_initial_positions(first_day)
+
+        # No positions — stock scores too low
+        assert len(engine.positions) == 0
+        assert engine.cash == 25000.0

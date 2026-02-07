@@ -182,6 +182,9 @@ class BacktestEngine:
             if self.spy_start_price > 0:
                 self.spy_shares = self.backtest.starting_cash / self.spy_start_price
 
+            # Seed initial positions on day 1 based on historical CANSLIM scores
+            self._seed_initial_positions(trading_days[0])
+
             # Simulate each trading day
             total_days = len(trading_days)
             for i, current_date in enumerate(trading_days):
@@ -353,6 +356,88 @@ class BacktestEngine:
 
         # Take daily snapshot
         self._take_snapshot(current_date)
+
+    def _seed_initial_positions(self, first_day: date):
+        """
+        Seed the portfolio with top CANSLIM stocks on day 1.
+
+        Instead of waiting months for breakout/pre-breakout setups, establish
+        initial positions based on the best-scoring stocks at backtest start.
+        Uses quality filters but bypasses breakout/base pattern requirements.
+        Allocates up to 50% of capital across top picks (max 3 positions).
+        """
+        scores = self._calculate_scores(first_day)
+        if not scores:
+            return
+
+        quality_config = config.get('ai_trader.quality_filters', {})
+        min_c_score = quality_config.get('min_c_score', 10)
+        min_l_score = quality_config.get('min_l_score', 8)
+        skip_growth = quality_config.get('skip_in_growth_mode', True)
+
+        # Filter by quality and min score, rank by total score
+        candidates = []
+        for ticker, data in scores.items():
+            total_score = data.get("total_score", 0)
+            if total_score < self.backtest.min_score_to_buy:
+                continue
+
+            c_score = data.get('c', 0) or data.get('c_score', 0)
+            l_score = data.get('l', 0) or data.get('l_score', 0)
+            is_growth = data.get('is_growth_stock', False)
+
+            if not (is_growth and skip_growth):
+                if c_score < min_c_score or l_score < min_l_score:
+                    continue
+
+            price = self.data_provider.get_price_on_date(ticker, first_day)
+            if not price or price <= 0:
+                continue
+
+            candidates.append((ticker, data, price, total_score))
+
+        if not candidates:
+            logger.info(f"Backtest {self.backtest.id}: No stocks qualify for initial seeding on {first_day}")
+            return
+
+        # Sort by total score descending, take top 3
+        candidates.sort(key=lambda x: x[3], reverse=True)
+        max_seed_positions = 3
+        seed_pct_per_position = 15.0  # 15% each, up to 45% total
+        seeds = candidates[:max_seed_positions]
+
+        logger.info(f"Backtest {self.backtest.id}: Seeding {len(seeds)} initial positions on {first_day}: "
+                    f"{[s[0] for s in seeds]}")
+
+        for ticker, data, price, total_score in seeds:
+            portfolio_value = self._get_portfolio_value(first_day)
+            position_value = portfolio_value * (seed_pct_per_position / 100)
+            position_value = min(position_value, self.cash * 0.70)
+
+            if position_value < 100 or self.cash < 100:
+                break
+
+            shares = position_value / price
+            has_base = data.get("has_base_pattern", False)
+            base_type = data.get("base_pattern", {}).get("type", "none") if has_base else "none"
+            pct_from_high = data.get("pct_from_high", 0)
+
+            reason = f"🏁 INITIAL SEED | Score {total_score:.0f} | {pct_from_high:.1f}% from high"
+            if has_base:
+                reason += f" | Base: {base_type}"
+
+            trade = SimulatedTrade(
+                ticker=ticker,
+                action="BUY",
+                shares=shares,
+                price=price,
+                reason=reason,
+                score=total_score,
+                priority=0
+            )
+            self._execute_buy(first_day, trade)
+
+        self._take_snapshot(first_day)
 
     def _update_positions(self, current_date: date):
         """Update position prices and track peak for trailing stops"""
