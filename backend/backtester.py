@@ -46,6 +46,7 @@ class SimulatedPosition:
     is_growth_stock: bool = False
     sector: str = ""
     partial_profit_taken: float = 0.0  # Cumulative % of position sold as partial profits
+    pyramid_count: int = 0  # Number of times pyramided into
 
 
 @dataclass
@@ -96,6 +97,9 @@ class BacktestEngine:
         self.sells_executed: int = 0  # Track sells separately for accurate win rate
         self.profitable_trades: int = 0
 
+        # Re-entry cooldown tracking: ticker -> (date, reason)
+        self.recently_sold: Dict[str, tuple] = {}
+
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
         self.spy_shares: float = 0.0  # Hypothetical SPY buy-and-hold
@@ -129,6 +133,9 @@ class BacktestEngine:
 
             if not success:
                 raise ValueError("Failed to load historical data")
+
+            # Pre-compute market direction for all trading days (performance optimization)
+            self.data_provider.precompute_market_direction()
 
             # Load static data (sector, earnings) from database
             self._load_static_data()
@@ -301,34 +308,48 @@ class BacktestEngine:
         return calculate_coiled_spring_score(data, score, cs_config)
 
     def _simulate_day(self, current_date: date):
-        """Simulate one trading day"""
+        """Simulate one trading day with two-tier scoring for performance."""
         # Update position prices and peak tracking
         self._update_positions(current_date)
 
-        # Calculate scores for universe (simplified - use price momentum as proxy)
-        scores = self._calculate_scores(current_date)
+        # Tier 1: Score HELD positions every day (needed for sell/pyramid triggers)
+        held_tickers = list(self.positions.keys())
+        held_scores = self._calculate_scores(current_date, tickers=held_tickers) if held_tickers else {}
 
         # Evaluate and execute sells first
-        sells = self._evaluate_sells(current_date, scores)
+        sells = self._evaluate_sells(current_date, held_scores)
         for trade in sells:
             self._execute_sell(current_date, trade)
 
-        # Evaluate and execute pyramids
-        pyramids = self._evaluate_pyramids(current_date, scores)
-        for trade in pyramids[:3]:  # Max 3 pyramids per day
-            self._execute_pyramid(current_date, trade)
-
-        # Check cash reserve before buys
+        # Tier 2: Check if we have cash to buy new positions
         portfolio_value = self._get_portfolio_value(current_date)
-        if self.cash / portfolio_value >= MIN_CASH_RESERVE_PCT:
+        can_buy = (self.cash / portfolio_value >= MIN_CASH_RESERVE_PCT and
+                   len(self.positions) < self.backtest.max_positions and
+                   self.cash >= 100)
+
+        if can_buy:
+            # Score full universe when we can buy
+            all_scores = self._calculate_scores(current_date)
+            all_scores.update(held_scores)  # Ensure held positions have scores
+
+            # Evaluate pyramids with full scores
+            pyramids = self._evaluate_pyramids(current_date, all_scores)
+            for trade in pyramids[:3]:
+                self._execute_pyramid(current_date, trade)
+
             # Evaluate and execute buys
-            buys = self._evaluate_buys(current_date, scores)
+            buys = self._evaluate_buys(current_date, all_scores)
             for trade in buys:
                 if self.cash < 100:
                     break
                 if len(self.positions) >= self.backtest.max_positions:
                     break
                 self._execute_buy(current_date, trade)
+        else:
+            # Only evaluate pyramids for held positions
+            pyramids = self._evaluate_pyramids(current_date, held_scores)
+            for trade in pyramids[:3]:
+                self._execute_pyramid(current_date, trade)
 
         # Take daily snapshot
         self._take_snapshot(current_date)
@@ -343,9 +364,13 @@ class BacktestEngine:
                     position.peak_price = price
                     position.peak_date = current_date
 
-    def _calculate_scores(self, current_date: date) -> Dict[str, dict]:
+    def _calculate_scores(self, current_date: date, tickers: List[str] = None) -> Dict[str, dict]:
         """
-        Calculate full CANSLIM scores for all stocks.
+        Calculate full CANSLIM scores for stocks.
+
+        Args:
+            current_date: Date to calculate scores for
+            tickers: Optional list of tickers to score. If None, scores all available.
 
         CANSLIM Components (100 points total):
         - C (15 pts): Current quarterly earnings growth + acceleration
@@ -361,7 +386,8 @@ class BacktestEngine:
         # Get market direction once (same for all stocks)
         market = self.data_provider.get_market_direction(current_date)
 
-        for ticker in self.data_provider.get_available_tickers():
+        ticker_list = tickers if tickers is not None else self.data_provider.get_available_tickers()
+        for ticker in ticker_list:
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
                 continue
@@ -653,9 +679,20 @@ class BacktestEngine:
         stop_loss_config = config.get('ai_trader.stops', {})
         normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', self.backtest.stop_loss_pct)
         bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+        use_atr_stops = stop_loss_config.get('use_atr_stops', True)
+        atr_multiplier = stop_loss_config.get('atr_multiplier', 2.5)
+        atr_period = stop_loss_config.get('atr_period', 14)
+        max_stop_pct = stop_loss_config.get('max_stop_pct', 20.0)
+
+        # Partial trailing stop config
+        partial_trailing_config = config.get('ai_trader.trailing_stops', {})
+        partial_on_trailing = partial_trailing_config.get('partial_on_trailing', True)
+        partial_min_pyramid = partial_trailing_config.get('partial_min_pyramid_count', 2)
+        partial_min_score = partial_trailing_config.get('partial_min_score', 65)
+        partial_sell_pct = partial_trailing_config.get('partial_sell_pct', 50)
 
         # Use wider stop loss in bearish market
-        effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
+        base_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
 
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
@@ -666,15 +703,25 @@ class BacktestEngine:
             score_data = scores.get(ticker, {})
             current_score = score_data.get("total_score", 0)
 
+            # ATR-based stop loss: volatile stocks get wider stops
+            effective_stop_loss_pct = base_stop_loss_pct
+            if use_atr_stops:
+                atr_pct = self.data_provider.get_atr(ticker, current_date, period=atr_period)
+                if atr_pct > 0:
+                    atr_stop_pct = atr_multiplier * atr_pct
+                    effective_stop_loss_pct = max(base_stop_loss_pct, atr_stop_pct)
+                    effective_stop_loss_pct = min(effective_stop_loss_pct, max_stop_pct)  # Cap
+
             # Market-aware stop loss check
             if gain_pct <= -effective_stop_loss_pct:
                 market_note = " (bearish market)" if is_bearish_market else ""
+                atr_note = f" (ATR-adj {effective_stop_loss_pct:.1f}%)" if use_atr_stops and effective_stop_loss_pct != base_stop_loss_pct else ""
                 sells.append(SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
                     price=price,
-                    reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}",
+                    reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}",
                     score=current_score,
                     priority=1
                 ))
@@ -696,17 +743,44 @@ class BacktestEngine:
                 elif peak_gain_pct >= 10:
                     trailing_stop_pct = 8
 
-                if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
-                    sells.append(SimulatedTrade(
-                        ticker=ticker,
-                        action="SELL",
-                        shares=position.shares,
-                        price=price,
-                        reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%)",
-                        score=current_score,
-                        priority=2
-                    ))
-                    continue
+                if trailing_stop_pct:
+                    # Widen trailing stop for pyramided positions (high conviction)
+                    pyramid_widening = min(position.pyramid_count * 2.0, 6.0)  # +2% per pyramid, max +6%
+                    effective_trailing_stop = trailing_stop_pct + pyramid_widening
+
+                    if drop_from_peak >= effective_trailing_stop:
+                        # High conviction: partial sell + widen stop on remainder
+                        if (partial_on_trailing and
+                                position.pyramid_count >= partial_min_pyramid and
+                                current_score >= partial_min_score):
+                            shares_to_sell = position.shares * (partial_sell_pct / 100)
+                            sells.append(SimulatedTrade(
+                                ticker=ticker,
+                                action="SELL",
+                                shares=shares_to_sell,
+                                price=price,
+                                reason=f"TRAILING STOP (PARTIAL {partial_sell_pct}%): Peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%)",
+                                score=current_score,
+                                priority=2,
+                                is_partial=True,
+                                sell_pct=partial_sell_pct
+                            ))
+                            # Reset peak to current price so remaining shares get a fresh wider stop
+                            position.peak_price = price
+                            position.peak_date = current_date
+                        else:
+                            # Standard: full sell
+                            pyramid_note = f" (pyramid +{pyramid_widening:.0f}%)" if pyramid_widening > 0 else ""
+                            sells.append(SimulatedTrade(
+                                ticker=ticker,
+                                action="SELL",
+                                shares=position.shares,
+                                price=price,
+                                reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%){pyramid_note}",
+                                score=current_score,
+                                priority=2
+                            ))
+                        continue
 
             # Score crash check with stability verification and profitability exception
             # Get score crash config
@@ -832,12 +906,47 @@ class BacktestEngine:
         buys = []
         current_tickers = set(self.positions.keys())
 
-        # Get candidates above minimum score
+        # Apply market regime score adjustment (match ai_trader logic)
+        market = self.data_provider.get_market_direction(current_date)
+        weighted_signal = market.get("weighted_signal", 0)
+
+        regime_config = config.get('ai_trader.market_regime', {})
+        bullish_threshold = regime_config.get('bullish_threshold', 1.5)
+        bearish_threshold = regime_config.get('bearish_threshold', -0.5)
+        bearish_adj = regime_config.get('bearish_min_score_adj', 10)
+        bear_exception_min_cal = regime_config.get('bear_exception_min_cal', 35)
+        bear_exception_position_mult = regime_config.get('bear_exception_position_mult', 0.50)
+
+        if weighted_signal >= bullish_threshold:
+            effective_min_score = self.backtest.min_score_to_buy - 5  # Easier in bull
+        elif weighted_signal <= bearish_threshold:
+            effective_min_score = self.backtest.min_score_to_buy + bearish_adj  # Harder in bear
+        else:
+            effective_min_score = self.backtest.min_score_to_buy
+
+        # Get candidates with regime-adjusted threshold
         candidates = [
             (ticker, data) for ticker, data in scores.items()
-            if data["total_score"] >= self.backtest.min_score_to_buy
+            if data["total_score"] >= effective_min_score
             and ticker not in current_tickers
         ]
+
+        # BEAR MARKET EXCEPTION: Allow very strong stocks at reduced position size
+        # If C+A+L >= 35 (out of 45 max), the stock has excellent fundamentals
+        # regardless of market conditions
+        is_bearish = weighted_signal <= bearish_threshold
+        if not candidates and is_bearish:
+            bear_candidates = []
+            for ticker, data in scores.items():
+                if ticker in current_tickers:
+                    continue
+                if data["total_score"] < self.backtest.min_score_to_buy:
+                    continue
+                cal_score = (data.get("c_score", 0) + data.get("a_score", 0) + data.get("l_score", 0))
+                if cal_score >= bear_exception_min_cal:
+                    data["_bear_market_entry"] = True
+                    bear_candidates.append((ticker, data))
+            candidates = bear_candidates
 
         portfolio_value = self._get_portfolio_value(current_date)
 
@@ -851,6 +960,23 @@ class BacktestEngine:
             pct_from_pivot = score_data.get("pct_from_pivot", pct_from_high)
             has_base = score_data.get("has_base_pattern", False)
             weeks_in_base = score_data.get("weeks_in_base", 0)
+
+            # Re-entry cooldown: don't re-buy recently stopped-out stocks
+            cooldown_config = config.get('ai_trader.re_entry_cooldown', {})
+            stop_loss_cooldown = cooldown_config.get('stop_loss_days', 5)
+            trailing_stop_cooldown = cooldown_config.get('trailing_stop_days', 3)
+
+            if ticker in self.recently_sold:
+                sold_date, sold_reason = self.recently_sold[ticker]
+                days_since = (current_date - sold_date).days
+                if "STOP LOSS" in sold_reason:
+                    cooldown = stop_loss_cooldown
+                elif "TRAILING STOP" in sold_reason and "PARTIAL" not in sold_reason:
+                    cooldown = trailing_stop_cooldown
+                else:
+                    cooldown = 0  # No cooldown for score crash, protect gains, etc.
+                if cooldown > 0 and days_since < cooldown:
+                    continue
 
             # Check sector limits
             sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
@@ -1039,6 +1165,10 @@ class BacktestEngine:
                 cs_multiplier = cs_config.get('position_multiplier', 1.25)
                 position_pct *= cs_multiplier
 
+            # Reduce position size for bear market exception entries
+            if score_data.get("_bear_market_entry"):
+                position_pct *= bear_exception_position_mult
+
             position_value = portfolio_value * (position_pct / 100)
 
             # Allow more cash for breakout/pre-breakout stocks
@@ -1214,8 +1344,9 @@ class BacktestEngine:
             logger.debug(f"PARTIAL SELL {trade.ticker}: {trade.sell_pct}% "
                         f"({trade.shares:.2f} shares), remaining: {position.shares:.2f}")
         else:
-            # FULL SELL - remove position entirely
+            # FULL SELL - remove position entirely and record for cooldown
             del self.positions[trade.ticker]
+            self.recently_sold[trade.ticker] = (current_date, trade.reason)
 
         self._record_trade(
             current_date, trade,
@@ -1246,6 +1377,7 @@ class BacktestEngine:
         new_value = trade.shares * trade.price
         position.shares += trade.shares
         position.cost_basis = (old_value + new_value) / position.shares
+        position.pyramid_count += 1
 
         self._record_trade(current_date, trade)
         self.trades_executed += 1

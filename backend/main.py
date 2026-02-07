@@ -3039,7 +3039,7 @@ async def create_backtest(
 
     # Create backtest run record
     backtest = BacktestRun(
-        name=config.name or f"Backtest {config.start_date} to {config.end_date}",
+        name=config.name or f"{config.stock_universe.upper()} | {config.start_date} to {config.end_date} | ${config.starting_cash:,.0f}",
         start_date=config.start_date,
         end_date=config.end_date,
         starting_cash=config.starting_cash,

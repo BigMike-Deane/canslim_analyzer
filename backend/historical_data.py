@@ -88,6 +88,10 @@ class HistoricalDataProvider:
         # Preloaded flag
         self._is_loaded = False
 
+        # Performance caches
+        self._market_direction_cache: Dict[date, dict] = {}  # date -> market direction
+        self._base_pattern_cache: Dict[str, Tuple[date, dict]] = {}  # ticker -> (computed_date, pattern)
+
         # Disk cache for price history (speeds up repeated backtests)
         self._disk_cache = None
         self._disk_cache_enabled = True
@@ -376,10 +380,16 @@ class HistoricalDataProvider:
 
         return float(history["close"].tail(period).mean())
 
+    def precompute_market_direction(self):
+        """Pre-compute market direction for all trading days (call after preload_data)."""
+        for d in self._trading_days:
+            self._market_direction_cache[d] = self._compute_market_direction(d)
+        logger.info(f"Pre-computed market direction for {len(self._market_direction_cache)} trading days")
+
     def get_market_direction(self, as_of_date: date) -> dict:
         """
         Calculate market direction (M score components) for a specific date.
-        Uses historical MAs from index price history.
+        Uses pre-computed cache when available.
 
         Returns:
             {
@@ -390,6 +400,12 @@ class HistoricalDataProvider:
                 "is_bullish": bool
             }
         """
+        if as_of_date in self._market_direction_cache:
+            return self._market_direction_cache[as_of_date]
+        return self._compute_market_direction(as_of_date)
+
+    def _compute_market_direction(self, as_of_date: date) -> dict:
+        """Compute market direction from scratch for a given date."""
         result = {"weighted_signal": 0.0, "is_bullish": False}
 
         for index in MARKET_INDEXES:
@@ -672,9 +688,52 @@ class HistoricalDataProvider:
 
         return weekly_data[-weeks:]  # Return most recent N weeks
 
+    def get_atr(self, ticker: str, as_of_date: date, period: int = 14) -> float:
+        """
+        Calculate Average True Range as percentage of price.
+
+        ATR measures volatility by looking at the range of each bar
+        plus any gap from the previous close.
+
+        Args:
+            ticker: Stock ticker
+            as_of_date: Date to calculate ATR for
+            period: Number of days for ATR calculation
+
+        Returns:
+            ATR as percentage of current price (e.g., 3.5 means 3.5%)
+        """
+        history = self.get_price_history_up_to(ticker, as_of_date, lookback_days=period + 5)
+        if len(history) < period + 1:
+            return 0.0
+
+        # Calculate True Range for each day
+        true_ranges = []
+        for i in range(1, len(history)):
+            high = float(history.iloc[i]["high"])
+            low = float(history.iloc[i]["low"])
+            prev_close = float(history.iloc[i - 1]["close"])
+
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+
+        if not true_ranges:
+            return 0.0
+
+        # ATR is the average of recent true ranges
+        atr = sum(true_ranges[-period:]) / min(period, len(true_ranges))
+
+        # Convert to percentage of current price
+        current_price = float(history.iloc[-1]["close"])
+        if current_price <= 0:
+            return 0.0
+
+        return (atr / current_price) * 100
+
     def detect_base_pattern(self, ticker: str, as_of_date: date) -> dict:
         """
         Detect consolidation base patterns for breakout detection.
+        Uses weekly cache (patterns change weekly, not daily).
 
         Returns:
             {
@@ -683,22 +742,34 @@ class HistoricalDataProvider:
                 "pivot_price": float
             }
         """
+        # Check cache - valid if computed within the same week
+        if ticker in self._base_pattern_cache:
+            cached_date, cached_pattern = self._base_pattern_cache[ticker]
+            if (as_of_date - cached_date).days < 7:
+                return cached_pattern
+
         weekly_data = self.get_weekly_price_history(ticker, as_of_date, weeks=26)
 
         if len(weekly_data) < 5:
-            return {"type": "none", "weeks": 0, "pivot_price": 0.0}
+            pattern = {"type": "none", "weeks": 0, "pivot_price": 0.0}
+            self._base_pattern_cache[ticker] = (as_of_date, pattern)
+            return pattern
 
         # Try to detect flat base first (most common for CANSLIM)
         flat_base = self._detect_flat_base(weekly_data)
         if flat_base["type"] != "none":
+            self._base_pattern_cache[ticker] = (as_of_date, flat_base)
             return flat_base
 
         # Try cup pattern
         cup = self._detect_cup_pattern(weekly_data)
         if cup["type"] != "none":
+            self._base_pattern_cache[ticker] = (as_of_date, cup)
             return cup
 
-        return {"type": "none", "weeks": 0, "pivot_price": 0.0}
+        pattern = {"type": "none", "weeks": 0, "pivot_price": 0.0}
+        self._base_pattern_cache[ticker] = (as_of_date, pattern)
+        return pattern
 
     def _detect_flat_base(self, weekly_data: List[dict]) -> dict:
         """

@@ -172,6 +172,8 @@ ai_trader:
     neutral_max_position_pct: 12.0  # Standard position sizing
     bearish_max_position_pct: 8.0   # Smaller positions in bear market
     bearish_min_score_adj: 10      # Require 10 more points in bear market (raised from 5)
+    bear_exception_min_cal: 35     # Min C+A+L score to bypass bearish adjustment
+    bear_exception_position_mult: 0.50  # 50% position size for bear market exceptions
 
   # Drawdown protection (reduce position sizes when portfolio is down)
   drawdown_protection:
@@ -233,10 +235,19 @@ ai_trader:
     rs_ratio_threshold: 0.95  # rs_3m must be >= rs_12m * 0.95
     penalty: 0.15             # 15% penalty to composite score if fading
 
+  # Re-entry cooldown (prevent same-day re-buys after stops)
+  re_entry_cooldown:
+    stop_loss_days: 5                 # Days to wait after stop loss before re-buying
+    trailing_stop_days: 3             # Days to wait after trailing stop before re-buying
+
   # Stop loss settings
   stops:
     normal_stop_loss_pct: 10.0        # Normal stop loss percentage
     bearish_stop_loss_pct: 15.0       # Wider stop loss when SPY < 50-day MA
+    use_atr_stops: true               # Use ATR-based adaptive stop losses
+    atr_multiplier: 2.5               # Stop = max(config_stop, ATR * multiplier)
+    atr_period: 14                    # ATR lookback period in days
+    max_stop_pct: 20.0                # Maximum stop loss percentage (cap)
 
   # Trailing stop loss thresholds
   trailing_stops:
@@ -252,6 +263,11 @@ ai_trader:
     gain_10_to_20:
       threshold: 0.10
       stop_pct: 0.08     # 8% trailing stop
+    # Partial sell on trailing stop for high-conviction positions
+    partial_on_trailing: true           # Enable partial sell on trailing stop hit
+    partial_min_pyramid_count: 2        # Min pyramids to qualify for partial
+    partial_min_score: 65               # Min score to qualify for partial
+    partial_sell_pct: 50                # Sell this % of position, keep remainder
 
   # Insider trading signal weights
   insider_signals:
