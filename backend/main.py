@@ -3037,6 +3037,11 @@ async def create_backtest(
     if config.end_date > date.today():
         raise HTTPException(400, "end_date cannot be in the future")
 
+    # Read defaults from yaml config when not provided via API
+    from config_loader import config as yaml_config
+    default_min_score = yaml_config.get('ai_trader.allocation.min_score_to_buy', 72)
+    default_stop_loss = yaml_config.get('ai_trader.stops.normal_stop_loss_pct', 10.0)
+
     # Create backtest run record
     backtest = BacktestRun(
         name=config.name or f"{config.stock_universe.upper()} | {config.start_date} to {config.end_date} | ${config.starting_cash:,.0f}",
@@ -3046,8 +3051,8 @@ async def create_backtest(
         stock_universe=config.stock_universe,
         custom_tickers=config.custom_tickers,
         max_positions=config.max_positions or 20,
-        min_score_to_buy=config.min_score_to_buy or 65,
-        stop_loss_pct=config.stop_loss_pct or 10.0,
+        min_score_to_buy=config.min_score_to_buy or default_min_score,
+        stop_loss_pct=config.stop_loss_pct or default_stop_loss,
         status="pending"
     )
     db.add(backtest)
