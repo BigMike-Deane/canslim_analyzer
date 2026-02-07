@@ -906,17 +906,47 @@ class BacktestEngine:
         buys = []
         current_tickers = set(self.positions.keys())
 
-        # Use flat min_score_to_buy threshold — the M score (market direction)
-        # in the total score already handles market regime naturally.
-        # Adding regime adjustments on top double-penalizes during bear markets.
-        effective_min_score = self.backtest.min_score_to_buy
+        # Apply market regime score adjustment (match ai_trader logic)
+        market = self.data_provider.get_market_direction(current_date)
+        weighted_signal = market.get("weighted_signal", 0)
 
-        # Get candidates
+        regime_config = config.get('ai_trader.market_regime', {})
+        bullish_threshold = regime_config.get('bullish_threshold', 1.5)
+        bearish_threshold = regime_config.get('bearish_threshold', -0.5)
+        bearish_adj = regime_config.get('bearish_min_score_adj', 10)
+        bear_exception_min_cal = regime_config.get('bear_exception_min_cal', 35)
+        bear_exception_position_mult = regime_config.get('bear_exception_position_mult', 0.50)
+
+        if weighted_signal >= bullish_threshold:
+            effective_min_score = self.backtest.min_score_to_buy - 5  # Easier in bull
+        elif weighted_signal <= bearish_threshold:
+            effective_min_score = self.backtest.min_score_to_buy + bearish_adj  # Harder in bear
+        else:
+            effective_min_score = self.backtest.min_score_to_buy
+
+        # Get candidates with regime-adjusted threshold
         candidates = [
             (ticker, data) for ticker, data in scores.items()
             if data["total_score"] >= effective_min_score
             and ticker not in current_tickers
         ]
+
+        # BEAR MARKET EXCEPTION: Allow very strong stocks at reduced position size
+        # If C+A+L >= 35 (out of 45 max), the stock has excellent fundamentals
+        # regardless of market conditions
+        is_bearish = weighted_signal <= bearish_threshold
+        if not candidates and is_bearish:
+            bear_candidates = []
+            for ticker, data in scores.items():
+                if ticker in current_tickers:
+                    continue
+                if data["total_score"] < self.backtest.min_score_to_buy:
+                    continue
+                cal_score = (data.get("c_score", 0) + data.get("a_score", 0) + data.get("l_score", 0))
+                if cal_score >= bear_exception_min_cal:
+                    data["_bear_market_entry"] = True
+                    bear_candidates.append((ticker, data))
+            candidates = bear_candidates
 
         portfolio_value = self._get_portfolio_value(current_date)
 
@@ -1134,6 +1164,10 @@ class BacktestEngine:
             if coiled_spring_bonus > 0:
                 cs_multiplier = cs_config.get('position_multiplier', 1.25)
                 position_pct *= cs_multiplier
+
+            # Reduce position size for bear market exception entries
+            if score_data.get("_bear_market_entry"):
+                position_pct *= bear_exception_position_mult
 
             position_value = portfolio_value * (position_pct / 100)
 

@@ -2991,7 +2991,7 @@ class BacktestCreate(BaseModel):
     start_date: date
     end_date: date
     starting_cash: float = 25000.0
-    stock_universe: str = "sp500"  # sp500, all, custom
+    stock_universe: str = "all"  # sp500, all, custom
     custom_tickers: Optional[List[str]] = None
     max_positions: Optional[int] = None
     min_score_to_buy: Optional[int] = None

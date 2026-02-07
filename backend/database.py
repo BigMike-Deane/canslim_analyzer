@@ -663,7 +663,7 @@ class BacktestRun(Base):
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     starting_cash = Column(Float, default=25000.0)
-    stock_universe = Column(String, default="sp500")  # sp500, all, custom
+    stock_universe = Column(String, default="all")  # sp500, all, custom
     custom_tickers = Column(JSON)  # If universe is custom
 
     # AI Config snapshot (frozen at backtest start)
