@@ -371,9 +371,10 @@ class BacktestEngine:
             return
 
         # Use relaxed thresholds for seeding — we're establishing initial exposure,
-        # not making high-conviction breakout entries. The M score drags down totals
-        # during corrections, so we lower the bar by 7 points.
-        seed_min_score = self.backtest.min_score_to_buy - 7  # e.g., 65 instead of 72
+        # not making high-conviction breakout entries. During corrections M score drops
+        # to 0-5, dragging even strong stocks to 55-65 total. Use a generous floor
+        # since we sort by score and only take top 3.
+        seed_min_score = max(50, self.backtest.min_score_to_buy - 20)  # e.g., 52
 
         quality_config = config.get('ai_trader.quality_filters', {})
         min_c_score = quality_config.get('min_c_score', 10) - 2  # Relax C by 2 (e.g., 8)
