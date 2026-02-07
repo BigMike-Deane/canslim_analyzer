@@ -363,38 +363,34 @@ class BacktestEngine:
 
         Instead of waiting months for breakout/pre-breakout setups, establish
         initial positions based on the best-scoring stocks at backtest start.
-        Uses quality filters but bypasses breakout/base pattern requirements.
-        Allocates up to 50% of capital across top picks (max 3 positions).
+
+        NOTE: On day 1 of a 1-year backtest, _filter_available_earnings skips
+        ~4 quarters of earnings data. With only 8 quarters in the DB, the C score
+        YoY comparison (needs index 4) fails for ALL stocks, giving C=0 universally.
+        A score similarly gets 0. So we skip C/A quality filters for seeding and
+        rank by N+S+L+I+M (technical/institutional quality).
         """
         scores = self._calculate_scores(first_day)
         if not scores:
             return
 
-        # Use relaxed thresholds for seeding — we're establishing initial exposure,
-        # not making high-conviction breakout entries. During corrections M score drops
-        # to 0-5, dragging even strong stocks to 55-65 total. Use a generous floor
-        # since we sort by score and only take top 3.
-        seed_min_score = max(50, self.backtest.min_score_to_buy - 20)  # e.g., 52
+        # Low floor since C and A scores are typically 0 on backtest day 1
+        # (earnings data gets filtered out for historical dates).
+        # N+S+L+I+M max = 70, good stocks score 30-50 in this range.
+        seed_min_score = 35
 
-        quality_config = config.get('ai_trader.quality_filters', {})
-        min_c_score = quality_config.get('min_c_score', 10) - 2  # Relax C by 2 (e.g., 8)
-        min_l_score = quality_config.get('min_l_score', 8) - 2   # Relax L by 2 (e.g., 6)
-        skip_growth = quality_config.get('skip_in_growth_mode', True)
-
-        # Filter by relaxed quality and score, rank by total score
+        # Skip C/A quality filters — earnings data is unavailable for day 1 scoring.
+        # Instead rely on L score (relative strength) as the primary quality signal.
         candidates = []
         for ticker, data in scores.items():
             total_score = data.get("total_score", 0)
             if total_score < seed_min_score:
                 continue
 
-            c_score = data.get('c', 0) or data.get('c_score', 0)
-            l_score = data.get('l', 0) or data.get('l_score', 0)
-            is_growth = data.get('is_growth_stock', False)
-
-            if not (is_growth and skip_growth):
-                if c_score < min_c_score or l_score < min_l_score:
-                    continue
+            # Require decent relative strength (the one reliable signal on day 1)
+            l_score = data.get('l_score', 0)
+            if l_score < 8:
+                continue
 
             price = self.data_provider.get_price_on_date(ticker, first_day)
             if not price or price <= 0:

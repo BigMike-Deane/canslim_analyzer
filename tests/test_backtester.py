@@ -1186,7 +1186,7 @@ class TestInitialSeeding:
         assert engine.cash < 25000.0
 
     def test_no_seed_if_no_qualifying_stocks(self):
-        """Should not seed if no stocks meet quality thresholds"""
+        """Should not seed if stocks have weak relative strength"""
         from backend.backtester import BacktestEngine
 
         mock_session, mock_backtest = make_mock_db(min_score=72)
@@ -1196,14 +1196,14 @@ class TestInitialSeeding:
         engine.data_provider = MagicMock()
         engine.data_provider.get_price_on_date.return_value = 50.0
         engine.data_provider.get_market_direction.return_value = {
-            "weighted_signal": 0.5, "spy": {"price": 450, "ma_50": 445}
+            "weighted_signal": -1.0, "spy": {"price": 400, "ma_50": 430}
         }
         engine.data_provider.get_available_tickers.return_value = ["LOW"]
-        engine.data_provider.get_52_week_high_low.return_value = (55.0, 30.0)
-        engine.data_provider.get_relative_strength.return_value = 0.8
+        engine.data_provider.get_52_week_high_low.return_value = (80.0, 30.0)
+        engine.data_provider.get_relative_strength.return_value = 0.7  # Weak RS → L=0
         engine.data_provider.get_50_day_avg_volume.return_value = 100000
-        engine.data_provider.get_volume_on_date.return_value = 100000
-        engine.data_provider.is_breaking_out.return_value = (False, 1.0, 50.0)
+        engine.data_provider.get_volume_on_date.return_value = 80000  # Low volume → S=3
+        engine.data_provider.is_breaking_out.return_value = (False, 0.8, 50.0)
         engine.data_provider.get_atr.return_value = 2.0
         engine.data_provider.get_stock_data_on_date.return_value = MagicMock(
             quarterly_earnings=[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
@@ -1219,6 +1219,6 @@ class TestInitialSeeding:
         first_day = date(2025, 2, 7)
         engine._seed_initial_positions(first_day)
 
-        # No positions — stock scores too low
+        # No positions — weak RS (L < 8) blocks seeding
         assert len(engine.positions) == 0
         assert engine.cash == 25000.0
