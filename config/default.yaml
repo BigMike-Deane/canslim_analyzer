@@ -138,7 +138,14 @@ ai_trader:
     max_sector_allocation: 0.30   # Max 30% in any sector
     max_stocks_per_sector: 4      # Max 4 stocks per sector
     max_single_position: 0.15     # Max 15% in single stock
-    min_score_to_buy: 65          # Minimum CANSLIM score to buy
+    min_score_to_buy: 72          # Minimum CANSLIM score to buy (raised from 65)
+
+  # Stock selection quality filters - must meet ALL criteria
+  quality_filters:
+    min_c_score: 10               # Strong current earnings (max 15)
+    min_l_score: 8                # Strong relative strength (max 15)
+    min_volume_ratio: 1.2         # Accumulation signal (1.2x avg volume)
+    skip_in_growth_mode: true     # Don't apply C/L filters to growth stocks
 
   # Earnings calendar avoidance for non-CS stocks
   # CS stocks use their own allow_buy_days from coiled_spring config
@@ -164,7 +171,7 @@ ai_trader:
     bullish_max_position_pct: 15.0  # Allow larger positions in bull market
     neutral_max_position_pct: 12.0  # Standard position sizing
     bearish_max_position_pct: 8.0   # Smaller positions in bear market
-    bearish_min_score_adj: 5       # Require 5 more points in bear market
+    bearish_min_score_adj: 10      # Require 10 more points in bear market (raised from 5)
 
   # Drawdown protection (reduce position sizes when portfolio is down)
   drawdown_protection:

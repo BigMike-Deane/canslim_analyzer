@@ -1427,10 +1427,38 @@ def evaluate_buys(db: Session) -> list:
         if not effective_score or effective_score < config.min_score_to_buy:
             continue
 
+        # QUALITY FILTERS: Only buy stocks with strong fundamentals
+        from config_loader import config as yaml_config
+        quality_config = yaml_config.get('ai_trader.quality_filters', {})
+        min_c_score = quality_config.get('min_c_score', 10)
+        min_l_score = quality_config.get('min_l_score', 8)
+        min_volume_ratio = quality_config.get('min_volume_ratio', 1.2)
+        skip_growth = quality_config.get('skip_in_growth_mode', True)
+
+        # Get individual scores from score_details
+        score_details = stock.score_details or {}
+        c_score = score_details.get('c', {}).get('score', 0) if isinstance(score_details.get('c'), dict) else score_details.get('c', 0)
+        l_score = score_details.get('l', {}).get('score', 0) if isinstance(score_details.get('l'), dict) else score_details.get('l', 0)
+        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+
+        # Skip if not meeting quality thresholds (unless growth stock)
+        if not (is_growth and skip_growth):
+            if c_score < min_c_score:
+                logger.debug(f"Skipping {stock.ticker}: C score {c_score} < {min_c_score}")
+                continue
+            if l_score < min_l_score:
+                logger.debug(f"Skipping {stock.ticker}: L score {l_score} < {min_l_score}")
+                continue
+
+        # Volume confirmation - accumulation signal (skip for breakouts which already have volume)
+        is_breaking_out = getattr(stock, 'is_breaking_out', False)
+        if volume_ratio < min_volume_ratio and not is_breaking_out:
+            logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {min_volume_ratio}")
+            continue
+
         # Earnings proximity check with Coiled Spring exception
         # CS stocks EMBRACE earnings (catalyst), non-CS stocks AVOID earnings (binary risk)
         days_to_earnings = getattr(stock, 'days_to_earnings', None)
-        from config_loader import config as yaml_config
         cs_config = yaml_config.get('coiled_spring', {})
         earnings_config = yaml_config.get('ai_trader.earnings', {})
 

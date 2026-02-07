@@ -228,6 +228,7 @@ class TestTrailingStopLogic:
         # Current price at $136 = 15% drop from peak
         # Should trigger trailing stop (15% threshold for 50%+ gains)
         engine.data_provider.get_price_on_date.return_value = 136.0
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}  # Bullish market
 
         scores = {"AAPL": {"total_score": 70}}
         sells = engine._evaluate_sells(date.today(), scores)
@@ -258,6 +259,7 @@ class TestTrailingStopLogic:
         # Mock data provider
         engine.data_provider = MagicMock()
         engine.data_provider.get_price_on_date.return_value = 89.0  # 11% loss
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}  # Bullish market
 
         scores = {"AAPL": {"total_score": 60}}
         sells = engine._evaluate_sells(date.today(), scores)

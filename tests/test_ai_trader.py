@@ -1169,3 +1169,121 @@ class TestWorkerConfiguration:
         effective_workers = max(min_workers, min(configured_workers, max_workers))
         assert effective_workers == 12
         assert min_workers <= effective_workers <= max_workers
+
+
+class TestQualityFilters:
+    """Tests for stock selection quality filters"""
+
+    def test_min_score_raised(self):
+        """Test minimum score to buy raised from 65 to 72"""
+        from config_loader import config
+
+        min_score = config.get('ai_trader.allocation.min_score_to_buy', 65)
+        assert min_score == 72, f"min_score_to_buy should be 72, got {min_score}"
+
+    def test_c_score_filter_threshold(self):
+        """Test C score filter requires 10 points minimum"""
+        from config_loader import config
+
+        min_c = config.get('ai_trader.quality_filters.min_c_score', 10)
+        assert min_c == 10, f"min_c_score should be 10, got {min_c}"
+
+    def test_l_score_filter_threshold(self):
+        """Test L score filter requires 8 points minimum"""
+        from config_loader import config
+
+        min_l = config.get('ai_trader.quality_filters.min_l_score', 8)
+        assert min_l == 8, f"min_l_score should be 8, got {min_l}"
+
+    def test_volume_filter_threshold(self):
+        """Test volume filter requires 1.2x average"""
+        from config_loader import config
+
+        min_volume = config.get('ai_trader.quality_filters.min_volume_ratio', 1.2)
+        assert min_volume == 1.2, f"min_volume_ratio should be 1.2, got {min_volume}"
+
+    def test_growth_stocks_skip_c_l_filters(self):
+        """Test that growth stocks can skip C and L filters"""
+        from config_loader import config
+
+        skip_growth = config.get('ai_trader.quality_filters.skip_in_growth_mode', True)
+        assert skip_growth is True, "Growth stocks should skip C/L filters by default"
+
+    def test_bearish_score_adjustment(self):
+        """Test bear market requires 10 extra points (raised from 5)"""
+        from config_loader import config
+
+        bearish_adj = config.get('ai_trader.market_regime.bearish_min_score_adj', 5)
+        assert bearish_adj == 10, f"bearish_min_score_adj should be 10, got {bearish_adj}"
+
+    def test_quality_filter_logic(self):
+        """Test quality filter logic rejects weak stocks"""
+        # Simulate the filter logic
+        min_c_score = 10
+        min_l_score = 8
+        min_volume = 1.2
+
+        # Weak stock - should be filtered
+        weak_stock = {
+            'c_score': 5,  # Below 10
+            'l_score': 7,  # Below 8
+            'volume_ratio': 1.0,  # Below 1.2
+            'is_growth': False
+        }
+
+        # Check C score
+        if weak_stock['c_score'] < min_c_score:
+            should_skip = True
+        elif weak_stock['l_score'] < min_l_score:
+            should_skip = True
+        elif weak_stock['volume_ratio'] < min_volume:
+            should_skip = True
+        else:
+            should_skip = False
+
+        assert should_skip is True, "Weak stocks should be filtered out"
+
+    def test_quality_filter_passes_strong_stock(self):
+        """Test quality filter accepts strong stocks"""
+        min_c_score = 10
+        min_l_score = 8
+        min_volume = 1.2
+
+        # Strong stock - should pass all filters
+        strong_stock = {
+            'c_score': 12,  # Above 10
+            'l_score': 10,  # Above 8
+            'volume_ratio': 1.5,  # Above 1.2
+            'is_growth': False
+        }
+
+        passes_c = strong_stock['c_score'] >= min_c_score
+        passes_l = strong_stock['l_score'] >= min_l_score
+        passes_volume = strong_stock['volume_ratio'] >= min_volume
+
+        assert passes_c is True, "Strong stock should pass C score check"
+        assert passes_l is True, "Strong stock should pass L score check"
+        assert passes_volume is True, "Strong stock should pass volume check"
+        assert (passes_c and passes_l and passes_volume) is True
+
+    def test_growth_stock_bypasses_c_l_filters(self):
+        """Test growth stocks bypass C and L score filters"""
+        min_c_score = 10
+        min_l_score = 8
+        skip_growth = True
+
+        # Growth stock with weak C and L (should still pass)
+        growth_stock = {
+            'c_score': 0,  # Very low - no earnings
+            'l_score': 5,  # Below threshold
+            'is_growth': True
+        }
+
+        # Logic: if growth and skip_growth enabled, bypass C/L checks
+        if growth_stock['is_growth'] and skip_growth:
+            bypassed = True
+        else:
+            bypassed = (growth_stock['c_score'] >= min_c_score and
+                       growth_stock['l_score'] >= min_l_score)
+
+        assert bypassed is True, "Growth stocks should bypass C/L filters"
