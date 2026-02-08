@@ -374,6 +374,120 @@ def update_coiled_spring_outcomes():
         db.close()
 
 
+_last_briefing_date = None  # Track when last briefing was sent
+
+
+def send_morning_briefing_if_due():
+    """Send morning briefing email once per day (first scan after configured time)."""
+    global _last_briefing_date
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from config_loader import config as yaml_config
+    from backend.database import SessionLocal, Stock, AIPortfolioPosition
+
+    briefing_config = yaml_config.get('morning_briefing', {})
+    if not briefing_config.get('enabled', True):
+        return
+
+    now = datetime.now(timezone.utc)
+    today = now.date() if hasattr(now, 'date') else now
+
+    # Only send once per day
+    if _last_briefing_date == today:
+        return
+
+    # Check if it's after the configured send time (default 8:00 AM CT)
+    from zoneinfo import ZoneInfo
+    ct_now = datetime.now(ZoneInfo("America/Chicago"))
+    send_hour = briefing_config.get('send_time_hour', 8)
+    send_minute = briefing_config.get('send_time_minute', 0)
+    if ct_now.hour < send_hour or (ct_now.hour == send_hour and ct_now.minute < send_minute):
+        return
+
+    # Don't send on weekends
+    if ct_now.weekday() > 4:
+        return
+
+    logger.info("Sending morning briefing email...")
+    db = SessionLocal()
+    try:
+        from backend.ai_trader import get_portfolio_value, get_market_regime, evaluate_buys, get_effective_score
+        from email_utils import send_morning_briefing_email
+
+        # Portfolio summary
+        portfolio = get_portfolio_value(db)
+        market_regime = get_market_regime(db)
+
+        # Current positions
+        positions = db.query(AIPortfolioPosition).all()
+        pos_data = []
+        for p in positions:
+            stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+            pos_data.append({
+                "ticker": p.ticker,
+                "price": p.current_price or 0,
+                "gain_pct": p.gain_loss_pct or 0,
+                "score": get_effective_score(p, use_current=True)
+            })
+
+        # Top candidates (evaluate without executing)
+        try:
+            buys = evaluate_buys(db)[:5]
+            candidates = [{
+                "ticker": b["stock"].ticker,
+                "price": b["stock"].current_price or 0,
+                "score": b.get("effective_score", 0),
+                "reason": b.get("reason", "")
+            } for b in buys]
+        except Exception:
+            candidates = []
+
+        # Market timing info
+        timing_info = {"state": "N/A", "can_buy": True}
+        try:
+            from backend.historical_data import HistoricalDataProvider
+            from datetime import date, timedelta
+            provider = HistoricalDataProvider(['SPY'])
+            provider.preload_data(date.today() - timedelta(days=60), date.today())
+            timing_info = provider.get_follow_through_day_status(date.today())
+        except Exception:
+            pass
+
+        # Portfolio heat
+        heat = 0.0
+        stop_cfg = yaml_config.get('ai_trader.stops', {})
+        base_stop = stop_cfg.get('normal_stop_loss_pct', 8.0)
+        pv = portfolio.get("total_value", 0)
+        if pv > 0:
+            for p in positions:
+                if p.current_price and p.current_price > 0 and p.cost_basis and p.cost_basis > 0:
+                    pos_pct = ((p.current_value or 0) / pv) * 100
+                    g_pct = ((p.current_price - p.cost_basis) / p.cost_basis) * 100
+                    heat += pos_pct * ((base_stop + g_pct) / 100)
+
+        briefing_data = {
+            "portfolio": portfolio,
+            "market_regime": market_regime,
+            "positions": pos_data,
+            "top_candidates": candidates,
+            "market_timing": timing_info,
+            "portfolio_heat": heat
+        }
+
+        success = send_morning_briefing_email(briefing_data)
+        if success:
+            _last_briefing_date = today
+            logger.info("Morning briefing sent successfully")
+        else:
+            logger.warning("Morning briefing email failed to send")
+
+    except Exception as e:
+        logger.error(f"Morning briefing generation error: {e}")
+    finally:
+        db.close()
+
+
 def run_continuous_scan():
     """Execute a scan of the configured stock universe"""
     from backend.database import SessionLocal, Stock
@@ -1006,6 +1120,12 @@ def run_continuous_scan():
             check_watchlist_alerts()
         except Exception as e:
             logger.error(f"Watchlist alert check failed: {e}")
+
+        # Phase 6: Morning briefing email (first scan of the day only)
+        try:
+            send_morning_briefing_if_due()
+        except Exception as e:
+            logger.error(f"Morning briefing error: {e}")
 
     except Exception as e:
         logger.error(f"Scan error: {e}")

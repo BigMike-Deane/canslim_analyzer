@@ -863,6 +863,313 @@ class HistoricalDataProvider:
 
         return {"type": "none", "weeks": 0, "pivot_price": 0.0}
 
+    def get_accumulation_distribution_days(self, as_of_date: date, lookback_days: int = 25) -> dict:
+        """
+        Count accumulation and distribution days for SPY over a rolling window.
+
+        Distribution day: Index down >= 0.2% on higher volume than prior day.
+        Accumulation day: Index up >= 0.2% on higher volume than prior day.
+
+        Returns:
+            {
+                "distribution_days": int,
+                "accumulation_days": int,
+                "net_ad": int (accumulation - distribution),
+                "is_under_pressure": bool (4+ distribution days),
+                "is_critical": bool (5+ distribution days),
+                "recent_dates": list of (date, type) tuples
+            }
+        """
+        df = self._index_cache.get("SPY")
+        if df is None:
+            return {"distribution_days": 0, "accumulation_days": 0, "net_ad": 0,
+                    "is_under_pressure": False, "is_critical": False, "recent_dates": []}
+
+        history = df[df["date"] <= as_of_date].tail(lookback_days + 1)
+        if len(history) < 2:
+            return {"distribution_days": 0, "accumulation_days": 0, "net_ad": 0,
+                    "is_under_pressure": False, "is_critical": False, "recent_dates": []}
+
+        distribution_days = 0
+        accumulation_days = 0
+        recent_dates = []
+
+        for i in range(1, len(history)):
+            prev_close = float(history.iloc[i - 1]["close"])
+            curr_close = float(history.iloc[i]["close"])
+            prev_vol = float(history.iloc[i - 1]["volume"])
+            curr_vol = float(history.iloc[i]["volume"])
+
+            if prev_close <= 0 or prev_vol <= 0:
+                continue
+
+            pct_change = ((curr_close - prev_close) / prev_close) * 100
+            higher_volume = curr_vol > prev_vol
+            curr_date = history.iloc[i]["date"]
+
+            if pct_change <= -0.2 and higher_volume:
+                distribution_days += 1
+                recent_dates.append((curr_date, "distribution"))
+            elif pct_change >= 0.2 and higher_volume:
+                accumulation_days += 1
+                recent_dates.append((curr_date, "accumulation"))
+
+        return {
+            "distribution_days": distribution_days,
+            "accumulation_days": accumulation_days,
+            "net_ad": accumulation_days - distribution_days,
+            "is_under_pressure": distribution_days >= 4,
+            "is_critical": distribution_days >= 5,
+            "recent_dates": recent_dates[-10:]  # Last 10 events
+        }
+
+    def get_follow_through_day_status(self, as_of_date: date) -> dict:
+        """
+        Determine the O'Neil Follow-Through Day market timing state.
+
+        State machine:
+        - CONFIRMED_UPTREND: After a valid FTD, market is in confirmed uptrend
+        - UPTREND_UNDER_PRESSURE: 3+ distribution days in confirmed uptrend
+        - MARKET_IN_CORRECTION: SPY below 50-day MA or 5+ distribution days
+        - RALLY_ATTEMPT: After correction, market trying to rally (waiting for FTD)
+
+        Returns:
+            {
+                "state": str,
+                "rally_day_count": int (days since correction low),
+                "last_ftd_date": date or None,
+                "can_buy": bool (True in CONFIRMED_UPTREND or RALLY_ATTEMPT day 4+)
+            }
+        """
+        df = self._index_cache.get("SPY")
+        if df is None:
+            return {"state": "CONFIRMED_UPTREND", "rally_day_count": 0,
+                    "last_ftd_date": None, "can_buy": True}
+
+        history = df[df["date"] <= as_of_date].tail(60)
+        if len(history) < 20:
+            return {"state": "CONFIRMED_UPTREND", "rally_day_count": 0,
+                    "last_ftd_date": None, "can_buy": True}
+
+        # Get market direction to check if below 50-day MA
+        market = self.get_market_direction(as_of_date)
+        spy_data = market.get("spy", {})
+        spy_price = spy_data.get("price", 0)
+        spy_ma_50 = spy_data.get("ma_50", 0)
+
+        # Get A/D day count
+        ad_data = self.get_accumulation_distribution_days(as_of_date, lookback_days=25)
+        dist_days = ad_data["distribution_days"]
+
+        # Check if in correction (below 50-day MA OR 5+ distribution days)
+        in_correction = (spy_price < spy_ma_50 * 0.98) or dist_days >= 5
+
+        if in_correction:
+            # Look for rally attempt: find the correction low and count days since
+            recent = history.tail(20)
+            low_idx = recent["close"].idxmin()
+            low_date = recent.loc[low_idx, "date"]
+
+            # Count trading days since correction low
+            rally_days = len(recent[recent["date"] > low_date])
+
+            # Check for FTD: day 4+, up 1.5%+, higher volume
+            last_ftd_date = None
+            for i in range(max(0, len(recent) - rally_days), len(recent)):
+                if i < 1:
+                    continue
+                day_num = i - (len(recent) - rally_days)
+                if day_num < 3:  # FTD must be day 4+ (0-indexed day 3+)
+                    continue
+
+                prev_close = float(recent.iloc[i - 1]["close"])
+                curr_close = float(recent.iloc[i]["close"])
+                prev_vol = float(recent.iloc[i - 1]["volume"])
+                curr_vol = float(recent.iloc[i]["volume"])
+
+                if prev_close <= 0:
+                    continue
+
+                gain_pct = ((curr_close - prev_close) / prev_close) * 100
+                if gain_pct >= 1.5 and curr_vol > prev_vol:
+                    last_ftd_date = recent.iloc[i]["date"]
+
+            if last_ftd_date:
+                state = "CONFIRMED_UPTREND"
+                can_buy = True
+            elif rally_days >= 3:
+                state = "RALLY_ATTEMPT"
+                can_buy = False  # Wait for FTD
+            else:
+                state = "MARKET_IN_CORRECTION"
+                can_buy = False
+
+            return {
+                "state": state,
+                "rally_day_count": rally_days,
+                "last_ftd_date": last_ftd_date,
+                "can_buy": can_buy
+            }
+
+        # Market above 50-day MA
+        if dist_days >= 4:
+            return {
+                "state": "UPTREND_UNDER_PRESSURE",
+                "rally_day_count": 0,
+                "last_ftd_date": None,
+                "can_buy": True  # Still can buy but with caution
+            }
+
+        return {
+            "state": "CONFIRMED_UPTREND",
+            "rally_day_count": 0,
+            "last_ftd_date": None,
+            "can_buy": True
+        }
+
+    def get_rs_line_new_high(self, ticker: str, as_of_date: date) -> dict:
+        """
+        Check if a stock's relative strength line (stock/SPY ratio) is at
+        a new 52-week high BEFORE the price itself hits a new 52-week high.
+
+        This is a powerful leading indicator per O'Neil/Minervini.
+
+        Returns:
+            {
+                "rs_at_new_high": bool,
+                "price_at_new_high": bool,
+                "rs_leading": bool (RS new high but price not = bullish divergence),
+                "rs_lagging": bool (price new high but RS not = bearish divergence)
+            }
+        """
+        stock_history = self.get_price_history_up_to(ticker, as_of_date, lookback_days=260)
+        spy_df = self._index_cache.get("SPY")
+
+        if stock_history.empty or spy_df is None or len(stock_history) < 60:
+            return {"rs_at_new_high": False, "price_at_new_high": False,
+                    "rs_leading": False, "rs_lagging": False}
+
+        spy_history = spy_df[spy_df["date"] <= as_of_date].tail(260)
+        if len(spy_history) < 60:
+            return {"rs_at_new_high": False, "price_at_new_high": False,
+                    "rs_leading": False, "rs_lagging": False}
+
+        # Merge on date to align data
+        stock_dates = set(stock_history["date"].tolist())
+        spy_dates = set(spy_history["date"].tolist())
+        common_dates = sorted(stock_dates & spy_dates)
+
+        if len(common_dates) < 60:
+            return {"rs_at_new_high": False, "price_at_new_high": False,
+                    "rs_leading": False, "rs_lagging": False}
+
+        # Calculate RS line (stock price / SPY price) for each common date
+        rs_values = []
+        stock_prices = []
+        for d in common_dates:
+            stock_row = stock_history[stock_history["date"] == d]
+            spy_row = spy_history[spy_history["date"] == d]
+            if not stock_row.empty and not spy_row.empty:
+                sp = float(spy_row.iloc[0]["close"])
+                stk = float(stock_row.iloc[0]["close"])
+                if sp > 0:
+                    rs_values.append(stk / sp)
+                    stock_prices.append(stk)
+
+        if len(rs_values) < 60:
+            return {"rs_at_new_high": False, "price_at_new_high": False,
+                    "rs_leading": False, "rs_lagging": False}
+
+        # Check if current RS line is at 52-week high
+        current_rs = rs_values[-1]
+        rs_52w_high = max(rs_values)
+        rs_at_new_high = current_rs >= rs_52w_high * 0.99  # Within 1% of high
+
+        # Check if price is at 52-week high
+        current_price = stock_prices[-1]
+        price_52w_high = max(stock_prices)
+        price_at_new_high = current_price >= price_52w_high * 0.99
+
+        return {
+            "rs_at_new_high": rs_at_new_high,
+            "price_at_new_high": price_at_new_high,
+            "rs_leading": rs_at_new_high and not price_at_new_high,
+            "rs_lagging": price_at_new_high and not rs_at_new_high
+        }
+
+    def get_vix_proxy(self, as_of_date: date, lookback_days: int = 20) -> float:
+        """
+        Calculate a VIX-like volatility measure from SPY daily returns.
+        Since we don't have VIX data in the backtest, we use realized volatility
+        of SPY as a proxy.
+
+        Returns:
+            Annualized volatility as a percentage (e.g., 15.0 means VIX ~15).
+            Typical values: 10-15 (low vol), 15-20 (normal), 20-30 (elevated), 30+ (high).
+        """
+        df = self._index_cache.get("SPY")
+        if df is None:
+            return 18.0  # Default to normal vol
+
+        history = df[df["date"] <= as_of_date].tail(lookback_days + 1)
+        if len(history) < 10:
+            return 18.0
+
+        # Calculate daily returns
+        closes = history["close"].tolist()
+        daily_returns = []
+        for i in range(1, len(closes)):
+            if closes[i - 1] > 0:
+                daily_returns.append((closes[i] - closes[i - 1]) / closes[i - 1])
+
+        if not daily_returns:
+            return 18.0
+
+        import numpy as np
+        # Annualized standard deviation of daily returns * 100
+        std_dev = np.std(daily_returns)
+        annualized_vol = std_dev * np.sqrt(252) * 100
+
+        return round(annualized_vol, 1)
+
+    def get_stock_correlation(self, ticker1: str, ticker2: str,
+                               as_of_date: date, lookback_days: int = 30) -> float:
+        """
+        Calculate rolling correlation between two stocks' daily returns.
+
+        Returns:
+            Correlation coefficient (-1.0 to 1.0), or 0.0 if insufficient data.
+        """
+        hist1 = self.get_price_history_up_to(ticker1, as_of_date, lookback_days + 1)
+        hist2 = self.get_price_history_up_to(ticker2, as_of_date, lookback_days + 1)
+
+        if len(hist1) < 15 or len(hist2) < 15:
+            return 0.0
+
+        # Get daily returns for common dates
+        dates1 = {row["date"]: float(row["close"]) for _, row in hist1.iterrows()}
+        dates2 = {row["date"]: float(row["close"]) for _, row in hist2.iterrows()}
+        common = sorted(set(dates1.keys()) & set(dates2.keys()))
+
+        if len(common) < 15:
+            return 0.0
+
+        returns1 = []
+        returns2 = []
+        for i in range(1, len(common)):
+            prev_d, curr_d = common[i - 1], common[i]
+            p1_prev, p1_curr = dates1[prev_d], dates1[curr_d]
+            p2_prev, p2_curr = dates2[prev_d], dates2[curr_d]
+            if p1_prev > 0 and p2_prev > 0:
+                returns1.append((p1_curr - p1_prev) / p1_prev)
+                returns2.append((p2_curr - p2_prev) / p2_prev)
+
+        if len(returns1) < 10:
+            return 0.0
+
+        import numpy as np
+        return float(np.corrcoef(returns1, returns2)[0, 1])
+
     def is_breaking_out(self, ticker: str, as_of_date: date) -> Tuple[bool, float, dict]:
         """
         Check if stock is breaking out of a base pattern or near 52-week high with volume.

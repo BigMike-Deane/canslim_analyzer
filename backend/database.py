@@ -154,6 +154,9 @@ def run_migrations():
         ("ai_portfolio_positions", "pyramid_count", "INTEGER DEFAULT 0"),
         # Peak portfolio value for drawdown circuit breaker (Feb 2026)
         ("ai_portfolio_config", "peak_portfolio_value", "FLOAT DEFAULT 0"),
+        # Trade Journal / Performance Attribution (Feb 2026)
+        ("backtest_trades", "signal_factors", "TEXT"),  # JSON: which factors drove the trade
+        ("ai_portfolio_trades", "signal_factors", "TEXT"),  # JSON: which factors drove the trade
     ]
 
     for table, column, col_type in migrations:
@@ -631,6 +634,9 @@ class AIPortfolioTrade(Base):
     cost_basis = Column(Float)  # Original cost basis for sells
     realized_gain = Column(Float)  # Profit/loss on the trade
 
+    # Trade Journal / Performance Attribution
+    signal_factors = Column(JSON)  # {"entry_type": "pre-breakout", "market_regime": "bullish", ...}
+
     executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -761,6 +767,9 @@ class BacktestTrade(Base):
     realized_gain = Column(Float)
     realized_gain_pct = Column(Float)
     holding_days = Column(Integer)
+
+    # Trade Journal / Performance Attribution
+    signal_factors = Column(JSON)  # {"entry_type": "pre-breakout", "market_regime": "bullish", ...}
 
     backtest_run = relationship("BacktestRun", back_populates="trades")
 

@@ -47,6 +47,7 @@ class SimulatedPosition:
     sector: str = ""
     partial_profit_taken: float = 0.0  # Cumulative % of position sold as partial profits
     pyramid_count: int = 0  # Number of times pyramided into
+    signal_factors: dict = field(default_factory=dict)  # Trade journal: factors that drove the buy
 
 
 @dataclass
@@ -100,6 +101,10 @@ class BacktestEngine:
 
         # Re-entry cooldown tracking: ticker -> (date, reason)
         self.recently_sold: Dict[str, tuple] = {}
+
+        # Market timing state (O'Neil A/D + FTD)
+        self.market_timing_state: str = "CONFIRMED_UPTREND"
+        self.ftd_can_buy: bool = True
 
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
@@ -337,10 +342,46 @@ class BacktestEngine:
 
         return calculate_coiled_spring_score(data, score, cs_config)
 
+    def _calculate_portfolio_heat(self, current_date: date) -> float:
+        """
+        Calculate total portfolio heat: sum of (position_size_pct × distance_to_stop_pct).
+        Higher heat = more total risk exposure.
+        """
+        portfolio_value = self._get_portfolio_value(current_date)
+        if portfolio_value <= 0:
+            return 0.0
+
+        stop_loss_config = config.get('ai_trader.stops', {})
+        base_stop = stop_loss_config.get('normal_stop_loss_pct', 8.0)
+
+        total_heat = 0.0
+        for ticker, position in self.positions.items():
+            price = self.data_provider.get_price_on_date(ticker, current_date)
+            if not price or price <= 0:
+                continue
+            position_value = position.shares * price
+            position_pct = (position_value / portfolio_value) * 100
+            # Distance to stop = current gain% + stop loss%
+            # e.g., stock up 5% with 8% stop = 13% distance
+            gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100 if position.cost_basis > 0 else 0
+            distance_to_stop = base_stop + gain_pct if gain_pct > 0 else base_stop + gain_pct
+            total_heat += position_pct * (distance_to_stop / 100)
+
+        return total_heat
+
     def _simulate_day(self, current_date: date):
         """Simulate one trading day with two-tier scoring for performance."""
         # Update position prices and peak tracking
         self._update_positions(current_date)
+
+        # ===== MARKET TIMING: A/D Days + FTD =====
+        market_timing_config = config.get('market_timing', {})
+        if market_timing_config.get('follow_through_day', {}).get('enabled', True):
+            ftd_status = self.data_provider.get_follow_through_day_status(current_date)
+            self.market_timing_state = ftd_status["state"]
+            self.ftd_can_buy = ftd_status["can_buy"]
+        else:
+            self.ftd_can_buy = True
 
         # ===== DRAWDOWN CIRCUIT BREAKER =====
         portfolio_value = self._get_portfolio_value(current_date)
@@ -408,7 +449,19 @@ class BacktestEngine:
         else:
             min_cash_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
 
+        # Portfolio heat check
+        heat_config = config.get('portfolio_heat', {})
+        heat_blocked = False
+        if heat_config.get('enabled', True):
+            portfolio_heat = self._calculate_portfolio_heat(current_date)
+            max_heat = heat_config.get('max_heat_pct', 15.0)
+            if portfolio_heat > max_heat:
+                heat_blocked = True
+                logger.debug(f"Portfolio heat {portfolio_heat:.1f}% > {max_heat}% - blocking new buys")
+
         can_buy = (not self.drawdown_halt and
+                   not heat_blocked and
+                   self.ftd_can_buy and
                    self.cash / portfolio_value >= min_cash_pct and
                    len(self.positions) < self.backtest.max_positions and
                    self.cash >= 100)
@@ -889,6 +942,19 @@ class BacktestEngine:
         # Use tighter stop loss in bearish market (7% vs 8% normal)
         base_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
 
+        # VIX-regime stop adjustment
+        vix_config = config.get('vix_stops', {})
+        if vix_config.get('enabled', True):
+            vix_proxy = self.data_provider.get_vix_proxy(current_date)
+            low_vix = vix_config.get('low_vix_threshold', 15)
+            high_vix = vix_config.get('high_vix_threshold', 25)
+            if vix_proxy < low_vix:
+                vix_multiplier = vix_config.get('low_vix_stop_tighten', 0.80)
+                base_stop_loss_pct *= vix_multiplier
+            elif vix_proxy > high_vix:
+                vix_multiplier = vix_config.get('high_vix_stop_widen', 1.20)
+                base_stop_loss_pct *= vix_multiplier
+
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
@@ -1227,8 +1293,19 @@ class BacktestEngine:
                     logger.debug(f"Skipping {ticker}: L score {l_score} < {min_l_score}")
                     continue
 
-            # Volume confirmation - accumulation signal
-            if volume_ratio < min_volume_ratio and not score_data.get('is_breaking_out', False):
+            # VOLUME GATE: Only buy when volume confirms interest
+            vol_gate_config = config.get('volume_gate', {})
+            if vol_gate_config.get('enabled', True):
+                if score_data.get('is_breaking_out', False):
+                    vol_threshold = vol_gate_config.get('breakout_min_volume_ratio', 1.5)
+                elif has_base and pct_from_pivot is not None and 0 <= pct_from_pivot <= 15:
+                    vol_threshold = vol_gate_config.get('pre_breakout_min_volume_ratio', 0.8)
+                else:
+                    vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+                if volume_ratio < vol_threshold:
+                    logger.debug(f"Skipping {ticker}: Volume ratio {volume_ratio:.2f} < {vol_threshold} (volume gate)")
+                    continue
+            elif volume_ratio < min_volume_ratio and not score_data.get('is_breaking_out', False):
                 logger.debug(f"Skipping {ticker}: Volume ratio {volume_ratio:.2f} < {min_volume_ratio}")
                 continue
 
@@ -1340,6 +1417,33 @@ class BacktestEngine:
                 else:
                     momentum_score = -5
 
+            # RS LINE NEW HIGH: Leading indicator when RS makes new high before price
+            rs_line_bonus = 0
+            rs_line_config = config.get('rs_line', {})
+            if rs_line_config.get('enabled', True):
+                rs_line_data = self.data_provider.get_rs_line_new_high(ticker, current_date)
+                if rs_line_data.get("rs_leading"):
+                    rs_line_bonus = rs_line_config.get('bonus_points', 8)
+                elif rs_line_data.get("rs_lagging"):
+                    rs_line_bonus = rs_line_config.get('penalty_divergence', -5)
+
+            # EARNINGS SURPRISE DRIFT: Post-earnings momentum for big beats
+            earnings_drift_bonus = 0
+            drift_config = config.get('earnings_drift', {})
+            if drift_config.get('enabled', True):
+                static_data = self.static_data.get(ticker, {})
+                days_to_earnings = static_data.get('days_to_earnings')
+                beat_streak = static_data.get('earnings_beat_streak', 0)
+                # If stock has recent strong earnings beat (proxy: high beat streak + near earnings)
+                if beat_streak >= 3 and days_to_earnings is not None:
+                    # Post-earnings drift window: within 60 days after earnings
+                    # Proxy: if days_to_earnings < 0 (past), we're in drift window
+                    # Since we don't have negative days_to_earnings, use beat_streak as signal
+                    if beat_streak >= 4:
+                        earnings_drift_bonus = drift_config.get('bonus_points', 5)
+                    elif beat_streak >= 3:
+                        earnings_drift_bonus = 3
+
             # MOMENTUM CONFIRMATION: Penalize stocks where recent momentum is fading
             # If 3-month RS is significantly weaker than 12-month RS, momentum is weakening
             rs_12m = score_data.get("rs_12m", 1.0)
@@ -1358,7 +1462,9 @@ class BacktestEngine:
                 ((breakout_bonus + pre_breakout_bonus) * 0.20) +
                 (base_quality_bonus * 0.10) +
                 extended_penalty +
-                coiled_spring_bonus  # Earnings catalyst bonus
+                coiled_spring_bonus +   # Earnings catalyst bonus
+                rs_line_bonus +         # RS line new high bonus
+                earnings_drift_bonus    # Post-earnings drift bonus
             )
 
             # Apply momentum penalty after base composite calculation
@@ -1390,6 +1496,28 @@ class BacktestEngine:
             # Reduce position size for bear market exception entries
             if score_data.get("_bear_market_entry"):
                 position_pct *= bear_exception_position_mult
+
+            # CORRELATION-AWARE SIZING: Reduce position if highly correlated with existing holdings
+            corr_config = config.get('correlation_sizing', {})
+            if corr_config.get('enabled', True) and self.positions:
+                corr_threshold = corr_config.get('high_correlation_threshold', 0.70)
+                corr_multiplier = corr_config.get('high_correlation_multiplier', 0.75)
+                max_correlated = corr_config.get('max_correlated_positions', 3)
+                lookback = corr_config.get('lookback_days', 30)
+
+                high_corr_count = 0
+                for held_ticker in list(self.positions.keys())[:5]:  # Check top 5 for performance
+                    corr = self.data_provider.get_stock_correlation(
+                        ticker, held_ticker, current_date, lookback
+                    )
+                    if corr > corr_threshold:
+                        high_corr_count += 1
+
+                if high_corr_count >= max_correlated:
+                    logger.debug(f"{ticker}: {high_corr_count} correlated positions, skipping")
+                    continue
+                elif high_corr_count > 0:
+                    position_pct *= corr_multiplier
 
             position_value = portfolio_value * (position_pct / 100)
 
@@ -1429,6 +1557,20 @@ class BacktestEngine:
             if volume_ratio >= 1.5 and not is_breaking_out:
                 reason_parts.append(f"Vol {volume_ratio:.1f}x")
 
+            # Build trade journal signal factors
+            signal_factors = {
+                "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
+                "market_regime": "bullish" if weighted_signal >= bullish_threshold else ("bearish" if weighted_signal <= bearish_threshold else "neutral"),
+                "market_timing_state": self.market_timing_state,
+                "rs_line_bonus": rs_line_bonus,
+                "earnings_drift_bonus": earnings_drift_bonus,
+                "composite_score": round(composite_score, 1),
+            }
+            if coiled_spring_bonus > 0:
+                signal_factors["coiled_spring"] = True
+            if score_data.get("_bear_market_entry"):
+                signal_factors["bear_exception"] = True
+
             buys.append(SimulatedTrade(
                 ticker=ticker,
                 action="BUY",
@@ -1438,6 +1580,8 @@ class BacktestEngine:
                 score=score,
                 priority=-int(composite_score)  # Higher score = lower priority number
             ))
+            # Stash signal_factors on trade for recording
+            buys[-1]._signal_factors = signal_factors
 
         buys.sort(key=lambda x: x.priority)
 
@@ -1465,6 +1609,34 @@ class BacktestEngine:
             gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100
             current_value = position.shares * price
             current_allocation = current_value / portfolio_value if portfolio_value > 0 else 0
+
+            # SCALE-IN ON PULLBACKS: Add to winners pulling back on low volume
+            scale_in_config = config.get('scale_in_pullbacks', {})
+            if scale_in_config.get('enabled', True) and position.pyramid_count >= 2:
+                min_gain = scale_in_config.get('min_gain_pct', 10.0)
+                pullback_min = scale_in_config.get('pullback_pct', 3.0)
+                pullback_max = scale_in_config.get('max_pullback_pct', 5.0)
+                low_vol_ratio = scale_in_config.get('low_volume_ratio', 0.8)
+                min_score_pullback = scale_in_config.get('min_score', 70)
+
+                if gain_pct >= min_gain and current_score >= min_score_pullback:
+                    # Check if pulling back from peak on low volume
+                    if position.peak_price > 0:
+                        drop_from_peak = ((position.peak_price - price) / position.peak_price) * 100
+                        vol_ratio = self.data_provider.get_volume_ratio(ticker, current_date)
+                        if pullback_min <= drop_from_peak <= pullback_max and vol_ratio < low_vol_ratio:
+                            add_pct = scale_in_config.get('add_pct', 30.0) / 100
+                            original_cost = position.shares * position.cost_basis
+                            scale_amount = min(original_cost * add_pct, self.cash * 0.3)
+                            if scale_amount >= 100:
+                                shares = scale_amount / price
+                                pyramids.append(SimulatedTrade(
+                                    ticker=ticker, action="PYRAMID", shares=shares,
+                                    price=price,
+                                    reason=f"SCALE-IN PULLBACK: +{gain_pct:.0f}% winner, -{drop_from_peak:.1f}% pullback, {vol_ratio:.1f}x vol",
+                                    score=current_score, priority=-25
+                                ))
+                                continue  # Don't evaluate standard pyramid
 
             # O'Neil: add after 2-3% confirmation (lowered from 5%)
             if gain_pct < 2.5 or current_score < 70:
@@ -1548,7 +1720,8 @@ class BacktestEngine:
             peak_price=trade.price,
             peak_date=current_date,
             is_growth_stock=trade.is_growth_stock,
-            sector=sector
+            sector=sector,
+            signal_factors=getattr(trade, '_signal_factors', {})
         )
 
         self._record_trade(current_date, trade, cost_basis=trade.price)
@@ -1628,6 +1801,12 @@ class BacktestEngine:
             holding_days = (current_date - sell_purchase_date).days if sell_purchase_date else 0
             realized_gain_pct = (realized_gain / (trade.shares * cost_basis)) * 100 if cost_basis else 0
 
+        # Get signal_factors from trade (stashed during evaluation)
+        signal_factors = getattr(trade, '_signal_factors', None)
+        # For sells, get from position if available
+        if trade.action == "SELL" and not signal_factors and position:
+            signal_factors = position.signal_factors
+
         db_trade = BacktestTrade(
             backtest_id=self.backtest.id,
             date=current_date,
@@ -1642,7 +1821,8 @@ class BacktestEngine:
             cost_basis=cost_basis,
             realized_gain=realized_gain,
             realized_gain_pct=realized_gain_pct,
-            holding_days=holding_days
+            holding_days=holding_days,
+            signal_factors=signal_factors
         )
         self.db.add(db_trade)
 

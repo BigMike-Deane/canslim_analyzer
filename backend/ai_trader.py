@@ -75,6 +75,12 @@ from backend.database import (
 )
 from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore, TechnicalAnalyzer
 
+# Import historical data provider for market timing, RS line, VIX, correlation
+try:
+    from backend.historical_data import HistoricalDataProvider
+except ImportError:
+    HistoricalDataProvider = None
+
 logger = logging.getLogger(__name__)
 
 # Lock to prevent concurrent trading cycles
@@ -727,6 +733,8 @@ def evaluate_pyramids(db: Session) -> list:
 
     pyramids = []
 
+    from config_loader import config as yaml_config
+
     for position in positions:
         # Use effective score based on stock type
         score = get_effective_score(position, use_current=True)
@@ -736,13 +744,50 @@ def evaluate_pyramids(db: Session) -> list:
 
         gain_pct = position.gain_loss_pct or 0
         current_allocation = (position.current_value or 0) / portfolio_value if portfolio_value > 0 else 0
+        current_pyramid_count = getattr(position, 'pyramid_count', 0) or 0
+
+        # Get stock data for additional checks (from batch-fetched dict)
+        stock = ticker_to_stock.get(position.ticker)
+        if not stock:
+            continue
+
+        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+
+        # SCALE-IN ON PULLBACKS: Add to mature winners pulling back on low volume (matches backtester)
+        scale_in_config = yaml_config.get('scale_in_pullbacks', {})
+        if (scale_in_config.get('enabled', True) and current_pyramid_count >= 2 and
+                current_allocation < MAX_POSITION_ALLOCATION and config.current_cash >= 200):
+            min_gain = scale_in_config.get('min_gain_pct', 10.0)
+            pullback_min = scale_in_config.get('pullback_pct', 3.0)
+            pullback_max = scale_in_config.get('max_pullback_pct', 5.0)
+            low_vol_ratio = scale_in_config.get('low_volume_ratio', 0.8)
+            min_score_pullback = scale_in_config.get('min_score', 70)
+
+            if gain_pct >= min_gain and score >= min_score_pullback:
+                peak_price = getattr(position, 'peak_price', 0) or 0
+                if peak_price > 0:
+                    drop_from_peak = ((peak_price - position.current_price) / peak_price) * 100
+                    if pullback_min <= drop_from_peak <= pullback_max and volume_ratio < low_vol_ratio:
+                        add_pct = scale_in_config.get('add_pct', 30.0) / 100
+                        original_cost = position.shares * position.cost_basis
+                        scale_amount = min(original_cost * add_pct, config.current_cash * 0.3)
+                        remaining_room = (MAX_POSITION_ALLOCATION - current_allocation) * portfolio_value
+                        scale_amount = min(scale_amount, remaining_room)
+                        if scale_amount >= 100:
+                            pyramids.append({
+                                "position": position,
+                                "amount": scale_amount,
+                                "shares": scale_amount / position.current_price,
+                                "reason": f"SCALE-IN PULLBACK: +{gain_pct:.0f}%, -{drop_from_peak:.1f}% from peak, vol {volume_ratio:.1f}x",
+                                "priority": -30  # High priority for disciplined entries
+                            })
+                            continue  # Don't also evaluate as regular pyramid
 
         # Pyramid threshold: must be up at least 2.5% (matching backtester)
         if gain_pct < 2.5 or score < 70:
             continue
 
         # Max 2 pyramids per position (O'Neil: decreasing position sizes)
-        current_pyramid_count = getattr(position, 'pyramid_count', 0) or 0
         if current_pyramid_count >= 2:
             continue
 
@@ -754,14 +799,8 @@ def evaluate_pyramids(db: Session) -> list:
         if config.current_cash < 200:
             continue
 
-        # Get stock data for additional checks (from batch-fetched dict)
-        stock = ticker_to_stock.get(position.ticker)
-        if not stock:
-            continue
-
         # Prefer stocks that are breaking out or showing accumulation
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
-        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
 
         # O'Neil 60/40 pyramid sizing (decreasing adds)
         # First pyramid: 60% of original cost, Second: 40%
@@ -1059,6 +1098,23 @@ def check_and_execute_stop_losses(db: Session) -> dict:
     # Use tighter stop loss in bearish market
     effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
 
+    # VIX-regime stop adjustment (matches backtester)
+    vix_config = yaml_config.get('vix_stops', {})
+    if vix_config.get('enabled', True) and HistoricalDataProvider:
+        try:
+            from backend.historical_data import HistoricalDataProvider as HDP
+            provider = HDP([])
+            provider.preload_data(date.today() - timedelta(days=30), date.today())
+            vix_proxy = provider.get_vix_proxy(date.today())
+            low_vix = vix_config.get('low_vix_threshold', 15)
+            high_vix = vix_config.get('high_vix_threshold', 25)
+            if vix_proxy < low_vix:
+                effective_stop_loss_pct *= vix_config.get('low_vix_stop_tighten', 0.80)
+            elif vix_proxy > high_vix:
+                effective_stop_loss_pct *= vix_config.get('high_vix_stop_widen', 1.20)
+        except Exception as e:
+            logger.debug(f"VIX proxy calculation failed in stop check: {e}")
+
     # Partial trailing stop config (matches backtester)
     partial_trailing_config = yaml_config.get('ai_trader.trailing_stops', {})
     partial_on_trailing = partial_trailing_config.get('partial_on_trailing', True)
@@ -1220,7 +1276,8 @@ def check_and_execute_stop_losses(db: Session) -> dict:
 def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,
-                  cost_basis: float = None, realized_gain: float = None):
+                  cost_basis: float = None, realized_gain: float = None,
+                  signal_factors: dict = None):
     """Record a trade in the database with detailed logging"""
     trade = AIPortfolioTrade(
         ticker=ticker,
@@ -1234,7 +1291,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         is_growth_stock=is_growth_stock,
         cost_basis=cost_basis,
         realized_gain=realized_gain,
-        executed_at=get_cst_now()  # Use CST timezone
+        executed_at=get_cst_now(),  # Use CST timezone
+        signal_factors=signal_factors  # Trade journal: what drove this decision
     )
     db.add(trade)
 
@@ -1301,6 +1359,25 @@ def evaluate_sells(db: Session) -> list:
 
     # Use tighter stop loss in bearish market (7% vs 8% normal)
     effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
+
+    # VIX-regime stop adjustment (matches backtester)
+    vix_config = yaml_config.get('vix_stops', {})
+    if vix_config.get('enabled', True) and HistoricalDataProvider:
+        try:
+            from backend.historical_data import HistoricalDataProvider as HDP
+            provider = HDP([])
+            provider.preload_data(date.today() - timedelta(days=30), date.today())
+            vix_proxy = provider.get_vix_proxy(date.today())
+            low_vix = vix_config.get('low_vix_threshold', 15)
+            high_vix = vix_config.get('high_vix_threshold', 25)
+            if vix_proxy < low_vix:
+                effective_stop_loss_pct *= vix_config.get('low_vix_stop_tighten', 0.80)
+                logger.debug(f"VIX proxy {vix_proxy:.1f} < {low_vix}: tightening stops to {effective_stop_loss_pct:.1f}%")
+            elif vix_proxy > high_vix:
+                effective_stop_loss_pct *= vix_config.get('high_vix_stop_widen', 1.20)
+                logger.debug(f"VIX proxy {vix_proxy:.1f} > {high_vix}: widening stops to {effective_stop_loss_pct:.1f}%")
+        except Exception as e:
+            logger.debug(f"VIX proxy calculation failed: {e}")
 
     for position in positions:
         # Use effective score based on stock type
@@ -1689,9 +1766,24 @@ def evaluate_buys(db: Session) -> list:
                 logger.debug(f"Skipping {stock.ticker}: L score {l_score} < {min_l_score}")
                 continue
 
-        # Volume confirmation - accumulation signal (skip for breakouts which already have volume)
+        # VOLUME GATE: Context-aware volume thresholds (matches backtester)
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
-        if volume_ratio < min_volume_ratio and not is_breaking_out:
+        vol_gate_config = yaml_config.get('volume_gate', {})
+        if vol_gate_config.get('enabled', True):
+            if is_breaking_out:
+                vol_threshold = vol_gate_config.get('breakout_min_volume_ratio', 1.5)
+            elif has_base and pivot_price > 0:
+                pct_check = ((pivot_price - stock.current_price) / pivot_price) * 100 if pivot_price > 0 else 0
+                if 0 <= pct_check <= 15:
+                    vol_threshold = vol_gate_config.get('pre_breakout_min_volume_ratio', 0.8)
+                else:
+                    vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+            else:
+                vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+            if volume_ratio < vol_threshold:
+                logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {vol_threshold} (volume gate)")
+                continue
+        elif volume_ratio < min_volume_ratio and not is_breaking_out:
             logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {min_volume_ratio}")
             continue
 
@@ -1938,6 +2030,29 @@ def evaluate_buys(db: Session) -> list:
         sector = getattr(stock, 'sector', None)
         sector_bonus, sector_detail = get_sector_rotation_bonus(db, sector) if sector else (0, "")
 
+        # RS LINE NEW HIGH: Leading indicator when RS makes new high before price (matches backtester)
+        rs_line_bonus = 0
+        rs_line_config = yaml_config.get('rs_line', {})
+        if rs_line_config.get('enabled', True):
+            # Use L score as proxy for RS line in live trader (avoids expensive historical calc)
+            # RS new high = L score >= 13 (top quartile) and stock is NOT at price new high
+            if l_score >= 13 and stock.week_52_high and stock.current_price:
+                pct_from_high_check = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+                if pct_from_high_check > 2:  # RS strong but price hasn't caught up
+                    rs_line_bonus = rs_line_config.get('bonus_points', 8)
+            elif l_score < 5:  # RS lagging badly
+                rs_line_bonus = rs_line_config.get('penalty_divergence', -5)
+
+        # EARNINGS SURPRISE DRIFT: Post-earnings momentum for big beats (matches backtester)
+        earnings_drift_bonus = 0
+        drift_config = yaml_config.get('earnings_drift', {})
+        if drift_config.get('enabled', True):
+            beat_streak = getattr(stock, 'earnings_beat_streak', 0) or 0
+            if beat_streak >= 4:
+                earnings_drift_bonus = drift_config.get('bonus_points', 5)
+            elif beat_streak >= 3:
+                earnings_drift_bonus = 3
+
         # Calculate composite score with breakout and pre-breakout weighting
         # 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
@@ -1953,7 +2068,9 @@ def evaluate_buys(db: Session) -> list:
             accum_bonus +  # Accumulation/distribution signal
             estimate_revision_bonus +  # Analyst estimate revisions
             sector_bonus +  # Sector rotation signal
-            coiled_spring_bonus  # Earnings catalyst bonus
+            coiled_spring_bonus +  # Earnings catalyst bonus
+            rs_line_bonus +  # RS line new high bonus
+            earnings_drift_bonus  # Post-earnings drift bonus
         )
 
         # Apply momentum penalty after base composite calculation
@@ -2071,6 +2188,21 @@ def evaluate_buys(db: Session) -> list:
             reason_parts.append(f"📊 Est↑ {revision_pct:+.0f}%")
         elif estimate_revision_bonus <= -5:
             reason_parts.append(f"📉 Est↓ {revision_pct:+.0f}%")
+        if rs_line_bonus > 0:
+            reason_parts.append("RS new high")
+        if earnings_drift_bonus > 0:
+            reason_parts.append(f"Drift +{earnings_drift_bonus}")
+
+        # Build trade journal signal_factors (matches backtester)
+        buy_signal_factors = {
+            "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
+            "market_regime": market_regime["regime"],
+            "rs_line_bonus": rs_line_bonus,
+            "earnings_drift_bonus": earnings_drift_bonus,
+            "composite_score": round(composite_score, 1),
+        }
+        if coiled_spring_bonus > 0:
+            buy_signal_factors["coiled_spring"] = True
 
         buys.append({
             "stock": stock,
@@ -2082,7 +2214,8 @@ def evaluate_buys(db: Session) -> list:
             "is_growth_stock": is_growth,
             "effective_score": effective_score,
             "is_breaking_out": is_breaking_out,
-            "position_pct": position_pct
+            "position_pct": position_pct,
+            "signal_factors": buy_signal_factors  # Trade journal
         })
 
     # Sort by composite score (highest first)
@@ -2446,8 +2579,49 @@ def run_ai_trading_cycle(db: Session) -> dict:
             dynamic_reserve_pct = alloc_config.get('cash_reserve_neutral', 0.20)
 
         min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
+
+        # ===== MARKET TIMING: Follow-Through Day check (matches backtester) =====
+        ftd_can_buy = True
+        market_timing_config = yaml_config.get('market_timing', {})
+        if market_timing_config.get('follow_through_day', {}).get('enabled', True) and HistoricalDataProvider:
+            try:
+                from backend.historical_data import HistoricalDataProvider as HDP
+                ftd_provider = HDP(['SPY'])
+                ftd_provider.preload_data(date.today() - timedelta(days=60), date.today())
+                ftd_status = ftd_provider.get_follow_through_day_status(date.today())
+                ftd_can_buy = ftd_status.get("can_buy", True)
+                if not ftd_can_buy:
+                    logger.info(f"Market timing: {ftd_status['state']} - blocking new buys")
+            except Exception as e:
+                logger.debug(f"FTD check failed: {e}")
+
+        # ===== PORTFOLIO HEAT check (matches backtester) =====
+        heat_blocked = False
+        heat_config = yaml_config.get('portfolio_heat', {})
+        if heat_config.get('enabled', True):
+            max_heat = heat_config.get('max_heat_pct', 15.0)
+            # Calculate heat: sum of (position_pct × distance_to_stop)
+            stop_cfg = yaml_config.get('ai_trader.stops', {})
+            base_stop = stop_cfg.get('normal_stop_loss_pct', 8.0)
+            total_heat = 0.0
+            pv = portfolio["total_value"]
+            if pv > 0:
+                for pos in db.query(AIPortfolioPosition).all():
+                    if pos.current_price and pos.current_price > 0 and pos.cost_basis and pos.cost_basis > 0:
+                        pos_pct = ((pos.current_value or 0) / pv) * 100
+                        g_pct = ((pos.current_price - pos.cost_basis) / pos.cost_basis) * 100
+                        dist = base_stop + g_pct
+                        total_heat += pos_pct * (dist / 100)
+            if total_heat > max_heat:
+                heat_blocked = True
+                logger.info(f"Portfolio heat {total_heat:.1f}% > {max_heat}% - blocking new buys")
+
         if drawdown_halt:
             logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
+        elif not ftd_can_buy:
+            logger.info("Market timing: no confirmed uptrend - skipping buys")
+        elif heat_blocked:
+            logger.info("Portfolio heat too high - skipping buys")
         elif config.current_cash < min_cash_reserve:
             logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve (${min_cash_reserve:.2f}), regime={market_regime['regime']}, skipping buys")
         elif position_count < config.max_positions:
@@ -2515,7 +2689,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     reason=buy["reason"],
                     score=stock.canslim_score,
                     growth_score=stock.growth_mode_score,
-                    is_growth_stock=is_growth
+                    is_growth_stock=is_growth,
+                    signal_factors=buy.get("signal_factors")
                 )
 
                 # Deduct cash

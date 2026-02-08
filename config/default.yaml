@@ -475,6 +475,105 @@ database:
     - name: ix_stocks_score_price
       columns: [canslim_score, current_price]
 
+# Market Timing (O'Neil's system: A/D days + Follow-Through Days)
+market_timing:
+  # Accumulation/Distribution Day Tracking
+  accumulation_distribution:
+    enabled: true
+    lookback_days: 25                  # Rolling window for A/D day count
+    distribution_threshold: 4          # 4-5 distribution days in 25 = go defensive
+    critical_threshold: 5              # 5+ distribution days = go to cash
+    # A distribution day: index down 0.2%+ on higher volume than prior day
+    min_decline_pct: 0.2               # Minimum decline for distribution day
+    # An accumulation day: index up 0.2%+ on higher volume than prior day
+    min_advance_pct: 0.2               # Minimum advance for accumulation day
+
+  # Follow-Through Day Confirmation (O'Neil market timing)
+  follow_through_day:
+    enabled: true
+    min_rally_day: 4                   # FTD must occur on day 4+ of rally attempt
+    min_gain_pct: 1.5                  # Index must gain 1.5%+ on FTD
+    require_higher_volume: true        # Volume must be higher than prior day
+    # State machine: CONFIRMED_UPTREND -> UPTREND_UNDER_PRESSURE -> MARKET_IN_CORRECTION -> RALLY_ATTEMPT
+    states:
+      confirmed_uptrend: "CONFIRMED_UPTREND"
+      under_pressure: "UPTREND_UNDER_PRESSURE"
+      correction: "MARKET_IN_CORRECTION"
+      rally_attempt: "RALLY_ATTEMPT"
+
+# RS Line New Highs (relative strength line making new highs before price)
+rs_line:
+  enabled: true
+  lookback_weeks: 52                   # 52-week lookback for RS line new high
+  bonus_points: 8                      # Bonus when RS line hits new high before price
+  penalty_divergence: -5               # Penalty when price at new high but RS line isn't
+
+# Earnings Surprise Drift (post-earnings momentum)
+earnings_drift:
+  enabled: true
+  min_surprise_pct: 10                 # Minimum earnings beat to trigger drift signal
+  drift_window_days: 60                # How long drift effect lasts after earnings
+  bonus_points: 5                      # Score bonus for stocks in drift window
+  volume_confirmation: true            # Require above-average volume on earnings day
+
+# Portfolio Heat Monitor (total risk exposure)
+portfolio_heat:
+  enabled: true
+  max_heat_pct: 15.0                   # Block new buys if total heat > 15%
+  warning_heat_pct: 12.0               # Log warning at 12%
+  # Heat = sum of (position_size_pct × distance_to_stop_pct)
+
+# VIX-Regime Stops (volatility-adjusted stop losses)
+vix_stops:
+  enabled: true
+  low_vix_threshold: 15                # VIX < 15: low volatility
+  high_vix_threshold: 25               # VIX > 25: high volatility
+  low_vix_stop_tighten: 0.80           # Tighten stops 20% in low vol (multiply by 0.8)
+  high_vix_stop_widen: 1.20            # Widen stops 20% in high vol (multiply by 1.2)
+
+# Volume Confirmation on Entry
+volume_gate:
+  enabled: true
+  min_volume_ratio: 1.0                # Only buy when volume >= 50-day average
+  breakout_min_volume_ratio: 1.5       # Breakout entries need 1.5x volume
+  pre_breakout_min_volume_ratio: 0.8   # Pre-breakout can have slightly lower volume
+
+# Correlation-Aware Sizing
+correlation_sizing:
+  enabled: true
+  lookback_days: 30                    # Rolling correlation window
+  high_correlation_threshold: 0.70     # Reduce sizing when avg correlation > 0.7
+  high_correlation_multiplier: 0.75    # 25% smaller position when correlated
+  max_correlated_positions: 3          # Max positions with correlation > threshold
+
+# Scale-In on Pullbacks (add to winners pulling back)
+scale_in_pullbacks:
+  enabled: true
+  min_gain_pct: 10.0                   # Position must be up 10%+ to qualify
+  pullback_pct: 3.0                    # Pullback of 3-5% from recent high
+  max_pullback_pct: 5.0                # Don't add if pulled back more than 5%
+  low_volume_ratio: 0.8                # Pullback should be on below-average volume
+  add_pct: 30.0                        # Add 30% of original position size
+  min_score: 70                        # Score must still be strong
+
+# Morning Briefing Email
+morning_briefing:
+  enabled: true
+  send_time_hour: 8                    # 8 AM Central Time
+  send_time_minute: 0
+  include_positions_at_risk: true      # Positions near stop loss
+  include_approaching_pivots: true     # Stocks approaching breakout pivots
+  include_earnings_this_week: true     # Stocks reporting earnings this week
+  include_market_regime: true          # Current market regime summary
+
+# Trade Journal / Performance Attribution
+trade_journal:
+  enabled: true
+  track_signal_factors: true           # Record which factors drove each trade
+  # Factors tracked: entry_type (pre-breakout, breakout, etc.), market_regime,
+  # A/D count, FTD state, RS line new high, insider signal, sector momentum,
+  # coiled spring, earnings drift
+
 # Backtester Settings
 backtester:
   workers: 12                         # Number of parallel workers for fetching price history
