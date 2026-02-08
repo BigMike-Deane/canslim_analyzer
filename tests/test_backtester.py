@@ -1240,8 +1240,8 @@ class TestConcentratedPortfolio:
         col = BacktestRun.__table__.columns['max_positions']
         assert col.default.arg == 8
 
-    def test_half_size_initial_buy(self):
-        """Verify initial buys are half of full position size (0.50 multiplier applied)"""
+    def test_full_size_initial_buy(self):
+        """Verify initial buys use full position sizing (capped at 25% max)"""
         from backend.backtester import BacktestEngine
 
         mock_session, mock_backtest = make_mock_db(min_score=65)
@@ -1268,10 +1268,9 @@ class TestConcentratedPortfolio:
 
         buys = engine._evaluate_buys(date.today(), scores)
         if buys:
-            # Position value should be < 15% of portfolio (half-size of ~20% intended = ~10%)
             buy_value = buys[0].shares * buys[0].price
             position_pct = buy_value / 25000.0
-            assert position_pct < 0.15, f"Initial buy {position_pct:.1%} should be < 15% (half-size)"
+            assert position_pct <= 0.25, f"Initial buy {position_pct:.1%} should be <= 25% max"
 
     def test_dynamic_cash_reserve_bull(self):
         """Verify cash reserve is 5% in strong bull market"""

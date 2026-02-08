@@ -1265,10 +1265,6 @@ class BacktestEngine:
             elif is_breaking_out and volume_ratio >= 1.5:
                 position_pct *= 1.0   # No boost - already extended, entry is late
 
-            # O'Neil 50/30/20: initial buy is half of intended full position
-            # The other half gets added via pyramiding if the stock confirms
-            position_pct *= 0.50
-
             # Coiled Spring position boost
             if coiled_spring_bonus > 0:
                 cs_multiplier = cs_config.get('position_multiplier', 1.25)
