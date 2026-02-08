@@ -1619,7 +1619,7 @@ def evaluate_sells(db: Session) -> list:
     return sells
 
 
-def evaluate_buys(db: Session) -> list:
+def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_active: bool = False) -> list:
     """
     Evaluate stocks for potential buys - considers both CANSLIM and Growth Mode stocks.
     Uses appropriate score based on stock type for a balanced portfolio.
@@ -2077,6 +2077,14 @@ def evaluate_buys(db: Session) -> list:
         if momentum_penalty < 0:
             composite_score *= (1 + momentum_penalty)  # Reduce by 15%
 
+        # FTD penalty: no confirmed uptrend → reduce score (advisory, not blocking)
+        if ftd_penalty_active:
+            composite_score -= 15
+
+        # Heat penalty: too much risk exposure → reduce score
+        if heat_penalty_active:
+            composite_score -= 10
+
         # Skip if composite score is too low
         if composite_score < 25:
             continue
@@ -2100,6 +2108,10 @@ def evaluate_buys(db: Session) -> list:
         # Base: 4% minimum, scale up to regime_max_pct for highest conviction picks
         conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
         position_pct = 4.0 + (conviction_multiplier * (regime_max_pct - 4) / 1.5)  # Dynamic range
+
+        # Half-size positions when portfolio heat is elevated
+        if heat_penalty_active:
+            position_pct *= 0.50
 
         # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
         # These are the ideal entries - before the crowd notices
@@ -2580,8 +2592,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
         min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
 
-        # ===== MARKET TIMING: Follow-Through Day check (matches backtester) =====
-        ftd_can_buy = True
+        # ===== MARKET TIMING: Follow-Through Day check (advisory penalty, matches backtester) =====
+        ftd_penalty_active = False
         market_timing_config = yaml_config.get('market_timing', {})
         if market_timing_config.get('follow_through_day', {}).get('enabled', True) and HistoricalDataProvider:
             try:
@@ -2591,12 +2603,13 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 ftd_status = ftd_provider.get_follow_through_day_status(date.today())
                 ftd_can_buy = ftd_status.get("can_buy", True)
                 if not ftd_can_buy:
-                    logger.info(f"Market timing: {ftd_status['state']} - blocking new buys")
+                    ftd_penalty_active = True
+                    logger.info(f"Market timing: {ftd_status['state']} - applying score penalty to buys")
             except Exception as e:
                 logger.debug(f"FTD check failed: {e}")
 
-        # ===== PORTFOLIO HEAT check (matches backtester) =====
-        heat_blocked = False
+        # ===== PORTFOLIO HEAT check (advisory penalty, matches backtester) =====
+        heat_penalty_active = False
         heat_config = yaml_config.get('portfolio_heat', {})
         if heat_config.get('enabled', True):
             max_heat = heat_config.get('max_heat_pct', 15.0)
@@ -2613,21 +2626,17 @@ def run_ai_trading_cycle(db: Session) -> dict:
                         dist = base_stop + g_pct
                         total_heat += pos_pct * (dist / 100)
             if total_heat > max_heat:
-                heat_blocked = True
-                logger.info(f"Portfolio heat {total_heat:.1f}% > {max_heat}% - blocking new buys")
+                heat_penalty_active = True
+                logger.info(f"Portfolio heat {total_heat:.1f}% > {max_heat}% - applying score penalty + half-size buys")
 
         if drawdown_halt:
             logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
-        elif not ftd_can_buy:
-            logger.info("Market timing: no confirmed uptrend - skipping buys")
-        elif heat_blocked:
-            logger.info("Portfolio heat too high - skipping buys")
         elif config.current_cash < min_cash_reserve:
             logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve (${min_cash_reserve:.2f}), regime={market_regime['regime']}, skipping buys")
         elif position_count < config.max_positions:
             # Evaluate and execute buys (only if we have room for more positions)
             logger.info("Evaluating buy candidates from Stock table...")
-            buys = evaluate_buys(db)
+            buys = evaluate_buys(db, ftd_penalty_active=ftd_penalty_active, heat_penalty_active=heat_penalty_active)
             results["buys_considered"] = len(buys)
             logger.info(f"Buy candidates found: {len(buys)}")
 

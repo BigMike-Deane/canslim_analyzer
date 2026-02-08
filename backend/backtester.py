@@ -105,6 +105,8 @@ class BacktestEngine:
         # Market timing state (O'Neil A/D + FTD)
         self.market_timing_state: str = "CONFIRMED_UPTREND"
         self.ftd_can_buy: bool = True
+        self.ftd_penalty_active: bool = False
+        self.heat_penalty_active: bool = False
 
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
@@ -449,19 +451,20 @@ class BacktestEngine:
         else:
             min_cash_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
 
-        # Portfolio heat check
+        # Portfolio heat check — advisory penalty, not hard block
         heat_config = config.get('portfolio_heat', {})
-        heat_blocked = False
+        self.heat_penalty_active = False
         if heat_config.get('enabled', True):
             portfolio_heat = self._calculate_portfolio_heat(current_date)
             max_heat = heat_config.get('max_heat_pct', 15.0)
             if portfolio_heat > max_heat:
-                heat_blocked = True
-                logger.debug(f"Portfolio heat {portfolio_heat:.1f}% > {max_heat}% - blocking new buys")
+                self.heat_penalty_active = True
+                logger.debug(f"Portfolio heat {portfolio_heat:.1f}% > {max_heat}% - applying score penalty + half-size buys")
+
+        # FTD: advisory penalty, not hard block
+        self.ftd_penalty_active = not self.ftd_can_buy
 
         can_buy = (not self.drawdown_halt and
-                   not heat_blocked and
-                   self.ftd_can_buy and
                    self.cash / portfolio_value >= min_cash_pct and
                    len(self.positions) < self.backtest.max_positions and
                    self.cash >= 100)
@@ -1471,6 +1474,14 @@ class BacktestEngine:
             if momentum_penalty < 0:
                 composite_score *= (1 + momentum_penalty)  # Reduce by 15%
 
+            # FTD penalty: no confirmed uptrend → reduce score (advisory, not blocking)
+            if self.ftd_penalty_active:
+                composite_score -= 15
+
+            # Heat penalty: too much risk exposure → reduce score
+            if self.heat_penalty_active:
+                composite_score -= 10
+
             if composite_score < 25:
                 continue
 
@@ -1496,6 +1507,10 @@ class BacktestEngine:
             # Reduce position size for bear market exception entries
             if score_data.get("_bear_market_entry"):
                 position_pct *= bear_exception_position_mult
+
+            # Half-size positions when portfolio heat is elevated
+            if self.heat_penalty_active:
+                position_pct *= 0.50
 
             # CORRELATION-AWARE SIZING: Reduce position if highly correlated with existing holdings
             corr_config = config.get('correlation_sizing', {})

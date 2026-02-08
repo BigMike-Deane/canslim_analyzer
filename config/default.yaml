@@ -534,9 +534,9 @@ vix_stops:
 # Volume Confirmation on Entry
 volume_gate:
   enabled: true
-  min_volume_ratio: 1.0                # Only buy when volume >= 50-day average
-  breakout_min_volume_ratio: 1.5       # Breakout entries need 1.5x volume
-  pre_breakout_min_volume_ratio: 0.8   # Pre-breakout can have slightly lower volume
+  min_volume_ratio: 0.8                # Buy when volume >= 80% of 50-day average
+  breakout_min_volume_ratio: 1.2       # Breakout entries need 1.2x volume (daily close underestimates intraday spikes)
+  pre_breakout_min_volume_ratio: 0.6   # Pre-breakout can have lower volume (accumulation phase)
 
 # Correlation-Aware Sizing
 correlation_sizing:
