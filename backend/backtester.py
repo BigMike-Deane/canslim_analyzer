@@ -96,6 +96,7 @@ class BacktestEngine:
         self.trades_executed: int = 0
         self.sells_executed: int = 0  # Track sells separately for accurate win rate
         self.profitable_trades: int = 0
+        self.drawdown_halt: bool = False  # Circuit breaker: no new buys when True
 
         # Re-entry cooldown tracking: ticker -> (date, reason)
         self.recently_sold: Dict[str, tuple] = {}
@@ -258,16 +259,42 @@ class BacktestEngine:
         return tickers
 
     def _load_static_data(self):
-        """Load static stock data (sector, earnings) from database"""
+        """Load static stock data (sector, earnings, ROE) from database"""
+        from backend.database import StockDataCache
+
         stocks = self.db.query(Stock).all()
+
+        # Batch-load ROE and analyst data from StockDataCache
+        cache_entries = self.db.query(StockDataCache).all()
+        cache_by_ticker = {c.ticker: c for c in cache_entries}
+
         for stock in stocks:
+            cache = cache_by_ticker.get(stock.ticker)
+
+            # Extract ROE from StockDataCache (stored as decimal, e.g. 0.25 = 25%)
+            roe = 0.0
+            if cache and cache.roe is not None:
+                roe = cache.roe
+            elif stock.score_details:
+                # Fallback: extract from score_details JSON if available
+                a_details = stock.score_details.get('a', {})
+                if isinstance(a_details, dict):
+                    roe = a_details.get('roe', 0.0) or 0.0
+
+            # Extract analyst data from cache
+            analyst_target = 0.0
+            num_analysts = 0
+            if cache:
+                analyst_target = getattr(cache, 'analyst_target_price', 0) or 0
+                num_analysts = getattr(cache, 'num_analyst_opinions', 0) or 0
+
             self.static_data[stock.ticker] = {
                 "sector": stock.sector or "Unknown",
                 "name": stock.name or stock.ticker,
                 "institutional_holders_pct": getattr(stock, 'institutional_holders_pct', 0) or 0,
-                "roe": 0.0,
-                "analyst_target_price": 0.0,
-                "num_analyst_opinions": 0,
+                "roe": roe,
+                "analyst_target_price": analyst_target,
+                "num_analyst_opinions": num_analysts,
                 "quarterly_earnings": stock.quarterly_earnings or [],
                 "annual_earnings": stock.annual_earnings or [],
                 "quarterly_revenue": stock.quarterly_revenue or [],
@@ -315,6 +342,45 @@ class BacktestEngine:
         # Update position prices and peak tracking
         self._update_positions(current_date)
 
+        # ===== DRAWDOWN CIRCUIT BREAKER =====
+        portfolio_value = self._get_portfolio_value(current_date)
+        current_drawdown = 0.0
+        if self.peak_portfolio_value > 0:
+            current_drawdown = ((self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value) * 100
+
+        drawdown_config = config.get('ai_trader.drawdown_protection', {})
+        halt_threshold = drawdown_config.get('halt_new_buys_pct', 15.0)
+        liquidate_threshold = drawdown_config.get('liquidate_all_pct', 25.0)
+        recovery_threshold = drawdown_config.get('recovery_pct', 10.0)
+
+        if current_drawdown >= liquidate_threshold and self.positions:
+            # Emergency: liquidate all positions
+            logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown >= {liquidate_threshold}% threshold - LIQUIDATING ALL")
+            self.drawdown_halt = True
+            held_tickers = list(self.positions.keys())
+            held_scores = self._calculate_scores(current_date, tickers=held_tickers) if held_tickers else {}
+            for ticker in list(self.positions.keys()):
+                position = self.positions[ticker]
+                price = self.data_provider.get_price_on_date(ticker, current_date)
+                if price and price > 0:
+                    score = held_scores.get(ticker, {}).get("total_score", 0)
+                    trade = SimulatedTrade(
+                        ticker=ticker, action="SELL", shares=position.shares,
+                        price=price, reason=f"CIRCUIT BREAKER: Portfolio drawdown {current_drawdown:.1f}%",
+                        score=score, priority=0
+                    )
+                    self._execute_sell(current_date, trade)
+            self._take_snapshot(current_date)
+            return
+
+        if current_drawdown >= halt_threshold:
+            if not self.drawdown_halt:
+                logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown - halting new buys")
+            self.drawdown_halt = True
+        elif self.drawdown_halt and current_drawdown < recovery_threshold:
+            logger.info(f"CIRCUIT BREAKER LIFTED: Drawdown recovered to {current_drawdown:.1f}%")
+            self.drawdown_halt = False
+
         # Tier 1: Score HELD positions every day (needed for sell/pyramid triggers)
         held_tickers = list(self.positions.keys())
         held_scores = self._calculate_scores(current_date, tickers=held_tickers) if held_tickers else {}
@@ -342,7 +408,8 @@ class BacktestEngine:
         else:
             min_cash_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
 
-        can_buy = (self.cash / portfolio_value >= min_cash_pct and
+        can_buy = (not self.drawdown_halt and
+                   self.cash / portfolio_value >= min_cash_pct and
                    len(self.positions) < self.backtest.max_positions and
                    self.cash >= 100)
 
@@ -507,6 +574,7 @@ class BacktestEngine:
 
             # ===== C SCORE (15 pts): Current Quarterly Earnings =====
             c_score = 0
+            eps_growth = 0.0  # Track for projected_growth calculation
             quarterly_earnings = stock_data.quarterly_earnings or []
             if len(quarterly_earnings) >= 2:
                 # Calculate YoY growth (compare current quarter to same quarter last year)
@@ -533,6 +601,7 @@ class BacktestEngine:
 
             # ===== A SCORE (15 pts): Annual Earnings Growth =====
             a_score = 0
+            annual_cagr = 0.0  # Track for projected_growth calculation
             annual_earnings = stock_data.annual_earnings or []
             roe = static_data.get("roe", 0)
 
@@ -543,6 +612,7 @@ class BacktestEngine:
 
                 if three_years_ago > 0 and current_annual > 0:
                     cagr = ((current_annual / three_years_ago) ** (1/3) - 1) * 100
+                    annual_cagr = cagr  # Save for projected_growth
                     if cagr >= 25:
                         a_score = 12
                     elif cagr >= 15:
@@ -662,6 +732,16 @@ class BacktestEngine:
             else:
                 m_score = 0
 
+            # ===== PROJECTED GROWTH (independent of CANSLIM score) =====
+            # Combine EPS growth rate, annual CAGR, and price momentum
+            # This gives the composite score a truly independent growth signal
+            momentum_pct = (combined_rs - 1.0) * 100  # RS ratio to %
+            projected_growth = (
+                eps_growth * 0.40 +      # 40% quarterly EPS growth rate
+                annual_cagr * 0.30 +     # 30% annual earnings CAGR
+                momentum_pct * 0.30      # 30% price momentum vs market
+            )
+
             # ===== TOTAL SCORE (100 pts) =====
             total_score = c_score + a_score + n_score + s_score + l_score + i_score + m_score
 
@@ -693,6 +773,7 @@ class BacktestEngine:
                 "m_score": m_score,
                 "rs_12m": rs_12m,
                 "rs_3m": rs_3m,
+                "projected_growth": projected_growth,
                 "pct_from_high": pct_from_high,
                 "pct_from_pivot": pct_from_pivot,
                 "pivot_price": pivot_price,
@@ -783,11 +864,20 @@ class BacktestEngine:
         # Get stop loss config
         stop_loss_config = config.get('ai_trader.stops', {})
         normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', self.backtest.stop_loss_pct)
-        bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+        bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 7.0)
         use_atr_stops = stop_loss_config.get('use_atr_stops', True)
         atr_multiplier = stop_loss_config.get('atr_multiplier', 2.5)
         atr_period = stop_loss_config.get('atr_period', 14)
         max_stop_pct = stop_loss_config.get('max_stop_pct', 20.0)
+
+        # Partial profit config from YAML
+        partial_profit_config = config.get('ai_trader.partial_profits', {})
+        pp_25_gain = partial_profit_config.get('threshold_25pct', {}).get('gain_pct', 25)
+        pp_25_sell = partial_profit_config.get('threshold_25pct', {}).get('sell_pct', 25)
+        pp_25_min_score = partial_profit_config.get('threshold_25pct', {}).get('min_score', 60)
+        pp_40_gain = partial_profit_config.get('threshold_40pct', {}).get('gain_pct', 40)
+        pp_40_sell = partial_profit_config.get('threshold_40pct', {}).get('sell_pct', 50)
+        pp_40_min_score = partial_profit_config.get('threshold_40pct', {}).get('min_score', 60)
 
         # Partial trailing stop config
         partial_trailing_config = config.get('ai_trader.trailing_stops', {})
@@ -796,12 +886,16 @@ class BacktestEngine:
         partial_min_score = partial_trailing_config.get('partial_min_score', 65)
         partial_sell_pct = partial_trailing_config.get('partial_sell_pct', 50)
 
-        # Use wider stop loss in bearish market
+        # Use tighter stop loss in bearish market (7% vs 8% normal)
         base_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
 
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
+                continue
+
+            # Guard against division by zero on cost_basis
+            if position.cost_basis <= 0:
                 continue
 
             gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100
@@ -930,12 +1024,12 @@ class BacktestEngine:
                 continue
 
             # PARTIAL PROFIT TAKING - let winners run while locking in gains
-            # Only take partial profits if score remains decent (>= 60)
+            # Thresholds from YAML config
             partial_taken = position.partial_profit_taken
 
-            # Check for 50% partial at +40% gain (highest priority partial)
-            if gain_pct >= 40 and current_score >= 60 and partial_taken < 50:
-                take_pct = 50 - partial_taken  # Take what's left to get to 50%
+            # Check for higher tier partial at +40% gain (highest priority partial)
+            if gain_pct >= pp_40_gain and current_score >= pp_40_min_score and partial_taken < pp_40_sell:
+                take_pct = pp_40_sell - partial_taken  # Take what's left to get to target
                 if take_pct > 0:
                     shares_to_sell = position.shares * (take_pct / 100)
                     sells.append(SimulatedTrade(
@@ -943,7 +1037,7 @@ class BacktestEngine:
                         action="SELL",
                         shares=shares_to_sell,
                         price=price,
-                        reason=f"PARTIAL PROFIT 50%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
+                        reason=f"PARTIAL PROFIT {pp_40_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
                         score=current_score,
                         priority=4,
                         is_partial=True,
@@ -951,21 +1045,35 @@ class BacktestEngine:
                     ))
                     continue  # Don't add more sell signals for this position
 
-            # Check for 25% partial at +25% gain
-            elif gain_pct >= 25 and current_score >= 60 and partial_taken < 25:
-                shares_to_sell = position.shares * 0.25
+            # Check for lower tier partial at +25% gain
+            elif gain_pct >= pp_25_gain and current_score >= pp_25_min_score and partial_taken < pp_25_sell:
+                shares_to_sell = position.shares * (pp_25_sell / 100)
                 sells.append(SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=shares_to_sell,
                     price=price,
-                    reason=f"PARTIAL PROFIT 25%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
+                    reason=f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
                     score=current_score,
                     priority=5,
                     is_partial=True,
-                    sell_pct=25
+                    sell_pct=pp_25_sell
                 ))
                 continue  # Don't add more sell signals for this position
+
+            # TAKE PROFIT: Full sell at +40% if score declining significantly (matches live trader)
+            take_profit_pct = 40.0  # Could be config-driven
+            if gain_pct >= take_profit_pct and current_score < position.purchase_score - 15:
+                sells.append(SimulatedTrade(
+                    ticker=ticker,
+                    action="SELL",
+                    shares=position.shares,
+                    price=price,
+                    reason=f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly ({position.purchase_score:.0f} -> {current_score:.0f})",
+                    score=current_score,
+                    priority=7
+                ))
+                continue
 
             # Protect gains - winners with weak scores
             if gain_pct >= 20 and current_score < self.backtest.sell_score_threshold:
@@ -1022,12 +1130,20 @@ class BacktestEngine:
         bear_exception_min_cal = regime_config.get('bear_exception_min_cal', 35)
         bear_exception_position_mult = regime_config.get('bear_exception_position_mult', 0.50)
 
+        # Regime-based position sizing (matches live trader get_market_regime())
+        bullish_max_pct = regime_config.get('bullish_max_position_pct', 15.0)
+        bearish_max_pct = regime_config.get('bearish_max_position_pct', 8.0)
+        neutral_max_pct = regime_config.get('neutral_max_position_pct', 12.0)
+
         if weighted_signal >= bullish_threshold:
             effective_min_score = self.backtest.min_score_to_buy - 5  # Easier in bull
+            regime_max_pct = bullish_max_pct
         elif weighted_signal <= bearish_threshold:
             effective_min_score = self.backtest.min_score_to_buy + bearish_adj  # Harder in bear
+            regime_max_pct = bearish_max_pct
         else:
             effective_min_score = self.backtest.min_score_to_buy
+            regime_max_pct = neutral_max_pct
 
         # Get candidates with regime-adjusted threshold
         candidates = [
@@ -1197,7 +1313,7 @@ class BacktestEngine:
                 momentum_score = 15  # Lower score - already extended
 
             # EXTENDED: More than 5% above pivot - the easy money is gone
-            elif pct_from_pivot < -5:
+            elif has_base and pivot_price > 0 and pct_from_pivot < -5:
                 if pct_from_pivot < -10:
                     extended_penalty = -20  # Heavily penalize extended stocks
                     momentum_score = 5
@@ -1251,10 +1367,10 @@ class BacktestEngine:
             if composite_score < 25:
                 continue
 
-            # Position sizing (4-20% based on conviction)
+            # Position sizing (4-regime_max_pct based on conviction, matches live trader)
             conviction_multiplier = min(composite_score / 50, 1.5)
-            position_pct = 4.0 + (conviction_multiplier * 10.67)
-            position_pct = min(position_pct, 20.0)
+            position_pct = 4.0 + (conviction_multiplier * (regime_max_pct - 4) / 1.5)
+            position_pct = min(position_pct, regime_max_pct)
 
             # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
             # These are the ideal entries - before the crowd notices
@@ -1449,6 +1565,8 @@ class BacktestEngine:
 
         self.cash += total_value
 
+        purchase_date = position.purchase_date
+
         if trade.is_partial:
             # PARTIAL SELL - reduce position but don't delete
             position.shares -= trade.shares
@@ -1464,7 +1582,8 @@ class BacktestEngine:
         self._record_trade(
             current_date, trade,
             cost_basis=cost_basis,
-            realized_gain=realized_gain
+            realized_gain=realized_gain,
+            purchase_date=purchase_date
         )
 
         self.trades_executed += 1
@@ -1496,14 +1615,16 @@ class BacktestEngine:
         self.trades_executed += 1
 
     def _record_trade(self, current_date: date, trade: SimulatedTrade,
-                      cost_basis: float = None, realized_gain: float = None):
+                      cost_basis: float = None, realized_gain: float = None,
+                      purchase_date: date = None):
         """Record trade in database"""
         position = self.positions.get(trade.ticker)
         holding_days = None
         realized_gain_pct = None
 
         if trade.action == "SELL" and cost_basis:
-            holding_days = (current_date - position.purchase_date).days if position else 0
+            sell_purchase_date = purchase_date or (position.purchase_date if position else None)
+            holding_days = (current_date - sell_purchase_date).days if sell_purchase_date else 0
             realized_gain_pct = (realized_gain / (trade.shares * cost_basis)) * 100 if cost_basis else 0
 
         db_trade = BacktestTrade(

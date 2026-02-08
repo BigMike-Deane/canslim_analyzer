@@ -140,10 +140,10 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
             current_cash=25000.0,
             max_positions=20,  # More positions for diversification
             max_position_pct=12.0,  # Larger positions for conviction picks
-            min_score_to_buy=65,  # Lower threshold to catch more growth
+            min_score_to_buy=72,  # CANSLIM quality threshold
             sell_score_threshold=45,  # Hold slightly longer
             take_profit_pct=40.0,  # Let winners run
-            stop_loss_pct=10.0,  # Cut losers faster
+            stop_loss_pct=8.0,  # O'Neil standard 8% stop
             is_active=True
         )
         db.add(config)
@@ -737,8 +737,13 @@ def evaluate_pyramids(db: Session) -> list:
         gain_pct = position.gain_loss_pct or 0
         current_allocation = (position.current_value or 0) / portfolio_value if portfolio_value > 0 else 0
 
-        # Skip if position is losing or score is weak
-        if gain_pct < 5 or score < 70:
+        # Pyramid threshold: must be up at least 2.5% (matching backtester)
+        if gain_pct < 2.5 or score < 70:
+            continue
+
+        # Max 2 pyramids per position (O'Neil: decreasing position sizes)
+        current_pyramid_count = getattr(position, 'pyramid_count', 0) or 0
+        if current_pyramid_count >= 2:
             continue
 
         # Skip if already at max position size
@@ -758,9 +763,13 @@ def evaluate_pyramids(db: Session) -> list:
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
         volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
 
-        # Calculate pyramid amount (50% of original position)
+        # O'Neil 60/40 pyramid sizing (decreasing adds)
+        # First pyramid: 60% of original cost, Second: 40%
         original_cost = position.shares * position.cost_basis
-        pyramid_amount = original_cost * 0.5
+        if current_pyramid_count == 0:
+            pyramid_amount = original_cost * 0.60  # First add: 60%
+        else:
+            pyramid_amount = original_cost * 0.40  # Second add: 40%
 
         # Cap by remaining room in position
         remaining_room = (MAX_POSITION_ALLOCATION - current_allocation) * portfolio_value
@@ -936,6 +945,65 @@ def refresh_ai_portfolio(db: Session) -> dict:
     }
 
 
+def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) -> float:
+    """
+    Calculate ATR-based adaptive stop loss.
+    Volatile stocks get wider stops to avoid being shaken out on normal movement.
+    Returns the effective stop loss percentage (always >= base_stop_pct, capped at max_stop_pct).
+    """
+    from config_loader import config as yaml_config
+    stop_config = yaml_config.get('ai_trader.stops', {})
+
+    if not stop_config.get('use_atr_stops', True):
+        return base_stop_pct
+
+    atr_multiplier = stop_config.get('atr_multiplier', 2.5)
+    max_stop_pct = stop_config.get('max_stop_pct', 20.0)
+
+    # Try to get ATR from recent price data via Yahoo
+    try:
+        import requests
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        params = {"interval": "1d", "range": "1mo"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            result = data.get("chart", {}).get("result", [])
+            if result:
+                indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
+                highs = indicators.get("high", [])
+                lows = indicators.get("low", [])
+                closes = indicators.get("close", [])
+
+                if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
+                    # Calculate 14-day ATR
+                    atr_period = stop_config.get('atr_period', 14)
+                    true_ranges = []
+                    for i in range(-atr_period, 0):
+                        if highs[i] and lows[i] and closes[i-1]:
+                            tr = max(
+                                highs[i] - lows[i],
+                                abs(highs[i] - closes[i-1]),
+                                abs(lows[i] - closes[i-1])
+                            )
+                            true_ranges.append(tr)
+
+                    if true_ranges:
+                        atr = sum(true_ranges) / len(true_ranges)
+                        atr_pct = (atr / current_price) * 100 if current_price > 0 else 0
+                        atr_stop = atr_pct * atr_multiplier
+                        effective_stop = max(base_stop_pct, atr_stop)
+                        effective_stop = min(effective_stop, max_stop_pct)
+                        if effective_stop > base_stop_pct:
+                            logger.debug(f"{ticker}: ATR stop {effective_stop:.1f}% (ATR={atr:.2f}, base={base_stop_pct}%)")
+                        return effective_stop
+    except Exception as e:
+        logger.debug(f"{ticker}: ATR calculation failed ({e}), using base stop {base_stop_pct}%")
+
+    return base_stop_pct
+
+
 def check_and_execute_stop_losses(db: Session) -> dict:
     """
     Check stop loss conditions and execute sells if triggered.
@@ -986,10 +1054,17 @@ def check_and_execute_stop_losses(db: Session) -> dict:
     from config_loader import config as yaml_config
     stop_loss_config = yaml_config.get('ai_trader.stops', {})
     normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', config.stop_loss_pct)
-    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 7.0)
 
-    # Use wider stop loss in bearish market
+    # Use tighter stop loss in bearish market
     effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
+
+    # Partial trailing stop config (matches backtester)
+    partial_trailing_config = yaml_config.get('ai_trader.trailing_stops', {})
+    partial_on_trailing = partial_trailing_config.get('partial_on_trailing', True)
+    partial_min_pyramid = partial_trailing_config.get('partial_min_pyramid_count', 2)
+    partial_min_score = partial_trailing_config.get('partial_min_score', 65)
+    partial_sell_pct_config = partial_trailing_config.get('partial_sell_pct', 50)
 
     for position in positions:
         if not position.current_price:
@@ -997,10 +1072,14 @@ def check_and_execute_stop_losses(db: Session) -> dict:
 
         gain_pct = position.gain_loss_pct or 0
 
-        # Market-aware stop loss check
-        if gain_pct <= -effective_stop_loss_pct:
+        # ATR-based adaptive stop loss - volatile stocks get wider stops
+        position_stop_pct = calculate_atr_stop(position.ticker, position.current_price, effective_stop_loss_pct)
+
+        # Market-aware stop loss check (with ATR adaptation)
+        if gain_pct <= -position_stop_pct:
             market_note = " (bearish market)" if is_bearish_market else ""
-            logger.warning(f"{position.ticker}: STOP LOSS TRIGGERED at {gain_pct:.1f}%{market_note}")
+            atr_note = f" (ATR-adjusted {position_stop_pct:.1f}%)" if position_stop_pct > effective_stop_loss_pct else ""
+            logger.warning(f"{position.ticker}: STOP LOSS TRIGGERED at {gain_pct:.1f}%{market_note}{atr_note}")
 
             # Execute the sell (from batch-fetched dict)
             stock = ticker_to_stock.get(position.ticker)
@@ -1013,7 +1092,7 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                 action="SELL",
                 shares=position.shares,
                 price=position.current_price,
-                reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}",
+                reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}",
                 score=score,
                 growth_score=growth_score,
                 is_growth_stock=position.is_growth_stock or False,
@@ -1028,7 +1107,7 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                 "shares": position.shares,
                 "price": position.current_price,
                 "gain_loss": position.gain_loss,
-                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}"
+                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}"
             })
             db.delete(position)
             continue
@@ -1049,38 +1128,80 @@ def check_and_execute_stop_losses(db: Session) -> dict:
             elif peak_gain_pct >= 10:
                 trailing_stop_pct = 8
 
-            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
-                logger.warning(f"{position.ticker}: TRAILING STOP TRIGGERED - Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
+            # Pyramid-aware trailing stop widening: +2% per pyramid (max +6%)
+            pyramid_count = getattr(position, 'pyramid_count', 0) or 0
+            if trailing_stop_pct and pyramid_count > 0:
+                pyramid_widening = min(pyramid_count * 2, 6)
+                trailing_stop_pct += pyramid_widening
 
-                # Execute the sell (from batch-fetched dict)
+            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
                 stock = ticker_to_stock.get(position.ticker)
                 score = stock.canslim_score if stock else 0
                 growth_score = stock.growth_mode_score if stock else None
 
-                execute_trade(
-                    db=db,
-                    ticker=position.ticker,
-                    action="SELL",
-                    shares=position.shares,
-                    price=position.current_price,
-                    reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)",
-                    score=score,
-                    growth_score=growth_score,
-                    is_growth_stock=position.is_growth_stock or False,
-                    cost_basis=position.cost_basis,
-                    realized_gain=position.gain_loss
-                )
+                # Partial trailing stop: high conviction positions sell 50%, reset peak
+                if (partial_on_trailing and
+                        pyramid_count >= partial_min_pyramid and
+                        score >= partial_min_score):
+                    shares_to_sell = position.shares * (partial_sell_pct_config / 100)
+                    partial_value = shares_to_sell * position.current_price
+                    logger.warning(f"{position.ticker}: PARTIAL TRAILING STOP - selling {partial_sell_pct_config}% ({shares_to_sell:.2f} shares)")
 
-                # Update cash and remove position
-                config.current_cash += position.current_value
-                sells_executed.append({
-                    "ticker": position.ticker,
-                    "shares": position.shares,
-                    "price": position.current_price,
-                    "gain_loss": position.gain_loss,
-                    "reason": f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)"
-                })
-                db.delete(position)
+                    execute_trade(
+                        db=db,
+                        ticker=position.ticker,
+                        action="SELL",
+                        shares=shares_to_sell,
+                        price=position.current_price,
+                        reason=f"PARTIAL TRAILING STOP ({partial_sell_pct_config}%): Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)",
+                        score=score,
+                        growth_score=growth_score,
+                        is_growth_stock=position.is_growth_stock or False,
+                        cost_basis=position.cost_basis,
+                        realized_gain=(position.current_price - position.cost_basis) * shares_to_sell
+                    )
+
+                    # Update position: reduce shares, reset peak
+                    position.shares -= shares_to_sell
+                    position.current_value = position.shares * position.current_price
+                    position.gain_loss = position.current_value - (position.shares * position.cost_basis)
+                    position.peak_price = position.current_price
+                    position.partial_profit_taken = (getattr(position, 'partial_profit_taken', 0) or 0) + partial_sell_pct_config
+                    config.current_cash += partial_value
+                    sells_executed.append({
+                        "ticker": position.ticker,
+                        "shares": shares_to_sell,
+                        "price": position.current_price,
+                        "gain_loss": (position.current_price - position.cost_basis) * shares_to_sell,
+                        "reason": f"PARTIAL TRAILING STOP ({partial_sell_pct_config}%): Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)"
+                    })
+                else:
+                    # Standard: full sell
+                    logger.warning(f"{position.ticker}: TRAILING STOP TRIGGERED - Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
+
+                    execute_trade(
+                        db=db,
+                        ticker=position.ticker,
+                        action="SELL",
+                        shares=position.shares,
+                        price=position.current_price,
+                        reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)",
+                        score=score,
+                        growth_score=growth_score,
+                        is_growth_stock=position.is_growth_stock or False,
+                        cost_basis=position.cost_basis,
+                        realized_gain=position.gain_loss
+                    )
+
+                    config.current_cash += position.current_value
+                    sells_executed.append({
+                        "ticker": position.ticker,
+                        "shares": position.shares,
+                        "price": position.current_price,
+                        "gain_loss": position.gain_loss,
+                        "reason": f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)"
+                    })
+                    db.delete(position)
 
     db.commit()
 
@@ -1167,9 +1288,18 @@ def evaluate_sells(db: Session) -> list:
     from config_loader import config as yaml_config
     stop_loss_config = yaml_config.get('ai_trader.stops', {})
     normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', portfolio_config.stop_loss_pct)
-    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 15.0)
+    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 7.0)
 
-    # Use wider stop loss in bearish market
+    # Partial profit config from YAML
+    partial_profit_config = yaml_config.get('ai_trader.partial_profits', {})
+    pp_25_gain = partial_profit_config.get('threshold_25pct', {}).get('gain_pct', 25)
+    pp_25_sell = partial_profit_config.get('threshold_25pct', {}).get('sell_pct', 25)
+    pp_25_min_score = partial_profit_config.get('threshold_25pct', {}).get('min_score', 60)
+    pp_40_gain = partial_profit_config.get('threshold_40pct', {}).get('gain_pct', 40)
+    pp_40_sell = partial_profit_config.get('threshold_40pct', {}).get('sell_pct', 50)
+    pp_40_min_score = partial_profit_config.get('threshold_40pct', {}).get('min_score', 60)
+
+    # Use tighter stop loss in bearish market (7% vs 8% normal)
     effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
 
     for position in positions:
@@ -1177,18 +1307,26 @@ def evaluate_sells(db: Session) -> list:
         score = get_effective_score(position, use_current=True)
         purchase_score = get_effective_score(position, use_current=False)
 
-        if not position.current_price or score == 0:
+        if not position.current_price:
             continue
+
+        # P0 FIX: When score==0 (data missing), still evaluate stop loss and trailing stop
+        # Only skip score-dependent sells (score crash, partial profit, weak position)
+        score_available = score > 0
 
         gain_pct = position.gain_loss_pct or 0
         stock_type = "Growth" if position.is_growth_stock else "CANSLIM"
 
-        # Market-aware stop loss
-        if gain_pct <= -effective_stop_loss_pct:
+        # ATR-based adaptive stop loss - volatile stocks get wider stops
+        position_stop_pct = calculate_atr_stop(position.ticker, position.current_price, effective_stop_loss_pct)
+
+        # Market-aware stop loss (with ATR adaptation)
+        if gain_pct <= -position_stop_pct:
             market_note = " (bearish market)" if is_bearish_market else ""
+            atr_note = f" (ATR-adjusted {position_stop_pct:.1f}%)" if position_stop_pct > effective_stop_loss_pct else ""
             sells.append({
                 "position": position,
-                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}",
+                "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}",
                 "priority": 1  # High priority - cut losers fast
             })
             continue
@@ -1215,7 +1353,36 @@ def evaluate_sells(db: Session) -> list:
             elif peak_gain_pct >= 10:
                 trailing_stop_pct = 8
 
+            # Pyramid-aware trailing stop widening: +2% per pyramid (max +6%)
+            # High-conviction positions (pyramided) get more room to run
+            pyramid_count = getattr(position, 'pyramid_count', 0) or 0
+            if trailing_stop_pct and pyramid_count > 0:
+                pyramid_widening = min(pyramid_count * 2, 6)
+                trailing_stop_pct += pyramid_widening
+
             if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
+                # Partial trailing stop for high-conviction positions
+                # If pyramided 2+ times and score still strong, sell 50% and keep running
+                partial_trailing_config = yaml_config.get('ai_trader.trailing_stops', {})
+                partial_on_trailing = partial_trailing_config.get('partial_on_trailing', True)
+                partial_min_pyramids = partial_trailing_config.get('partial_min_pyramid_count', 2)
+                partial_min_score = partial_trailing_config.get('partial_min_score', 65)
+                partial_sell_pct_config = partial_trailing_config.get('partial_sell_pct', 50)
+
+                if (partial_on_trailing and pyramid_count >= partial_min_pyramids
+                        and score_available and score >= partial_min_score):
+                    sells.append({
+                        "position": position,
+                        "reason": f"PARTIAL TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%), keeping {100-partial_sell_pct_config}%",
+                        "priority": 2,
+                        "is_partial": True,
+                        "sell_pct": partial_sell_pct_config,
+                        "reset_peak": True  # Signal to reset peak price after partial sell
+                    })
+                    logger.info(f"{position.ticker}: Partial trailing stop ({partial_sell_pct_config}%) - "
+                               f"pyramids={pyramid_count}, score={score:.0f}")
+                    continue
+
                 sells.append({
                     "position": position,
                     "reason": f"TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)",
@@ -1223,6 +1390,11 @@ def evaluate_sells(db: Session) -> list:
                 })
                 logger.info(f"{position.ticker}: Trailing stop triggered - peak ${position.peak_price:.2f}, now ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
                 continue
+
+        # Skip all score-dependent sells if score data is missing
+        if not score_available:
+            logger.debug(f"{position.ticker}: Score=0 (data missing), skipping score-dependent sells but stops still active")
+            continue
 
         # Score crashed - sell if score dropped dramatically
         # WITH safeguards: profitability exception + consecutive requirement
@@ -1253,8 +1425,14 @@ def evaluate_sells(db: Session) -> list:
                 continue  # Skip this sell, wait for next scan to confirm
 
             # Require N consecutive low scores before selling (configurable, default 3)
+            # Count from most recent — stop at first score above threshold
             recent_scores = stability.get("recent_scores", [])
-            consecutive_low = sum(1 for s in recent_scores if s < score_threshold)
+            consecutive_low = 0
+            for s in recent_scores:
+                if s < score_threshold:
+                    consecutive_low += 1
+                else:
+                    break
             if consecutive_low < consecutive_required:
                 logger.debug(f"{position.ticker}: SKIPPING SELL - only {consecutive_low} "
                             f"consecutive low score(s), need {consecutive_required}+")
@@ -1307,30 +1485,30 @@ def evaluate_sells(db: Session) -> list:
             continue
 
         # PARTIAL PROFIT TAKING - let winners run while locking in gains
-        # Only take partial profits if score remains decent (>= 60)
+        # Thresholds from YAML config
         partial_taken = getattr(position, 'partial_profit_taken', 0) or 0
 
-        # Check for 50% partial at +40% gain (highest priority partial)
-        if gain_pct >= 40 and score >= 60 and partial_taken < 50:
-            take_pct = 50 - partial_taken  # Take what's left to get to 50%
+        # Check for higher tier partial at configured gain threshold
+        if gain_pct >= pp_40_gain and score >= pp_40_min_score and partial_taken < pp_40_sell:
+            take_pct = pp_40_sell - partial_taken  # Take what's left to get to target
             if take_pct > 0:
                 sells.append({
                     "position": position,
-                    "reason": f"PARTIAL PROFIT 50%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
+                    "reason": f"PARTIAL PROFIT {pp_40_sell}%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
                     "priority": 4,
                     "is_partial": True,
                     "sell_pct": take_pct
                 })
                 continue  # Don't add more sell signals for this position
 
-        # Check for 25% partial at +25% gain
-        elif gain_pct >= 25 and score >= 60 and partial_taken < 25:
+        # Check for lower tier partial at configured gain threshold
+        elif gain_pct >= pp_25_gain and score >= pp_25_min_score and partial_taken < pp_25_sell:
             sells.append({
                 "position": position,
-                "reason": f"PARTIAL PROFIT 25%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
+                "reason": f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
                 "priority": 5,
                 "is_partial": True,
-                "sell_pct": 25
+                "sell_pct": pp_25_sell
             })
             continue  # Don't add more sell signals for this position
 
@@ -1369,9 +1547,9 @@ def evaluate_buys(db: Session) -> list:
     Evaluate stocks for potential buys - considers both CANSLIM and Growth Mode stocks.
     Uses appropriate score based on stock type for a balanced portfolio.
     """
-    config = get_or_create_config(db)
+    portfolio_config = get_or_create_config(db)
     portfolio = get_portfolio_value(db)
-    logger.info(f"evaluate_buys: cash=${config.current_cash:.2f}, portfolio_value=${portfolio['total_value']:.2f}")
+    logger.info(f"evaluate_buys: cash=${portfolio_config.current_cash:.2f}, portfolio_value=${portfolio['total_value']:.2f}")
 
     positions = db.query(AIPortfolioPosition).all()
     current_tickers = {p.ticker for p in positions}
@@ -1382,16 +1560,48 @@ def evaluate_buys(db: Session) -> list:
         # Add more pairs here if needed (e.g., BRK.A/BRK.B)
     ]
 
+    # RE-ENTRY COOLDOWN: Prevent whipsaw losses from rapid re-buys after stops
+    # Check recent sells and build cooldown set
+    from config_loader import config as yaml_config
+    cooldown_config = yaml_config.get('ai_trader.re_entry_cooldown', {})
+    stop_loss_cooldown_days = cooldown_config.get('stop_loss_days', 5)
+    trailing_stop_cooldown_days = cooldown_config.get('trailing_stop_days', 3)
+
+    cooldown_tickers = set()
+    # Query recent SELL trades to check for cooldowns
+    cooldown_lookback = datetime.now(timezone.utc) - timedelta(days=max(stop_loss_cooldown_days, trailing_stop_cooldown_days))
+    recent_sells = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.action == "SELL",
+        AIPortfolioTrade.executed_at >= cooldown_lookback
+    ).all()
+
+    for trade in recent_sells:
+        if not trade.reason:
+            continue
+        days_since = (datetime.now(timezone.utc) - trade.executed_at.replace(tzinfo=timezone.utc)).days if trade.executed_at else 999
+        if "STOP LOSS" in trade.reason and days_since < stop_loss_cooldown_days:
+            cooldown_tickers.add(trade.ticker)
+            logger.debug(f"Cooldown: {trade.ticker} - stop loss {days_since}d ago (need {stop_loss_cooldown_days}d)")
+        elif "TRAILING STOP" in trade.reason and "PARTIAL" not in trade.reason and days_since < trailing_stop_cooldown_days:
+            cooldown_tickers.add(trade.ticker)
+            logger.debug(f"Cooldown: {trade.ticker} - trailing stop {days_since}d ago (need {trailing_stop_cooldown_days}d)")
+
+    if cooldown_tickers:
+        logger.info(f"Re-entry cooldown active for: {', '.join(sorted(cooldown_tickers))}")
+
     # Build set of tickers to exclude (already own or own a duplicate)
-    excluded_tickers = set(current_tickers)
+    excluded_tickers = set(current_tickers) | cooldown_tickers
     for ticker in current_tickers:
         for group in DUPLICATE_TICKERS:
             if ticker in group:
                 excluded_tickers.update(group)  # Exclude all in the group
 
+    # Read min_score from YAML config with DB fallback
+    min_score_to_buy = yaml_config.get('ai_trader.allocation.min_score_to_buy', portfolio_config.min_score_to_buy)
+
     # Get traditional CANSLIM stocks that meet minimum score threshold
     canslim_candidates = db.query(Stock).filter(
-        Stock.canslim_score >= config.min_score_to_buy,
+        Stock.canslim_score >= min_score_to_buy,
         Stock.current_price > 0,
         Stock.projected_growth != None,  # Must have growth projection
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
@@ -1399,7 +1609,7 @@ def evaluate_buys(db: Session) -> list:
 
     # Get Growth Mode stocks that meet minimum threshold
     growth_candidates = db.query(Stock).filter(
-        Stock.growth_mode_score >= config.min_score_to_buy,
+        Stock.growth_mode_score >= min_score_to_buy,
         Stock.is_growth_stock == True,
         Stock.current_price > 0,
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
@@ -1419,12 +1629,41 @@ def evaluate_buys(db: Session) -> list:
 
     logger.info(f"Buy candidates: {len(canslim_candidates)} CANSLIM, {len(growth_candidates)} Growth Mode, {len(candidates)} total unique")
 
+    # REGIME SCORE ADJUSTMENT: Raise the bar in bear markets, lower in bull
+    market_regime = get_market_regime(db)
+    regime_config = yaml_config.get('ai_trader.market_regime', {})
+    regime_adj = 0
+    if market_regime["regime"] == "bullish":
+        regime_adj = -5
+    elif market_regime["regime"] == "bearish":
+        regime_adj = regime_config.get('bearish_min_score_adj', 10)
+
+    effective_min_score = min_score_to_buy + regime_adj
+    logger.info(f"Regime: {market_regime['regime']}, min_score: {min_score_to_buy} + {regime_adj} = {effective_min_score}")
+
+    # Bear market exception config
+    bear_exception_min_cal = regime_config.get('bear_exception_min_cal', 35)
+    bear_exception_position_mult = regime_config.get('bear_exception_position_mult', 0.50)
+
     buys = []
+    bear_exception_candidates = []
+
     for stock in candidates:
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
         effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
-        if not effective_score or effective_score < config.min_score_to_buy:
+        if not effective_score or effective_score < effective_min_score:
+            # BEAR MARKET EXCEPTION: Allow strong fundamental stocks at half position size
+            if market_regime["regime"] == "bearish" and effective_score and effective_score >= min_score_to_buy:
+                score_details = stock.score_details or {}
+                c_val = score_details.get('c', {}).get('score', 0) if isinstance(score_details.get('c'), dict) else score_details.get('c', 0)
+                a_val = score_details.get('a', {}).get('score', 0) if isinstance(score_details.get('a'), dict) else score_details.get('a', 0)
+                l_val = score_details.get('l', {}).get('score', 0) if isinstance(score_details.get('l'), dict) else score_details.get('l', 0)
+                cal_sum = c_val + a_val + l_val
+                if cal_sum >= bear_exception_min_cal:
+                    bear_exception_candidates.append(stock)
+                    logger.info(f"Bear exception: {stock.ticker} C+A+L={cal_sum:.0f} (score {effective_score:.0f})")
+                    continue
             continue
 
         # QUALITY FILTERS: Only buy stocks with strong fundamentals
@@ -1772,11 +2011,11 @@ def evaluate_buys(db: Session) -> list:
 
         # Don't exceed available cash (allow more for high conviction entries)
         if is_breaking_out:
-            cash_limit = config.current_cash * 0.85
+            cash_limit = portfolio_config.current_cash * 0.85
         elif pre_breakout_bonus >= 15:
-            cash_limit = config.current_cash * 0.80
+            cash_limit = portfolio_config.current_cash * 0.80
         else:
-            cash_limit = config.current_cash * 0.70
+            cash_limit = portfolio_config.current_cash * 0.70
         position_value = min(max_position_value, cash_limit)
 
         # Check sector limits
@@ -1875,6 +2114,33 @@ def evaluate_buys(db: Session) -> list:
             seen_groups.add(in_group)
 
         final_buys.append(buy)
+
+    # Add bear market exception candidates at reduced position size
+    # These are stocks that meet base min_score but not the regime-adjusted threshold
+    if bear_exception_candidates and not final_buys:
+        logger.info(f"No regular candidates in bear market, adding {len(bear_exception_candidates)} exception candidates at {bear_exception_position_mult*100:.0f}% position size")
+        for stock in bear_exception_candidates[:3]:  # Max 3 exceptions
+            is_growth = stock.is_growth_stock or False
+            effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
+            portfolio_value = get_portfolio_value(db)["total_value"]
+            # Half position size for bear exceptions
+            position_value = portfolio_value * 0.05 * bear_exception_position_mult  # ~2.5% positions
+            position_value = min(position_value, portfolio_config.current_cash * 0.50)
+            if position_value < 100 or not stock.current_price:
+                continue
+            shares = position_value / stock.current_price
+            final_buys.append({
+                "stock": stock,
+                "shares": shares,
+                "value": position_value,
+                "reason": f"BEAR EXCEPTION: Strong C+A+L at {bear_exception_position_mult*100:.0f}% size | {'Growth' if is_growth else 'CANSLIM'} {effective_score:.0f}",
+                "priority": 0,
+                "composite_score": effective_score,
+                "is_growth_stock": is_growth,
+                "effective_score": effective_score,
+                "is_breaking_out": False,
+                "position_pct": 5.0 * bear_exception_position_mult
+            })
 
     return final_buys
 
@@ -1978,6 +2244,12 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 current_partial = getattr(position, 'partial_profit_taken', 0) or 0
                 position.partial_profit_taken = current_partial + sell_pct
 
+                # Reset peak price after partial trailing stop (give remainder room to recover)
+                if sell.get("reset_peak"):
+                    position.peak_price = position.current_price
+                    position.peak_date = get_cst_now()
+                    logger.info(f"PARTIAL TRAILING STOP {position.ticker}: peak reset to ${position.current_price:.2f}")
+
                 logger.info(f"PARTIAL SELL {position.ticker}: {sell_pct}% ({shares_to_sell:.2f} shares) @ ${position.current_price:.2f}")
 
                 results["sells_executed"].append({
@@ -2024,77 +2296,160 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
         db.commit()
 
-        # Evaluate and execute pyramid trades (add to winners)
-        pyramids = evaluate_pyramids(db)
-        results["pyramids_executed"] = []
-        results["pyramids_considered"] = len(pyramids)
+        # ===== DRAWDOWN CIRCUIT BREAKER (before pyramids and buys) =====
+        # Re-fetch positions after sells (some may have been deleted)
+        positions = db.query(AIPortfolioPosition).all()
+        position_count = len(positions)
 
-        if pyramids:
-            logger.info(f"Pyramid opportunities found: {len(pyramids)}")
-
-        for pyramid in pyramids[:3]:  # Limit to 3 pyramids per cycle
-            position = pyramid["position"]
-
-            # Fetch live price
-            live_price = fetch_live_price(position.ticker)
-            if not live_price:
-                live_price = position.current_price
-            if not live_price or live_price <= 0:
-                continue
-
-            time.sleep(0.3)
-
-            # Recalculate with live price
-            actual_value = min(pyramid["amount"], config.current_cash * 0.5)
-            if actual_value < 100:
-                continue
-
-            actual_shares = actual_value / live_price
-
-            if config.current_cash < actual_value:
-                continue
-
-            # Execute the pyramid buy with both scores
-            execute_trade(
-                db=db,
-                ticker=position.ticker,
-                action="BUY",
-                shares=actual_shares,
-                price=live_price,
-                reason=f"PYRAMID: {pyramid['reason']}",
-                score=position.current_score,
-                growth_score=position.current_growth_score,
-                is_growth_stock=position.is_growth_stock or False
-            )
-
-            # Deduct cash
-            config.current_cash -= actual_value
-
-            # Update position (add shares, recalculate cost basis)
-            total_cost = (position.shares * position.cost_basis) + actual_value
-            position.shares += actual_shares
-            position.cost_basis = total_cost / position.shares
-            position.current_value = position.shares * live_price
-            position.gain_loss = position.current_value - total_cost
-            position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
-
-            results["pyramids_executed"].append({
-                "ticker": position.ticker,
-                "shares_added": actual_shares,
-                "price": live_price,
-                "value": actual_value,
-                "reason": pyramid["reason"]
-            })
-
-            logger.info(f"PYRAMID {position.ticker}: +{actual_shares:.2f} shares @ ${live_price:.2f}")
-
-        db.commit()
-
-        # Check cash reserve - stop buying if below 10% of portfolio
         portfolio = get_portfolio_value(db)
-        min_cash_reserve = portfolio["total_value"] * MIN_CASH_RESERVE_PCT
-        if config.current_cash < min_cash_reserve:
-            logger.info(f"Cash ${config.current_cash:.2f} below 10% reserve (${min_cash_reserve:.2f}), skipping buys")
+        total_value = portfolio["total_value"]
+
+        # Update peak portfolio value
+        peak_value = config.peak_portfolio_value or config.starting_cash
+        if total_value > peak_value:
+            config.peak_portfolio_value = total_value
+            peak_value = total_value
+
+        current_drawdown = ((peak_value - total_value) / peak_value) * 100 if peak_value > 0 else 0
+
+        from config_loader import config as yaml_config
+        drawdown_config = yaml_config.get('ai_trader.drawdown_protection', {})
+        halt_threshold = drawdown_config.get('halt_new_buys_pct', 15.0)
+        liquidate_threshold = drawdown_config.get('liquidate_all_pct', 25.0)
+        recovery_threshold = drawdown_config.get('recovery_pct', 10.0)
+        drawdown_halt = False
+
+        if current_drawdown >= liquidate_threshold and position_count > 0:
+            logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown >= {liquidate_threshold}% - LIQUIDATING ALL POSITIONS")
+            for position in positions:
+                if position.current_price and position.current_price > 0:
+                    execute_trade(
+                        db=db, ticker=position.ticker, action="SELL",
+                        shares=position.shares, price=position.current_price,
+                        reason=f"CIRCUIT BREAKER: Portfolio drawdown {current_drawdown:.1f}%",
+                        score=position.current_score, cost_basis=position.cost_basis,
+                        realized_gain=position.gain_loss,
+                        is_growth_stock=position.is_growth_stock or False
+                    )
+                    config.current_cash += position.current_value
+                    results["sells_executed"].append({
+                        "ticker": position.ticker, "shares": position.shares,
+                        "price": position.current_price, "gain_loss": position.gain_loss,
+                        "reason": f"CIRCUIT BREAKER: Portfolio drawdown {current_drawdown:.1f}%"
+                    })
+                    db.delete(position)
+            db.commit()
+            logger.warning(f"CIRCUIT BREAKER: All positions liquidated. Cash: ${config.current_cash:.2f}")
+            return results
+        elif current_drawdown >= halt_threshold:
+            logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown - halting new buys and pyramids")
+            drawdown_halt = True
+        elif current_drawdown < recovery_threshold:
+            # Recovery: only resume if below recovery threshold (conservative)
+            drawdown_halt = False
+
+        # Evaluate and execute pyramid trades (add to winners) - blocked by circuit breaker
+        results["pyramids_executed"] = []
+        if not drawdown_halt:
+            pyramids = evaluate_pyramids(db)
+            results["pyramids_considered"] = len(pyramids)
+
+            if pyramids:
+                logger.info(f"Pyramid opportunities found: {len(pyramids)}")
+
+            for pyramid in pyramids[:3]:  # Limit to 3 pyramids per cycle
+                position = pyramid["position"]
+
+                # Fetch live price
+                live_price = fetch_live_price(position.ticker)
+                if not live_price:
+                    live_price = position.current_price
+                if not live_price or live_price <= 0:
+                    continue
+
+                time.sleep(0.3)
+
+                # Recalculate with live price
+                actual_value = min(pyramid["amount"], config.current_cash * 0.5)
+                if actual_value < 100:
+                    continue
+
+                actual_shares = actual_value / live_price
+
+                if config.current_cash < actual_value:
+                    continue
+
+                # Execute the pyramid buy with both scores
+                execute_trade(
+                    db=db,
+                    ticker=position.ticker,
+                    action="BUY",
+                    shares=actual_shares,
+                    price=live_price,
+                    reason=f"PYRAMID: {pyramid['reason']}",
+                    score=position.current_score,
+                    growth_score=position.current_growth_score,
+                    is_growth_stock=position.is_growth_stock or False
+                )
+
+                # Deduct cash
+                config.current_cash -= actual_value
+
+                # Update position (add shares, recalculate cost basis, increment pyramid count)
+                total_cost = (position.shares * position.cost_basis) + actual_value
+                position.shares += actual_shares
+                position.cost_basis = total_cost / position.shares
+                position.current_value = position.shares * live_price
+                position.gain_loss = position.current_value - total_cost
+                position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
+                position.pyramid_count = (getattr(position, 'pyramid_count', 0) or 0) + 1
+
+                results["pyramids_executed"].append({
+                    "ticker": position.ticker,
+                    "shares_added": actual_shares,
+                    "price": live_price,
+                    "value": actual_value,
+                    "reason": pyramid["reason"]
+                })
+
+                logger.info(f"PYRAMID {position.ticker}: +{actual_shares:.2f} shares @ ${live_price:.2f}")
+
+            db.commit()
+        else:
+            results["pyramids_considered"] = 0
+            logger.info("Pyramids skipped - circuit breaker active")
+
+        # Dynamic cash reserves based on market regime (matches backtester)
+        # Strong bull: 5%, Bull: 10%, Neutral: 20%, Bear: 40%, Strong bear: 60%
+        market_regime = get_market_regime(db)
+
+        from config_loader import config as yaml_config
+        alloc_config = yaml_config.get('ai_trader.allocation', {})
+        if market_regime["regime"] == "bullish":
+            # Check if strong bull (signal >= 2.0) vs regular bull
+            from data_fetcher import get_cached_market_direction
+            _mkt = get_cached_market_direction()
+            _signal = _mkt.get("weighted_signal", 0) if _mkt.get("success") else 0
+            if _signal >= 2.0:
+                dynamic_reserve_pct = alloc_config.get('cash_reserve_strong_bull', 0.05)
+            else:
+                dynamic_reserve_pct = alloc_config.get('cash_reserve_bull', 0.10)
+        elif market_regime["regime"] == "bearish":
+            from data_fetcher import get_cached_market_direction
+            _mkt = get_cached_market_direction()
+            _signal = _mkt.get("weighted_signal", 0) if _mkt.get("success") else 0
+            if _signal <= -1.0:
+                dynamic_reserve_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
+            else:
+                dynamic_reserve_pct = alloc_config.get('cash_reserve_bear', 0.40)
+        else:
+            dynamic_reserve_pct = alloc_config.get('cash_reserve_neutral', 0.20)
+
+        min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
+        if drawdown_halt:
+            logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
+        elif config.current_cash < min_cash_reserve:
+            logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve (${min_cash_reserve:.2f}), regime={market_regime['regime']}, skipping buys")
         elif position_count < config.max_positions:
             # Evaluate and execute buys (only if we have room for more positions)
             logger.info("Evaluating buy candidates from Stock table...")
@@ -2106,11 +2461,11 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 logger.warning("No buy candidates found! Check if Stock table has data with scores >= 65")
 
             for buy in buys:
-                # Re-check cash reserve on each buy
+                # Re-check dynamic cash reserve on each buy
                 portfolio = get_portfolio_value(db)
-                min_cash_reserve = portfolio["total_value"] * MIN_CASH_RESERVE_PCT
+                min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
                 if config.current_cash < min_cash_reserve:
-                    logger.info(f"Cash ${config.current_cash:.2f} below 10% reserve, stopping buys")
+                    logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve, stopping buys")
                     break
 
                 if position_count >= config.max_positions:
@@ -2278,16 +2633,16 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
     db.query(AIPortfolioSnapshot).delete()
     db.query(AIPortfolioConfig).delete()
 
-    # Create new config - aggressive growth strategy
+    # Create new config - CANSLIM concentrated strategy
     config = AIPortfolioConfig(
         starting_cash=starting_cash,
         current_cash=starting_cash,
-        max_positions=20,  # More diversification
-        max_position_pct=12.0,  # Larger conviction positions
-        min_score_to_buy=65,  # Lower threshold for more opportunities
-        sell_score_threshold=45,  # Hold a bit longer
-        take_profit_pct=40.0,  # Let winners run
-        stop_loss_pct=10.0,  # Cut losers fast
+        max_positions=20,
+        max_position_pct=12.0,
+        min_score_to_buy=72,  # CANSLIM quality threshold
+        sell_score_threshold=45,
+        take_profit_pct=40.0,
+        stop_loss_pct=8.0,  # O'Neil standard 8% stop
         is_active=True
     )
     db.add(config)
@@ -2300,9 +2655,9 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
         "message": "AI Portfolio reset. Click 'Run Trading Cycle' to build positions.",
         "starting_cash": starting_cash,
         "strategy": {
-            "min_score": 65,
+            "min_score": 72,
             "max_positions": 20,
-            "stop_loss": "10%",
+            "stop_loss": "8%",
             "take_profit": "40%",
             "focus": "High growth + momentum stocks"
         }

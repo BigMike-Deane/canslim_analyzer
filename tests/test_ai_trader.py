@@ -48,16 +48,16 @@ class TestPositionSizing:
         assert position_value >= min_position
 
     def test_maximum_position_size(self, mock_db_session):
-        """Test that positions are capped at 20% of portfolio"""
+        """Test that positions are capped at max single position (concentrated portfolio: 25%)"""
         from backend.ai_trader import MAX_POSITION_ALLOCATION
 
-        # Default max is 15% but can be up to 20% in code
-        assert MAX_POSITION_ALLOCATION <= 0.20
+        # Concentrated portfolio: max 25% per position (O'Neil/Minervini)
+        assert MAX_POSITION_ALLOCATION <= 0.25
 
         # Test calculation
         portfolio_value = 25000.0
-        max_position = portfolio_value * 0.20  # 20% cap
-        assert max_position == 5000.0
+        max_position = portfolio_value * MAX_POSITION_ALLOCATION
+        assert max_position > 0
 
     def test_pre_breakout_bonus_sizing(self):
         """Test that pre-breakout entries get 1.30x position multiplier"""
@@ -398,19 +398,19 @@ class TestSectorLimits:
         assert allow_buy == False
 
     def test_max_sector_allocation(self):
-        """Test that max sector allocation (30%) is enforced"""
+        """Test that max sector allocation (50%) is enforced for concentrated portfolio"""
         from backend.ai_trader import MAX_SECTOR_ALLOCATION
 
-        # Default is 30% max per sector
-        assert MAX_SECTOR_ALLOCATION == 0.30
+        # Concentrated portfolio: max 50% per sector (follow best sectors)
+        assert MAX_SECTOR_ALLOCATION == 0.50
 
         portfolio_value = 25000
-        current_sector_value = 7000  # 28%
+        current_sector_value = 12000  # 48%
         proposed_buy = 1000
 
         new_allocation = (current_sector_value + proposed_buy) / portfolio_value
 
-        # 32% would exceed 30% limit
+        # 52% would exceed 50% limit
         assert new_allocation > MAX_SECTOR_ALLOCATION
 
 

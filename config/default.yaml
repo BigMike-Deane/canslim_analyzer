@@ -246,10 +246,16 @@ ai_trader:
     stop_loss_days: 5                 # Days to wait after stop loss before re-buying
     trailing_stop_days: 3             # Days to wait after trailing stop before re-buying
 
+  # Drawdown protection (portfolio-level circuit breaker)
+  drawdown_protection:
+    halt_new_buys_pct: 15.0           # Stop buying when portfolio down 15% from peak
+    liquidate_all_pct: 25.0           # Emergency: sell everything at 25% drawdown
+    recovery_pct: 10.0                # Resume buying when drawdown recovers below 10%
+
   # Stop loss settings
   stops:
     normal_stop_loss_pct: 8.0          # O'Neil: cut losses at 7-8%, no exceptions
-    bearish_stop_loss_pct: 10.0       # Tighter in bear (Minervini: tighter when hard)
+    bearish_stop_loss_pct: 7.0        # Tighter in bear (Minervini: tighter stops in difficult markets)
     use_atr_stops: true               # Use ATR-based adaptive stop losses
     atr_multiplier: 2.5               # Stop = max(config_stop, ATR * multiplier)
     atr_period: 14                    # ATR lookback period in days

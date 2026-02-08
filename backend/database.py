@@ -150,6 +150,10 @@ def run_migrations():
         # Volume Profile Analysis (Feb 2026)
         ("stocks", "volume_dry_up", "BOOLEAN DEFAULT 0"),
         ("stocks", "institutional_accumulation", "BOOLEAN DEFAULT 0"),
+        # Pyramid count tracking (Feb 2026 - O'Neil 60/40 sizing)
+        ("ai_portfolio_positions", "pyramid_count", "INTEGER DEFAULT 0"),
+        # Peak portfolio value for drawdown circuit breaker (Feb 2026)
+        ("ai_portfolio_config", "peak_portfolio_value", "FLOAT DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:
@@ -566,6 +570,7 @@ class AIPortfolioConfig(Base):
     take_profit_pct = Column(Float, default=25.0)  # Take profits at this gain %
     stop_loss_pct = Column(Float, default=15.0)  # Stop loss at this loss %
     is_active = Column(Boolean, default=True)
+    peak_portfolio_value = Column(Float, default=0.0)  # Track peak for drawdown circuit breaker
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -596,6 +601,9 @@ class AIPortfolioPosition(Base):
     # Trailing stop loss tracking
     peak_price = Column(Float)  # Highest price since purchase (for trailing stop)
     peak_date = Column(DateTime)  # When peak was reached
+
+    # Pyramiding tracking (O'Neil 60/40 sizing)
+    pyramid_count = Column(Integer, default=0)  # Number of times position has been pyramided (max 2)
 
     # Partial profit taking tracking
     partial_profit_taken = Column(Float, default=0)  # Cumulative % of position sold as partial profits
