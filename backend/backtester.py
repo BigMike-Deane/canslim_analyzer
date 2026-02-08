@@ -1180,6 +1180,7 @@ class BacktestEngine:
             pct_from_high = score_data.get("pct_from_high", 100)
             pct_from_pivot = score_data.get("pct_from_pivot", pct_from_high)
             has_base = score_data.get("has_base_pattern", False)
+            pivot_price = score_data.get("pivot_price", 0)
             weeks_in_base = score_data.get("weeks_in_base", 0)
 
             # Re-entry cooldown: don't re-buy recently stopped-out stocks
