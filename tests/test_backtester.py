@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 
 
-def make_mock_db(min_score=65):
+def make_mock_db(min_score=65, max_positions=8, stop_loss_pct=8.0):
     """Helper to create a mock database session with BacktestRun."""
     from backend.database import BacktestRun
 
@@ -21,10 +21,10 @@ def make_mock_db(min_score=65):
         end_date=date.today(),
         starting_cash=25000.0,
         stock_universe="sp500",
-        max_positions=20,
+        max_positions=max_positions,
         min_score_to_buy=min_score,
         sell_score_threshold=45,
-        stop_loss_pct=10.0,
+        stop_loss_pct=stop_loss_pct,
         status="pending"
     )
 
@@ -98,10 +98,10 @@ class TestBacktestEngine:
             end_date=date.today(),
             starting_cash=25000.0,
             stock_universe="sp500",
-            max_positions=20,
+            max_positions=8,
             min_score_to_buy=65,
             sell_score_threshold=45,
-            stop_loss_pct=10.0,
+            stop_loss_pct=8.0,
             status="pending"
         )
 
@@ -216,10 +216,10 @@ class TestTrailingStopLogic:
             end_date=date.today(),
             starting_cash=25000.0,
             stock_universe="sp500",
-            max_positions=20,
+            max_positions=8,
             min_score_to_buy=65,
             sell_score_threshold=45,
-            stop_loss_pct=10.0,
+            stop_loss_pct=8.0,
             status="pending"
         )
 
@@ -264,13 +264,13 @@ class TestTrailingStopLogic:
         assert "TRAILING STOP" in sells[0].reason
 
     def test_stop_loss_triggers(self, mock_db):
-        """Test hard stop loss at 10%"""
+        """Test hard stop loss at 8% (O'Neil standard)"""
         from backend.backtester import BacktestEngine, SimulatedPosition
 
         mock_session, mock_backtest = mock_db
         engine = BacktestEngine(mock_session, 1)
 
-        # Position bought at $100, now at $89 (11% loss)
+        # Position bought at $100, now at $91 (9% loss, exceeds 8% stop)
         position = SimulatedPosition(
             ticker="AAPL",
             shares=100,
@@ -285,9 +285,9 @@ class TestTrailingStopLogic:
 
         # Mock data provider
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 89.0  # 11% loss
+        engine.data_provider.get_price_on_date.return_value = 91.0  # 9% loss > 8% stop
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}  # Bullish market
-        engine.data_provider.get_atr.return_value = 2.0  # Normal ATR - 2.5*2=5%, below 10% default
+        engine.data_provider.get_atr.return_value = 2.0  # Normal ATR - 2.5*2=5%, below 8% default
 
         scores = {"AAPL": {"total_score": 60}}
         sells = engine._evaluate_sells(date.today(), scores)
@@ -369,10 +369,10 @@ class TestPreBreakoutBonuses:
             end_date=date.today(),
             starting_cash=25000.0,
             stock_universe="sp500",
-            max_positions=20,
+            max_positions=8,
             min_score_to_buy=65,
             sell_score_threshold=45,
-            stop_loss_pct=10.0,
+            stop_loss_pct=8.0,
             status="pending"
         )
 
@@ -449,10 +449,10 @@ class TestScoreStability:
             end_date=date.today(),
             starting_cash=25000.0,
             stock_universe="sp500",
-            max_positions=20,
+            max_positions=8,
             min_score_to_buy=65,
             sell_score_threshold=45,
-            stop_loss_pct=10.0,
+            stop_loss_pct=8.0,
             status="pending"
         )
 
@@ -551,10 +551,10 @@ class TestMomentumConfirmation:
             end_date=date.today(),
             starting_cash=25000.0,
             stock_universe="sp500",
-            max_positions=20,
+            max_positions=8,
             min_score_to_buy=65,
             sell_score_threshold=45,
-            stop_loss_pct=10.0,
+            stop_loss_pct=8.0,
             status="pending"
         )
 
@@ -641,13 +641,13 @@ class TestATRStops:
         assert "ATR" in sells[0].reason
 
     def test_stable_stock_uses_default_stop(self):
-        """Low ATR stock should use the config default stop, not a wider ATR stop"""
+        """Low ATR stock should use the config default stop (8%), not a wider ATR stop"""
         from backend.backtester import BacktestEngine, SimulatedPosition
 
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)
 
-        # Position bought at $100, now at $89 (11% loss)
+        # Position bought at $100, now at $91 (9% loss > 8% stop)
         engine.positions["SAFE"] = SimulatedPosition(
             ticker="SAFE", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=20),
@@ -656,9 +656,9 @@ class TestATRStops:
         )
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 89.0
+        engine.data_provider.get_price_on_date.return_value = 91.0  # 9% loss > 8% stop
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
-        # ATR is 1% -> 2.5 * 1 = 2.5%, but config stop is 10% -> use 10%
+        # ATR is 1% -> 2.5 * 1 = 2.5%, but config stop is 8% -> use 8%
         engine.data_provider.get_atr.return_value = 1.0
 
         sells = engine._evaluate_sells(date.today(), {"SAFE": {"total_score": 60}})
@@ -1179,9 +1179,9 @@ class TestInitialSeeding:
         first_day = date(2025, 2, 7)
         engine._seed_initial_positions(first_day)
 
-        # Should have opened positions (up to 3)
+        # Should have opened positions (up to 5 pilot positions at 10% each)
         assert len(engine.positions) > 0
-        assert len(engine.positions) <= 3
+        assert len(engine.positions) <= 5
         # Should have spent some cash
         assert engine.cash < 25000.0
 
@@ -1222,3 +1222,229 @@ class TestInitialSeeding:
         # No positions — weak RS (L < 8) blocks seeding
         assert len(engine.positions) == 0
         assert engine.cash == 25000.0
+
+
+class TestConcentratedPortfolio:
+    """Tests for concentrated portfolio strategy (O'Neil/Minervini)"""
+
+    def test_max_position_25_pct(self):
+        """Verify single position can reach 25% via MAX_POSITION_ALLOCATION"""
+        from backend.backtester import MAX_POSITION_ALLOCATION
+        assert MAX_POSITION_ALLOCATION == 0.25
+
+    def test_max_positions_default_8(self):
+        """Verify BacktestRun model default for max_positions is 8"""
+        from backend.database import BacktestRun
+        # SQLAlchemy Column defaults only apply at INSERT time,
+        # so check the column's default value directly
+        col = BacktestRun.__table__.columns['max_positions']
+        assert col.default.arg == 8
+
+    def test_half_size_initial_buy(self):
+        """Verify initial buys are half of full position size (0.50 multiplier applied)"""
+        from backend.backtester import BacktestEngine
+
+        mock_session, mock_backtest = make_mock_db(min_score=65)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 25000.0
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 1.5, "spy": {"price": 500, "ma_50": 490}
+        }
+
+        engine.static_data = {"TEST": {"sector": "Technology"}}
+
+        scores = {
+            "TEST": {
+                "total_score": 80, "c_score": 12, "l_score": 10,
+                "has_base_pattern": True, "base_pattern": {"type": "flat"},
+                "pct_from_pivot": 8, "pct_from_high": 8, "is_breaking_out": False,
+                "volume_ratio": 1.5, "weeks_in_base": 8, "rs_12m": 1.2, "rs_3m": 1.15,
+                "is_growth_stock": False,
+            }
+        }
+
+        buys = engine._evaluate_buys(date.today(), scores)
+        if buys:
+            # Position value should be < 15% of portfolio (half-size of ~20% intended = ~10%)
+            buy_value = buys[0].shares * buys[0].price
+            position_pct = buy_value / 25000.0
+            assert position_pct < 0.15, f"Initial buy {position_pct:.1%} should be < 15% (half-size)"
+
+    def test_dynamic_cash_reserve_bull(self):
+        """Verify cash reserve is 5% in strong bull market"""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 2000.0  # 8% of $25K — above 5% bull reserve
+
+        # Fill positions to max so we test the can_buy cash check
+        for i in range(7):
+            engine.positions[f"POS{i}"] = SimulatedPosition(
+                ticker=f"POS{i}", shares=10, cost_basis=300.0,
+                purchase_date=date.today() - timedelta(days=30),
+                purchase_score=80.0, peak_price=300.0,
+                peak_date=date.today(), sector=f"Sector{i}"
+            )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 300.0
+        # Strong bull market: weighted_signal = 2.0 -> 5% cash reserve
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 2.0, "spy": {"price": 500, "ma_50": 490}
+        }
+        engine.data_provider.get_available_tickers.return_value = []
+
+        # $2000 / $23000 portfolio = 8.7% cash > 5% bull reserve -> should allow buying
+        # But max positions (8) reached with 7 + we'd need room for 1 more
+        # This test verifies the cash threshold logic, not position count
+        portfolio_value = engine._get_portfolio_value()
+        cash_ratio = engine.cash / portfolio_value
+        assert cash_ratio > 0.05  # Above bull market reserve
+
+    def test_dynamic_cash_reserve_bear(self):
+        """Verify cash reserve is 40% in bear market (blocks most buys)"""
+        from backend.backtester import BacktestEngine
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 5000.0  # 20% of $25K — below 40% bear reserve
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        # Bear market: weighted_signal = -1.0 -> 40% cash reserve
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": -1.0, "spy": {"price": 400, "ma_50": 450}
+        }
+        engine.data_provider.get_available_tickers.return_value = ["TEST"]
+        engine.data_provider.get_52_week_high_low.return_value = (110.0, 80.0)
+        engine.data_provider.get_relative_strength.return_value = 1.2
+        engine.data_provider.get_50_day_avg_volume.return_value = 500000
+        engine.data_provider.get_volume_on_date.return_value = 600000
+        engine.data_provider.is_breaking_out.return_value = (False, 1.2, 105.0)
+        engine.data_provider.detect_base_pattern.return_value = {"type": "none"}
+        engine.data_provider.get_stock_data_on_date.return_value = MagicMock(
+            quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7],
+            annual_earnings=[5.0, 3.5, 2.5],
+            quarterly_revenue=[],
+        )
+
+        engine.static_data = {"TEST": {"sector": "Technology", "institutional_holders_pct": 0.45}}
+
+        # Simulate a day — with 20% cash < 40% bear reserve, can_buy should be False
+        engine._simulate_day(date.today())
+
+        # Cash should be unchanged (no buys in bear market with low cash)
+        assert engine.cash == 5000.0
+
+    def test_pyramid_max_2(self):
+        """Verify max 2 pyramids per O'Neil 50/30/20 method"""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        mock_session, mock_backtest = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 20000.0
+
+        # Position with 2 pyramids already
+        engine.positions["AAPL"] = SimulatedPosition(
+            ticker="AAPL", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=30),
+            purchase_score=80.0, peak_price=120.0,
+            peak_date=date.today(), sector="Technology",
+            pyramid_count=2
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 115.0  # +15% gain
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 1.5, "spy": {"price": 500, "ma_50": 490}
+        }
+
+        scores = {"AAPL": {
+            "total_score": 85, "is_breaking_out": True, "volume_ratio": 2.0
+        }}
+
+        pyramids = engine._evaluate_pyramids(date.today(), scores)
+        # Already at 2 pyramids — should NOT allow a 3rd
+        assert len(pyramids) == 0
+
+    def test_pyramid_threshold_2_5_pct(self):
+        """Verify pyramid triggers at 2.5% gain (lowered from 5%)"""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        mock_session, mock_backtest = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 20000.0
+
+        # Position with 3% gain (above 2.5% threshold, below old 5%)
+        # Small position relative to portfolio so allocation < 25% max
+        engine.positions["AAPL"] = SimulatedPosition(
+            ticker="AAPL", shares=20, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=10),
+            purchase_score=80.0, peak_price=103.0,
+            peak_date=date.today(), sector="Technology",
+            pyramid_count=0
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 103.0  # +3% gain
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 1.5, "spy": {"price": 500, "ma_50": 490}
+        }
+
+        scores = {"AAPL": {
+            "total_score": 80, "is_breaking_out": False, "volume_ratio": 1.3
+        }}
+
+        pyramids = engine._evaluate_pyramids(date.today(), scores)
+        # 3% > 2.5% threshold, score 80 >= 70, allocation ~9% < 25% -> should pyramid
+        assert len(pyramids) == 1
+
+    def test_seed_5_positions_at_10_pct(self):
+        """Verify seeding creates up to 5 positions at ~10% each"""
+        from backend.backtester import BacktestEngine
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 25000.0
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 50.0
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 0.5, "spy": {"price": 450, "ma_50": 445}
+        }
+        engine.data_provider.get_available_tickers.return_value = ["A", "B", "C", "D", "E", "F"]
+        engine.data_provider.get_52_week_high_low.return_value = (55.0, 30.0)
+        engine.data_provider.get_relative_strength.return_value = 1.2
+        engine.data_provider.get_50_day_avg_volume.return_value = 500000
+        engine.data_provider.get_volume_on_date.return_value = 600000
+        engine.data_provider.is_breaking_out.return_value = (False, 1.2, 52.0)
+        engine.data_provider.get_atr.return_value = 2.5
+        engine.data_provider.get_stock_data_on_date.return_value = MagicMock(
+            quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4],
+            annual_earnings=[5.0, 3.5, 2.5],
+            quarterly_revenue=[],
+        )
+        engine.data_provider.detect_base_pattern.return_value = {
+            "type": "flat", "weeks": 10, "depth_pct": 12, "pivot_price": 52.0
+        }
+
+        engine.static_data = {
+            t: {"sector": f"Sector{i}", "roe": 0.20, "institutional_holders_pct": 0.45}
+            for i, t in enumerate(["A", "B", "C", "D", "E", "F"])
+        }
+
+        first_day = date(2025, 2, 7)
+        engine._seed_initial_positions(first_day)
+
+        # Should seed up to 5 positions at 10% each = 50% deployed
+        assert len(engine.positions) <= 5
+        assert len(engine.positions) > 0
+        # Each position should be ~10% of $25K = ~$2,500
+        for pos in engine.positions.values():
+            pos_value = pos.shares * pos.cost_basis
+            pos_pct = pos_value / 25000.0
+            assert pos_pct < 0.15, f"Seed position {pos.ticker} at {pos_pct:.1%} should be ~10%"

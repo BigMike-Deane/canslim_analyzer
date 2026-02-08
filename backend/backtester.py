@@ -326,7 +326,23 @@ class BacktestEngine:
 
         # Tier 2: Check if we have cash to buy new positions
         portfolio_value = self._get_portfolio_value(current_date)
-        can_buy = (self.cash / portfolio_value >= MIN_CASH_RESERVE_PCT and
+
+        # Dynamic cash reserve based on market regime
+        market_for_cash = self.data_provider.get_market_direction(current_date)
+        weighted_signal_cash = market_for_cash.get("weighted_signal", 0) if market_for_cash else 0
+        alloc_config = config.get('ai_trader.allocation', {})
+        if weighted_signal_cash >= 1.5:
+            min_cash_pct = alloc_config.get('cash_reserve_strong_bull', 0.05)
+        elif weighted_signal_cash >= 1.0:
+            min_cash_pct = alloc_config.get('cash_reserve_bull', 0.10)
+        elif weighted_signal_cash >= 0:
+            min_cash_pct = alloc_config.get('cash_reserve_neutral', 0.20)
+        elif weighted_signal_cash >= -0.5:
+            min_cash_pct = alloc_config.get('cash_reserve_bear', 0.40)
+        else:
+            min_cash_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
+
+        can_buy = (self.cash / portfolio_value >= min_cash_pct and
                    len(self.positions) < self.backtest.max_positions and
                    self.cash >= 100)
 
@@ -402,10 +418,12 @@ class BacktestEngine:
             logger.info(f"Backtest {self.backtest.id}: No stocks qualify for initial seeding on {first_day}")
             return
 
-        # Sort by total score descending, take top 3
+        # Sort by total score descending, take top 5
+        # O'Neil/Minervini: start with half-size pilot positions, let winners prove themselves
+        # 5 x 10% = 50% deployed, 50% reserved for pyramiding into winners
         candidates.sort(key=lambda x: x[3], reverse=True)
-        max_seed_positions = 3
-        seed_pct_per_position = 15.0  # 15% each, up to 45% total
+        max_seed_positions = 5
+        seed_pct_per_position = 10.0  # 10% each = half-size pilots
         seeds = candidates[:max_seed_positions]
 
         logger.info(f"Backtest {self.backtest.id}: Seeding {len(seeds)} initial positions on {first_day}: "
@@ -1247,6 +1265,10 @@ class BacktestEngine:
             elif is_breaking_out and volume_ratio >= 1.5:
                 position_pct *= 1.0   # No boost - already extended, entry is late
 
+            # O'Neil 50/30/20: initial buy is half of intended full position
+            # The other half gets added via pyramiding if the stock confirms
+            position_pct *= 0.50
+
             # Coiled Spring position boost
             if coiled_spring_bonus > 0:
                 cs_multiplier = cs_config.get('position_multiplier', 1.25)
@@ -1331,8 +1353,12 @@ class BacktestEngine:
             current_value = position.shares * price
             current_allocation = current_value / portfolio_value if portfolio_value > 0 else 0
 
-            # Skip if not profitable enough or score too low
-            if gain_pct < 5 or current_score < 70:
+            # O'Neil: add after 2-3% confirmation (lowered from 5%)
+            if gain_pct < 2.5 or current_score < 70:
+                continue
+
+            # Max 2 pyramids per O'Neil 50/30/20 method
+            if position.pyramid_count >= 2:
                 continue
 
             # Skip if at max allocation
@@ -1347,9 +1373,13 @@ class BacktestEngine:
             is_breaking_out = score_data.get("is_breaking_out", False)
             volume_ratio = score_data.get("volume_ratio", 1.0)
 
-            # Calculate pyramid amount (50% of original position)
+            # O'Neil 50/30/20: second add = 60% of original, third add = 40%
             original_cost = position.shares * position.cost_basis
-            pyramid_amount = original_cost * 0.5
+            if position.pyramid_count == 0:
+                pyramid_pct = 0.60  # ~30% of full position
+            else:
+                pyramid_pct = 0.40  # ~20% of full position
+            pyramid_amount = original_cost * pyramid_pct
 
             # Cap by remaining room
             remaining_room = (MAX_POSITION_ALLOCATION - current_allocation) * portfolio_value

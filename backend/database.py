@@ -667,7 +667,7 @@ class BacktestRun(Base):
     custom_tickers = Column(JSON)  # If universe is custom
 
     # AI Config snapshot (frozen at backtest start)
-    max_positions = Column(Integer, default=20)
+    max_positions = Column(Integer, default=8)
     max_position_pct = Column(Float, default=12.0)
     min_score_to_buy = Column(Integer, default=72)
     sell_score_threshold = Column(Integer, default=45)
