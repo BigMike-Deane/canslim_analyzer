@@ -2077,13 +2077,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if momentum_penalty < 0:
             composite_score *= (1 + momentum_penalty)  # Reduce by 15%
 
-        # FTD penalty: no confirmed uptrend → reduce score (advisory, not blocking)
+        # FTD penalty: no confirmed uptrend → mild score reduction (advisory, not blocking)
         if ftd_penalty_active:
-            composite_score -= 15
+            composite_score -= 8
 
-        # Heat penalty: too much risk exposure → reduce score
+        # Heat penalty: too much risk exposure → mild score reduction
         if heat_penalty_active:
-            composite_score -= 10
+            composite_score -= 5
 
         # Skip if composite score is too low
         if composite_score < 25:

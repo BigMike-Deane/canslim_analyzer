@@ -525,7 +525,7 @@ portfolio_heat:
 
 # VIX-Regime Stops (volatility-adjusted stop losses)
 vix_stops:
-  enabled: true
+  enabled: false
   low_vix_threshold: 15                # VIX < 15: low volatility
   high_vix_threshold: 25               # VIX > 25: high volatility
   low_vix_stop_tighten: 0.80           # Tighten stops 20% in low vol (multiply by 0.8)
@@ -540,7 +540,7 @@ volume_gate:
 
 # Correlation-Aware Sizing
 correlation_sizing:
-  enabled: true
+  enabled: false
   lookback_days: 30                    # Rolling correlation window
   high_correlation_threshold: 0.70     # Reduce sizing when avg correlation > 0.7
   high_correlation_multiplier: 0.75    # 25% smaller position when correlated
