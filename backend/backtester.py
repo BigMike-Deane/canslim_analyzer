@@ -108,6 +108,9 @@ class BacktestEngine:
         self.ftd_penalty_active: bool = False
         self.heat_penalty_active: bool = False
 
+        # Track consecutive days with no positions (for re-seeding)
+        self.idle_days: int = 0
+
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
         self.spy_shares: float = 0.0  # Hypothetical SPY buy-and-hold
@@ -468,6 +471,21 @@ class BacktestEngine:
                    self.cash / portfolio_value >= min_cash_pct and
                    len(self.positions) < self.backtest.max_positions and
                    self.cash >= 100)
+
+        # Track idle days (no positions, all cash) for re-seeding
+        if not self.positions:
+            self.idle_days += 1
+        else:
+            self.idle_days = 0
+
+        # Re-seed if portfolio has been 100% cash for 10+ trading days
+        # This handles the case where all seeds were sold and the buy filters
+        # are too strict for the available historical data
+        if can_buy and not self.positions and self.idle_days >= 10:
+            logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, re-seeding on {current_date}")
+            self._seed_initial_positions(current_date)
+            self._take_snapshot(current_date)
+            return
 
         if can_buy:
             # Score full universe when we can buy
@@ -1214,6 +1232,20 @@ class BacktestEngine:
             effective_min_score = self.backtest.min_score_to_buy
             regime_max_pct = neutral_max_pct
 
+        # Detect if earnings data is limited (historical backtests lose C/A scores)
+        # When _filter_available_earnings strips too many quarters, C=0 and A=0 for
+        # all stocks. Without these 30 points, the normal threshold (72) is unreachable.
+        max_c_in_universe = max((data.get('c_score', 0) for _, data in scores.items()), default=0)
+        max_a_in_universe = max((data.get('a_score', 0) for _, data in scores.items()), default=0)
+        earnings_data_limited = (max_c_in_universe < 5 and max_a_in_universe < 5)
+
+        if earnings_data_limited:
+            # C+A worth up to 30 points — reduce threshold to match available range
+            # This mirrors seeding logic which uses threshold 35 instead of 72
+            effective_min_score = max(effective_min_score - 30, 35)
+            logger.debug(f"Earnings data limited (max C={max_c_in_universe:.0f}, A={max_a_in_universe:.0f}), "
+                         f"adjusted min_score to {effective_min_score:.0f}")
+
         # Get candidates with regime-adjusted threshold
         candidates = [
             (ticker, data) for ticker, data in scores.items()
@@ -1287,13 +1319,20 @@ class BacktestEngine:
             volume_ratio = score_data.get('volume_ratio', 1.0) or 1.0
             is_growth_stock = score_data.get('is_growth_stock', False)
 
-            # Skip if not meeting quality thresholds (unless growth stock)
-            if not (is_growth_stock and skip_growth):
+            # Skip if not meeting quality thresholds (unless growth stock or limited earnings)
+            # When earnings data is limited (historical backtests), C=0 for all stocks.
+            # Requiring min_c_score=10 would block ALL buys. Fall back to L score only,
+            # matching what the seeding function already does.
+            if not (is_growth_stock and skip_growth) and not earnings_data_limited:
                 if c_score < min_c_score:
                     logger.debug(f"Skipping {ticker}: C score {c_score} < {min_c_score}")
                     continue
                 if l_score < min_l_score:
                     logger.debug(f"Skipping {ticker}: L score {l_score} < {min_l_score}")
+                    continue
+            elif earnings_data_limited:
+                # Gate on L score (relative strength) only — the one reliable signal
+                if l_score < min_l_score:
                     continue
 
             # VOLUME GATE: Only buy when volume confirms interest
