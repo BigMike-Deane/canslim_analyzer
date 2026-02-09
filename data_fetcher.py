@@ -714,7 +714,7 @@ def fetch_fmp_earnings(ticker: str) -> dict:
 
     try:
         # Quarterly income statement - using new /stable/ endpoint
-        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=24&apikey={FMP_API_KEY}"
         resp = _fmp_get(url, timeout=10)
         logger.debug(f"FMP quarterly {ticker}: status={resp.status_code}")
         if resp.status_code == 200:
@@ -734,7 +734,7 @@ def fetch_fmp_earnings(ticker: str) -> dict:
 
     try:
         # Annual income statement - using new /stable/ endpoint
-        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=5&apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=10&apikey={FMP_API_KEY}"
         resp = _fmp_get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -1047,7 +1047,7 @@ def fetch_fmp_revenue(ticker: str) -> dict:
 
     try:
         # Quarterly revenue
-        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=24&apikey={FMP_API_KEY}"
         resp = _fmp_get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
@@ -1058,7 +1058,7 @@ def fetch_fmp_revenue(ticker: str) -> dict:
 
     try:
         # Annual revenue
-        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=5&apikey={FMP_API_KEY}"
+        url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=10&apikey={FMP_API_KEY}"
         resp = _fmp_get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()

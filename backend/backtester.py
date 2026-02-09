@@ -151,6 +151,9 @@ class BacktestEngine:
             # Load static data (sector, earnings) from database
             self._load_static_data()
 
+            # Fetch missing historical earnings for old backtest periods
+            self._fetch_missing_earnings()
+
             # Filter for survivorship bias: only keep stocks with price data at backtest start
             # This prevents inflated returns from stocks that didn't exist or weren't tradeable
             available_tickers = self.data_provider.get_available_tickers()
@@ -313,6 +316,120 @@ class BacktestEngine:
                 "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', 0) or 0,
                 "days_to_earnings": getattr(stock, 'days_to_earnings', None),
             }
+
+    def _fetch_missing_earnings(self):
+        """
+        Fetch historical earnings from FMP for tickers that don't have enough data
+        for the backtest period. This ensures C and A scores can be calculated
+        even for backtests that go back several years.
+        """
+        import requests
+        import time
+
+        fmp_api_key = os.environ.get('FMP_API_KEY', '')
+        if not fmp_api_key:
+            logger.warning("Backtest: No FMP_API_KEY, cannot fetch missing earnings")
+            return
+
+        # Calculate how many quarters we need
+        today = date.today()
+        days_diff = (today - self.backtest.start_date).days
+        if days_diff <= 0:
+            return  # Current period, no extra data needed
+
+        # quarters_to_skip = how many the filter will skip
+        # We need at least 8 usable quarters after skipping (for C score YoY + buffer)
+        quarters_to_skip = max(0, (days_diff + 45) // 91)
+        quarters_needed = quarters_to_skip + 8
+        annuals_to_skip = max(0, (days_diff + 45) // 365)
+        annuals_needed = annuals_to_skip + 5
+
+        # Find tickers that need more data
+        tickers_needing_data = []
+        for ticker, data in self.static_data.items():
+            q_earnings = data.get("quarterly_earnings", [])
+            a_earnings = data.get("annual_earnings", [])
+            if len(q_earnings) < quarters_needed or len(a_earnings) < annuals_needed:
+                tickers_needing_data.append(ticker)
+
+        if not tickers_needing_data:
+            logger.info(f"Backtest {self.backtest.id}: All tickers have sufficient earnings data")
+            return
+
+        logger.info(f"Backtest {self.backtest.id}: Fetching historical earnings for "
+                     f"{len(tickers_needing_data)} tickers (need {quarters_needed}q/{annuals_needed}a, "
+                     f"backtest starts {self.backtest.start_date})")
+
+        fmp_base = "https://financialmodelingprep.com/stable"
+        fetched_count = 0
+        failed_count = 0
+        batch_size = 50  # Respect FMP rate limits
+
+        for i, ticker in enumerate(tickers_needing_data):
+            try:
+                # Fetch quarterly (enough for the backtest period)
+                q_limit = min(quarters_needed + 4, 40)  # small buffer, cap at 40
+                q_url = f"{fmp_base}/income-statement?symbol={ticker}&period=quarter&limit={q_limit}&apikey={fmp_api_key}"
+                q_resp = requests.get(q_url, timeout=10)
+
+                # Fetch annual
+                a_limit = min(annuals_needed + 2, 15)
+                a_url = f"{fmp_base}/income-statement?symbol={ticker}&limit={a_limit}&apikey={fmp_api_key}"
+                a_resp = requests.get(a_url, timeout=10)
+
+                updated = False
+
+                if q_resp.status_code == 200:
+                    q_data = q_resp.json()
+                    if isinstance(q_data, list) and q_data:
+                        q_eps = [q.get("eps", 0) or 0 for q in q_data]
+                        q_rev = [q.get("revenue", 0) or 0 for q in q_data]
+                        if len(q_eps) > len(self.static_data[ticker].get("quarterly_earnings", [])):
+                            self.static_data[ticker]["quarterly_earnings"] = q_eps
+                            self.static_data[ticker]["quarterly_revenue"] = q_rev
+                            updated = True
+
+                if a_resp.status_code == 200:
+                    a_data = a_resp.json()
+                    if isinstance(a_data, list) and a_data:
+                        a_eps = [a.get("eps", 0) or 0 for a in a_data]
+                        if len(a_eps) > len(self.static_data[ticker].get("annual_earnings", [])):
+                            self.static_data[ticker]["annual_earnings"] = a_eps
+                            updated = True
+
+                if updated:
+                    fetched_count += 1
+                    # Also update DB so future backtests don't need to re-fetch
+                    try:
+                        stock = self.db.query(Stock).filter(Stock.ticker == ticker).first()
+                        if stock:
+                            stock.quarterly_earnings = self.static_data[ticker]["quarterly_earnings"]
+                            stock.annual_earnings = self.static_data[ticker]["annual_earnings"]
+                            stock.quarterly_revenue = self.static_data[ticker].get("quarterly_revenue", stock.quarterly_revenue)
+                            if (i + 1) % batch_size == 0:
+                                self.db.commit()
+                    except Exception:
+                        pass
+                else:
+                    failed_count += 1
+
+            except Exception as e:
+                failed_count += 1
+                if i < 3:  # Only log first few errors
+                    logger.debug(f"Backtest earnings fetch failed for {ticker}: {e}")
+
+            # Rate limiting: pause every batch_size requests
+            if (i + 1) % batch_size == 0:
+                time.sleep(1.0)
+
+        # Final commit
+        try:
+            self.db.commit()
+        except Exception:
+            pass
+
+        logger.info(f"Backtest {self.backtest.id}: Fetched earnings for {fetched_count} tickers "
+                     f"({failed_count} failed, {len(tickers_needing_data) - fetched_count - failed_count} skipped)")
 
     def _calculate_coiled_spring_for_backtest(self, ticker: str, score_data: dict, static_data: dict, cs_config: dict) -> dict:
         """

@@ -545,8 +545,8 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
     }
 
     # Fetch quarterly and annual in parallel (but only 2 calls total, not 4)
-    quarterly_url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=8&apikey={FMP_API_KEY}"
-    annual_url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=5&apikey={FMP_API_KEY}"
+    quarterly_url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=24&apikey={FMP_API_KEY}"
+    annual_url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=10&apikey={FMP_API_KEY}"
 
     quarterly_data, annual_data = await asyncio.gather(
         fetch_json_async(session, quarterly_url),
