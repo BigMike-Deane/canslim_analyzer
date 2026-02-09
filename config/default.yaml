@@ -503,14 +503,14 @@ market_timing:
 
 # RS Line New Highs (relative strength line making new highs before price)
 rs_line:
-  enabled: true
+  enabled: false
   lookback_weeks: 52                   # 52-week lookback for RS line new high
   bonus_points: 8                      # Bonus when RS line hits new high before price
   penalty_divergence: -5               # Penalty when price at new high but RS line isn't
 
 # Earnings Surprise Drift (post-earnings momentum)
 earnings_drift:
-  enabled: true
+  enabled: false
   min_surprise_pct: 10                 # Minimum earnings beat to trigger drift signal
   drift_window_days: 60                # How long drift effect lasts after earnings
   bonus_points: 5                      # Score bonus for stocks in drift window
