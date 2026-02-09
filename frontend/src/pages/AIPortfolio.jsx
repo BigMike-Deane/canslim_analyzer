@@ -14,31 +14,26 @@ function PerformanceChart({ history, startingCash }) {
     )
   }
 
-  // Check if timestamp is during market hours (9:30 AM - 4:00 PM ET, Mon-Fri)
-  const isDuringMarketHours = (timestamp) => {
-    if (!timestamp) return false
-    const date = new Date(timestamp)
-    // Convert to Eastern Time for market hours check
-    const etOptions = { timeZone: 'America/New_York', hour: 'numeric', minute: 'numeric', hour12: false }
-    const etTime = date.toLocaleString('en-US', etOptions)
-    const [hours, minutes] = etTime.split(':').map(Number)
-    const timeInMinutes = hours * 60 + minutes
-
-    // Market hours: 9:30 AM (570 min) to 4:00 PM (960 min)
-    const marketOpen = 9 * 60 + 30  // 9:30 AM = 570
-    const marketClose = 16 * 60     // 4:00 PM = 960
-
-    // Check if weekday (0 = Sunday, 6 = Saturday)
-    const dayOfWeek = date.getDay()
-    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5
-
-    return isWeekday && timeInMinutes >= marketOpen && timeInMinutes <= marketClose
+  // Deduplicate snapshots: keep latest per day for a clean chart
+  const dedupeByDay = (data) => {
+    const byDay = {}
+    for (const d of data) {
+      const ts = d.timestamp || d.date
+      if (!ts) continue
+      const dayKey = new Date(ts).toISOString().slice(0, 10)
+      // Keep the latest snapshot for each day
+      if (!byDay[dayKey] || new Date(ts) > new Date(byDay[dayKey].timestamp || byDay[dayKey].date)) {
+        byDay[dayKey] = d
+      }
+    }
+    return Object.values(byDay).sort((a, b) =>
+      new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date)
+    )
   }
 
-  // Filter history based on selected time range and market hours
+  // Filter history based on selected time range
   const filterHistory = (data, range) => {
-    // First filter to market hours only
-    let filtered = data.filter(d => isDuringMarketHours(d.timestamp || d.date))
+    let filtered = dedupeByDay(data)
 
     if (range === 'all') return filtered
     const now = new Date()
