@@ -3182,18 +3182,11 @@ async def create_multi_backtest(
         db.flush()
         created_ids.append(bt.id)
 
-        def run_in_background(bt_id=bt.id, start=preset["start"], end=preset["end"]):
+        def run_in_background(bt_id=bt.id):
             from backend.database import SessionLocal
             bg_db = SessionLocal()
             try:
-                run_backtest(
-                    db=bg_db,
-                    backtest_id=bt_id,
-                    start_date=start,
-                    end_date=end,
-                    starting_cash=starting_cash,
-                    stock_universe=stock_universe
-                )
+                run_backtest(bg_db, bt_id)
             except Exception as e:
                 logger.error(f"Multi-backtest {bt_id} failed: {e}")
                 bt_obj = bg_db.query(BacktestRun).get(bt_id)
