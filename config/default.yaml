@@ -490,7 +490,7 @@ market_timing:
 
   # Follow-Through Day Confirmation (O'Neil market timing)
   follow_through_day:
-    enabled: true
+    enabled: false
     min_rally_day: 4                   # FTD must occur on day 4+ of rally attempt
     min_gain_pct: 1.5                  # Index must gain 1.5%+ on FTD
     require_higher_volume: true        # Volume must be higher than prior day
@@ -518,7 +518,7 @@ earnings_drift:
 
 # Portfolio Heat Monitor (total risk exposure)
 portfolio_heat:
-  enabled: true
+  enabled: false
   max_heat_pct: 15.0                   # Block new buys if total heat > 15%
   warning_heat_pct: 12.0               # Log warning at 12%
   # Heat = sum of (position_size_pct × distance_to_stop_pct)
@@ -533,7 +533,7 @@ vix_stops:
 
 # Volume Confirmation on Entry
 volume_gate:
-  enabled: true
+  enabled: false
   min_volume_ratio: 0.8                # Buy when volume >= 80% of 50-day average
   breakout_min_volume_ratio: 1.2       # Breakout entries need 1.2x volume (daily close underestimates intraday spikes)
   pre_breakout_min_volume_ratio: 0.6   # Pre-breakout can have lower volume (accumulation phase)
@@ -548,7 +548,7 @@ correlation_sizing:
 
 # Scale-In on Pullbacks (add to winners pulling back)
 scale_in_pullbacks:
-  enabled: true
+  enabled: false
   min_gain_pct: 10.0                   # Position must be up 10%+ to qualify
   pullback_pct: 3.0                    # Pullback of 3-5% from recent high
   max_pullback_pct: 5.0                # Don't add if pulled back more than 5%
