@@ -1203,8 +1203,8 @@ class BacktestEngine:
             score_crash_config = config.get('ai_trader.score_crash', {})
             consecutive_required = score_crash_config.get('consecutive_required', 3)
             score_threshold = score_crash_config.get('threshold', 50)
-            drop_required = score_crash_config.get('drop_required', 20)
-            ignore_if_profitable_pct = score_crash_config.get('ignore_if_profitable_pct', 10)
+            drop_required = self.profile.get('score_crash_drop_required', score_crash_config.get('drop_required', 20))
+            ignore_if_profitable_pct = self.profile.get('score_crash_ignore_if_profitable', score_crash_config.get('ignore_if_profitable_pct', 10))
 
             score_drop = position.purchase_score - current_score
             if score_drop > drop_required and current_score < score_threshold:

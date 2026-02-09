@@ -2344,7 +2344,7 @@ class TestStrategyProfiles:
         assert profile.get('min_score') == 68
         assert profile.get('max_positions') == 6
         assert profile.get('stop_loss_pct') == 8.0
-        assert profile.get('take_profit_pct') == 55.0
+        assert profile.get('take_profit_pct') == 75.0
         assert profile.get('seed_count') == 4
         assert profile.get('max_single_position_pct') == 25
         assert profile.get('c_score_weight') == 1.3
@@ -2380,7 +2380,7 @@ class TestStrategyProfiles:
         """Growth mode uses 55% take profit (vs 40% balanced)"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("growth")
-        assert profile.get('take_profit_pct') == 55.0
+        assert profile.get('take_profit_pct') == 75.0
 
     def test_growth_mode_scoring_weights(self):
         """Growth mode weights growth_projection at 35%"""
@@ -2391,12 +2391,19 @@ class TestStrategyProfiles:
         assert weights.get('canslim_score') == 0.20
         assert weights.get('momentum') == 0.25
 
-    def test_growth_mode_trailing_stops_match_balanced(self):
-        """Growth mode trailing stops match balanced for capital protection"""
+    def test_growth_mode_wider_trailing_for_big_winners(self):
+        """Growth mode gives big winners more room to run"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("growth")
         trailing = profile.get('trailing_stops', {})
-        assert trailing.get('gain_50_plus') == 15
-        assert trailing.get('gain_30_to_50') == 12
-        assert trailing.get('gain_20_to_30') == 10
-        assert trailing.get('gain_10_to_20') == 8
+        assert trailing.get('gain_50_plus') == 20   # wider than balanced (15)
+        assert trailing.get('gain_30_to_50') == 15   # wider than balanced (12)
+        assert trailing.get('gain_20_to_30') == 10   # match balanced
+        assert trailing.get('gain_10_to_20') == 8    # match balanced
+
+    def test_growth_mode_lenient_score_crash(self):
+        """Growth mode requires bigger score drop and holds profitable positions longer"""
+        from backend.backtester import get_strategy_profile
+        profile = get_strategy_profile("growth")
+        assert profile.get('score_crash_drop_required') == 25        # vs 20 balanced
+        assert profile.get('score_crash_ignore_if_profitable') == 20  # vs 10% balanced

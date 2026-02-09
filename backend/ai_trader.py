@@ -1513,8 +1513,8 @@ def evaluate_sells(db: Session) -> list:
         score_crash_config = yaml_config.get('ai_trader.score_crash', {})
         consecutive_required = score_crash_config.get('consecutive_required', 3)
         score_threshold = score_crash_config.get('threshold', 50)
-        drop_required = score_crash_config.get('drop_required', 20)
-        ignore_if_profitable_pct = score_crash_config.get('ignore_if_profitable_pct', 10)
+        drop_required = profile.get('score_crash_drop_required', score_crash_config.get('drop_required', 20))
+        ignore_if_profitable_pct = profile.get('score_crash_ignore_if_profitable', score_crash_config.get('ignore_if_profitable_pct', 10))
 
         score_drop = purchase_score - score
         if score_drop > drop_required and score < score_threshold:
