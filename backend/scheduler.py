@@ -1138,15 +1138,38 @@ def run_continuous_scan():
         _scan_config["phase_detail"] = None
 
 
+def _refresh_portfolio_prices():
+    """Lightweight job: refresh position prices + take snapshot (runs every 15 min during market hours)"""
+    try:
+        from backend.ai_trader import is_market_open, refresh_ai_portfolio, get_or_create_config
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            config = get_or_create_config(db)
+            if not config.is_active:
+                return
+            if not is_market_open():
+                return
+            result = refresh_ai_portfolio(db)
+            logger.info(f"Portfolio price refresh: {result.get('message', 'done')}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Portfolio price refresh error: {e}")
+
+
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):
     """Start continuous scanning with specified interval"""
     _scan_config["enabled"] = True
     _scan_config["source"] = source
     _scan_config["interval_minutes"] = interval_minutes
 
-    # Remove existing job if any
+    # Remove existing jobs if any
     if scheduler.get_job("continuous_scan"):
         scheduler.remove_job("continuous_scan")
+    if scheduler.get_job("portfolio_price_refresh"):
+        scheduler.remove_job("portfolio_price_refresh")
 
     # Add the scan job
     scheduler.add_job(
@@ -1154,6 +1177,15 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
         IntervalTrigger(minutes=interval_minutes),
         id="continuous_scan",
         name=f"Continuous CANSLIM Scan ({source})",
+        replace_existing=True
+    )
+
+    # Add portfolio price refresh job (every 15 min for chart data points)
+    scheduler.add_job(
+        _refresh_portfolio_prices,
+        IntervalTrigger(minutes=15),
+        id="portfolio_price_refresh",
+        name="Portfolio Price Refresh",
         replace_existing=True
     )
 
@@ -1186,6 +1218,8 @@ def stop_continuous_scanning():
 
     if scheduler.get_job("continuous_scan"):
         scheduler.remove_job("continuous_scan")
+    if scheduler.get_job("portfolio_price_refresh"):
+        scheduler.remove_job("portfolio_price_refresh")
 
     logger.info("Continuous scanning stopped")
     return get_scan_status()
