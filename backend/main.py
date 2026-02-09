@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text, case
 from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional, List
 import logging
 
@@ -2702,7 +2703,7 @@ async def get_ai_portfolio_history(
     snapshots = sorted(snapshots, key=sort_key)
 
     return [{
-        "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else None,  # UTC timestamp
+        "timestamp": s.timestamp.replace(tzinfo=ZoneInfo("America/Chicago")).isoformat() if s.timestamp else None,
         "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
         "total_value": s.total_value,
         "cash": s.cash,
