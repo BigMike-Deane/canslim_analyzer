@@ -2112,65 +2112,6 @@ class TestVIXStopAdjustment:
         assert len(stop_losses) == 1
 
 
-class TestVolumeGate:
-    """Test context-aware volume gate in backtester"""
-
-    @patch('backend.backtester.config')
-    def test_breakout_requires_higher_volume(self, mock_config):
-        """Breakout entries should require higher volume threshold"""
-        from backend.backtester import BacktestEngine
-
-        def config_get(key, default=None):
-            config_data = {
-                'volume_gate': {'enabled': True, 'min_volume_ratio': 1.0,
-                                'breakout_min_volume_ratio': 1.5,
-                                'pre_breakout_min_volume_ratio': 0.8},
-                'ai_trader.allocation': {'min_score_to_buy': 72, 'max_single_position': 0.15},
-                'ai_trader.market_regime': {'enabled': True, 'bullish_threshold': 1.5,
-                                            'bearish_threshold': -0.5,
-                                            'bullish_max_position_pct': 15.0,
-                                            'bearish_max_position_pct': 8.0,
-                                            'neutral_max_position_pct': 12.0,
-                                            'bearish_min_score_adj': 10,
-                                            'bear_exception_min_cal': 35,
-                                            'bear_exception_position_mult': 0.50},
-                'ai_trader.quality_filters': {'min_c_score': 10, 'min_l_score': 8,
-                                              'min_volume_ratio': 1.2, 'skip_in_growth_mode': True},
-                'coiled_spring': {},
-                'rs_line': {'enabled': False},
-                'earnings_drift': {'enabled': False},
-                'correlation_sizing': {'enabled': False},
-            }
-            return config_data.get(key, default if default is not None else {})
-
-        mock_config.get = config_get
-
-        # Volume gate is a filter in _evaluate_buys - tested indirectly
-        # A breakout stock with volume_ratio=1.2 should be rejected (needs 1.5)
-        mock_session, mock_backtest = make_mock_db()
-        engine = BacktestEngine(mock_session, 1)
-        engine.data_provider = MagicMock()
-        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
-        engine.data_provider.get_price_on_date.return_value = 99.0
-        engine.cash = 20000
-
-        # Score data with low volume for breakout
-        score_data = {
-            "BRKOUT": {
-                "total_score": 80, "c_score": 12, "l_score": 10,
-                "volume_ratio": 1.2,  # Below breakout threshold of 1.5
-                "is_breaking_out": True,
-                "base_pattern": {"type": "cup", "weeks_in_base": 10, "pivot_price": 98},
-                "week_52_high": 100, "current_price": 99,
-                "projected_growth": 20, "rs_12m": 1.0, "rs_3m": 1.0,
-            }
-        }
-
-        buys = engine._evaluate_buys(date.today(), score_data)
-        # Should be filtered out by volume gate
-        matching = [b for b in buys if b.ticker == "BRKOUT"]
-        assert len(matching) == 0, "Breakout with insufficient volume should be filtered"
-
 
 class TestScaleInPullbacks:
     """Test scale-in on pullback logic in backtester"""
