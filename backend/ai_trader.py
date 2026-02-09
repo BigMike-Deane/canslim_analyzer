@@ -1799,12 +1799,48 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     continue
             continue
 
-        # Extract score details and volume for ranking (not filtering)
-        # The CANSLIM score already incorporates C, A, N, S, L, I, M quality
+        # QUALITY FILTERS: Only buy stocks with strong fundamentals
+        quality_config = yaml_config.get('ai_trader.quality_filters', {})
+        min_c_score = quality_config.get('min_c_score', 10)
+        min_l_score = quality_config.get('min_l_score', 8)
+        min_volume_ratio = quality_config.get('min_volume_ratio', 1.2)
+        skip_growth = quality_config.get('skip_in_growth_mode', True)
+
+        # Get individual scores from score_details
         score_details = stock.score_details or {}
         c_score = score_details.get('c', {}).get('score', 0) if isinstance(score_details.get('c'), dict) else score_details.get('c', 0)
         l_score = score_details.get('l', {}).get('score', 0) if isinstance(score_details.get('l'), dict) else score_details.get('l', 0)
         volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+        is_breaking_out = getattr(stock, 'is_breaking_out', False)
+
+        # Skip if not meeting quality thresholds (unless growth stock)
+        if not (is_growth and skip_growth):
+            if c_score < min_c_score:
+                logger.debug(f"Skipping {stock.ticker}: C score {c_score} < {min_c_score}")
+                continue
+            if l_score < min_l_score:
+                logger.debug(f"Skipping {stock.ticker}: L score {l_score} < {min_l_score}")
+                continue
+
+        # VOLUME GATE: Context-aware volume thresholds
+        vol_gate_config = yaml_config.get('volume_gate', {})
+        if vol_gate_config.get('enabled', True):
+            if is_breaking_out:
+                vol_threshold = vol_gate_config.get('breakout_min_volume_ratio', 1.5)
+            elif has_base and pivot_price > 0:
+                pct_check = ((pivot_price - stock.current_price) / pivot_price) * 100 if pivot_price > 0 else 0
+                if 0 <= pct_check <= 15:
+                    vol_threshold = vol_gate_config.get('pre_breakout_min_volume_ratio', 0.8)
+                else:
+                    vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+            else:
+                vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+            if volume_ratio < vol_threshold:
+                logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {vol_threshold} (volume gate)")
+                continue
+        elif volume_ratio < min_volume_ratio and not is_breaking_out:
+            logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {min_volume_ratio}")
+            continue
 
         # Earnings proximity check with Coiled Spring exception
         # CS stocks EMBRACE earnings (catalyst), non-CS stocks AVOID earnings (binary risk)
@@ -1926,20 +1962,25 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     extended_penalty = -10  # Moderate penalty
                     momentum_score = 10
 
-            # NO BASE or base with no valid pivot: Use 52-week high proximity
-            else:
-                if pct_from_high <= 2:
-                    # Near highs — still valid for CANSLIM (N = New Highs)
-                    momentum_score = 15
-                elif pct_from_high <= 15:
-                    if volume_ratio >= 1.3:  # Accumulation pattern
-                        momentum_score = 18
-                    else:
-                        momentum_score = 12
-                elif pct_from_high <= 25:
+            # NO BASE PATTERN at high = chasing
+            elif not has_base and pct_from_high <= 2:
+                if effective_score < 85:
+                    extended_penalty = -15  # Penalize buying at high without base
                     momentum_score = 5
                 else:
-                    momentum_score = -10  # Too far from highs, may be in downtrend
+                    momentum_score = 12  # Very high score justifies the entry
+
+            # Good zone: 5-15% from high (whether or not has base)
+            elif pct_from_high <= 15:
+                if volume_ratio >= 1.3:  # Accumulation pattern
+                    momentum_score = 18
+                else:
+                    momentum_score = 12
+
+            elif pct_from_high <= 25:
+                momentum_score = 5  # Still acceptable
+            else:
+                momentum_score = -10  # Too far from highs, may be in downtrend
 
         # Calculate insider sentiment bonus/penalty (P1 Feature: Scale by $ value)
         insider_bonus = 0
