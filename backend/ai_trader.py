@@ -1926,21 +1926,20 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     extended_penalty = -10  # Moderate penalty
                     momentum_score = 10
 
-            # Near highs without base — still valid for CANSLIM (N = New Highs)
-            elif not has_base and pct_from_high <= 2:
-                momentum_score = 15  # New highs are a CANSLIM positive
-
-            # Good zone: 5-15% from high (whether or not has base)
-            elif pct_from_high <= 15:
-                if volume_ratio >= 1.3:  # Accumulation pattern
-                    momentum_score = 18
-                else:
-                    momentum_score = 12
-
-            elif pct_from_high <= 25:
-                momentum_score = 5  # Still acceptable
+            # NO BASE or base with no valid pivot: Use 52-week high proximity
             else:
-                momentum_score = -10  # Too far from highs, may be in downtrend
+                if pct_from_high <= 2:
+                    # Near highs — still valid for CANSLIM (N = New Highs)
+                    momentum_score = 15
+                elif pct_from_high <= 15:
+                    if volume_ratio >= 1.3:  # Accumulation pattern
+                        momentum_score = 18
+                    else:
+                        momentum_score = 12
+                elif pct_from_high <= 25:
+                    momentum_score = 5
+                else:
+                    momentum_score = -10  # Too far from highs, may be in downtrend
 
         # Calculate insider sentiment bonus/penalty (P1 Feature: Scale by $ value)
         insider_bonus = 0

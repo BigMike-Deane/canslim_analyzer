@@ -1501,7 +1501,7 @@ class BacktestEngine:
             # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
             # This is the BEST entry - optimal risk/reward BEFORE the crowd notices
             # PREDICTIVE: We want to catch stocks before they move
-            if has_base and 5 <= pct_from_pivot <= 15:
+            if has_base and pivot_price > 0 and 5 <= pct_from_pivot <= 15:
                 pre_breakout_bonus = 40  # Highest bonus - ideal entry point
                 momentum_score = 35
                 if volume_ratio >= 1.3:
@@ -1510,7 +1510,7 @@ class BacktestEngine:
                     pre_breakout_bonus += 5  # Longer base = more stored energy
 
             # AT PIVOT ZONE: 0-5% below pivot with base pattern (ready to break out)
-            elif has_base and 0 <= pct_from_pivot < 5:
+            elif has_base and pivot_price > 0 and 0 <= pct_from_pivot < 5:
                 pre_breakout_bonus = 35  # Strong bonus near pivot
                 momentum_score = 30
                 if volume_ratio >= 1.5:
@@ -1533,19 +1533,20 @@ class BacktestEngine:
                     extended_penalty = -10  # Moderate penalty
                     momentum_score = 10
 
-            # NO BASE PATTERN: Use 52-week high with penalties
-            elif not has_base:
+            # NO BASE or base with no valid pivot: Use 52-week high proximity
+            else:
                 if pct_from_high <= 2:
-                    # Near highs without base — still valid for CANSLIM (N = New Highs)
+                    # Near highs — still valid for CANSLIM (N = New Highs)
                     momentum_score = 15
-                elif pct_from_high <= 10:
-                    momentum_score = 15
-                    if volume_ratio >= 1.5:
-                        momentum_score += 3
+                elif pct_from_high <= 15:
+                    if volume_ratio >= 1.3:  # Accumulation pattern
+                        momentum_score = 18
+                    else:
+                        momentum_score = 12
                 elif pct_from_high <= 25:
-                    momentum_score = 8
+                    momentum_score = 5
                 else:
-                    momentum_score = -5
+                    momentum_score = -10  # Too far from highs, may be in downtrend
 
             # RS LINE NEW HIGH: Leading indicator when RS makes new high before price
             rs_line_bonus = 0
@@ -1614,7 +1615,10 @@ class BacktestEngine:
             # Position sizing (4-regime_max_pct based on conviction, matches live trader)
             conviction_multiplier = min(composite_score / 50, 1.5)
             position_pct = 4.0 + (conviction_multiplier * (regime_max_pct - 4) / 1.5)
-            position_pct = min(position_pct, regime_max_pct)
+
+            # Half-size positions when portfolio heat is elevated
+            if self.heat_penalty_active:
+                position_pct *= 0.50
 
             # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
             # These are the ideal entries - before the crowd notices
@@ -1633,10 +1637,6 @@ class BacktestEngine:
             # Reduce position size for bear market exception entries
             if score_data.get("_bear_market_entry"):
                 position_pct *= bear_exception_position_mult
-
-            # Half-size positions when portfolio heat is elevated
-            if self.heat_penalty_active:
-                position_pct *= 0.50
 
             # CORRELATION-AWARE SIZING: Reduce position if highly correlated with existing holdings
             corr_config = config.get('correlation_sizing', {})
@@ -1659,6 +1659,9 @@ class BacktestEngine:
                     continue
                 elif high_corr_count > 0:
                     position_pct *= corr_multiplier
+
+            # Cap at market regime max AFTER all multipliers (matches live trader)
+            position_pct = min(position_pct, regime_max_pct)
 
             position_value = portfolio_value * (position_pct / 100)
 
@@ -1719,7 +1722,7 @@ class BacktestEngine:
                 price=price,
                 reason=" | ".join(reason_parts),
                 score=score,
-                priority=-int(composite_score)  # Higher score = lower priority number
+                priority=-composite_score  # Higher score = lower priority number
             ))
             # Stash signal_factors on trade for recording
             buys[-1]._signal_factors = signal_factors
