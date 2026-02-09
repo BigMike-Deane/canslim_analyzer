@@ -43,10 +43,19 @@ PgSession = sessionmaker(bind=pg_engine)
 # Import all models to create tables
 from backend.database import Base, init_db
 
-# Create all tables in PostgreSQL
+# Create all tables in PostgreSQL (skip if already exist)
 print("\nCreating tables in PostgreSQL...")
 os.environ['DATABASE_URL'] = PG_URL
-Base.metadata.create_all(bind=pg_engine)
+try:
+    Base.metadata.create_all(bind=pg_engine)
+except Exception as e:
+    print(f"  Note: create_all had issues ({type(e).__name__}), tables likely already exist")
+    # Create individually as fallback
+    for table in Base.metadata.sorted_tables:
+        try:
+            table.create(bind=pg_engine, checkfirst=True)
+        except Exception:
+            pass
 
 # Get table names in dependency order (parents before children)
 TABLE_ORDER = [
@@ -77,6 +86,15 @@ sqlite_tables = sqlite_inspector.get_table_names()
 pg_inspector = inspect(pg_engine)
 pg_tables = pg_inspector.get_table_names()
 
+# Build map of boolean columns per table (PostgreSQL uses strict BOOLEAN,
+# SQLite stores as 0/1 integers which PostgreSQL rejects)
+bool_cols_map = {}
+for table_name in pg_tables:
+    pg_col_info = pg_inspector.get_columns(table_name)
+    bool_cols = {c['name'] for c in pg_col_info if str(c['type']).upper() == 'BOOLEAN'}
+    if bool_cols:
+        bool_cols_map[table_name] = bool_cols
+
 total_migrated = 0
 
 for table_name in TABLE_ORDER:
@@ -104,6 +122,9 @@ for table_name in TABLE_ORDER:
         print(f"  SKIP {table_name} (empty)")
         continue
 
+    # Identify boolean columns that need casting for this table
+    table_bool_cols = bool_cols_map.get(table_name, set()) & set(common_cols)
+
     print(f"  Migrating {table_name}: {count} rows...", end="", flush=True)
 
     cols_str = ", ".join(common_cols)
@@ -117,6 +138,17 @@ for table_name in TABLE_ORDER:
         batch = []
         for row in result:
             row_dict = dict(zip(common_cols, row))
+            # Cast integer booleans (0/1) to Python bool for PostgreSQL
+            for col in table_bool_cols:
+                if col in row_dict and row_dict[col] is not None:
+                    row_dict[col] = bool(row_dict[col])
+            # Fill NULL values for NOT NULL columns with sensible defaults
+            if row_dict.get('timestamp') is None and 'timestamp' in row_dict:
+                # Use date column value as fallback timestamp
+                if row_dict.get('date'):
+                    row_dict['timestamp'] = str(row_dict['date']) + ' 00:00:00'
+                else:
+                    row_dict['timestamp'] = '2026-01-01 00:00:00'
             batch.append(row_dict)
 
             if len(batch) >= BATCH_SIZE:
