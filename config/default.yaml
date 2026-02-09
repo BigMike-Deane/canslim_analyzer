@@ -617,34 +617,34 @@ strategy_profiles:
 
   growth:
     label: "Growth Mode"
-    description: "Aggressive growth focus - higher risk, concentrated bets on high-growth setups"
-    min_score: 60
-    max_positions: 6
-    max_single_position_pct: 30
-    max_sector_pct: 60
-    stop_loss_pct: 10.0
-    bearish_stop_loss_pct: 8.0
-    take_profit_pct: 60.0
+    description: "Growth-focused stock ranking with balanced risk management"
+    min_score: 68                       # Tighter than v1 (60) — filter out junk, still lower than balanced (72)
+    max_positions: 6                    # Concentrated — fewer, higher-conviction bets
+    max_single_position_pct: 25         # Match balanced — avoid single-stock blow-ups
+    max_sector_pct: 50                  # Match balanced
+    stop_loss_pct: 8.0                  # Match balanced — cut losers fast (was 10%)
+    bearish_stop_loss_pct: 7.0          # Match balanced — tighter in bear (was 8%)
+    take_profit_pct: 55.0               # Let winners run longer than balanced (40%)
     trailing_stops:
-      gain_50_plus: 18
-      gain_30_to_50: 15
-      gain_20_to_30: 12
-      gain_10_to_20: 10
-    seed_count: 4
-    seed_pct: 12
-    half_size_initial: false
+      gain_50_plus: 15                  # Match balanced — protect big winners
+      gain_30_to_50: 12                 # Match balanced
+      gain_20_to_30: 10                 # Match balanced
+      gain_10_to_20: 8                  # Match balanced
+    seed_count: 4                       # Fewer seeds — more selective on day 1
+    seed_pct: 10                        # Match balanced per-seed size (was 12%)
+    half_size_initial: true             # Half-size entries — prove it first (was false)
     quality_filters:
-      min_c_score: 12
-      min_l_score: 10
+      min_c_score: 12                   # Higher C bar — demand strong earnings
+      min_l_score: 10                   # Higher L bar — demand relative strength leaders
     scoring_weights:
-      growth_projection: 0.35
+      growth_projection: 0.35           # Heavier growth tilt (vs 0.25 balanced)
       canslim_score: 0.20
-      momentum: 0.25
+      momentum: 0.25                    # Heavier momentum tilt (vs 0.20 balanced)
       breakout: 0.15
       base_quality: 0.05
-    # Growth mode bonuses
-    c_score_weight: 1.3               # Weight C score 30% more (earnings momentum)
-    l_score_weight: 1.3               # Weight L score 30% more (relative strength)
-    n_score_weight: 1.2               # Weight N score 20% more (new highs)
-    eps_accel_bonus: 8                # Extra bonus for EPS acceleration (vs 5 in balanced)
-    pre_breakout_multiplier: 1.50     # 50% larger positions on pre-breakout (vs 1.30)
+    # Growth mode ranking bonuses — these are the key differentiator
+    c_score_weight: 1.3                 # Weight C score 30% more (earnings momentum)
+    l_score_weight: 1.3                 # Weight L score 30% more (relative strength)
+    n_score_weight: 1.2                 # Weight N score 20% more (new highs)
+    eps_accel_bonus: 8                  # Extra bonus for EPS acceleration (vs 5 in balanced)
+    pre_breakout_multiplier: 1.40       # Slightly larger pre-breakout positions (was 1.50, balanced is 1.30)

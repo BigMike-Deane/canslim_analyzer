@@ -2341,12 +2341,12 @@ class TestStrategyProfiles:
         """Growth profile returns growth overrides"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("growth")
-        assert profile.get('min_score') == 60
+        assert profile.get('min_score') == 68
         assert profile.get('max_positions') == 6
-        assert profile.get('stop_loss_pct') == 10.0
-        assert profile.get('take_profit_pct') == 60.0
+        assert profile.get('stop_loss_pct') == 8.0
+        assert profile.get('take_profit_pct') == 55.0
         assert profile.get('seed_count') == 4
-        assert profile.get('max_single_position_pct') == 30
+        assert profile.get('max_single_position_pct') == 25
         assert profile.get('c_score_weight') == 1.3
         assert profile.get('l_score_weight') == 1.3
 
@@ -2358,7 +2358,7 @@ class TestStrategyProfiles:
         assert profile.get('max_positions') == 8
 
     def test_growth_mode_lower_min_score(self):
-        """Growth mode uses min_score 60 in backtester init"""
+        """Growth mode uses min_score 68 in backtester init"""
         from backend.backtester import BacktestEngine, get_strategy_profile
 
         mock_db, mock_backtest = make_mock_db()
@@ -2367,20 +2367,20 @@ class TestStrategyProfiles:
         with patch('backend.backtester.HistoricalDataProvider'):
             engine = BacktestEngine(mock_db, mock_backtest.id)
             assert engine.strategy == "growth"
-            assert engine.profile.get('min_score') == 60
+            assert engine.profile.get('min_score') == 68
 
-    def test_growth_mode_wider_stops(self):
-        """Growth mode uses 10% stop loss"""
+    def test_growth_mode_stops_match_balanced(self):
+        """Growth mode uses same tight stops as balanced (8%/7%)"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("growth")
-        assert profile.get('stop_loss_pct') == 10.0
-        assert profile.get('bearish_stop_loss_pct') == 8.0
+        assert profile.get('stop_loss_pct') == 8.0
+        assert profile.get('bearish_stop_loss_pct') == 7.0
 
     def test_growth_mode_higher_take_profit(self):
-        """Growth mode uses 60% take profit"""
+        """Growth mode uses 55% take profit (vs 40% balanced)"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("growth")
-        assert profile.get('take_profit_pct') == 60.0
+        assert profile.get('take_profit_pct') == 55.0
 
     def test_growth_mode_scoring_weights(self):
         """Growth mode weights growth_projection at 35%"""
@@ -2391,12 +2391,12 @@ class TestStrategyProfiles:
         assert weights.get('canslim_score') == 0.20
         assert weights.get('momentum') == 0.25
 
-    def test_growth_mode_trailing_stops(self):
-        """Growth mode has wider trailing stop thresholds"""
+    def test_growth_mode_trailing_stops_match_balanced(self):
+        """Growth mode trailing stops match balanced for capital protection"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("growth")
         trailing = profile.get('trailing_stops', {})
-        assert trailing.get('gain_50_plus') == 18
-        assert trailing.get('gain_30_to_50') == 15
-        assert trailing.get('gain_20_to_30') == 12
-        assert trailing.get('gain_10_to_20') == 10
+        assert trailing.get('gain_50_plus') == 15
+        assert trailing.get('gain_30_to_50') == 12
+        assert trailing.get('gain_20_to_30') == 10
+        assert trailing.get('gain_10_to_20') == 8
