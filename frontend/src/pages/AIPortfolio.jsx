@@ -14,34 +14,37 @@ function PerformanceChart({ history, startingCash }) {
     )
   }
 
-  // Deduplicate snapshots: keep latest per day for a clean chart
-  const dedupeByDay = (data) => {
-    const byDay = {}
-    for (const d of data) {
-      const ts = d.timestamp || d.date
-      if (!ts) continue
-      const dayKey = new Date(ts).toISOString().slice(0, 10)
-      // Keep the latest snapshot for each day
-      if (!byDay[dayKey] || new Date(ts) > new Date(byDay[dayKey].timestamp || byDay[dayKey].date)) {
-        byDay[dayKey] = d
-      }
-    }
-    return Object.values(byDay).sort((a, b) =>
-      new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date)
-    )
-  }
-
   // Filter history based on selected time range
+  // For multi-day views (7d, 30d, all), keep latest snapshot per day for clean chart
+  // For 24h view, show all intraday snapshots for granularity
   const filterHistory = (data, range) => {
-    let filtered = dedupeByDay(data)
+    let filtered = data.filter(d => d.timestamp || d.date)
+    filtered.sort((a, b) => new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date))
 
-    if (range === 'all') return filtered
-    const now = new Date()
-    const cutoff = new Date()
-    if (range === '24h') cutoff.setHours(now.getHours() - 24)
-    else if (range === '7d') cutoff.setDate(now.getDate() - 7)
-    else if (range === '30d') cutoff.setDate(now.getDate() - 30)
-    return filtered.filter(d => new Date(d.timestamp || d.date) >= cutoff)
+    if (range !== 'all') {
+      const now = new Date()
+      const cutoff = new Date()
+      if (range === '24h') cutoff.setHours(now.getHours() - 24)
+      else if (range === '7d') cutoff.setDate(now.getDate() - 7)
+      else if (range === '30d') cutoff.setDate(now.getDate() - 30)
+      filtered = filtered.filter(d => new Date(d.timestamp || d.date) >= cutoff)
+    }
+
+    // For longer views with many data points, dedupe to latest per day
+    if (range !== '24h' && filtered.length > 60) {
+      const byDay = {}
+      for (const d of filtered) {
+        const dayKey = new Date(d.timestamp || d.date).toISOString().slice(0, 10)
+        if (!byDay[dayKey] || new Date(d.timestamp || d.date) > new Date(byDay[dayKey].timestamp || byDay[dayKey].date)) {
+          byDay[dayKey] = d
+        }
+      }
+      filtered = Object.values(byDay).sort((a, b) =>
+        new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date)
+      )
+    }
+
+    return filtered
   }
 
   const filteredHistory = filterHistory(history, timeRange)
