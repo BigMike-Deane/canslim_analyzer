@@ -33,7 +33,18 @@ def get_db():
 
 def init_db():
     """Initialize database tables and run migrations"""
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        # PostgreSQL may error on duplicate indexes if any remain.
+        # Fall back to creating each table individually with checkfirst.
+        import logging
+        logging.getLogger(__name__).warning(f"create_all failed ({e}), creating tables individually")
+        for table in Base.metadata.sorted_tables:
+            try:
+                table.create(bind=engine, checkfirst=True)
+            except Exception:
+                pass
     run_migrations()
 
 
@@ -379,7 +390,7 @@ class StockScore(Base):
     id = Column(Integer, primary_key=True, index=True)
     stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
     timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
-    date = Column(Date, nullable=False, index=True)  # Kept for easy daily grouping
+    date = Column(Date, nullable=False)  # Kept for easy daily grouping (indexed via __table_args__)
 
     # CANSLIM breakdown
     total_score = Column(Float)
