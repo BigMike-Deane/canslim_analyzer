@@ -290,7 +290,28 @@ export const api = {
     const result = await request(`/api/backtests/${id}/cancel`, { method: 'POST' })
     cache.invalidate('/api/backtests')
     return result
-  }
+  },
+
+  // Backtest Comparison & Multi-Period
+  compareBacktests: (ids) => request(`/api/backtests/compare?ids=${ids.join(',')}`),
+  getBacktestPresets: () => request('/api/backtests/presets'),
+  createMultiBacktest: async (config = {}) => {
+    const params = new URLSearchParams()
+    if (config.starting_cash) params.set('starting_cash', config.starting_cash)
+    if (config.stock_universe) params.set('stock_universe', config.stock_universe)
+    const result = await request(`/api/backtests/multi?${params}`, { method: 'POST' })
+    cache.invalidate('/api/backtests')
+    return result
+  },
+
+  // Trade Analytics
+  getTradeAnalytics: () => request('/api/analytics/trades'),
+
+  // Earnings Calendar
+  getEarningsCalendar: () => request('/api/ai-portfolio/earnings-calendar'),
+
+  // Portfolio Risk
+  getPortfolioRisk: () => request('/api/ai-portfolio/risk'),
 }
 
 // Formatting utilities

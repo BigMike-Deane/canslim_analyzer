@@ -1277,7 +1277,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,
                   cost_basis: float = None, realized_gain: float = None,
-                  signal_factors: dict = None):
+                  signal_factors: dict = None, is_paper: bool = False):
     """Record a trade in the database with detailed logging"""
     trade = AIPortfolioTrade(
         ticker=ticker,
@@ -1285,7 +1285,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         shares=shares,
         price=price,
         total_value=shares * price,
-        reason=reason,
+        reason=f"PAPER: {reason}" if is_paper else reason,
         canslim_score=score,
         growth_mode_score=growth_score,
         is_growth_stock=is_growth_stock,
@@ -1294,6 +1294,9 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         executed_at=get_cst_now(),  # Use CST timezone
         signal_factors=signal_factors  # Trade journal: what drove this decision
     )
+    # Set is_paper if column exists
+    if hasattr(trade, 'is_paper'):
+        trade.is_paper = is_paper
     db.add(trade)
 
     stock_type = "Growth" if is_growth_stock else "CANSLIM"
@@ -1305,9 +1308,28 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         logger.info(f"AI SELL: {ticker} - {shares:.2f} shares @ ${price:.2f} "
                     f"(cost: ${cost_basis:.2f}, gain: {gain_pct:+.1f}%, P/L: ${realized_gain:.2f}) "
                     f"Score: {effective:.0f} - {reason}")
+
+        # Send webhook notification for sells
+        try:
+            from backend.email_utils import send_trade_webhook, send_stop_loss_webhook
+            if "STOP LOSS" in reason or "TRAILING STOP" in reason:
+                send_stop_loss_webhook(ticker, shares, price,
+                                       "STOP LOSS" if "STOP LOSS" in reason else "TRAILING STOP",
+                                       gain_pct)
+            else:
+                send_trade_webhook(ticker, "SELL", shares, price, reason, gain_pct)
+        except Exception:
+            pass  # Never block trading on webhook failure
     else:
         logger.info(f"AI {action}: {ticker} - {shares:.2f} shares @ ${price:.2f} "
                     f"({stock_type} {effective:.0f}) - {reason}")
+
+        # Send webhook notification for buys
+        try:
+            from backend.email_utils import send_trade_webhook
+            send_trade_webhook(ticker, "BUY", shares, price, reason)
+        except Exception:
+            pass  # Never block trading on webhook failure
 
     return trade
 
@@ -2323,7 +2345,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
     try:
         config = get_or_create_config(db)
-        logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}")
+        paper_mode = getattr(config, 'paper_mode', False) or False
+        logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}, Paper: {paper_mode}")
 
         if not config.is_active:
             logger.info("AI Portfolio is not active, skipping cycle")
@@ -2332,6 +2355,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
         results = {
             "sells_executed": [],
             "buys_executed": [],
+            "paper_mode": paper_mode,
             "sells_considered": 0,
             "buys_considered": 0
         }
@@ -2374,26 +2398,28 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     growth_score=position.current_growth_score,
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
-                    realized_gain=realized_gain
+                    realized_gain=realized_gain,
+                    is_paper=paper_mode
                 )
 
-                # Add partial cash back
-                config.current_cash += value_to_sell
+                if not paper_mode:
+                    # Add partial cash back
+                    config.current_cash += value_to_sell
 
-                # Update position (reduce shares, track partial profit taken)
-                position.shares -= shares_to_sell
-                position.current_value = position.shares * position.current_price
-                position.gain_loss = position.current_value - (position.shares * position.cost_basis)
+                    # Update position (reduce shares, track partial profit taken)
+                    position.shares -= shares_to_sell
+                    position.current_value = position.shares * position.current_price
+                    position.gain_loss = position.current_value - (position.shares * position.cost_basis)
 
-                # Track cumulative partial profit percentage taken
-                current_partial = getattr(position, 'partial_profit_taken', 0) or 0
-                position.partial_profit_taken = current_partial + sell_pct
+                    # Track cumulative partial profit percentage taken
+                    current_partial = getattr(position, 'partial_profit_taken', 0) or 0
+                    position.partial_profit_taken = current_partial + sell_pct
 
-                # Reset peak price after partial trailing stop (give remainder room to recover)
-                if sell.get("reset_peak"):
-                    position.peak_price = position.current_price
-                    position.peak_date = get_cst_now()
-                    logger.info(f"PARTIAL TRAILING STOP {position.ticker}: peak reset to ${position.current_price:.2f}")
+                    # Reset peak price after partial trailing stop (give remainder room to recover)
+                    if sell.get("reset_peak"):
+                        position.peak_price = position.current_price
+                        position.peak_date = get_cst_now()
+                        logger.info(f"PARTIAL TRAILING STOP {position.ticker}: peak reset to ${position.current_price:.2f}")
 
                 logger.info(f"PARTIAL SELL {position.ticker}: {sell_pct}% ({shares_to_sell:.2f} shares) @ ${position.current_price:.2f}")
 
@@ -2420,15 +2446,17 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     growth_score=position.current_growth_score,
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
-                    realized_gain=position.gain_loss
+                    realized_gain=position.gain_loss,
+                    is_paper=paper_mode
                 )
 
-                # Add cash back
-                config.current_cash += position.current_value
+                if not paper_mode:
+                    # Add cash back
+                    config.current_cash += position.current_value
 
-                # Remove position
-                db.delete(position)
-                position_count -= 1
+                    # Remove position
+                    db.delete(position)
+                    position_count -= 1
 
                 results["sells_executed"].append({
                     "ticker": position.ticker,
@@ -2534,20 +2562,22 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     reason=f"PYRAMID: {pyramid['reason']}",
                     score=position.current_score,
                     growth_score=position.current_growth_score,
-                    is_growth_stock=position.is_growth_stock or False
+                    is_growth_stock=position.is_growth_stock or False,
+                    is_paper=paper_mode
                 )
 
-                # Deduct cash
-                config.current_cash -= actual_value
+                if not paper_mode:
+                    # Deduct cash
+                    config.current_cash -= actual_value
 
-                # Update position (add shares, recalculate cost basis, increment pyramid count)
-                total_cost = (position.shares * position.cost_basis) + actual_value
-                position.shares += actual_shares
-                position.cost_basis = total_cost / position.shares
-                position.current_value = position.shares * live_price
-                position.gain_loss = position.current_value - total_cost
-                position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
-                position.pyramid_count = (getattr(position, 'pyramid_count', 0) or 0) + 1
+                    # Update position (add shares, recalculate cost basis, increment pyramid count)
+                    total_cost = (position.shares * position.cost_basis) + actual_value
+                    position.shares += actual_shares
+                    position.cost_basis = total_cost / position.shares
+                    position.current_value = position.shares * live_price
+                    position.gain_loss = position.current_value - total_cost
+                    position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
+                    position.pyramid_count = (getattr(position, 'pyramid_count', 0) or 0) + 1
 
                 results["pyramids_executed"].append({
                     "ticker": position.ticker,
@@ -2699,33 +2729,35 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     score=stock.canslim_score,
                     growth_score=stock.growth_mode_score,
                     is_growth_stock=is_growth,
-                    signal_factors=buy.get("signal_factors")
+                    signal_factors=buy.get("signal_factors"),
+                    is_paper=paper_mode
                 )
 
-                # Deduct cash
-                config.current_cash -= actual_value
+                if not paper_mode:
+                    # Deduct cash
+                    config.current_cash -= actual_value
 
-                # Create position at live price with both scores
-                new_position = AIPortfolioPosition(
-                    ticker=stock.ticker,
-                    shares=actual_shares,
-                    cost_basis=live_price,
-                    purchase_score=stock.canslim_score,
-                    current_price=live_price,
-                    current_value=actual_value,
-                    gain_loss=0,
-                    gain_loss_pct=0,
-                    current_score=stock.canslim_score,
-                    # Growth Mode fields
-                    is_growth_stock=is_growth,
-                    purchase_growth_score=stock.growth_mode_score,
-                    current_growth_score=stock.growth_mode_score,
-                    # Trailing stop loss tracking
-                    peak_price=live_price,
-                    peak_date=get_cst_now()
-                )
-                db.add(new_position)
-                position_count += 1
+                    # Create position at live price with both scores
+                    new_position = AIPortfolioPosition(
+                        ticker=stock.ticker,
+                        shares=actual_shares,
+                        cost_basis=live_price,
+                        purchase_score=stock.canslim_score,
+                        current_price=live_price,
+                        current_value=actual_value,
+                        gain_loss=0,
+                        gain_loss_pct=0,
+                        current_score=stock.canslim_score,
+                        # Growth Mode fields
+                        is_growth_stock=is_growth,
+                        purchase_growth_score=stock.growth_mode_score,
+                        current_growth_score=stock.growth_mode_score,
+                        # Trailing stop loss tracking
+                        peak_price=live_price,
+                        peak_date=get_cst_now()
+                    )
+                    db.add(new_position)
+                    position_count += 1
 
                 stock_type = "Growth" if is_growth else "CANSLIM"
                 effective = buy.get("effective_score", stock.canslim_score)
@@ -2758,6 +2790,30 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
         # Take daily snapshot
         take_portfolio_snapshot(db)
+
+        # ===== RISK ALERT WEBHOOKS (advisory only, never block) =====
+        try:
+            from backend.email_utils import send_risk_alert_webhook
+            # Re-check heat for alerting
+            if heat_penalty_active:
+                send_risk_alert_webhook("heat", f"Portfolio heat {total_heat:.1f}% exceeds {max_heat}% warning threshold")
+            # Check sector concentration
+            positions = db.query(AIPortfolioPosition).all()
+            sector_counts = {}
+            for pos in positions:
+                stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+                sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
+                sector_counts[sector] = sector_counts.get(sector, 0) + 1
+            for sector, count in sector_counts.items():
+                if count >= 3:
+                    send_risk_alert_webhook("sector_concentration",
+                                            f"Sector '{sector}' has {count} positions - concentration risk")
+            # Check drawdown
+            if current_drawdown >= halt_threshold * 0.7:
+                send_risk_alert_webhook("drawdown",
+                                        f"Portfolio drawdown {current_drawdown:.1f}% approaching halt threshold {halt_threshold}%")
+        except Exception as e:
+            logger.debug(f"Risk alert webhooks skipped: {e}")
 
         logger.info(f"Trading cycle complete: {len(results['buys_executed'])} buys, {len(results['sells_executed'])} sells")
         return results

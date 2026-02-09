@@ -8,6 +8,7 @@ import Documentation from './pages/Documentation'
 import AIPortfolio from './pages/AIPortfolio'
 import Breakouts from './pages/Breakouts'
 import Backtest from './pages/Backtest'
+import Analytics from './pages/Analytics'
 
 function NavIcon({ icon, label }) {
   return (
@@ -62,6 +63,7 @@ export default function App() {
         <Route path="/breakouts" element={<Breakouts />} />
         <Route path="/docs" element={<Documentation />} />
         <Route path="/backtest" element={<Backtest />} />
+        <Route path="/analytics" element={<Analytics />} />
       </Routes>
       <BottomNav />
     </div>

@@ -69,12 +69,14 @@ def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
         if deleted < batch_size:
             break
 
-    # VACUUM to reclaim disk space (SQLite specific)
-    try:
-        db.execute(text("VACUUM"))
-        db.commit()
-    except Exception as e:
-        logger.debug(f"VACUUM skipped: {e}")
+    # VACUUM to reclaim disk space (SQLite only)
+    from backend.database import DATABASE_URL
+    if DATABASE_URL.startswith("sqlite"):
+        try:
+            db.execute(text("VACUUM"))
+            db.commit()
+        except Exception as e:
+            logger.debug(f"VACUUM skipped: {e}")
 
     logger.info(f"StockScore cleanup complete: {total_deleted} records deleted")
     return total_deleted

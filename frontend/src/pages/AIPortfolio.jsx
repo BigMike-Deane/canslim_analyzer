@@ -669,20 +669,28 @@ export default function AIPortfolio() {
   const [isRefreshingPrices, setIsRefreshingPrices] = useState(false)
   const [csAlerts, setCsAlerts] = useState([])
   const [csExpanded, setCsExpanded] = useState(true)
+  const [earningsCalendar, setEarningsCalendar] = useState(null)
+  const [earningsExpanded, setEarningsExpanded] = useState(false)
+  const [riskData, setRiskData] = useState(null)
+  const [riskExpanded, setRiskExpanded] = useState(false)
 
   const fetchData = async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true)
-      const [portfolioData, historyData, tradesData, csData] = await Promise.all([
+      const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo] = await Promise.all([
         api.getAIPortfolio(),
         api.getAIPortfolioHistory(90),
         api.getAIPortfolioTrades(50),
-        api.getCoiledSpringCandidates().catch(() => ({ candidates: [] }))
+        api.getCoiledSpringCandidates().catch(() => ({ candidates: [] })),
+        api.getEarningsCalendar().catch(() => null),
+        api.getPortfolioRisk().catch(() => null),
       ])
       setPortfolio(portfolioData)
       setHistory(historyData)
       setTrades(tradesData)
       setCsAlerts(csData?.candidates || [])
+      setEarningsCalendar(earningsData)
+      setRiskData(riskInfo)
       setLastUpdated(new Date())
 
       // Check if data changed while waiting for trades
@@ -976,6 +984,137 @@ export default function AIPortfolio() {
         </div>
       )}
 
+      {/* Paper Mode Banner */}
+      {portfolio?.config?.paper_mode && (
+        <div className="card mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30">
+          <div className="flex items-center gap-2 text-yellow-400">
+            <span className="text-lg">PAPER MODE</span>
+            <span className="text-xs text-dark-400">Trades are simulated - no real positions affected</span>
+          </div>
+        </div>
+      )}
+
+      {/* Risk Monitor */}
+      {riskData && (
+        <div className="card mb-4 border border-dark-600">
+          <button onClick={() => setRiskExpanded(!riskExpanded)} className="w-full flex justify-between items-center">
+            <div className="font-semibold text-sm flex items-center gap-2">
+              Risk Monitor
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                riskData.heat_status === 'danger' ? 'bg-red-500/20 text-red-400' :
+                riskData.heat_status === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                'bg-green-500/20 text-green-400'
+              }`}>
+                Heat: {riskData.portfolio_heat}%
+              </span>
+              {riskData.position_alerts?.length > 0 && (
+                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">
+                  {riskData.position_alerts.length} alerts
+                </span>
+              )}
+            </div>
+            <span className="text-dark-400">{riskExpanded ? '▼' : '▶'}</span>
+          </button>
+          {riskExpanded && (
+            <div className="mt-3 space-y-3">
+              {/* Heat bar */}
+              <div>
+                <div className="text-xs text-dark-400 mb-1">Portfolio Heat</div>
+                <div className="h-2 bg-dark-600 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      riskData.portfolio_heat < 10 ? 'bg-green-500' :
+                      riskData.portfolio_heat < 15 ? 'bg-yellow-500' : 'bg-red-500'
+                    }`}
+                    style={{ width: `${Math.min(riskData.portfolio_heat / 20 * 100, 100)}%` }}
+                  />
+                </div>
+              </div>
+              {/* Sector concentration */}
+              {riskData.sector_concentration?.length > 0 && (
+                <div>
+                  <div className="text-xs text-dark-400 mb-1">Sector Concentration</div>
+                  <div className="flex flex-wrap gap-1">
+                    {riskData.sector_concentration.map(s => (
+                      <span key={s.sector} className={`text-[10px] px-2 py-0.5 rounded ${
+                        s.count >= 3 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-dark-600 text-dark-300'
+                      }`}>
+                        {s.sector}: {s.count} ({s.pct}%)
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Stop distances */}
+              {riskData.stop_distances?.length > 0 && (
+                <div>
+                  <div className="text-xs text-dark-400 mb-1">Distance to Stop</div>
+                  {riskData.stop_distances.slice(0, 5).map(s => (
+                    <div key={s.ticker} className="flex justify-between text-xs py-0.5">
+                      <span className="font-medium">{s.ticker}</span>
+                      <span className={s.distance_pct < 5 ? 'text-red-400' : 'text-dark-300'}>
+                        {s.distance_pct}% ({s.gain_pct >= 0 ? '+' : ''}{s.gain_pct}%)
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Earnings Calendar */}
+      {earningsCalendar && earningsCalendar.positions?.length > 0 && (
+        <div className="card mb-4 border border-dark-600">
+          <button onClick={() => setEarningsExpanded(!earningsExpanded)} className="w-full flex justify-between items-center">
+            <div className="font-semibold text-sm flex items-center gap-2">
+              Earnings Calendar
+              {earningsCalendar.upcoming_count?.high > 0 && (
+                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">
+                  {earningsCalendar.upcoming_count.high} this week
+                </span>
+              )}
+              {earningsCalendar.upcoming_count?.medium > 0 && (
+                <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">
+                  {earningsCalendar.upcoming_count.medium} next week
+                </span>
+              )}
+            </div>
+            <span className="text-dark-400">{earningsExpanded ? '▼' : '▶'}</span>
+          </button>
+          {earningsExpanded && (
+            <div className="mt-3 space-y-1">
+              {earningsCalendar.positions.map(p => (
+                <div key={p.ticker} className={`flex justify-between items-center py-1.5 px-2 -mx-2 rounded ${
+                  p.risk_level === 'high' ? 'bg-red-500/5' : ''
+                }`}>
+                  <div>
+                    <span className="font-medium text-sm">{p.ticker}</span>
+                    <span className="text-dark-400 text-xs ml-2">
+                      {p.next_earnings_date || `${p.days_to_earnings}d`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-dark-400">{p.beat_streak} beats</span>
+                    <span className={`px-1.5 py-0.5 rounded ${
+                      p.risk_level === 'high' ? 'bg-red-500/20 text-red-400' :
+                      p.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                      'bg-green-500/20 text-green-400'
+                    }`}>
+                      {p.days_to_earnings}d
+                    </span>
+                    <span className={p.gain_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
+                      {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <PerformanceChart
         history={history}
         startingCash={portfolio?.config?.starting_cash || 25000}
@@ -998,6 +1137,16 @@ export default function AIPortfolio() {
       <PositionsList positions={portfolio?.positions} />
 
       <TradeHistory trades={trades} />
+
+      {/* Links */}
+      <div className="flex gap-3 mt-4">
+        <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300">
+          Trade Analytics
+        </Link>
+        <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300">
+          Run Backtest
+        </Link>
+      </div>
 
       <div className="h-4" />
     </div>

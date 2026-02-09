@@ -2,6 +2,7 @@
 Database models for CANSLIM Analyzer Web App
 """
 
+import os
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey, Index, JSON
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from datetime import datetime, date, timezone
@@ -10,9 +11,13 @@ from pathlib import Path
 # Database setup
 DATA_DIR = Path(__file__).parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
-DATABASE_URL = f"sqlite:///{DATA_DIR}/canslim.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Support PostgreSQL via DATABASE_URL env var, fallback to SQLite
+DATABASE_URL = os.environ.get('DATABASE_URL', f"sqlite:///{DATA_DIR}/canslim.db")
+
+# SQLite needs check_same_thread=False; PostgreSQL does not
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -33,55 +38,49 @@ def init_db():
 
 
 def run_migrations():
-    """Add any missing columns to existing tables and fix constraints"""
-    import sqlite3
+    """Add any missing columns to existing tables and fix constraints.
+    Uses SQLAlchemy inspect() for database-agnostic migrations (SQLite + PostgreSQL).
+    """
+    from sqlalchemy import inspect, text
     import logging
-    from pathlib import Path
 
     logger = logging.getLogger(__name__)
 
-    db_path = DATA_DIR / "canslim.db"
-    if not db_path.exists():
-        logger.info("No database yet, skipping migrations")
-        return
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
 
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
+    if not existing_tables:
+        logger.info("No tables yet, skipping migrations")
+        return
 
     # Define column migrations: (table, column, type)
     migrations = [
         ("stocks", "previous_score", "FLOAT"),
         ("stocks", "score_change", "FLOAT"),
-        ("ai_portfolio_snapshots", "timestamp", "DATETIME"),
+        ("ai_portfolio_snapshots", "timestamp", "TIMESTAMP"),
         ("ai_portfolio_snapshots", "prev_value", "FLOAT"),
         ("ai_portfolio_snapshots", "value_change", "FLOAT"),
         ("ai_portfolio_snapshots", "value_change_pct", "FLOAT"),
-        # StockScore enhancements for backtesting
-        ("stock_scores", "timestamp", "DATETIME"),
+        ("stock_scores", "timestamp", "TIMESTAMP"),
         ("stock_scores", "week_52_high", "FLOAT"),
-        # Growth Mode Scoring
         ("stocks", "growth_mode_score", "FLOAT"),
-        ("stocks", "growth_mode_details", "TEXT"),  # JSON stored as TEXT in SQLite
+        ("stocks", "growth_mode_details", "TEXT"),
         ("stocks", "is_growth_stock", "BOOLEAN"),
-        # Enhanced Earnings Analysis
         ("stocks", "eps_acceleration", "BOOLEAN"),
         ("stocks", "earnings_surprise_pct", "FLOAT"),
         ("stocks", "revenue_growth_pct", "FLOAT"),
-        # Technical Analysis
         ("stocks", "volume_ratio", "FLOAT"),
         ("stocks", "weeks_in_base", "INTEGER"),
         ("stocks", "base_type", "TEXT"),
         ("stocks", "pivot_price", "FLOAT"),
         ("stocks", "is_breaking_out", "BOOLEAN"),
         ("stocks", "breakout_volume_ratio", "FLOAT"),
-        # AI Portfolio Growth Mode support
-        ("ai_portfolio_positions", "is_growth_stock", "BOOLEAN DEFAULT 0"),
+        ("ai_portfolio_positions", "is_growth_stock", "BOOLEAN DEFAULT FALSE"),
         ("ai_portfolio_positions", "purchase_growth_score", "FLOAT"),
         ("ai_portfolio_positions", "current_growth_score", "FLOAT"),
         ("ai_portfolio_trades", "growth_mode_score", "FLOAT"),
-        ("ai_portfolio_trades", "is_growth_stock", "BOOLEAN DEFAULT 0"),
-        # Multi-index market direction
-        ("market_snapshots", "timestamp", "DATETIME"),
+        ("ai_portfolio_trades", "is_growth_stock", "BOOLEAN DEFAULT FALSE"),
+        ("market_snapshots", "timestamp", "TIMESTAMP"),
         ("market_snapshots", "spy_signal", "INTEGER"),
         ("market_snapshots", "qqq_price", "FLOAT"),
         ("market_snapshots", "qqq_50_ma", "FLOAT"),
@@ -92,153 +91,143 @@ def run_migrations():
         ("market_snapshots", "dia_200_ma", "FLOAT"),
         ("market_snapshots", "dia_signal", "INTEGER"),
         ("market_snapshots", "weighted_signal", "FLOAT"),
-        # Trailing stop loss tracking (AI Portfolio)
         ("ai_portfolio_positions", "peak_price", "FLOAT"),
-        ("ai_portfolio_positions", "peak_date", "DATETIME"),
-        # Insider trading signals
+        ("ai_portfolio_positions", "peak_date", "TIMESTAMP"),
         ("stocks", "insider_buy_count", "INTEGER"),
         ("stocks", "insider_sell_count", "INTEGER"),
         ("stocks", "insider_net_shares", "FLOAT"),
         ("stocks", "insider_sentiment", "TEXT"),
-        ("stocks", "insider_updated_at", "DATETIME"),
-        # Short interest tracking
+        ("stocks", "insider_updated_at", "TIMESTAMP"),
         ("stocks", "short_interest_pct", "FLOAT"),
         ("stocks", "short_ratio", "FLOAT"),
-        ("stocks", "short_updated_at", "DATETIME"),
-        # Score details for clickable breakdown
-        ("stocks", "score_details", "TEXT"),  # JSON stored as TEXT in SQLite
-        # Earnings/Revenue JSON columns
-        ("stocks", "quarterly_earnings", "TEXT"),  # JSON stored as TEXT
-        ("stocks", "annual_earnings", "TEXT"),  # JSON stored as TEXT
-        ("stocks", "quarterly_revenue", "TEXT"),  # JSON stored as TEXT
-        # Backtest cancellation support
-        ("backtest_runs", "cancel_requested", "BOOLEAN DEFAULT 0"),
-        # Relative Strength for momentum confirmation (Feb 2026)
+        ("stocks", "short_updated_at", "TIMESTAMP"),
+        ("stocks", "score_details", "TEXT"),
+        ("stocks", "quarterly_earnings", "TEXT"),
+        ("stocks", "annual_earnings", "TEXT"),
+        ("stocks", "quarterly_revenue", "TEXT"),
+        ("backtest_runs", "cancel_requested", "BOOLEAN DEFAULT FALSE"),
         ("stocks", "rs_12m", "FLOAT"),
         ("stocks", "rs_3m", "FLOAT"),
-        # Partial profit taking tracking (Feb 2026)
         ("ai_portfolio_positions", "partial_profit_taken", "FLOAT DEFAULT 0"),
-        # Earnings Calendar (Feb 2026)
         ("stocks", "next_earnings_date", "DATE"),
         ("stocks", "days_to_earnings", "INTEGER"),
         ("stocks", "earnings_beat_streak", "INTEGER"),
-        ("stocks", "earnings_calendar_updated_at", "DATETIME"),
-        # Analyst Estimate Revisions (Feb 2026)
+        ("stocks", "earnings_calendar_updated_at", "TIMESTAMP"),
         ("stocks", "eps_estimate_current", "FLOAT"),
         ("stocks", "eps_estimate_prior", "FLOAT"),
         ("stocks", "eps_estimate_revision_pct", "FLOAT"),
         ("stocks", "estimate_revision_trend", "TEXT"),
-        ("stocks", "analyst_estimates_updated_at", "DATETIME"),
-        # Insider Value Tracking (Feb 2026)
+        ("stocks", "analyst_estimates_updated_at", "TIMESTAMP"),
         ("stocks", "insider_buy_value", "FLOAT"),
         ("stocks", "insider_sell_value", "FLOAT"),
         ("stocks", "insider_net_value", "FLOAT"),
         ("stocks", "insider_largest_buy", "FLOAT"),
         ("stocks", "insider_largest_buyer_title", "TEXT"),
-        # P1 Cache Fields (Feb 2026) - StockDataCache
         ("stock_data_cache", "next_earnings_date", "DATE"),
         ("stock_data_cache", "days_to_earnings", "INTEGER"),
         ("stock_data_cache", "earnings_beat_streak", "INTEGER"),
-        ("stock_data_cache", "earnings_calendar_updated_at", "DATETIME"),
+        ("stock_data_cache", "earnings_calendar_updated_at", "TIMESTAMP"),
         ("stock_data_cache", "eps_estimate_current", "FLOAT"),
         ("stock_data_cache", "eps_estimate_prior", "FLOAT"),
         ("stock_data_cache", "eps_estimate_revision_pct", "FLOAT"),
-        ("stock_data_cache", "analyst_estimates_updated_at", "DATETIME"),
+        ("stock_data_cache", "analyst_estimates_updated_at", "TIMESTAMP"),
         ("stock_data_cache", "short_interest_pct", "FLOAT"),
         ("stock_data_cache", "short_ratio", "FLOAT"),
-        ("stock_data_cache", "short_updated_at", "DATETIME"),
-        # Volume Profile Analysis (Feb 2026)
-        ("stocks", "volume_dry_up", "BOOLEAN DEFAULT 0"),
-        ("stocks", "institutional_accumulation", "BOOLEAN DEFAULT 0"),
-        # Pyramid count tracking (Feb 2026 - O'Neil 60/40 sizing)
+        ("stock_data_cache", "short_updated_at", "TIMESTAMP"),
+        ("stocks", "volume_dry_up", "BOOLEAN DEFAULT FALSE"),
+        ("stocks", "institutional_accumulation", "BOOLEAN DEFAULT FALSE"),
         ("ai_portfolio_positions", "pyramid_count", "INTEGER DEFAULT 0"),
-        # Peak portfolio value for drawdown circuit breaker (Feb 2026)
         ("ai_portfolio_config", "peak_portfolio_value", "FLOAT DEFAULT 0"),
-        # Trade Journal / Performance Attribution (Feb 2026)
-        ("backtest_trades", "signal_factors", "TEXT"),  # JSON: which factors drove the trade
-        ("ai_portfolio_trades", "signal_factors", "TEXT"),  # JSON: which factors drove the trade
+        ("backtest_trades", "signal_factors", "TEXT"),
+        ("ai_portfolio_trades", "signal_factors", "TEXT"),
+        # Paper Trading Mode (Feb 2026)
+        ("ai_portfolio_config", "paper_mode", "BOOLEAN DEFAULT FALSE"),
+        ("ai_portfolio_trades", "is_paper", "BOOLEAN DEFAULT FALSE"),
     ]
 
-    for table, column, col_type in migrations:
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-            logger.info(f"Migration: Added {table}.{column}")
-        except sqlite3.OperationalError:
-            pass
+    # Build a cache of existing columns per table
+    columns_cache = {}
+    for table_name in set(t for t, _, _ in migrations):
+        if table_name in existing_tables:
+            columns_cache[table_name] = {c['name'] for c in inspector.get_columns(table_name)}
+        else:
+            columns_cache[table_name] = set()
 
-    # Create indexes for performance (Feb 2026)
-    indexes = [
-        ("ix_stocks_breaking_out", "stocks", "is_breaking_out, canslim_score"),
-        ("ix_stocks_growth", "stocks", "is_growth_stock, growth_mode_score"),
-    ]
-    for idx_name, table, columns in indexes:
-        try:
-            cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({columns})")
-            logger.info(f"Migration: Created index {idx_name}")
-        except sqlite3.OperationalError as e:
-            logger.debug(f"Index {idx_name} already exists or failed: {e}")
+    with engine.begin() as conn:
+        for table, column, col_type in migrations:
+            if table not in existing_tables:
+                continue
+            if column in columns_cache.get(table, set()):
+                continue
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                logger.info(f"Migration: Added {table}.{column}")
+            except Exception:
+                pass
 
-    conn.commit()
+    # Fix: Remove unique constraint on ai_portfolio_snapshots.date (SQLite only)
+    is_sqlite = DATABASE_URL.startswith("sqlite")
+    if is_sqlite and "ai_portfolio_snapshots" in existing_tables:
+        import sqlite3
+        db_path = DATA_DIR / "canslim.db"
+        if db_path.exists():
+            sqlite_conn = sqlite3.connect(str(db_path))
+            cursor = sqlite_conn.cursor()
 
-    # Fix: Remove unique constraint on ai_portfolio_snapshots.date
-    # Check if the old unique index exists
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='ix_ai_portfolio_snapshots_date' AND sql LIKE '%UNIQUE%'")
-    has_unique = cursor.fetchone()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='ix_ai_portfolio_snapshots_date' AND sql LIKE '%UNIQUE%'")
+            has_unique = cursor.fetchone()
 
-    # Also check for implicit unique constraint in table definition
-    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_portfolio_snapshots'")
-    table_sql = cursor.fetchone()
-    needs_rebuild = has_unique or (table_sql and 'UNIQUE' in table_sql[0] and 'date' in table_sql[0].lower())
+            cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_portfolio_snapshots'")
+            table_sql = cursor.fetchone()
+            needs_rebuild = has_unique or (table_sql and 'UNIQUE' in table_sql[0] and 'date' in table_sql[0].lower())
 
-    if needs_rebuild:
-        logger.info("Rebuilding ai_portfolio_snapshots table to remove unique constraint on date")
-        try:
-            # Create new table without unique constraint
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ai_portfolio_snapshots_new (
-                    id INTEGER PRIMARY KEY,
-                    timestamp DATETIME,
-                    total_value FLOAT NOT NULL,
-                    cash FLOAT NOT NULL,
-                    positions_value FLOAT NOT NULL,
-                    positions_count INTEGER NOT NULL,
-                    total_return FLOAT,
-                    total_return_pct FLOAT,
-                    prev_value FLOAT,
-                    value_change FLOAT,
-                    value_change_pct FLOAT,
-                    date DATE
-                )
-            ''')
+            if needs_rebuild:
+                logger.info("Rebuilding ai_portfolio_snapshots table to remove unique constraint on date")
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS ai_portfolio_snapshots_new (
+                            id INTEGER PRIMARY KEY,
+                            timestamp DATETIME,
+                            total_value FLOAT NOT NULL,
+                            cash FLOAT NOT NULL,
+                            positions_value FLOAT NOT NULL,
+                            positions_count INTEGER NOT NULL,
+                            total_return FLOAT,
+                            total_return_pct FLOAT,
+                            prev_value FLOAT,
+                            value_change FLOAT,
+                            value_change_pct FLOAT,
+                            date DATE
+                        )
+                    ''')
 
-            # Get existing columns from old table
-            cursor.execute('PRAGMA table_info(ai_portfolio_snapshots)')
-            old_cols = [row[1] for row in cursor.fetchall()]
+                    cursor.execute('PRAGMA table_info(ai_portfolio_snapshots)')
+                    old_cols = [row[1] for row in cursor.fetchall()]
 
-            # Only copy columns that exist in both tables
-            new_cols = ['id', 'timestamp', 'total_value', 'cash', 'positions_value', 'positions_count',
-                        'total_return', 'total_return_pct', 'prev_value', 'value_change', 'value_change_pct', 'date']
-            common_cols = [c for c in new_cols if c in old_cols]
-            cols_str = ', '.join(common_cols)
+                    new_cols = ['id', 'timestamp', 'total_value', 'cash', 'positions_value', 'positions_count',
+                                'total_return', 'total_return_pct', 'prev_value', 'value_change', 'value_change_pct', 'date']
+                    common_cols = [c for c in new_cols if c in old_cols]
+                    cols_str = ', '.join(common_cols)
 
-            cursor.execute(f'''
-                INSERT INTO ai_portfolio_snapshots_new ({cols_str})
-                SELECT {cols_str} FROM ai_portfolio_snapshots
-            ''')
+                    cursor.execute(f'''
+                        INSERT INTO ai_portfolio_snapshots_new ({cols_str})
+                        SELECT {cols_str} FROM ai_portfolio_snapshots
+                    ''')
 
-            # Drop old table and rename new
-            cursor.execute('DROP TABLE ai_portfolio_snapshots')
-            cursor.execute('ALTER TABLE ai_portfolio_snapshots_new RENAME TO ai_portfolio_snapshots')
+                    cursor.execute('DROP TABLE ai_portfolio_snapshots')
+                    cursor.execute('ALTER TABLE ai_portfolio_snapshots_new RENAME TO ai_portfolio_snapshots')
 
-            # Recreate indexes (non-unique)
-            cursor.execute('CREATE INDEX IF NOT EXISTS ix_ai_portfolio_snapshots_timestamp ON ai_portfolio_snapshots(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS ix_ai_portfolio_snapshots_date ON ai_portfolio_snapshots(date)')
+                    cursor.execute('CREATE INDEX IF NOT EXISTS ix_ai_portfolio_snapshots_timestamp ON ai_portfolio_snapshots(timestamp)')
+                    cursor.execute('CREATE INDEX IF NOT EXISTS ix_ai_portfolio_snapshots_date ON ai_portfolio_snapshots(date)')
 
-            logger.info("Successfully rebuilt ai_portfolio_snapshots table")
-        except Exception as e:
-            logger.error(f"Failed to rebuild ai_portfolio_snapshots: {e}")
+                    logger.info("Successfully rebuilt ai_portfolio_snapshots table")
+                except Exception as e:
+                    logger.error(f"Failed to rebuild ai_portfolio_snapshots: {e}")
 
-    # Create indexes that may not exist on older databases
+            sqlite_conn.commit()
+            sqlite_conn.close()
+
+    # Create indexes (database-agnostic)
     index_migrations = [
         ('ix_stocks_sector', 'stocks', 'sector'),
         ('ix_stocks_canslim', 'stocks', 'canslim_score'),
@@ -247,28 +236,27 @@ def run_migrations():
         ('ix_stock_scores_stock_date', 'stock_scores', 'stock_id, date'),
         ('ix_stock_scores_stock_timestamp', 'stock_scores', 'stock_id, timestamp'),
         ('ix_stocks_growth_mode', 'stocks', 'growth_mode_score'),
-        ('ix_stocks_breaking_out', 'stocks', 'is_breaking_out'),
-        # Backtest indexes
+        ('ix_stocks_breaking_out_idx', 'stocks', 'is_breaking_out'),
         ('ix_backtest_runs_status', 'backtest_runs', 'status'),
         ('ix_backtest_snapshots_backtest_date', 'backtest_snapshots', 'backtest_id, date'),
         ('ix_backtest_trades_backtest_date', 'backtest_trades', 'backtest_id, date'),
         ('ix_backtest_positions_backtest', 'backtest_positions', 'backtest_id'),
-        # Coiled Spring indexes
         ('ix_coiled_spring_alerts_ticker_date', 'coiled_spring_alerts', 'ticker, alert_date'),
         ('ix_coiled_spring_alerts_date', 'coiled_spring_alerts', 'alert_date'),
-        # Performance indexes for common query patterns (Feb 2026)
         ('ix_stocks_cs_candidates', 'stocks',
          'days_to_earnings, weeks_in_base, earnings_beat_streak, canslim_score'),
         ('ix_stocks_earnings', 'stocks', 'days_to_earnings, canslim_score'),
     ]
-    for idx_name, table, columns in index_migrations:
-        try:
-            cursor.execute(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})')
-        except sqlite3.OperationalError:
-            pass
 
-    conn.commit()
-    conn.close()
+    with engine.begin() as conn:
+        for idx_name, table, columns in index_migrations:
+            if table not in existing_tables:
+                continue
+            try:
+                conn.execute(text(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})'))
+            except Exception:
+                pass
+
     logger.info("Database migrations complete")
 
 

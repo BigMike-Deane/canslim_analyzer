@@ -2660,7 +2660,8 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
             "sell_score_threshold": config.sell_score_threshold,
             "take_profit_pct": config.take_profit_pct,
             "stop_loss_pct": config.stop_loss_pct,
-            "is_active": config.is_active
+            "is_active": config.is_active,
+            "paper_mode": getattr(config, 'paper_mode', False) or False,
         },
         "summary": portfolio,
         "positions": positions_data
@@ -2824,43 +2825,6 @@ async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(run_cycle_background)
     return {"status": "started", "message": "Trading cycle started in background. Refresh page in 15-20 seconds."}
-
-
-@app.patch("/api/ai-portfolio/config")
-async def update_ai_portfolio_config(
-    is_active: bool = Query(None),
-    min_score_to_buy: int = Query(None, ge=50, le=100),
-    sell_score_threshold: int = Query(None, ge=20, le=80),
-    take_profit_pct: float = Query(None, ge=10, le=100),
-    stop_loss_pct: float = Query(None, ge=5, le=50),
-    db: Session = Depends(get_db)
-):
-    """Update AI Portfolio configuration"""
-    config = get_or_create_config(db)
-
-    if is_active is not None:
-        config.is_active = is_active
-    if min_score_to_buy is not None:
-        config.min_score_to_buy = min_score_to_buy
-    if sell_score_threshold is not None:
-        config.sell_score_threshold = sell_score_threshold
-    if take_profit_pct is not None:
-        config.take_profit_pct = take_profit_pct
-    if stop_loss_pct is not None:
-        config.stop_loss_pct = stop_loss_pct
-
-    db.commit()
-
-    return {
-        "message": "Config updated",
-        "config": {
-            "is_active": config.is_active,
-            "min_score_to_buy": config.min_score_to_buy,
-            "sell_score_threshold": config.sell_score_threshold,
-            "take_profit_pct": config.take_profit_pct,
-            "stop_loss_pct": config.stop_loss_pct
-        }
-    }
 
 
 # ============== Watchlist ==============
@@ -3100,6 +3064,152 @@ async def list_backtests(
     ]
 
 
+BACKTEST_PRESETS = [
+    {"name": "2022 Bear Market", "start": "2022-01-01", "end": "2022-12-31", "desc": "S&P 500 -19.4%"},
+    {"name": "2020 COVID Crash", "start": "2020-02-01", "end": "2020-12-31", "desc": "V-shaped recovery"},
+    {"name": "2023-24 Recovery", "start": "2023-01-01", "end": "2024-01-01", "desc": "AI-led rally"},
+    {"name": "2024-25 Bull", "start": "2024-01-01", "end": "2025-01-01", "desc": "Broadening market"},
+    {"name": "Full Year 2025", "start": "2025-01-01", "end": "2026-01-01", "desc": "Recent performance"},
+]
+
+
+@app.get("/api/backtests/compare")
+async def compare_backtests(
+    ids: str = Query(..., description="Comma-separated backtest IDs"),
+    db: Session = Depends(get_db)
+):
+    """Compare 2+ backtests side-by-side with overlaid equity curves"""
+    try:
+        bt_ids = [int(x.strip()) for x in ids.split(",")]
+    except ValueError:
+        raise HTTPException(400, "ids must be comma-separated integers")
+
+    if len(bt_ids) < 2:
+        raise HTTPException(400, "Need at least 2 backtest IDs to compare")
+
+    backtests_data = []
+    all_dates = set()
+
+    for bt_id in bt_ids:
+        bt = db.query(BacktestRun).get(bt_id)
+        if not bt or bt.status != "completed":
+            continue
+
+        snapshots = db.query(BacktestSnapshot).filter(
+            BacktestSnapshot.backtest_id == bt_id
+        ).order_by(BacktestSnapshot.date).all()
+
+        bt_info = {
+            "id": bt.id, "name": bt.name,
+            "total_return_pct": bt.total_return_pct,
+            "spy_return_pct": bt.spy_return_pct,
+            "max_drawdown_pct": bt.max_drawdown_pct,
+            "sharpe_ratio": bt.sharpe_ratio,
+            "win_rate": bt.win_rate,
+            "total_trades": bt.total_trades,
+            "start_date": bt.start_date.isoformat() if bt.start_date else None,
+            "end_date": bt.end_date.isoformat() if bt.end_date else None,
+        }
+        bt_info["snapshots"] = {s.date.isoformat(): s.cumulative_return_pct for s in snapshots}
+        backtests_data.append(bt_info)
+
+        for s in snapshots:
+            all_dates.add(s.date.isoformat())
+
+    if len(backtests_data) < 2:
+        raise HTTPException(400, "Need at least 2 completed backtests")
+
+    # Build chart data
+    sorted_dates = sorted(all_dates)
+    chart_data = []
+    for d in sorted_dates:
+        point = {"date": d}
+        for bt in backtests_data:
+            point[f"bt_{bt['id']}_return"] = bt["snapshots"].get(d)
+        # Use SPY from first backtest
+        if backtests_data[0]["snapshots"].get(d) is not None:
+            first_bt_id = backtests_data[0]["id"]
+            first_snaps = db.query(BacktestSnapshot).filter(
+                BacktestSnapshot.backtest_id == first_bt_id,
+                BacktestSnapshot.date == d
+            ).first()
+            point["spy_return"] = first_snaps.spy_return_pct if first_snaps else None
+        chart_data.append(point)
+
+    stat_keys = ["total_return_pct", "spy_return_pct", "max_drawdown_pct", "sharpe_ratio", "win_rate", "total_trades"]
+    stats_table = {}
+    for key in stat_keys:
+        stats_table[key] = [bt.get(key) for bt in backtests_data]
+
+    for bt in backtests_data:
+        del bt["snapshots"]
+
+    return {
+        "backtests": backtests_data,
+        "chart_data": chart_data,
+        "stats_table": stats_table
+    }
+
+
+@app.get("/api/backtests/presets")
+async def get_backtest_presets():
+    """Get preset backtest periods for multi-period testing"""
+    return BACKTEST_PRESETS
+
+
+@app.post("/api/backtests/multi")
+async def create_multi_backtest(
+    background_tasks: BackgroundTasks,
+    starting_cash: float = Query(25000.0, ge=1000, le=1000000),
+    stock_universe: str = Query("all"),
+    db: Session = Depends(get_db)
+):
+    """Launch backtests for all preset periods simultaneously"""
+    from backend.backtester import run_backtest
+
+    created_ids = []
+    for preset in BACKTEST_PRESETS:
+        bt = BacktestRun(
+            name=preset["name"],
+            status="pending",
+            start_date=datetime.strptime(preset["start"], "%Y-%m-%d").date(),
+            end_date=datetime.strptime(preset["end"], "%Y-%m-%d").date(),
+            starting_cash=starting_cash,
+            stock_universe=stock_universe,
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(bt)
+        db.flush()
+        created_ids.append(bt.id)
+
+        def run_in_background(bt_id=bt.id, start=preset["start"], end=preset["end"]):
+            from backend.database import SessionLocal
+            bg_db = SessionLocal()
+            try:
+                run_backtest(
+                    db=bg_db,
+                    backtest_id=bt_id,
+                    start_date=start,
+                    end_date=end,
+                    starting_cash=starting_cash,
+                    stock_universe=stock_universe
+                )
+            except Exception as e:
+                logger.error(f"Multi-backtest {bt_id} failed: {e}")
+                bt_obj = bg_db.query(BacktestRun).get(bt_id)
+                if bt_obj:
+                    bt_obj.status = "failed"
+                    bt_obj.error_message = str(e)[:500]
+                    bg_db.commit()
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(run_in_background)
+
+    db.commit()
+    return {"message": f"Started {len(created_ids)} backtests", "backtest_ids": created_ids}
+
+
 @app.get("/api/backtests/{backtest_id}")
 async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
     """Get detailed backtest results including performance chart data"""
@@ -3245,6 +3355,260 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
             "id": backtest.id,
             "status": backtest.status
         }
+
+
+# ============== Trade Analytics ==============
+
+@app.get("/api/analytics/trades")
+async def get_trade_analytics(db: Session = Depends(get_db)):
+    """Analyze historical trade performance with breakdowns"""
+    trades = db.query(AIPortfolioTrade).all()
+
+    if not trades:
+        return {"summary": {}, "by_sector": [], "monthly_pnl": [], "by_entry_type": []}
+
+    sells = [t for t in trades if t.action == "SELL"]
+    buys = [t for t in trades if t.action == "BUY"]
+
+    # Summary stats
+    wins = [t for t in sells if (t.realized_gain or 0) > 0]
+    losses = [t for t in sells if (t.realized_gain or 0) < 0]
+    total_gains = sum(t.realized_gain or 0 for t in wins)
+    total_losses = abs(sum(t.realized_gain or 0 for t in losses))
+
+    summary = {
+        "total_trades": len(trades),
+        "total_buys": len(buys),
+        "total_sells": len(sells),
+        "win_rate": (len(wins) / len(sells) * 100) if sells else 0,
+        "avg_gain_pct": sum(((t.price / t.cost_basis - 1) * 100) if t.cost_basis and t.cost_basis > 0 else 0 for t in wins) / max(1, len(wins)),
+        "avg_loss_pct": sum(((t.price / t.cost_basis - 1) * 100) if t.cost_basis and t.cost_basis > 0 else 0 for t in losses) / max(1, len(losses)),
+        "profit_factor": (total_gains / total_losses) if total_losses > 0 else float('inf') if total_gains > 0 else 0,
+        "total_realized": sum(t.realized_gain or 0 for t in sells),
+    }
+
+    # By sector
+    sector_data = {}
+    for t in sells:
+        stock = db.query(Stock).filter(Stock.ticker == t.ticker).first()
+        sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
+        if sector not in sector_data:
+            sector_data[sector] = {"trades": 0, "wins": 0, "pnl": 0}
+        sector_data[sector]["trades"] += 1
+        sector_data[sector]["pnl"] += t.realized_gain or 0
+        if (t.realized_gain or 0) > 0:
+            sector_data[sector]["wins"] += 1
+
+    by_sector = [
+        {"sector": s, "trades": d["trades"],
+         "win_rate": (d["wins"] / d["trades"] * 100) if d["trades"] > 0 else 0,
+         "pnl": d["pnl"]}
+        for s, d in sorted(sector_data.items(), key=lambda x: x[1]["pnl"], reverse=True)
+    ]
+
+    # Monthly P&L
+    monthly = {}
+    for t in sells:
+        if t.executed_at:
+            month_key = t.executed_at.strftime("%Y-%m")
+            if month_key not in monthly:
+                monthly[month_key] = {"month": month_key, "pnl": 0, "trades": 0}
+            monthly[month_key]["pnl"] += t.realized_gain or 0
+            monthly[month_key]["trades"] += 1
+
+    monthly_pnl = sorted(monthly.values(), key=lambda x: x["month"])
+
+    # By entry type (from signal_factors)
+    entry_types = {}
+    for t in sells:
+        factors = t.signal_factors if hasattr(t, 'signal_factors') and t.signal_factors else {}
+        entry_type = factors.get("entry_type", "unknown") if isinstance(factors, dict) else "unknown"
+        if entry_type not in entry_types:
+            entry_types[entry_type] = {"trades": 0, "wins": 0, "pnl": 0}
+        entry_types[entry_type]["trades"] += 1
+        entry_types[entry_type]["pnl"] += t.realized_gain or 0
+        if (t.realized_gain or 0) > 0:
+            entry_types[entry_type]["wins"] += 1
+
+    by_entry_type = [
+        {"entry_type": et, "trades": d["trades"],
+         "win_rate": (d["wins"] / d["trades"] * 100) if d["trades"] > 0 else 0,
+         "pnl": d["pnl"]}
+        for et, d in sorted(entry_types.items(), key=lambda x: x[1]["pnl"], reverse=True)
+    ]
+
+    return {
+        "summary": summary,
+        "by_sector": by_sector,
+        "monthly_pnl": monthly_pnl,
+        "by_entry_type": by_entry_type
+    }
+
+
+# ============== Earnings Calendar ==============
+
+@app.get("/api/ai-portfolio/earnings-calendar")
+async def get_earnings_calendar(db: Session = Depends(get_db)):
+    """Get upcoming earnings dates for AI portfolio positions"""
+    from backend.ai_trader import get_or_create_config
+    config = get_or_create_config(db)
+    positions = db.query(AIPortfolioPosition).all()
+
+    earnings_data = []
+    counts = {"high": 0, "medium": 0, "low": 0}
+
+    for pos in positions:
+        stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+        if not stock:
+            continue
+
+        days = stock.days_to_earnings
+        if days is None:
+            continue
+
+        if days < 7:
+            risk = "high"
+        elif days <= 14:
+            risk = "medium"
+        else:
+            risk = "low"
+
+        counts[risk] += 1
+        gain_pct = ((pos.current_price / pos.cost_basis) - 1) * 100 if pos.cost_basis and pos.cost_basis > 0 else 0
+
+        earnings_data.append({
+            "ticker": pos.ticker,
+            "days_to_earnings": days,
+            "next_earnings_date": stock.next_earnings_date.isoformat() if stock.next_earnings_date else None,
+            "beat_streak": stock.earnings_beat_streak or 0,
+            "risk_level": risk,
+            "gain_pct": round(gain_pct, 1),
+            "current_price": pos.current_price,
+            "shares": pos.shares,
+        })
+
+    # Sort by days to earnings (soonest first)
+    earnings_data.sort(key=lambda x: x["days_to_earnings"])
+
+    return {
+        "positions": earnings_data,
+        "upcoming_count": counts
+    }
+
+
+# ============== Portfolio Risk Monitor ==============
+
+@app.get("/api/ai-portfolio/risk")
+async def get_portfolio_risk(db: Session = Depends(get_db)):
+    """Get current portfolio risk metrics"""
+    from backend.ai_trader import get_or_create_config, get_portfolio_value
+    from config_loader import config as yaml_config
+
+    config = get_or_create_config(db)
+    portfolio = get_portfolio_value(db)
+    positions = db.query(AIPortfolioPosition).all()
+    pv = portfolio["total_value"]
+
+    # Calculate portfolio heat
+    stop_cfg = yaml_config.get('ai_trader.stops', {})
+    base_stop = stop_cfg.get('normal_stop_loss_pct', 8.0)
+    total_heat = 0.0
+    stop_distances = []
+
+    for pos in positions:
+        if pos.current_price and pos.current_price > 0 and pos.cost_basis and pos.cost_basis > 0 and pv > 0:
+            pos_pct = ((pos.current_value or 0) / pv) * 100
+            g_pct = ((pos.current_price - pos.cost_basis) / pos.cost_basis) * 100
+            dist = base_stop + g_pct
+            total_heat += pos_pct * (dist / 100)
+            stop_distances.append({
+                "ticker": pos.ticker,
+                "distance_pct": round(dist, 1),
+                "gain_pct": round(g_pct, 1),
+                "position_pct": round(pos_pct, 1),
+            })
+
+    heat_status = "normal" if total_heat < 10 else ("warning" if total_heat < 15 else "danger")
+
+    # Sector concentration
+    sector_data = {}
+    for pos in positions:
+        stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+        sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
+        if sector not in sector_data:
+            sector_data[sector] = {"count": 0, "value": 0}
+        sector_data[sector]["count"] += 1
+        sector_data[sector]["value"] += pos.current_value or 0
+
+    sector_concentration = [
+        {"sector": s, "count": d["count"], "pct": round((d["value"] / pv * 100) if pv > 0 else 0, 1)}
+        for s, d in sorted(sector_data.items(), key=lambda x: x[1]["value"], reverse=True)
+    ]
+
+    # Position size alerts
+    max_pos_pct = config.max_position_pct or 25.0
+    position_alerts = []
+    for pos in positions:
+        if pv > 0:
+            pos_pct = ((pos.current_value or 0) / pv) * 100
+            if pos_pct > max_pos_pct * 0.9:
+                position_alerts.append({
+                    "ticker": pos.ticker,
+                    "pct": round(pos_pct, 1),
+                    "near_limit": True
+                })
+
+    return {
+        "portfolio_heat": round(total_heat, 1),
+        "heat_status": heat_status,
+        "sector_concentration": sector_concentration,
+        "position_alerts": position_alerts,
+        "stop_distances": sorted(stop_distances, key=lambda x: x["distance_pct"]),
+    }
+
+
+# ============== Paper Trading Mode ==============
+
+@app.patch("/api/ai-portfolio/config")
+async def update_ai_portfolio_config_v2(
+    is_active: bool = Query(None),
+    min_score_to_buy: int = Query(None, ge=50, le=100),
+    sell_score_threshold: int = Query(None, ge=20, le=80),
+    take_profit_pct: float = Query(None, ge=10, le=100),
+    stop_loss_pct: float = Query(None, ge=5, le=50),
+    paper_mode: bool = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Update AI Portfolio configuration including paper mode"""
+    from backend.ai_trader import get_or_create_config
+    config = get_or_create_config(db)
+
+    if is_active is not None:
+        config.is_active = is_active
+    if min_score_to_buy is not None:
+        config.min_score_to_buy = min_score_to_buy
+    if sell_score_threshold is not None:
+        config.sell_score_threshold = sell_score_threshold
+    if take_profit_pct is not None:
+        config.take_profit_pct = take_profit_pct
+    if stop_loss_pct is not None:
+        config.stop_loss_pct = stop_loss_pct
+    if paper_mode is not None:
+        config.paper_mode = paper_mode
+
+    db.commit()
+
+    return {
+        "message": "Config updated",
+        "config": {
+            "is_active": config.is_active,
+            "min_score_to_buy": config.min_score_to_buy,
+            "sell_score_threshold": config.sell_score_threshold,
+            "take_profit_pct": config.take_profit_pct,
+            "stop_loss_pct": config.stop_loss_pct,
+            "paper_mode": getattr(config, 'paper_mode', False) or False,
+        }
+    }
 
 
 # ============== Serve Frontend ==============

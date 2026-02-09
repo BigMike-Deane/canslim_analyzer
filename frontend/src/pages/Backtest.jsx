@@ -146,13 +146,104 @@ function BacktestForm({ onSubmit, isLoading }) {
   )
 }
 
-function BacktestList({ backtests, onSelect, onDelete, onCancel }) {
+function ComparisonView({ comparison, onClose }) {
+  if (!comparison) return null
+
+  const { backtests, chart_data, stats_table } = comparison
+  const colors = ['#34c759', '#5ac8fa', '#ff9500', '#ff3b30', '#af52de']
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold">Backtest Comparison</h2>
+        <button onClick={onClose} className="text-dark-400 hover:text-white">Close</button>
+      </div>
+
+      {/* Overlaid chart */}
+      <div className="card">
+        <div className="text-dark-400 text-xs mb-2">Return % Over Time</div>
+        <div className="h-52">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chart_data}>
+              {backtests.map((bt, i) => (
+                <Line
+                  key={bt.id}
+                  type="monotone"
+                  dataKey={`bt_${bt.id}_return`}
+                  name={bt.name}
+                  stroke={colors[i % colors.length]}
+                  strokeWidth={2}
+                  dot={false}
+                  connectNulls
+                />
+              ))}
+              <Line type="monotone" dataKey="spy_return" name="SPY" stroke="#8e8e93" strokeWidth={1} strokeDasharray="5 5" dot={false} connectNulls />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8e8e93' }} tickFormatter={(d) => { const p = d.split('-'); return `${p[1]}/${p[2]}` }} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 10, fill: '#8e8e93' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} />
+              <Tooltip contentStyle={{ background: '#2c2c2e', border: 'none', borderRadius: '8px' }} formatter={(v, n) => [`${v?.toFixed(2)}%`, n]} />
+              <Legend />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Stats comparison table */}
+      <div className="card overflow-x-auto">
+        <h3 className="text-sm font-bold mb-3">Stats Comparison</h3>
+        <table className="w-full text-sm">
+          <thead className="text-dark-400 text-xs">
+            <tr>
+              <th className="text-left py-2">Metric</th>
+              {backtests.map((bt) => <th key={bt.id} className="text-right py-2">{bt.name}</th>)}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-dark-700">
+            {[
+              ['Return', 'total_return_pct', (v) => `${v >= 0 ? '+' : ''}${v?.toFixed(1)}%`, true],
+              ['SPY Return', 'spy_return_pct', (v) => `${v >= 0 ? '+' : ''}${v?.toFixed(1)}%`, false],
+              ['Max Drawdown', 'max_drawdown_pct', (v) => `-${v?.toFixed(1)}%`, false],
+              ['Sharpe', 'sharpe_ratio', (v) => v?.toFixed(2), true],
+              ['Win Rate', 'win_rate', (v) => `${v?.toFixed(0)}%`, true],
+              ['Trades', 'total_trades', (v) => v, false],
+            ].map(([label, key, fmt, highlight]) => {
+              const values = stats_table[key] || []
+              const best = highlight ? Math.max(...values.filter(v => v != null)) : null
+              return (
+                <tr key={key} className="hover:bg-dark-700">
+                  <td className="py-2 text-dark-400">{label}</td>
+                  {values.map((v, i) => (
+                    <td key={i} className={`text-right py-2 font-medium ${highlight && v === best ? 'text-green-400' : ''}`}>
+                      {v != null ? fmt(v) : 'N/A'}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
+  const [selected, setSelected] = useState(new Set())
+
   if (!backtests || backtests.length === 0) {
     return (
       <div className="card text-center text-dark-400 py-8">
         No backtests yet. Run one above!
       </div>
     )
+  }
+
+  const toggleSelect = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
   const getStatusBadge = (status) => {
@@ -172,7 +263,17 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel }) {
 
   return (
     <div className="card">
-      <h3 className="text-lg font-bold mb-3">Previous Backtests</h3>
+      <div className="flex justify-between items-center mb-3">
+        <h3 className="text-lg font-bold">Previous Backtests</h3>
+        {selected.size >= 2 && (
+          <button
+            onClick={() => onCompare([...selected])}
+            className="text-xs bg-primary-600 hover:bg-primary-500 px-3 py-1.5 rounded font-medium transition-colors"
+          >
+            Compare Selected ({selected.size})
+          </button>
+        )}
+      </div>
       <div className="space-y-2">
         {backtests.map(bt => (
           <div
@@ -180,6 +281,15 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel }) {
             className="bg-dark-700 rounded-lg p-3 flex justify-between items-center cursor-pointer hover:bg-dark-600 transition-colors"
             onClick={() => bt.status === 'completed' && onSelect(bt.id)}
           >
+            {bt.status === 'completed' && (
+              <input
+                type="checkbox"
+                checked={selected.has(bt.id)}
+                onChange={(e) => { e.stopPropagation(); toggleSelect(bt.id) }}
+                onClick={(e) => e.stopPropagation()}
+                className="mr-2 accent-primary-500"
+              />
+            )}
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
                 <span className="font-medium">{bt.name}</span>
@@ -348,9 +458,52 @@ function BacktestResults({ backtest, onClose }) {
   )
 }
 
+function MultiPeriodPanel({ onLaunch, isLoading }) {
+  const [presets, setPresets] = useState([])
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    api.getBacktestPresets().then(setPresets).catch(() => {})
+  }, [])
+
+  if (!presets.length) return null
+
+  return (
+    <div className="card mb-4 border border-purple-500/30 bg-purple-500/5">
+      <button onClick={() => setExpanded(!expanded)} className="w-full flex justify-between items-center">
+        <div className="font-semibold text-sm">Multi-Period Backtesting</div>
+        <span className="text-dark-400">{expanded ? '▼' : '▶'}</span>
+      </button>
+      {expanded && (
+        <div className="mt-3">
+          <div className="text-dark-400 text-xs mb-3">
+            Test the strategy across different market regimes simultaneously.
+          </div>
+          <div className="space-y-1 mb-3">
+            {presets.map((p, i) => (
+              <div key={i} className="flex justify-between text-xs py-1">
+                <span className="font-medium">{p.name}</span>
+                <span className="text-dark-400">{p.desc}</span>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={onLaunch}
+            disabled={isLoading}
+            className="w-full bg-purple-600 hover:bg-purple-500 disabled:bg-dark-600 rounded py-2 text-sm font-semibold transition-colors"
+          >
+            {isLoading ? 'Starting...' : `Launch ${presets.length} Backtests`}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Backtest() {
   const [backtests, setBacktests] = useState([])
   const [selectedBacktest, setSelectedBacktest] = useState(null)
+  const [comparison, setComparison] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
   const pollingRef = useRef(null)
@@ -437,11 +590,32 @@ export default function Backtest() {
   const cancelBacktest = async (id) => {
     try {
       await api.cancelBacktest(id)
-      // Refresh list to show updated status
       fetchBacktests()
     } catch (err) {
       console.error('Failed to cancel backtest:', err)
       setError(err.message || 'Failed to cancel backtest')
+    }
+  }
+
+  const handleCompare = async (ids) => {
+    try {
+      const data = await api.compareBacktests(ids)
+      setComparison(data)
+    } catch (err) {
+      setError(err.message || 'Failed to compare backtests')
+    }
+  }
+
+  const handleMultiPeriod = async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      await api.createMultiBacktest({ starting_cash: 25000, stock_universe: 'all' })
+      fetchBacktests()
+    } catch (err) {
+      setError(err.message || 'Failed to start multi-period backtest')
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -458,7 +632,9 @@ export default function Backtest() {
         </div>
       )}
 
-      {selectedBacktest ? (
+      {comparison ? (
+        <ComparisonView comparison={comparison} onClose={() => setComparison(null)} />
+      ) : selectedBacktest ? (
         <BacktestResults
           backtest={selectedBacktest}
           onClose={() => setSelectedBacktest(null)}
@@ -466,11 +642,13 @@ export default function Backtest() {
       ) : (
         <>
           <BacktestForm onSubmit={startBacktest} isLoading={isLoading} />
+          <MultiPeriodPanel onLaunch={handleMultiPeriod} isLoading={isLoading} />
           <BacktestList
             backtests={backtests}
             onSelect={selectBacktest}
             onDelete={deleteBacktest}
             onCancel={cancelBacktest}
+            onCompare={handleCompare}
           />
         </>
       )}
