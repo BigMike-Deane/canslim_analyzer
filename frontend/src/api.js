@@ -299,6 +299,7 @@ export const api = {
     const params = new URLSearchParams()
     if (config.starting_cash) params.set('starting_cash', config.starting_cash)
     if (config.stock_universe) params.set('stock_universe', config.stock_universe)
+    if (config.strategy) params.set('strategy', config.strategy)
     const result = await request(`/api/backtests/multi?${params}`, { method: 'POST' })
     cache.invalidate('/api/backtests')
     return result

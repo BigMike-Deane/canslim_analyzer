@@ -82,7 +82,8 @@ function BacktestForm({ onSubmit, isLoading }) {
     start_date: oneYearAgo,
     end_date: today,
     starting_cash: 25000,
-    stock_universe: 'sp500'
+    stock_universe: 'sp500',
+    strategy: 'balanced'
   })
 
   const handleSubmit = (e) => {
@@ -131,6 +132,17 @@ function BacktestForm({ onSubmit, isLoading }) {
           >
             <option value="sp500">S&P 500</option>
             <option value="all">All Stocks (~2000)</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-dark-400 text-xs block mb-1">Strategy</label>
+          <select
+            value={config.strategy}
+            onChange={(e) => setConfig({...config, strategy: e.target.value})}
+            className="w-full bg-dark-700 border border-dark-600 rounded px-3 py-2 text-sm"
+          >
+            <option value="balanced">Balanced (Default)</option>
+            <option value="growth">Growth Mode</option>
           </select>
         </div>
       </div>
@@ -294,6 +306,9 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
               <div className="flex items-center gap-2 mb-1">
                 <span className="font-medium">{bt.name}</span>
                 {getStatusBadge(bt.status)}
+                {bt.strategy === 'growth' && (
+                  <span className="text-xs bg-purple-900 text-purple-400 px-2 py-0.5 rounded">Growth</span>
+                )}
               </div>
               <div className="text-dark-400 text-xs">
                 {bt.start_date} to {bt.end_date}

@@ -583,3 +583,68 @@ backtester:
     enabled: true                     # Enable disk caching for price history
     database: null                    # Path to cache database (null = default: data/price_cache.db)
     expiry_days: 30                   # Days before cached data expires
+
+# Strategy Profiles — preset trading configurations
+# Used by both backtester and live AI trader
+strategy_profiles:
+  balanced:
+    label: "Balanced (Default)"
+    description: "Standard CANSLIM with risk management"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 8.0
+    bearish_stop_loss_pct: 7.0
+    take_profit_pct: 40.0
+    trailing_stops:
+      gain_50_plus: 15
+      gain_30_to_50: 12
+      gain_20_to_30: 10
+      gain_10_to_20: 8
+    seed_count: 5
+    seed_pct: 10
+    half_size_initial: true
+    quality_filters:
+      min_c_score: 10
+      min_l_score: 8
+    scoring_weights:
+      growth_projection: 0.25
+      canslim_score: 0.25
+      momentum: 0.20
+      breakout: 0.20
+      base_quality: 0.10
+
+  growth:
+    label: "Growth Mode"
+    description: "Aggressive growth focus - higher risk, concentrated bets on high-growth setups"
+    min_score: 60
+    max_positions: 6
+    max_single_position_pct: 30
+    max_sector_pct: 60
+    stop_loss_pct: 10.0
+    bearish_stop_loss_pct: 8.0
+    take_profit_pct: 60.0
+    trailing_stops:
+      gain_50_plus: 18
+      gain_30_to_50: 15
+      gain_20_to_30: 12
+      gain_10_to_20: 10
+    seed_count: 4
+    seed_pct: 12
+    half_size_initial: false
+    quality_filters:
+      min_c_score: 12
+      min_l_score: 10
+    scoring_weights:
+      growth_projection: 0.35
+      canslim_score: 0.20
+      momentum: 0.25
+      breakout: 0.15
+      base_quality: 0.05
+    # Growth mode bonuses
+    c_score_weight: 1.3               # Weight C score 30% more (earnings momentum)
+    l_score_weight: 1.3               # Weight L score 30% more (relative strength)
+    n_score_weight: 1.2               # Weight N score 20% more (new highs)
+    eps_accel_bonus: 8                # Extra bonus for EPS acceleration (vs 5 in balanced)
+    pre_breakout_multiplier: 1.50     # 50% larger positions on pre-breakout (vs 1.30)

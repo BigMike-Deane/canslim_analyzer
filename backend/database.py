@@ -572,6 +572,7 @@ class AIPortfolioConfig(Base):
     take_profit_pct = Column(Float, default=25.0)  # Take profits at this gain %
     stop_loss_pct = Column(Float, default=15.0)  # Stop loss at this loss %
     is_active = Column(Boolean, default=True)
+    strategy = Column(String, default="balanced")  # balanced, growth
     peak_portfolio_value = Column(Float, default=0.0)  # Track peak for drawdown circuit breaker
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -677,6 +678,7 @@ class BacktestRun(Base):
     end_date = Column(Date, nullable=False)
     starting_cash = Column(Float, default=25000.0)
     stock_universe = Column(String, default="all")  # sp500, all, custom
+    strategy = Column(String, default="balanced")  # balanced, growth
     custom_tickers = Column(JSON)  # If universe is custom
 
     # AI Config snapshot (frozen at backtest start)

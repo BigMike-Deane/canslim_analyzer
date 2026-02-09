@@ -26,6 +26,14 @@ from canslim_scorer import calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
 
+
+def get_strategy_profile(strategy_name: str = "balanced") -> dict:
+    """Load strategy profile from YAML config, falling back to balanced defaults."""
+    profiles = config.get('strategy_profiles', {})
+    profile = profiles.get(strategy_name, profiles.get('balanced', {}))
+    return profile
+
+
 # Trading thresholds - loaded from config to match ai_trader.py
 MIN_CASH_RESERVE_PCT = config.get('ai_trader.allocation.min_cash_reserve_pct', default=0.10)
 MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
@@ -110,6 +118,10 @@ class BacktestEngine:
 
         # Track consecutive days with no positions (for re-seeding)
         self.idle_days: int = 0
+
+        # Strategy profile (balanced or growth)
+        self.strategy = self.backtest.strategy or "balanced"
+        self.profile = get_strategy_profile(self.strategy)
 
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
@@ -584,9 +596,10 @@ class BacktestEngine:
         # FTD: advisory penalty, not hard block
         self.ftd_penalty_active = not self.ftd_can_buy
 
+        profile_max_positions = self.profile.get('max_positions', self.backtest.max_positions)
         can_buy = (not self.drawdown_halt and
                    self.cash / portfolio_value >= min_cash_pct and
-                   len(self.positions) < self.backtest.max_positions and
+                   len(self.positions) < profile_max_positions and
                    self.cash >= 100)
 
         # Track idle days (no positions, all cash) for re-seeding
@@ -619,7 +632,7 @@ class BacktestEngine:
             for trade in buys:
                 if self.cash < 100:
                     break
-                if len(self.positions) >= self.backtest.max_positions:
+                if len(self.positions) >= profile_max_positions:
                     break
                 self._execute_buy(current_date, trade)
         else:
@@ -676,12 +689,11 @@ class BacktestEngine:
             logger.info(f"Backtest {self.backtest.id}: No stocks qualify for initial seeding on {first_day}")
             return
 
-        # Sort by total score descending, take top 5
+        # Sort by total score descending, take top N based on strategy profile
         # O'Neil/Minervini: start with half-size pilot positions, let winners prove themselves
-        # 5 x 10% = 50% deployed, 50% reserved for pyramiding into winners
         candidates.sort(key=lambda x: x[3], reverse=True)
-        max_seed_positions = 5
-        seed_pct_per_position = 10.0  # 10% each = half-size pilots
+        max_seed_positions = self.profile.get('seed_count', 5)
+        seed_pct_per_position = self.profile.get('seed_pct', 10.0)
         seeds = candidates[:max_seed_positions]
 
         logger.info(f"Backtest {self.backtest.id}: Seeding {len(seeds)} initial positions on {first_day}: "
@@ -1052,10 +1064,10 @@ class BacktestEngine:
         spy_data = market.get('spy', {})
         is_bearish_market = spy_data.get('price', 0) < spy_data.get('ma_50', 0)
 
-        # Get stop loss config
+        # Get stop loss config — strategy profile overrides YAML defaults
         stop_loss_config = config.get('ai_trader.stops', {})
-        normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', self.backtest.stop_loss_pct)
-        bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 7.0)
+        normal_stop_loss_pct = self.profile.get('stop_loss_pct', stop_loss_config.get('normal_stop_loss_pct', self.backtest.stop_loss_pct))
+        bearish_stop_loss_pct = self.profile.get('bearish_stop_loss_pct', stop_loss_config.get('bearish_stop_loss_pct', 7.0))
         use_atr_stops = stop_loss_config.get('use_atr_stops', True)
         atr_multiplier = stop_loss_config.get('atr_multiplier', 2.5)
         atr_period = stop_loss_config.get('atr_period', 14)
@@ -1135,16 +1147,17 @@ class BacktestEngine:
                 drop_from_peak = ((position.peak_price - price) / position.peak_price) * 100
                 peak_gain_pct = ((position.peak_price - position.cost_basis) / position.cost_basis) * 100
 
-                # Dynamic trailing stop thresholds
+                # Dynamic trailing stop thresholds — strategy profile overrides
+                profile_trailing = self.profile.get('trailing_stops', {})
                 trailing_stop_pct = None
                 if peak_gain_pct >= 50:
-                    trailing_stop_pct = 15
+                    trailing_stop_pct = profile_trailing.get('gain_50_plus', 15)
                 elif peak_gain_pct >= 30:
-                    trailing_stop_pct = 12
+                    trailing_stop_pct = profile_trailing.get('gain_30_to_50', 12)
                 elif peak_gain_pct >= 20:
-                    trailing_stop_pct = 10
+                    trailing_stop_pct = profile_trailing.get('gain_20_to_30', 10)
                 elif peak_gain_pct >= 10:
-                    trailing_stop_pct = 8
+                    trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
 
                 if trailing_stop_pct:
                     # Widen trailing stop for pyramided positions (high conviction)
@@ -1265,8 +1278,8 @@ class BacktestEngine:
                 ))
                 continue  # Don't add more sell signals for this position
 
-            # TAKE PROFIT: Full sell at +40% if score declining significantly (matches live trader)
-            take_profit_pct = 40.0  # Could be config-driven
+            # TAKE PROFIT: Full sell at profile threshold if score declining significantly
+            take_profit_pct = self.profile.get('take_profit_pct', 40.0)
             if gain_pct >= take_profit_pct and current_score < position.purchase_score - 15:
                 sells.append(SimulatedTrade(
                     ticker=ticker,
@@ -1339,14 +1352,17 @@ class BacktestEngine:
         bearish_max_pct = regime_config.get('bearish_max_position_pct', 8.0)
         neutral_max_pct = regime_config.get('neutral_max_position_pct', 12.0)
 
+        # Use strategy profile min_score (falls back to backtest record value)
+        profile_min_score = self.profile.get('min_score', self.backtest.min_score_to_buy)
+
         if weighted_signal >= bullish_threshold:
-            effective_min_score = self.backtest.min_score_to_buy - 5  # Easier in bull
+            effective_min_score = profile_min_score - 5  # Easier in bull
             regime_max_pct = bullish_max_pct
         elif weighted_signal <= bearish_threshold:
-            effective_min_score = self.backtest.min_score_to_buy + bearish_adj  # Harder in bear
+            effective_min_score = profile_min_score + bearish_adj  # Harder in bear
             regime_max_pct = bearish_max_pct
         else:
-            effective_min_score = self.backtest.min_score_to_buy
+            effective_min_score = profile_min_score
             regime_max_pct = neutral_max_pct
 
         # Detect if earnings data is limited (historical backtests lose C/A scores)
@@ -1438,9 +1454,11 @@ class BacktestEngine:
                 continue
 
             # QUALITY FILTERS: Only buy stocks with strong fundamentals
+            # Strategy profile overrides YAML defaults
             quality_config = config.get('ai_trader.quality_filters', {})
-            min_c_score = quality_config.get('min_c_score', 10)
-            min_l_score = quality_config.get('min_l_score', 8)
+            profile_quality = self.profile.get('quality_filters', {})
+            min_c_score = profile_quality.get('min_c_score', quality_config.get('min_c_score', 10))
+            min_l_score = profile_quality.get('min_l_score', quality_config.get('min_l_score', 8))
             min_volume_ratio = quality_config.get('min_volume_ratio', 1.2)
             skip_growth = quality_config.get('skip_in_growth_mode', True)
 
@@ -1622,14 +1640,33 @@ class BacktestEngine:
                 # Recent momentum fading - apply 15% penalty to composite
                 momentum_penalty = -0.15
 
-            # Composite score: 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
+            # Composite score with strategy-specific weights
+            scoring_weights = self.profile.get('scoring_weights', {})
+            w_growth = scoring_weights.get('growth_projection', 0.25)
+            w_score = scoring_weights.get('canslim_score', 0.25)
+            w_momentum = scoring_weights.get('momentum', 0.20)
+            w_breakout = scoring_weights.get('breakout', 0.20)
+            w_base = scoring_weights.get('base_quality', 0.10)
+
+            # Growth mode: weight C/L/N scores higher in the CANSLIM component
+            effective_score = score
+            if self.strategy == "growth":
+                c_weight = self.profile.get('c_score_weight', 1.0)
+                l_weight = self.profile.get('l_score_weight', 1.0)
+                n_weight = self.profile.get('n_score_weight', 1.0)
+                c_sc = score_data.get('c_score', 0)
+                l_sc = score_data.get('l_score', 0)
+                n_sc = score_data.get('n_score', 0)
+                # Add the weighted bonus on top of total score
+                effective_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
+
             growth_projection = min(score_data.get("projected_growth", score * 0.3), 50)
             composite_score = (
-                (growth_projection * 0.25) +
-                (score * 0.25) +
-                (momentum_score * 0.20) +
-                ((breakout_bonus + pre_breakout_bonus) * 0.20) +
-                (base_quality_bonus * 0.10) +
+                (growth_projection * w_growth) +
+                (effective_score * w_score) +
+                (momentum_score * w_momentum) +
+                ((breakout_bonus + pre_breakout_bonus) * w_breakout) +
+                (base_quality_bonus * w_base) +
                 extended_penalty +
                 coiled_spring_bonus +   # Earnings catalyst bonus
                 rs_line_bonus +         # RS line new high bonus
@@ -1660,10 +1697,11 @@ class BacktestEngine:
 
             # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
             # These are the ideal entries - before the crowd notices
+            pre_breakout_mult = self.profile.get('pre_breakout_multiplier', 1.40)
             if pre_breakout_bonus >= 35 and has_base:
-                position_pct *= 1.40  # 40% larger for best pre-breakout entries
+                position_pct *= pre_breakout_mult  # Larger for best pre-breakout entries
             elif pre_breakout_bonus >= 25 and has_base:
-                position_pct *= 1.30  # 30% larger for good pre-breakout entries
+                position_pct *= (pre_breakout_mult * 0.93)  # Slightly less for good pre-breakout
             elif is_breaking_out and volume_ratio >= 1.5:
                 position_pct *= 1.0   # No boost - already extended, entry is late
 
@@ -1698,8 +1736,9 @@ class BacktestEngine:
                 elif high_corr_count > 0:
                     position_pct *= corr_multiplier
 
-            # Cap at market regime max AFTER all multipliers (matches live trader)
-            position_pct = min(position_pct, regime_max_pct)
+            # Cap at profile max or market regime max AFTER all multipliers (matches live trader)
+            profile_max_pct = self.profile.get('max_single_position_pct', 25)
+            position_pct = min(position_pct, regime_max_pct, profile_max_pct)
 
             position_value = portfolio_value * (position_pct / 100)
 

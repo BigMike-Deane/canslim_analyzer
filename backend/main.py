@@ -2663,6 +2663,7 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
             "stop_loss_pct": config.stop_loss_pct,
             "is_active": config.is_active,
             "paper_mode": getattr(config, 'paper_mode', False) or False,
+            "strategy": getattr(config, 'strategy', None) or "balanced",
         },
         "summary": portfolio,
         "positions": positions_data
@@ -2961,6 +2962,7 @@ class BacktestCreate(BaseModel):
     max_positions: Optional[int] = None
     min_score_to_buy: Optional[int] = None
     stop_loss_pct: Optional[float] = None
+    strategy: str = "balanced"  # balanced, growth
 
 
 def run_backtest_background(backtest_id: int):
@@ -3008,12 +3010,14 @@ async def create_backtest(
     default_stop_loss = yaml_config.get('ai_trader.stops.normal_stop_loss_pct', 10.0)
 
     # Create backtest run record
+    strategy_label = f" [{config.strategy.upper()}]" if config.strategy != "balanced" else ""
     backtest = BacktestRun(
-        name=config.name or f"{config.stock_universe.upper()} | {config.start_date} to {config.end_date} | ${config.starting_cash:,.0f}",
+        name=config.name or f"{config.stock_universe.upper()} | {config.start_date} to {config.end_date} | ${config.starting_cash:,.0f}{strategy_label}",
         start_date=config.start_date,
         end_date=config.end_date,
         starting_cash=config.starting_cash,
         stock_universe=config.stock_universe,
+        strategy=config.strategy,
         custom_tickers=config.custom_tickers,
         max_positions=config.max_positions or 20,
         min_score_to_buy=config.min_score_to_buy or default_min_score,
@@ -3057,6 +3061,7 @@ async def list_backtests(
             "total_trades": b.total_trades,
             "win_rate": b.win_rate,
             "sharpe_ratio": b.sharpe_ratio,
+            "strategy": getattr(b, 'strategy', None) or "balanced",
             "progress_pct": b.progress_pct,
             "created_at": b.created_at.isoformat() + "Z" if b.created_at else None,
             "completed_at": b.completed_at.isoformat() + "Z" if b.completed_at else None
@@ -3163,20 +3168,23 @@ async def create_multi_backtest(
     background_tasks: BackgroundTasks,
     starting_cash: float = Query(25000.0, ge=1000, le=1000000),
     stock_universe: str = Query("all"),
+    strategy: str = Query("balanced"),
     db: Session = Depends(get_db)
 ):
     """Launch backtests for all preset periods simultaneously"""
     from backend.backtester import run_backtest
 
+    strategy_label = f" [{strategy.upper()}]" if strategy != "balanced" else ""
     created_ids = []
     for preset in BACKTEST_PRESETS:
         bt = BacktestRun(
-            name=preset["name"],
+            name=f"{preset['name']}{strategy_label}",
             status="pending",
             start_date=datetime.strptime(preset["start"], "%Y-%m-%d").date(),
             end_date=datetime.strptime(preset["end"], "%Y-%m-%d").date(),
             starting_cash=starting_cash,
             stock_universe=stock_universe,
+            strategy=strategy,
             created_at=datetime.now(timezone.utc)
         )
         db.add(bt)
@@ -3236,6 +3244,7 @@ async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
             "total_trades": backtest.total_trades,
             "win_rate": backtest.win_rate,
             "sharpe_ratio": backtest.sharpe_ratio,
+            "strategy": getattr(backtest, 'strategy', None) or "balanced",
             "progress_pct": backtest.progress_pct,
             "error_message": backtest.error_message,
             "created_at": backtest.created_at.isoformat() + "Z" if backtest.created_at else None,
@@ -3571,9 +3580,10 @@ async def update_ai_portfolio_config_v2(
     take_profit_pct: float = Query(None, ge=10, le=100),
     stop_loss_pct: float = Query(None, ge=5, le=50),
     paper_mode: bool = Query(None),
+    strategy: str = Query(None),
     db: Session = Depends(get_db)
 ):
-    """Update AI Portfolio configuration including paper mode"""
+    """Update AI Portfolio configuration including paper mode and strategy"""
     from backend.ai_trader import get_or_create_config
     config = get_or_create_config(db)
 
@@ -3589,6 +3599,8 @@ async def update_ai_portfolio_config_v2(
         config.stop_loss_pct = stop_loss_pct
     if paper_mode is not None:
         config.paper_mode = paper_mode
+    if strategy is not None:
+        config.strategy = strategy
 
     db.commit()
 
@@ -3601,6 +3613,7 @@ async def update_ai_portfolio_config_v2(
             "take_profit_pct": config.take_profit_pct,
             "stop_loss_pct": config.stop_loss_pct,
             "paper_mode": getattr(config, 'paper_mode', False) or False,
+            "strategy": getattr(config, 'strategy', None) or "balanced",
         }
     }
 

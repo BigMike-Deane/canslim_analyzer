@@ -862,7 +862,12 @@ export default function AIPortfolio() {
       <div className="flex justify-between items-center mb-4">
         <div>
           <div className="text-dark-400 text-sm">Autonomous</div>
-          <h1 className="text-xl font-bold">AI Portfolio</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold">AI Portfolio</h1>
+            {portfolio?.config?.strategy === 'growth' && (
+              <span className="text-xs bg-purple-900 text-purple-400 px-2 py-0.5 rounded font-medium">Growth Mode</span>
+            )}
+          </div>
         </div>
         <div className="text-right">
           <div className="text-dark-400 text-xs">

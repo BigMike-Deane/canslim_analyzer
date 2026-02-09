@@ -29,6 +29,13 @@ except ImportError:
         def send_coiled_spring_alert_webhook(*args, **kwargs):
             return False
 
+def get_strategy_profile(strategy_name: str = "balanced") -> dict:
+    """Load strategy profile from YAML config, falling back to balanced defaults."""
+    profiles = config.get('strategy_profiles', {})
+    profile = profiles.get(strategy_name, profiles.get('balanced', {}))
+    return profile
+
+
 # Timezone constants - use zoneinfo for proper DST handling
 EASTERN_TZ = ZoneInfo("America/New_York")
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -1065,6 +1072,10 @@ def check_and_execute_stop_losses(db: Session) -> dict:
     if not positions:
         return {"message": "No positions to check", "sells_executed": []}
 
+    # Load strategy profile for stop thresholds
+    strategy = getattr(config, 'strategy', None) or "balanced"
+    profile = get_strategy_profile(strategy)
+
     # First update prices to get current values
     logger.info(f"Checking stop losses for {len(positions)} positions...")
     update_position_prices(db, use_live_prices=True)
@@ -1089,11 +1100,11 @@ def check_and_execute_stop_losses(db: Session) -> dict:
         spy_ma_50 = spy_data.get("ma_50", 0)
         is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
 
-    # Get stop loss config
+    # Get stop loss config, with strategy profile override
     from config_loader import config as yaml_config
     stop_loss_config = yaml_config.get('ai_trader.stops', {})
-    normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', config.stop_loss_pct)
-    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 7.0)
+    normal_stop_loss_pct = profile.get('stop_loss_pct', stop_loss_config.get('normal_stop_loss_pct', config.stop_loss_pct))
+    bearish_stop_loss_pct = profile.get('bearish_stop_loss_pct', stop_loss_config.get('bearish_stop_loss_pct', 7.0))
 
     # Use tighter stop loss in bearish market
     effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
@@ -1173,16 +1184,17 @@ def check_and_execute_stop_losses(db: Session) -> dict:
             drop_from_peak = ((position.peak_price - position.current_price) / position.peak_price) * 100
             peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
-            # Dynamic trailing stop thresholds
+            # Dynamic trailing stop thresholds (strategy profile overrides)
+            profile_trailing = profile.get('trailing_stops', {})
             trailing_stop_pct = None
             if peak_gain_pct >= 50:
-                trailing_stop_pct = 15
+                trailing_stop_pct = profile_trailing.get('gain_50_plus', 15)
             elif peak_gain_pct >= 30:
-                trailing_stop_pct = 12
+                trailing_stop_pct = profile_trailing.get('gain_30_to_50', 12)
             elif peak_gain_pct >= 20:
-                trailing_stop_pct = 10
+                trailing_stop_pct = profile_trailing.get('gain_20_to_30', 10)
             elif peak_gain_pct >= 10:
-                trailing_stop_pct = 8
+                trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
 
             # Pyramid-aware trailing stop widening: +2% per pyramid (max +6%)
             pyramid_count = getattr(position, 'pyramid_count', 0) or 0
@@ -1346,6 +1358,10 @@ def evaluate_sells(db: Session) -> list:
     positions = db.query(AIPortfolioPosition).all()
     sells = []
 
+    # Load strategy profile for sell thresholds
+    strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
+    profile = get_strategy_profile(strategy)
+
     # Batch fetch all stocks in one query (fixes N+1 for score crash checks)
     tickers = [pos.ticker for pos in positions]
     if tickers:
@@ -1364,11 +1380,11 @@ def evaluate_sells(db: Session) -> list:
         spy_ma_50 = spy_data.get("ma_50", 0)
         is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
 
-    # Get stop loss config from YAML
+    # Get stop loss config from YAML, with strategy profile override
     from config_loader import config as yaml_config
     stop_loss_config = yaml_config.get('ai_trader.stops', {})
-    normal_stop_loss_pct = stop_loss_config.get('normal_stop_loss_pct', portfolio_config.stop_loss_pct)
-    bearish_stop_loss_pct = stop_loss_config.get('bearish_stop_loss_pct', 7.0)
+    normal_stop_loss_pct = profile.get('stop_loss_pct', stop_loss_config.get('normal_stop_loss_pct', portfolio_config.stop_loss_pct))
+    bearish_stop_loss_pct = profile.get('bearish_stop_loss_pct', stop_loss_config.get('bearish_stop_loss_pct', 7.0))
 
     # Partial profit config from YAML
     partial_profit_config = yaml_config.get('ai_trader.partial_profits', {})
@@ -1436,21 +1452,17 @@ def evaluate_sells(db: Session) -> list:
             drop_from_peak = ((position.peak_price - position.current_price) / position.peak_price) * 100
             peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
-            # Dynamic trailing stop thresholds based on peak gain:
-            # - Up 50%+: 15% trailing stop (protect big winner)
-            # - Up 30-50%: 12% trailing stop
-            # - Up 20-30%: 10% trailing stop
-            # - Up 10-20%: 8% trailing stop
-            # - Up 0-10%: No trailing stop (use regular stop loss)
+            # Dynamic trailing stop thresholds based on peak gain (strategy profile overrides)
+            profile_trailing = profile.get('trailing_stops', {})
             trailing_stop_pct = None
             if peak_gain_pct >= 50:
-                trailing_stop_pct = 15
+                trailing_stop_pct = profile_trailing.get('gain_50_plus', 15)
             elif peak_gain_pct >= 30:
-                trailing_stop_pct = 12
+                trailing_stop_pct = profile_trailing.get('gain_30_to_50', 12)
             elif peak_gain_pct >= 20:
-                trailing_stop_pct = 10
+                trailing_stop_pct = profile_trailing.get('gain_20_to_30', 10)
             elif peak_gain_pct >= 10:
-                trailing_stop_pct = 8
+                trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
 
             # Pyramid-aware trailing stop widening: +2% per pyramid (max +6%)
             # High-conviction positions (pyramided) get more room to run
@@ -1612,6 +1624,7 @@ def evaluate_sells(db: Session) -> list:
             continue  # Don't add more sell signals for this position
 
         # For winners, use additional score-based logic
+        profile_take_profit = profile.get('take_profit_pct', portfolio_config.take_profit_pct)
         if gain_pct >= 20:
             # If up 20%+, only sell if score is weak AND gains are fading
             if score < portfolio_config.sell_score_threshold:
@@ -1620,8 +1633,8 @@ def evaluate_sells(db: Session) -> list:
                     "reason": f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({score:.0f})",
                     "priority": 6
                 })
-            # Take full profits at 40%+ if score is declining significantly
-            elif gain_pct >= portfolio_config.take_profit_pct and score < purchase_score - 15:
+            # Take full profits at take_profit_pct if score is declining significantly
+            elif gain_pct >= profile_take_profit and score < purchase_score - 15:
                 sells.append({
                     "position": position,
                     "reason": f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly",
@@ -1695,8 +1708,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             if ticker in group:
                 excluded_tickers.update(group)  # Exclude all in the group
 
-    # Read min_score from YAML config with DB fallback
-    min_score_to_buy = yaml_config.get('ai_trader.allocation.min_score_to_buy', portfolio_config.min_score_to_buy)
+    # Load strategy profile (balanced or growth)
+    strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
+    profile = get_strategy_profile(strategy)
+
+    # Read min_score from strategy profile → YAML config → DB fallback
+    min_score_to_buy = profile.get('min_score', yaml_config.get('ai_trader.allocation.min_score_to_buy', portfolio_config.min_score_to_buy))
 
     # PERCENTILE-BASED THRESHOLD: Adapt to current market score distribution
     # Instead of a fixed 72, use the lower of (config threshold, top 5% percentile)
@@ -1799,10 +1816,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     continue
             continue
 
-        # QUALITY FILTERS: Only buy stocks with strong fundamentals
+        # QUALITY FILTERS: Strategy profile overrides YAML defaults
         quality_config = yaml_config.get('ai_trader.quality_filters', {})
-        min_c_score = quality_config.get('min_c_score', 10)
-        min_l_score = quality_config.get('min_l_score', 8)
+        profile_quality = profile.get('quality_filters', {})
+        min_c_score = profile_quality.get('min_c_score', quality_config.get('min_c_score', 10))
+        min_l_score = profile_quality.get('min_l_score', quality_config.get('min_l_score', 8))
         min_volume_ratio = quality_config.get('min_volume_ratio', 1.2)
         skip_growth = quality_config.get('skip_in_growth_mode', True)
 
@@ -2108,15 +2126,33 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             elif beat_streak >= 3:
                 earnings_drift_bonus = 3
 
-        # Calculate composite score with breakout and pre-breakout weighting
-        # 25% growth, 25% score, 20% momentum, 20% breakout/pre-breakout, 10% base quality
+        # Calculate composite score with strategy-specific weights
+        scoring_weights = profile.get('scoring_weights', {})
+        w_growth = scoring_weights.get('growth_projection', 0.25)
+        w_score = scoring_weights.get('canslim_score', 0.25)
+        w_momentum = scoring_weights.get('momentum', 0.20)
+        w_breakout = scoring_weights.get('breakout', 0.20)
+        w_base = scoring_weights.get('base_quality', 0.10)
+
+        # Growth mode: weight C/L/N scores higher in the score component
+        weighted_score = effective_score
+        if strategy == "growth":
+            c_weight = profile.get('c_score_weight', 1.0)
+            l_weight = profile.get('l_score_weight', 1.0)
+            n_weight = profile.get('n_score_weight', 1.0)
+            sd = stock.score_details or {}
+            c_sc = sd.get('c', {}).get('score', 0) if isinstance(sd.get('c'), dict) else sd.get('c', 0)
+            l_sc = sd.get('l', {}).get('score', 0) if isinstance(sd.get('l'), dict) else sd.get('l', 0)
+            n_sc = sd.get('n', {}).get('score', 0) if isinstance(sd.get('n'), dict) else sd.get('n', 0)
+            weighted_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
+
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
         composite_score = (
-            (growth_projection * 0.25) +
-            (effective_score * 0.25) +
-            (momentum_score * 0.20) +
-            ((breakout_bonus + pre_breakout_bonus) * 0.20) +
-            (base_quality_bonus * 0.10) +
+            (growth_projection * w_growth) +
+            (weighted_score * w_score) +
+            (momentum_score * w_momentum) +
+            ((breakout_bonus + pre_breakout_bonus) * w_breakout) +
+            (base_quality_bonus * w_base) +
             extended_penalty +
             insider_bonus +
             short_adjustment +  # Short squeeze potential (+) or risk (-)
@@ -2168,10 +2204,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
         # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
         # These are the ideal entries - before the crowd notices
+        pre_breakout_mult = profile.get('pre_breakout_multiplier', 1.40)
         if pre_breakout_bonus >= 35 and has_base:
-            position_pct *= 1.40  # 40% larger for best pre-breakout entries
+            position_pct *= pre_breakout_mult  # Larger for best pre-breakout entries
         elif pre_breakout_bonus >= 25 and has_base:
-            position_pct *= 1.30  # 30% larger for good pre-breakout entries
+            position_pct *= (pre_breakout_mult * 0.93)  # Slightly less for good pre-breakout
         elif is_breaking_out and breakout_volume_ratio >= 1.5:
             position_pct *= 1.0   # No boost - already extended, entry is late
 
@@ -2186,8 +2223,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Apply drawdown protection (reduce positions when portfolio is down)
         position_pct *= drawdown_multiplier
 
-        # Cap at market regime max (varies by market conditions)
-        position_pct = min(position_pct, regime_max_pct)
+        # Cap at profile max or market regime max (varies by market conditions)
+        profile_max_pct = profile.get('max_single_position_pct', 25)
+        position_pct = min(position_pct, regime_max_pct, profile_max_pct)
 
         max_position_value = portfolio_value * (position_pct / 100)
 
