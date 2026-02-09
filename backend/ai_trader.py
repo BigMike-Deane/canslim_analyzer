@@ -1698,9 +1698,43 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # Read min_score from YAML config with DB fallback
     min_score_to_buy = yaml_config.get('ai_trader.allocation.min_score_to_buy', portfolio_config.min_score_to_buy)
 
+    # PERCENTILE-BASED THRESHOLD: Adapt to current market score distribution
+    # Instead of a fixed 72, use the lower of (config threshold, top 5% percentile)
+    # This ensures we always have candidates even when scores are compressed
+    from sqlalchemy import func
+    percentile_pct = yaml_config.get('ai_trader.allocation.percentile_threshold_pct', 5)
+    score_floor = yaml_config.get('ai_trader.allocation.percentile_score_floor', 45)
+
+    all_canslim_scores = [s[0] for s in db.query(Stock.canslim_score).filter(
+        Stock.canslim_score > 0, Stock.current_price > 0
+    ).all()]
+    all_growth_scores = [s[0] for s in db.query(Stock.growth_mode_score).filter(
+        Stock.growth_mode_score > 0, Stock.is_growth_stock == True, Stock.current_price > 0
+    ).all()]
+
+    canslim_percentile = min_score_to_buy
+    if all_canslim_scores:
+        sorted_scores = sorted(all_canslim_scores, reverse=True)
+        top_idx = max(1, len(sorted_scores) * percentile_pct // 100)
+        canslim_percentile = sorted_scores[min(top_idx - 1, len(sorted_scores) - 1)]
+
+    growth_percentile = min_score_to_buy
+    if all_growth_scores:
+        sorted_gscores = sorted(all_growth_scores, reverse=True)
+        top_idx = max(1, len(sorted_gscores) * percentile_pct // 100)
+        growth_percentile = sorted_gscores[min(top_idx - 1, len(sorted_gscores) - 1)]
+
+    # Use the lower of fixed threshold and percentile, floored at score_floor
+    effective_canslim_min = max(score_floor, min(min_score_to_buy, canslim_percentile))
+    effective_growth_min = max(score_floor, min(min_score_to_buy, growth_percentile))
+
+    logger.info(f"Score thresholds: CANSLIM config={min_score_to_buy}, top {percentile_pct}%={canslim_percentile:.1f}, "
+                f"effective={effective_canslim_min:.1f} | Growth top {percentile_pct}%={growth_percentile:.1f}, "
+                f"effective={effective_growth_min:.1f}")
+
     # Get traditional CANSLIM stocks that meet minimum score threshold
     canslim_candidates = db.query(Stock).filter(
-        Stock.canslim_score >= min_score_to_buy,
+        Stock.canslim_score >= effective_canslim_min,
         Stock.current_price > 0,
         Stock.projected_growth != None,  # Must have growth projection
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
@@ -1708,7 +1742,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
     # Get Growth Mode stocks that meet minimum threshold
     growth_candidates = db.query(Stock).filter(
-        Stock.growth_mode_score >= min_score_to_buy,
+        Stock.growth_mode_score >= effective_growth_min,
         Stock.is_growth_stock == True,
         Stock.current_price > 0,
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True

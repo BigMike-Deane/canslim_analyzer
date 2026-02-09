@@ -1363,6 +1363,20 @@ class BacktestEngine:
             logger.debug(f"Earnings data limited (max C={max_c_in_universe:.0f}, A={max_a_in_universe:.0f}), "
                          f"adjusted min_score to {effective_min_score:.0f}")
 
+        # PERCENTILE-BASED THRESHOLD: Adapt to score distribution
+        # Use the lower of (regime-adjusted threshold, top 5% percentile)
+        # This ensures we always have candidates even when scores are compressed
+        percentile_pct = config.get('ai_trader.allocation.percentile_threshold_pct', 5)
+        score_floor = config.get('ai_trader.allocation.percentile_score_floor', 45)
+
+        all_scores_list = sorted([data["total_score"] for _, data in scores.items()
+                                  if data["total_score"] > 0], reverse=True)
+        if all_scores_list:
+            top_idx = max(1, len(all_scores_list) * percentile_pct // 100)
+            percentile_threshold = all_scores_list[min(top_idx - 1, len(all_scores_list) - 1)]
+            # Use the lower of regime-adjusted and percentile, floored at score_floor
+            effective_min_score = max(score_floor, min(effective_min_score, percentile_threshold))
+
         # Get candidates with regime-adjusted threshold
         candidates = [
             (ticker, data) for ticker, data in scores.items()

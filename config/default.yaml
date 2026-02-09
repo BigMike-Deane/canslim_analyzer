@@ -145,6 +145,8 @@ ai_trader:
     max_stocks_per_sector: 4      # Max 4 stocks per sector
     max_single_position: 0.25     # Max 25% in single stock (Minervini: 4 stocks at 25% = fully invested)
     min_score_to_buy: 72          # Minimum CANSLIM score to buy (raised from 65)
+    percentile_threshold_pct: 5   # Use top N% of stocks as adaptive threshold
+    percentile_score_floor: 45    # Never buy below this score regardless of percentile
 
   # Stock selection quality filters - must meet ALL criteria
   quality_filters:
