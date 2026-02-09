@@ -1180,10 +1180,10 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
         replace_existing=True
     )
 
-    # Add portfolio price refresh job (every 15 min for chart data points)
+    # Add portfolio price refresh job (every 5 min for chart data points, matches frontend)
     scheduler.add_job(
         _refresh_portfolio_prices,
-        IntervalTrigger(minutes=15),
+        IntervalTrigger(minutes=5),
         id="portfolio_price_refresh",
         name="Portfolio Price Refresh",
         replace_existing=True
