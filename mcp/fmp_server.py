@@ -145,7 +145,7 @@ async def get_earnings_calendar(from_date: str = "", to_date: str = "") -> str:
         params["from"] = from_date
     if to_date:
         params["to"] = to_date
-    data = await _fmp_get("earning-calendar", params)
+    data = await _fmp_get("earnings-calendar", params)
     if not data:
         return "No upcoming earnings found"
     return json.dumps(data[:50] if isinstance(data, list) else data, indent=2)
@@ -192,6 +192,112 @@ async def get_stock_screener(
     data = await _fmp_get("stock-screener", params)
     if not data:
         return "No stocks match the criteria"
+    return json.dumps(data if isinstance(data, list) else [data], indent=2)
+
+
+@mcp.tool()
+async def get_balance_sheet(symbol: str, period: str = "quarterly", limit: int = 4) -> str:
+    """Get balance sheet: total assets, liabilities, equity, cash, debt.
+
+    Args:
+        symbol: Stock ticker
+        period: 'quarterly' or 'annual'
+        limit: Number of periods (default 4)
+    """
+    data = await _fmp_get("balance-sheet-statement", {"symbol": symbol, "period": period, "limit": limit})
+    if not data:
+        return f"No balance sheet data for {symbol}"
+    return json.dumps(data if isinstance(data, list) else [data], indent=2)
+
+
+@mcp.tool()
+async def get_cash_flow(symbol: str, period: str = "quarterly", limit: int = 4) -> str:
+    """Get cash flow statement: operating, investing, financing cash flows, free cash flow.
+
+    Args:
+        symbol: Stock ticker
+        period: 'quarterly' or 'annual'
+        limit: Number of periods (default 4)
+    """
+    data = await _fmp_get("cash-flow-statement", {"symbol": symbol, "period": period, "limit": limit})
+    if not data:
+        return f"No cash flow data for {symbol}"
+    return json.dumps(data if isinstance(data, list) else [data], indent=2)
+
+
+@mcp.tool()
+async def get_financial_ratios(symbol: str, period: str = "quarterly", limit: int = 4) -> str:
+    """Get financial ratios: profitability, liquidity, leverage, efficiency ratios.
+
+    Args:
+        symbol: Stock ticker
+        period: 'quarterly' or 'annual'
+        limit: Number of periods (default 4)
+    """
+    data = await _fmp_get("ratios", {"symbol": symbol, "period": period, "limit": limit})
+    if not data:
+        return f"No financial ratios for {symbol}"
+    return json.dumps(data if isinstance(data, list) else [data], indent=2)
+
+
+@mcp.tool()
+async def get_market_movers() -> str:
+    """Get today's biggest gainers, losers, and most active stocks."""
+    gainers = await _fmp_get("biggest-gainers") or []
+    losers = await _fmp_get("biggest-losers") or []
+    most_active = await _fmp_get("most-active") or []
+    return json.dumps({
+        "gainers": (gainers[:10] if isinstance(gainers, list) else []),
+        "losers": (losers[:10] if isinstance(losers, list) else []),
+        "most_active": (most_active[:10] if isinstance(most_active, list) else []),
+    }, indent=2)
+
+
+@mcp.tool()
+async def get_sector_performance() -> str:
+    """Get sector performance snapshot: daily change % for each sector."""
+    data = await _fmp_get("sector-performance-snapshot")
+    if not data:
+        return "No sector performance data"
+    return json.dumps(data if isinstance(data, list) else [data], indent=2)
+
+
+@mcp.tool()
+async def get_economic_calendar(from_date: str = "", to_date: str = "") -> str:
+    """Get upcoming economic events: GDP, CPI, jobs, Fed decisions.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD), defaults to today
+        to_date: End date (YYYY-MM-DD), defaults to 2 weeks out
+    """
+    params = {}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    data = await _fmp_get("economic-calendar", params)
+    if not data:
+        return "No upcoming economic events"
+    return json.dumps(data[:50] if isinstance(data, list) else data, indent=2)
+
+
+@mcp.tool()
+async def get_historical_price(symbol: str, from_date: str = "", to_date: str = "") -> str:
+    """Get historical daily price data (OHLCV) for a stock.
+
+    Args:
+        symbol: Stock ticker
+        from_date: Start date (YYYY-MM-DD)
+        to_date: End date (YYYY-MM-DD)
+    """
+    params = {"symbol": symbol}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    data = await _fmp_get("historical-price-eod/light", params)
+    if not data:
+        return f"No historical price data for {symbol}"
     return json.dumps(data if isinstance(data, list) else [data], indent=2)
 
 
