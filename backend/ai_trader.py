@@ -2974,10 +2974,11 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
                 sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
                 sector_counts[sector] = sector_counts.get(sector, 0) + 1
+            max_per_sector = config.get('ai_trader.allocation.max_stocks_per_sector', 4)
             for sector, count in sector_counts.items():
-                if count >= 3:
+                if count > max_per_sector:
                     send_risk_alert_webhook("sector_concentration",
-                                            f"Sector '{sector}' has {count} positions - concentration risk")
+                                            f"Sector '{sector}' has {count} positions - exceeds limit of {max_per_sector}")
             # Check drawdown
             if current_drawdown >= halt_threshold * 0.7:
                 send_risk_alert_webhook("drawdown",

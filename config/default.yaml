@@ -567,7 +567,7 @@ scale_in_pullbacks:
 
 # Morning Briefing Email
 morning_briefing:
-  enabled: true
+  enabled: false
   send_time_hour: 8                    # 8 AM Central Time
   send_time_minute: 0
   include_positions_at_risk: true      # Positions near stop loss
