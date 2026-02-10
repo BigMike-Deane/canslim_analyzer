@@ -1596,6 +1596,20 @@ def evaluate_sells(db: Session) -> list:
             if consecutive_low < consecutive_required:
                 logger.debug(f"{position.ticker}: SKIPPING SELL - only {consecutive_low} "
                             f"consecutive low score(s), need {consecutive_required}+")
+                # Send early warning push if at least 1 consecutive low scan
+                if consecutive_low >= 1:
+                    try:
+                        from email_utils import send_score_crash_warning_push
+                        send_score_crash_warning_push(
+                            ticker=position.ticker,
+                            purchase_score=purchase_score,
+                            current_score=score,
+                            gain_pct=gain_pct,
+                            consecutive_low=consecutive_low,
+                            consecutive_required=consecutive_required,
+                        )
+                    except Exception:
+                        pass  # Non-critical, don't break trading logic
                 continue
 
             # Build detailed reason with component breakdown

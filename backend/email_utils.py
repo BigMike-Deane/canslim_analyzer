@@ -141,22 +141,19 @@ CANSLIM Score: {stock.canslim_score:.0f}
 WEBHOOK_URL = os.environ.get('CANSLIM_WEBHOOK_URL', '')
 
 
-def send_webhook_notification(title: str, message: str, priority: str = "normal", data: dict = None) -> bool:
+def send_webhook_notification(title: str, message: str, priority: str = "default",
+                              data: dict = None, tags: list = None,
+                              click: str = None, markdown: bool = False) -> bool:
     """Send push notification via webhook (e.g., ntfy.sh, Pushover, or custom)
-
-    The webhook receives a JSON payload with:
-    - title: Notification title
-    - message: Notification body
-    - priority: "normal", "high", or "low"
-    - data: Optional extra data dict
-
-    Compatible with ntfy.sh, Pushover, Discord webhooks, and custom endpoints.
 
     Args:
         title: Notification title
         message: Notification body text
-        priority: Priority level ("normal", "high", "low")
+        priority: Priority level ("urgent", "high", "default", "low", "min")
         data: Optional extra data to include in payload
+        tags: Optional list of ntfy emoji tags (e.g. ["moneybag", "chart_with_upwards_trend"])
+        click: Optional URL to open when notification is tapped
+        markdown: If True, enable markdown formatting in ntfy
 
     Returns:
         True if notification sent successfully, False otherwise
@@ -173,15 +170,25 @@ def send_webhook_notification(title: str, message: str, priority: str = "normal"
     if data:
         payload["data"] = data
 
+    # Map word priorities to ntfy numeric levels
+    _ntfy_priority = {
+        "urgent": "5", "high": "4", "default": "3", "low": "2", "min": "1",
+    }
+
     # Handle different webhook formats
     try:
         # Check for ntfy.sh style (topic-based URL)
         if "ntfy" in WEBHOOK_URL:
-            # ntfy.sh uses a different format
             headers = {
                 "Title": title,
-                "Priority": "high" if priority == "high" else "default",
+                "Priority": _ntfy_priority.get(priority, "3"),
             }
+            if tags:
+                headers["Tags"] = ",".join(tags)
+            if click:
+                headers["Click"] = click
+            if markdown:
+                headers["Markdown"] = "yes"
             response = requests.post(WEBHOOK_URL, data=message.encode('utf-8'), headers=headers, timeout=10)
         else:
             # Standard JSON webhook (Pushover, Discord, custom)
@@ -236,7 +243,8 @@ def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
         "beat_streak": beat_streak,
     }
 
-    return send_webhook_notification(title, message, priority="high", data=data)
+    return send_webhook_notification(title, message, priority="high", data=data,
+                                     tags=["cyclone", "chart_with_upwards_trend"])
 
 
 def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
@@ -259,7 +267,14 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
     if gain_pct is not None:
         message = f"{ticker}: {shares:.2f} shares @ ${price:.2f} ({gain_pct:+.1f}%)\n{reason}"
 
-    return send_webhook_notification(title, message, priority="high")
+    if action == "BUY":
+        tags = ["moneybag", "chart_with_upwards_trend"]
+    elif gain_pct is not None and gain_pct >= 0:
+        tags = ["money_with_wings", "white_check_mark"]
+    else:
+        tags = ["money_with_wings", "chart_with_downwards_trend"]
+
+    return send_webhook_notification(title, message, priority="high", tags=tags)
 
 
 def send_stop_loss_webhook(ticker: str, shares: float, price: float,
@@ -279,7 +294,8 @@ def send_stop_loss_webhook(ticker: str, shares: float, price: float,
     title = f"{stop_type}: {ticker}"
     message = f"{ticker}: {shares:.2f} shares @ ${price:.2f} ({loss_pct:+.1f}%)\nAutomatic stop triggered"
 
-    return send_webhook_notification(title, message, priority="high")
+    return send_webhook_notification(title, message, priority="urgent",
+                                     tags=["rotating_light", "chart_with_downwards_trend"])
 
 
 def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
@@ -298,8 +314,121 @@ def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
         "position_size": "Position Size Alert",
         "drawdown": "Drawdown Warning",
     }
+    tag_map = {
+        "heat": ["fire", "warning"],
+        "sector_concentration": ["warning", "pie"],
+        "position_size": ["warning", "heavy_dollar_sign"],
+        "drawdown": ["rotating_light", "chart_with_downwards_trend"],
+    }
     title = titles.get(alert_type, f"Risk Alert: {alert_type}")
-    return send_webhook_notification(title, details, priority="high")
+    tags = tag_map.get(alert_type, ["warning"])
+    return send_webhook_notification(title, details, priority="high", tags=tags)
+
+
+def send_morning_briefing_push(briefing_data: dict) -> bool:
+    """Send compact morning briefing as a push notification.
+
+    Args:
+        briefing_data: Same dict used for the email briefing
+
+    Returns:
+        True if sent successfully
+    """
+    portfolio = briefing_data.get("portfolio", {})
+    regime = briefing_data.get("market_regime", {})
+    positions = briefing_data.get("positions", [])
+    candidates = briefing_data.get("top_candidates", [])
+    heat = briefing_data.get("portfolio_heat", 0)
+
+    total_value = portfolio.get("total_value", 0)
+    total_return_pct = portfolio.get("total_return_pct", 0)
+    cash = portfolio.get("cash", 0)
+    regime_name = regime.get("regime", "unknown").upper()
+
+    title = f"Morning Briefing - ${total_value:,.0f} ({total_return_pct:+.1f}%)"
+
+    lines = [f"Cash: ${cash:,.0f} | {regime_name} | Heat: {heat:.0f}%"]
+
+    # Top 3 positions
+    if positions:
+        top = sorted(positions, key=lambda p: abs(p.get("gain_pct", 0)), reverse=True)[:3]
+        pos_str = ", ".join(f"{p['ticker']} {p.get('gain_pct',0):+.1f}%" for p in top)
+        lines.append(f"Top: {pos_str}")
+
+    # Top 2 buy candidates
+    if candidates:
+        cand_str = ", ".join(f"{c['ticker']} ({c.get('score',0):.0f})" for c in candidates[:2])
+        lines.append(f"Buy: {cand_str}")
+
+    message = "\n".join(lines)
+
+    regime_tags = {"BULLISH": "green_circle", "BEARISH": "red_circle"}.get(regime_name, "yellow_circle")
+    return send_webhook_notification(title, message, priority="default",
+                                     tags=["sunrise", regime_tags])
+
+
+def send_scan_completion_push(stocks_scanned: int, total: int, scan_time: float,
+                              buys: list = None, sells: list = None) -> bool:
+    """Send push notification when a scan cycle completes.
+
+    Args:
+        stocks_scanned: Number of stocks successfully scanned
+        total: Total stocks attempted
+        scan_time: Scan duration in seconds
+        buys: List of buy trade dicts (optional)
+        sells: List of sell trade dicts (optional)
+
+    Returns:
+        True if sent successfully
+    """
+    buys = buys or []
+    sells = sells or []
+
+    title = f"Scan Complete: {stocks_scanned}/{total}"
+    lines = [f"Scanned in {scan_time:.0f}s"]
+
+    if buys or sells:
+        trade_parts = []
+        if buys:
+            trade_parts.append(f"{len(buys)} buy{'s' if len(buys) != 1 else ''}")
+        if sells:
+            trade_parts.append(f"{len(sells)} sell{'s' if len(sells) != 1 else ''}")
+        lines.append(f"Trades: {', '.join(trade_parts)}")
+
+    message = "\n".join(lines)
+    tags = ["mag"]
+    if buys or sells:
+        tags.append("bell")
+
+    return send_webhook_notification(title, message, priority="low", tags=tags)
+
+
+def send_score_crash_warning_push(ticker: str, purchase_score: float, current_score: float,
+                                  gain_pct: float, consecutive_low: int,
+                                  consecutive_required: int) -> bool:
+    """Send early warning when a held position's score is dropping toward auto-sell.
+
+    Args:
+        ticker: Stock ticker
+        purchase_score: Score when position was bought
+        current_score: Current CANSLIM score
+        gain_pct: Current gain/loss percentage
+        consecutive_low: How many consecutive low scans so far
+        consecutive_required: How many are needed to trigger auto-sell
+
+    Returns:
+        True if sent successfully
+    """
+    remaining = consecutive_required - consecutive_low
+    title = f"Score Warning: {ticker}"
+    message = (
+        f"{ticker}: {purchase_score:.0f} -> {current_score:.0f} (position {gain_pct:+.1f}%)\n"
+        f"{consecutive_low}/{consecutive_required} low scans - "
+        f"{remaining} more before auto-sell"
+    )
+
+    return send_webhook_notification(title, message, priority="high",
+                                     tags=["warning", "chart_with_downwards_trend"])
 
 
 def send_morning_briefing_email(briefing_data: dict) -> bool:

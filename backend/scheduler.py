@@ -484,6 +484,13 @@ def send_morning_briefing_if_due():
         else:
             logger.warning("Morning briefing email failed to send")
 
+        # Also send compact push notification
+        try:
+            from email_utils import send_morning_briefing_push
+            send_morning_briefing_push(briefing_data)
+        except Exception as e:
+            logger.error(f"Morning briefing push failed: {e}")
+
     except Exception as e:
         logger.error(f"Morning briefing generation error: {e}")
     finally:
@@ -1084,6 +1091,7 @@ def run_continuous_scan():
         _scan_config["phase_detail"] = "Running AI trading cycle..."
 
         # Run AI trading cycle after scan completes (only during market hours)
+        ai_trading_result = {}
         try:
             from backend.ai_trader import run_ai_trading_cycle, get_or_create_config, take_portfolio_snapshot, is_market_open
             ai_db = SessionLocal()
@@ -1091,8 +1099,8 @@ def run_continuous_scan():
             if config.is_active:
                 if is_market_open():
                     logger.info("Running AI trading cycle...")
-                    result = run_ai_trading_cycle(ai_db)
-                    logger.info(f"AI trading: {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+                    ai_trading_result = run_ai_trading_cycle(ai_db)
+                    logger.info(f"AI trading: {len(ai_trading_result.get('buys_executed', []))} buys, {len(ai_trading_result.get('sells_executed', []))} sells")
                     # Note: run_ai_trading_cycle already takes a snapshot
                 else:
                     logger.info("Market closed - skipping AI trading, taking snapshot only")
@@ -1128,6 +1136,19 @@ def run_continuous_scan():
             send_morning_briefing_if_due()
         except Exception as e:
             logger.error(f"Morning briefing error: {e}")
+
+        # Phase 7: Scan completion push notification
+        try:
+            from email_utils import send_scan_completion_push
+            send_scan_completion_push(
+                stocks_scanned=successful,
+                total=len(tickers),
+                scan_time=total_time,
+                buys=ai_trading_result.get("buys_executed", []),
+                sells=ai_trading_result.get("sells_executed", []),
+            )
+        except Exception as e:
+            logger.error(f"Scan completion push error: {e}")
 
     except Exception as e:
         logger.error(f"Scan error: {e}")
