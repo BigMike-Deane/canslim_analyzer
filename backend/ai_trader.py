@@ -1775,6 +1775,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
     profile = get_strategy_profile(strategy)
 
+    max_positions = profile.get('max_positions', 8)
+
     # Read min_score from strategy profile → YAML config → DB fallback
     min_score_to_buy = profile.get('min_score', yaml_config.get('ai_trader.allocation.min_score_to_buy', portfolio_config.min_score_to_buy))
 
@@ -2292,13 +2294,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
         max_position_value = portfolio_value * (position_pct / 100)
 
-        # Don't exceed available cash (allow more for high conviction entries)
-        if is_breaking_out:
-            cash_limit = portfolio_config.current_cash * 0.85
-        elif pre_breakout_bonus >= 15:
-            cash_limit = portfolio_config.current_cash * 0.80
+        # Budget cash evenly across remaining position slots
+        remaining_slots = max(1, max_positions - len(current_tickers))
+        available_cash = portfolio_config.current_cash * 0.90  # Keep 10% liquid buffer
+        per_slot_budget = available_cash / remaining_slots
+        # Allow high-conviction entries up to 1.3x the per-slot budget
+        if pre_breakout_bonus >= 35 or is_breaking_out:
+            cash_limit = per_slot_budget * 1.3
         else:
-            cash_limit = portfolio_config.current_cash * 0.70
+            cash_limit = per_slot_budget
+        cash_limit = max(cash_limit, 500)  # Floor
         position_value = min(max_position_value, cash_limit)
 
         # Check sector limits
