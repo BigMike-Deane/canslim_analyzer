@@ -539,11 +539,13 @@ class BacktestEngine:
                 price = self.data_provider.get_price_on_date(ticker, current_date)
                 if price and price > 0:
                     score = held_scores.get(ticker, {}).get("total_score", 0)
+                    cb_gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100 if position.cost_basis > 0 else 0
                     trade = SimulatedTrade(
                         ticker=ticker, action="SELL", shares=position.shares,
                         price=price, reason=f"CIRCUIT BREAKER: Portfolio drawdown {current_drawdown:.1f}%",
                         score=score, priority=0
                     )
+                    trade._signal_factors = {"sell_reason": "CIRCUIT BREAKER", "gain_pct": round(cb_gain_pct, 1), "drawdown_pct": round(current_drawdown, 1)}
                     self._execute_sell(current_date, trade)
             self._take_snapshot(current_date)
             return
@@ -1131,7 +1133,7 @@ class BacktestEngine:
             if gain_pct <= -effective_stop_loss_pct:
                 market_note = " (bearish market)" if is_bearish_market else ""
                 atr_note = f" (ATR-adj {effective_stop_loss_pct:.1f}%)" if use_atr_stops and effective_stop_loss_pct != base_stop_loss_pct else ""
-                sells.append(SimulatedTrade(
+                trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
@@ -1139,7 +1141,9 @@ class BacktestEngine:
                     reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}",
                     score=current_score,
                     priority=1
-                ))
+                )
+                trade._signal_factors = {"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(effective_stop_loss_pct, 1)}
+                sells.append(trade)
                 continue
 
             # Trailing stop check
@@ -1170,7 +1174,7 @@ class BacktestEngine:
                                 position.pyramid_count >= partial_min_pyramid and
                                 current_score >= partial_min_score):
                             shares_to_sell = position.shares * (partial_sell_pct / 100)
-                            sells.append(SimulatedTrade(
+                            trade = SimulatedTrade(
                                 ticker=ticker,
                                 action="SELL",
                                 shares=shares_to_sell,
@@ -1180,14 +1184,16 @@ class BacktestEngine:
                                 priority=2,
                                 is_partial=True,
                                 sell_pct=partial_sell_pct
-                            ))
+                            )
+                            trade._signal_factors = {"sell_reason": "PARTIAL TRAILING", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1), "sell_pct": partial_sell_pct}
+                            sells.append(trade)
                             # Reset peak to current price so remaining shares get a fresh wider stop
                             position.peak_price = price
                             position.peak_date = current_date
                         else:
                             # Standard: full sell
                             pyramid_note = f" (pyramid +{pyramid_widening:.0f}%)" if pyramid_widening > 0 else ""
-                            sells.append(SimulatedTrade(
+                            trade = SimulatedTrade(
                                 ticker=ticker,
                                 action="SELL",
                                 shares=position.shares,
@@ -1195,7 +1201,9 @@ class BacktestEngine:
                                 reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%){pyramid_note}",
                                 score=current_score,
                                 priority=2
-                            ))
+                            )
+                            trade._signal_factors = {"sell_reason": "TRAILING STOP", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1)}
+                            sells.append(trade)
                         continue
 
             # Score crash check with stability verification and profitability exception
@@ -1228,7 +1236,7 @@ class BacktestEngine:
                                 f"consecutive low score(s), need {consecutive_required}+")
                     continue
 
-                sells.append(SimulatedTrade(
+                trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
@@ -1237,7 +1245,9 @@ class BacktestEngine:
                            f"(avg: {stability['avg_score']:.0f}, {stability['consecutive_low']} low scans)",
                     score=current_score,
                     priority=3
-                ))
+                )
+                trade._signal_factors = {"sell_reason": "SCORE CRASH", "gain_pct": round(gain_pct, 1), "score_drop": round(score_drop, 1)}
+                sells.append(trade)
                 continue
 
             # PARTIAL PROFIT TAKING - let winners run while locking in gains
@@ -1249,7 +1259,7 @@ class BacktestEngine:
                 take_pct = pp_40_sell - partial_taken  # Take what's left to get to target
                 if take_pct > 0:
                     shares_to_sell = position.shares * (take_pct / 100)
-                    sells.append(SimulatedTrade(
+                    trade = SimulatedTrade(
                         ticker=ticker,
                         action="SELL",
                         shares=shares_to_sell,
@@ -1259,13 +1269,15 @@ class BacktestEngine:
                         priority=4,
                         is_partial=True,
                         sell_pct=take_pct
-                    ))
+                    )
+                    trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
+                    sells.append(trade)
                     continue  # Don't add more sell signals for this position
 
             # Check for lower tier partial at +25% gain
             elif gain_pct >= pp_25_gain and current_score >= pp_25_min_score and partial_taken < pp_25_sell:
                 shares_to_sell = position.shares * (pp_25_sell / 100)
-                sells.append(SimulatedTrade(
+                trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=shares_to_sell,
@@ -1275,13 +1287,15 @@ class BacktestEngine:
                     priority=5,
                     is_partial=True,
                     sell_pct=pp_25_sell
-                ))
+                )
+                trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": pp_25_sell}
+                sells.append(trade)
                 continue  # Don't add more sell signals for this position
 
             # TAKE PROFIT: Full sell at profile threshold if score declining significantly
             take_profit_pct = self.profile.get('take_profit_pct', 40.0)
             if gain_pct >= take_profit_pct and current_score < position.purchase_score - 15:
-                sells.append(SimulatedTrade(
+                trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
@@ -1289,12 +1303,14 @@ class BacktestEngine:
                     reason=f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly ({position.purchase_score:.0f} -> {current_score:.0f})",
                     score=current_score,
                     priority=7
-                ))
+                )
+                trade._signal_factors = {"sell_reason": "TAKE PROFIT", "gain_pct": round(gain_pct, 1)}
+                sells.append(trade)
                 continue
 
             # Protect gains - winners with weak scores
             if gain_pct >= 20 and current_score < self.backtest.sell_score_threshold:
-                sells.append(SimulatedTrade(
+                trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
@@ -1302,12 +1318,14 @@ class BacktestEngine:
                     reason=f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({current_score:.0f})",
                     score=current_score,
                     priority=6
-                ))
+                )
+                trade._signal_factors = {"sell_reason": "PROTECT GAINS", "gain_pct": round(gain_pct, 1)}
+                sells.append(trade)
                 continue
 
             # Weak flat positions
             if gain_pct < 10 and current_score < self.backtest.sell_score_threshold:
-                sells.append(SimulatedTrade(
+                trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
@@ -1315,7 +1333,9 @@ class BacktestEngine:
                     reason=f"WEAK POSITION: {gain_pct:+.1f}%, score {current_score:.0f}",
                     score=current_score,
                     priority=6
-                ))
+                )
+                trade._signal_factors = {"sell_reason": "WEAK POSITION", "gain_pct": round(gain_pct, 1)}
+                sells.append(trade)
 
         # Sort by priority
         sells.sort(key=lambda x: x.priority)
