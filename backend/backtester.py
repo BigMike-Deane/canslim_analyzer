@@ -1717,9 +1717,12 @@ class BacktestEngine:
 
             # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
-            # Position sizing (4-regime_max_pct based on conviction, matches live trader)
+            # Position sizing: equal-weight floor with conviction scaling (matches live trader)
+            max_positions = self.profile.get('max_positions', self.backtest.max_positions)
+            min_position_pct = 90.0 / max_positions  # Equal-weight floor (11.25% for 8 slots)
             conviction_multiplier = min(composite_score / 50, 1.5)
-            position_pct = 4.0 + (conviction_multiplier * (regime_max_pct - 4) / 1.5)
+            conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
+            position_pct = max(min_position_pct, conviction_pct)
 
             # Half-size positions when portfolio heat is elevated
             if self.heat_penalty_active:
@@ -1772,13 +1775,16 @@ class BacktestEngine:
 
             position_value = portfolio_value * (position_pct / 100)
 
-            # Allow more cash for breakout/pre-breakout stocks
-            if is_breaking_out:
-                cash_limit = self.cash * 0.85
-            elif pre_breakout_bonus >= 15:
-                cash_limit = self.cash * 0.80
+            # Budget cash evenly across remaining position slots (matches live trader)
+            remaining_slots = max(1, max_positions - len(self.positions))
+            available_cash = self.cash * 0.90  # Keep 10% liquid buffer
+            per_slot_budget = available_cash / remaining_slots
+            # Allow high-conviction entries up to 1.3x the per-slot budget
+            if pre_breakout_bonus >= 35 or is_breaking_out:
+                cash_limit = per_slot_budget * 1.3
             else:
-                cash_limit = self.cash * 0.70
+                cash_limit = per_slot_budget
+            cash_limit = max(cash_limit, 500)  # Floor
             position_value = min(position_value, cash_limit)
 
             if position_value < 100:

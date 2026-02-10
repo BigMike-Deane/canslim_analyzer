@@ -2255,10 +2255,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         drawdown_info = get_portfolio_drawdown(db)
         drawdown_multiplier = drawdown_info["position_multiplier"]
 
-        # Position sizing: 4-regime_max_pct based on conviction
-        # Base: 4% minimum, scale up to regime_max_pct for highest conviction picks
+        # Position sizing: equal-weight floor with conviction scaling up to regime_max_pct
+        min_position_pct = 90.0 / max_positions  # Equal-weight floor (11.25% for 8 slots)
         conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
-        position_pct = 4.0 + (conviction_multiplier * (regime_max_pct - 4) / 1.5)  # Dynamic range
+        conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
+        position_pct = max(min_position_pct, conviction_pct)
 
         # Half-size positions when portfolio heat is elevated
         if heat_penalty_active:
