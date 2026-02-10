@@ -229,7 +229,7 @@ class TestTrailingStopLogic:
         return mock_session, mock_backtest
 
     def test_trailing_stop_50_pct_winner(self, mock_db):
-        """Test 15% trailing stop for 50%+ winners"""
+        """Test 20% trailing stop for 50%+ winners"""
         from backend.backtester import BacktestEngine, SimulatedPosition
 
         mock_session, mock_backtest = mock_db
@@ -251,9 +251,9 @@ class TestTrailingStopLogic:
         # Mock data provider
         engine.data_provider = MagicMock()
 
-        # Current price at $136 = 15% drop from peak
-        # Should trigger trailing stop (15% threshold for 50%+ gains)
-        engine.data_provider.get_price_on_date.return_value = 136.0
+        # Current price at $128 = 20% drop from peak of $160
+        # Should trigger trailing stop (20% threshold for 50%+ gains)
+        engine.data_provider.get_price_on_date.return_value = 128.0
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}  # Bullish market
         engine.data_provider.get_atr.return_value = 2.0  # Normal ATR
         engine.data_provider.get_vix_proxy.return_value = 18.0
@@ -758,14 +758,14 @@ class TestPyramidAwareTrailingStops:
         assert len(sells) == 0
 
     def test_no_pyramid_uses_standard_stop(self):
-        """0 pyramids = standard trailing stop (should trigger at 15%)"""
+        """0 pyramids = standard trailing stop (should trigger at 20% for 50%+ gains)"""
         from backend.backtester import BacktestEngine, SimulatedPosition
 
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)
 
-        # Position peaked at $200 (100% gain), now at $170 (15% from peak)
-        # With 0 pyramids, trailing stop = 15%, so 15% drop should trigger
+        # Position peaked at $200 (100% gain), now at $160 (20% from peak)
+        # With 0 pyramids, trailing stop = 20% for 50%+ gains, so 20% drop should trigger
         engine.positions["AAPL"] = SimulatedPosition(
             ticker="AAPL", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=60),
@@ -775,12 +775,12 @@ class TestPyramidAwareTrailingStops:
         )
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 170.0  # 15% from peak
+        engine.data_provider.get_price_on_date.return_value = 160.0  # 20% from peak
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
         engine.data_provider.get_atr.return_value = 2.0
         engine.data_provider.get_vix_proxy.return_value = 18.0
 
-        sells = engine._evaluate_sells(date.today(), {"AAPL": {"total_score": 70}})
+        sells = engine._evaluate_sells(date.today(), {"AAPL": {"total_score": 55}})
         assert len(sells) == 1
         assert "TRAILING STOP" in sells[0].reason
 
@@ -795,8 +795,8 @@ class TestPartialTrailingStop:
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)
 
-        # Position peaked at $200 (100% gain), now at $158 (21% from peak)
-        # With 2 pyramids: trailing = 15% + 4% = 19%, drop 21% > 19% -> triggers
+        # Position peaked at $200 (100% gain), now at $150 (25% from peak)
+        # With 2 pyramids: trailing = 20% + 4% = 24%, drop 25% > 24% -> triggers
         engine.positions["IESC"] = SimulatedPosition(
             ticker="IESC", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=90),
@@ -806,7 +806,7 @@ class TestPartialTrailingStop:
         )
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 158.0
+        engine.data_provider.get_price_on_date.return_value = 150.0
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
         engine.data_provider.get_atr.return_value = 2.0
         engine.data_provider.get_vix_proxy.return_value = 18.0
@@ -817,7 +817,7 @@ class TestPartialTrailingStop:
         assert sells[0].is_partial is True
         assert sells[0].shares == 50  # 50% of 100 shares
         # Peak should have been reset
-        assert engine.positions["IESC"].peak_price == 158.0
+        assert engine.positions["IESC"].peak_price == 150.0
 
     def test_full_sell_on_trailing_stop_low_conviction(self):
         """No pyramids = full sell even if score is high"""
@@ -826,7 +826,8 @@ class TestPartialTrailingStop:
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)
 
-        # Same setup but 0 pyramids -> full sell
+        # 0 pyramids, peaked at $200 (100% gain), now at $160 (20% from peak)
+        # trailing = 20% for 50%+ gains, drop 20% >= 20% -> triggers full sell
         engine.positions["TEST"] = SimulatedPosition(
             ticker="TEST", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=90),
@@ -836,12 +837,12 @@ class TestPartialTrailingStop:
         )
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 170.0  # 15% from peak
+        engine.data_provider.get_price_on_date.return_value = 160.0  # 20% from peak
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
         engine.data_provider.get_atr.return_value = 2.0
         engine.data_provider.get_vix_proxy.return_value = 18.0
 
-        sells = engine._evaluate_sells(date.today(), {"TEST": {"total_score": 70}})
+        sells = engine._evaluate_sells(date.today(), {"TEST": {"total_score": 55}})
         assert len(sells) == 1
         assert sells[0].is_partial is False
         assert sells[0].shares == 100  # Full position
@@ -1622,24 +1623,24 @@ class TestTakeProfit:
     """Tests for TAKE PROFIT sell in backtester (P2 fix 2.2)"""
 
     def test_take_profit_full_sell(self):
-        """+45% gain, score down 20 from purchase -> sell"""
+        """+80% gain, score down 20 from purchase -> sell"""
         from backend.backtester import BacktestEngine, SimulatedPosition
 
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)
 
-        # Position bought at $100, now at $145 (+45% gain)
+        # Position bought at $100, now at $180 (+80% gain)
         # Purchase score 80, current score 55 (dropped 25 > 15)
         engine.positions["PROFIT"] = SimulatedPosition(
             ticker="PROFIT", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=90),
-            purchase_score=80.0, peak_price=150.0,
+            purchase_score=80.0, peak_price=185.0,
             peak_date=date.today() - timedelta(days=5),
             sector="Technology", partial_profit_taken=50.0  # Already took partials
         )
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 145.0
+        engine.data_provider.get_price_on_date.return_value = 180.0
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
         engine.data_provider.get_atr.return_value = 2.0
         engine.data_provider.get_vix_proxy.return_value = 18.0
@@ -1647,7 +1648,7 @@ class TestTakeProfit:
         scores = {"PROFIT": {"total_score": 55}}
         sells = engine._evaluate_sells(date.today(), scores)
 
-        # Should trigger TAKE PROFIT (gain 45% >= 40%, score drop 80-55=25 > 15)
+        # Should trigger TAKE PROFIT (gain 80% >= 75%, score drop 80-55=25 > 15)
         take_profits = [s for s in sells if "TAKE PROFIT" in s.reason]
         assert len(take_profits) == 1
         assert take_profits[0].shares == 100  # Full sell
@@ -2328,14 +2329,16 @@ class TestStrategyProfiles:
     """Test strategy profile loading and application"""
 
     def test_get_strategy_profile_balanced(self):
-        """Balanced profile returns expected defaults"""
+        """Balanced profile returns expected defaults with ride-winners sell logic"""
         from backend.backtester import get_strategy_profile
         profile = get_strategy_profile("balanced")
         assert profile.get('min_score') == 72
         assert profile.get('max_positions') == 8
         assert profile.get('stop_loss_pct') == 8.0
-        assert profile.get('take_profit_pct') == 40.0
+        assert profile.get('take_profit_pct') == 75.0
         assert profile.get('seed_count') == 5
+        assert profile.get('score_crash_drop_required') == 25
+        assert profile.get('score_crash_ignore_if_profitable') == 20
 
     def test_get_strategy_profile_growth(self):
         """Growth profile returns growth overrides"""

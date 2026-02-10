@@ -589,17 +589,17 @@ backtester:
 strategy_profiles:
   balanced:
     label: "Balanced (Default)"
-    description: "Standard CANSLIM with risk management"
+    description: "Standard CANSLIM with ride-winners sell discipline"
     min_score: 72
     max_positions: 8
     max_single_position_pct: 25
     max_sector_pct: 50
     stop_loss_pct: 8.0
     bearish_stop_loss_pct: 7.0
-    take_profit_pct: 40.0
+    take_profit_pct: 75.0                 # Let winners run (was 40) — proven in #90
     trailing_stops:
-      gain_50_plus: 15
-      gain_30_to_50: 12
+      gain_50_plus: 20                    # Wider for big winners (was 15) — proven in #90
+      gain_30_to_50: 15                   # Wider (was 12) — give room for consolidation
       gain_20_to_30: 10
       gain_10_to_20: 8
     seed_count: 5
@@ -614,6 +614,9 @@ strategy_profiles:
       momentum: 0.20
       breakout: 0.20
       base_quality: 0.10
+    # Ride-winners sell discipline — don't shake out profitable positions
+    score_crash_drop_required: 25         # Require bigger score drop before selling (was 20)
+    score_crash_ignore_if_profitable: 20  # Hold if up 20%+ through score dips (was 10%)
 
   growth:
     label: "Growth Mode"
