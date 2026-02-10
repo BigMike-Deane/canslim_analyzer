@@ -1103,11 +1103,10 @@ def run_continuous_scan():
                     logger.info(f"AI trading: {len(ai_trading_result.get('buys_executed', []))} buys, {len(ai_trading_result.get('sells_executed', []))} sells")
                     # Note: run_ai_trading_cycle already takes a snapshot
                 else:
-                    logger.info("Market closed - skipping AI trading, taking snapshot only")
-                    take_portfolio_snapshot(ai_db)
+                    logger.info("Market closed - skipping AI trading and snapshot")
             else:
-                # Only take snapshot if trading didn't run (trading cycle takes its own)
-                take_portfolio_snapshot(ai_db)
+                if is_market_open():
+                    take_portfolio_snapshot(ai_db)
             ai_db.close()
         except Exception as e:
             logger.error(f"AI trading error: {e}")
