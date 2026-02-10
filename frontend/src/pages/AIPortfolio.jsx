@@ -31,17 +31,21 @@ function PerformanceChart({ history, startingCash }) {
     }
 
     // For longer views with many data points, dedupe to latest per day
+    // But only if there are enough unique days to make a readable chart (7+)
     if (range !== '24h' && filtered.length > 60) {
-      const byDay = {}
-      for (const d of filtered) {
-        const dayKey = new Date(d.timestamp || d.date).toISOString().slice(0, 10)
-        if (!byDay[dayKey] || new Date(d.timestamp || d.date) > new Date(byDay[dayKey].timestamp || byDay[dayKey].date)) {
-          byDay[dayKey] = d
+      const uniqueDays = new Set(filtered.map(d => new Date(d.timestamp || d.date).toISOString().slice(0, 10)))
+      if (uniqueDays.size >= 7) {
+        const byDay = {}
+        for (const d of filtered) {
+          const dayKey = new Date(d.timestamp || d.date).toISOString().slice(0, 10)
+          if (!byDay[dayKey] || new Date(d.timestamp || d.date) > new Date(byDay[dayKey].timestamp || byDay[dayKey].date)) {
+            byDay[dayKey] = d
+          }
         }
+        filtered = Object.values(byDay).sort((a, b) =>
+          new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date)
+        )
       }
-      filtered = Object.values(byDay).sort((a, b) =>
-        new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date)
-      )
     }
 
     return filtered
@@ -419,22 +423,8 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [isEditing, setIsEditing] = useState(false)
-  const [editedConfig, setEditedConfig] = useState({
-    min_score_to_buy: config?.min_score_to_buy || 65,
-    sell_score_threshold: config?.sell_score_threshold || 45,
-    take_profit_pct: config?.take_profit_pct || 40,
-    stop_loss_pct: config?.stop_loss_pct || 10
-  })
-
   useEffect(() => {
     setIsActive(config?.is_active || false)
-    setEditedConfig({
-      min_score_to_buy: config?.min_score_to_buy || 65,
-      sell_score_threshold: config?.sell_score_threshold || 45,
-      take_profit_pct: config?.take_profit_pct || 40,
-      stop_loss_pct: config?.stop_loss_pct || 10
-    })
   }, [config])
 
   const handleToggle = async () => {
@@ -478,25 +468,6 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
     }
   }
 
-  const handleSaveConfig = async () => {
-    setUpdating(true)
-    try {
-      await onUpdate(editedConfig)
-      setIsEditing(false)
-    } finally {
-      setUpdating(false)
-    }
-  }
-
-  const handleCancelEdit = () => {
-    setEditedConfig({
-      min_score_to_buy: config?.min_score_to_buy || 65,
-      sell_score_threshold: config?.sell_score_threshold || 45,
-      take_profit_pct: config?.take_profit_pct || 40,
-      stop_loss_pct: config?.stop_loss_pct || 10
-    })
-    setIsEditing(false)
-  }
 
   return (
     <div className="card mb-4">
@@ -527,91 +498,22 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       <div className="grid grid-cols-2 gap-3 text-sm mb-3">
         <div>
           <div className="text-dark-400 text-xs">Min Score to Buy</div>
-          {isEditing ? (
-            <input
-              type="number"
-              min="50"
-              max="100"
-              value={editedConfig.min_score_to_buy}
-              onChange={(e) => setEditedConfig({ ...editedConfig, min_score_to_buy: parseInt(e.target.value) || 65 })}
-              className="w-full mt-1 px-2 py-1 bg-dark-700 border border-dark-500 rounded text-sm focus:outline-none focus:border-primary-500"
-            />
-          ) : (
-            <div className="font-medium">{config?.min_score_to_buy || 65}</div>
-          )}
+          <div className="font-medium">72</div>
         </div>
         <div>
-          <div className="text-dark-400 text-xs">Sell Below Score</div>
-          {isEditing ? (
-            <input
-              type="number"
-              min="20"
-              max="80"
-              value={editedConfig.sell_score_threshold}
-              onChange={(e) => setEditedConfig({ ...editedConfig, sell_score_threshold: parseInt(e.target.value) || 45 })}
-              className="w-full mt-1 px-2 py-1 bg-dark-700 border border-dark-500 rounded text-sm focus:outline-none focus:border-primary-500"
-            />
-          ) : (
-            <div className="font-medium">{config?.sell_score_threshold || 45}</div>
-          )}
+          <div className="text-dark-400 text-xs">Strategy</div>
+          <div className="font-medium capitalize">{config?.strategy || 'balanced'}</div>
         </div>
         <div>
-          <div className="text-dark-400 text-xs">Take Profit %</div>
-          {isEditing ? (
-            <input
-              type="number"
-              min="10"
-              max="100"
-              value={editedConfig.take_profit_pct}
-              onChange={(e) => setEditedConfig({ ...editedConfig, take_profit_pct: parseFloat(e.target.value) || 40 })}
-              className="w-full mt-1 px-2 py-1 bg-dark-700 border border-dark-500 rounded text-sm focus:outline-none focus:border-primary-500"
-            />
-          ) : (
-            <div className="font-medium text-green-400">+{config?.take_profit_pct || 40}%</div>
-          )}
+          <div className="text-dark-400 text-xs">Take Profit</div>
+          <div className="font-medium text-green-400">+75%</div>
         </div>
         <div>
-          <div className="text-dark-400 text-xs">Stop Loss %</div>
-          {isEditing ? (
-            <input
-              type="number"
-              min="5"
-              max="50"
-              value={editedConfig.stop_loss_pct}
-              onChange={(e) => setEditedConfig({ ...editedConfig, stop_loss_pct: parseFloat(e.target.value) || 10 })}
-              className="w-full mt-1 px-2 py-1 bg-dark-700 border border-dark-500 rounded text-sm focus:outline-none focus:border-primary-500"
-            />
-          ) : (
-            <div className="font-medium text-red-400">-{config?.stop_loss_pct || 10}%</div>
-          )}
+          <div className="text-dark-400 text-xs">Stop Loss</div>
+          <div className="font-medium text-red-400">-8%</div>
         </div>
       </div>
 
-      {isEditing ? (
-        <div className="flex gap-2 mb-3">
-          <button
-            onClick={handleSaveConfig}
-            disabled={updating}
-            className="flex-1 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            {updating ? 'Saving...' : 'Save Settings'}
-          </button>
-          <button
-            onClick={handleCancelEdit}
-            className="flex-1 py-2 bg-dark-600 hover:bg-dark-500 rounded-lg text-sm font-medium transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setIsEditing(true)}
-          className="w-full py-2 mb-3 bg-dark-600 hover:bg-dark-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
-        >
-          <span>✎</span>
-          <span>Edit Settings</span>
-        </button>
-      )}
 
       <div className="flex gap-2 mb-2">
         <button
