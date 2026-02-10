@@ -1870,10 +1870,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if not effective_score or effective_score < effective_min_score:
             # BEAR MARKET EXCEPTION: Allow strong fundamental stocks at half position size
             if market_regime["regime"] == "bearish" and effective_score and effective_score >= min_score_to_buy:
-                score_details = stock.score_details or {}
-                c_val = score_details.get('c', {}).get('score', 0) if isinstance(score_details.get('c'), dict) else score_details.get('c', 0)
-                a_val = score_details.get('a', {}).get('score', 0) if isinstance(score_details.get('a'), dict) else score_details.get('a', 0)
-                l_val = score_details.get('l', {}).get('score', 0) if isinstance(score_details.get('l'), dict) else score_details.get('l', 0)
+                c_val = getattr(stock, 'c_score', 0) or 0
+                a_val = getattr(stock, 'a_score', 0) or 0
+                l_val = getattr(stock, 'l_score', 0) or 0
                 cal_sum = c_val + a_val + l_val
                 if cal_sum >= bear_exception_min_cal:
                     bear_exception_candidates.append(stock)
@@ -1889,10 +1888,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         min_volume_ratio = quality_config.get('min_volume_ratio', 1.2)
         skip_growth = quality_config.get('skip_in_growth_mode', True)
 
-        # Get individual scores from score_details
-        score_details = stock.score_details or {}
-        c_score = score_details.get('c', {}).get('score', 0) if isinstance(score_details.get('c'), dict) else score_details.get('c', 0)
-        l_score = score_details.get('l', {}).get('score', 0) if isinstance(score_details.get('l'), dict) else score_details.get('l', 0)
+        # Get individual scores from Stock model columns
+        c_score = getattr(stock, 'c_score', 0) or 0
+        l_score = getattr(stock, 'l_score', 0) or 0
         volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
 
@@ -2205,10 +2203,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             c_weight = profile.get('c_score_weight', 1.0)
             l_weight = profile.get('l_score_weight', 1.0)
             n_weight = profile.get('n_score_weight', 1.0)
-            sd = stock.score_details or {}
-            c_sc = sd.get('c', {}).get('score', 0) if isinstance(sd.get('c'), dict) else sd.get('c', 0)
-            l_sc = sd.get('l', {}).get('score', 0) if isinstance(sd.get('l'), dict) else sd.get('l', 0)
-            n_sc = sd.get('n', {}).get('score', 0) if isinstance(sd.get('n'), dict) else sd.get('n', 0)
+            c_sc = getattr(stock, 'c_score', 0) or 0
+            l_sc = getattr(stock, 'l_score', 0) or 0
+            n_sc = getattr(stock, 'n_score', 0) or 0
             weighted_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
         growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
