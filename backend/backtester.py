@@ -147,6 +147,10 @@ class BacktestEngine:
             def update_progress(pct):
                 self.backtest.progress_pct = pct * 0.3  # Loading is 30% of total
                 self.db.commit()
+                # Check for cancellation during data loading
+                self.db.refresh(self.backtest)
+                if self.backtest.cancel_requested or self.backtest.status == "cancelled":
+                    raise ValueError("Cancelled by user")
 
             success = self.data_provider.preload_data(
                 self.backtest.start_date,
@@ -217,7 +221,7 @@ class BacktestEngine:
                 # Check for cancellation request every 10 days
                 if i % 10 == 0:
                     self.db.refresh(self.backtest)
-                    if self.backtest.cancel_requested:
+                    if self.backtest.cancel_requested or self.backtest.status == "cancelled":
                         logger.info(f"Backtest {self.backtest.id} cancelled by user at {i}/{total_days} days")
                         self.backtest.status = "cancelled"
                         self.backtest.error_message = f"Cancelled by user at {progress:.0f}% progress"
@@ -247,6 +251,12 @@ class BacktestEngine:
             return self.backtest
 
         except Exception as e:
+            if "Cancelled by user" in str(e):
+                logger.info(f"Backtest {self.backtest.id} cancelled during data loading")
+                self.backtest.status = "cancelled"
+                self.backtest.error_message = "Cancelled by user"
+                self.db.commit()
+                return self.backtest
             logger.error(f"Backtest {self.backtest.id} failed: {e}")
             self.backtest.status = "failed"
             self.backtest.error_message = str(e)

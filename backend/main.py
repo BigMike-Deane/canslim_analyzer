@@ -3325,41 +3325,22 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
     if backtest.status not in ("pending", "running"):
         raise HTTPException(400, f"Cannot cancel backtest with status: {backtest.status}")
 
-    # Check if backtest is stuck (running for more than 2 hours or no progress for 10+ minutes)
-    # If stuck, directly cancel it since the background process is likely dead
-    is_stuck = False
-    if backtest.created_at:
-        created_at = backtest.created_at
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        time_since_created = (datetime.now(timezone.utc) - created_at).total_seconds()
-        # Consider stuck if running for more than 2 hours
-        if time_since_created > 7200:
-            is_stuck = True
-            logger.info(f"Backtest {backtest_id} appears stuck (running for {time_since_created/3600:.1f} hours)")
+    # Set the flag so the backtester loop picks it up if still running
+    backtest.cancel_requested = True
 
-    if is_stuck:
-        # Directly cancel the backtest since the process is dead
-        backtest.status = "cancelled"
-        backtest.completed_at = datetime.now(timezone.utc)
-        backtest.error_message = "Cancelled by user (backtest was stuck)"
-        db.commit()
-        logger.info(f"Directly cancelled stuck backtest {backtest_id}")
-        return {
-            "message": "Backtest cancelled (was stuck)",
-            "id": backtest.id,
-            "status": "cancelled"
-        }
-    else:
-        # Normal cancel - set flag for running process to check
-        backtest.cancel_requested = True
-        db.commit()
-        logger.info(f"Cancellation requested for backtest {backtest_id}")
-        return {
-            "message": "Cancellation requested",
-            "id": backtest.id,
-            "status": backtest.status
-        }
+    # Also force-cancel immediately — the background thread may be stuck in data loading
+    # or the process may be dead. The backtester's own cancel check will be a no-op
+    # if we've already set the status here.
+    backtest.status = "cancelled"
+    backtest.completed_at = datetime.now(timezone.utc)
+    backtest.error_message = "Cancelled by user"
+    db.commit()
+    logger.info(f"Backtest {backtest_id} cancelled by user (was at {backtest.progress_pct or 0:.0f}%)")
+    return {
+        "message": "Backtest cancelled",
+        "id": backtest.id,
+        "status": "cancelled"
+    }
 
 
 # ============== Trade Analytics ==============
