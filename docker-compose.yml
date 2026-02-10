@@ -31,6 +31,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: canslim-postgres
+    ports:
+      - "100.104.189.36:5432:5432"  # Tailscale-only access for MCP/dev tools
     environment:
       POSTGRES_DB: canslim
       POSTGRES_USER: canslim
