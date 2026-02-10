@@ -2488,7 +2488,11 @@ def run_ai_trading_cycle(db: Session) -> dict:
     try:
         config = get_or_create_config(db)
         paper_mode = getattr(config, 'paper_mode', False) or False
-        logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}, Paper: {paper_mode}")
+        strategy = getattr(config, 'strategy', None) or "balanced"
+        profile = get_strategy_profile(strategy)
+        # Profile-driven max positions (concentrated portfolio = higher returns)
+        max_positions = profile.get('max_positions', config.max_positions)
+        logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}, Paper: {paper_mode}, Strategy: {strategy}, Max positions: {max_positions}")
 
         if not config.is_active:
             logger.info("AI Portfolio is not active, skipping cycle")
@@ -2811,7 +2815,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
         elif config.current_cash < min_cash_reserve:
             logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve (${min_cash_reserve:.2f}), regime={market_regime['regime']}, skipping buys")
-        elif position_count < config.max_positions:
+        elif position_count < max_positions:
             # Evaluate and execute buys (only if we have room for more positions)
             logger.info("Evaluating buy candidates from Stock table...")
             buys = evaluate_buys(db, ftd_penalty_active=ftd_penalty_active, heat_penalty_active=heat_penalty_active)
@@ -2829,8 +2833,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve, stopping buys")
                     break
 
-                if position_count >= config.max_positions:
-                    logger.info(f"Max positions ({config.max_positions}) reached, stopping buys")
+                if position_count >= max_positions:
+                    logger.info(f"Max positions ({max_positions}) reached, stopping buys")
                     break
 
                 stock = buy["stock"]
