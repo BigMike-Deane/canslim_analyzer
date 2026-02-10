@@ -3270,7 +3270,9 @@ async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
                 "reason": t.reason,
                 "score": t.canslim_score,
                 "gain_pct": t.realized_gain_pct,
-                "holding_days": t.holding_days
+                "holding_days": t.holding_days,
+                "realized_gain": t.realized_gain,
+                "signal_factors": t.signal_factors
             } for t in trades
         ],
         "statistics": {
