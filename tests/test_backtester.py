@@ -2410,3 +2410,110 @@ class TestStrategyProfiles:
         profile = get_strategy_profile("growth")
         assert profile.get('score_crash_drop_required') == 25        # vs 20 balanced
         assert profile.get('score_crash_ignore_if_profitable') == 20  # vs 10% balanced
+
+
+class TestEstimateRevisionBonus:
+    """Test analyst estimate revision bonus in backtester (synced with ai_trader)"""
+
+    def _make_engine_with_revision(self, mock_config, revision_pct):
+        """Helper: create engine with a stock that has given eps_estimate_revision_pct."""
+        from backend.backtester import BacktestEngine
+
+        def config_get(key, default=None):
+            config_data = {
+                'ai_trader.allocation': {'min_score_to_buy': 72, 'max_single_position': 0.15},
+                'ai_trader.market_regime': {
+                    'enabled': True, 'bullish_threshold': 1.5,
+                    'bearish_threshold': -0.5,
+                    'bullish_max_position_pct': 15.0,
+                    'neutral_max_position_pct': 12.0,
+                    'bearish_max_position_pct': 8.0,
+                    'bearish_min_score_adj': 10,
+                    'bear_exception_min_cal': 35,
+                    'bear_exception_position_mult': 0.50,
+                },
+                'ai_trader.quality_filters': {
+                    'min_c_score': 10, 'min_l_score': 8,
+                    'min_volume_ratio': 1.0, 'skip_in_growth_mode': True,
+                },
+                'ai_trader.analyst_revisions': {
+                    'strong_up_threshold': 10,
+                    'strong_up_bonus': 5,
+                    'mod_up_bonus': 3,
+                    'strong_down_threshold': -10,
+                    'strong_down_penalty': -5,
+                    'mod_down_penalty': -2,
+                },
+                'volume_gate': {'enabled': False},
+                'coiled_spring': {},
+                'rs_line': {'enabled': False},
+                'earnings_drift': {'enabled': False},
+                'correlation_sizing': {'enabled': False},
+            }
+            return config_data.get(key, default if default is not None else {})
+
+        mock_config.get = config_get
+        mock_session, _ = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.cash = 20000
+        engine.static_data = {
+            "REV1": {
+                "sector": "Technology",
+                "eps_estimate_revision_pct": revision_pct,
+            }
+        }
+
+        score_data = {
+            "REV1": {
+                "total_score": 85, "c_score": 14, "l_score": 12,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 25, "rs_12m": 1.1, "rs_3m": 1.05,
+            }
+        }
+        buys = engine._evaluate_buys(date.today(), score_data)
+        return buys
+
+    @patch('backend.backtester.config')
+    def test_strong_positive_revision(self, mock_config):
+        """Strong upward revision (+10%) gives +5 bonus"""
+        buys = self._make_engine_with_revision(mock_config, 12.0)
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf["estimate_revision_bonus"] == 5
+
+    @patch('backend.backtester.config')
+    def test_moderate_positive_revision(self, mock_config):
+        """Moderate upward revision (+7%) gives +3 bonus"""
+        buys = self._make_engine_with_revision(mock_config, 7.0)
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf["estimate_revision_bonus"] == 3
+
+    @patch('backend.backtester.config')
+    def test_strong_negative_revision(self, mock_config):
+        """Strong downward revision (-12%) gives -5 penalty"""
+        buys = self._make_engine_with_revision(mock_config, -12.0)
+        if buys:
+            sf = buys[0]._signal_factors
+            assert sf["estimate_revision_bonus"] == -5
+
+    @patch('backend.backtester.config')
+    def test_moderate_negative_revision(self, mock_config):
+        """Moderate downward revision (-7%) gives -2 penalty"""
+        buys = self._make_engine_with_revision(mock_config, -7.0)
+        if buys:
+            sf = buys[0]._signal_factors
+            assert sf["estimate_revision_bonus"] == -2
+
+    @patch('backend.backtester.config')
+    def test_none_revision_no_crash(self, mock_config):
+        """None revision_pct should not crash and gives 0 bonus"""
+        buys = self._make_engine_with_revision(mock_config, None)
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf["estimate_revision_bonus"] == 0

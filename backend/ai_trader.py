@@ -2368,6 +2368,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             "market_regime": market_regime["regime"],
             "rs_line_bonus": rs_line_bonus,
             "earnings_drift_bonus": earnings_drift_bonus,
+            "estimate_revision_bonus": estimate_revision_bonus,
             "composite_score": round(composite_score, 1),
         }
         if coiled_spring_bonus > 0:

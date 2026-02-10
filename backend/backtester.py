@@ -337,6 +337,7 @@ class BacktestEngine:
                 "weeks_in_base": getattr(stock, 'weeks_in_base', 0) or 0,
                 "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', 0) or 0,
                 "days_to_earnings": getattr(stock, 'days_to_earnings', None),
+                "eps_estimate_revision_pct": getattr(stock, 'eps_estimate_revision_pct', None),
             }
 
     def _fetch_missing_earnings(self):
@@ -1661,6 +1662,26 @@ class BacktestEngine:
                     elif beat_streak >= 3:
                         earnings_drift_bonus = 3
 
+            # ANALYST REVISION BONUS: Reward stocks where analysts are raising estimates
+            estimate_revision_bonus = 0
+            revision_pct = self.static_data.get(ticker, {}).get('eps_estimate_revision_pct')
+            revision_config = config.get('ai_trader.analyst_revisions', {})
+            if revision_pct is not None:
+                strong_up_threshold = revision_config.get('strong_up_threshold', 10)
+                strong_up_bonus = revision_config.get('strong_up_bonus', 5)
+                mod_up_bonus = revision_config.get('mod_up_bonus', 3)
+                strong_down_penalty = revision_config.get('strong_down_penalty', -5)
+                mod_down_penalty = revision_config.get('mod_down_penalty', -2)
+
+                if revision_pct >= strong_up_threshold:
+                    estimate_revision_bonus = strong_up_bonus
+                elif revision_pct >= 5:
+                    estimate_revision_bonus = mod_up_bonus
+                elif revision_pct <= -10:
+                    estimate_revision_bonus = strong_down_penalty
+                elif revision_pct <= -5:
+                    estimate_revision_bonus = mod_down_penalty
+
             # MOMENTUM CONFIRMATION: Penalize stocks where recent momentum is fading
             # If 3-month RS is significantly weaker than 12-month RS, momentum is weakening
             rs_12m = score_data.get("rs_12m", 1.0)
@@ -1700,7 +1721,8 @@ class BacktestEngine:
                 extended_penalty +
                 coiled_spring_bonus +   # Earnings catalyst bonus
                 rs_line_bonus +         # RS line new high bonus
-                earnings_drift_bonus    # Post-earnings drift bonus
+                earnings_drift_bonus +  # Post-earnings drift bonus
+                estimate_revision_bonus # Analyst estimate revisions
             )
 
             # Apply momentum penalty after base composite calculation
@@ -1813,6 +1835,10 @@ class BacktestEngine:
                 reason_parts.append(f"{pct_from_high:.1f}% from high")
             if volume_ratio >= 1.5 and not is_breaking_out:
                 reason_parts.append(f"Vol {volume_ratio:.1f}x")
+            if estimate_revision_bonus >= 5:
+                reason_parts.append(f"📊 Est↑ {revision_pct:+.0f}%")
+            elif estimate_revision_bonus <= -5:
+                reason_parts.append(f"📉 Est↓ {revision_pct:+.0f}%")
 
             # Build trade journal signal factors
             signal_factors = {
@@ -1821,6 +1847,7 @@ class BacktestEngine:
                 "market_timing_state": self.market_timing_state,
                 "rs_line_bonus": rs_line_bonus,
                 "earnings_drift_bonus": earnings_drift_bonus,
+                "estimate_revision_bonus": estimate_revision_bonus,
                 "composite_score": round(composite_score, 1),
             }
             if coiled_spring_bonus > 0:
