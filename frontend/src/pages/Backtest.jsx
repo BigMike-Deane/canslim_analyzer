@@ -544,18 +544,15 @@ export default function Backtest() {
     const hasRunning = backtests.some(b => b.status === 'running' || b.status === 'pending')
 
     if (hasRunning && !pollingRef.current) {
-      console.log('Starting polling for running backtest...')
       pollingRef.current = setInterval(async () => {
         const data = await fetchBacktests()
         const stillRunning = data.some(b => b.status === 'running' || b.status === 'pending')
         if (!stillRunning && pollingRef.current) {
-          console.log('Backtest completed, stopping polling')
           clearInterval(pollingRef.current)
           pollingRef.current = null
         }
       }, 2000)
     } else if (!hasRunning && pollingRef.current) {
-      console.log('No running backtests, stopping polling')
       clearInterval(pollingRef.current)
       pollingRef.current = null
     }

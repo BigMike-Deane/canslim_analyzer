@@ -98,6 +98,71 @@ function EntryTypeBreakdown({ data }) {
   )
 }
 
+const SELL_REASON_COLORS = {
+  'STOP LOSS': '#ff3b30',
+  'TRAILING STOP': '#ff9500',
+  'PARTIAL TRAILING': '#ffcc00',
+  'TAKE PROFIT': '#34c759',
+  'PARTIAL PROFIT': '#30d158',
+  'SCORE CRASH': '#ff2d55',
+  'PROTECT GAINS': '#5ac8fa',
+  'WEAK POSITION': '#8e8e93',
+  'CIRCUIT BREAKER': '#af52de',
+}
+
+function SellReasonBreakdown({ data }) {
+  if (!data || data.length === 0) return null
+
+  return (
+    <div className="card mb-4">
+      <h3 className="text-sm font-bold mb-3">Performance by Sell Reason</h3>
+      <div className="space-y-2">
+        {data.map((sr) => (
+          <div key={sr.sell_reason} className="flex justify-between items-center py-1 border-b border-dark-700 last:border-0">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: SELL_REASON_COLORS[sr.sell_reason] || '#8e8e93' }} />
+              <span className="text-sm font-medium">{sr.sell_reason}</span>
+              <span className="text-dark-400 text-xs">{sr.trades} trades</span>
+            </div>
+            <div className="text-right">
+              <span className={`text-sm font-medium ${sr.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {formatCurrency(sr.pnl)}
+              </span>
+              <span className="text-dark-400 text-xs ml-2">{sr.win_rate.toFixed(0)}% win</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function HoldDurationBreakdown({ data }) {
+  if (!data || data.length === 0) return null
+
+  return (
+    <div className="card mb-4">
+      <h3 className="text-sm font-bold mb-3">Performance by Hold Duration</h3>
+      <div className="space-y-2">
+        {data.map((hd) => (
+          <div key={hd.duration} className="flex justify-between items-center py-1 border-b border-dark-700 last:border-0">
+            <div>
+              <span className="text-sm font-medium">{hd.duration}</span>
+              <span className="text-dark-400 text-xs ml-2">{hd.trades} trades</span>
+            </div>
+            <div className="text-right">
+              <span className={`text-sm font-medium ${hd.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {formatCurrency(hd.pnl)}
+              </span>
+              <span className="text-dark-400 text-xs ml-2">{hd.win_rate.toFixed(0)}% win</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function Analytics() {
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -136,7 +201,7 @@ export default function Analytics() {
     )
   }
 
-  const { summary, by_sector, monthly_pnl, by_entry_type } = analytics
+  const { summary, by_sector, monthly_pnl, by_entry_type, by_sell_reason, by_hold_duration } = analytics
 
   return (
     <div className="p-4 max-w-4xl mx-auto">
@@ -182,6 +247,8 @@ export default function Analytics() {
       <MonthlyPnLChart data={monthly_pnl} />
       <SectorBreakdown data={by_sector} />
       <EntryTypeBreakdown data={by_entry_type} />
+      <SellReasonBreakdown data={by_sell_reason} />
+      <HoldDurationBreakdown data={by_hold_duration} />
 
       <div className="h-4" />
     </div>

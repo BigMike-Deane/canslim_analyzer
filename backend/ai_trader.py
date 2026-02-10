@@ -51,13 +51,55 @@ def get_eastern_now():
     return datetime.now(EASTERN_TZ)
 
 
+def _get_us_market_holidays() -> set:
+    """Return set of date objects for US market holidays (NYSE closures) in 2026 and 2027.
+
+    Fixed holidays: New Year's Day, Juneteenth, Independence Day, Christmas.
+    Floating holidays: MLK Day, Presidents Day, Good Friday, Memorial Day,
+    Labor Day, Thanksgiving.
+    If a fixed holiday falls on Saturday, market closes Friday.
+    If it falls on Sunday, market closes Monday.
+    """
+    holidays = set()
+
+    # 2026 holidays (NYSE confirmed schedule)
+    holidays.update([
+        date(2026, 1, 1),   # New Year's Day (Thu)
+        date(2026, 1, 19),  # MLK Day (3rd Mon Jan)
+        date(2026, 2, 16),  # Presidents Day (3rd Mon Feb)
+        date(2026, 4, 3),   # Good Friday
+        date(2026, 5, 25),  # Memorial Day (last Mon May)
+        date(2026, 6, 19),  # Juneteenth (Fri)
+        date(2026, 7, 3),   # Independence Day observed (Sat→Fri)
+        date(2026, 9, 7),   # Labor Day (1st Mon Sep)
+        date(2026, 11, 26), # Thanksgiving (4th Thu Nov)
+        date(2026, 12, 25), # Christmas (Fri)
+    ])
+
+    # 2027 holidays
+    holidays.update([
+        date(2027, 1, 1),   # New Year's Day (Fri)
+        date(2027, 1, 18),  # MLK Day (3rd Mon Jan)
+        date(2027, 2, 15),  # Presidents Day (3rd Mon Feb)
+        date(2027, 3, 26),  # Good Friday
+        date(2027, 5, 31),  # Memorial Day (last Mon May)
+        date(2027, 6, 18),  # Juneteenth observed (Sat→Fri)
+        date(2027, 7, 5),   # Independence Day observed (Sun→Mon)
+        date(2027, 9, 6),   # Labor Day (1st Mon Sep)
+        date(2027, 11, 25), # Thanksgiving (4th Thu Nov)
+        date(2027, 12, 24), # Christmas observed (Sat→Fri)
+    ])
+
+    return holidays
+
+_US_MARKET_HOLIDAYS = _get_us_market_holidays()
+
+
 def is_market_open() -> bool:
     """
     Check if US stock market is currently open.
     Market hours: Monday-Friday, 9:30 AM - 4:00 PM Eastern Time.
-
-    Note: Does not account for market holidays - will return True on holidays
-    that fall on weekdays during market hours.
+    Accounts for US market holidays (NYSE closures).
 
     Returns:
         True if market is open, False otherwise
@@ -67,6 +109,10 @@ def is_market_open() -> bool:
 
     # Weekday check: Monday=0, Friday=4, Saturday=5, Sunday=6
     if now.weekday() > 4:
+        return False
+
+    # Holiday check
+    if now.date() in _US_MARKET_HOLIDAYS:
         return False
 
     # Market hours: 9:30 AM - 4:00 PM Eastern
@@ -1164,7 +1210,8 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                 growth_score=growth_score,
                 is_growth_stock=position.is_growth_stock or False,
                 cost_basis=position.cost_basis,
-                realized_gain=position.gain_loss
+                realized_gain=position.gain_loss,
+                signal_factors={"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(position_stop_pct, 1)}
             )
 
             # Update cash and remove position
@@ -1226,7 +1273,8 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                         growth_score=growth_score,
                         is_growth_stock=position.is_growth_stock or False,
                         cost_basis=position.cost_basis,
-                        realized_gain=(position.current_price - position.cost_basis) * shares_to_sell
+                        realized_gain=(position.current_price - position.cost_basis) * shares_to_sell,
+                        signal_factors={"sell_reason": "PARTIAL TRAILING", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1), "sell_pct": partial_sell_pct_config}
                     )
 
                     # Update position: reduce shares, reset peak
@@ -1258,7 +1306,8 @@ def check_and_execute_stop_losses(db: Session) -> dict:
                         growth_score=growth_score,
                         is_growth_stock=position.is_growth_stock or False,
                         cost_basis=position.cost_basis,
-                        realized_gain=position.gain_loss
+                        realized_gain=position.gain_loss,
+                        signal_factors={"sell_reason": "TRAILING STOP", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1)}
                     )
 
                     config.current_cash += position.current_value
@@ -2381,6 +2430,30 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     return final_buys
 
 
+def _categorize_sell_reason(reason: str) -> str:
+    """Extract sell category from reason string for trade attribution."""
+    reason_upper = reason.upper()
+    if "PARTIAL TRAILING STOP" in reason_upper:
+        return "PARTIAL TRAILING"
+    elif "TRAILING STOP" in reason_upper:
+        return "TRAILING STOP"
+    elif "STOP LOSS" in reason_upper:
+        return "STOP LOSS"
+    elif "SCORE CRASH" in reason_upper:
+        return "SCORE CRASH"
+    elif "TAKE PROFIT" in reason_upper:
+        return "TAKE PROFIT"
+    elif "PARTIAL PROFIT" in reason_upper:
+        return "PARTIAL PROFIT"
+    elif "PROTECT GAINS" in reason_upper:
+        return "PROTECT GAINS"
+    elif "WEAK POSITION" in reason_upper:
+        return "WEAK POSITION"
+    elif "CIRCUIT BREAKER" in reason_upper:
+        return "CIRCUIT BREAKER"
+    return "OTHER"
+
+
 def run_ai_trading_cycle(db: Session) -> dict:
     """
     Run a complete AI trading cycle:
@@ -2396,7 +2469,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
         # Lock is held - check for timeout using thread-safe accessor
         cycle_started = _get_cycle_started()
         if cycle_started:
-            elapsed = (datetime.now() - cycle_started).total_seconds()
+            elapsed = (get_cst_now() - cycle_started).total_seconds()
             if elapsed < 300:  # 5 minute timeout
                 logger.warning(f"Trading cycle already in progress (started {elapsed:.0f}s ago), skipping")
                 return {"status": "busy", "message": f"Trading cycle already running ({elapsed:.0f}s elapsed)"}
@@ -2410,7 +2483,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             _trading_cycle_lock.acquire(blocking=True)
 
     # Lock acquired - record start time using thread-safe setter
-    _set_cycle_started(datetime.now())
+    _set_cycle_started(get_cst_now())
 
     try:
         config = get_or_create_config(db)
@@ -2456,6 +2529,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 realized_gain = (position.current_price - position.cost_basis) * shares_to_sell
 
                 # Execute partial sell
+                gain_pct_val = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis and position.cost_basis > 0 else 0
                 execute_trade(
                     db=db,
                     ticker=position.ticker,
@@ -2468,6 +2542,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
                     realized_gain=realized_gain,
+                    signal_factors={"sell_reason": _categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1), "sell_pct": sell_pct},
                     is_paper=paper_mode
                 )
 
@@ -2504,6 +2579,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 })
             else:
                 # FULL SELL - sell entire position
+                gain_pct_val = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis and position.cost_basis > 0 else 0
                 execute_trade(
                     db=db,
                     ticker=position.ticker,
@@ -2516,6 +2592,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
                     realized_gain=position.gain_loss,
+                    signal_factors={"sell_reason": _categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1)},
                     is_paper=paper_mode
                 )
 
@@ -2565,13 +2642,15 @@ def run_ai_trading_cycle(db: Session) -> dict:
             logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown >= {liquidate_threshold}% - LIQUIDATING ALL POSITIONS")
             for position in positions:
                 if position.current_price and position.current_price > 0:
+                    cb_gain_pct = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis and position.cost_basis > 0 else 0
                     execute_trade(
                         db=db, ticker=position.ticker, action="SELL",
                         shares=position.shares, price=position.current_price,
                         reason=f"CIRCUIT BREAKER: Portfolio drawdown {current_drawdown:.1f}%",
                         score=position.current_score, cost_basis=position.cost_basis,
                         realized_gain=position.gain_loss,
-                        is_growth_stock=position.is_growth_stock or False
+                        is_growth_stock=position.is_growth_stock or False,
+                        signal_factors={"sell_reason": "CIRCUIT BREAKER", "gain_pct": round(cb_gain_pct, 1), "drawdown_pct": round(current_drawdown, 1)}
                     )
                     config.current_cash += position.current_value
                     results["sells_executed"].append({

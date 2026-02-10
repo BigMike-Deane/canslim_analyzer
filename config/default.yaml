@@ -490,6 +490,13 @@ market_timing:
     # An accumulation day: index up 0.2%+ on higher volume than prior day
     min_advance_pct: 0.2               # Minimum advance for accumulation day
 
+  # ============================================================
+  # DISABLED FEATURES — Backtested in runs #42-#46. All filtering
+  # and blocking features hurt returns in bullish markets. Only
+  # additive score bonuses (RS line +8, earnings drift +5/+3) were
+  # net-positive. Keep disabled unless re-validated in bear market.
+  # ============================================================
+
   # Follow-Through Day Confirmation (O'Neil market timing)
   follow_through_day:
     enabled: false

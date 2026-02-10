@@ -3440,11 +3440,69 @@ async def get_trade_analytics(db: Session = Depends(get_db)):
         for et, d in sorted(entry_types.items(), key=lambda x: x[1]["pnl"], reverse=True)
     ]
 
+    # By sell reason (from signal_factors.sell_reason)
+    sell_reasons = {}
+    for t in sells:
+        factors = t.signal_factors if hasattr(t, 'signal_factors') and t.signal_factors else {}
+        reason = factors.get("sell_reason", "unknown") if isinstance(factors, dict) else "unknown"
+        if reason not in sell_reasons:
+            sell_reasons[reason] = {"trades": 0, "wins": 0, "pnl": 0}
+        sell_reasons[reason]["trades"] += 1
+        sell_reasons[reason]["pnl"] += t.realized_gain or 0
+        if (t.realized_gain or 0) > 0:
+            sell_reasons[reason]["wins"] += 1
+
+    by_sell_reason = [
+        {"sell_reason": sr, "trades": d["trades"],
+         "win_rate": (d["wins"] / d["trades"] * 100) if d["trades"] > 0 else 0,
+         "pnl": round(d["pnl"], 2)}
+        for sr, d in sorted(sell_reasons.items(), key=lambda x: x[1]["pnl"], reverse=True)
+    ]
+
+    # By hold duration (bucket sells by days held)
+    duration_buckets = {"0-7d": {"trades": 0, "wins": 0, "pnl": 0},
+                        "7-30d": {"trades": 0, "wins": 0, "pnl": 0},
+                        "30-90d": {"trades": 0, "wins": 0, "pnl": 0},
+                        "90d+": {"trades": 0, "wins": 0, "pnl": 0}}
+    # Build a map of most recent BUY per ticker for hold duration calculation
+    buy_dates = {}
+    for t in sorted(buys, key=lambda x: x.executed_at or datetime.min):
+        buy_dates[t.ticker] = t.executed_at
+
+    for t in sells:
+        buy_date = buy_dates.get(t.ticker)
+        if buy_date and t.executed_at:
+            days_held = (t.executed_at - buy_date).days
+            if days_held < 7:
+                bucket = "0-7d"
+            elif days_held < 30:
+                bucket = "7-30d"
+            elif days_held < 90:
+                bucket = "30-90d"
+            else:
+                bucket = "90d+"
+        else:
+            bucket = "0-7d"  # Default if dates missing
+
+        duration_buckets[bucket]["trades"] += 1
+        duration_buckets[bucket]["pnl"] += t.realized_gain or 0
+        if (t.realized_gain or 0) > 0:
+            duration_buckets[bucket]["wins"] += 1
+
+    by_hold_duration = [
+        {"duration": d, "trades": b["trades"],
+         "win_rate": (b["wins"] / b["trades"] * 100) if b["trades"] > 0 else 0,
+         "pnl": round(b["pnl"], 2)}
+        for d, b in duration_buckets.items() if b["trades"] > 0
+    ]
+
     return {
         "summary": summary,
         "by_sector": by_sector,
         "monthly_pnl": monthly_pnl,
-        "by_entry_type": by_entry_type
+        "by_entry_type": by_entry_type,
+        "by_sell_reason": by_sell_reason,
+        "by_hold_duration": by_hold_duration
     }
 
 

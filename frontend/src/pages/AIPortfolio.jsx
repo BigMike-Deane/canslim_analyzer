@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatScore, getScoreClass } from '../api'
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell } from 'recharts'
 
 function PerformanceChart({ history, startingCash }) {
   const [timeRange, setTimeRange] = useState('all')
@@ -418,6 +418,70 @@ function TradeHistory({ trades }) {
   )
 }
 
+const SECTOR_COLORS = ['#34c759', '#5ac8fa', '#ff9500', '#ff3b30', '#af52de',
+  '#ff2d55', '#5856d6', '#007aff', '#30d158', '#ffd60a']
+
+function SectorAllocationChart({ riskData, cashPct }) {
+  if (!riskData?.sector_concentration || riskData.sector_concentration.length === 0) return null
+
+  const chartData = [
+    ...riskData.sector_concentration.map(s => ({ name: s.sector || 'Unknown', value: s.pct })),
+    ...(cashPct > 1 ? [{ name: 'Cash', value: Math.round(cashPct * 10) / 10 }] : [])
+  ]
+
+  const renderLabel = ({ name, value, cx, cy, midAngle, innerRadius, outerRadius }) => {
+    if (value < 5) return null
+    const RADIAN = Math.PI / 180
+    const radius = innerRadius + (outerRadius - innerRadius) * 0.5
+    const x = cx + radius * Math.cos(-midAngle * RADIAN)
+    const y = cy + radius * Math.sin(-midAngle * RADIAN)
+    return (
+      <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={10}>
+        {Math.round(value)}%
+      </text>
+    )
+  }
+
+  return (
+    <div className="card mb-4">
+      <h3 className="text-sm font-bold mb-2">Sector Allocation</h3>
+      <div className="flex items-center">
+        <div className="w-1/2 h-40">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={chartData}
+                cx="50%"
+                cy="50%"
+                innerRadius={30}
+                outerRadius={60}
+                dataKey="value"
+                label={renderLabel}
+                labelLine={false}
+              >
+                {chartData.map((entry, i) => (
+                  <Cell key={i} fill={entry.name === 'Cash' ? '#636366' : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(v) => `${v.toFixed(1)}%`} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="w-1/2 space-y-1 text-xs">
+          {chartData.map((entry, i) => (
+            <div key={entry.name} className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                style={{ backgroundColor: entry.name === 'Cash' ? '#636366' : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
+              <span className="text-dark-300 truncate">{entry.name}</span>
+              <span className="text-dark-400 ml-auto">{entry.value.toFixed(0)}%</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, waitingForTrades }) {
   const [isActive, setIsActive] = useState(config?.is_active || false)
   const [updating, setUpdating] = useState(false)
@@ -657,11 +721,10 @@ export default function AIPortfolio() {
       const isMarketHours = cstHour >= 8 && cstHour < 16
 
       if (!isWeekday || !isMarketHours) {
-        console.log('Auto-refresh skipped: market closed')
+        // Market closed, skip auto-refresh
         return
       }
 
-      console.log('Auto-refreshing prices...')
       setIsRefreshingPrices(true)
       try {
         await api.refreshAIPortfolio()
@@ -1023,6 +1086,13 @@ export default function AIPortfolio() {
       <PerformanceChart
         history={history}
         startingCash={portfolio?.config?.starting_cash || 25000}
+      />
+
+      <SectorAllocationChart
+        riskData={riskData}
+        cashPct={portfolio?.summary?.total_value > 0
+          ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
+          : 0}
       />
 
       <SummaryCard

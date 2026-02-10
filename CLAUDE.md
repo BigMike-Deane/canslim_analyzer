@@ -1,5 +1,79 @@
 # CANSLIM Analyzer - Project Context
 
+## Session Summary: Feb 9, 2026
+
+### Strategy Profiles (Growth Mode) - DEPLOYED
+
+**Purpose**: Added a first-class `strategy` parameter that controls thresholds, stops, position sizing, and scoring weights. Currently supports "balanced" (default) and "growth" profiles.
+
+**Implementation**:
+1. **YAML Config** (`config/default.yaml`): Added `strategy_profiles` section with `balanced` and `growth` profiles. Each profile controls: min_score, max_positions, position sizing, stop loss, trailing stops, take profit, scoring weights, quality filters, and C/L/N score multipliers.
+
+2. **Database** (`backend/database.py`): Added `strategy` column (String, default "balanced") to both `BacktestRun` and `AIPortfolioConfig`.
+
+3. **Backtester** (`backend/backtester.py`): `get_strategy_profile()` helper loads profile dict. `__init__` reads strategy from BacktestRun record. `_seed_initial_positions`, `_evaluate_buys`, `_evaluate_sells` all use profile overrides.
+
+4. **AI Trader** (`backend/ai_trader.py`): Same profile loading in `evaluate_buys()`, `evaluate_sells()`, and `check_and_execute_stop_losses()`. Profile overrides for stops, trailing, take profit, score crash, and composite scoring weights.
+
+5. **API** (`backend/main.py`): `BacktestCreate` accepts `strategy` field. Multi-period endpoint accepts `strategy` query param. AI portfolio config PATCH accepts strategy updates.
+
+6. **Frontend** (`frontend/src/pages/Backtest.jsx`): Strategy dropdown in new backtest form. Purple "Growth" badge on growth backtests. (`frontend/src/pages/AIPortfolio.jsx`): Growth Mode badge on header.
+
+**Growth Mode Iterations**:
+| Version | min_score | stop_loss | take_profit | trailing_50+ | Result |
+|---------|-----------|-----------|-------------|---------------|--------|
+| v1 | 60 | 10% | 60% | 18% | +3.2% (too loose) |
+| v2 | 68 | 8% | 55% | 15% | +16.0% (tighter risk) |
+| v3 | 68 | 8% | 75% | 20% | **+23.7%** (ride winners) |
+
+**Key Insight**: The "ride winners" sell logic (wider trailing for big gains, higher take profit, lenient score crash) was universally beneficial — not growth-specific.
+
+### Ride-Winners Sell Logic Merged into Balanced Default - DEPLOYED
+
+Merged the proven sell improvements from growth v3 into the balanced profile:
+- **Take profit**: 40% → **75%** (let big winners run)
+- **Trailing stop at 50%+ gain**: 15% → **20%** (wider room for volatile winners)
+- **Trailing stop at 30-50% gain**: 12% → **15%**
+- **Score crash drop required**: 20pt → **25pt** (less reactive to score noise)
+- **Score crash ignore if profitable**: 10% → **20%** (hold profitable positions through dips)
+
+**6-month backtest (#91)**: +19.0% vs SPY +9.3%, Sharpe 2.39, DD 3.9%, WR 72.7%
+
+### ALL View Chart Bug - FIXED
+
+**Problem**: Performance chart showed 61 data points in 24H view but only 2 in ALL view.
+**Root Cause**: `filterHistory()` in AIPortfolio.jsx deduped to latest-per-day for non-24h views when >60 points. With only 2 unique dates, this collapsed 61 intraday points to 2.
+**Fix**: Only dedup when 7+ unique days exist. With fewer days, all intraday points are preserved.
+
+### Removed Editable Config Parameters from AI Portfolio UI
+
+Removed the editable "Min Score to Buy", "Sell Below Score", "Take Profit %", and "Stop Loss %" inputs from the AI Portfolio config panel. These conflicted with the strategy profile system — the profile controls all these values. Replaced with clean read-only displays showing active values + strategy name.
+
+**Files Modified**:
+- `config/default.yaml` - `strategy_profiles` section (balanced + growth)
+- `backend/database.py` - `strategy` column on BacktestRun + AIPortfolioConfig
+- `backend/backtester.py` - `get_strategy_profile()`, profile overrides in buy/sell/seed
+- `backend/ai_trader.py` - Profile overrides in evaluate_buys/sells, stop losses
+- `backend/main.py` - Strategy in BacktestCreate, multi-period, AI portfolio config
+- `frontend/src/pages/Backtest.jsx` - Strategy dropdown + badge
+- `frontend/src/pages/AIPortfolio.jsx` - Chart fix, config cleanup, strategy badge
+- `frontend/src/api.js` - Strategy param in multi-backtest
+- `tests/test_backtester.py` - TestStrategyProfiles (9 tests)
+
+**Tests**: 266 passed, 5 skipped, 0 failures
+
+### Backtest Results (This Session)
+
+| # | Strategy | Return | vs SPY | Sharpe | Max DD | Win Rate | Notes |
+|---|----------|--------|--------|--------|--------|----------|-------|
+| #87 | balanced | +21.9% | +5.6% | 1.43 | 11.0% | 56.0% | 1yr baseline |
+| #88 | growth v1 | +3.2% | -13.1% | 0.17 | 17.7% | 40.9% | Too loose |
+| #89 | growth v2 | +16.0% | -0.3% | 0.78 | 10.4% | 46.9% | Tightened risk |
+| #90 | growth v3 | **+23.7%** | **+7.4%** | 1.14 | 10.6% | 54.5% | Ride winners |
+| #91 | balanced (new) | **+19.0%** | **+9.3%** | **2.39** | **3.9%** | **72.7%** | 6mo, ride-winners merged |
+
+---
+
 ## Session Summary: Feb 5, 2026
 
 ### Scanner Only Processing 12% of Stocks - FIXED
