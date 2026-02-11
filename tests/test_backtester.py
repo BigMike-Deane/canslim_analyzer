@@ -2517,3 +2517,277 @@ class TestEstimateRevisionBonus:
         assert len(buys) > 0
         sf = buys[0]._signal_factors
         assert sf["estimate_revision_bonus"] == 0
+
+
+def _soft_zone_config_data(soft_enabled=True, zone_width=4, stability_enabled=True,
+                            stable_min=55, det_enabled=True):
+    """Shared config for soft zone / stable override / deterministic boost tests.
+
+    Note: The mock config.get() uses flat key lookup, so dotted keys like
+    'ai_trader.allocation.soft_threshold' must be separate entries.
+    """
+    return {
+        'ai_trader.allocation': {
+            'min_score_to_buy': 72, 'max_single_position': 0.15,
+            'percentile_threshold_pct': 5, 'percentile_score_floor': 45,
+        },
+        # Dotted sub-keys for config.get() calls in backtester
+        'ai_trader.allocation.soft_threshold': {
+            'enabled': soft_enabled,
+            'zone_width': zone_width,
+            'multiplier_at_edge': 0.25,
+            'multiplier_at_top': 0.75,
+        },
+        'ai_trader.allocation.percentile_threshold_pct': 5,
+        'ai_trader.allocation.percentile_score_floor': 72,  # Keep threshold at 72 in tests (prevents single-stock percentile collapse)
+        'ai_trader.market_regime': {
+            'enabled': True, 'bullish_threshold': 1.5,
+            'bearish_threshold': -0.5,
+            'bullish_max_position_pct': 15.0,
+            'neutral_max_position_pct': 12.0,
+            'bearish_max_position_pct': 8.0,
+            'bearish_min_score_adj': 10,
+            'bear_exception_min_cal': 35,
+            'bear_exception_position_mult': 0.50,
+        },
+        'ai_trader.quality_filters': {
+            'min_c_score': 0, 'min_l_score': 0,
+            'min_volume_ratio': 0.5, 'skip_in_growth_mode': True,
+        },
+        'ai_trader.analyst_revisions': {'strong_up_threshold': 10, 'strong_up_bonus': 5,
+                                         'mod_up_bonus': 3, 'strong_down_threshold': -10,
+                                         'strong_down_penalty': -5, 'mod_down_penalty': -2},
+        'ai_trader.score_stability': {
+            'enabled': stability_enabled,
+            'stable_min_for_override': stable_min,
+        },
+        'ai_trader.conviction_sizing': {'enabled': False},
+        'ai_trader.deterministic_boost': {
+            'enabled': det_enabled,
+            'stable_bonus_threshold': 55,
+            'stable_bonus': 5,
+            'strong_threshold': 60,
+            'strong_bonus': 8,
+        },
+        'volume_gate': {'enabled': False},
+        'coiled_spring': {},
+        'rs_line': {'enabled': False},
+        'earnings_drift': {'enabled': False},
+        'correlation_sizing': {'enabled': False},
+    }
+
+
+def _make_soft_zone_engine(mock_config, config_data, score_data, static_data=None):
+    """Helper: create engine with custom config for soft zone tests."""
+    from backend.backtester import BacktestEngine
+
+    def config_get(key, default=None):
+        return config_data.get(key, default if default is not None else {})
+
+    mock_config.get = config_get
+    mock_session, _ = make_mock_db()
+    engine = BacktestEngine(mock_session, 1)
+    engine.data_provider = MagicMock()
+    engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+    engine.data_provider.get_price_on_date.return_value = 100.0
+    engine.cash = 20000
+    engine.static_data = static_data or {"SOFT1": {"sector": "Technology"}}
+
+    buys = engine._evaluate_buys(date.today(), score_data)
+    return buys
+
+
+class TestSoftThreshold:
+    """Test soft buy threshold (graduated zone below min_score)"""
+
+    def _score(self, total, c=10, a=10, n=12, s=12, l=12, i=8, m=12):
+        """Build score_data dict for a single stock."""
+        return {
+            "SOFT1": {
+                "total_score": total, "c_score": c, "a_score": a,
+                "n_score": n, "s_score": s, "l_score": l, "i_score": i, "m_score": m,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 20, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        }
+
+    @patch('backend.backtester.config')
+    def test_above_threshold_full_position(self, mock_config):
+        """Score >= min_score gets multiplier 1.0 (full position)"""
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(75))
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert "soft_zone" not in sf
+
+    @patch('backend.backtester.config')
+    def test_soft_zone_top_gets_075(self, mock_config):
+        """Score at top of soft zone (71 when threshold=72) gets ~0.75 multiplier"""
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(71))
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("soft_zone") is True
+        assert sf["soft_zone_multiplier"] >= 0.60  # Close to 0.75
+
+    @patch('backend.backtester.config')
+    def test_soft_zone_edge_gets_025(self, mock_config):
+        """Score at edge of soft zone (68 when threshold=72, width=4) gets ~0.25 multiplier"""
+        cfg = _soft_zone_config_data()
+        # Use low deterministic scores to avoid stable override (n+s+l+i+m=37 < 55)
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(68, c=12, a=12, n=8, s=8, l=10, i=5, m=13))
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("soft_zone") is True
+        assert sf["soft_zone_multiplier"] <= 0.35  # Close to 0.25
+
+    @patch('backend.backtester.config')
+    def test_below_soft_zone_skipped(self, mock_config):
+        """Score below soft zone (67 when threshold=72, width=4) is NOT bought"""
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(67))
+        assert len(buys) == 0
+
+    @patch('backend.backtester.config')
+    def test_soft_disabled_skips_below_threshold(self, mock_config):
+        """When soft threshold is disabled, score below min_score is skipped"""
+        cfg = _soft_zone_config_data(soft_enabled=False)
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(71))
+        assert len(buys) == 0
+
+    @patch('backend.backtester.config')
+    def test_soft_zone_reason_string(self, mock_config):
+        """Soft zone entries include 'Soft zone' in the trade reason"""
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(70))
+        assert len(buys) > 0
+        assert "Soft zone" in buys[0].reason
+
+
+class TestStableOverride:
+    """Test stable score override in soft zone (strong N+S+L+I+M upgrades multiplier)"""
+
+    def _score(self, total, n=14, s=14, l=14, i=9, m=14):
+        """Build score with given deterministic component scores."""
+        return {
+            "SOFT1": {
+                "total_score": total, "c_score": 3, "a_score": 2,
+                "n_score": n, "s_score": s, "l_score": l, "i_score": i, "m_score": m,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 20, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        }
+
+    @patch('backend.backtester.config')
+    def test_stable_override_upgrades_to_top_mult(self, mock_config):
+        """When stable score (N+S+L+I+M) >= 55 in soft zone, multiplier = 0.75"""
+        # total=70, stable = 14+14+14+9+14 = 65 >= 55 → override
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(70))
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("soft_zone") is True
+        assert sf["soft_zone_multiplier"] == 0.75  # Top multiplier
+
+    @patch('backend.backtester.config')
+    def test_no_override_when_stable_low(self, mock_config):
+        """When stable score < 55, no override — use graduated multiplier"""
+        # total=70, stable = 8+8+8+5+8 = 37 < 55 → no override
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(70, n=8, s=8, l=8, i=5, m=8))
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("soft_zone") is True
+        assert sf["soft_zone_multiplier"] < 0.75  # Not overridden
+
+    @patch('backend.backtester.config')
+    def test_stability_disabled_no_override(self, mock_config):
+        """When score_stability.enabled=false, no override even with strong stable scores"""
+        cfg = _soft_zone_config_data(stability_enabled=False)
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(70))
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("soft_zone") is True
+        assert sf["soft_zone_multiplier"] < 0.75  # Not overridden
+
+    @patch('backend.backtester.config')
+    def test_stable_override_reason_string(self, mock_config):
+        """Stable override includes 'stable override' in the trade reason"""
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(70))
+        assert len(buys) > 0
+        assert "stable override" in buys[0].reason
+
+
+class TestDeterministicBoost:
+    """Test deterministic boost to composite score for strong non-FMP scores"""
+
+    def _score(self, total, n=14, s=14, l=14, i=9, m=14):
+        """Build score with given deterministic component scores."""
+        return {
+            "DET1": {
+                "total_score": total, "c_score": 12, "a_score": 10,
+                "n_score": n, "s_score": s, "l_score": l, "i_score": i, "m_score": m,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 25, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        }
+
+    @patch('backend.backtester.config')
+    def test_strong_deterministic_gets_8_boost(self, mock_config):
+        """N+S+L+I+M >= 60 → +8 to composite score"""
+        cfg = _soft_zone_config_data()
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(85),
+                                       static_data={"DET1": {"sector": "Technology"}})
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("deterministic_boost") == 8
+        assert "Det+8" in buys[0].reason
+
+    @patch('backend.backtester.config')
+    def test_moderate_deterministic_gets_5_boost(self, mock_config):
+        """N+S+L+I+M >= 55 but < 60 → +5 to composite score"""
+        cfg = _soft_zone_config_data()
+        # n=12+s=12+l=12+i=8+m=12 = 56, >= 55 but < 60
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(85, n=12, s=12, l=12, i=8, m=12),
+                                       static_data={"DET1": {"sector": "Technology"}})
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("deterministic_boost") == 5
+        assert "Det+5" in buys[0].reason
+
+    @patch('backend.backtester.config')
+    def test_low_deterministic_no_boost(self, mock_config):
+        """N+S+L+I+M < 55 → no boost"""
+        cfg = _soft_zone_config_data()
+        # n=8+s=8+l=8+i=5+m=8 = 37, < 55
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(85, n=8, s=8, l=8, i=5, m=8),
+                                       static_data={"DET1": {"sector": "Technology"}})
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert "deterministic_boost" not in sf
+
+    @patch('backend.backtester.config')
+    def test_deterministic_disabled_no_boost(self, mock_config):
+        """When deterministic_boost.enabled=false, no boost even with strong scores"""
+        cfg = _soft_zone_config_data(det_enabled=False)
+        buys = _make_soft_zone_engine(mock_config, cfg, self._score(85),
+                                       static_data={"DET1": {"sector": "Technology"}})
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert "deterministic_boost" not in sf

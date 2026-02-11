@@ -1120,12 +1120,12 @@ class BacktestEngine:
 
             # ===== PROJECTED GROWTH (independent of CANSLIM score) =====
             # Combine EPS growth rate, annual CAGR, and price momentum
-            # This gives the composite score a truly independent growth signal
+            # Weights tuned to reduce FMP-dependent signal (eps+cagr = 55%, was 70%)
             momentum_pct = (combined_rs - 1.0) * 100  # RS ratio to %
             projected_growth = (
-                eps_growth * 0.40 +      # 40% quarterly EPS growth rate
-                annual_cagr * 0.30 +     # 30% annual earnings CAGR
-                momentum_pct * 0.30      # 30% price momentum vs market
+                eps_growth * 0.30 +      # 30% quarterly EPS growth rate (was 40%)
+                annual_cagr * 0.25 +     # 25% annual earnings CAGR (was 30%)
+                momentum_pct * 0.45      # 45% price momentum vs market (was 30%)
             )
 
             # ===== TOTAL SCORE (100 pts) =====
@@ -1594,12 +1594,48 @@ class BacktestEngine:
             # Use the lower of regime-adjusted and percentile, floored at score_floor
             effective_min_score = max(score_floor, min(effective_min_score, percentile_threshold))
 
-        # Get candidates with regime-adjusted threshold
-        candidates = [
-            (ticker, data) for ticker, data in scores.items()
-            if data["total_score"] >= effective_min_score
-            and ticker not in current_tickers
-        ]
+        # SOFT THRESHOLD: Allow stocks slightly below min_score with reduced position sizes
+        soft_config = config.get('ai_trader.allocation.soft_threshold', {})
+        soft_enabled = soft_config.get('enabled', False)
+        soft_zone_width = soft_config.get('zone_width', 4)
+        soft_mult_edge = soft_config.get('multiplier_at_edge', 0.25)
+        soft_mult_top = soft_config.get('multiplier_at_top', 0.75)
+
+        # SCORE STABILITY: Override for strong deterministic scores
+        stability_config = config.get('ai_trader.score_stability', {})
+        stability_enabled = stability_config.get('enabled', False)
+        stable_min_for_override = stability_config.get('stable_min_for_override', 55)
+
+        # Get candidates: full-position (above threshold) + soft-zone (graduated)
+        soft_zone_floor = effective_min_score - soft_zone_width if soft_enabled else effective_min_score
+        candidates = []
+        for ticker, data in scores.items():
+            if ticker in current_tickers:
+                continue
+            total_score = data["total_score"]
+            if total_score >= effective_min_score:
+                # Full position candidate
+                data["_soft_zone_multiplier"] = 1.0
+                candidates.append((ticker, data))
+            elif soft_enabled and total_score >= soft_zone_floor:
+                # Soft zone candidate — graduated position size
+                # Linear interpolation: edge of zone → multiplier_at_edge, top of zone → multiplier_at_top
+                zone_position = (total_score - soft_zone_floor) / max(1, soft_zone_width)
+                soft_mult = soft_mult_edge + zone_position * (soft_mult_top - soft_mult_edge)
+
+                # STABLE OVERRIDE: If deterministic scores are very strong, upgrade to top multiplier
+                if stability_enabled:
+                    stable_score = (data.get("n_score", 0) + data.get("s_score", 0) +
+                                    data.get("l_score", 0) + data.get("i_score", 0) +
+                                    data.get("m_score", 0))
+                    if stable_score >= stable_min_for_override:
+                        soft_mult = soft_mult_top
+                        data["_stable_override"] = True
+                        data["_stable_score"] = stable_score
+
+                data["_soft_zone_multiplier"] = round(soft_mult, 2)
+                data["_in_soft_zone"] = True
+                candidates.append((ticker, data))
 
         # BEAR MARKET EXCEPTION: Allow very strong stocks at reduced position size
         # If C+A+L >= 35 (out of 45 max), the stock has excellent fundamentals
@@ -1907,6 +1943,22 @@ class BacktestEngine:
             if self.heat_penalty_active:
                 composite_score -= 5
 
+            # DETERMINISTIC BOOST: Bonus for stocks with strong non-FMP scores (N+S+L+I+M)
+            # This raises their ranking so they get bought first and with larger positions
+            det_config = config.get('ai_trader.deterministic_boost', {})
+            deterministic_boost_val = 0
+            if det_config.get('enabled', False):
+                stable_score = (score_data.get("n_score", 0) + score_data.get("s_score", 0) +
+                                score_data.get("l_score", 0) + score_data.get("i_score", 0) +
+                                score_data.get("m_score", 0))
+                strong_thresh = det_config.get('strong_threshold', 60)
+                stable_thresh = det_config.get('stable_bonus_threshold', 55)
+                if stable_score >= strong_thresh:
+                    deterministic_boost_val = det_config.get('strong_bonus', 8)
+                elif stable_score >= stable_thresh:
+                    deterministic_boost_val = det_config.get('stable_bonus', 5)
+                composite_score += deterministic_boost_val
+
             # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
             # Position sizing: conviction-based (higher scores get larger positions)
@@ -1972,6 +2024,11 @@ class BacktestEngine:
                 elif high_corr_count > 0:
                     position_pct *= corr_multiplier
 
+            # SOFT ZONE: Apply graduated position multiplier for stocks below hard threshold
+            soft_zone_mult = score_data.get("_soft_zone_multiplier", 1.0)
+            if soft_zone_mult < 1.0:
+                position_pct *= soft_zone_mult
+
             # Cap at profile max or market regime max AFTER all multipliers (matches live trader)
             profile_max_pct = self.profile.get('max_single_position_pct', 25)
             position_pct = min(position_pct, regime_max_pct, profile_max_pct)
@@ -2009,6 +2066,13 @@ class BacktestEngine:
                 reason_parts.append(f"📈 PRE-BREAKOUT ({base_type}) {pct_from_pivot:.0f}% below pivot")
             elif extended_penalty < 0:
                 reason_parts.append(f"⚠️ Extended {abs(pct_from_pivot):.0f}% above pivot")
+            # Soft zone annotation
+            if score_data.get("_in_soft_zone"):
+                sz_pct = int(soft_zone_mult * 100)
+                if score_data.get("_stable_override"):
+                    reason_parts.append(f"Soft zone {sz_pct}% pos (stable override {score_data.get('_stable_score', 0):.0f}/70)")
+                else:
+                    reason_parts.append(f"Soft zone {sz_pct}% pos")
             reason_parts.append(f"Score {score:.0f}")
             if has_base and not is_breaking_out and pre_breakout_bonus < 15:
                 reason_parts.append(f"Base: {base_pattern.get('type', 'none')} {weeks_in_base}w")
@@ -2020,6 +2084,8 @@ class BacktestEngine:
                 reason_parts.append(f"📊 Est↑ {revision_pct:+.0f}%")
             elif estimate_revision_bonus <= -5:
                 reason_parts.append(f"📉 Est↓ {revision_pct:+.0f}%")
+            if deterministic_boost_val > 0:
+                reason_parts.append(f"Det+{deterministic_boost_val}")
 
             # Build trade journal signal factors
             signal_factors = {
@@ -2035,6 +2101,11 @@ class BacktestEngine:
                 signal_factors["coiled_spring"] = True
             if score_data.get("_bear_market_entry"):
                 signal_factors["bear_exception"] = True
+            if score_data.get("_in_soft_zone"):
+                signal_factors["soft_zone"] = True
+                signal_factors["soft_zone_multiplier"] = soft_zone_mult
+            if deterministic_boost_val > 0:
+                signal_factors["deterministic_boost"] = deterministic_boost_val
 
             buys.append(SimulatedTrade(
                 ticker=ticker,

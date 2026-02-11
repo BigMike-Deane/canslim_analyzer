@@ -1855,17 +1855,31 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 f"effective={effective_canslim_min:.1f} | Growth top {percentile_pct}%={growth_percentile:.1f}, "
                 f"effective={effective_growth_min:.1f}")
 
-    # Get traditional CANSLIM stocks that meet minimum score threshold
+    # SOFT THRESHOLD: Widen query to include stocks in the soft zone (below threshold)
+    soft_config = yaml_config.get('ai_trader.allocation.soft_threshold', {})
+    soft_enabled = soft_config.get('enabled', False)
+    soft_zone_width = soft_config.get('zone_width', 4)
+    soft_mult_edge = soft_config.get('multiplier_at_edge', 0.25)
+    soft_mult_top = soft_config.get('multiplier_at_top', 0.75)
+    canslim_query_floor = effective_canslim_min - soft_zone_width if soft_enabled else effective_canslim_min
+    growth_query_floor = effective_growth_min - soft_zone_width if soft_enabled else effective_growth_min
+
+    # SCORE STABILITY: Override for strong deterministic scores
+    stability_config = yaml_config.get('ai_trader.score_stability', {})
+    stability_enabled = stability_config.get('enabled', False)
+    stable_min_for_override = stability_config.get('stable_min_for_override', 55)
+
+    # Get traditional CANSLIM stocks (widened to include soft zone)
     canslim_candidates = db.query(Stock).filter(
-        Stock.canslim_score >= effective_canslim_min,
+        Stock.canslim_score >= canslim_query_floor,
         Stock.current_price > 0,
         Stock.projected_growth != None,  # Must have growth projection
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
     ).all()
 
-    # Get Growth Mode stocks that meet minimum threshold
+    # Get Growth Mode stocks (widened to include soft zone)
     growth_candidates = db.query(Stock).filter(
-        Stock.growth_mode_score >= effective_growth_min,
+        Stock.growth_mode_score >= growth_query_floor,
         Stock.is_growth_stock == True,
         Stock.current_price > 0,
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
@@ -1904,12 +1918,41 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     buys = []
     bear_exception_candidates = []
 
+    # MULTI-SCAN AVERAGING (live-only): Smooth score wobble from FMP rate limits
+    from backend.database import StockScore
+    def _get_avg_score(ticker, current_score):
+        """Average last 3 StockScore records to smooth scan-to-scan noise."""
+        try:
+            recent = db.query(StockScore.total_score).filter(
+                StockScore.ticker == ticker
+            ).order_by(StockScore.timestamp.desc()).limit(3).all()
+            if len(recent) >= 2:
+                avg = sum(r[0] for r in recent) / len(recent)
+                if abs(avg - current_score) >= 3:
+                    return avg
+        except Exception:
+            pass
+        return current_score
+
     for stock in candidates:
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
         effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
-        if not effective_score or effective_score < effective_min_score:
-            # BEAR MARKET EXCEPTION: Allow strong fundamental stocks at half position size
+
+        # Multi-scan averaging: smooth score wobble (live-only, not in backtester)
+        if effective_score and not is_growth:
+            effective_score = _get_avg_score(stock.ticker, effective_score)
+
+        # Compute soft zone multiplier for this candidate
+        soft_zone_mult = 1.0
+        in_soft_zone = False
+        stable_override = False
+        stable_score_val = 0
+
+        soft_zone_floor = effective_min_score - soft_zone_width if soft_enabled else effective_min_score
+
+        if not effective_score or effective_score < soft_zone_floor:
+            # Below even the soft zone — check bear exception
             if market_regime["regime"] == "bearish" and effective_score and effective_score >= min_score_to_buy:
                 c_val = getattr(stock, 'c_score', 0) or 0
                 a_val = getattr(stock, 'a_score', 0) or 0
@@ -1919,6 +1962,28 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     bear_exception_candidates.append(stock)
                     logger.info(f"Bear exception: {stock.ticker} C+A+L={cal_sum:.0f} (score {effective_score:.0f})")
                     continue
+            continue
+        elif effective_score < effective_min_score and soft_enabled:
+            # In soft zone — graduated position sizing
+            zone_position = (effective_score - soft_zone_floor) / max(1, soft_zone_width)
+            soft_zone_mult = soft_mult_edge + zone_position * (soft_mult_top - soft_mult_edge)
+
+            # STABLE OVERRIDE: If deterministic scores are very strong, upgrade to top multiplier
+            if stability_enabled:
+                n_val = getattr(stock, 'n_score', 0) or 0
+                s_val = getattr(stock, 's_score', 0) or 0
+                l_val = getattr(stock, 'l_score', 0) or 0
+                i_val = getattr(stock, 'i_score', 0) or 0
+                m_val = getattr(stock, 'm_score', 0) or 0
+                stable_score_val = n_val + s_val + l_val + i_val + m_val
+                if stable_score_val >= stable_min_for_override:
+                    soft_zone_mult = soft_mult_top
+                    stable_override = True
+
+            in_soft_zone = True
+            logger.info(f"Soft zone: {stock.ticker} score={effective_score:.0f} (threshold={effective_min_score:.0f}), "
+                        f"mult={soft_zone_mult:.0%}" + (f" stable override ({stable_score_val:.0f}/70)" if stable_override else ""))
+        elif not effective_score:
             continue
 
         # QUALITY FILTERS: Strategy profile overrides YAML defaults
@@ -2249,7 +2314,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             n_sc = getattr(stock, 'n_score', 0) or 0
             weighted_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
-        growth_projection = min(stock.projected_growth or 0, 50)  # Cap at 50 for scoring
+        # Blend stored growth_projection with momentum to reduce FMP dependency
+        # stored projected_growth was calculated with old weights in scanner; re-blend locally
+        stored_growth = stock.projected_growth or 0
+        momentum_pct_local = ((rs_3m / rs_12m) - 1.0) * 100 if rs_12m > 0 else 0
+        growth_projection = min(stored_growth * 0.70 + momentum_pct_local * 0.30, 50)
         composite_score = (
             (growth_projection * w_growth) +
             (weighted_score * w_score) +
@@ -2278,6 +2347,24 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Heat penalty: too much risk exposure → mild score reduction
         if heat_penalty_active:
             composite_score -= 5
+
+        # DETERMINISTIC BOOST: Bonus for stocks with strong non-FMP scores (N+S+L+I+M)
+        det_config = yaml_config.get('ai_trader.deterministic_boost', {})
+        deterministic_boost_val = 0
+        if det_config.get('enabled', False):
+            n_val = getattr(stock, 'n_score', 0) or 0
+            s_val = getattr(stock, 's_score', 0) or 0
+            l_val_det = getattr(stock, 'l_score', 0) or 0
+            i_val = getattr(stock, 'i_score', 0) or 0
+            m_val = getattr(stock, 'm_score', 0) or 0
+            stable_score_det = n_val + s_val + l_val_det + i_val + m_val
+            strong_thresh = det_config.get('strong_threshold', 60)
+            stable_thresh = det_config.get('stable_bonus_threshold', 55)
+            if stable_score_det >= strong_thresh:
+                deterministic_boost_val = det_config.get('strong_bonus', 8)
+            elif stable_score_det >= stable_thresh:
+                deterministic_boost_val = det_config.get('stable_bonus', 5)
+            composite_score += deterministic_boost_val
 
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
@@ -2338,6 +2425,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Apply drawdown protection (reduce positions when portfolio is down)
         position_pct *= drawdown_multiplier
 
+        # SOFT ZONE: Apply graduated position multiplier for stocks below hard threshold
+        if in_soft_zone and soft_zone_mult < 1.0:
+            position_pct *= soft_zone_mult
+
         # Cap at profile max or market regime max (varies by market conditions)
         profile_max_pct = profile.get('max_single_position_pct', 25)
         position_pct = min(position_pct, regime_max_pct, profile_max_pct)
@@ -2381,6 +2472,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 reason_parts.append(f"⚠️ Extended {abs(pct_from_pivot):.0f}% above pivot")
             else:
                 reason_parts.append(f"⚠️ At high without base")
+        # Soft zone annotation
+        if in_soft_zone:
+            sz_pct = int(soft_zone_mult * 100)
+            if stable_override:
+                reason_parts.append(f"Soft zone {sz_pct}% pos (stable override {stable_score_val:.0f}/70)")
+            else:
+                reason_parts.append(f"Soft zone {sz_pct}% pos")
         if stock.projected_growth and stock.projected_growth > 15:
             reason_parts.append(f"+{stock.projected_growth:.0f}% growth")
         stock_type_label = "Growth" if is_growth else "CANSLIM"
@@ -2413,6 +2511,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append("RS new high")
         if earnings_drift_bonus > 0:
             reason_parts.append(f"Drift +{earnings_drift_bonus}")
+        if deterministic_boost_val > 0:
+            reason_parts.append(f"Det+{deterministic_boost_val}")
 
         # Build trade journal signal_factors (matches backtester)
         buy_signal_factors = {
@@ -2425,6 +2525,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         }
         if coiled_spring_bonus > 0:
             buy_signal_factors["coiled_spring"] = True
+        if in_soft_zone:
+            buy_signal_factors["soft_zone"] = True
+            buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult
+        if deterministic_boost_val > 0:
+            buy_signal_factors["deterministic_boost"] = deterministic_boost_val
 
         buys.append({
             "stock": stock,
