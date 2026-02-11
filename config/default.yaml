@@ -261,7 +261,7 @@ ai_trader:
   # Conviction-based position sizing: higher scores get larger positions
   # Uses composite_score (typically 25-75 range, not CANSLIM 0-100)
   conviction_sizing:
-    enabled: true
+    enabled: false                   # Disabled: hurt returns in #125 (+5.2% vs #123 +29.5%)
     min_pct: 8.0                     # Floor: lowest-conviction positions
     max_pct: 20.0                    # Ceiling: highest-conviction positions
     score_floor: 30                  # Composite score at which min_pct applies
