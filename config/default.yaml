@@ -737,23 +737,23 @@ strategy_profiles:
   # Only this lab profile should be changed by optimization scripts.
   lab:
     label: "Lab (Optimization)"
-    description: "Experimental profile for automated parameter tuning — clone of balanced"
+    description: "Experimental profile for automated parameter tuning"
     min_score: 72
     max_positions: 8
     max_single_position_pct: 25
     max_sector_pct: 50
-    stop_loss_pct: 8.0
-    bearish_stop_loss_pct: 7.0
+    stop_loss_pct: 7.0                     # Iter 1: tighter stop (was 8.0) — cut losers faster
+    bearish_stop_loss_pct: 6.0             # Iter 1: tighter bearish stop (was 7.0)
     take_profit_pct: 75.0
     trailing_stops:
       gain_50_plus: 20
       gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
-    seed_count: 5
+    seed_count: 4                          # Iter 1: fewer seeds (was 5) — less day-1 risk
     seed_pct: 10
     half_size_initial: true
-    max_seed_investment_pct: 60
+    max_seed_investment_pct: 50            # Iter 1: lower seed cap (was 60) — keep more cash
     quality_filters:
       min_c_score: 10
       min_l_score: 8
