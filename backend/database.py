@@ -706,6 +706,7 @@ class BacktestRun(Base):
     error_message = Column(Text)
     progress_pct = Column(Float, default=0.0)  # 0-100 progress during run
     cancel_requested = Column(Boolean, default=False)  # Flag to request cancellation
+    force_refresh = Column(Boolean, default=False)  # Force fresh FMP earnings fetch (ignore cache)
 
     # Relationships (cascade delete when backtest is deleted)
     daily_snapshots = relationship("BacktestSnapshot", back_populates="backtest_run", cascade="all, delete-orphan")

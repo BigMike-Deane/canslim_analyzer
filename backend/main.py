@@ -2963,6 +2963,7 @@ class BacktestCreate(BaseModel):
     min_score_to_buy: Optional[int] = None
     stop_loss_pct: Optional[float] = None
     strategy: str = "balanced"  # balanced, growth
+    force_refresh: bool = False  # Force fresh FMP earnings fetch (ignore cache)
 
 
 def run_backtest_background(backtest_id: int):
@@ -3022,6 +3023,7 @@ async def create_backtest(
         max_positions=config.max_positions or 20,
         min_score_to_buy=config.min_score_to_buy or default_min_score,
         stop_loss_pct=config.stop_loss_pct or default_stop_loss,
+        force_refresh=config.force_refresh,
         status="pending"
     )
     db.add(backtest)
@@ -3169,6 +3171,7 @@ async def create_multi_backtest(
     starting_cash: float = Query(25000.0, ge=1000, le=1000000),
     stock_universe: str = Query("all"),
     strategy: str = Query("balanced"),
+    force_refresh: bool = Query(False),
     db: Session = Depends(get_db)
 ):
     """Launch backtests for all preset periods simultaneously"""
@@ -3185,6 +3188,7 @@ async def create_multi_backtest(
             starting_cash=starting_cash,
             stock_universe=stock_universe,
             strategy=strategy,
+            force_refresh=force_refresh,
             created_at=datetime.now(timezone.utc)
         )
         db.add(bt)

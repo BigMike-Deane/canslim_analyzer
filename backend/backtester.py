@@ -354,21 +354,44 @@ class BacktestEngine:
         return hashlib.md5(fingerprint_data.encode()).hexdigest()[:12]
 
     def _get_earnings_cache_path(self):
-        """Get path for the earnings cache file, keyed by today's date."""
+        """Get path for the version-based earnings cache file (single file, not per-date)."""
         cache_dir = "/tmp/backtest_cache"
         os.makedirs(cache_dir, exist_ok=True)
-        return os.path.join(cache_dir, f"earnings_{date.today().isoformat()}.json")
+        return os.path.join(cache_dir, "earnings_latest.json")
 
     def _load_earnings_cache(self):
-        """Try to load cached FMP earnings data from today. Returns True if loaded."""
+        """Try to load cached FMP earnings data. Returns True if loaded.
+
+        Uses a single persistent cache file (earnings_latest.json) instead of
+        date-keyed files. Cache is reused indefinitely unless force_refresh is set.
+        """
         import json
+
+        # Check if force_refresh is requested
+        if getattr(self.backtest, 'force_refresh', False):
+            logger.info(f"Backtest {self.backtest.id}: force_refresh=True, skipping cache")
+            return False
+
         cache_path = self._get_earnings_cache_path()
         if not os.path.exists(cache_path):
             return False
 
         try:
             with open(cache_path, 'r') as f:
-                cached = json.load(f)
+                wrapper = json.load(f)
+
+            # Support both old format (flat dict) and new format (with metadata)
+            if "data" in wrapper and "fetched_at" in wrapper:
+                cached = wrapper["data"]
+                fetched_at = wrapper.get("fetched_at", "unknown")
+                cached_fingerprint = wrapper.get("fingerprint", "unknown")
+                ticker_count = wrapper.get("ticker_count", len(cached))
+            else:
+                # Old format: flat dict of ticker -> earnings data
+                cached = wrapper
+                fetched_at = "unknown (legacy)"
+                cached_fingerprint = "unknown"
+                ticker_count = len(cached)
 
             applied = 0
             for ticker, data in cached.items():
@@ -383,14 +406,19 @@ class BacktestEngine:
 
             self._data_fingerprint = self._compute_fingerprint()
             logger.info(f"Backtest {self.backtest.id}: Loaded earnings cache for {applied} tickers "
-                       f"(fingerprint: {self._data_fingerprint})")
+                       f"(fetched: {fetched_at}, cached_fp: {cached_fingerprint}, "
+                       f"current_fp: {self._data_fingerprint})")
             return True
         except Exception as e:
             logger.warning(f"Backtest {self.backtest.id}: Failed to load earnings cache: {e}")
             return False
 
     def _save_earnings_cache(self):
-        """Save FMP earnings data to cache file for reuse by subsequent backtests."""
+        """Save FMP earnings data to cache file for reuse by subsequent backtests.
+
+        Saves as a single versioned file with metadata (fetched_at, fingerprint, ticker_count).
+        Cleans up old date-based cache files from the previous scheme.
+        """
         import json
         cache_path = self._get_earnings_cache_path()
         try:
@@ -406,34 +434,101 @@ class BacktestEngine:
                 if entry:
                     cached[ticker] = entry
 
-            with open(cache_path, 'w') as f:
-                json.dump(cached, f)
+            wrapper = {
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "fingerprint": getattr(self, '_data_fingerprint', 'unknown'),
+                "ticker_count": len(cached),
+                "data": cached,
+            }
 
-            # Clean up old cache files (keep only today's)
+            with open(cache_path, 'w') as f:
+                json.dump(wrapper, f)
+
+            # Clean up old date-based cache files (earnings_YYYY-MM-DD.json)
             cache_dir = os.path.dirname(cache_path)
-            today_name = os.path.basename(cache_path)
             for fname in os.listdir(cache_dir):
-                if fname.startswith("earnings_") and fname != today_name:
+                if fname.startswith("earnings_2") and fname.endswith(".json"):
                     os.remove(os.path.join(cache_dir, fname))
 
-            logger.info(f"Backtest {self.backtest.id}: Saved earnings cache ({len(cached)} tickers)")
+            logger.info(f"Backtest {self.backtest.id}: Saved earnings cache ({len(cached)} tickers, "
+                        f"fingerprint: {getattr(self, '_data_fingerprint', 'unknown')})")
         except Exception as e:
             logger.warning(f"Backtest {self.backtest.id}: Failed to save earnings cache: {e}")
+
+    def _wait_for_scan_to_finish(self):
+        """Wait for any running scan to finish before starting FMP fetch.
+
+        This prevents rate limit competition between the scanner and backtester,
+        which was causing variable FMP failures (19 vs 88 tickers).
+        """
+        import time
+        try:
+            from backend.scheduler import _scan_config
+        except ImportError:
+            return
+
+        max_wait = 1800  # 30 minutes
+        waited = 0
+        while _scan_config.get("is_scanning", False) and waited < max_wait:
+            logger.info(f"Backtest {self.backtest.id}: Waiting for scan to finish before FMP fetch ({waited}s)...")
+            time.sleep(10)
+            waited += 10
+
+        if waited > 0:
+            logger.info(f"Backtest {self.backtest.id}: Scan finished after {waited}s wait, proceeding with FMP fetch")
+
+    def _fetch_single_ticker_earnings(self, ticker, fmp_base, fmp_api_key, q_limit, a_limit):
+        """Fetch earnings data for a single ticker from FMP. Returns True on success."""
+        import requests
+
+        try:
+            q_url = f"{fmp_base}/income-statement?symbol={ticker}&period=quarter&limit={q_limit}&apikey={fmp_api_key}"
+            q_resp = requests.get(q_url, timeout=10)
+
+            a_url = f"{fmp_base}/income-statement?symbol={ticker}&limit={a_limit}&apikey={fmp_api_key}"
+            a_resp = requests.get(a_url, timeout=10)
+
+            updated = False
+
+            if q_resp.status_code == 200:
+                q_data = q_resp.json()
+                if isinstance(q_data, list) and q_data:
+                    q_eps = [q.get("eps", 0) or 0 for q in q_data]
+                    q_rev = [q.get("revenue", 0) or 0 for q in q_data]
+                    self.static_data[ticker]["quarterly_earnings"] = q_eps
+                    self.static_data[ticker]["quarterly_revenue"] = q_rev
+                    updated = True
+
+            if a_resp.status_code == 200:
+                a_data = a_resp.json()
+                if isinstance(a_data, list) and a_data:
+                    a_eps = [a.get("eps", 0) or 0 for a in a_data]
+                    self.static_data[ticker]["annual_earnings"] = a_eps
+                    updated = True
+
+            return updated
+        except Exception:
+            return False
 
     def _fetch_missing_earnings(self):
         """
         Fetch earnings from FMP for ALL tickers to ensure deterministic backtests.
 
-        Uses a daily file cache to avoid re-fetching ~2000 tickers on every run.
-        Cache is keyed by date — first backtest of the day fetches from FMP (~20 min),
-        subsequent backtests load from cache (~1 sec).
+        Uses a persistent version-based cache (earnings_latest.json) that is reused
+        across days unless force_refresh is set. This eliminates the main source of
+        non-determinism (FMP data changing between fetches).
+
+        Key improvements over the old date-based cache:
+        - A) Waits for any running scan to finish (prevents rate limit competition)
+        - B) Retries failed tickers up to 2 times with increasing delays
+        - C) Cache persists indefinitely (not date-keyed), use force_refresh to update
 
         Only updates self.static_data (NOT the DB) to avoid interfering with scans.
         """
         import requests
         import time
 
-        # Try loading from today's cache first
+        # Try loading from cache first (skipped if force_refresh=True)
         if self._load_earnings_cache():
             return
 
@@ -442,18 +537,18 @@ class BacktestEngine:
             logger.warning("Backtest: No FMP_API_KEY, cannot fetch earnings")
             return
 
+        # A) Wait for scan to finish before starting FMP fetch
+        self._wait_for_scan_to_finish()
+
         # Calculate how many quarters we need
         today = date.today()
         days_diff = (today - self.backtest.start_date).days
 
-        # quarters_to_skip = how many the filter will skip
-        # We need at least 8 usable quarters after skipping (for C score YoY + buffer)
         quarters_to_skip = max(0, (days_diff + 45) // 91) if days_diff > 0 else 0
         quarters_needed = quarters_to_skip + 8
         annuals_to_skip = max(0, (days_diff + 45) // 365) if days_diff > 0 else 0
         annuals_needed = annuals_to_skip + 5
 
-        # Fetch for ALL tickers (deterministic — ignores DB cache)
         all_tickers = list(self.static_data.keys())
 
         logger.info(f"Backtest {self.backtest.id}: Fetching FMP earnings for "
@@ -461,65 +556,58 @@ class BacktestEngine:
                      f"backtest starts {self.backtest.start_date})")
 
         fmp_base = "https://financialmodelingprep.com/stable"
+        q_limit = min(quarters_needed + 4, 40)
+        a_limit = min(annuals_needed + 2, 15)
         fetched_count = 0
-        failed_count = 0
-        batch_size = 50  # Respect FMP rate limits
+        failed_tickers = []
+        batch_size = 50
 
+        # Main fetch loop
         for i, ticker in enumerate(all_tickers):
-            try:
-                # Fetch quarterly (enough for the backtest period)
-                q_limit = min(quarters_needed + 4, 40)  # small buffer, cap at 40
-                q_url = f"{fmp_base}/income-statement?symbol={ticker}&period=quarter&limit={q_limit}&apikey={fmp_api_key}"
-                q_resp = requests.get(q_url, timeout=10)
-
-                # Fetch annual
-                a_limit = min(annuals_needed + 2, 15)
-                a_url = f"{fmp_base}/income-statement?symbol={ticker}&limit={a_limit}&apikey={fmp_api_key}"
-                a_resp = requests.get(a_url, timeout=10)
-
-                updated = False
-
-                if q_resp.status_code == 200:
-                    q_data = q_resp.json()
-                    if isinstance(q_data, list) and q_data:
-                        q_eps = [q.get("eps", 0) or 0 for q in q_data]
-                        q_rev = [q.get("revenue", 0) or 0 for q in q_data]
-                        # Always overwrite — FMP is the canonical source for determinism
-                        self.static_data[ticker]["quarterly_earnings"] = q_eps
-                        self.static_data[ticker]["quarterly_revenue"] = q_rev
-                        updated = True
-
-                if a_resp.status_code == 200:
-                    a_data = a_resp.json()
-                    if isinstance(a_data, list) and a_data:
-                        a_eps = [a.get("eps", 0) or 0 for a in a_data]
-                        self.static_data[ticker]["annual_earnings"] = a_eps
-                        updated = True
-
-                if updated:
-                    fetched_count += 1
-                else:
-                    failed_count += 1
-
-            except Exception as e:
-                failed_count += 1
-                if i < 3:  # Only log first few errors
-                    logger.debug(f"Backtest earnings fetch failed for {ticker}: {e}")
+            success = self._fetch_single_ticker_earnings(ticker, fmp_base, fmp_api_key, q_limit, a_limit)
+            if success:
+                fetched_count += 1
+            else:
+                failed_tickers.append(ticker)
 
             # Rate limiting: pause every batch_size requests
             if (i + 1) % batch_size == 0:
                 time.sleep(1.0)
-                # Log progress every 200 tickers
                 if (i + 1) % 200 == 0:
                     logger.info(f"Backtest {self.backtest.id}: FMP earnings fetch progress: "
-                               f"{i + 1}/{len(all_tickers)} tickers")
+                               f"{i + 1}/{len(all_tickers)} tickers "
+                               f"({fetched_count} ok, {len(failed_tickers)} failed)")
+
+        # B) Retry failed tickers (2 rounds with increasing delay)
+        for retry_round in range(2):
+            if not failed_tickers:
+                break
+            logger.info(f"Backtest {self.backtest.id}: Retry round {retry_round + 1}: "
+                       f"{len(failed_tickers)} tickers")
+            time.sleep(5 * (retry_round + 1))  # 5s, then 10s
+
+            still_failed = []
+            for i, ticker in enumerate(failed_tickers):
+                success = self._fetch_single_ticker_earnings(ticker, fmp_base, fmp_api_key, q_limit, a_limit)
+                if success:
+                    fetched_count += 1
+                else:
+                    still_failed.append(ticker)
+
+                if (i + 1) % batch_size == 0:
+                    time.sleep(1.0)
+
+            logger.info(f"Backtest {self.backtest.id}: Retry round {retry_round + 1} recovered "
+                       f"{len(failed_tickers) - len(still_failed)} tickers")
+            failed_tickers = still_failed
 
         self._data_fingerprint = self._compute_fingerprint()
 
         logger.info(f"Backtest {self.backtest.id}: FMP earnings fetched for {fetched_count} tickers "
-                     f"({failed_count} failed), data fingerprint: {self._data_fingerprint}")
+                     f"({len(failed_tickers)} failed after retries), "
+                     f"data fingerprint: {self._data_fingerprint}")
 
-        # Save to cache for subsequent backtests today
+        # Save to cache for subsequent backtests
         self._save_earnings_cache()
 
     def _calculate_coiled_spring_for_backtest(self, ticker: str, score_data: dict, static_data: dict, cs_config: dict) -> dict:
