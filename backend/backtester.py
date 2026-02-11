@@ -110,6 +110,9 @@ class BacktestEngine:
         # Re-entry cooldown tracking: ticker -> (date, reason)
         self.recently_sold: Dict[str, tuple] = {}
 
+        # Pyramid cooldown tracking: ticker -> last pyramid date (1-day min between pyramids)
+        self.last_pyramid_date: Dict[str, date] = {}
+
         # Market timing state (O'Neil A/D + FTD)
         self.market_timing_state: str = "CONFIRMED_UPTREND"
         self.ftd_can_buy: bool = True
@@ -2108,6 +2111,13 @@ class BacktestEngine:
             if position.pyramid_count >= 2:
                 continue
 
+            # 1-day cooldown between pyramids (and from initial buy)
+            last_pyr = self.last_pyramid_date.get(ticker)
+            if last_pyr and last_pyr >= current_date:
+                continue
+            if position.pyramid_count == 0 and position.purchase_date >= current_date:
+                continue
+
             # Skip if at max allocation
             if current_allocation >= MAX_POSITION_ALLOCATION:
                 continue
@@ -2246,6 +2256,9 @@ class BacktestEngine:
         position.shares += trade.shares
         position.cost_basis = (old_value + new_value) / position.shares
         position.pyramid_count += 1
+
+        # Track pyramid date for 1-day cooldown
+        self.last_pyramid_date[trade.ticker] = current_date
 
         self._record_trade(current_date, trade)
         self.trades_executed += 1

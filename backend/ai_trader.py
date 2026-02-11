@@ -788,6 +788,22 @@ def evaluate_pyramids(db: Session) -> list:
 
     from config_loader import config as yaml_config
 
+    # Batch-fetch last pyramid trade date per ticker (for 1-day cooldown)
+    from backend.database import AIPortfolioTrade
+    from sqlalchemy import func
+    last_pyramid_dates = {}
+    if tickers:
+        pyramid_trades = (
+            db.query(AIPortfolioTrade.ticker, func.max(AIPortfolioTrade.executed_at))
+            .filter(AIPortfolioTrade.ticker.in_(tickers))
+            .filter(AIPortfolioTrade.reason.like("PYRAMID:%"))
+            .group_by(AIPortfolioTrade.ticker)
+            .all()
+        )
+        last_pyramid_dates = {t: dt for t, dt in pyramid_trades}
+
+    today = datetime.now(timezone.utc).date()
+
     for position in positions:
         # Use effective score based on stock type
         score = get_effective_score(position, use_current=True)
@@ -843,6 +859,19 @@ def evaluate_pyramids(db: Session) -> list:
         # Max 2 pyramids per position (O'Neil: decreasing position sizes)
         if current_pyramid_count >= 2:
             continue
+
+        # 1-day cooldown between pyramids (prevent same-session double-adds)
+        last_pyr_date = last_pyramid_dates.get(position.ticker)
+        if last_pyr_date:
+            last_pyr_day = last_pyr_date.date() if hasattr(last_pyr_date, 'date') else last_pyr_date
+            if last_pyr_day >= today:
+                continue
+
+        # Also enforce cooldown from initial buy (don't pyramid same day as purchase)
+        if current_pyramid_count == 0 and position.purchase_date:
+            buy_day = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
+            if buy_day >= today:
+                continue
 
         # Skip if already at max position size
         if current_allocation >= MAX_POSITION_ALLOCATION:
