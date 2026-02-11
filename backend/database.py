@@ -259,6 +259,8 @@ def run_migrations():
         ('ix_stocks_cs_candidates', 'stocks',
          'days_to_earnings, weeks_in_base, earnings_beat_streak, canslim_score'),
         ('ix_stocks_earnings', 'stocks', 'days_to_earnings, canslim_score'),
+        ('ix_earnings_audits_ticker', 'earnings_audits', 'ticker'),
+        ('ix_earnings_audits_ticker_date', 'earnings_audits', 'ticker, audited_at'),
     ]
 
     with engine.begin() as conn:
@@ -506,6 +508,59 @@ class CoiledSpringAlert(Base):
     __table_args__ = (
         Index('ix_coiled_spring_alerts_ticker_date', 'ticker', 'alert_date'),
         Index('ix_coiled_spring_alerts_date', 'alert_date'),
+    )
+
+
+class EarningsAudit(Base):
+    """
+    Deep fundamental audit of buy candidates using FMP data.
+
+    Runs between scan and AI trading phases. Enriches top candidates
+    with analyst targets, earnings quality, financial health, insider
+    conviction, and estimate revision data to compute a fundamental_confidence
+    score (0-100) that modifies the composite buy score.
+    """
+    __tablename__ = "earnings_audits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    audited_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # Analyst target consensus
+    analyst_avg_target = Column(Float)       # Average price target
+    analyst_high_target = Column(Float)      # Highest target
+    analyst_low_target = Column(Float)       # Lowest target
+    analyst_num = Column(Integer)            # Number of analysts
+    analyst_upside_pct = Column(Float)       # % upside to avg target from current price
+
+    # Earnings beat quality
+    beat_streak = Column(Integer)            # Consecutive quarterly beats
+    avg_beat_magnitude = Column(Float)       # Average EPS surprise %
+    last_beat_pct = Column(Float)            # Most recent quarter surprise %
+
+    # Financial health
+    roe = Column(Float)                      # Return on equity
+    debt_to_equity = Column(Float)           # Debt/equity ratio
+    free_cash_flow_per_share = Column(Float) # FCF per share
+    current_ratio = Column(Float)            # Current assets / current liabilities
+
+    # Insider conviction
+    insider_net_value = Column(Float)        # Net insider buy value (90d)
+    insider_cluster_buys = Column(Integer)   # Number of distinct insider buyers (90d)
+
+    # Estimate revisions
+    eps_revision_pct = Column(Float)         # EPS estimate revision %
+    revenue_revision_pct = Column(Float)     # Revenue estimate revision %
+
+    # Composite confidence score
+    fundamental_confidence = Column(Float)   # 0-100 composite score
+    confidence_breakdown = Column(JSON)      # Per-component scores for transparency
+
+    # Current price at audit time (for upside calc)
+    price_at_audit = Column(Float)
+
+    __table_args__ = (
+        Index('ix_earnings_audits_ticker_date', 'ticker', 'audited_at'),
     )
 
 

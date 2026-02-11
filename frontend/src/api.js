@@ -4,6 +4,7 @@ const API_BASE = ''
 
 // Cache TTL configuration (seconds)
 const CACHE_TTL = {
+  '/api/command-center': 60,       // 1 min (primary dashboard)
   '/api/dashboard': 180,           // 3 min
   '/api/stocks': 300,              // 5 min (list)
   '/api/stocks/': 600,             // 10 min (individual stock)
@@ -16,6 +17,7 @@ const CACHE_TTL = {
   '/api/market-direction': 300,
   '/api/ai-portfolio': 120,        // 2 min (price sensitive)
   '/api/backtests': 600,
+  '/api/earnings-audit': 300,      // 5 min
 }
 
 function getCacheTTL(endpoint) {
@@ -313,6 +315,14 @@ export const api = {
 
   // Portfolio Risk
   getPortfolioRisk: () => request('/api/ai-portfolio/risk'),
+
+  // Command Center
+  getCommandCenter: () => request('/api/command-center'),
+
+  // Earnings Audit
+  getEarningsAudits: (limit = 30, minConfidence = 0) =>
+    request(`/api/earnings-audit?limit=${limit}&min_confidence=${minConfidence}`),
+  getEarningsAudit: (ticker) => request(`/api/earnings-audit/${ticker}`),
 }
 
 // Formatting utilities

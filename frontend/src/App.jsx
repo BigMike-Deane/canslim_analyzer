@@ -1,4 +1,5 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
+import CommandCenter from './pages/CommandCenter'
 import Dashboard from './pages/Dashboard'
 import Screener from './pages/Screener'
 import StockDetail from './pages/StockDetail'
@@ -21,12 +22,12 @@ function NavIcon({ icon, label }) {
 
 function BottomNav() {
   const navItems = [
-    { to: '/', icon: '📊', label: 'Home' },
-    { to: '/screener', icon: '🔍', label: 'Screener' },
-    { to: '/portfolio', icon: '💼', label: 'Portfolio' },
+    { to: '/', icon: '>', label: 'CMD' },
+    { to: '/dashboard', icon: '📊', label: 'Home' },
     { to: '/ai-portfolio', icon: '🤖', label: 'AI' },
+    { to: '/screener', icon: '🔍', label: 'Screen' },
     { to: '/watchlist', icon: '👁️', label: 'Watch' },
-    { to: '/docs', icon: '📖', label: 'Docs' },
+    { to: '/backtest', icon: '📈', label: 'Test' },
   ]
 
   return (
@@ -36,6 +37,7 @@ function BottomNav() {
           <NavLink
             key={item.to}
             to={item.to}
+            end={item.to === '/'}
             className={({ isActive }) =>
               `flex-1 flex justify-center py-2 transition-colors ${
                 isActive ? 'text-primary-500' : 'text-dark-400 hover:text-dark-200'
@@ -54,7 +56,8 @@ export default function App() {
   return (
     <div className="min-h-screen pb-20">
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<CommandCenter />} />
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/screener" element={<Screener />} />
         <Route path="/stock/:ticker" element={<StockDetail />} />
         <Route path="/portfolio" element={<Portfolio />} />

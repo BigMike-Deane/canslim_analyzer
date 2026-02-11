@@ -1931,6 +1931,22 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     buys = []
     bear_exception_candidates = []
 
+    # EARNINGS AUDIT: Batch-fetch latest audit data for all candidates
+    audit_map = {}  # ticker -> {fundamental_confidence, breakdown, ...}
+    try:
+        from backend.earnings_audit import get_latest_audit, get_audit_bonus
+        audit_config = yaml_config.get('ai_trader.earnings_audit', {})
+        if audit_config.get('enabled', True):
+            freshness = audit_config.get('freshness_hours', 24)
+            for stock in candidates:
+                audit = get_latest_audit(db, stock.ticker, max_age_hours=freshness)
+                if audit:
+                    audit_map[stock.ticker] = audit
+            if audit_map:
+                logger.info(f"Earnings audit data loaded for {len(audit_map)} candidates")
+    except Exception as e:
+        logger.warning(f"Earnings audit lookup failed (non-fatal): {e}")
+
     # MULTI-SCAN AVERAGING (live-only): Smooth score wobble from FMP rate limits
     from backend.database import StockScore
     def _get_avg_score(ticker, current_score):
@@ -2389,6 +2405,18 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 deterministic_boost_val = det_config.get('stable_bonus', 5)
             composite_score += deterministic_boost_val
 
+        # EARNINGS AUDIT BONUS: Deep fundamental confidence adjustment
+        earnings_audit_bonus = 0
+        audit_confidence = None
+        audit_info = audit_map.get(stock.ticker)
+        if audit_info:
+            audit_confidence = audit_info.get("fundamental_confidence")
+            try:
+                earnings_audit_bonus = get_audit_bonus(audit_confidence)
+            except Exception:
+                earnings_audit_bonus = 0
+            composite_score += earnings_audit_bonus
+
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
         # Calculate position size - MORE DYNAMIC range based on conviction
@@ -2536,6 +2564,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append(f"Drift +{earnings_drift_bonus}")
         if deterministic_boost_val > 0:
             reason_parts.append(f"Det+{deterministic_boost_val}")
+        if earnings_audit_bonus > 0:
+            reason_parts.append(f"Audit+{earnings_audit_bonus} ({audit_confidence:.0f})")
+        elif earnings_audit_bonus < 0:
+            reason_parts.append(f"Audit{earnings_audit_bonus} ({audit_confidence:.0f})")
 
         # Build trade journal signal_factors (matches backtester)
         buy_signal_factors = {
@@ -2553,6 +2585,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult
         if deterministic_boost_val > 0:
             buy_signal_factors["deterministic_boost"] = deterministic_boost_val
+        if earnings_audit_bonus != 0:
+            buy_signal_factors["earnings_audit_bonus"] = earnings_audit_bonus
+            buy_signal_factors["fundamental_confidence"] = audit_confidence
 
         buys.append({
             "stock": stock,

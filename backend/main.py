@@ -25,7 +25,8 @@ from backend.database import (
     init_db, get_db, Stock, StockScore, PortfolioPosition,
     Watchlist, AnalysisJob, MarketSnapshot,
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
-    BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert
+    BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert,
+    EarningsAudit
 )
 from backend.config import settings
 from pydantic import BaseModel
@@ -3660,6 +3661,317 @@ async def update_ai_portfolio_config_v2(
             "paper_mode": getattr(config, 'paper_mode', False) or False,
             "strategy": getattr(config, 'strategy', None) or "balanced",
         }
+    }
+
+
+# ============== Earnings Audit ==============
+
+@app.get("/api/earnings-audit")
+async def get_earnings_audits(
+    limit: int = Query(30, ge=1, le=100),
+    min_confidence: float = Query(0, ge=0, le=100),
+    db: Session = Depends(get_db)
+):
+    """Get recent earnings audit results, sorted by confidence score."""
+    from backend.database import EarningsAudit
+    from datetime import timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    query = db.query(EarningsAudit).filter(
+        EarningsAudit.audited_at >= cutoff,
+    )
+    if min_confidence > 0:
+        query = query.filter(EarningsAudit.fundamental_confidence >= min_confidence)
+
+    audits = query.order_by(EarningsAudit.fundamental_confidence.desc()).limit(limit).all()
+
+    return {
+        "audits": [
+            {
+                "ticker": a.ticker,
+                "fundamental_confidence": a.fundamental_confidence,
+                "confidence_breakdown": a.confidence_breakdown,
+                "analyst_upside_pct": a.analyst_upside_pct,
+                "analyst_avg_target": a.analyst_avg_target,
+                "analyst_num": a.analyst_num,
+                "beat_streak": a.beat_streak,
+                "avg_beat_magnitude": round(a.avg_beat_magnitude, 1) if a.avg_beat_magnitude else None,
+                "roe": round(a.roe * 100, 1) if a.roe else None,
+                "debt_to_equity": round(a.debt_to_equity, 2) if a.debt_to_equity else None,
+                "free_cash_flow_per_share": round(a.free_cash_flow_per_share, 2) if a.free_cash_flow_per_share else None,
+                "insider_net_value": a.insider_net_value,
+                "insider_cluster_buys": a.insider_cluster_buys,
+                "eps_revision_pct": a.eps_revision_pct,
+                "price_at_audit": a.price_at_audit,
+                "audited_at": a.audited_at.isoformat() + "Z" if a.audited_at else None,
+            }
+            for a in audits
+        ],
+        "count": len(audits),
+    }
+
+
+@app.get("/api/earnings-audit/{ticker}")
+async def get_earnings_audit_ticker(ticker: str, db: Session = Depends(get_db)):
+    """Get the latest earnings audit for a specific ticker."""
+    from backend.database import EarningsAudit
+
+    audit = db.query(EarningsAudit).filter(
+        EarningsAudit.ticker == ticker.upper(),
+    ).order_by(EarningsAudit.audited_at.desc()).first()
+
+    if not audit:
+        raise HTTPException(status_code=404, detail=f"No audit found for {ticker}")
+
+    return {
+        "ticker": audit.ticker,
+        "fundamental_confidence": audit.fundamental_confidence,
+        "confidence_breakdown": audit.confidence_breakdown,
+        "analyst_upside_pct": audit.analyst_upside_pct,
+        "analyst_avg_target": audit.analyst_avg_target,
+        "analyst_high_target": audit.analyst_high_target,
+        "analyst_low_target": audit.analyst_low_target,
+        "analyst_num": audit.analyst_num,
+        "beat_streak": audit.beat_streak,
+        "avg_beat_magnitude": round(audit.avg_beat_magnitude, 1) if audit.avg_beat_magnitude else None,
+        "last_beat_pct": round(audit.last_beat_pct, 1) if audit.last_beat_pct else None,
+        "roe": round(audit.roe * 100, 1) if audit.roe else None,
+        "debt_to_equity": round(audit.debt_to_equity, 2) if audit.debt_to_equity else None,
+        "free_cash_flow_per_share": round(audit.free_cash_flow_per_share, 2) if audit.free_cash_flow_per_share else None,
+        "current_ratio": round(audit.current_ratio, 2) if audit.current_ratio else None,
+        "insider_net_value": audit.insider_net_value,
+        "insider_cluster_buys": audit.insider_cluster_buys,
+        "eps_revision_pct": audit.eps_revision_pct,
+        "revenue_revision_pct": audit.revenue_revision_pct,
+        "price_at_audit": audit.price_at_audit,
+        "audited_at": audit.audited_at.isoformat() + "Z" if audit.audited_at else None,
+    }
+
+
+# ============== Command Center ==============
+
+@app.get("/api/command-center")
+async def get_command_center(db: Session = Depends(get_db)):
+    """
+    Consolidated endpoint for the Command Center dashboard.
+    Returns market regime, portfolio summary, positions, risk alerts,
+    earnings calendar, top candidates, recent trades, and scanner status
+    in a single API call.
+    """
+    from backend.ai_trader import get_or_create_config, get_portfolio_value
+    from config_loader import config as yaml_config
+    from backend.scheduler import get_scan_status
+
+    config = get_or_create_config(db)
+    portfolio = get_portfolio_value(db)
+    positions = db.query(AIPortfolioPosition).all()
+    pv = portfolio["total_value"]
+
+    # --- 1. Market Regime ---
+    latest_market = db.query(MarketSnapshot).order_by(
+        desc(MarketSnapshot.date)
+    ).first()
+
+    market_data = {}
+    if latest_market:
+        spy_above_50 = latest_market.spy_price > latest_market.spy_50_ma if latest_market.spy_50_ma else None
+        spy_above_200 = latest_market.spy_price > latest_market.spy_200_ma if latest_market.spy_200_ma else None
+        regime = "bullish" if spy_above_50 and spy_above_200 else ("bearish" if not spy_above_50 else "neutral")
+
+        market_data = {
+            "regime": regime,
+            "spy": {
+                "price": latest_market.spy_price,
+                "ma50": latest_market.spy_50_ma,
+                "ma200": latest_market.spy_200_ma,
+                "signal": latest_market.spy_signal,
+            },
+            "qqq": {
+                "price": latest_market.qqq_price,
+                "ma50": latest_market.qqq_50_ma,
+                "signal": getattr(latest_market, 'qqq_signal', None),
+            },
+            "dia": {
+                "price": latest_market.dia_price,
+                "ma50": latest_market.dia_50_ma,
+                "signal": getattr(latest_market, 'dia_signal', None),
+            },
+            "weighted_signal": latest_market.weighted_signal,
+            "updated_at": latest_market.created_at.isoformat() + "Z" if latest_market.created_at else None,
+        }
+    else:
+        market_data = {"regime": "unknown"}
+
+    # --- 2. Portfolio Summary ---
+    portfolio_summary = {
+        "total_value": portfolio["total_value"],
+        "cash": portfolio["cash"],
+        "positions_value": portfolio["positions_value"],
+        "total_return": portfolio.get("total_return", 0),
+        "total_return_pct": portfolio.get("total_return_pct", 0),
+        "positions_count": len(positions),
+        "max_positions": config.max_positions,
+        "strategy": getattr(config, 'strategy', None) or "balanced",
+        "paper_mode": getattr(config, 'paper_mode', False) or False,
+        "is_active": config.is_active,
+    }
+
+    # --- 3. Performance sparkline (last 30 days) ---
+    from datetime import timedelta as td
+    sparkline_cutoff = datetime.now(timezone.utc) - td(days=30)
+    snapshots = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.timestamp >= sparkline_cutoff
+    ).order_by(AIPortfolioSnapshot.timestamp).all()
+
+    # Deduplicate to 1 per day for sparkline
+    daily_values = {}
+    for snap in snapshots:
+        day_key = snap.timestamp.date() if snap.timestamp else None
+        if day_key:
+            daily_values[day_key] = snap.total_value
+    sparkline = [{"date": d.isoformat(), "value": round(v, 2)} for d, v in sorted(daily_values.items())]
+
+    # --- 4. Active Positions (dense) ---
+    position_tickers = [p.ticker for p in positions]
+    stocks_map = {}
+    if position_tickers:
+        pos_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all()
+        stocks_map = {s.ticker: s for s in pos_stocks}
+
+    positions_data = []
+    stop_cfg = yaml_config.get('ai_trader.stops', {})
+    base_stop = stop_cfg.get('normal_stop_loss_pct', 8.0)
+    total_heat = 0.0
+
+    for p in positions:
+        stock = stocks_map.get(p.ticker)
+        g_pct = ((p.current_price - p.cost_basis) / p.cost_basis * 100) if p.cost_basis and p.cost_basis > 0 else 0
+        pos_pct = ((p.current_value or 0) / pv * 100) if pv > 0 else 0
+        stop_dist = base_stop + g_pct
+
+        total_heat += pos_pct * (stop_dist / 100) if pv > 0 else 0
+
+        # Trailing stop distance
+        trail_pct = None
+        if p.peak_price and p.current_price and p.peak_price > 0:
+            trail_pct = round(((p.peak_price - p.current_price) / p.peak_price) * 100, 1)
+
+        positions_data.append({
+            "ticker": p.ticker,
+            "shares": p.shares,
+            "cost_basis": p.cost_basis,
+            "current_price": p.current_price,
+            "gain_pct": round(g_pct, 1),
+            "position_pct": round(pos_pct, 1),
+            "score": stock.canslim_score if stock else None,
+            "stop_distance": round(stop_dist, 1),
+            "trail_from_peak": trail_pct,
+            "days_held": (datetime.now(timezone.utc) - p.purchase_date.replace(tzinfo=timezone.utc)).days if p.purchase_date else None,
+        })
+
+    positions_data.sort(key=lambda x: x["gain_pct"], reverse=True)
+
+    # --- 5. Top Buy Candidates (with audit data) ---
+    top_candidates = db.query(Stock).filter(
+        Stock.canslim_score >= 65,
+        Stock.current_price > 0,
+        ~Stock.ticker.in_(position_tickers) if position_tickers else True,
+    ).order_by(desc(Stock.canslim_score)).limit(8).all()
+
+    # Get audit data for candidates
+    audit_cutoff = datetime.now(timezone.utc) - td(hours=48)
+    candidate_tickers = [s.ticker for s in top_candidates]
+    recent_audits = {}
+    if candidate_tickers:
+        audits = db.query(EarningsAudit).filter(
+            EarningsAudit.ticker.in_(candidate_tickers),
+            EarningsAudit.audited_at >= audit_cutoff,
+        ).all()
+        for a in audits:
+            if a.ticker not in recent_audits or (a.audited_at and a.audited_at > recent_audits[a.ticker].audited_at):
+                recent_audits[a.ticker] = a
+
+    candidates_data = []
+    for s in filter_duplicate_stocks(top_candidates, 8):
+        audit = recent_audits.get(s.ticker)
+        candidates_data.append({
+            "ticker": s.ticker,
+            "name": s.name,
+            "score": s.canslim_score,
+            "price": s.current_price,
+            "projected_growth": s.projected_growth,
+            "audit_confidence": audit.fundamental_confidence if audit else None,
+            "sector": s.sector,
+        })
+
+    # --- 6. Risk Alerts ---
+    heat_status = "normal" if total_heat < 10 else ("warning" if total_heat < 15 else "danger")
+
+    # Sector concentration
+    sector_data = {}
+    for p in positions:
+        stock = stocks_map.get(p.ticker)
+        sector = (stock.sector if stock else None) or "Unknown"
+        if sector not in sector_data:
+            sector_data[sector] = {"count": 0, "value": 0}
+        sector_data[sector]["count"] += 1
+        sector_data[sector]["value"] += p.current_value or 0
+
+    sector_concentration = [
+        {"sector": s, "count": d["count"], "pct": round((d["value"] / pv * 100) if pv > 0 else 0, 1)}
+        for s, d in sorted(sector_data.items(), key=lambda x: x[1]["value"], reverse=True)
+    ][:5]  # Top 5 sectors
+
+    risk_data = {
+        "portfolio_heat": round(total_heat, 1),
+        "heat_status": heat_status,
+        "top_sectors": sector_concentration,
+    }
+
+    # --- 7. Earnings Calendar (compact) ---
+    earnings_data = []
+    for p in positions:
+        stock = stocks_map.get(p.ticker)
+        if stock and stock.days_to_earnings is not None and stock.days_to_earnings <= 21:
+            earnings_data.append({
+                "ticker": p.ticker,
+                "days": stock.days_to_earnings,
+                "date": stock.next_earnings_date.isoformat() if stock.next_earnings_date else None,
+                "beat_streak": stock.earnings_beat_streak or 0,
+            })
+    earnings_data.sort(key=lambda x: x["days"])
+
+    # --- 8. Recent Trades ---
+    recent_trades = db.query(AIPortfolioTrade).order_by(
+        desc(AIPortfolioTrade.executed_at)
+    ).limit(10).all()
+
+    trades_data = [
+        {
+            "ticker": t.ticker,
+            "action": t.action,
+            "shares": t.shares,
+            "price": t.price,
+            "value": round(t.shares * t.price, 2) if t.shares and t.price else None,
+            "reason": t.reason[:80] if t.reason else None,
+            "executed_at": t.executed_at.isoformat() + "Z" if t.executed_at else None,
+        }
+        for t in recent_trades
+    ]
+
+    # --- 9. Scanner Status ---
+    scanner_status = get_scan_status()
+
+    return {
+        "market": market_data,
+        "portfolio": portfolio_summary,
+        "sparkline": sparkline,
+        "positions": positions_data,
+        "candidates": candidates_data,
+        "risk": risk_data,
+        "earnings": earnings_data,
+        "trades": trades_data,
+        "scanner": scanner_status,
     }
 
 

@@ -1086,6 +1086,22 @@ def run_continuous_scan():
         except Exception as e:
             logger.error(f"CS outcome tracking error: {e}")
 
+        # Phase 2.7: Earnings Audit (deep FMP fundamental check for top candidates)
+        _scan_config["phase"] = "earnings_audit"
+        _scan_config["phase_detail"] = "Running earnings audit on top candidates..."
+
+        try:
+            from backend.earnings_audit import run_earnings_audit
+            audit_db = SessionLocal()
+            try:
+                audit_results = run_earnings_audit(audit_db)
+                if audit_results:
+                    logger.info(f"Earnings audit: {len(audit_results)} candidates audited")
+            finally:
+                audit_db.close()
+        except Exception as e:
+            logger.error(f"Earnings audit error: {e}")
+
         # Phase 3: AI Trading
         _scan_config["phase"] = "ai_trading"
         _scan_config["phase_detail"] = "Running AI trading cycle..."

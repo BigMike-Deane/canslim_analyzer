@@ -171,6 +171,26 @@ ai_trader:
     avoidance_days: 5             # Block non-CS stocks within 5 days of earnings
     cs_override: true             # Allow CS stocks to override avoidance
 
+  # Earnings Audit: Deep FMP fundamental check for buy candidates
+  # Runs between scan and AI trading to enrich composite scores
+  earnings_audit:
+    enabled: true
+    max_candidates: 30              # Top N candidates to audit per cycle
+    freshness_hours: 24             # Re-audit after this many hours
+    weights:
+      analyst_upside: 0.20          # 20pts: Analyst price target upside
+      beat_quality: 0.25            # 25pts: Earnings beat streak + magnitude
+      financial_health: 0.20        # 20pts: ROE, debt/equity, FCF
+      insider_conviction: 0.15      # 15pts: Insider cluster buys + net value
+      estimate_revisions: 0.20      # 20pts: EPS/revenue revision trend
+    bonus_thresholds:
+      high_confidence: 70           # >= 70 confidence → +10 composite
+      high_bonus: 10
+      medium_confidence: 50         # >= 50 confidence → +5 composite
+      medium_bonus: 5
+      low_confidence: 30            # < 30 confidence → -5 composite
+      low_penalty: -5
+
   # Analyst revision bonus (estimate revisions)
   analyst_revisions:
     enabled: true
@@ -711,3 +731,37 @@ strategy_profiles:
     # "Ride the thesis" — more lenient score-based sells for growth
     score_crash_drop_required: 25       # Require bigger score drop before selling (balanced: 20)
     score_crash_ignore_if_profitable: 20  # Hold if up 20%+ even on score dip (balanced: 10%)
+
+  # Lab profile: Clone of balanced for Ralph Loop optimization experiments
+  # SAFETY: NEVER modify balanced or growth profiles via automated optimization.
+  # Only this lab profile should be changed by optimization scripts.
+  lab:
+    label: "Lab (Optimization)"
+    description: "Experimental profile for automated parameter tuning — clone of balanced"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 8.0
+    bearish_stop_loss_pct: 7.0
+    take_profit_pct: 75.0
+    trailing_stops:
+      gain_50_plus: 20
+      gain_30_to_50: 15
+      gain_20_to_30: 10
+      gain_10_to_20: 8
+    seed_count: 5
+    seed_pct: 10
+    half_size_initial: true
+    max_seed_investment_pct: 60
+    quality_filters:
+      min_c_score: 10
+      min_l_score: 8
+    scoring_weights:
+      growth_projection: 0.20
+      canslim_score: 0.25
+      momentum: 0.25
+      breakout: 0.20
+      base_quality: 0.10
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
