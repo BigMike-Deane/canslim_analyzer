@@ -742,14 +742,14 @@ strategy_profiles:
     max_positions: 8
     max_single_position_pct: 25
     max_sector_pct: 50
-    stop_loss_pct: 7.0                     # Iter 1: tighter stop (was 8.0)
-    bearish_stop_loss_pct: 6.0             # Iter 1: tighter bearish stop (was 7.0)
+    stop_loss_pct: 6.0                     # Iter 9: even tighter stop (was 7.0)
+    bearish_stop_loss_pct: 5.0             # Iter 9: even tighter bearish (was 6.0)
     take_profit_pct: 75.0
     trailing_stops:
       gain_50_plus: 20
       gain_30_to_50: 15
-      gain_20_to_30: 8                     # Iter 8: tighter trail (was 10)
-      gain_10_to_20: 6                     # Iter 8: tighter trail (was 8)
+      gain_20_to_30: 10
+      gain_10_to_20: 8
     seed_count: 4                          # Iter 1: fewer seeds (was 5)
     seed_pct: 10
     half_size_initial: true
