@@ -25,9 +25,9 @@ function BottomNav() {
     { to: '/', icon: '>', label: 'CMD' },
     { to: '/dashboard', icon: '📊', label: 'Home' },
     { to: '/ai-portfolio', icon: '🤖', label: 'AI' },
-    { to: '/screener', icon: '🔍', label: 'Screen' },
-    { to: '/watchlist', icon: '👁️', label: 'Watch' },
     { to: '/backtest', icon: '📈', label: 'Test' },
+    { to: '/watchlist', icon: '👁️', label: 'Watch' },
+    { to: '/docs', icon: '📖', label: 'Docs' },
   ]
 
   return (
