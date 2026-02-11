@@ -388,9 +388,9 @@ export default function CommandCenter() {
         <div className="flex items-center gap-3">
           <span className="text-xs tracking-wider" style={{ color: C.dim }}>SCANNER</span>
           <span className="text-xs" style={{
-            color: scanner?.is_running ? C.green : C.dim,
+            color: scanner?.is_scanning ? C.green : C.dim,
           }}>
-            {scanner?.is_running ? (
+            {scanner?.is_scanning ? (
               <>
                 <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: C.green }} />
                 {scanner?.phase || 'scanning'}
@@ -398,14 +398,14 @@ export default function CommandCenter() {
             ) : 'IDLE'}
           </span>
         </div>
-        {scanner?.is_running && scanner?.stocks_scanned != null && (
+        {scanner?.is_scanning && scanner?.stocks_scanned != null && (
           <span className="text-xs" style={{ color: C.dim }}>
             {scanner.stocks_scanned}/{scanner.total_stocks}
           </span>
         )}
-        {scanner?.last_scan_time && (
+        {scanner?.last_scan_end && (
           <span className="text-xs" style={{ color: C.dim }}>
-            Last: {new Date(scanner.last_scan_time).toLocaleTimeString('en-US', {
+            Last: {new Date(scanner.last_scan_end).toLocaleTimeString('en-US', {
               timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit'
             })}
           </span>
