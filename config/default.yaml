@@ -752,7 +752,7 @@ strategy_profiles:
       gain_10_to_20: 8
     seed_count: 4                          # Iter 1: fewer seeds (was 5)
     seed_pct: 10
-    half_size_initial: true
+    half_size_initial: false                   # Iter 6: full-size seeds (was true)
     max_seed_investment_pct: 50            # Iter 1: lower seed cap (was 60)
     quality_filters:
       min_c_score: 10                      # Reverted from Iter 4 (12 hurt returns)
@@ -763,5 +763,5 @@ strategy_profiles:
       momentum: 0.25
       breakout: 0.20
       base_quality: 0.10
-    score_crash_drop_required: 30              # Iter 5: more lenient crash (was 25)
-    score_crash_ignore_if_profitable: 15       # Iter 5: protect winners earlier (was 20)
+    score_crash_drop_required: 25              # Reverted: Iter 5 had zero impact
+    score_crash_ignore_if_profitable: 20       # Reverted: Iter 5 had zero impact
