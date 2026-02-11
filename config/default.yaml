@@ -149,9 +149,12 @@ ai_trader:
     # instead of binary skip. Reduces sensitivity to FMP data variance on C/A scores.
     soft_threshold:
       enabled: true
-      zone_width: 4              # Score 68-71 when min_score=72
-      multiplier_at_edge: 0.25   # Score 68 → 25% position
+      zone_width: 8              # Score 64-71 when min_score=72 (widened from 4 for FMP resilience)
+      multiplier_at_edge: 0.25   # Score 64 → 25% position
       multiplier_at_top: 0.75    # Score 71 → 75% position
+      # H: Only allow wide soft zone for stocks with strong deterministic scores
+      require_strong_deterministic: true
+      deterministic_min: 50      # N+S+L+I+M >= 50 (out of 70) to qualify for soft zone
     percentile_threshold_pct: 5   # Use top N% of stocks as adaptive threshold
     percentile_score_floor: 45    # Never buy below this score regardless of percentile
 
@@ -280,6 +283,15 @@ ai_trader:
     max_pct: 20.0                    # Ceiling: highest-conviction positions
     score_floor: 30                  # Composite score at which min_pct applies
     score_ceiling: 75                # Composite score at which max_pct applies
+    skip_initial_seeds: true         # G: Don't use conviction sizing for day-1 seed positions
+
+  # New Position Guard: tighter stop loss for new positions in their first N days
+  # Cuts early losers faster (POWL -22% in 14d, GDDY -14% in 7d)
+  new_position_guard:
+    enabled: true
+    guard_days: 21                   # F: Apply tighter stop for first 21 days
+    guard_stop_pct: 8.0              # F: 8% max loss for new positions (vs normal ATR-adjusted)
+    skip_if_pyramided: true          # Don't apply guard if position has been pyramided (proven winner)
 
   # Deterministic score boost: bonus to composite for stocks with strong
   # non-FMP scores (N+S+L+I+M). Reduces FMP influence on ranking/sizing.
@@ -648,6 +660,7 @@ strategy_profiles:
     seed_count: 5
     seed_pct: 10
     half_size_initial: true
+    max_seed_investment_pct: 60            # E: Max 60% of capital in initial seeds (keep 40% for mid-year)
     quality_filters:
       min_c_score: 10
       min_l_score: 8
@@ -679,6 +692,7 @@ strategy_profiles:
     seed_count: 4                       # Fewer seeds — more selective on day 1
     seed_pct: 10                        # Match balanced per-seed size
     half_size_initial: true             # Half-size entries — prove it first
+    max_seed_investment_pct: 50          # E: Max 50% of capital in initial seeds (growth is more selective)
     quality_filters:
       min_c_score: 12                   # Higher C bar — demand strong earnings
       min_l_score: 10                   # Higher L bar — demand relative strength leaders

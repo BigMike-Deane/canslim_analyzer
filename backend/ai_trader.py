@@ -1217,6 +1217,19 @@ def check_and_execute_stop_losses(db: Session) -> dict:
         # ATR-based adaptive stop loss - volatile stocks get wider stops
         position_stop_pct = calculate_atr_stop(position.ticker, position.current_price, effective_stop_loss_pct)
 
+        # F: NEW POSITION GUARD — tighter stop for new positions in first N days
+        guard_config = yaml_config.get('ai_trader.new_position_guard', {})
+        if guard_config.get('enabled', False) and position.purchase_date:
+            guard_days = guard_config.get('guard_days', 21)
+            guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
+            skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
+            purchase_dt = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
+            holding_days = (date.today() - purchase_dt).days
+            pyramid_count = getattr(position, 'pyramid_count', 0) or 0
+            if holding_days <= guard_days:
+                if not (skip_if_pyramided and pyramid_count > 0):
+                    position_stop_pct = min(position_stop_pct, guard_stop_pct)
+
         # Market-aware stop loss check (with ATR adaptation)
         if gain_pct <= -position_stop_pct:
             market_note = " (bearish market)" if is_bearish_market else ""
@@ -1951,6 +1964,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
         soft_zone_floor = effective_min_score - soft_zone_width if soft_enabled else effective_min_score
 
+        # H: Deterministic gate for soft zone
+        require_strong_det = soft_config.get('require_strong_deterministic', False)
+        det_min_for_soft = soft_config.get('deterministic_min', 50)
+
         if not effective_score or effective_score < soft_zone_floor:
             # Below even the soft zone — check bear exception
             if market_regime["regime"] == "bearish" and effective_score and effective_score >= min_score_to_buy:
@@ -1964,18 +1981,24 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     continue
             continue
         elif effective_score < effective_min_score and soft_enabled:
+            # H: Calculate deterministic score and gate on it
+            n_val = getattr(stock, 'n_score', 0) or 0
+            s_val = getattr(stock, 's_score', 0) or 0
+            l_val = getattr(stock, 'l_score', 0) or 0
+            i_val = getattr(stock, 'i_score', 0) or 0
+            m_val = getattr(stock, 'm_score', 0) or 0
+            stable_score_val = n_val + s_val + l_val + i_val + m_val
+
+            # H: Require strong deterministic scores for wider soft zone
+            if require_strong_det and stable_score_val < det_min_for_soft:
+                continue  # Skip weak deterministic stocks in soft zone
+
             # In soft zone — graduated position sizing
             zone_position = (effective_score - soft_zone_floor) / max(1, soft_zone_width)
             soft_zone_mult = soft_mult_edge + zone_position * (soft_mult_top - soft_mult_edge)
 
             # STABLE OVERRIDE: If deterministic scores are very strong, upgrade to top multiplier
             if stability_enabled:
-                n_val = getattr(stock, 'n_score', 0) or 0
-                s_val = getattr(stock, 's_score', 0) or 0
-                l_val = getattr(stock, 'l_score', 0) or 0
-                i_val = getattr(stock, 'i_score', 0) or 0
-                m_val = getattr(stock, 'm_score', 0) or 0
-                stable_score_val = n_val + s_val + l_val + i_val + m_val
                 if stable_score_val >= stable_min_for_override:
                     soft_zone_mult = soft_mult_top
                     stable_override = True

@@ -624,9 +624,10 @@ class TestATRStops:
         engine = BacktestEngine(mock_session, 1)
 
         # Position bought at $100, now at $85 (15% loss)
+        # Use 30 days so it's outside the new position guard window (21 days)
         engine.positions["VOL"] = SimulatedPosition(
             ticker="VOL", shares=100, cost_basis=100.0,
-            purchase_date=date.today() - timedelta(days=20),
+            purchase_date=date.today() - timedelta(days=30),
             purchase_score=80.0, peak_price=105.0,
             peak_date=date.today() - timedelta(days=15), sector="Energy"
         )
@@ -2520,7 +2521,10 @@ class TestEstimateRevisionBonus:
 
 
 def _soft_zone_config_data(soft_enabled=True, zone_width=4, stability_enabled=True,
-                            stable_min=55, det_enabled=True):
+                            stable_min=55, det_enabled=True,
+                            require_strong_det=False, det_min_for_soft=50,
+                            conv_enabled=False, skip_initial_seeds=True,
+                            guard_enabled=False, guard_days=21, guard_stop_pct=8.0):
     """Shared config for soft zone / stable override / deterministic boost tests.
 
     Note: The mock config.get() uses flat key lookup, so dotted keys like
@@ -2537,6 +2541,8 @@ def _soft_zone_config_data(soft_enabled=True, zone_width=4, stability_enabled=Tr
             'zone_width': zone_width,
             'multiplier_at_edge': 0.25,
             'multiplier_at_top': 0.75,
+            'require_strong_deterministic': require_strong_det,
+            'deterministic_min': det_min_for_soft,
         },
         'ai_trader.allocation.percentile_threshold_pct': 5,
         'ai_trader.allocation.percentile_score_floor': 72,  # Keep threshold at 72 in tests (prevents single-stock percentile collapse)
@@ -2561,7 +2567,18 @@ def _soft_zone_config_data(soft_enabled=True, zone_width=4, stability_enabled=Tr
             'enabled': stability_enabled,
             'stable_min_for_override': stable_min,
         },
-        'ai_trader.conviction_sizing': {'enabled': False},
+        'ai_trader.conviction_sizing': {
+            'enabled': conv_enabled,
+            'min_pct': 8.0, 'max_pct': 20.0,
+            'score_floor': 30, 'score_ceiling': 75,
+            'skip_initial_seeds': skip_initial_seeds,
+        },
+        'ai_trader.new_position_guard': {
+            'enabled': guard_enabled,
+            'guard_days': guard_days,
+            'guard_stop_pct': guard_stop_pct,
+            'skip_if_pyramided': True,
+        },
         'ai_trader.deterministic_boost': {
             'enabled': det_enabled,
             'stable_bonus_threshold': 55,
@@ -2791,3 +2808,313 @@ class TestDeterministicBoost:
         assert len(buys) > 0
         sf = buys[0]._signal_factors
         assert "deterministic_boost" not in sf
+
+
+# ── E: Seed Investment Cap ──────────────────────────────────────────────────
+
+class TestSeedInvestmentCap:
+    """Test that initial seed investment is capped at max_seed_investment_pct."""
+
+    @patch('backend.backtester.config')
+    def test_seed_cap_limits_total_investment(self, mock_config):
+        """Seed investment should not exceed max_seed_investment_pct of starting cash."""
+        from backend.backtester import BacktestEngine
+
+        cfg = _soft_zone_config_data()
+        def config_get(key, default=None):
+            return cfg.get(key, default if default is not None else {})
+        mock_config.get = config_get
+
+        mock_session, mock_bt = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.cash = 25000
+
+        # Profile with 60% seed cap → max $15,000 in seeds
+        engine.profile = {'max_seed_investment_pct': 60, 'seed_pct_per_position': 15}
+
+        # Create 6 candidates with score 80 (each would be 15% = $3,750)
+        # 6 * $3,750 = $22,500 but cap is $15,000 → should stop after 4
+        score_data = {}
+        for i in range(6):
+            ticker = f"SEED{i}"
+            score_data[ticker] = {
+                "total_score": 80, "c_score": 12, "a_score": 10,
+                "n_score": 14, "s_score": 14, "l_score": 14, "i_score": 8, "m_score": 8,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 25, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        engine.static_data = {f"SEED{i}": {"sector": "Technology"} for i in range(6)}
+
+        engine.data_provider.get_historical_scores.return_value = score_data
+
+        first_day = date.today() - timedelta(days=30)
+        engine._seed_initial_positions(first_day)
+
+        # Total invested should be <= 60% of 25000 = $15,000
+        total_invested = sum(pos.shares * pos.cost_basis for pos in engine.positions.values())
+        assert total_invested <= 15000 + 10  # Small tolerance for rounding
+
+
+# ── F: New Position Guard ───────────────────────────────────────────────────
+
+class TestNewPositionGuard:
+    """Test tighter stop loss for positions in their first N days."""
+
+    @patch('backend.backtester.config')
+    def test_guard_triggers_tighter_stop_within_window(self, mock_config):
+        """Positions within guard_days should use guard_stop_pct instead of wider stop."""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        cfg = _soft_zone_config_data(guard_enabled=True, guard_days=21, guard_stop_pct=8.0)
+        def config_get(key, default=None):
+            return cfg.get(key, default if default is not None else {})
+        mock_config.get = config_get
+
+        mock_session, _ = make_mock_db(stop_loss_pct=10.0)
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.cash = 20000
+        engine.static_data = {"GUARD1": {"sector": "Technology"}}
+
+        # Position bought 10 days ago — within 21-day guard window
+        current_date = date.today()
+        engine.positions["GUARD1"] = SimulatedPosition(
+            ticker="GUARD1", shares=100, cost_basis=100.0,
+            purchase_date=current_date - timedelta(days=10),
+            purchase_score=75, peak_price=100.0, peak_date=current_date - timedelta(days=5),
+            sector="Technology",
+        )
+        # Price dropped 9% — wider stop (10%) wouldn't trigger, but guard (8%) should
+        engine.data_provider.get_price_on_date.return_value = 91.0
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+
+        sells = engine._evaluate_sells(current_date, {})
+        # Guard stop at 8% should trigger (price is -9% from cost basis)
+        assert len(sells) > 0
+        assert "GUARD1" in [s.ticker for s in sells]
+
+    @patch('backend.backtester.config')
+    def test_guard_does_not_trigger_after_window(self, mock_config):
+        """Positions beyond guard_days should use normal (wider) stop."""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        cfg = _soft_zone_config_data(guard_enabled=True, guard_days=21, guard_stop_pct=8.0)
+        def config_get(key, default=None):
+            return cfg.get(key, default if default is not None else {})
+        mock_config.get = config_get
+
+        mock_session, _ = make_mock_db(stop_loss_pct=10.0)
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.cash = 20000
+        engine.static_data = {"GUARD2": {"sector": "Technology"}}
+
+        # Position bought 30 days ago — outside 21-day guard window
+        current_date = date.today()
+        engine.positions["GUARD2"] = SimulatedPosition(
+            ticker="GUARD2", shares=100, cost_basis=100.0,
+            purchase_date=current_date - timedelta(days=30),
+            purchase_score=75, peak_price=100.0, peak_date=current_date - timedelta(days=5),
+            sector="Technology",
+        )
+        # Price dropped 9% — guard (8%) would trigger if active, but base stop is 10%
+        engine.data_provider.get_price_on_date.return_value = 91.0
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+
+        sells = engine._evaluate_sells(current_date, {})
+        # Base stop at 10% should NOT trigger (-9% < -10%)
+        guard_sells = [s for s in sells if s.ticker == "GUARD2" and "stop" in s.reason.lower()]
+        assert len(guard_sells) == 0
+
+    @patch('backend.backtester.config')
+    def test_guard_skips_pyramided_positions(self, mock_config):
+        """Pyramided positions should skip the guard even within the window."""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        cfg = _soft_zone_config_data(guard_enabled=True, guard_days=21, guard_stop_pct=8.0)
+        def config_get(key, default=None):
+            return cfg.get(key, default if default is not None else {})
+        mock_config.get = config_get
+
+        mock_session, _ = make_mock_db(stop_loss_pct=10.0)
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.cash = 20000
+        engine.static_data = {"PYR1": {"sector": "Technology"}}
+
+        # Position bought 10 days ago, but has been pyramided
+        current_date = date.today()
+        engine.positions["PYR1"] = SimulatedPosition(
+            ticker="PYR1", shares=200, cost_basis=100.0,
+            purchase_date=current_date - timedelta(days=10),
+            purchase_score=75, peak_price=100.0, peak_date=current_date - timedelta(days=5),
+            sector="Technology", pyramid_count=1,
+        )
+        # Price dropped 9% — guard (8%) would trigger, but skip_if_pyramided=True
+        engine.data_provider.get_price_on_date.return_value = 91.0
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+
+        sells = engine._evaluate_sells(current_date, {})
+        # Pyramided positions should NOT get the guard stop
+        guard_sells = [s for s in sells if s.ticker == "PYR1" and "stop" in s.reason.lower()]
+        assert len(guard_sells) == 0
+
+
+# ── G: No Conviction Sizing on Seeds ────────────────────────────────────────
+
+class TestNoConvictionOnSeeds:
+    """Test that conviction sizing is skipped on seed days."""
+
+    @patch('backend.backtester.config')
+    def test_seed_day_produces_valid_buys_with_conviction_enabled(self, mock_config):
+        """When is_seed_day=True with conviction enabled, buys still succeed (fallback sizing)."""
+        from backend.backtester import BacktestEngine
+
+        cfg = _soft_zone_config_data(conv_enabled=True, skip_initial_seeds=True)
+        mock_config.get = lambda key, default=None: cfg.get(key, default if default is not None else {})
+
+        mock_session, _ = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.cash = 20000
+        engine.is_seed_day = True
+        engine.static_data = {"CONV1": {"sector": "Technology"}}
+
+        score_data = {
+            "CONV1": {
+                "total_score": 80, "c_score": 12, "a_score": 10,
+                "n_score": 14, "s_score": 14, "l_score": 14, "i_score": 8, "m_score": 8,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 25, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        }
+
+        buys = engine._evaluate_buys(date.today(), score_data)
+        assert len(buys) > 0
+        assert buys[0].shares > 0
+
+    @patch('backend.backtester.config')
+    def test_non_seed_day_uses_conviction_sizing(self, mock_config):
+        """When is_seed_day=False, conviction sizing applies and produces valid buys."""
+        from backend.backtester import BacktestEngine
+
+        cfg = _soft_zone_config_data(conv_enabled=True, skip_initial_seeds=True)
+        mock_config.get = lambda key, default=None: cfg.get(key, default if default is not None else {})
+
+        mock_session, _ = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0}
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.cash = 20000
+        engine.is_seed_day = False
+        engine.static_data = {"CONV2": {"sector": "Technology"}}
+
+        score_data = {
+            "CONV2": {
+                "total_score": 80, "c_score": 12, "a_score": 10,
+                "n_score": 14, "s_score": 14, "l_score": 14, "i_score": 8, "m_score": 8,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 25, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        }
+
+        buys = engine._evaluate_buys(date.today(), score_data)
+        assert len(buys) > 0
+        assert buys[0].shares > 0
+
+
+# ── H: Deterministic Soft Zone Gate ─────────────────────────────────────────
+
+class TestDeterministicSoftZoneGate:
+    """Test that soft zone only admits stocks with strong deterministic scores."""
+
+    def _score(self, total, n=14, s=14, l=14, i=9, m=14):
+        """Build score with configurable deterministic components."""
+        c = 12
+        a = total - n - s - l - i - m - c
+        if a < 0:
+            a = 0
+        return {
+            "GATE1": {
+                "total_score": total, "c_score": c, "a_score": a,
+                "n_score": n, "s_score": s, "l_score": l, "i_score": i, "m_score": m,
+                "volume_ratio": 1.5, "is_breaking_out": False,
+                "base_pattern": {"type": "flat", "weeks_in_base": 8, "pivot_price": 105},
+                "week_52_high": 110, "current_price": 100,
+                "projected_growth": 20, "rs_12m": 1.1, "rs_3m": 1.05,
+                "is_growth_stock": False, "pct_from_high": 9.1,
+                "pct_from_pivot": 4.8, "pivot_price": 105,
+                "has_base_pattern": True, "weeks_in_base": 8,
+            }
+        }
+
+    @patch('backend.backtester.config')
+    def test_strong_deterministic_admitted_to_soft_zone(self, mock_config):
+        """Stock in soft zone with N+S+L+I+M >= 50 is admitted when gate enabled."""
+        # zone_width=8, min_score=72, so soft zone is 64-71
+        # n=12+s=12+l=12+i=8+m=12 = 56 >= 50
+        cfg = _soft_zone_config_data(zone_width=8, require_strong_det=True, det_min_for_soft=50)
+        buys = _make_soft_zone_engine(mock_config, cfg,
+                                       self._score(68, n=12, s=12, l=12, i=8, m=12),
+                                       static_data={"GATE1": {"sector": "Technology"}})
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert sf.get("soft_zone") is True
+
+    @patch('backend.backtester.config')
+    def test_weak_deterministic_rejected_from_soft_zone(self, mock_config):
+        """Stock in soft zone with N+S+L+I+M < 50 is rejected when gate enabled."""
+        # n=8+s=8+l=8+i=5+m=8 = 37 < 50
+        cfg = _soft_zone_config_data(zone_width=8, require_strong_det=True, det_min_for_soft=50)
+        buys = _make_soft_zone_engine(mock_config, cfg,
+                                       self._score(68, n=8, s=8, l=8, i=5, m=8),
+                                       static_data={"GATE1": {"sector": "Technology"}})
+        assert len(buys) == 0
+
+    @patch('backend.backtester.config')
+    def test_gate_disabled_admits_weak_deterministic(self, mock_config):
+        """With gate disabled, weak deterministic stocks are still admitted to soft zone."""
+        # n=8+s=8+l=8+i=5+m=8 = 37 < 50, but gate is off
+        cfg = _soft_zone_config_data(zone_width=8, require_strong_det=False)
+        buys = _make_soft_zone_engine(mock_config, cfg,
+                                       self._score(68, n=8, s=8, l=8, i=5, m=8),
+                                       static_data={"GATE1": {"sector": "Technology"}})
+        assert len(buys) > 0
+
+    @patch('backend.backtester.config')
+    def test_above_threshold_ignores_gate(self, mock_config):
+        """Stocks above min_score are NOT affected by the gate (gate only applies to soft zone)."""
+        # Score 75 >= 72 threshold, weak deterministic but should still be bought
+        cfg = _soft_zone_config_data(zone_width=8, require_strong_det=True, det_min_for_soft=50)
+        buys = _make_soft_zone_engine(mock_config, cfg,
+                                       self._score(75, n=8, s=8, l=8, i=5, m=8),
+                                       static_data={"GATE1": {"sector": "Technology"}})
+        assert len(buys) > 0
+        sf = buys[0]._signal_factors
+        assert "soft_zone" not in sf  # Full position, not soft zone

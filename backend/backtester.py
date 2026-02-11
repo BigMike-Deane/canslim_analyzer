@@ -121,6 +121,7 @@ class BacktestEngine:
 
         # Track consecutive days with no positions (for re-seeding)
         self.idle_days: int = 0
+        self.is_seed_day: bool = False  # G: Track seed day to skip conviction sizing
 
         # Strategy profile (balanced or growth)
         self.strategy = self.backtest.strategy or "balanced"
@@ -216,11 +217,15 @@ class BacktestEngine:
                 self.spy_shares = self.backtest.starting_cash / self.spy_start_price
 
             # Seed initial positions on day 1 based on historical CANSLIM scores
+            self.is_seed_day = True
             self._seed_initial_positions(trading_days[0])
 
             # Simulate each trading day
             total_days = len(trading_days)
             for i, current_date in enumerate(trading_days):
+                # G: Clear seed day flag after day 1
+                if i > 0:
+                    self.is_seed_day = False
                 # Check for cancellation request every 10 days
                 if i % 10 == 0:
                     self.db.refresh(self.backtest)
@@ -785,6 +790,7 @@ class BacktestEngine:
         # are too strict for the available historical data
         if can_buy and not self.positions and self.idle_days >= 10:
             logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, re-seeding on {current_date}")
+            self.is_seed_day = True
             self._seed_initial_positions(current_date)
             self._take_snapshot(current_date)
             return
@@ -882,10 +888,17 @@ class BacktestEngine:
         logger.info(f"Backtest {self.backtest.id}: Seeding {len(seeds)} initial positions on {first_day}: "
                     f"{[s[0] for s in seeds]}")
 
+        # E: Cap total seed investment at max_seed_investment_pct of portfolio
+        max_seed_invest_pct = self.profile.get('max_seed_investment_pct', 60)
+        max_seed_cash = self.cash * (max_seed_invest_pct / 100)
+        seed_cash_spent = 0
+
         for ticker, data, price, total_score in seeds:
             portfolio_value = self._get_portfolio_value(first_day)
             position_value = portfolio_value * (seed_pct_per_position / 100)
-            position_value = min(position_value, self.cash * 0.70)
+            # E: Respect seed investment cap
+            remaining_seed_budget = max_seed_cash - seed_cash_spent
+            position_value = min(position_value, remaining_seed_budget, self.cash * 0.70)
 
             if position_value < 100 or self.cash < 100:
                 break
@@ -909,6 +922,7 @@ class BacktestEngine:
                 priority=0
             )
             self._execute_buy(first_day, trade)
+            seed_cash_spent += position_value
 
         self._take_snapshot(first_day)
 
@@ -1310,6 +1324,23 @@ class BacktestEngine:
                     effective_stop_loss_pct = max(base_stop_loss_pct, atr_stop_pct)
                     effective_stop_loss_pct = min(effective_stop_loss_pct, max_stop_pct)  # Cap
 
+            # F: NEW POSITION GUARD — tighter stop for new positions in first N days
+            guard_config = config.get('ai_trader.conviction_sizing.new_position_guard', {}) or config.get('ai_trader.new_position_guard', {})
+            if not guard_config:
+                guard_config = config.get('ai_trader', {})
+                guard_config = guard_config.get('new_position_guard', {}) if isinstance(guard_config, dict) else {}
+            # Try dedicated dotted key
+            guard_config = config.get('ai_trader.new_position_guard', {})
+            if guard_config.get('enabled', False):
+                guard_days = guard_config.get('guard_days', 21)
+                guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
+                skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
+                holding_days = (current_date - position.purchase_date).days
+                if holding_days <= guard_days:
+                    if not (skip_if_pyramided and position.pyramid_count > 0):
+                        # Use the tighter guard stop instead of the wider ATR-adjusted stop
+                        effective_stop_loss_pct = min(effective_stop_loss_pct, guard_stop_pct)
+
             # Market-aware stop loss check
             if gain_pct <= -effective_stop_loss_pct:
                 market_note = " (bearish market)" if is_bearish_market else ""
@@ -1606,6 +1637,10 @@ class BacktestEngine:
         stability_enabled = stability_config.get('enabled', False)
         stable_min_for_override = stability_config.get('stable_min_for_override', 55)
 
+        # H: Wider soft zone with deterministic gate
+        require_strong_det = soft_config.get('require_strong_deterministic', False)
+        det_min_for_soft = soft_config.get('deterministic_min', 50)
+
         # Get candidates: full-position (above threshold) + soft-zone (graduated)
         soft_zone_floor = effective_min_score - soft_zone_width if soft_enabled else effective_min_score
         candidates = []
@@ -1618,6 +1653,14 @@ class BacktestEngine:
                 data["_soft_zone_multiplier"] = 1.0
                 candidates.append((ticker, data))
             elif soft_enabled and total_score >= soft_zone_floor:
+                # H: If require_strong_deterministic, only allow soft zone for stocks
+                # with strong N+S+L+I+M scores (these are Yahoo-based, deterministic)
+                det_score = (data.get("n_score", 0) + data.get("s_score", 0) +
+                             data.get("l_score", 0) + data.get("i_score", 0) +
+                             data.get("m_score", 0))
+                if require_strong_det and det_score < det_min_for_soft:
+                    continue  # Skip weak deterministic stocks in soft zone
+
                 # Soft zone candidate — graduated position size
                 # Linear interpolation: edge of zone → multiplier_at_edge, top of zone → multiplier_at_top
                 zone_position = (total_score - soft_zone_floor) / max(1, soft_zone_width)
@@ -1625,13 +1668,10 @@ class BacktestEngine:
 
                 # STABLE OVERRIDE: If deterministic scores are very strong, upgrade to top multiplier
                 if stability_enabled:
-                    stable_score = (data.get("n_score", 0) + data.get("s_score", 0) +
-                                    data.get("l_score", 0) + data.get("i_score", 0) +
-                                    data.get("m_score", 0))
-                    if stable_score >= stable_min_for_override:
+                    if det_score >= stable_min_for_override:
                         soft_mult = soft_mult_top
                         data["_stable_override"] = True
-                        data["_stable_score"] = stable_score
+                        data["_stable_score"] = det_score
 
                 data["_soft_zone_multiplier"] = round(soft_mult, 2)
                 data["_in_soft_zone"] = True
@@ -1964,7 +2004,10 @@ class BacktestEngine:
             # Position sizing: conviction-based (higher scores get larger positions)
             max_positions = self.profile.get('max_positions', self.backtest.max_positions)
             conv_config = config.get('ai_trader.conviction_sizing', {})
-            if conv_config.get('enabled', False):
+            # G: Skip conviction sizing on seed days — equal weight for initial entries
+            skip_conv_on_seeds = conv_config.get('skip_initial_seeds', True)
+            use_conviction = conv_config.get('enabled', False) and not (self.is_seed_day and skip_conv_on_seeds)
+            if use_conviction:
                 # Linear interpolation: score_floor → min_pct, score_ceiling → max_pct
                 conv_min = conv_config.get('min_pct', 8.0)
                 conv_max = conv_config.get('max_pct', 20.0)
