@@ -1,25 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, formatPercent } from '../api'
-
-// Terminal color palette
-const C = {
-  green: '#00ff88',
-  red: '#ff4444',
-  yellow: '#ffcc00',
-  cyan: '#00ccff',
-  dim: '#666',
-  bright: '#e0e0e0',
-  bg: '#0a0a0a',
-  panel: '#111',
-  border: '#222',
-  accent: '#007aff',
-}
-
-function useMono(val, decimals = 1) {
-  if (val == null) return '-'
-  return typeof val === 'number' ? val.toFixed(decimals) : val
-}
+import { api, formatCurrency, formatPercent, getScoreClass, formatScore } from '../api'
 
 // Auto-refresh during market hours (M-F 8:30am-4pm CST)
 function useMarketRefresh(callback, intervalMs = 60000) {
@@ -31,7 +12,6 @@ function useMarketRefresh(callback, intervalMs = 60000) {
       const hours = cst.getHours()
       const mins = cst.getMinutes()
       const totalMins = hours * 60 + mins
-      // M-F, 8:30 AM to 4:00 PM CST
       return day >= 1 && day <= 5 && totalMins >= 510 && totalMins <= 960
     }
 
@@ -43,21 +23,15 @@ function useMarketRefresh(callback, intervalMs = 60000) {
 }
 
 function RegimeBadge({ regime }) {
-  const colors = {
-    bullish: C.green,
-    neutral: C.yellow,
-    bearish: C.red,
-    unknown: C.dim,
+  const config = {
+    bullish: { label: 'BULL', color: 'bg-green-500/20 text-green-400' },
+    neutral: { label: 'NEUT', color: 'bg-yellow-500/20 text-yellow-400' },
+    bearish: { label: 'BEAR', color: 'bg-red-500/20 text-red-400' },
   }
+  const { label, color } = config[regime] || { label: '---', color: 'bg-dark-600 text-dark-400' }
   return (
-    <span style={{
-      color: colors[regime] || C.dim,
-      fontWeight: 'bold',
-      textTransform: 'uppercase',
-      fontSize: '0.75rem',
-      letterSpacing: '0.1em',
-    }}>
-      {regime === 'bullish' ? 'BULL' : regime === 'bearish' ? 'BEAR' : regime === 'neutral' ? 'NEUT' : '---'}
+    <span className={`text-xs font-bold px-2 py-0.5 rounded ${color}`}>
+      {label}
     </span>
   )
 }
@@ -66,12 +40,12 @@ function IndexRow({ label, data }) {
   if (!data || !data.price) return null
   const aboveMa = data.ma50 ? data.price > data.ma50 : null
   return (
-    <div className="flex items-center justify-between text-xs" style={{ fontFamily: 'monospace' }}>
-      <span style={{ color: C.dim, width: '32px' }}>{label}</span>
-      <span style={{ color: C.bright }}>{data.price?.toFixed(2)}</span>
+    <div className="flex items-center justify-between text-xs py-1">
+      <span className="text-dark-400 w-8 font-medium">{label}</span>
+      <span className="font-mono">{data.price?.toFixed(2)}</span>
       {data.ma50 && (
-        <span style={{ color: aboveMa ? C.green : C.red, fontSize: '0.65rem' }}>
-          {aboveMa ? 'MA' : 'MA'}
+        <span className={`text-[10px] px-1.5 py-0.5 rounded ${aboveMa ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+          {aboveMa ? '> 50MA' : '< 50MA'}
         </span>
       )}
     </div>
@@ -101,7 +75,7 @@ function Sparkline({ data, width = 200, height = 60 }) {
       <polyline
         points={points}
         fill="none"
-        stroke={isUp ? C.green : C.red}
+        stroke={isUp ? '#34c759' : '#ff3b30'}
         strokeWidth="1.5"
         strokeLinejoin="round"
       />
@@ -109,30 +83,12 @@ function Sparkline({ data, width = 200, height = 60 }) {
   )
 }
 
-function Panel({ title, children, className = '' }) {
-  return (
-    <div
-      className={`rounded border p-3 ${className}`}
-      style={{
-        background: C.panel,
-        borderColor: C.border,
-      }}
-    >
-      <div className="text-xs font-bold mb-2 tracking-wider" style={{ color: C.dim, letterSpacing: '0.15em' }}>
-        {title}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function PnlText({ value, pct, size = 'text-sm' }) {
-  if (value == null) return <span style={{ color: C.dim }}>-</span>
+function PnlText({ value, pct }) {
+  if (value == null) return <span className="text-dark-400">-</span>
   const isUp = value >= 0
-  const color = isUp ? C.green : C.red
   const sign = isUp ? '+' : ''
   return (
-    <span className={size} style={{ color, fontFamily: 'monospace' }}>
+    <span className={`text-xs font-mono ${isUp ? 'text-green-400' : 'text-red-400'}`}>
       {sign}{formatCurrency(value)} ({sign}{pct?.toFixed(1)}%)
     </span>
   )
@@ -162,16 +118,29 @@ export default function CommandCenter() {
 
   if (loading && !data) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
-        <div style={{ color: C.dim, fontFamily: 'monospace' }}>LOADING COMMAND CENTER...</div>
+      <div className="p-4">
+        <div className="skeleton h-8 w-48 mb-4" />
+        <div className="skeleton h-32 rounded-2xl mb-4" />
+        <div className="skeleton h-16 rounded-2xl mb-4" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+          <div className="skeleton h-48 rounded-2xl" />
+          <div className="skeleton h-48 rounded-2xl" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="skeleton h-32 rounded-2xl" />
+          <div className="skeleton h-32 rounded-2xl" />
+          <div className="skeleton h-32 rounded-2xl" />
+        </div>
       </div>
     )
   }
 
   if (error && !data) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: C.bg }}>
-        <div style={{ color: C.red, fontFamily: 'monospace' }}>ERROR: {error}</div>
+      <div className="p-4">
+        <div className="card text-center py-8 text-red-400">
+          Failed to load Command Center: {error}
+        </div>
       </div>
     )
   }
@@ -179,132 +148,138 @@ export default function CommandCenter() {
   const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner } = data || {}
 
   return (
-    <div className="min-h-screen p-2 md:p-4" style={{ background: C.bg, fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" }}>
+    <div className="p-4">
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <h1 className="text-sm font-bold tracking-widest" style={{ color: C.bright }}>
-            CANSLIM COMMAND CENTER
-          </h1>
-          {portfolio?.paper_mode && (
-            <span className="text-xs px-2 py-0.5 rounded" style={{ background: '#333', color: C.yellow }}>PAPER</span>
-          )}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <div className="text-dark-400 text-sm">CANSLIM</div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold">Command Center</h1>
+            {portfolio?.paper_mode && (
+              <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded font-medium">PAPER</span>
+            )}
+          </div>
         </div>
-        <div className="text-xs" style={{ color: C.dim }}>
-          {lastUpdate ? lastUpdate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+        <div className="text-dark-500 text-xs">
+          {lastUpdate ? lastUpdate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' CST' : ''}
         </div>
       </div>
 
       {/* Row 1: Market + Portfolio Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
-        <Panel title="MARKET REGIME" className="md:col-span-2">
-          <div className="flex items-center gap-4 mb-2">
-            <RegimeBadge regime={market?.regime} />
-            <span className="text-xs" style={{ color: C.dim }}>
-              Signal: {market?.weighted_signal?.toFixed(2) || '-'}
-            </span>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        <div className="card md:col-span-2">
+          <div className="flex justify-between items-center mb-3">
+            <div className="font-semibold text-sm">Market Regime</div>
+            <div className="flex items-center gap-3">
+              <RegimeBadge regime={market?.regime} />
+              <span className="text-dark-400 text-xs font-mono">
+                {market?.weighted_signal?.toFixed(2) || '-'}
+              </span>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <IndexRow label="SPY" data={market?.spy} />
             <IndexRow label="QQQ" data={market?.qqq} />
             <IndexRow label="DIA" data={market?.dia} />
           </div>
-        </Panel>
+        </div>
 
-        <Panel title="PORTFOLIO">
-          <div className="text-lg font-bold mb-1" style={{ color: C.bright, fontFamily: 'monospace' }}>
+        <div className="card">
+          <div className="font-semibold text-sm mb-2">Portfolio</div>
+          <div className="text-2xl font-bold mb-1 font-mono">
             {formatCurrency(portfolio?.total_value)}
           </div>
-          <PnlText value={portfolio?.total_return} pct={portfolio?.total_return_pct} size="text-xs" />
-          <div className="mt-2 grid grid-cols-2 gap-1 text-xs">
+          <PnlText value={portfolio?.total_return} pct={portfolio?.total_return_pct} />
+          <div className="mt-3 pt-3 border-t border-dark-700 grid grid-cols-2 gap-2 text-xs">
             <div>
-              <span style={{ color: C.dim }}>Cash </span>
-              <span style={{ color: C.bright }}>{formatCurrency(portfolio?.cash)}</span>
+              <div className="text-dark-400">Cash</div>
+              <div className="font-semibold font-mono">{formatCurrency(portfolio?.cash)}</div>
             </div>
             <div>
-              <span style={{ color: C.dim }}>Pos </span>
-              <span style={{ color: C.bright }}>{portfolio?.positions_count}/{portfolio?.max_positions}</span>
+              <div className="text-dark-400">Positions</div>
+              <div className="font-semibold font-mono">{portfolio?.positions_count}/{portfolio?.max_positions}</div>
             </div>
           </div>
-        </Panel>
+        </div>
       </div>
 
       {/* Row 2: Sparkline */}
       {sparkline && sparkline.length > 1 && (
-        <div className="mb-2 rounded border p-2" style={{ background: C.panel, borderColor: C.border }}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs tracking-wider" style={{ color: C.dim }}>30-DAY PERFORMANCE</span>
-            <Link to="/ai-portfolio" className="text-xs" style={{ color: C.accent }}>
-              Details
-            </Link>
+        <div className="card mb-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-dark-400 text-xs">30-Day Performance</span>
+            <Link to="/ai-portfolio" className="text-primary-500 text-xs">Details</Link>
           </div>
-          <div className="mt-1 flex justify-center">
-            <Sparkline data={sparkline} width={typeof window !== 'undefined' ? Math.min(window.innerWidth - 48, 600) : 400} height={60} />
+          <div className="flex justify-center">
+            <Sparkline data={sparkline} width={typeof window !== 'undefined' ? Math.min(window.innerWidth - 64, 600) : 400} height={60} />
           </div>
         </div>
       )}
 
       {/* Row 3: Positions + Candidates */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
-        <Panel title={`POSITIONS (${positions?.length || 0})`}>
-          <div className="space-y-1 max-h-64 overflow-y-auto">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div className="card">
+          <div className="font-semibold text-sm mb-2">Positions ({positions?.length || 0})</div>
+          <div className="max-h-64 overflow-y-auto">
             {positions?.length === 0 && (
-              <div className="text-xs" style={{ color: C.dim }}>No active positions</div>
+              <div className="text-dark-400 text-xs py-4 text-center">No active positions</div>
             )}
             {positions?.map(p => (
               <Link
                 key={p.ticker}
                 to={`/stock/${p.ticker}`}
-                className="flex items-center justify-between text-xs py-0.5 hover:opacity-80"
+                className="flex items-center justify-between py-2 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors text-sm"
               >
                 <div className="flex items-center gap-2">
-                  <span style={{ color: C.cyan, fontWeight: 'bold', width: '40px' }}>{p.ticker}</span>
-                  <span style={{ color: C.dim }}>{p.position_pct?.toFixed(0)}%</span>
+                  <span className="font-medium text-primary-400 w-10">{p.ticker}</span>
+                  <span className="text-dark-500 text-xs font-mono">{p.position_pct?.toFixed(0)}%</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span style={{ color: C.bright }}>{p.score?.toFixed(0) || '-'}</span>
-                  <span style={{
-                    color: p.gain_pct >= 0 ? C.green : C.red,
-                    width: '55px',
-                    textAlign: 'right',
-                  }}>
+                  <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${getScoreClass(p.score)}`}>
+                    {p.score?.toFixed(0) || '-'}
+                  </span>
+                  <span className={`font-mono text-xs w-14 text-right ${p.gain_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct?.toFixed(1)}%
                   </span>
                 </div>
               </Link>
             ))}
           </div>
-        </Panel>
+        </div>
 
-        <Panel title="TOP CANDIDATES">
-          <div className="space-y-1 max-h-64 overflow-y-auto">
+        <div className="card">
+          <div className="font-semibold text-sm mb-2">Top Candidates</div>
+          <div className="max-h-64 overflow-y-auto">
             {candidates?.length === 0 && (
-              <div className="text-xs" style={{ color: C.dim }}>No candidates above threshold</div>
+              <div className="text-dark-400 text-xs py-4 text-center">No candidates above threshold</div>
             )}
             {candidates?.map(c => (
               <Link
                 key={c.ticker}
                 to={`/stock/${c.ticker}`}
-                className="flex items-center justify-between text-xs py-0.5 hover:opacity-80"
+                className="flex items-center justify-between py-2 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors text-sm"
               >
                 <div className="flex items-center gap-2">
-                  <span style={{ color: C.cyan, fontWeight: 'bold', width: '40px' }}>{c.ticker}</span>
-                  <span style={{ color: C.dim, width: '50px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span className="font-medium text-primary-400 w-10">{c.ticker}</span>
+                  <span className="text-dark-500 text-[10px] truncate max-w-[50px]">
                     {c.sector?.slice(0, 6)}
                   </span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span style={{ color: C.bright }}>{c.score?.toFixed(0)}</span>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${getScoreClass(c.score)}`}>
+                    {c.score?.toFixed(0)}
+                  </span>
                   {c.audit_confidence != null && (
-                    <span style={{
-                      color: c.audit_confidence >= 70 ? C.green : c.audit_confidence >= 50 ? C.yellow : C.red,
-                      fontSize: '0.6rem',
-                    }}>
+                    <span className={`text-[10px] px-1 py-0.5 rounded ${
+                      c.audit_confidence >= 70 ? 'bg-green-500/20 text-green-400' :
+                      c.audit_confidence >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+                      'bg-red-500/20 text-red-400'
+                    }`}>
                       A{c.audit_confidence?.toFixed(0)}
                     </span>
                   )}
                   {c.projected_growth != null && c.projected_growth > 0 && (
-                    <span style={{ color: C.green, width: '40px', textAlign: 'right' }}>
+                    <span className="text-green-400 text-xs font-mono w-10 text-right">
                       +{c.projected_growth?.toFixed(0)}%
                     </span>
                   )}
@@ -312,67 +287,69 @@ export default function CommandCenter() {
               </Link>
             ))}
           </div>
-        </Panel>
+        </div>
       </div>
 
       {/* Row 4: Risk + Earnings + Recent Trades */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
-        <Panel title="RISK">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs" style={{ color: C.dim }}>Heat</span>
-            <span className="text-sm font-bold" style={{
-              color: risk?.heat_status === 'normal' ? C.green : risk?.heat_status === 'warning' ? C.yellow : C.red
-            }}>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        <div className="card">
+          <div className="font-semibold text-sm mb-2">Risk</div>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-dark-400 text-xs">Heat</span>
+            <span className={`text-sm font-bold font-mono ${
+              risk?.heat_status === 'normal' ? 'text-green-400' :
+              risk?.heat_status === 'warning' ? 'text-yellow-400' : 'text-red-400'
+            }`}>
               {risk?.portfolio_heat?.toFixed(1)}%
             </span>
           </div>
-          <div className="space-y-0.5">
-            {risk?.top_sectors?.slice(0, 3).map(s => (
-              <div key={s.sector} className="flex justify-between text-xs">
-                <span style={{ color: C.dim }}>{s.sector?.slice(0, 12)}</span>
-                <span style={{ color: C.bright }}>{s.pct}% ({s.count})</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
+          {risk?.top_sectors?.slice(0, 3).map(s => (
+            <div key={s.sector} className="flex justify-between text-xs py-1 border-b border-dark-700 last:border-0">
+              <span className="text-dark-400 truncate max-w-[100px]">{s.sector}</span>
+              <span className="font-mono">{s.pct}% ({s.count})</span>
+            </div>
+          ))}
+        </div>
 
-        <Panel title="EARNINGS">
+        <div className="card">
+          <div className="font-semibold text-sm mb-2">Earnings</div>
           {earnings?.length === 0 ? (
-            <div className="text-xs" style={{ color: C.dim }}>No upcoming earnings</div>
+            <div className="text-dark-400 text-xs py-4 text-center">No upcoming earnings</div>
           ) : (
-            <div className="space-y-0.5">
+            <div>
               {earnings?.slice(0, 5).map(e => (
-                <div key={e.ticker} className="flex justify-between text-xs">
-                  <span style={{ color: C.cyan }}>{e.ticker}</span>
-                  <span style={{
-                    color: e.days <= 7 ? C.red : e.days <= 14 ? C.yellow : C.bright,
-                  }}>
+                <div key={e.ticker} className="flex items-center justify-between text-xs py-1.5 border-b border-dark-700 last:border-0">
+                  <span className="font-medium text-primary-400">{e.ticker}</span>
+                  <span className={`px-1.5 py-0.5 rounded ${
+                    e.days <= 7 ? 'bg-red-500/20 text-red-400' :
+                    e.days <= 14 ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-dark-600 text-dark-300'
+                  }`}>
                     {e.days}d
                   </span>
-                  <span style={{ color: C.dim }}>
-                    {e.beat_streak > 0 ? `${e.beat_streak}` : '-'}
+                  <span className="text-dark-400 font-mono">
+                    {e.beat_streak > 0 ? `${e.beat_streak} beats` : '-'}
                   </span>
                 </div>
               ))}
             </div>
           )}
-        </Panel>
+        </div>
 
-        <Panel title="RECENT TRADES">
-          <div className="space-y-0.5 max-h-40 overflow-y-auto">
+        <div className="card">
+          <div className="font-semibold text-sm mb-2">Recent Trades</div>
+          <div className="max-h-40 overflow-y-auto">
             {trades?.slice(0, 5).map((t, i) => (
-              <div key={i} className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-1">
-                  <span style={{
-                    color: t.action === 'BUY' ? C.green : C.red,
-                    fontWeight: 'bold',
-                    width: '24px',
-                  }}>
+              <div key={i} className="flex items-center justify-between text-xs py-1.5 border-b border-dark-700 last:border-0">
+                <div className="flex items-center gap-1.5">
+                  <span className={`px-1.5 py-0.5 rounded font-bold ${
+                    t.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                  }`}>
                     {t.action === 'BUY' ? 'B' : 'S'}
                   </span>
-                  <span style={{ color: C.cyan }}>{t.ticker}</span>
+                  <span className="font-medium text-primary-400">{t.ticker}</span>
                 </div>
-                <span style={{ color: C.dim }}>
+                <span className="text-dark-400">
                   {t.executed_at ? new Date(t.executed_at).toLocaleDateString('en-US', {
                     month: 'numeric', day: 'numeric', timeZone: 'America/Chicago'
                   }) : '-'}
@@ -380,31 +357,29 @@ export default function CommandCenter() {
               </div>
             ))}
           </div>
-        </Panel>
+        </div>
       </div>
 
       {/* Row 5: Scanner Status */}
-      <div className="rounded border px-3 py-2 flex items-center justify-between" style={{ background: C.panel, borderColor: C.border }}>
+      <div className="card p-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-xs tracking-wider" style={{ color: C.dim }}>SCANNER</span>
-          <span className="text-xs" style={{
-            color: scanner?.is_scanning ? C.green : C.dim,
-          }}>
+          <span className="text-dark-400 text-xs font-medium">Scanner</span>
+          <span className={`text-xs ${scanner?.is_scanning ? 'text-green-400' : 'text-dark-500'}`}>
             {scanner?.is_scanning ? (
-              <>
-                <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: C.green }} />
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
                 {scanner?.phase || 'scanning'}
-              </>
+              </span>
             ) : 'IDLE'}
           </span>
         </div>
         {scanner?.is_scanning && scanner?.stocks_scanned != null && (
-          <span className="text-xs" style={{ color: C.dim }}>
+          <span className="text-dark-400 text-xs font-mono">
             {scanner.stocks_scanned}/{scanner.total_stocks}
           </span>
         )}
         {scanner?.last_scan_end && (
-          <span className="text-xs" style={{ color: C.dim }}>
+          <span className="text-dark-500 text-xs">
             Last: {new Date(scanner.last_scan_end).toLocaleTimeString('en-US', {
               timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit'
             })}
@@ -412,25 +387,7 @@ export default function CommandCenter() {
         )}
       </div>
 
-      {/* Quick nav links */}
-      <div className="mt-3 flex flex-wrap gap-2">
-        {[
-          { to: '/dashboard', label: 'Dashboard' },
-          { to: '/ai-portfolio', label: 'AI Portfolio' },
-          { to: '/screener', label: 'Screener' },
-          { to: '/backtest', label: 'Backtests' },
-          { to: '/analytics', label: 'Analytics' },
-        ].map(link => (
-          <Link
-            key={link.to}
-            to={link.to}
-            className="text-xs px-3 py-1.5 rounded border hover:opacity-80"
-            style={{ borderColor: C.border, color: C.accent }}
-          >
-            {link.label}
-          </Link>
-        ))}
-      </div>
+      <div className="h-4" />
     </div>
   )
 }
