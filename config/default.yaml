@@ -259,12 +259,13 @@ ai_trader:
     enabled: true                    # Don't buy when SPY below 50-day MA
 
   # Conviction-based position sizing: higher scores get larger positions
+  # Uses composite_score (typically 25-75 range, not CANSLIM 0-100)
   conviction_sizing:
     enabled: true
-    min_pct: 8.0                     # Floor: lowest-conviction positions (score ~72)
-    max_pct: 20.0                    # Ceiling: highest-conviction positions (score 95+)
-    score_floor: 72                  # Score at which min_pct applies
-    score_ceiling: 95                # Score at which max_pct applies
+    min_pct: 8.0                     # Floor: lowest-conviction positions
+    max_pct: 20.0                    # Ceiling: highest-conviction positions
+    score_floor: 30                  # Composite score at which min_pct applies
+    score_ceiling: 75                # Composite score at which max_pct applies
 
   # Stop loss settings
   stops:
