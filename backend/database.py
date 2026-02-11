@@ -154,6 +154,8 @@ def run_migrations():
         # Paper Trading Mode (Feb 2026)
         ("ai_portfolio_config", "paper_mode", "BOOLEAN DEFAULT FALSE"),
         ("ai_portfolio_trades", "is_paper", "BOOLEAN DEFAULT FALSE"),
+        # Backtest force refresh (Feb 2026)
+        ("backtest_runs", "force_refresh", "BOOLEAN DEFAULT FALSE"),
     ]
 
     # Build a cache of existing columns per table
