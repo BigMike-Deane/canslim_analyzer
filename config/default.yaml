@@ -751,7 +751,7 @@ strategy_profiles:
       gain_20_to_30: 10
       gain_10_to_20: 8
     seed_count: 4                          # Iter 1: fewer seeds (was 5)
-    seed_pct: 12                               # Iter 6b: bigger seeds (was 10)
+    seed_pct: 8                                # Iter 7: smaller seeds (was 10)
     half_size_initial: true
     max_seed_investment_pct: 50            # Iter 1: lower seed cap (was 60)
     quality_filters:
