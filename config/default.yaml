@@ -738,7 +738,7 @@ strategy_profiles:
   lab:
     label: "Lab (Optimization)"
     description: "Experimental profile for automated parameter tuning"
-    min_score: 72
+    min_score: 70                          # Iter 2: slightly lower threshold (was 72) — more candidates
     max_positions: 8
     max_single_position_pct: 25
     max_sector_pct: 50
@@ -758,9 +758,9 @@ strategy_profiles:
       min_c_score: 10
       min_l_score: 8
     scoring_weights:
-      growth_projection: 0.20
+      growth_projection: 0.15             # Iter 2: less FMP-dependent (was 0.20)
       canslim_score: 0.25
-      momentum: 0.25
+      momentum: 0.30                      # Iter 2: more price-action driven (was 0.25)
       breakout: 0.20
       base_quality: 0.10
     score_crash_drop_required: 25
