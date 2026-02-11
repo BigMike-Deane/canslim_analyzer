@@ -739,15 +739,15 @@ strategy_profiles:
     label: "Lab (Optimization)"
     description: "Experimental profile for automated parameter tuning"
     min_score: 72
-    max_positions: 8
-    max_single_position_pct: 25
+    max_positions: 10                      # Iter 4: more diversification (was 8)
+    max_single_position_pct: 20            # Iter 4: lower cap per position (was 25)
     max_sector_pct: 50
     stop_loss_pct: 7.0                     # Iter 1: tighter stop (was 8.0)
     bearish_stop_loss_pct: 6.0             # Iter 1: tighter bearish stop (was 7.0)
-    take_profit_pct: 90.0                   # Iter 3: let big winners run longer (was 75)
+    take_profit_pct: 75.0
     trailing_stops:
-      gain_50_plus: 22                     # Iter 3: wider for big winners (was 20)
-      gain_30_to_50: 18                    # Iter 3: wider (was 15)
+      gain_50_plus: 20
+      gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
     seed_count: 4                          # Iter 1: fewer seeds (was 5)
@@ -755,8 +755,8 @@ strategy_profiles:
     half_size_initial: true
     max_seed_investment_pct: 50            # Iter 1: lower seed cap (was 60)
     quality_filters:
-      min_c_score: 10
-      min_l_score: 8
+      min_c_score: 12                      # Iter 4: higher C bar (was 10)
+      min_l_score: 10                      # Iter 4: higher L bar (was 8)
     scoring_weights:
       growth_projection: 0.20
       canslim_score: 0.25
