@@ -9,6 +9,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env:ro
+      - backtest-cache:/tmp/backtest_cache
     environment:
       - DEBUG=false
       - FMP_API_KEY=q2iNuagXaKuuZKuWYrGo9nEEPygMFmX1
@@ -65,3 +66,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  backtest-cache:
