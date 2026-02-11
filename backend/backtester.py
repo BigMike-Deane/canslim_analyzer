@@ -242,6 +242,9 @@ class BacktestEngine:
             self.backtest.status = "completed"
             self.backtest.completed_at = datetime.now(timezone.utc)
             self.backtest.progress_pct = 100
+            # Store data fingerprint for reproducibility tracking
+            if hasattr(self, '_data_fingerprint'):
+                self.backtest.error_message = f"data_fp:{self._data_fingerprint}"
             self.db.commit()
 
             logger.info(f"Backtest {self.backtest.id} completed: "
@@ -342,45 +345,39 @@ class BacktestEngine:
 
     def _fetch_missing_earnings(self):
         """
-        Fetch historical earnings from FMP for tickers that don't have enough data
-        for the backtest period. This ensures C and A scores can be calculated
-        even for backtests that go back several years.
+        Fetch earnings from FMP for ALL tickers to ensure deterministic backtests.
+
+        The DB cache changes with every scan, causing different C/A scores and
+        different stock picks between backtest runs. By always fetching from FMP,
+        we get consistent historical data regardless of DB state.
+
+        Only updates self.static_data (NOT the DB) to avoid interfering with scans.
         """
         import requests
         import time
+        import hashlib
 
         fmp_api_key = os.environ.get('FMP_API_KEY', '')
         if not fmp_api_key:
-            logger.warning("Backtest: No FMP_API_KEY, cannot fetch missing earnings")
+            logger.warning("Backtest: No FMP_API_KEY, cannot fetch earnings")
             return
 
         # Calculate how many quarters we need
         today = date.today()
         days_diff = (today - self.backtest.start_date).days
-        if days_diff <= 0:
-            return  # Current period, no extra data needed
 
         # quarters_to_skip = how many the filter will skip
         # We need at least 8 usable quarters after skipping (for C score YoY + buffer)
-        quarters_to_skip = max(0, (days_diff + 45) // 91)
+        quarters_to_skip = max(0, (days_diff + 45) // 91) if days_diff > 0 else 0
         quarters_needed = quarters_to_skip + 8
-        annuals_to_skip = max(0, (days_diff + 45) // 365)
+        annuals_to_skip = max(0, (days_diff + 45) // 365) if days_diff > 0 else 0
         annuals_needed = annuals_to_skip + 5
 
-        # Find tickers that need more data
-        tickers_needing_data = []
-        for ticker, data in self.static_data.items():
-            q_earnings = data.get("quarterly_earnings", [])
-            a_earnings = data.get("annual_earnings", [])
-            if len(q_earnings) < quarters_needed or len(a_earnings) < annuals_needed:
-                tickers_needing_data.append(ticker)
+        # Fetch for ALL tickers (deterministic — ignores DB cache)
+        all_tickers = list(self.static_data.keys())
 
-        if not tickers_needing_data:
-            logger.info(f"Backtest {self.backtest.id}: All tickers have sufficient earnings data")
-            return
-
-        logger.info(f"Backtest {self.backtest.id}: Fetching historical earnings for "
-                     f"{len(tickers_needing_data)} tickers (need {quarters_needed}q/{annuals_needed}a, "
+        logger.info(f"Backtest {self.backtest.id}: Fetching FMP earnings for "
+                     f"{len(all_tickers)} tickers (need {quarters_needed}q/{annuals_needed}a, "
                      f"backtest starts {self.backtest.start_date})")
 
         fmp_base = "https://financialmodelingprep.com/stable"
@@ -388,7 +385,7 @@ class BacktestEngine:
         failed_count = 0
         batch_size = 50  # Respect FMP rate limits
 
-        for i, ticker in enumerate(tickers_needing_data):
+        for i, ticker in enumerate(all_tickers):
             try:
                 # Fetch quarterly (enough for the backtest period)
                 q_limit = min(quarters_needed + 4, 40)  # small buffer, cap at 40
@@ -407,32 +404,20 @@ class BacktestEngine:
                     if isinstance(q_data, list) and q_data:
                         q_eps = [q.get("eps", 0) or 0 for q in q_data]
                         q_rev = [q.get("revenue", 0) or 0 for q in q_data]
-                        if len(q_eps) > len(self.static_data[ticker].get("quarterly_earnings", [])):
-                            self.static_data[ticker]["quarterly_earnings"] = q_eps
-                            self.static_data[ticker]["quarterly_revenue"] = q_rev
-                            updated = True
+                        # Always overwrite — FMP is the canonical source for determinism
+                        self.static_data[ticker]["quarterly_earnings"] = q_eps
+                        self.static_data[ticker]["quarterly_revenue"] = q_rev
+                        updated = True
 
                 if a_resp.status_code == 200:
                     a_data = a_resp.json()
                     if isinstance(a_data, list) and a_data:
                         a_eps = [a.get("eps", 0) or 0 for a in a_data]
-                        if len(a_eps) > len(self.static_data[ticker].get("annual_earnings", [])):
-                            self.static_data[ticker]["annual_earnings"] = a_eps
-                            updated = True
+                        self.static_data[ticker]["annual_earnings"] = a_eps
+                        updated = True
 
                 if updated:
                     fetched_count += 1
-                    # Also update DB so future backtests don't need to re-fetch
-                    try:
-                        stock = self.db.query(Stock).filter(Stock.ticker == ticker).first()
-                        if stock:
-                            stock.quarterly_earnings = self.static_data[ticker]["quarterly_earnings"]
-                            stock.annual_earnings = self.static_data[ticker]["annual_earnings"]
-                            stock.quarterly_revenue = self.static_data[ticker].get("quarterly_revenue", stock.quarterly_revenue)
-                            if (i + 1) % batch_size == 0:
-                                self.db.commit()
-                    except Exception:
-                        pass
                 else:
                     failed_count += 1
 
@@ -444,15 +429,21 @@ class BacktestEngine:
             # Rate limiting: pause every batch_size requests
             if (i + 1) % batch_size == 0:
                 time.sleep(1.0)
+                # Log progress every 200 tickers
+                if (i + 1) % 200 == 0:
+                    logger.info(f"Backtest {self.backtest.id}: FMP earnings fetch progress: "
+                               f"{i + 1}/{len(all_tickers)} tickers")
 
-        # Final commit
-        try:
-            self.db.commit()
-        except Exception:
-            pass
+        # Compute data fingerprint for reproducibility tracking
+        fingerprint_data = ""
+        for ticker in sorted(self.static_data.keys()):
+            q = self.static_data[ticker].get("quarterly_earnings", [])
+            a = self.static_data[ticker].get("annual_earnings", [])
+            fingerprint_data += f"{ticker}:{q[:8]}:{a[:5]}|"
+        self._data_fingerprint = hashlib.md5(fingerprint_data.encode()).hexdigest()[:12]
 
-        logger.info(f"Backtest {self.backtest.id}: Fetched earnings for {fetched_count} tickers "
-                     f"({failed_count} failed, {len(tickers_needing_data) - fetched_count - failed_count} skipped)")
+        logger.info(f"Backtest {self.backtest.id}: FMP earnings fetched for {fetched_count} tickers "
+                     f"({failed_count} failed), data fingerprint: {self._data_fingerprint}")
 
     def _calculate_coiled_spring_for_backtest(self, ticker: str, score_data: dict, static_data: dict, cs_config: dict) -> dict:
         """
@@ -629,6 +620,17 @@ class BacktestEngine:
             self._seed_initial_positions(current_date)
             self._take_snapshot(current_date)
             return
+
+        # MARKET REGIME GATE: Don't buy when SPY is below 50MA (bearish regime)
+        # This prevents the whack-a-mole pattern of buying into corrections
+        regime_gate_config = config.get('ai_trader.market_regime_gate', {})
+        if regime_gate_config.get('enabled', True) and can_buy:
+            spy_data = market_for_cash.get('spy', {}) if market_for_cash else {}
+            spy_price = spy_data.get('price', 0)
+            spy_ma50 = spy_data.get('ma_50', 0)
+            if spy_price and spy_ma50 and spy_price < spy_ma50:
+                logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys on {current_date}")
+                can_buy = False
 
         if can_buy:
             # Score full universe when we can buy
@@ -1739,12 +1741,23 @@ class BacktestEngine:
 
             # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
-            # Position sizing: equal-weight floor with conviction scaling (matches live trader)
+            # Position sizing: conviction-based (higher scores get larger positions)
             max_positions = self.profile.get('max_positions', self.backtest.max_positions)
-            min_position_pct = 90.0 / max_positions  # Equal-weight floor (11.25% for 8 slots)
-            conviction_multiplier = min(composite_score / 50, 1.5)
-            conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
-            position_pct = max(min_position_pct, conviction_pct)
+            conv_config = config.get('ai_trader.conviction_sizing', {})
+            if conv_config.get('enabled', False):
+                # Linear interpolation: score_floor → min_pct, score_ceiling → max_pct
+                conv_min = conv_config.get('min_pct', 8.0)
+                conv_max = conv_config.get('max_pct', 20.0)
+                score_floor = conv_config.get('score_floor', 72)
+                score_ceiling = conv_config.get('score_ceiling', 95)
+                score_ratio = max(0, min(1, (composite_score - score_floor) / max(1, score_ceiling - score_floor)))
+                position_pct = conv_min + score_ratio * (conv_max - conv_min)
+            else:
+                # Fallback: equal-weight floor with conviction scaling
+                min_position_pct = 90.0 / max_positions
+                conviction_multiplier = min(composite_score / 50, 1.5)
+                conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
+                position_pct = max(min_position_pct, conviction_pct)
 
             # Half-size positions when portfolio heat is elevated
             if self.heat_penalty_active:

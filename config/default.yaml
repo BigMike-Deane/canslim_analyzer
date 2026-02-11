@@ -254,6 +254,18 @@ ai_trader:
     liquidate_all_pct: 25.0           # Emergency: sell everything at 25% drawdown
     recovery_pct: 10.0                # Resume buying when drawdown recovers below 10%
 
+  # Market regime gate: skip buys when SPY < 50MA (bearish regime)
+  market_regime_gate:
+    enabled: true                    # Don't buy when SPY below 50-day MA
+
+  # Conviction-based position sizing: higher scores get larger positions
+  conviction_sizing:
+    enabled: true
+    min_pct: 8.0                     # Floor: lowest-conviction positions (score ~72)
+    max_pct: 20.0                    # Ceiling: highest-conviction positions (score 95+)
+    score_floor: 72                  # Score at which min_pct applies
+    score_ceiling: 95                # Score at which max_pct applies
+
   # Stop loss settings
   stops:
     normal_stop_loss_pct: 8.0          # O'Neil: cut losses at 7-8%, no exceptions

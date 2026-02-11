@@ -1764,6 +1764,18 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     if cooldown_tickers:
         logger.info(f"Re-entry cooldown active for: {', '.join(sorted(cooldown_tickers))}")
 
+    # MARKET REGIME GATE: Don't buy when SPY is below 50MA (bearish regime)
+    regime_gate_config = yaml_config.get('ai_trader.market_regime_gate', {})
+    if regime_gate_config.get('enabled', True):
+        from data_fetcher import get_cached_market_direction
+        mkt = get_cached_market_direction()
+        spy_info = mkt.get('spy', {}) if mkt else {}
+        spy_px = spy_info.get('price', 0)
+        spy_50 = spy_info.get('ma_50', 0)
+        if spy_px and spy_50 and spy_px < spy_50:
+            logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
+            return {"buys": [], "reason": f"Market regime gate: SPY below 50MA"}
+
     # Build set of tickers to exclude (already own or own a duplicate)
     excluded_tickers = set(current_tickers) | cooldown_tickers
     for ticker in current_tickers:
@@ -2255,11 +2267,22 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         drawdown_info = get_portfolio_drawdown(db)
         drawdown_multiplier = drawdown_info["position_multiplier"]
 
-        # Position sizing: equal-weight floor with conviction scaling up to regime_max_pct
-        min_position_pct = 90.0 / max_positions  # Equal-weight floor (11.25% for 8 slots)
-        conviction_multiplier = min(composite_score / 50, 1.5)  # 0.5 to 1.5
-        conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
-        position_pct = max(min_position_pct, conviction_pct)
+        # Position sizing: conviction-based (higher scores get larger positions)
+        conv_config = yaml_config.get('ai_trader.conviction_sizing', {})
+        if conv_config.get('enabled', False):
+            # Linear interpolation: score_floor → min_pct, score_ceiling → max_pct
+            conv_min = conv_config.get('min_pct', 8.0)
+            conv_max = conv_config.get('max_pct', 20.0)
+            score_floor = conv_config.get('score_floor', 72)
+            score_ceiling = conv_config.get('score_ceiling', 95)
+            score_ratio = max(0, min(1, (composite_score - score_floor) / max(1, score_ceiling - score_floor)))
+            position_pct = conv_min + score_ratio * (conv_max - conv_min)
+        else:
+            # Fallback: equal-weight floor with conviction scaling
+            min_position_pct = 90.0 / max_positions
+            conviction_multiplier = min(composite_score / 50, 1.5)
+            conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
+            position_pct = max(min_position_pct, conviction_pct)
 
         # Half-size positions when portfolio heat is elevated
         if heat_penalty_active:
