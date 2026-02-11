@@ -343,19 +343,99 @@ class BacktestEngine:
                 "eps_estimate_revision_pct": getattr(stock, 'eps_estimate_revision_pct', None),
             }
 
+    def _compute_fingerprint(self):
+        """Compute MD5 fingerprint of earnings data for reproducibility tracking."""
+        import hashlib
+        fingerprint_data = ""
+        for ticker in sorted(self.static_data.keys()):
+            q = self.static_data[ticker].get("quarterly_earnings", [])
+            a = self.static_data[ticker].get("annual_earnings", [])
+            fingerprint_data += f"{ticker}:{q[:8]}:{a[:5]}|"
+        return hashlib.md5(fingerprint_data.encode()).hexdigest()[:12]
+
+    def _get_earnings_cache_path(self):
+        """Get path for the earnings cache file, keyed by today's date."""
+        cache_dir = "/tmp/backtest_cache"
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, f"earnings_{date.today().isoformat()}.json")
+
+    def _load_earnings_cache(self):
+        """Try to load cached FMP earnings data from today. Returns True if loaded."""
+        import json
+        cache_path = self._get_earnings_cache_path()
+        if not os.path.exists(cache_path):
+            return False
+
+        try:
+            with open(cache_path, 'r') as f:
+                cached = json.load(f)
+
+            applied = 0
+            for ticker, data in cached.items():
+                if ticker in self.static_data:
+                    if "quarterly_earnings" in data:
+                        self.static_data[ticker]["quarterly_earnings"] = data["quarterly_earnings"]
+                    if "quarterly_revenue" in data:
+                        self.static_data[ticker]["quarterly_revenue"] = data["quarterly_revenue"]
+                    if "annual_earnings" in data:
+                        self.static_data[ticker]["annual_earnings"] = data["annual_earnings"]
+                    applied += 1
+
+            self._data_fingerprint = self._compute_fingerprint()
+            logger.info(f"Backtest {self.backtest.id}: Loaded earnings cache for {applied} tickers "
+                       f"(fingerprint: {self._data_fingerprint})")
+            return True
+        except Exception as e:
+            logger.warning(f"Backtest {self.backtest.id}: Failed to load earnings cache: {e}")
+            return False
+
+    def _save_earnings_cache(self):
+        """Save FMP earnings data to cache file for reuse by subsequent backtests."""
+        import json
+        cache_path = self._get_earnings_cache_path()
+        try:
+            cached = {}
+            for ticker, data in self.static_data.items():
+                entry = {}
+                if "quarterly_earnings" in data:
+                    entry["quarterly_earnings"] = data["quarterly_earnings"]
+                if "quarterly_revenue" in data:
+                    entry["quarterly_revenue"] = data["quarterly_revenue"]
+                if "annual_earnings" in data:
+                    entry["annual_earnings"] = data["annual_earnings"]
+                if entry:
+                    cached[ticker] = entry
+
+            with open(cache_path, 'w') as f:
+                json.dump(cached, f)
+
+            # Clean up old cache files (keep only today's)
+            cache_dir = os.path.dirname(cache_path)
+            today_name = os.path.basename(cache_path)
+            for fname in os.listdir(cache_dir):
+                if fname.startswith("earnings_") and fname != today_name:
+                    os.remove(os.path.join(cache_dir, fname))
+
+            logger.info(f"Backtest {self.backtest.id}: Saved earnings cache ({len(cached)} tickers)")
+        except Exception as e:
+            logger.warning(f"Backtest {self.backtest.id}: Failed to save earnings cache: {e}")
+
     def _fetch_missing_earnings(self):
         """
         Fetch earnings from FMP for ALL tickers to ensure deterministic backtests.
 
-        The DB cache changes with every scan, causing different C/A scores and
-        different stock picks between backtest runs. By always fetching from FMP,
-        we get consistent historical data regardless of DB state.
+        Uses a daily file cache to avoid re-fetching ~2000 tickers on every run.
+        Cache is keyed by date — first backtest of the day fetches from FMP (~20 min),
+        subsequent backtests load from cache (~1 sec).
 
         Only updates self.static_data (NOT the DB) to avoid interfering with scans.
         """
         import requests
         import time
-        import hashlib
+
+        # Try loading from today's cache first
+        if self._load_earnings_cache():
+            return
 
         fmp_api_key = os.environ.get('FMP_API_KEY', '')
         if not fmp_api_key:
@@ -434,16 +514,13 @@ class BacktestEngine:
                     logger.info(f"Backtest {self.backtest.id}: FMP earnings fetch progress: "
                                f"{i + 1}/{len(all_tickers)} tickers")
 
-        # Compute data fingerprint for reproducibility tracking
-        fingerprint_data = ""
-        for ticker in sorted(self.static_data.keys()):
-            q = self.static_data[ticker].get("quarterly_earnings", [])
-            a = self.static_data[ticker].get("annual_earnings", [])
-            fingerprint_data += f"{ticker}:{q[:8]}:{a[:5]}|"
-        self._data_fingerprint = hashlib.md5(fingerprint_data.encode()).hexdigest()[:12]
+        self._data_fingerprint = self._compute_fingerprint()
 
         logger.info(f"Backtest {self.backtest.id}: FMP earnings fetched for {fetched_count} tickers "
                      f"({failed_count} failed), data fingerprint: {self._data_fingerprint}")
+
+        # Save to cache for subsequent backtests today
+        self._save_earnings_cache()
 
     def _calculate_coiled_spring_for_backtest(self, ticker: str, score_data: dict, static_data: dict, cs_config: dict) -> dict:
         """
