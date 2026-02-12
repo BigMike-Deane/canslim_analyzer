@@ -2113,14 +2113,6 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         pivot_price = getattr(stock, 'pivot_price', 0) or 0
         has_base = base_type not in ('none', '', None)
 
-        # Insider trading signals
-        insider_sentiment = getattr(stock, 'insider_sentiment', 'neutral') or 'neutral'
-        insider_buy_count = getattr(stock, 'insider_buy_count', 0) or 0
-
-        # Short interest data
-        short_interest_pct = getattr(stock, 'short_interest_pct', 0) or 0
-        short_ratio = getattr(stock, 'short_ratio', 0) or 0
-
         # Calculate momentum, breakout, pre-breakout, and extended scores
         momentum_score = 0
         breakout_bonus = 0
@@ -2188,90 +2180,28 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     extended_penalty = -10  # Moderate penalty
                     momentum_score = 10
 
-            # NO BASE PATTERN at high = chasing
-            elif not has_base and pct_from_high <= 2:
-                if effective_score < 85:
-                    extended_penalty = -15  # Penalize buying at high without base
-                    momentum_score = 5
+            # NO BASE PATTERN: Use 52-week high with penalties (matches backtester)
+            elif not has_base:
+                if pct_from_high <= 2:
+                    # At 52-week high without base = chasing
+                    if effective_score < 85:
+                        extended_penalty = -15
+                        momentum_score = 5
+                    else:
+                        momentum_score = 12
+                elif pct_from_high <= 10:
+                    momentum_score = 15
+                    if volume_ratio >= 1.5:
+                        momentum_score += 3
+                elif pct_from_high <= 25:
+                    momentum_score = 8
                 else:
-                    momentum_score = 12  # Very high score justifies the entry
+                    momentum_score = -5
 
-            # Good zone: 5-15% from high (whether or not has base)
-            elif pct_from_high <= 15:
-                if volume_ratio >= 1.3:  # Accumulation pattern
-                    momentum_score = 18
-                else:
-                    momentum_score = 12
-
-            elif pct_from_high <= 25:
-                momentum_score = 5  # Still acceptable
-            else:
-                momentum_score = -10  # Too far from highs, may be in downtrend
-
-        # Calculate insider sentiment bonus/penalty (P1 Feature: Scale by $ value)
-        insider_bonus = 0
-        insider_net_value = getattr(stock, 'insider_net_value', 0) or 0
-        insider_largest_buyer_title = getattr(stock, 'insider_largest_buyer_title', '') or ''
-
-        # Get insider signal config
-        insider_config = config.get('ai_trader.insider_signals', {})
-        cluster_bonus = insider_config.get('cluster_bonus', 8)
-        high_value_cluster_bonus = insider_config.get('high_value_cluster_bonus', 12)
-
-        if insider_sentiment == "bullish":
-            # INSIDER CLUSTER DETECTION: Multiple insiders buying is stronger signal
-            if insider_buy_count >= 3:
-                # Cluster of insider buying - very bullish signal
-                if insider_net_value >= 1_000_000:  # $1M+ cluster
-                    insider_bonus = high_value_cluster_bonus
-                else:
-                    insider_bonus = cluster_bonus
-            elif insider_net_value >= 500000:  # $500K+ net buying
-                insider_bonus = 10
-            elif insider_net_value >= 100000:  # $100K+ net buying
-                insider_bonus = 7
-            elif insider_buy_count >= 2:
-                insider_bonus = 5  # Fallback to count-based if no value data
-
-            # Extra +3 for C-suite buying (CEO, CFO, COO, President)
-            if insider_largest_buyer_title.upper() in ('CEO', 'CFO', 'COO', 'PRESIDENT', 'CHIEF EXECUTIVE OFFICER', 'CHIEF FINANCIAL OFFICER'):
-                insider_bonus += 3
-        elif insider_sentiment == "bearish":
-            insider_bonus = -3  # Insiders selling = caution
-
-        # ACCUMULATION/DISTRIBUTION: Proxy using volume_ratio and L score
-        # High volume with rising RS suggests institutional accumulation
-        accum_bonus = 0
+        # NOTE: Insider signals, accumulation/distribution, and short squeeze detection
+        # were removed to align live trader with backtester (proven +51.2% returns).
+        # The backtester does not model these signals and they added noise to scoring.
         l_score = getattr(stock, 'l_score', 0) or 0
-        if volume_ratio >= 1.5 and l_score >= 10:
-            accum_bonus = 5  # Strong volume with strong RS = accumulation
-        elif volume_ratio >= 1.3 and l_score >= 8:
-            accum_bonus = 3  # Moderate accumulation signal
-        elif volume_ratio >= 2.0 and l_score < 5:
-            accum_bonus = -3  # High volume with weak RS = possible distribution
-
-        # SHORT SQUEEZE DETECTION
-        # High short interest can be bullish (short squeeze potential) or bearish (smart money betting against)
-        # Squeeze setup: high short + strong RS + base pattern + breaking out or pre-breakout
-        short_adjustment = 0
-        is_squeeze_setup = False
-        squeeze_config = config.get('ai_trader.short_squeeze', {})
-        squeeze_enabled = squeeze_config.get('enabled', True)
-        min_short_pct = squeeze_config.get('min_short_pct', 20)
-        min_l_for_squeeze = squeeze_config.get('min_l_score', 10)
-        squeeze_bonus = squeeze_config.get('squeeze_bonus', 5)
-
-        if short_interest_pct >= min_short_pct:
-            # Check if this is a squeeze OPPORTUNITY (not just risk)
-            if squeeze_enabled and l_score >= min_l_for_squeeze and has_base and (is_breaking_out or pre_breakout_bonus >= 15):
-                # Squeeze setup: high short with strong technicals = potential squeeze
-                short_adjustment = squeeze_bonus
-                is_squeeze_setup = True
-            else:
-                # Just high short interest without setup = risky
-                short_adjustment = -5
-        elif short_interest_pct > 10:
-            short_adjustment = -2  # Elevated short interest = slight caution
 
         # MOMENTUM CONFIRMATION: Penalize stocks where recent momentum is fading
         # If 3-month RS is significantly weaker than 12-month RS, momentum is weakening
@@ -2307,9 +2237,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring'):
             coiled_spring_bonus = stock._cs_result.get('cs_score', 0)
 
-        # SECTOR ROTATION: Bonus for leading sectors, penalty for lagging
-        sector = getattr(stock, 'sector', None)
-        sector_bonus, sector_detail = get_sector_rotation_bonus(db, sector) if sector else (0, "")
+        # NOTE: Sector rotation bonus removed to align with backtester (proven +51.2%)
 
         # RS LINE NEW HIGH: Leading indicator when RS makes new high before price (matches backtester)
         rs_line_bonus = 0
@@ -2353,11 +2281,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             n_sc = getattr(stock, 'n_score', 0) or 0
             weighted_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
-        # Blend stored growth_projection with momentum to reduce FMP dependency
-        # stored projected_growth was calculated with old weights in scanner; re-blend locally
-        stored_growth = stock.projected_growth or 0
-        momentum_pct_local = ((rs_3m / rs_12m) - 1.0) * 100 if rs_12m > 0 else 0
-        growth_projection = min(stored_growth * 0.70 + momentum_pct_local * 0.30, 50)
+        # Growth projection: use stored projected_growth directly (matches backtester)
+        # Backtester computes: eps_growth*0.30 + annual_cagr*0.25 + momentum*0.45
+        # Live trader uses the pre-computed projected_growth from the scanner
+        growth_projection = min(stock.projected_growth or (effective_score * 0.3), 50)
+
+        # Composite score — aligned with backtester (no insider/short/sector/audit bonuses)
         composite_score = (
             (growth_projection * w_growth) +
             (weighted_score * w_score) +
@@ -2365,14 +2294,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             ((breakout_bonus + pre_breakout_bonus) * w_breakout) +
             (base_quality_bonus * w_base) +
             extended_penalty +
-            insider_bonus +
-            short_adjustment +  # Short squeeze potential (+) or risk (-)
-            accum_bonus +  # Accumulation/distribution signal
-            estimate_revision_bonus +  # Analyst estimate revisions
-            sector_bonus +  # Sector rotation signal
-            coiled_spring_bonus +  # Earnings catalyst bonus
-            rs_line_bonus +  # RS line new high bonus
-            earnings_drift_bonus  # Post-earnings drift bonus
+            coiled_spring_bonus +   # Earnings catalyst bonus
+            rs_line_bonus +         # RS line new high bonus
+            earnings_drift_bonus +  # Post-earnings drift bonus
+            estimate_revision_bonus # Analyst estimate revisions
         )
 
         # Apply momentum penalty after base composite calculation
@@ -2405,34 +2330,14 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 deterministic_boost_val = det_config.get('stable_bonus', 5)
             composite_score += deterministic_boost_val
 
-        # EARNINGS AUDIT BONUS: Deep fundamental confidence adjustment
-        earnings_audit_bonus = 0
-        audit_confidence = None
-        audit_info = audit_map.get(stock.ticker)
-        if audit_info:
-            audit_confidence = audit_info.get("fundamental_confidence")
-            try:
-                earnings_audit_bonus = get_audit_bonus(audit_confidence)
-            except Exception:
-                earnings_audit_bonus = 0
-            composite_score += earnings_audit_bonus
-
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
-        # Calculate position size - MORE DYNAMIC range based on conviction
+        # Calculate position size - aligned with backtester
         portfolio_value = get_portfolio_value(db)["total_value"]
-
-        # Check correlation - reduce position for highly correlated sectors/industries
-        correlation_info = check_portfolio_correlation(db, stock.ticker)
-        correlation_multiplier = correlation_info["position_multiplier"]
 
         # Get market regime for position size limits
         market_regime = get_market_regime(db)
         regime_max_pct = market_regime["max_position_pct"]
-
-        # Get drawdown protection multiplier
-        drawdown_info = get_portfolio_drawdown(db)
-        drawdown_multiplier = drawdown_info["position_multiplier"]
 
         # Position sizing: conviction-based (higher scores get larger positions)
         conv_config = yaml_config.get('ai_trader.conviction_sizing', {})
@@ -2470,11 +2375,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             cs_multiplier = cs_config.get('position_multiplier', 1.25)
             position_pct *= cs_multiplier
 
-        # Apply correlation penalty
-        position_pct *= correlation_multiplier
-
-        # Apply drawdown protection (reduce positions when portfolio is down)
-        position_pct *= drawdown_multiplier
+        # NOTE: Correlation sizing and graduated drawdown removed to match backtester.
+        # Backtester uses binary drawdown halt (no graduated reduction) and doesn't
+        # apply correlation-aware sizing.
 
         # SOFT ZONE: Apply graduated position multiplier for stocks below hard threshold
         if in_soft_zone and soft_zone_mult < 1.0:
@@ -2540,20 +2443,6 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append("Strong momentum")
         if volume_ratio >= 1.5 and not is_breaking_out:
             reason_parts.append(f"Vol {volume_ratio:.1f}x")
-        if insider_sentiment == "bullish" and insider_buy_count >= 2:
-            if insider_buy_count >= 3:
-                # Insider cluster indicator
-                if insider_net_value >= 1_000_000:
-                    reason_parts.append(f"👔💰 Insider cluster ({insider_buy_count}, ${insider_net_value/1_000_000:.1f}M)")
-                else:
-                    reason_parts.append(f"👔 Insider cluster ({insider_buy_count})")
-            else:
-                reason_parts.append(f"👔 Insiders buying ({insider_buy_count})")
-        if short_interest_pct > 15:
-            if is_squeeze_setup:
-                reason_parts.append(f"⚡ Squeeze ({short_interest_pct:.0f}%)")
-            else:
-                reason_parts.append(f"⚠️ Short {short_interest_pct:.0f}%")
         if estimate_revision_bonus >= 5:
             reason_parts.append(f"📊 Est↑ {revision_pct:+.0f}%")
         elif estimate_revision_bonus <= -5:
@@ -2564,11 +2453,6 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append(f"Drift +{earnings_drift_bonus}")
         if deterministic_boost_val > 0:
             reason_parts.append(f"Det+{deterministic_boost_val}")
-        if earnings_audit_bonus > 0:
-            reason_parts.append(f"Audit+{earnings_audit_bonus} ({audit_confidence:.0f})")
-        elif earnings_audit_bonus < 0:
-            reason_parts.append(f"Audit{earnings_audit_bonus} ({audit_confidence:.0f})")
-
         # Build trade journal signal_factors (matches backtester)
         buy_signal_factors = {
             "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
@@ -2585,10 +2469,6 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult
         if deterministic_boost_val > 0:
             buy_signal_factors["deterministic_boost"] = deterministic_boost_val
-        if earnings_audit_bonus != 0:
-            buy_signal_factors["earnings_audit_bonus"] = earnings_audit_bonus
-            buy_signal_factors["fundamental_confidence"] = audit_confidence
-
         buys.append({
             "stock": stock,
             "shares": shares,

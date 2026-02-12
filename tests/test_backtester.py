@@ -2337,7 +2337,7 @@ class TestStrategyProfiles:
         assert profile.get('max_positions') == 8
         assert profile.get('stop_loss_pct') == 8.0
         assert profile.get('take_profit_pct') == 75.0
-        assert profile.get('seed_count') == 5
+        assert profile.get('seed_count') == 3  # Ralph Loop optimized from 5
         assert profile.get('score_crash_drop_required') == 25
         assert profile.get('score_crash_ignore_if_profitable') == 20
 
