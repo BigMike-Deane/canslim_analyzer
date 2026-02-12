@@ -134,6 +134,13 @@ try:
 except ImportError:
     HistoricalDataProvider = None
 
+# Import market state machine (replaces binary regime gate)
+try:
+    from backend.market_state import MarketStateManager, MarketState
+except ImportError:
+    MarketStateManager = None
+    MarketState = None
+
 logger = logging.getLogger(__name__)
 
 # Lock to prevent concurrent trading cycles
@@ -1806,17 +1813,43 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     if cooldown_tickers:
         logger.info(f"Re-entry cooldown active for: {', '.join(sorted(cooldown_tickers))}")
 
-    # MARKET REGIME GATE: Don't buy when SPY is below 50MA (bearish regime)
-    regime_gate_config = yaml_config.get('ai_trader.market_regime_gate', {})
-    if regime_gate_config.get('enabled', True):
+    # MARKET STATE MACHINE: Graduated exposure system (replaces binary regime gate)
+    # In bull markets (SPY > 50MA), this is always TRENDING at 100% — identical to before.
+    market_state_config = yaml_config.get('market_state', {})
+    market_state_enabled = market_state_config.get('enabled', True) and MarketStateManager is not None
+    market_state_mgr = None
+    if market_state_enabled:
         from data_fetcher import get_cached_market_direction
         mkt = get_cached_market_direction()
         spy_info = mkt.get('spy', {}) if mkt else {}
         spy_px = spy_info.get('price', 0)
         spy_50 = spy_info.get('ma_50', 0)
-        if spy_px and spy_50 and spy_px < spy_50:
-            logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
-            return {"buys": [], "reason": f"Market regime gate: SPY below 50MA"}
+        spy_ema21 = spy_info.get('ema_21', spy_50)  # Fallback to 50MA if 21EMA unavailable
+
+        # For live trading, we initialize state from current conditions each cycle.
+        # The state machine is stateless across cycles — it determines state from
+        # the current SPY/MA relationship, not from persistent tracking.
+        # This is simpler and avoids stale state bugs.
+        market_state_mgr = MarketStateManager(market_state_config)
+        market_state_mgr.initialize_state(spy_px, spy_50, spy_ema21)
+
+        if not market_state_mgr.can_buy:
+            state_name = market_state_mgr.state.value
+            logger.info(f"MARKET STATE ({state_name}): SPY ${spy_px:.2f}, 50MA ${spy_50:.2f}, "
+                       f"skipping all buys")
+            return {"buys": [], "reason": f"Market state: {state_name} (SPY below 50MA)"}
+    else:
+        # Legacy fallback: binary regime gate
+        regime_gate_config = yaml_config.get('ai_trader.market_regime_gate', {})
+        if regime_gate_config.get('enabled', True):
+            from data_fetcher import get_cached_market_direction
+            mkt = get_cached_market_direction()
+            spy_info = mkt.get('spy', {}) if mkt else {}
+            spy_px = spy_info.get('price', 0)
+            spy_50 = spy_info.get('ma_50', 0)
+            if spy_px and spy_50 and spy_px < spy_50:
+                logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
+                return {"buys": [], "reason": f"Market regime gate: SPY below 50MA"}
 
     # Build set of tickers to exclude (already own or own a duplicate)
     excluded_tickers = set(current_tickers) | cooldown_tickers
@@ -2304,8 +2337,15 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if momentum_penalty < 0:
             composite_score *= (1 + momentum_penalty)  # Reduce by 15%
 
-        # FTD penalty: no confirmed uptrend → mild score reduction (advisory, not blocking)
-        if ftd_penalty_active:
+        # Market state penalty: non-TRENDING states get a mild score reduction
+        # Matches backtester logic for sync
+        if market_state_mgr and market_state_mgr.state in (
+                MarketState.RECOVERY, MarketState.CONFIRMED):
+            composite_score -= 5
+        elif market_state_mgr and market_state_mgr.state == MarketState.PRESSURE:
+            composite_score -= 8
+        elif ftd_penalty_active:
+            # Legacy fallback if market state not enabled
             composite_score -= 8
 
         # Heat penalty: too much risk exposure → mild score reduction
@@ -2359,6 +2399,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Half-size positions when portfolio heat is elevated
         if heat_penalty_active:
             position_pct *= 0.50
+
+        # Market state position sizing: smaller positions during recovery/pressure
+        if market_state_mgr:
+            position_pct *= market_state_mgr.position_size_multiplier
 
         # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
         # These are the ideal entries - before the crowd notices

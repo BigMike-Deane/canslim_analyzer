@@ -22,6 +22,7 @@ from backend.database import (
     BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, Stock
 )
 from backend.historical_data import HistoricalDataProvider, HistoricalStockData
+from backend.market_state import MarketStateManager, MarketState
 from canslim_scorer import calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
@@ -113,10 +114,10 @@ class BacktestEngine:
         # Pyramid cooldown tracking: ticker -> last pyramid date (1-day min between pyramids)
         self.last_pyramid_date: Dict[str, date] = {}
 
-        # Market timing state (O'Neil A/D + FTD)
-        self.market_timing_state: str = "CONFIRMED_UPTREND"
-        self.ftd_can_buy: bool = True
-        self.ftd_penalty_active: bool = False
+        # Market state machine (replaces binary regime gate + advisory FTD)
+        market_state_config = config.get('market_state', {})
+        self.market_state = MarketStateManager(market_state_config)
+        self.market_state_enabled = market_state_config.get('enabled', True)
         self.heat_penalty_active: bool = False
 
         # Track consecutive days with no positions (for re-seeding)
@@ -216,6 +217,15 @@ class BacktestEngine:
             if self.spy_start_price > 0:
                 self.spy_shares = self.backtest.starting_cash / self.spy_start_price
 
+            # Initialize market state machine from day-1 conditions
+            if self.market_state_enabled:
+                spy_day1 = self.data_provider.get_spy_daily_data(trading_days[0])
+                self.market_state.initialize_state(
+                    spy_close=spy_day1["close"],
+                    spy_ma50=spy_day1["ma50"],
+                    spy_ema21=spy_day1["ema21"],
+                )
+
             # Seed initial positions on day 1 based on historical CANSLIM scores
             self.is_seed_day = True
             self._seed_initial_positions(trading_days[0])
@@ -258,6 +268,14 @@ class BacktestEngine:
             logger.info(f"Backtest {self.backtest.id} completed: "
                         f"{self.backtest.total_return_pct:.1f}% return, "
                         f"{self.backtest.total_trades} trades")
+
+            # Log market state summary
+            if self.market_state_enabled and self.market_state.state_history:
+                changes = self.market_state.state_history
+                logger.info(f"Market state changes: {len(changes)} transitions")
+                for c in changes:
+                    logger.info(f"  {c['date']}: {c['from']} -> {c['to']} "
+                               f"(SPY ${c['spy']:.2f}, dist={c['dist_count']})")
 
             return self.backtest
 
@@ -683,14 +701,21 @@ class BacktestEngine:
         # Update position prices and peak tracking
         self._update_positions(current_date)
 
-        # ===== MARKET TIMING: A/D Days + FTD =====
-        market_timing_config = config.get('market_timing', {})
-        if market_timing_config.get('follow_through_day', {}).get('enabled', True):
-            ftd_status = self.data_provider.get_follow_through_day_status(current_date)
-            self.market_timing_state = ftd_status["state"]
-            self.ftd_can_buy = ftd_status["can_buy"]
-        else:
-            self.ftd_can_buy = True
+        # ===== MARKET STATE MACHINE =====
+        # Replaces binary regime gate + advisory FTD with graduated exposure system.
+        # In bull markets (SPY > 50MA), state stays TRENDING at 100% — identical to before.
+        if self.market_state_enabled:
+            spy_daily = self.data_provider.get_spy_daily_data(current_date)
+            market_state_result = self.market_state.update(
+                current_date=current_date,
+                spy_close=spy_daily["close"],
+                spy_prev_close=spy_daily["prev_close"],
+                spy_volume=spy_daily["volume"],
+                spy_prev_volume=spy_daily["prev_volume"],
+                spy_ma50=spy_daily["ma50"],
+                spy_ema21=spy_daily["ema21"],
+                spy_ma200=spy_daily["ma200"],
+            )
 
         # ===== DRAWDOWN CIRCUIT BREAKER =====
         portfolio_value = self._get_portfolio_value(current_date)
@@ -770,9 +795,6 @@ class BacktestEngine:
                 self.heat_penalty_active = True
                 logger.debug(f"Portfolio heat {portfolio_heat:.1f}% > {max_heat}% - applying score penalty + half-size buys")
 
-        # FTD: advisory penalty, not hard block
-        self.ftd_penalty_active = not self.ftd_can_buy
-
         profile_max_positions = self.profile.get('max_positions', self.backtest.max_positions)
         can_buy = (not self.drawdown_halt and
                    self.cash / portfolio_value >= min_cash_pct and
@@ -785,26 +807,53 @@ class BacktestEngine:
         else:
             self.idle_days = 0
 
-        # Re-seed if portfolio has been 100% cash for 10+ trading days
-        # This handles the case where all seeds were sold and the buy filters
-        # are too strict for the available historical data
-        if can_buy and not self.positions and self.idle_days >= 10:
-            logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, re-seeding on {current_date}")
-            self.is_seed_day = True
-            self._seed_initial_positions(current_date)
-            self._take_snapshot(current_date)
-            return
+        # ===== MARKET STATE-AWARE RE-SEEDING =====
+        # When market transitions to RECOVERY after a correction and we have no positions,
+        # seed with higher-quality stocks instead of sitting in cash forever.
+        if self.market_state_enabled:
+            ms = self.market_state
+            # Recovery seed: FTD just fired, we have no positions → seed cautiously
+            if (market_state_result.get("changed") and ms.state == MarketState.RECOVERY
+                    and not self.positions):
+                logger.info(f"Backtest {self.backtest.id}: RECOVERY SEED triggered on {current_date} "
+                           f"(FTD detected, portfolio at 0 positions)")
+                self.is_seed_day = True
+                self._seed_initial_positions(current_date, recovery_mode=True)
+                self._take_snapshot(current_date)
+                return
 
-        # MARKET REGIME GATE: Don't buy when SPY is below 50MA (bearish regime)
-        # This prevents the whack-a-mole pattern of buying into corrections
-        regime_gate_config = config.get('ai_trader.market_regime_gate', {})
-        if regime_gate_config.get('enabled', True) and can_buy:
-            spy_data = market_for_cash.get('spy', {}) if market_for_cash else {}
-            spy_price = spy_data.get('price', 0)
-            spy_ma50 = spy_data.get('ma_50', 0)
-            if spy_price and spy_ma50 and spy_price < spy_ma50:
-                logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys on {current_date}")
+            # Fallback idle re-seed: respects market state (must be RECOVERY+ to seed)
+            if (can_buy and not self.positions and self.idle_days >= 10
+                    and ms.can_seed):
+                logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, "
+                           f"re-seeding in {ms.state.value} state on {current_date}")
+                self.is_seed_day = True
+                recovery_mode = ms.state in (MarketState.RECOVERY, MarketState.CONFIRMED)
+                self._seed_initial_positions(current_date, recovery_mode=recovery_mode)
+                self._take_snapshot(current_date)
+                return
+
+            # Market state replaces binary regime gate
+            if not ms.can_buy:
                 can_buy = False
+        else:
+            # Legacy fallback: binary regime gate (for backward compat if market_state disabled)
+            regime_gate_config = config.get('ai_trader.market_regime_gate', {})
+            if regime_gate_config.get('enabled', True) and can_buy:
+                spy_data = market_for_cash.get('spy', {}) if market_for_cash else {}
+                spy_price = spy_data.get('price', 0)
+                spy_ma50 = spy_data.get('ma_50', 0)
+                if spy_price and spy_ma50 and spy_price < spy_ma50:
+                    logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys")
+                    can_buy = False
+
+            # Legacy idle re-seed
+            if can_buy and not self.positions and self.idle_days >= 10:
+                logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, re-seeding on {current_date}")
+                self.is_seed_day = True
+                self._seed_initial_positions(current_date)
+                self._take_snapshot(current_date)
+                return
 
         if can_buy:
             # Score full universe when we can buy
@@ -816,13 +865,29 @@ class BacktestEngine:
             for trade in pyramids[:3]:
                 self._execute_pyramid(current_date, trade)
 
-            # Evaluate and execute buys
+            # Evaluate and execute buys (with market state exposure cap)
             buys = self._evaluate_buys(current_date, all_scores)
             for trade in buys:
                 if self.cash < 100:
                     break
                 if len(self.positions) >= profile_max_positions:
                     break
+                # Enforce market state exposure cap
+                if self.market_state_enabled:
+                    max_exposure = self.market_state.max_exposure_pct
+                    current_invested = sum(
+                        pos.shares * (self.data_provider.get_price_on_date(t, current_date) or pos.cost_basis)
+                        for t, pos in self.positions.items()
+                    )
+                    pv = self._get_portfolio_value(current_date)
+                    available_invest = (max_exposure * pv) - current_invested
+                    if available_invest < 100:
+                        logger.debug(f"Exposure cap: {max_exposure:.0%} reached, skipping remaining buys")
+                        break
+                    # Scale down trade if it would exceed exposure cap
+                    trade_value = trade.shares * trade.price
+                    if trade_value > available_invest:
+                        trade.shares = available_invest / trade.price
                 self._execute_buy(current_date, trade)
         else:
             # Only evaluate pyramids for held positions
@@ -833,27 +898,29 @@ class BacktestEngine:
         # Take daily snapshot
         self._take_snapshot(current_date)
 
-    def _seed_initial_positions(self, first_day: date):
+    def _seed_initial_positions(self, first_day: date, recovery_mode: bool = False):
         """
-        Seed the portfolio with top CANSLIM stocks on day 1.
+        Seed the portfolio with top CANSLIM stocks.
 
-        Instead of waiting months for breakout/pre-breakout setups, establish
-        initial positions based on the best-scoring stocks at backtest start.
+        In normal mode (day 1): Uses low score floor (35) since C/A scores are
+        typically 0 on backtest day 1 due to earnings data filtering.
 
-        NOTE: On day 1 of a 1-year backtest, _filter_available_earnings skips
-        ~4 quarters of earnings data. With only 8 quarters in the DB, the C score
-        YoY comparison (needs index 4) fails for ALL stocks, giving C=0 universally.
-        A score similarly gets 0. So we skip C/A quality filters for seeding and
-        rank by N+S+L+I+M (technical/institutional quality).
+        In recovery mode (post-FTD): Uses higher score floor (55) and fewer
+        positions (2 instead of 3) for cautious re-entry after a correction.
+        This prevents the old problem of seeding garbage-quality stocks (score 43-50)
+        into a falling market.
         """
         scores = self._calculate_scores(first_day)
         if not scores:
             return
 
-        # Low floor since C and A scores are typically 0 on backtest day 1
-        # (earnings data gets filtered out for historical dates).
-        # N+S+L+I+M max = 70, good stocks score 30-50 in this range.
-        seed_min_score = 35
+        # Recovery mode uses higher quality floor to prevent crash-period garbage seeding
+        recovery_config = config.get('market_state.recovery_seed', {})
+        if recovery_mode:
+            seed_min_score = recovery_config.get('min_score', 55)
+        else:
+            # Low floor since C and A scores are typically 0 on backtest day 1
+            seed_min_score = 35
 
         # Skip C/A quality filters — earnings data is unavailable for day 1 scoring.
         # Instead rely on L score (relative strength) as the primary quality signal.
@@ -865,7 +932,8 @@ class BacktestEngine:
 
             # Require decent relative strength (the one reliable signal on day 1)
             l_score = data.get('l_score', 0)
-            if l_score < 8:
+            min_l = 10 if recovery_mode else 8  # Higher bar during recovery
+            if l_score < min_l:
                 continue
 
             price = self.data_provider.get_price_on_date(ticker, first_day)
@@ -875,21 +943,30 @@ class BacktestEngine:
             candidates.append((ticker, data, price, total_score))
 
         if not candidates:
-            logger.info(f"Backtest {self.backtest.id}: No stocks qualify for initial seeding on {first_day}")
+            mode_str = "recovery" if recovery_mode else "initial"
+            logger.info(f"Backtest {self.backtest.id}: No stocks qualify for {mode_str} seeding on {first_day}")
             return
 
-        # Sort by total score descending, take top N based on strategy profile
-        # O'Neil/Minervini: start with half-size pilot positions, let winners prove themselves
+        # Sort by total score descending, take top N
         candidates.sort(key=lambda x: x[3], reverse=True)
-        max_seed_positions = self.profile.get('seed_count', 5)
-        seed_pct_per_position = self.profile.get('seed_pct', 10.0)
+        if recovery_mode:
+            max_seed_positions = recovery_config.get('max_positions', 2)
+            seed_pct_per_position = recovery_config.get('seed_pct', 10.0)
+        else:
+            max_seed_positions = self.profile.get('seed_count', 5)
+            seed_pct_per_position = self.profile.get('seed_pct', 10.0)
         seeds = candidates[:max_seed_positions]
 
-        logger.info(f"Backtest {self.backtest.id}: Seeding {len(seeds)} initial positions on {first_day}: "
+        mode_str = "RECOVERY" if recovery_mode else "INITIAL"
+        logger.info(f"Backtest {self.backtest.id}: {mode_str} seeding {len(seeds)} positions on {first_day}: "
                     f"{[s[0] for s in seeds]}")
 
         # E: Cap total seed investment at max_seed_investment_pct of portfolio
-        max_seed_invest_pct = self.profile.get('max_seed_investment_pct', 60)
+        # Recovery mode uses its own cap (typically 30%) to avoid over-committing
+        if recovery_mode:
+            max_seed_invest_pct = recovery_config.get('max_exposure_pct', 30)
+        else:
+            max_seed_invest_pct = self.profile.get('max_seed_investment_pct', 60)
         max_seed_cash = self.cash * (max_seed_invest_pct / 100)
         seed_cash_spent = 0
 
@@ -908,7 +985,8 @@ class BacktestEngine:
             base_type = data.get("base_pattern", {}).get("type", "none") if has_base else "none"
             pct_from_high = data.get("pct_from_high", 0)
 
-            reason = f"🏁 INITIAL SEED | Score {total_score:.0f} | {pct_from_high:.1f}% from high"
+            seed_label = "RECOVERY SEED" if recovery_mode else "INITIAL SEED"
+            reason = f"🏁 {seed_label} | Score {total_score:.0f} | {pct_from_high:.1f}% from high"
             if has_base:
                 reason += f" | Base: {base_type}"
 
@@ -1975,9 +2053,13 @@ class BacktestEngine:
             if momentum_penalty < 0:
                 composite_score *= (1 + momentum_penalty)  # Reduce by 15%
 
-            # FTD penalty: no confirmed uptrend → mild score reduction (advisory, not blocking)
-            if self.ftd_penalty_active:
-                composite_score -= 8
+            # Market state penalty: non-TRENDING states get a mild score reduction
+            # This makes the system prefer buying in confirmed uptrends
+            if self.market_state_enabled and self.market_state.state in (
+                    MarketState.RECOVERY, MarketState.CONFIRMED):
+                composite_score -= 5  # Mild penalty, not blocking
+            elif self.market_state_enabled and self.market_state.state == MarketState.PRESSURE:
+                composite_score -= 8  # Moderate penalty
 
             # Heat penalty: too much risk exposure → mild score reduction
             if self.heat_penalty_active:
@@ -2025,6 +2107,10 @@ class BacktestEngine:
             # Half-size positions when portfolio heat is elevated
             if self.heat_penalty_active:
                 position_pct *= 0.50
+
+            # Market state position sizing: smaller positions during recovery/pressure
+            if self.market_state_enabled:
+                position_pct *= self.market_state.position_size_multiplier
 
             # PREDICTIVE POSITION SIZING: Pre-breakout stocks get largest positions
             # These are the ideal entries - before the crowd notices
@@ -2134,7 +2220,7 @@ class BacktestEngine:
             signal_factors = {
                 "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
                 "market_regime": "bullish" if weighted_signal >= bullish_threshold else ("bearish" if weighted_signal <= bearish_threshold else "neutral"),
-                "market_timing_state": self.market_timing_state,
+                "market_timing_state": self.market_state.state.value if self.market_state_enabled else "trending",
                 "rs_line_bonus": rs_line_bonus,
                 "earnings_drift_bonus": earnings_drift_bonus,
                 "estimate_revision_bonus": estimate_revision_bonus,

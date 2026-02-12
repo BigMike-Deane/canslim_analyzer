@@ -423,6 +423,9 @@ class HistoricalDataProvider:
             ma_50 = float(history["close"].tail(50).mean())
             ma_200 = float(history["close"].tail(200).mean()) if len(history) >= 200 else ma_50
 
+            # 21-day EMA for market state machine
+            ema_21 = float(history["close"].ewm(span=21, adjust=False).mean().iloc[-1]) if len(history) >= 21 else ma_50
+
             # Calculate signal: -1 (bearish), 0 (neutral), 1 (bullish), 2 (strong bullish)
             signal = self._calculate_index_signal(price, ma_50, ma_200)
 
@@ -430,6 +433,7 @@ class HistoricalDataProvider:
                 "price": price,
                 "ma_50": ma_50,
                 "ma_200": ma_200,
+                "ema_21": ema_21,
                 "signal": signal
             }
 
@@ -640,6 +644,40 @@ class HistoricalDataProvider:
             return float(prior.iloc[-1]["close"])
 
         return 0.0
+
+    def get_spy_daily_data(self, as_of_date: date) -> dict:
+        """
+        Get comprehensive SPY data for market state machine.
+
+        Returns dict with: close, prev_close, volume, prev_volume, ma50, ema21, ma200
+        """
+        df = self._index_cache.get("SPY")
+        if df is None:
+            return {"close": 0, "prev_close": 0, "volume": 0, "prev_volume": 0,
+                    "ma50": 0, "ema21": 0, "ma200": 0}
+
+        history = df[df["date"] <= as_of_date].tail(252)
+        if len(history) < 2:
+            return {"close": 0, "prev_close": 0, "volume": 0, "prev_volume": 0,
+                    "ma50": 0, "ema21": 0, "ma200": 0}
+
+        close = float(history.iloc[-1]["close"])
+        prev_close = float(history.iloc[-2]["close"])
+        volume = float(history.iloc[-1]["volume"])
+        prev_volume = float(history.iloc[-2]["volume"])
+        ma50 = float(history["close"].tail(50).mean()) if len(history) >= 50 else close
+        ma200 = float(history["close"].tail(200).mean()) if len(history) >= 200 else ma50
+        ema21 = float(history["close"].ewm(span=21, adjust=False).mean().iloc[-1]) if len(history) >= 21 else ma50
+
+        return {
+            "close": close,
+            "prev_close": prev_close,
+            "volume": volume,
+            "prev_volume": prev_volume,
+            "ma50": ma50,
+            "ema21": ema21,
+            "ma200": ma200,
+        }
 
     def get_volume_ratio(self, ticker: str, as_of_date: date) -> float:
         """

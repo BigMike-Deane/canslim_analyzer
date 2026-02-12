@@ -1350,6 +1350,12 @@ class TestConcentratedPortfolio:
         engine.data_provider.get_follow_through_day_status.return_value = {
             "state": "CONFIRMED_UPTREND", "can_buy": True
         }
+        # Market state machine needs SPY daily data for _simulate_day
+        engine.data_provider.get_spy_daily_data.return_value = {
+            "close": 400, "prev_close": 402,
+            "volume": 1_000_000, "prev_volume": 950_000,
+            "ma50": 450, "ema21": 410, "ma200": 440,
+        }
 
         engine.static_data = {"TEST": {"sector": "Technology", "institutional_holders_pct": 0.45}}
 
@@ -1485,6 +1491,14 @@ class TestDrawdownCircuitBreaker:
         engine.data_provider.get_vix_proxy.return_value = 18.0
         engine.data_provider.get_follow_through_day_status.return_value = {
             "state": "CONFIRMED_UPTREND", "can_buy": True
+        }
+        # Market state machine needs SPY daily data for _simulate_day calls
+        spy_close = 500 if signal > 0 else 400
+        spy_ma50 = 490 if signal > 0 else 450
+        engine.data_provider.get_spy_daily_data.return_value = {
+            "close": spy_close, "prev_close": spy_close - 2,
+            "volume": 1_000_000, "prev_volume": 950_000,
+            "ma50": spy_ma50, "ema21": spy_close - 5, "ma200": spy_ma50 - 10,
         }
         engine.data_provider.get_available_tickers.return_value = []
         engine.data_provider.get_52_week_high_low.return_value = (price * 1.1, price * 0.7)
