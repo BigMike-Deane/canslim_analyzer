@@ -809,8 +809,8 @@ class BacktestEngine:
             self.idle_days = 0
 
         # Track under-invested days (few positions, lots of cash) for supplemental seeding
-        half_max_pos = profile_max_positions // 2
-        if len(self.positions) < half_max_pos and len(self.positions) > 0:
+        # Only count as under-invested when truly depleted (0-2 positions, not 3 of 8)
+        if len(self.positions) <= 2 and len(self.positions) > 0:
             pv = self._get_portfolio_value(current_date)
             cash_pct = self.cash / pv if pv > 0 else 0
             if cash_pct > 0.50:
@@ -825,11 +825,11 @@ class BacktestEngine:
         # seed with higher-quality stocks instead of sitting in cash forever.
         if self.market_state_enabled:
             ms = self.market_state
-            half_max = profile_max_positions // 2
 
-            # Recovery seed: FTD just fired, we have few/no positions → seed
+            # Recovery seed: FTD just fired, we have 0-1 positions → seed
+            # Only when truly depleted — 3 positions is normal portfolio churn, not depletion
             if (market_state_result.get("changed") and ms.state == MarketState.RECOVERY
-                    and len(self.positions) < half_max):
+                    and len(self.positions) <= 1):
                 logger.info(f"Backtest {self.backtest.id}: RECOVERY SEED triggered on {current_date} "
                            f"(FTD detected, {len(self.positions)} positions)")
                 self.is_seed_day = True
@@ -842,7 +842,7 @@ class BacktestEngine:
             # This catches that case and seeds with normal parameters.
             if (market_state_result.get("changed") and ms.state == MarketState.TRENDING
                     and ms.last_transition_was_fast_track
-                    and len(self.positions) < half_max):
+                    and len(self.positions) <= 1):
                 logger.info(f"Backtest {self.backtest.id}: FAST-TRACK SEED on {current_date} "
                            f"({len(self.positions)} positions, seeding to recover)")
                 self.is_seed_day = True
@@ -861,9 +861,10 @@ class BacktestEngine:
                 self._take_snapshot(current_date)
                 return
 
-            # Under-invested re-seed: in TRENDING/CONFIRMED with < half max_positions
-            # and > 50% cash for 5+ days → the "zombie" state. Seed back to normal.
-            if (self.underinvested_days >= 5
+            # Under-invested re-seed: in TRENDING/CONFIRMED with 0-2 positions
+            # and > 50% cash for 15+ days → the "zombie" state. Seed back to normal.
+            # 15 days gives positions time to develop and market time to stabilize.
+            if (self.underinvested_days >= 15
                     and ms.state in (MarketState.TRENDING, MarketState.CONFIRMED)
                     and ms.can_buy):
                 logger.info(f"Backtest {self.backtest.id}: UNDER-INVESTED SEED on {current_date} "
