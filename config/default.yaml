@@ -739,8 +739,8 @@ strategy_profiles:
     label: "Lab (Optimization)"
     description: "Experimental profile for automated parameter tuning"
     min_score: 72
-    max_positions: 6                          # Iter 13: more concentrated (was 8)
-    max_single_position_pct: 25
+    max_positions: 8
+    max_single_position_pct: 30              # Iter 14: let winners grow bigger (was 25)
     max_sector_pct: 50
     stop_loss_pct: 7.0                     # Iter 1: tighter stop (was 8.0)
     bearish_stop_loss_pct: 6.0             # Iter 1: tighter bearish stop (was 7.0)
