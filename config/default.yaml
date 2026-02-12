@@ -739,7 +739,7 @@ strategy_profiles:
     label: "Lab (Optimization)"
     description: "Experimental profile for automated parameter tuning"
     min_score: 72
-    max_positions: 8
+    max_positions: 6                          # Iter 13: more concentrated (was 8)
     max_single_position_pct: 25
     max_sector_pct: 50
     stop_loss_pct: 7.0                     # Iter 1: tighter stop (was 8.0)
@@ -751,7 +751,7 @@ strategy_profiles:
       gain_20_to_30: 10
       gain_10_to_20: 8
     seed_count: 3                          # Iter 10: optimal seed count
-    seed_pct: 12                               # Iter 12: bigger seeds for top 3 (was 10)
+    seed_pct: 10
     half_size_initial: true
     max_seed_investment_pct: 50            # Iter 1: lower seed cap (was 60)
     quality_filters:
