@@ -122,6 +122,7 @@ class BacktestEngine:
 
         # Track consecutive days with no positions (for re-seeding)
         self.idle_days: int = 0
+        self.underinvested_days: int = 0  # Track days with < half max_positions and > 50% cash
         self.is_seed_day: bool = False  # G: Track seed day to skip conviction sizing
 
         # Strategy profile (balanced or growth)
@@ -807,18 +808,45 @@ class BacktestEngine:
         else:
             self.idle_days = 0
 
+        # Track under-invested days (few positions, lots of cash) for supplemental seeding
+        half_max_pos = profile_max_positions // 2
+        if len(self.positions) < half_max_pos and len(self.positions) > 0:
+            pv = self._get_portfolio_value(current_date)
+            cash_pct = self.cash / pv if pv > 0 else 0
+            if cash_pct > 0.50:
+                self.underinvested_days += 1
+            else:
+                self.underinvested_days = 0
+        else:
+            self.underinvested_days = 0
+
         # ===== MARKET STATE-AWARE RE-SEEDING =====
         # When market transitions to RECOVERY after a correction and we have no positions,
         # seed with higher-quality stocks instead of sitting in cash forever.
         if self.market_state_enabled:
             ms = self.market_state
-            # Recovery seed: FTD just fired, we have no positions → seed cautiously
+            half_max = profile_max_positions // 2
+
+            # Recovery seed: FTD just fired, we have few/no positions → seed
             if (market_state_result.get("changed") and ms.state == MarketState.RECOVERY
-                    and not self.positions):
+                    and len(self.positions) < half_max):
                 logger.info(f"Backtest {self.backtest.id}: RECOVERY SEED triggered on {current_date} "
-                           f"(FTD detected, portfolio at 0 positions)")
+                           f"(FTD detected, {len(self.positions)} positions)")
                 self.is_seed_day = True
                 self._seed_initial_positions(current_date, recovery_mode=True)
+                self._take_snapshot(current_date)
+                return
+
+            # Fast-track seed: CORRECTION → TRENDING via fast-track with depleted portfolio.
+            # When fast-track skips RECOVERY entirely, recovery seed never fires.
+            # This catches that case and seeds with normal parameters.
+            if (market_state_result.get("changed") and ms.state == MarketState.TRENDING
+                    and ms.last_transition_was_fast_track
+                    and len(self.positions) < half_max):
+                logger.info(f"Backtest {self.backtest.id}: FAST-TRACK SEED on {current_date} "
+                           f"({len(self.positions)} positions, seeding to recover)")
+                self.is_seed_day = True
+                self._seed_initial_positions(current_date, recovery_mode=False)
                 self._take_snapshot(current_date)
                 return
 
@@ -830,6 +858,19 @@ class BacktestEngine:
                 self.is_seed_day = True
                 recovery_mode = ms.state in (MarketState.RECOVERY, MarketState.CONFIRMED)
                 self._seed_initial_positions(current_date, recovery_mode=recovery_mode)
+                self._take_snapshot(current_date)
+                return
+
+            # Under-invested re-seed: in TRENDING/CONFIRMED with < half max_positions
+            # and > 50% cash for 5+ days → the "zombie" state. Seed back to normal.
+            if (self.underinvested_days >= 5
+                    and ms.state in (MarketState.TRENDING, MarketState.CONFIRMED)
+                    and ms.can_buy):
+                logger.info(f"Backtest {self.backtest.id}: UNDER-INVESTED SEED on {current_date} "
+                           f"({len(self.positions)} positions, {self.underinvested_days} days under-invested)")
+                self.is_seed_day = True
+                self._seed_initial_positions(current_date, recovery_mode=False)
+                self.underinvested_days = 0
                 self._take_snapshot(current_date)
                 return
 
@@ -932,7 +973,7 @@ class BacktestEngine:
 
             # Require decent relative strength (the one reliable signal on day 1)
             l_score = data.get('l_score', 0)
-            min_l = 10 if recovery_mode else 8  # Higher bar during recovery
+            min_l = recovery_config.get('min_l_score', 6) if recovery_mode else 8
             if l_score < min_l:
                 continue
 

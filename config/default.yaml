@@ -412,14 +412,17 @@ market_state:
     recovery_confirm_days: 3        # Days above 21EMA: RECOVERY → CONFIRMED
     trending_confirm_days: 5        # Days above 21EMA: CONFIRMED → TRENDING
     trending_max_dist_days: 3       # Max dist days to re-enter TRENDING
+    min_correction_days: 3          # Min days in CORRECTION before allowing fast-track exit
+    min_confirmed_days: 3           # Min days in CONFIRMED before allowing back to CORRECTION
 
-  # Recovery seeding (when portfolio is at 0 positions after FTD)
+  # Recovery seeding (when portfolio is depleted after a correction)
   recovery_seed:
     enabled: true
-    min_score: 55       # Higher quality floor than normal seeds (35)
-    max_positions: 2    # Fewer positions than normal seeds (3)
-    max_exposure_pct: 30  # Cap at 30% of portfolio
-    seed_pct: 10        # Per-position size %
+    min_score: 45       # Lower than normal (72) — crash depresses all scores
+    max_positions: 3    # Match normal seed count for diversification
+    max_exposure_pct: 50  # Match normal max_seed_investment_pct
+    seed_pct: 12        # Slightly larger per-position (vs normal 10%)
+    min_l_score: 6      # Lower than normal (8) — RS meaningless after crash
 
 # Coiled Spring / Earnings Catalyst Detection
 # Identifies stocks with explosive earnings potential based on:

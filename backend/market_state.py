@@ -74,15 +74,18 @@ DEFAULT_CONFIG = {
         "recovery_confirm_days": 3,         # Days above 21EMA to advance RECOVERY → CONFIRMED
         "trending_confirm_days": 5,         # Days above 21EMA to advance CONFIRMED → TRENDING
         "trending_max_dist_days": 3,        # Max distribution days to re-enter TRENDING
+        "min_correction_days": 3,           # Minimum days in CORRECTION before allowing fast-track exit
+        "min_confirmed_days": 3,            # Minimum days in CONFIRMED before allowing back to CORRECTION
     },
 
-    # Recovery seeding (when portfolio is at 0 positions during RECOVERY)
+    # Recovery seeding (when portfolio is depleted after a correction)
     "recovery_seed": {
         "enabled": True,
-        "min_score": 55,               # Higher quality floor than normal seeds (35)
-        "max_positions": 2,            # Fewer positions than normal seeds (3)
-        "max_exposure_pct": 30,        # Cap at 30% of portfolio
-        "seed_pct": 10,                # Per-position size
+        "min_score": 45,               # Lower than normal (72) since crash depresses all scores
+        "max_positions": 3,            # Match normal seed count for adequate diversification
+        "max_exposure_pct": 50,        # Match normal max_seed_investment_pct
+        "seed_pct": 12,                # Slightly larger per-position (vs normal 10%)
+        "min_l_score": 6,              # Lower than normal (8) since RS is meaningless after crash
     },
 }
 
@@ -118,6 +121,10 @@ class MarketStateManager:
 
         # Recovery confirmation counter
         self.recovery_confirmations: int = 0
+
+        # State entry date tracking (for minimum stay enforcement)
+        self.state_entry_date: Optional[date] = None
+        self.state_days_count: int = 0
 
         # State change history for debugging/analysis
         self.state_history: List[dict] = []
@@ -184,6 +191,9 @@ class MarketStateManager:
         """
         old_state = self.state
 
+        # --- Track days in current state ---
+        self.state_days_count += 1
+
         # --- Update distribution days ---
         self._update_distribution_days(current_date, spy_close, spy_prev_close,
                                        spy_volume, spy_prev_volume)
@@ -224,6 +234,8 @@ class MarketStateManager:
         # Log state changes
         changed = self.state != old_state
         if changed:
+            self.state_entry_date = current_date
+            self.state_days_count = 0
             change_record = {
                 "date": current_date,
                 "from": old_state.value,
@@ -333,18 +345,22 @@ class MarketStateManager:
                                 spy_ema21: float) -> None:
         """CORRECTION -> RECOVERY (via FTD) or fast-track to TRENDING."""
         ftd_config = self.config.get("ftd", {})
+        transitions = self.config.get("transitions", {})
         min_gain = ftd_config.get("min_gain_pct", 1.7)
         earliest_day = ftd_config.get("earliest_day", 4)
         latest_day = ftd_config.get("latest_day", 25)
+        min_correction_days = transitions.get("min_correction_days", 3)
 
         # FAST-TRACK: If SPY recovers above 50MA AND 21EMA, skip directly to TRENDING.
-        # This handles brief 1-3 day dips that recover quickly — no need for full FTD cycle.
-        if spy_ma50 > 0 and spy_close > spy_ma50 and spy_ema21 > 0 and spy_close > spy_ema21:
+        # But only after min_correction_days to prevent jittery bouncing on mild pullbacks.
+        if (spy_ma50 > 0 and spy_close > spy_ma50
+                and spy_ema21 > 0 and spy_close > spy_ema21
+                and self.state_days_count >= min_correction_days):
             self.state = MarketState.TRENDING
             self.rally_attempt_day = 0
             self.recovery_confirmations = 0
-            logger.info(f"FAST-TRACK: SPY back above 50MA+21EMA on {current_date}, "
-                       f"skipping to TRENDING")
+            logger.info(f"FAST-TRACK: SPY back above 50MA+21EMA on {current_date} "
+                       f"(after {self.state_days_count} days in correction), skipping to TRENDING")
             return
 
         # Track rally attempt
@@ -413,6 +429,7 @@ class MarketStateManager:
         trending_max_dist = transitions.get("trending_max_dist_days", 3)
         deep_drop_pct = transitions.get("trending_deep_drop_pct", 3.0)
         pressure_threshold = self.config.get("distribution", {}).get("pressure_threshold", 5)
+        min_confirmed_days = transitions.get("min_confirmed_days", 3)
 
         # To TRENDING when fully recovered
         if (spy_ma50 > 0 and spy_close > spy_ma50
@@ -421,8 +438,10 @@ class MarketStateManager:
             self.state = MarketState.TRENDING
             return
 
-        # Back to CORRECTION if market breaks down again
-        if spy_ma50 > 0 and spy_close < spy_ma50 * (1 - deep_drop_pct / 100):
+        # Back to CORRECTION if market breaks down again — but only after min_confirmed_days
+        # to prevent the immediate CONFIRMED→CORRECTION reversal seen in COVID (Apr 8→Apr 9)
+        if (spy_ma50 > 0 and spy_close < spy_ma50 * (1 - deep_drop_pct / 100)
+                and self.state_days_count >= min_confirmed_days):
             self.state = MarketState.CORRECTION
             self._start_rally_tracking(spy_close, current_date)
             return
@@ -438,6 +457,14 @@ class MarketStateManager:
         self.rally_attempt_day = 0
         self.rally_attempt_low = spy_close
         self.rally_attempt_start_date = current_date
+
+    @property
+    def last_transition_was_fast_track(self) -> bool:
+        """Whether the most recent state change was a fast-track from CORRECTION."""
+        if not self.state_history:
+            return False
+        last = self.state_history[-1]
+        return last["from"] == "correction" and last["to"] == "trending"
 
     def get_state_summary(self) -> dict:
         """Get current state summary for logging/API."""

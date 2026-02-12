@@ -238,8 +238,8 @@ class TestCorrectionAndRecovery:
 class TestFastTrackRecovery:
     """Test fast-track from CORRECTION back to TRENDING for brief dips."""
 
-    def test_brief_dip_fast_tracks_to_trending(self):
-        """If SPY recovers above 50MA + 21EMA quickly, skip FTD cycle."""
+    def test_fast_track_after_min_correction_days(self):
+        """Fast-track to TRENDING only after min_correction_days (default 3)."""
         mgr = MarketStateManager()
 
         # Push to correction
@@ -254,10 +254,64 @@ class TestFastTrackRecovery:
         )
         assert mgr.state == MarketState.CORRECTION
 
-        # Next day: V-shaped recovery above all MAs
+        # Day 2: SPY back above MAs but too soon (< 3 days)
         mgr.update(
             current_date=date(2025, 3, 2),
-            spy_close=485,  # Back above 50MA + 21EMA
+            spy_close=485,
+            spy_prev_close=460,
+            spy_volume=1_500_000,
+            spy_prev_volume=2_000_000,
+            spy_ma50=480,
+            spy_ema21=478,
+        )
+        assert mgr.state == MarketState.CORRECTION  # Still too early
+
+        # Day 3: Still in CORRECTION (need 3 full days)
+        mgr.update(
+            current_date=date(2025, 3, 3),
+            spy_close=486,
+            spy_prev_close=485,
+            spy_volume=1_200_000,
+            spy_prev_volume=1_500_000,
+            spy_ma50=480,
+            spy_ema21=478,
+        )
+        assert mgr.state == MarketState.CORRECTION  # Still need 1 more day
+
+        # Day 4: Now fast-track fires (3 days completed)
+        mgr.update(
+            current_date=date(2025, 3, 4),
+            spy_close=487,
+            spy_prev_close=486,
+            spy_volume=1_100_000,
+            spy_prev_volume=1_200_000,
+            spy_ma50=480,
+            spy_ema21=478,
+        )
+        assert mgr.state == MarketState.TRENDING
+        assert mgr.last_transition_was_fast_track is True
+
+    def test_fast_track_with_zero_min_days(self):
+        """With min_correction_days=0, fast-track is immediate (backward compat)."""
+        config = {"transitions": {"min_correction_days": 0}}
+        mgr = MarketStateManager(config)
+
+        # Push to correction
+        mgr.update(
+            current_date=date(2025, 3, 1),
+            spy_close=460,
+            spy_prev_close=485,
+            spy_volume=2_000_000,
+            spy_prev_volume=1_000_000,
+            spy_ma50=480,
+            spy_ema21=478,
+        )
+        assert mgr.state == MarketState.CORRECTION
+
+        # Next day: immediate fast-track
+        mgr.update(
+            current_date=date(2025, 3, 2),
+            spy_close=485,
             spy_prev_close=460,
             spy_volume=1_500_000,
             spy_prev_volume=2_000_000,
@@ -265,6 +319,97 @@ class TestFastTrackRecovery:
             spy_ema21=478,
         )
         assert mgr.state == MarketState.TRENDING
+
+
+class TestConfirmedStickiness:
+    """Test that CONFIRMED state doesn't immediately revert to CORRECTION."""
+
+    def test_confirmed_stays_sticky_for_min_days(self):
+        """CONFIRMED doesn't go back to CORRECTION within min_confirmed_days."""
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CONFIRMED
+        mgr.state_days_count = 0  # Just entered CONFIRMED
+
+        # Day 1 in CONFIRMED: SPY drops well below 50MA (would normally trigger CORRECTION)
+        mgr.update(
+            current_date=date(2025, 4, 9),
+            spy_close=460,  # 4.2% below 50MA
+            spy_prev_close=470,
+            spy_volume=1_500_000,
+            spy_prev_volume=1_000_000,
+            spy_ma50=480,
+            spy_ema21=470,
+        )
+        assert mgr.state == MarketState.CONFIRMED  # Still sticky
+
+    def test_confirmed_to_correction_after_min_days(self):
+        """CONFIRMED can go to CORRECTION after min_confirmed_days."""
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CONFIRMED
+        mgr.state_days_count = 3  # Been in CONFIRMED for 3 days
+
+        # Now the deep drop triggers CORRECTION
+        mgr.update(
+            current_date=date(2025, 4, 12),
+            spy_close=460,
+            spy_prev_close=470,
+            spy_volume=1_500_000,
+            spy_prev_volume=1_000_000,
+            spy_ma50=480,
+            spy_ema21=470,
+        )
+        assert mgr.state == MarketState.CORRECTION
+
+
+class TestStateDaysCounting:
+    """Test the state_days_count tracking."""
+
+    def test_days_count_increments(self):
+        """state_days_count increments each day in same state."""
+        mgr = MarketStateManager()
+        assert mgr.state_days_count == 0
+
+        for i in range(5):
+            mgr.update(
+                current_date=date(2025, 3, 1) + timedelta(days=i),
+                spy_close=500 + i,
+                spy_prev_close=499 + i,
+                spy_volume=1_000_000,
+                spy_prev_volume=950_000,
+                spy_ma50=490,
+                spy_ema21=498,
+            )
+
+        assert mgr.state_days_count == 5
+
+    def test_days_count_resets_on_state_change(self):
+        """state_days_count resets to 0 when state changes."""
+        mgr = MarketStateManager()
+        # Accumulate some days in TRENDING
+        for i in range(3):
+            mgr.update(
+                current_date=date(2025, 3, 1) + timedelta(days=i),
+                spy_close=500,
+                spy_prev_close=499,
+                spy_volume=1_000_000,
+                spy_prev_volume=950_000,
+                spy_ma50=490,
+                spy_ema21=498,
+            )
+        assert mgr.state_days_count == 3
+
+        # Now push to CORRECTION
+        mgr.update(
+            current_date=date(2025, 3, 4),
+            spy_close=460,
+            spy_prev_close=485,
+            spy_volume=2_000_000,
+            spy_prev_volume=1_000_000,
+            spy_ma50=480,
+            spy_ema21=478,
+        )
+        assert mgr.state == MarketState.CORRECTION
+        assert mgr.state_days_count == 0
 
 
 class TestDistributionDays:
