@@ -677,10 +677,10 @@ strategy_profiles:
       gain_30_to_50: 15                   # Wider (was 12) — give room for consolidation
       gain_20_to_30: 10
       gain_10_to_20: 8
-    seed_count: 5
+    seed_count: 3                            # Ralph Loop optimized: 3 is optimal (tested 2-5)
     seed_pct: 10
     half_size_initial: true
-    max_seed_investment_pct: 60            # E: Max 60% of capital in initial seeds (keep 40% for mid-year)
+    max_seed_investment_pct: 50            # Ralph Loop optimized: 50% is optimal (was 60)
     quality_filters:
       min_c_score: 10
       min_l_score: 8
@@ -737,31 +737,31 @@ strategy_profiles:
   # Only this lab profile should be changed by optimization scripts.
   lab:
     label: "Lab (Optimization)"
-    description: "Experimental profile for automated parameter tuning"
+    description: "Optimized via Ralph Loop: +51.2% return, Sharpe 2.38 (#148)"
     min_score: 72
     max_positions: 8
-    max_single_position_pct: 30              # Iter 14: let winners grow bigger (was 25)
+    max_single_position_pct: 25
     max_sector_pct: 50
-    stop_loss_pct: 7.0                     # Iter 1: tighter stop (was 8.0)
-    bearish_stop_loss_pct: 6.0             # Iter 1: tighter bearish stop (was 7.0)
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
     trailing_stops:
       gain_50_plus: 20
       gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
-    seed_count: 3                          # Iter 10: optimal seed count
-    seed_pct: 10
+    seed_count: 3                          # Optimized: 3 is optimal (tested 2-5)
+    seed_pct: 10                           # Optimized: 10% is optimal (tested 8-12)
     half_size_initial: true
-    max_seed_investment_pct: 50            # Iter 1: lower seed cap (was 60)
+    max_seed_investment_pct: 50            # Optimized: 50% is optimal (was 60)
     quality_filters:
-      min_c_score: 10                      # Reverted from Iter 4 (12 hurt returns)
-      min_l_score: 8                       # Reverted from Iter 4 (10 hurt returns)
+      min_c_score: 10
+      min_l_score: 8
     scoring_weights:
       growth_projection: 0.20
       canslim_score: 0.25
       momentum: 0.25
       breakout: 0.20
       base_quality: 0.10
-    score_crash_drop_required: 25              # Reverted: Iter 5 had zero impact
-    score_crash_ignore_if_profitable: 20       # Reverted: Iter 5 had zero impact
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
