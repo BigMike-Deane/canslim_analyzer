@@ -815,7 +815,7 @@ class BacktestEngine:
         #     catches the "zombie" state where 3 positions + 50% cash sits idle for months
         underinvested_threshold = 2  # default: strict
         if (self.market_state_enabled and self.market_state.state in (MarketState.TRENDING, MarketState.CONFIRMED)
-                and self.market_state.state_days_count >= 10):
+                and self.market_state.state_days_count >= 30):
             half_max = profile_max_positions // 2
             underinvested_threshold = max(half_max - 1, 2)  # e.g. 8//2 - 1 = 3
 
@@ -889,7 +889,7 @@ class BacktestEngine:
             #   - Established TRENDING (10+ days): 10 days (market proven, deploy capital)
             #   - CONFIRMED: 15 days (still validating, be patient)
             # Guard: skip if drawdown is high — circuit breaker would just kill the positions.
-            underinvested_patience = 10 if (ms.state == MarketState.TRENDING and ms.state_days_count >= 10) else 15
+            underinvested_patience = 10 if (ms.state == MarketState.TRENDING and ms.state_days_count >= 30) else 15
             current_dd = 0.0
             if self.peak_portfolio_value > 0:
                 current_dd = ((self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value) * 100
