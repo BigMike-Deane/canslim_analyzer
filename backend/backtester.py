@@ -835,6 +835,19 @@ class BacktestEngine:
         if self.market_state_enabled:
             ms = self.market_state
 
+            # Reset peak after recovery transitions to prevent circuit breaker doom loop.
+            # After a crash, old peak is irrelevant — seeds would get immediately liquidated
+            # because portfolio value (e.g. $18K) is still far below pre-crash peak ($25K).
+            if (market_state_result.get("changed") and
+                    ms.state in (MarketState.RECOVERY, MarketState.CONFIRMED, MarketState.TRENDING)):
+                old_peak = self.peak_portfolio_value
+                new_peak = self._get_portfolio_value(current_date)
+                if new_peak < old_peak * 0.90:  # Only reset if meaningful gap (>10%)
+                    self.peak_portfolio_value = new_peak
+                    self.drawdown_halt = False
+                    logger.info(f"Backtest {self.backtest.id}: PEAK RESET on {current_date} "
+                               f"({ms.state.value}): ${old_peak:.0f} → ${new_peak:.0f}")
+
             # Recovery seed: FTD just fired, we have 0-1 positions → seed
             # Only when truly depleted — 3 positions is normal portfolio churn, not depletion
             if (market_state_result.get("changed") and ms.state == MarketState.RECOVERY
@@ -875,13 +888,18 @@ class BacktestEngine:
             # Patience adapts to market stability:
             #   - Established TRENDING (10+ days): 10 days (market proven, deploy capital)
             #   - CONFIRMED: 15 days (still validating, be patient)
+            # Guard: skip if drawdown is high — circuit breaker would just kill the positions.
             underinvested_patience = 10 if (ms.state == MarketState.TRENDING and ms.state_days_count >= 10) else 15
+            current_dd = 0.0
+            if self.peak_portfolio_value > 0:
+                current_dd = ((self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value) * 100
             if (self.underinvested_days >= underinvested_patience
                     and ms.state in (MarketState.TRENDING, MarketState.CONFIRMED)
-                    and ms.can_buy):
+                    and ms.can_buy
+                    and current_dd < halt_threshold):
                 logger.info(f"Backtest {self.backtest.id}: UNDER-INVESTED SEED on {current_date} "
                            f"({len(self.positions)} positions, {self.underinvested_days} days under-invested, "
-                           f"state={ms.state.value} for {ms.state_days_count} days)")
+                           f"state={ms.state.value} for {ms.state_days_count} days, dd={current_dd:.1f}%)")
                 self.is_seed_day = True
                 self._seed_initial_positions(current_date, recovery_mode=False)
                 self.underinvested_days = 0
