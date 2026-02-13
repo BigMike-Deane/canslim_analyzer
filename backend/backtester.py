@@ -809,8 +809,17 @@ class BacktestEngine:
             self.idle_days = 0
 
         # Track under-invested days (few positions, lots of cash) for supplemental seeding
-        # Only count as under-invested when truly depleted (0-2 positions, not 3 of 8)
-        if len(self.positions) <= 2 and len(self.positions) > 0:
+        # Threshold is market-state-aware:
+        #   - Volatile states (RECOVERY, early CONFIRMED): strict <= 2 prevents stop-out cascade
+        #   - Established trends (TRENDING 10+ days, CONFIRMED 10+ days): relaxed < half_max
+        #     catches the "zombie" state where 3 positions + 50% cash sits idle for months
+        underinvested_threshold = 2  # default: strict
+        if (self.market_state_enabled and self.market_state.state in (MarketState.TRENDING, MarketState.CONFIRMED)
+                and self.market_state.state_days_count >= 10):
+            half_max = profile_max_positions // 2
+            underinvested_threshold = max(half_max - 1, 2)  # e.g. 8//2 - 1 = 3
+
+        if 0 < len(self.positions) <= underinvested_threshold:
             pv = self._get_portfolio_value(current_date)
             cash_pct = self.cash / pv if pv > 0 else 0
             if cash_pct > 0.50:
@@ -861,14 +870,18 @@ class BacktestEngine:
                 self._take_snapshot(current_date)
                 return
 
-            # Under-invested re-seed: in TRENDING/CONFIRMED with 0-2 positions
-            # and > 50% cash for 15+ days → the "zombie" state. Seed back to normal.
-            # 15 days gives positions time to develop and market time to stabilize.
-            if (self.underinvested_days >= 15
+            # Under-invested re-seed: in TRENDING/CONFIRMED with few positions
+            # and > 50% cash for N+ days → the "zombie" state. Seed back to normal.
+            # Patience adapts to market stability:
+            #   - Established TRENDING (10+ days): 10 days (market proven, deploy capital)
+            #   - CONFIRMED: 15 days (still validating, be patient)
+            underinvested_patience = 10 if (ms.state == MarketState.TRENDING and ms.state_days_count >= 10) else 15
+            if (self.underinvested_days >= underinvested_patience
                     and ms.state in (MarketState.TRENDING, MarketState.CONFIRMED)
                     and ms.can_buy):
                 logger.info(f"Backtest {self.backtest.id}: UNDER-INVESTED SEED on {current_date} "
-                           f"({len(self.positions)} positions, {self.underinvested_days} days under-invested)")
+                           f"({len(self.positions)} positions, {self.underinvested_days} days under-invested, "
+                           f"state={ms.state.value} for {ms.state_days_count} days)")
                 self.is_seed_day = True
                 self._seed_initial_positions(current_date, recovery_mode=False)
                 self.underinvested_days = 0
