@@ -124,6 +124,7 @@ class BacktestEngine:
         self.idle_days: int = 0
         self.underinvested_days: int = 0  # Track days with < half max_positions and > 50% cash
         self.is_seed_day: bool = False  # G: Track seed day to skip conviction sizing
+        self.last_correction_end_date: Optional[date] = None  # For post-correction accelerated deployment
 
         # Strategy profile (balanced or growth)
         self.strategy = self.backtest.strategy or "balanced"
@@ -813,9 +814,14 @@ class BacktestEngine:
         #   - Volatile states (RECOVERY, early CONFIRMED): strict <= 2 prevents stop-out cascade
         #   - Established trends (TRENDING 10+ days, CONFIRMED 10+ days): relaxed < half_max
         #     catches the "zombie" state where 3 positions + 50% cash sits idle for months
+        #   - Post-correction window (90 days): immediately relaxed, no 30-day wait
+        in_post_correction_window = (
+            self.last_correction_end_date is not None
+            and (current_date - self.last_correction_end_date).days <= 90
+        )
         underinvested_threshold = 2  # default: strict
         if (self.market_state_enabled and self.market_state.state in (MarketState.TRENDING, MarketState.CONFIRMED)
-                and self.market_state.state_days_count >= 30):
+                and (self.market_state.state_days_count >= 30 or in_post_correction_window)):
             half_max = profile_max_positions // 2
             underinvested_threshold = max(half_max - 1, 2)  # e.g. 8//2 - 1 = 3
 
@@ -848,6 +854,15 @@ class BacktestEngine:
                     logger.info(f"Backtest {self.backtest.id}: PEAK RESET on {current_date} "
                                f"({ms.state.value}): ${old_peak:.0f} → ${new_peak:.0f}")
 
+            # Track correction end dates for post-correction accelerated deployment.
+            # When we exit CORRECTION, record the date so we can relax under-invested
+            # thresholds during the 90-day recovery window.
+            if (market_state_result.get("changed") and ms.state_history
+                    and ms.state_history[-1]["from"] == "correction"):
+                self.last_correction_end_date = current_date
+                logger.info(f"Backtest {self.backtest.id}: CORRECTION ENDED on {current_date}, "
+                           f"accelerated deployment window active for 90 days")
+
             # Recovery seed: FTD just fired, we have 0-1 positions → seed
             # Only when truly depleted — 3 positions is normal portfolio churn, not depletion
             if (market_state_result.get("changed") and ms.state == MarketState.RECOVERY
@@ -872,17 +887,18 @@ class BacktestEngine:
                 self._take_snapshot(current_date)
                 return
 
-            # Confirmation scale-up seed: when market advances from a recovery-related
-            # state to CONFIRMED or TRENDING and we still have few positions (< half max),
+            # Confirmation scale-up seed: when market advances from RECOVERY to
+            # CONFIRMED or TRENDING and we still have few positions (< half max),
             # add more positions to scale up from the initial recovery seed.
             # In bull markets this never fires (no correction → no depletion).
-            # Guard: only from recovery/correction/confirmed transitions, NOT from pressure.
+            # Guard: only from recovery/confirmed transitions. NOT correction fast-tracks,
+            # which fire repeatedly during jitter and cause deploy→stop-out doom loops.
             half_max_scaleup = profile_max_positions // 2
             if (market_state_result.get("changed")
                     and ms.state in (MarketState.CONFIRMED, MarketState.TRENDING)
                     and 0 < len(self.positions) < half_max_scaleup
                     and ms.state_history
-                    and ms.state_history[-1]["from"] in ("recovery", "correction", "confirmed")):
+                    and ms.state_history[-1]["from"] in ("recovery", "confirmed")):
                 logger.info(f"Backtest {self.backtest.id}: SCALE-UP SEED on {current_date} "
                            f"({len(self.positions)}/{half_max_scaleup} positions, "
                            f"{ms.state_history[-1]['from']} → {ms.state.value})")
@@ -905,10 +921,16 @@ class BacktestEngine:
             # Under-invested re-seed: in TRENDING/CONFIRMED with few positions
             # and > 50% cash for N+ days → the "zombie" state. Seed back to normal.
             # Patience adapts to market stability:
-            #   - Established TRENDING (10+ days): 10 days (market proven, deploy capital)
-            #   - CONFIRMED: 15 days (still validating, be patient)
+            #   - Post-correction window: 7 days (capital needs deploying, correction already proved downturn)
+            #   - Established TRENDING (30+ days): 10 days (market proven, deploy capital)
+            #   - Default: 15 days (still validating, be patient)
             # Guard: skip if drawdown is high — circuit breaker would just kill the positions.
-            underinvested_patience = 10 if (ms.state == MarketState.TRENDING and ms.state_days_count >= 30) else 15
+            if in_post_correction_window:
+                underinvested_patience = 7  # Accelerated: correction already validated the downturn
+            elif ms.state == MarketState.TRENDING and ms.state_days_count >= 30:
+                underinvested_patience = 10
+            else:
+                underinvested_patience = 15
             current_dd = 0.0
             if self.peak_portfolio_value > 0:
                 current_dd = ((self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value) * 100
