@@ -872,6 +872,25 @@ class BacktestEngine:
                 self._take_snapshot(current_date)
                 return
 
+            # Confirmation scale-up seed: when market advances from a recovery-related
+            # state to CONFIRMED or TRENDING and we still have few positions (< half max),
+            # add more positions to scale up from the initial recovery seed.
+            # In bull markets this never fires (no correction → no depletion).
+            # Guard: only from recovery/correction/confirmed transitions, NOT from pressure.
+            half_max_scaleup = profile_max_positions // 2
+            if (market_state_result.get("changed")
+                    and ms.state in (MarketState.CONFIRMED, MarketState.TRENDING)
+                    and 0 < len(self.positions) < half_max_scaleup
+                    and ms.state_history
+                    and ms.state_history[-1]["from"] in ("recovery", "correction", "confirmed")):
+                logger.info(f"Backtest {self.backtest.id}: SCALE-UP SEED on {current_date} "
+                           f"({len(self.positions)}/{half_max_scaleup} positions, "
+                           f"{ms.state_history[-1]['from']} → {ms.state.value})")
+                self.is_seed_day = True
+                self._seed_initial_positions(current_date, recovery_mode=False)
+                self._take_snapshot(current_date)
+                return
+
             # Fallback idle re-seed: respects market state (must be RECOVERY+ to seed)
             if (can_buy and not self.positions and self.idle_days >= 10
                     and ms.can_seed):
