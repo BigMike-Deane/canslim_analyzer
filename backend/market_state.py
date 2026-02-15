@@ -76,7 +76,7 @@ DEFAULT_CONFIG = {
         "trending_max_dist_days": 3,        # Max distribution days to re-enter TRENDING
         "min_correction_days": 3,           # Minimum days in CORRECTION before allowing fast-track exit
         "min_confirmed_days": 3,            # Minimum days in CONFIRMED before allowing back to CORRECTION
-        "post_correction_damping_days": 10, # Grace period after exiting CORRECTION: prevents rapid re-entry
+        # "post_correction_damping_days": 10, # DISABLED: caused -4.9pp bull regression by capping pyramids
     },
 
     # Recovery seeding (when portfolio is depleted after a correction)
@@ -130,11 +130,10 @@ class MarketStateManager:
         # State change history for debugging/analysis
         self.state_history: List[dict] = []
 
-        # Post-correction damping: prevents rapid re-entry to CORRECTION
-        # after exiting (SPY hovers around 50MA causing state jitter)
+        # Post-correction damping: DISABLED — caused -4.9pp bull regression
+        # by keeping system in PRESSURE (60% exposure) and reducing pyramids (24→19).
+        # The jitter prevention is handled by min_correction_days and min_confirmed_days instead.
         self.last_correction_exit_date: Optional[date] = None
-        self.post_correction_damping_days: int = self.config.get(
-            "transitions", {}).get("post_correction_damping_days", 10)
 
     @property
     def max_exposure_pct(self) -> float:
@@ -338,12 +337,7 @@ class MarketStateManager:
         trending_max_dist = transitions.get("trending_max_dist_days", 3)
 
         # To CORRECTION if SPY breaks below 50MA
-        # Post-correction damping: skip if we just exited CORRECTION recently
-        # (SPY hovers around 50MA during recovery causing jitter)
-        in_damping = (self.last_correction_exit_date is not None
-                      and (current_date - self.last_correction_exit_date).days
-                      <= self.post_correction_damping_days)
-        if spy_ma50 > 0 and spy_close < spy_ma50 and not in_damping:
+        if spy_ma50 > 0 and spy_close < spy_ma50:
             self.state = MarketState.CORRECTION
             self._start_rally_tracking(spy_close, current_date)
             return
@@ -456,13 +450,8 @@ class MarketStateManager:
 
         # Back to CORRECTION if market breaks down again — but only after min_confirmed_days
         # to prevent the immediate CONFIRMED→CORRECTION reversal seen in COVID (Apr 8→Apr 9).
-        # Also respect post-correction damping to prevent rapid re-entry jitter.
-        in_damping = (self.last_correction_exit_date is not None
-                      and (current_date - self.last_correction_exit_date).days
-                      <= self.post_correction_damping_days)
         if (spy_ma50 > 0 and spy_close < spy_ma50 * (1 - deep_drop_pct / 100)
-                and self.state_days_count >= min_confirmed_days
-                and not in_damping):
+                and self.state_days_count >= min_confirmed_days):
             self.state = MarketState.CORRECTION
             self._start_rally_tracking(spy_close, current_date)
             return
