@@ -17,7 +17,13 @@ DATABASE_URL = os.environ.get('DATABASE_URL', f"sqlite:///{DATA_DIR}/canslim.db"
 
 # SQLite needs check_same_thread=False; PostgreSQL does not
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+
+# Increase pool for concurrent backtests + scanning + API requests
+pool_kwargs = {}
+if not DATABASE_URL.startswith("sqlite"):
+    pool_kwargs = {"pool_size": 20, "max_overflow": 30, "pool_timeout": 60}
+
+engine = create_engine(DATABASE_URL, connect_args=connect_args, **pool_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
