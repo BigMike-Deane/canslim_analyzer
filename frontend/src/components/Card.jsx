@@ -1,6 +1,6 @@
 const variants = {
   default: 'bg-dark-800 border-dark-700/50',
-  glass: 'bg-dark-800/60 backdrop-blur-sm border-white/[0.04] hover:border-white/[0.08] hover:bg-dark-800/80',
+  glass: 'bg-dark-800/80 border-white/[0.04] hover:border-white/[0.08] hover:bg-dark-800/90',
   stat: 'bg-dark-850 border-dark-700/30',
   accent: 'bg-dark-800/80 border-l-2',
   flat: 'bg-transparent border-transparent',
@@ -33,7 +33,7 @@ export default function Card({
 
   return (
     <div
-      className={`border ${base} ${accentCls} ${rounded} ${padding} ${animCls} ${staggerCls} ${clickCls} transition-colors duration-200 ${className}`}
+      className={`border ${base} ${accentCls} ${rounded} ${padding} ${animCls} ${staggerCls} ${clickCls} ${className}`}
       onClick={onClick}
     >
       {children}

@@ -72,7 +72,7 @@ export default function BottomNav() {
       {/* More Menu Overlay */}
       {moreOpen && (
         <div className="fixed inset-0 z-40 md:hidden" onClick={() => setMoreOpen(false)}>
-          <div className="absolute inset-0 bg-dark-950/70 backdrop-blur-sm animate-fade-in" />
+          <div className="absolute inset-0 bg-dark-950/80 animate-fade-in" />
           <div className="absolute bottom-16 left-3 right-3 bg-dark-800 border border-dark-700/50 rounded-xl p-2 animate-slide-up shadow-xl">
             <div className="grid grid-cols-4 gap-1">
               {moreItems.map(item => (
@@ -95,7 +95,7 @@ export default function BottomNav() {
       )}
 
       {/* Bottom Nav Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-dark-900/95 backdrop-blur-md border-t border-dark-700/40 pb-safe md:hidden z-30">
+      <nav className="fixed bottom-0 left-0 right-0 bg-dark-900/95 backdrop-blur-md border-t border-dark-700/40 pb-safe md:hidden z-30" style={{ willChange: 'transform' }}>
         <div className="flex justify-around py-1.5">
           {mainTabs.map(item => (
             <NavLink
