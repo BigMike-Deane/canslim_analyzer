@@ -114,8 +114,23 @@ class BacktestEngine:
         # Pyramid cooldown tracking: ticker -> last pyramid date (1-day min between pyramids)
         self.last_pyramid_date: Dict[str, date] = {}
 
+        # Strategy profile (balanced or growth) — load BEFORE market state
+        # so profile-level market_state overrides (e.g. FTD thresholds) apply
+        self.strategy = self.backtest.strategy or "balanced"
+        self.profile = get_strategy_profile(self.strategy)
+
         # Market state machine (replaces binary regime gate + advisory FTD)
+        # Deep-merge profile-level market_state overrides with global config
         market_state_config = config.get('market_state', {})
+        profile_ms_overrides = self.profile.get('market_state', {})
+        if profile_ms_overrides:
+            merged_ms_config = {**market_state_config}
+            for key, val in profile_ms_overrides.items():
+                if isinstance(val, dict) and key in merged_ms_config and isinstance(merged_ms_config[key], dict):
+                    merged_ms_config[key] = {**merged_ms_config[key], **val}
+                else:
+                    merged_ms_config[key] = val
+            market_state_config = merged_ms_config
         self.market_state = MarketStateManager(market_state_config)
         self.market_state_enabled = market_state_config.get('enabled', True)
         self.heat_penalty_active: bool = False
@@ -126,9 +141,12 @@ class BacktestEngine:
         self.is_seed_day: bool = False  # G: Track seed day to skip conviction sizing
         self.last_correction_end_date: Optional[date] = None  # For post-correction accelerated deployment
 
-        # Strategy profile (balanced or growth)
-        self.strategy = self.backtest.strategy or "balanced"
-        self.profile = get_strategy_profile(self.strategy)
+        # Recovery seed tracking for fast scale-up
+        self.recovery_seed_date: Optional[date] = None  # When recovery seeds were planted
+        self.recovery_seed_tickers: List[str] = []  # Which tickers were recovery seeds
+
+        # Nibble mode flag (set during CORRECTION when nibble config is enabled)
+        self.nibble_mode_active: bool = False
 
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
@@ -863,6 +881,26 @@ class BacktestEngine:
                 logger.info(f"Backtest {self.backtest.id}: CORRECTION ENDED on {current_date}, "
                            f"accelerated deployment window active for 90 days")
 
+            # === V-BOTTOM DETECTOR ===
+            # When SPY crashes 15%+ and rallies 8%+ from the low within 10 days,
+            # this is a V-bottom pattern where FTD methodology is too slow.
+            # Deploy a small number of positions before waiting for the formal FTD.
+            v_bottom_config = self.profile.get('v_bottom', {})
+            if (v_bottom_config.get('enabled', False)
+                    and market_state_result.get("v_bottom", False)
+                    and ms.state == MarketState.CORRECTION
+                    and len(self.positions) <= 1):
+                v_seed_count = v_bottom_config.get('seed_count', 2)
+                v_seed_pct = v_bottom_config.get('seed_pct', 10)
+                logger.info(f"Backtest {self.backtest.id}: V-BOTTOM SEED on {current_date} "
+                           f"({len(self.positions)} positions, deploying {v_seed_count} positions)")
+                self.is_seed_day = True
+                self.recovery_seed_date = current_date
+                self._seed_initial_positions(current_date, recovery_mode=True)
+                self.recovery_seed_tickers = list(self.positions.keys())
+                self._take_snapshot(current_date)
+                return
+
             # Recovery seed: FTD just fired, we have 0-1 positions → seed
             # Only when truly depleted — 3 positions is normal portfolio churn, not depletion
             if (market_state_result.get("changed") and ms.state == MarketState.RECOVERY
@@ -870,7 +908,9 @@ class BacktestEngine:
                 logger.info(f"Backtest {self.backtest.id}: RECOVERY SEED triggered on {current_date} "
                            f"(FTD detected, {len(self.positions)} positions)")
                 self.is_seed_day = True
+                self.recovery_seed_date = current_date
                 self._seed_initial_positions(current_date, recovery_mode=True)
+                self.recovery_seed_tickers = list(self.positions.keys())
                 self._take_snapshot(current_date)
                 return
 
@@ -906,6 +946,46 @@ class BacktestEngine:
                 self._seed_initial_positions(current_date, recovery_mode=False)
                 self._take_snapshot(current_date)
                 return
+
+            # === FAST SCALE-UP: if recovery seeds are working, add more positions ===
+            # Don't wait 15 days for under-invested timer — if seeds are up 3%+ after
+            # 3 days, the recovery is confirmed. Deploy more capital immediately.
+            fast_scaleup_config = self.profile.get('fast_scaleup', {})
+            if (fast_scaleup_config.get('enabled', False)
+                    and self.recovery_seed_date is not None
+                    and ms.state in (MarketState.RECOVERY, MarketState.CONFIRMED, MarketState.TRENDING)
+                    and ms.can_buy):
+                days_since_seed = (current_date - self.recovery_seed_date).days
+                check_after = fast_scaleup_config.get('check_after_days', 3)
+                min_gain = fast_scaleup_config.get('min_seed_gain_pct', 3.0)
+                max_additional = fast_scaleup_config.get('additional_positions', 2)
+
+                if (days_since_seed >= check_after
+                        and self.recovery_seed_tickers
+                        and len(self.positions) < profile_max_positions
+                        and len(self.positions) <= len(self.recovery_seed_tickers) + 1):
+                    # Check if recovery seeds are profitable
+                    seed_gains = []
+                    for ticker in self.recovery_seed_tickers:
+                        if ticker in self.positions:
+                            pos = self.positions[ticker]
+                            price = self.data_provider.get_price_on_date(ticker, current_date)
+                            if price and pos.cost_basis > 0:
+                                gain = ((price - pos.cost_basis) / pos.cost_basis) * 100
+                                seed_gains.append(gain)
+
+                    if seed_gains:
+                        avg_gain = sum(seed_gains) / len(seed_gains)
+                        if avg_gain >= min_gain:
+                            logger.info(f"Backtest {self.backtest.id}: FAST SCALE-UP on {current_date} "
+                                       f"(recovery seeds avg +{avg_gain:.1f}% after {days_since_seed} days, "
+                                       f"adding up to {max_additional} positions)")
+                            self.is_seed_day = True
+                            self._seed_initial_positions(current_date, recovery_mode=False)
+                            self.recovery_seed_date = None  # Don't re-trigger
+                            self.recovery_seed_tickers = []
+                            self._take_snapshot(current_date)
+                            return
 
             # Fallback idle re-seed: respects market state (must be RECOVERY+ to seed)
             if (can_buy and not self.positions and self.idle_days >= 10
@@ -948,8 +1028,25 @@ class BacktestEngine:
                 return
 
             # Market state replaces binary regime gate
+            # BUT: nibble mode allows small buys during CORRECTION
+            nibble_config = self.profile.get('correction_nibble', {})
             if not ms.can_buy:
-                can_buy = False
+                if (nibble_config.get('enabled', False)
+                        and ms.state == MarketState.CORRECTION
+                        and len(self.positions) < nibble_config.get('max_positions', 2)):
+                    # Nibble mode: allow buying but with tight exposure cap
+                    # The exposure cap enforcement in the buy loop (line ~1050) will
+                    # limit actual deployment to nibble_config.max_exposure_pct
+                    can_buy = True  # Override the gate — exposure cap handles the limit
+                    self.nibble_mode_active = True
+                    logger.debug(f"NIBBLE MODE active: allowing up to "
+                               f"{nibble_config.get('max_positions', 2)} positions "
+                               f"at {nibble_config.get('max_exposure_pct', 15)}% max exposure")
+                else:
+                    can_buy = False
+                    self.nibble_mode_active = False
+            else:
+                self.nibble_mode_active = False
         else:
             # Legacy fallback: binary regime gate (for backward compat if market_state disabled)
             regime_gate_config = config.get('ai_trader.market_regime_gate', {})
@@ -984,11 +1081,23 @@ class BacktestEngine:
             for trade in buys:
                 if self.cash < 100:
                     break
-                if len(self.positions) >= profile_max_positions:
+
+                # In nibble mode, cap positions at nibble limit (not profile max)
+                nibble_active = getattr(self, 'nibble_mode_active', False)
+                nibble_cfg = self.profile.get('correction_nibble', {})
+                if nibble_active:
+                    nibble_max_pos = nibble_cfg.get('max_positions', 2)
+                    if len(self.positions) >= nibble_max_pos:
+                        break
+                elif len(self.positions) >= profile_max_positions:
                     break
-                # Enforce market state exposure cap
+
+                # Enforce market state exposure cap (nibble mode uses its own cap)
                 if self.market_state_enabled:
-                    max_exposure = self.market_state.max_exposure_pct
+                    if nibble_active:
+                        max_exposure = nibble_cfg.get('max_exposure_pct', 15) / 100
+                    else:
+                        max_exposure = self.market_state.max_exposure_pct
                     current_invested = sum(
                         pos.shares * (self.data_provider.get_price_on_date(t, current_date) or pos.cost_basis)
                         for t, pos in self.positions.items()
@@ -2363,6 +2472,49 @@ class BacktestEngine:
             buys[-1]._signal_factors = signal_factors
 
         buys.sort(key=lambda x: x.priority)
+
+        # === NIBBLE MODE FILTER ===
+        # During correction with nibble mode active, only allow high-quality
+        # defensive stocks that are holding up despite the market falling.
+        nibble_active = getattr(self, 'nibble_mode_active', False)
+        if nibble_active:
+            nibble_cfg = self.profile.get('correction_nibble', {})
+            nibble_min_score = nibble_cfg.get('min_score', 55)
+            nibble_min_l = nibble_cfg.get('min_l_score', 10)
+            nibble_position_pct = nibble_cfg.get('position_pct', 7)
+            defensive_sectors = set(nibble_cfg.get('defensive_sectors', []))
+
+            filtered_buys = []
+            for buy in buys:
+                # Apply stricter score filter
+                if buy.score < nibble_min_score:
+                    continue
+
+                # Check L score (relative strength) — must be a leader
+                buy_data = scores.get(buy.ticker, {})
+                l_score = buy_data.get('l_score', 0)
+                if l_score < nibble_min_l:
+                    continue
+
+                # Prefer defensive sectors if configured
+                if defensive_sectors:
+                    sector = self.static_data.get(buy.ticker, {}).get('sector', '')
+                    if sector and sector not in defensive_sectors:
+                        continue
+
+                # Cap position size at nibble level
+                pv = self._get_portfolio_value(current_date)
+                max_nibble_value = pv * (nibble_position_pct / 100)
+                trade_value = buy.shares * buy.price
+                if trade_value > max_nibble_value:
+                    buy.shares = max_nibble_value / buy.price
+
+                buy.reason = f"🔍 NIBBLE: {buy.reason}"
+                filtered_buys.append(buy)
+
+            buys = filtered_buys
+            if buys:
+                logger.info(f"NIBBLE MODE: {len(buys)} candidates passed filter on {current_date}")
 
         # Log breakout candidates for debugging
         breakout_buys = [b for b in buys[:10] if "BREAKOUT" in b.reason]

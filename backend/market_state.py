@@ -113,6 +113,12 @@ class MarketStateManager:
         self.rally_attempt_start_date: Optional[date] = None
         self.last_ftd_date: Optional[date] = None
 
+        # V-bottom tracking: detect rapid crash-recovery patterns
+        self.spy_52w_high: float = 0.0
+        self.correction_low: float = 0.0
+        self.correction_low_date: Optional[date] = None
+        self.v_bottom_triggered: bool = False
+
         # Distribution day tracking
         self.distribution_days: List[dict] = []
 
@@ -200,6 +206,14 @@ class MarketStateManager:
         # --- Track days in current state ---
         self.state_days_count += 1
 
+        # --- Track SPY 52-week high and correction low for V-bottom detection ---
+        if spy_close > self.spy_52w_high:
+            self.spy_52w_high = spy_close
+        if self.state == MarketState.CORRECTION:
+            if self.correction_low <= 0 or spy_close < self.correction_low:
+                self.correction_low = spy_close
+                self.correction_low_date = current_date
+
         # --- Update distribution days ---
         self._update_distribution_days(current_date, spy_close, spy_prev_close,
                                        spy_volume, spy_prev_volume)
@@ -262,6 +276,9 @@ class MarketStateManager:
                 f"dist_days={dist_count})"
             )
 
+        # --- Check for V-bottom pattern ---
+        v_bottom_signal = self._check_v_bottom(current_date, spy_close)
+
         return {
             "state": self.state.value,
             "max_exposure": self.max_exposure_pct,
@@ -269,7 +286,56 @@ class MarketStateManager:
             "can_seed": self.can_seed,
             "dist_count": dist_count,
             "changed": changed,
+            "v_bottom": v_bottom_signal,
         }
+
+    def _check_v_bottom(self, current_date: date, spy_close: float) -> bool:
+        """
+        Detect V-bottom pattern: rapid crash followed by rapid recovery.
+
+        This catches the pattern where FTD methodology is too slow — like COVID
+        where SPY dropped 34% and recovered most of it before the first FTD fired.
+
+        Only triggers once per correction cycle (resets when state leaves CORRECTION).
+        """
+        if self.v_bottom_triggered:
+            return False  # Already fired this cycle
+
+        if self.state != MarketState.CORRECTION:
+            # Reset for next correction cycle
+            if self.v_bottom_triggered:
+                self.v_bottom_triggered = False
+            return False
+
+        if self.spy_52w_high <= 0 or self.correction_low <= 0:
+            return False
+
+        # Check: SPY fell enough from its high
+        drop_from_high_pct = ((self.spy_52w_high - self.correction_low) / self.spy_52w_high) * 100
+        min_drop = 15.0  # Will be overridden by profile config in backtester
+        if drop_from_high_pct < min_drop:
+            return False
+
+        # Check: SPY has rallied enough from the correction low
+        rally_from_low_pct = ((spy_close - self.correction_low) / self.correction_low) * 100
+        min_rally = 8.0  # Will be overridden by profile config in backtester
+        if rally_from_low_pct < min_rally:
+            return False
+
+        # Check: Rally happened fast enough (within N trading days of the low)
+        if self.correction_low_date:
+            days_since_low = (current_date - self.correction_low_date).days
+            max_days = 15  # Calendar days (~10 trading days)
+            if days_since_low > max_days:
+                return False
+
+        self.v_bottom_triggered = True
+        logger.info(
+            f"V-BOTTOM DETECTED on {current_date}: SPY dropped {drop_from_high_pct:.1f}% "
+            f"from ${self.spy_52w_high:.2f} to ${self.correction_low:.2f}, "
+            f"rallied {rally_from_low_pct:.1f}% to ${spy_close:.2f}"
+        )
+        return True
 
     # ---- Distribution day tracking ----
 
@@ -488,4 +554,7 @@ class MarketStateManager:
             "rally_attempt_day": self.rally_attempt_day,
             "last_ftd_date": str(self.last_ftd_date) if self.last_ftd_date else None,
             "state_changes": len(self.state_history),
+            "v_bottom_triggered": self.v_bottom_triggered,
+            "spy_52w_high": self.spy_52w_high,
+            "correction_low": self.correction_low,
         }

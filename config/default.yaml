@@ -780,12 +780,12 @@ strategy_profiles:
     score_crash_drop_required: 25       # Require bigger score drop before selling (balanced: 20)
     score_crash_ignore_if_profitable: 20  # Hold if up 20%+ even on score dip (balanced: 10%)
 
-  # Lab profile: Clone of balanced for Ralph Loop optimization experiments
+  # Lab profile: Clone of balanced for optimization experiments
   # SAFETY: NEVER modify balanced or growth profiles via automated optimization.
   # Only this lab profile should be changed by optimization scripts.
   lab:
-    label: "Lab (Optimization)"
-    description: "Optimized via Ralph Loop: +51.2% return, Sharpe 2.38 (#148)"
+    label: "Lab (Bear Recovery)"
+    description: "Testing bear market re-entry: nibble mode, V-bottom detector, faster scale-up"
     min_score: 72
     max_positions: 8
     max_single_position_pct: 25
@@ -798,10 +798,10 @@ strategy_profiles:
       gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
-    seed_count: 3                          # Optimized: 3 is optimal (tested 2-5)
-    seed_pct: 10                           # Optimized: 10% is optimal (tested 8-12)
+    seed_count: 3
+    seed_pct: 10
     half_size_initial: true
-    max_seed_investment_pct: 50            # Optimized: 50% is optimal (was 60)
+    max_seed_investment_pct: 50
     quality_filters:
       min_c_score: 10
       min_l_score: 8
@@ -813,3 +813,47 @@ strategy_profiles:
       base_quality: 0.10
     score_crash_drop_required: 25
     score_crash_ignore_if_profitable: 20
+
+    # === BEAR MARKET RE-ENTRY EXPERIMENTS ===
+
+    # 1. Correction Nibble Mode: allow small exposure during CORRECTION
+    #    Instead of 0% during CORRECTION, permit 10-15% in quality survivors.
+    #    These are stocks holding their own 50MA despite the market falling.
+    correction_nibble:
+      enabled: true
+      max_exposure_pct: 15          # Max 15% of portfolio during correction
+      max_positions: 2              # At most 2 nibble positions
+      min_score: 55                 # Higher bar than recovery seed
+      min_l_score: 10               # Must be RS leader (holding up in crash)
+      position_pct: 7               # Small positions (7% each)
+      defensive_sectors:             # Prefer defensive sectors (empty = allow all)
+        - Consumer Defensive
+        - Healthcare
+        - Utilities
+
+    # 2. V-Bottom Detector: early recovery signal for rapid crash-recovery patterns
+    #    When SPY drops 15%+ from high then rallies 8%+ from low in <10 days,
+    #    this is a V-bottom — FTD methodology is too slow for these.
+    v_bottom:
+      enabled: true
+      min_drop_from_high_pct: 15    # SPY must have fallen 15%+ from 52w high
+      min_rally_from_low_pct: 8     # SPY must rally 8%+ from correction low
+      max_rally_days: 10            # Rally must happen within 10 trading days
+      early_exposure_pct: 20        # Allow 20% exposure on V-bottom signal
+      seed_count: 2                 # Deploy 2 positions on V-bottom
+      seed_pct: 10                  # 10% each
+
+    # 3. Faster Post-FTD Scale-Up: if recovery seeds are working, add more
+    #    Don't wait 15 days for under-invested timer — if seeds are up 3%+
+    #    after 3-5 days, the recovery is confirmed. Deploy more capital.
+    fast_scaleup:
+      enabled: true
+      check_after_days: 3           # Check seed performance after 3 days
+      min_seed_gain_pct: 3.0        # Seeds must average +3%+ gain
+      additional_positions: 2       # Add 2 more positions
+      additional_pct: 10            # 10% each
+
+    # 4. Profile-level market state overrides
+    market_state:
+      ftd:
+        min_gain_pct: 1.5           # Lower from 1.7 to 1.5 (still > O'Neil's 1.25)
