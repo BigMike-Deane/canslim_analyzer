@@ -1,0 +1,23 @@
+version: '3.8'
+
+# Test frontend on port 8002 — shares the production backend/DB
+# Usage:
+#   Deploy test:  docker-compose -f docker-compose.test.yml up -d --build
+#   Tear down:    docker-compose -f docker-compose.test.yml down
+#   Update:       git checkout <branch> && docker-compose -f docker-compose.test.yml up -d --build
+
+services:
+  canslim-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: canslim-test
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+    networks:
+      - canslim_analyzer_default
+
+networks:
+  canslim_analyzer_default:
+    external: true
