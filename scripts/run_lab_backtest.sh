@@ -103,16 +103,20 @@ done
 # Get full results
 echo ""
 echo "=== RESULTS ==="
-RESULTS=$(curl -sf "${API_BASE}/api/backtests/${BACKTEST_ID}")
+RESULTS_FILE="/tmp/lab_bt_results.json"
+curl -sf "${API_BASE}/api/backtests/${BACKTEST_ID}" > "$RESULTS_FILE"
 
 # Extract key metrics
 python3 << PYEOF
 import json, sys
 
-data = json.loads('''$RESULTS''')
+with open("$RESULTS_FILE") as f:
+    data = json.load(f)
 
-r = data.get('summary', data)
-bt_id = data.get('id', '$BACKTEST_ID')
+# API returns {backtest: {...}, trades: [...], ...}
+bt = data.get('backtest', data)
+r = bt
+bt_id = bt.get('id', '$BACKTEST_ID')
 total_return = r.get('total_return_pct', 0)
 spy_return = r.get('spy_return_pct', 0)
 sharpe = r.get('sharpe_ratio', 0)

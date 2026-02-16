@@ -2459,7 +2459,9 @@ async def get_coiled_spring_history(
             "price_change_pct": a.price_change_pct,
             "outcome": a.outcome,
             "base_type": a.base_type,
-            "institutional_pct": a.institutional_pct
+            "institutional_pct": a.institutional_pct,
+            "cs_bonus": a.cs_bonus,
+            "total_score": a.total_score,
         } for a in alerts],
         "pagination": {
             "page": page,
@@ -3962,6 +3964,65 @@ async def get_command_center(db: Session = Depends(get_db)):
     # --- 9. Scanner Status ---
     scanner_status = get_scan_status()
 
+    # --- 10. Coiled Spring ---
+    cs_data = None
+    try:
+        # Current candidates: stocks approaching earnings with long bases + beat streaks
+        cs_candidates = db.query(Stock).filter(
+            Stock.days_to_earnings <= 14,
+            Stock.days_to_earnings > 0,
+            Stock.weeks_in_base >= 15,
+            Stock.earnings_beat_streak >= 3,
+            Stock.canslim_score >= 48
+        ).order_by(desc(Stock.canslim_score)).limit(5).all()
+
+        cs_candidates_data = [{
+            "ticker": s.ticker,
+            "score": s.canslim_score,
+            "days_to_earnings": s.days_to_earnings,
+            "weeks_in_base": s.weeks_in_base,
+            "beat_streak": s.earnings_beat_streak,
+            "base_type": s.base_type,
+        } for s in cs_candidates]
+
+        # Aggregate stats from all alerts
+        all_cs = db.query(CoiledSpringAlert).all()
+        cs_with_outcome = [a for a in all_cs if a.outcome]
+        cs_wins = sum(1 for a in cs_with_outcome if a.outcome in ('win', 'big_win'))
+        cs_big_wins = sum(1 for a in cs_with_outcome if a.outcome == 'big_win')
+        cs_losses = sum(1 for a in cs_with_outcome if a.outcome == 'loss')
+        cs_flat = sum(1 for a in cs_with_outcome if a.outcome == 'flat')
+        cs_pending = sum(1 for a in all_cs if not a.outcome)
+        cs_win_rate = round(cs_wins / len(cs_with_outcome) * 100, 1) if cs_with_outcome else 0
+
+        # Recent resolved alerts (last 5 with outcomes)
+        recent_resolved = db.query(CoiledSpringAlert).filter(
+            CoiledSpringAlert.outcome.isnot(None)
+        ).order_by(desc(CoiledSpringAlert.outcome_updated_at)).limit(5).all()
+
+        cs_recent = [{
+            "ticker": a.ticker,
+            "outcome": a.outcome,
+            "price_change_pct": a.price_change_pct,
+            "alert_date": a.alert_date.isoformat() if a.alert_date else None,
+        } for a in recent_resolved]
+
+        cs_data = {
+            "candidates": cs_candidates_data,
+            "stats": {
+                "total": len(all_cs),
+                "wins": cs_wins,
+                "big_wins": cs_big_wins,
+                "losses": cs_losses,
+                "flat": cs_flat,
+                "pending": cs_pending,
+                "win_rate": cs_win_rate,
+            },
+            "recent_results": cs_recent,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to load CS data for command center: {e}")
+
     return {
         "market": market_data,
         "portfolio": portfolio_summary,
@@ -3972,6 +4033,7 @@ async def get_command_center(db: Session = Depends(get_db)):
         "earnings": earnings_data,
         "trades": trades_data,
         "scanner": scanner_status,
+        "coiled_spring": cs_data,
     }
 
 
