@@ -91,6 +91,8 @@ class HistoricalDataProvider:
         # Performance caches
         self._market_direction_cache: Dict[date, dict] = {}  # date -> market direction
         self._base_pattern_cache: Dict[str, Tuple[date, dict]] = {}  # ticker -> (computed_date, pattern)
+        self._rs_cache: Dict[tuple, float] = {}  # (ticker, date, months) -> RS value
+        self._52w_cache: Dict[tuple, Tuple[float, float]] = {}  # (ticker, date) -> (high, low)
 
         # Disk cache for price history (speeds up repeated backtests)
         self._disk_cache = None
@@ -358,11 +360,18 @@ class HistoricalDataProvider:
         Returns:
             (high_52w, low_52w) or (0.0, 0.0) if not available
         """
+        cache_key = (ticker, as_of_date)
+        if cache_key in self._52w_cache:
+            return self._52w_cache[cache_key]
+
         history = self.get_price_history_up_to(ticker, as_of_date, lookback_days=252)
         if history.empty:
+            self._52w_cache[cache_key] = (0.0, 0.0)
             return 0.0, 0.0
 
-        return float(history["high"].max()), float(history["low"].min())
+        result = (float(history["high"].max()), float(history["low"].min()))
+        self._52w_cache[cache_key] = result
+        return result
 
     def get_50_day_avg_volume(self, ticker: str, as_of_date: date) -> float:
         """Calculate 50-day average volume as of a specific date"""
@@ -475,17 +484,23 @@ class HistoricalDataProvider:
         Returns:
             Relative strength ratio (1.0 = market performance, >1.0 = outperforming)
         """
+        cache_key = (ticker, as_of_date, period_months)
+        if cache_key in self._rs_cache:
+            return self._rs_cache[cache_key]
+
         lookback_days = period_months * 21  # Approximate trading days per month
 
         stock_history = self.get_price_history_up_to(ticker, as_of_date, lookback_days)
         spy_history = self._index_cache.get("SPY")
 
         if stock_history.empty or spy_history is None:
+            self._rs_cache[cache_key] = 1.0
             return 1.0
 
         spy_subset = spy_history[spy_history["date"] <= as_of_date].tail(lookback_days)
 
         if len(stock_history) < 20 or len(spy_subset) < 20:
+            self._rs_cache[cache_key] = 1.0
             return 1.0
 
         # Calculate returns
@@ -495,6 +510,7 @@ class HistoricalDataProvider:
         spy_end = float(spy_subset.iloc[-1]["close"])
 
         if stock_start <= 0 or spy_start <= 0:
+            self._rs_cache[cache_key] = 1.0
             return 1.0
 
         stock_return = (stock_end - stock_start) / stock_start
@@ -502,9 +518,12 @@ class HistoricalDataProvider:
 
         # Relative strength: stock return / SPY return
         if spy_return == 0:
+            self._rs_cache[cache_key] = 1.0
             return 1.0
 
-        return (1 + stock_return) / (1 + spy_return)
+        result = (1 + stock_return) / (1 + spy_return)
+        self._rs_cache[cache_key] = result
+        return result
 
     def get_stock_data_on_date(self, ticker: str, as_of_date: date,
                                 static_data: dict = None) -> HistoricalStockData:

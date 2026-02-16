@@ -158,6 +158,11 @@ class BacktestEngine:
         self.spy_start_price: float = 0.0
         self.spy_shares: float = 0.0  # Hypothetical SPY buy-and-hold
 
+        # Daily score cache: avoids recalculating scores for the same ticker+date
+        # multiple times per day (circuit breaker, sell eval, buy eval all call _calculate_scores)
+        self._score_cache: Dict[str, Dict[str, dict]] = {}  # {date_str: {ticker: score_dict}}
+        self._score_cache_date: Optional[str] = None  # Current cache date
+
     def run(self) -> BacktestRun:
         """
         Execute the backtest day by day.
@@ -1267,28 +1272,40 @@ class BacktestEngine:
 
     def _calculate_scores(self, current_date: date, tickers: List[str] = None) -> Dict[str, dict]:
         """
-        Calculate full CANSLIM scores for stocks.
+        Calculate full CANSLIM scores for stocks, with daily caching.
+
+        Scores are cached per (ticker, date) so that multiple calls on the same day
+        (circuit breaker, sell eval, buy eval) don't recalculate from scratch.
+        Cache is invalidated when the date changes.
 
         Args:
             current_date: Date to calculate scores for
             tickers: Optional list of tickers to score. If None, scores all available.
-
-        CANSLIM Components (100 points total):
-        - C (15 pts): Current quarterly earnings growth + acceleration
-        - A (15 pts): Annual earnings growth (3-year CAGR) + ROE quality
-        - N (15 pts): New highs - proximity to pivot/52-week high
-        - S (15 pts): Supply/Demand - volume analysis
-        - L (15 pts): Leader/Laggard - relative strength
-        - I (10 pts): Institutional ownership quality
-        - M (15 pts): Market direction
         """
+        date_str = str(current_date)
+
+        # Invalidate cache on new day
+        if self._score_cache_date != date_str:
+            self._score_cache = {}
+            self._score_cache_date = date_str
+
         scores = {}
 
         # Get market direction once (same for all stocks)
         market = self.data_provider.get_market_direction(current_date)
 
         ticker_list = tickers if tickers is not None else self.data_provider.get_available_tickers()
+
+        # Separate cached vs uncached tickers
+        uncached_tickers = []
         for ticker in ticker_list:
+            if ticker in self._score_cache:
+                scores[ticker] = self._score_cache[ticker]
+            else:
+                uncached_tickers.append(ticker)
+
+        # Only calculate scores for tickers not already cached today
+        for ticker in uncached_tickers:
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
                 continue
@@ -1491,7 +1508,7 @@ class BacktestEngine:
                         if rev_growth >= 30:
                             is_growth_stock = True
 
-            scores[ticker] = {
+            score_result = {
                 "total_score": total_score,
                 "c_score": c_score,
                 "a_score": a_score,
@@ -1513,6 +1530,8 @@ class BacktestEngine:
                 "is_breaking_out": is_breaking_out,
                 "volume_ratio": volume_ratio_breakout if volume_ratio_breakout else (current_volume / avg_volume if avg_volume > 0 else 1.0),
             }
+            scores[ticker] = score_result
+            self._score_cache[ticker] = score_result  # Cache for reuse within same day
 
         return scores
 
