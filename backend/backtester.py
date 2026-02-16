@@ -57,6 +57,7 @@ class SimulatedPosition:
     partial_profit_taken: float = 0.0  # Cumulative % of position sold as partial profits
     pyramid_count: int = 0  # Number of times pyramided into
     signal_factors: dict = field(default_factory=dict)  # Trade journal: factors that drove the buy
+    is_experimental: bool = False  # True for nibble/V-bottom positions (isolated from circuit breaker)
 
 
 @dataclass
@@ -147,6 +148,11 @@ class BacktestEngine:
 
         # Nibble mode flag (set during CORRECTION when nibble config is enabled)
         self.nibble_mode_active: bool = False
+
+        # Experimental position isolation: track realized losses from nibble/V-bottom
+        # positions separately so they don't inflate circuit breaker drawdown
+        self.experimental_realized_losses: float = 0.0  # Cumulative $ lost on experimental positions
+        self.experimental_capital_deployed: float = 0.0  # Current $ in experimental positions
 
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
@@ -743,14 +749,26 @@ class BacktestEngine:
         if self.peak_portfolio_value > 0:
             current_drawdown = ((self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value) * 100
 
+        # Adjusted drawdown: exclude experimental position losses (nibble/V-bottom)
+        # so they don't cascade into killing legitimate recovery positions.
+        # The raw drawdown is still tracked for reporting (max_drawdown_pct).
+        adjusted_drawdown = current_drawdown
+        if self.experimental_realized_losses > 0 and self.peak_portfolio_value > 0:
+            experimental_drawdown_pct = (self.experimental_realized_losses / self.peak_portfolio_value) * 100
+            adjusted_drawdown = max(0.0, current_drawdown - experimental_drawdown_pct)
+            if adjusted_drawdown < current_drawdown - 0.1:
+                logger.debug(f"CB isolation: raw DD {current_drawdown:.1f}% -> adjusted {adjusted_drawdown:.1f}% "
+                           f"(excluded ${self.experimental_realized_losses:.0f} experimental losses)")
+
         drawdown_config = config.get('ai_trader.drawdown_protection', {})
         halt_threshold = drawdown_config.get('halt_new_buys_pct', 15.0)
         liquidate_threshold = drawdown_config.get('liquidate_all_pct', 25.0)
         recovery_threshold = drawdown_config.get('recovery_pct', 10.0)
 
-        if current_drawdown >= liquidate_threshold and self.positions:
+        if adjusted_drawdown >= liquidate_threshold and self.positions:
             # Emergency: liquidate all positions
-            logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown >= {liquidate_threshold}% threshold - LIQUIDATING ALL")
+            exp_note = f" (raw {current_drawdown:.1f}%, excl ${self.experimental_realized_losses:.0f} experimental)" if self.experimental_realized_losses > 0 else ""
+            logger.warning(f"CIRCUIT BREAKER: {adjusted_drawdown:.1f}% adjusted drawdown >= {liquidate_threshold}% threshold - LIQUIDATING ALL{exp_note}")
             self.drawdown_halt = True
             held_tickers = list(self.positions.keys())
             held_scores = self._calculate_scores(current_date, tickers=held_tickers) if held_tickers else {}
@@ -770,12 +788,12 @@ class BacktestEngine:
             self._take_snapshot(current_date)
             return
 
-        if current_drawdown >= halt_threshold:
+        if adjusted_drawdown >= halt_threshold:
             if not self.drawdown_halt:
-                logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown - halting new buys")
+                logger.warning(f"CIRCUIT BREAKER: {adjusted_drawdown:.1f}% drawdown - halting new buys")
             self.drawdown_halt = True
-        elif self.drawdown_halt and current_drawdown < recovery_threshold:
-            logger.info(f"CIRCUIT BREAKER LIFTED: Drawdown recovered to {current_drawdown:.1f}%")
+        elif self.drawdown_halt and adjusted_drawdown < recovery_threshold:
+            logger.info(f"CIRCUIT BREAKER LIFTED: Drawdown recovered to {adjusted_drawdown:.1f}%")
             self.drawdown_halt = False
 
         # Tier 1: Score HELD positions every day (needed for sell/pyramid triggers)
@@ -869,6 +887,11 @@ class BacktestEngine:
                 if new_peak < old_peak * 0.90:  # Only reset if meaningful gap (>10%)
                     self.peak_portfolio_value = new_peak
                     self.drawdown_halt = False
+                    # Reset experimental loss tracker — old losses are baked into the new peak
+                    if self.experimental_realized_losses > 0:
+                        logger.info(f"Backtest {self.backtest.id}: Resetting experimental loss tracker "
+                                   f"(${self.experimental_realized_losses:.0f}) on peak reset")
+                        self.experimental_realized_losses = 0.0
                     logger.info(f"Backtest {self.backtest.id}: PEAK RESET on {current_date} "
                                f"({ms.state.value}): ${old_peak:.0f} → ${new_peak:.0f}")
 
@@ -896,8 +919,13 @@ class BacktestEngine:
                            f"({len(self.positions)} positions, deploying {v_seed_count} positions)")
                 self.is_seed_day = True
                 self.recovery_seed_date = current_date
+                pre_seed_tickers = set(self.positions.keys())
                 self._seed_initial_positions(current_date, recovery_mode=True)
                 self.recovery_seed_tickers = list(self.positions.keys())
+                # Tag V-bottom seeds as experimental (isolated from circuit breaker)
+                for ticker in self.positions:
+                    if ticker not in pre_seed_tickers:
+                        self.positions[ticker].is_experimental = True
                 self._take_snapshot(current_date)
                 return
 
@@ -2649,6 +2677,9 @@ class BacktestEngine:
 
         sector = self.static_data.get(trade.ticker, {}).get("sector", "Unknown")
 
+        # Tag nibble buys as experimental (isolated from circuit breaker)
+        is_experimental = getattr(self, 'nibble_mode_active', False) and "NIBBLE" in trade.reason
+
         self.positions[trade.ticker] = SimulatedPosition(
             ticker=trade.ticker,
             shares=trade.shares,
@@ -2659,7 +2690,8 @@ class BacktestEngine:
             peak_date=current_date,
             is_growth_stock=trade.is_growth_stock,
             sector=sector,
-            signal_factors=getattr(trade, '_signal_factors', {})
+            signal_factors=getattr(trade, '_signal_factors', {}),
+            is_experimental=is_experimental,
         )
 
         self._record_trade(current_date, trade, cost_basis=trade.price)
@@ -2674,6 +2706,10 @@ class BacktestEngine:
         cost_basis = position.cost_basis
         total_value = trade.shares * trade.price
         realized_gain = total_value - (trade.shares * cost_basis)
+
+        # Track experimental position losses separately for circuit breaker isolation
+        if position.is_experimental and realized_gain < 0:
+            self.experimental_realized_losses += abs(realized_gain)
 
         self.cash += total_value
 
