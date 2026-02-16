@@ -1,14 +1,20 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatScore, getScoreClass, formatCurrency, formatPercent, formatMarketCap } from '../api'
+import { api, getScoreClass, formatCurrency } from '../api'
+import Card, { CardHeader, SectionLabel } from '../components/Card'
+import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
+import StatGrid from '../components/StatGrid'
+import PageHeader from '../components/PageHeader'
 
+// ---------------------------------------------------------------------------
+// IndexCard (market direction)
+// ---------------------------------------------------------------------------
 function IndexCard({ ticker, label, weight, price, ma50, ma200, signal }) {
-  // Signal: -1 bearish, 0 neutral, 1 bullish, 2 strong bullish
   const signalConfig = {
-    2: { icon: '▲▲', color: 'text-green-400', label: 'Strong' },
-    1: { icon: '▲', color: 'text-green-400', label: 'Bullish' },
-    0: { icon: '►', color: 'text-yellow-400', label: 'Neutral' },
-    '-1': { icon: '▼', color: 'text-red-400', label: 'Bearish' },
+    2: { icon: '\u25B2\u25B2', color: 'text-green-400', label: 'Strong' },
+    1: { icon: '\u25B2', color: 'text-green-400', label: 'Bullish' },
+    0: { icon: '\u25BA', color: 'text-yellow-400', label: 'Neutral' },
+    '-1': { icon: '\u25BC', color: 'text-red-400', label: 'Bearish' },
   }
 
   const config = signalConfig[signal] || signalConfig[0]
@@ -16,33 +22,36 @@ function IndexCard({ ticker, label, weight, price, ma50, ma200, signal }) {
   const above200 = price > ma200
 
   return (
-    <div className="bg-dark-800 rounded-lg p-3">
+    <Card variant="stat" padding="p-3" rounded="rounded-lg">
       <div className="flex justify-between items-center mb-2">
         <div>
           <span className="font-semibold text-sm">{ticker}</span>
-          <span className="text-dark-500 text-xs ml-1">({weight}%)</span>
+          <span className="text-dark-500 text-xs ml-1 font-data">({weight}%)</span>
         </div>
         <span className={`text-xs font-medium ${config.color}`}>
           {config.icon}
         </span>
       </div>
-      <div className="text-lg font-bold mb-2">
+      <div className="text-lg font-bold font-data mb-2">
         {price ? formatCurrency(price) : '-'}
       </div>
       <div className="space-y-1 text-xs">
         <div className={`flex justify-between items-center px-1.5 py-0.5 rounded ${above50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
           <span>50MA</span>
-          <span className="font-medium">{ma50 ? formatCurrency(ma50) : '-'} {above50 ? '▲' : '▼'}</span>
+          <span className="font-medium font-data">{ma50 ? formatCurrency(ma50) : '-'} {above50 ? '\u25B2' : '\u25BC'}</span>
         </div>
         <div className={`flex justify-between items-center px-1.5 py-0.5 rounded ${above200 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
           <span>200MA</span>
-          <span className="font-medium">{ma200 ? formatCurrency(ma200) : '-'} {above200 ? '▲' : '▼'}</span>
+          <span className="font-medium font-data">{ma200 ? formatCurrency(ma200) : '-'} {above200 ? '\u25B2' : '\u25BC'}</span>
         </div>
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// MarketStatus
+// ---------------------------------------------------------------------------
 function MarketStatus({ market, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false)
 
@@ -55,9 +64,9 @@ function MarketStatus({ market, onRefresh }) {
   }
 
   const trendIcons = {
-    bullish: '▲',
-    neutral: '►',
-    bearish: '▼'
+    bullish: '\u25B2',
+    neutral: '\u25BA',
+    bearish: '\u25BC'
   }
 
   const handleRefresh = async () => {
@@ -82,28 +91,28 @@ function MarketStatus({ market, onRefresh }) {
   const spySignal = spy.signal ?? (spyPrice > spyMa200 ? (spyPrice > spyMa50 ? 2 : 1) : (spyPrice > spyMa50 ? 0 : -1))
 
   return (
-    <div className="card mb-4">
-      <div className="flex justify-between items-center mb-3">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold">Market Direction</span>
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="text-dark-400 hover:text-white transition-colors p-1"
-            title="Refresh market data"
-          >
-            <span className={refreshing ? 'animate-spin inline-block' : ''}>⟳</span>
-          </button>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass((market.score / 15) * 100)}`}>
-            M: {market.score != null ? `${market.score.toFixed(1)}/15` : '-'}
-          </span>
-          <div className={`text-sm font-medium ${trendColors[market.trend] || 'text-dark-400'}`}>
-            {trendIcons[market.trend]} {market.trend?.toUpperCase()}
+    <Card variant="glass" className="mb-4">
+      <CardHeader
+        title="Market Direction"
+        action={
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="text-dark-400 hover:text-white transition-colors p-1"
+              title="Refresh market data"
+            >
+              <span className={refreshing ? 'animate-spin inline-block' : ''}>{'\u27F3'}</span>
+            </button>
+            <span className={`px-2 py-1 rounded text-sm font-medium font-data ${getScoreClass((market.score / 15) * 100)}`}>
+              M: {market.score != null ? `${market.score.toFixed(1)}/15` : '-'}
+            </span>
+            <div className={`text-sm font-medium ${trendColors[market.trend] || 'text-dark-400'}`}>
+              {trendIcons[market.trend]} {market.trend?.toUpperCase()}
+            </div>
           </div>
-        </div>
-      </div>
+        }
+      />
 
       {/* Three Index Cards */}
       <div className="grid grid-cols-3 gap-3">
@@ -140,285 +149,291 @@ function MarketStatus({ market, onRefresh }) {
       {market.weighted_signal != null && (
         <div className="mt-3 pt-3 border-t border-dark-700 text-center">
           <span className="text-dark-400 text-xs">
-            Weighted Signal: <span className={`font-medium ${market.weighted_signal >= 1 ? 'text-green-400' : market.weighted_signal <= -0.5 ? 'text-red-400' : 'text-yellow-400'}`}>
+            Weighted Signal: <span className={`font-medium font-data ${market.weighted_signal >= 1 ? 'text-green-400' : market.weighted_signal <= -0.5 ? 'text-red-400' : 'text-yellow-400'}`}>
               {market.weighted_signal.toFixed(2)}
             </span>
-            <span className="text-dark-500 ml-2">(SPY×50% + QQQ×30% + DIA×20%)</span>
+            <span className="text-dark-500 ml-2">(SPY x50% + QQQ x30% + DIA x20%)</span>
           </span>
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// Inline helpers: ScoreTrend, WeeklyTrend
+// ---------------------------------------------------------------------------
 function ScoreTrend({ change }) {
   if (change == null) return null
-
-  if (change === 0) {
-    return <span className="text-xs text-dark-400">-</span>
-  }
-
-  const isUp = change > 0
-  return (
-    <span className={`text-xs font-medium ${isUp ? 'text-green-400' : 'text-red-400'}`}>
-      {isUp ? '+' : ''}{change.toFixed(1)}
-    </span>
-  )
+  if (change === 0) return <span className="text-xs text-dark-400 font-data">-</span>
+  return <PnlText value={change} className="text-xs" />
 }
 
 function WeeklyTrend({ trend, change }) {
   if (!trend) return null
 
   const config = {
-    improving: { icon: '↗', color: 'text-green-400', bg: 'bg-green-500/10' },
-    stable: { icon: '→', color: 'text-dark-400', bg: 'bg-dark-600' },
-    deteriorating: { icon: '↘', color: 'text-red-400', bg: 'bg-red-500/10' }
+    improving: { icon: '\u2197', color: 'green' },
+    stable: { icon: '\u2192', color: 'default' },
+    deteriorating: { icon: '\u2198', color: 'red' }
   }
 
-  const { icon, color, bg } = config[trend] || config.stable
+  const { icon, color } = config[trend] || config.stable
 
   return (
-    <span
-      className={`text-[10px] px-1.5 py-0.5 rounded ${bg} ${color}`}
-      title={`7-day trend: ${change != null ? (change > 0 ? '+' : '') + change.toFixed(1) : ''} pts`}
+    <TagBadge
+      color={color}
+      className="cursor-default"
     >
-      {icon} {trend === 'improving' ? 'Up' : trend === 'deteriorating' ? 'Down' : ''}
-    </span>
+      <span title={`7-day trend: ${change != null ? (change > 0 ? '+' : '') + change.toFixed(1) : ''} pts`}>
+        {icon} {trend === 'improving' ? 'Up' : trend === 'deteriorating' ? 'Down' : ''}
+      </span>
+    </TagBadge>
   )
 }
 
+// ---------------------------------------------------------------------------
+// Ranked stock row (shared by TopStocksList, TopGrowthStocks, BreakingOutStocks, CoiledSpringAlerts)
+// ---------------------------------------------------------------------------
+function RankedStockRow({ stock, index, rankColor = 'bg-dark-600 text-dark-100', children, subtitle, badges, scoreValue, scoreClass }) {
+  return (
+    <Link
+      to={`/stock/${stock.ticker}`}
+      className="flex justify-between items-center py-1.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+    >
+      <div className="flex items-center gap-2">
+        <div className={`w-5 h-5 text-[10px] rounded-full flex items-center justify-center font-bold font-data ${rankColor}`}>
+          {index + 1}
+        </div>
+        <div>
+          <div className="flex items-center gap-1">
+            <span className="font-medium text-sm">{stock.ticker}</span>
+            {badges}
+          </div>
+          {subtitle && <div className="text-dark-500 text-[10px]">{subtitle}</div>}
+        </div>
+      </div>
+      <div className="text-right">
+        <ScoreBadge score={scoreValue ?? stock.canslim_score} size="xs" className={scoreClass || ''} />
+        {children}
+      </div>
+    </Link>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TopStocksList
+// ---------------------------------------------------------------------------
 function TopStocksList({ stocks, title, compact = false }) {
   if (!stocks || stocks.length === 0) return null
 
   return (
-    <div className={compact ? "card mb-3" : "card mb-4"}>
-      <div className="flex justify-between items-center mb-2">
-        <div className={compact ? "font-semibold text-sm" : "font-semibold"}>{title}</div>
-        <Link to="/screener" className="text-primary-500 text-xs">See All</Link>
-      </div>
+    <Card variant="glass" className={compact ? 'mb-3' : 'mb-4'}>
+      <CardHeader
+        title={title}
+        action={<Link to="/screener" className="text-primary-500 text-xs">See All</Link>}
+      />
 
-      <div className={compact ? "space-y-1" : "space-y-3"}>
-        {stocks.map((stock, index) => (
-          <Link
-            key={stock.ticker}
-            to={`/stock/${stock.ticker}`}
-            className={`flex justify-between items-center ${compact ? 'py-1' : 'py-2'} border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors`}
-          >
-            <div className="flex items-center gap-2">
-              <div className={`${compact ? 'w-5 h-5 text-[10px]' : 'w-6 h-6 text-xs'} rounded-full bg-dark-600 flex items-center justify-center font-bold`}>
-                {index + 1}
+      <div className={compact ? 'space-y-1' : 'space-y-3'}>
+        {stocks.map((stock, index) =>
+          compact ? (
+            <RankedStockRow
+              key={stock.ticker}
+              stock={stock}
+              index={index}
+              subtitle={null}
+            >
+              <div className="text-[10px] text-dark-400 font-data">
+                ${stock.current_price?.toFixed(0) || '-'}
               </div>
-              <div>
-                <div className="flex items-center gap-1">
-                  <span className={compact ? "font-medium text-sm" : "font-medium"}>{stock.ticker}</span>
-                  {!compact && <ScoreTrend change={stock.score_change} />}
-                  {!compact && <WeeklyTrend trend={stock.score_trend} change={stock.trend_change} />}
-                  {stock.data_quality === 'low' && (
-                    <span className="text-yellow-500 text-[10px]" title="Limited analyst data">⚠</span>
-                  )}
+            </RankedStockRow>
+          ) : (
+            <Link
+              key={stock.ticker}
+              to={`/stock/${stock.ticker}`}
+              className="flex justify-between items-center py-2 border-b border-dark-700/30 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 text-xs rounded-full bg-dark-600 flex items-center justify-center font-bold font-data">
+                  {index + 1}
                 </div>
-                {!compact && <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>}
+                <div>
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">{stock.ticker}</span>
+                    <ScoreTrend change={stock.score_change} />
+                    <WeeklyTrend trend={stock.score_trend} change={stock.trend_change} />
+                    {stock.data_quality === 'low' && (
+                      <span className="text-yellow-500 text-[10px]" title="Limited analyst data">{'\u26A0'}</span>
+                    )}
+                  </div>
+                  <div className="text-dark-400 text-xs truncate max-w-[150px]">{stock.name}</div>
+                </div>
               </div>
-            </div>
-            <div className="text-right">
-              <div className={`inline-block px-1.5 py-0.5 rounded ${compact ? 'text-xs' : 'text-sm'} font-medium ${getScoreClass(stock.canslim_score)}`}>
-                {formatScore(stock.canslim_score)}
-              </div>
-              {!compact && (
+              <div className="text-right">
+                <ScoreBadge score={stock.canslim_score} size="sm" />
                 <div className="text-xs mt-1">
-                  <div className="text-dark-300">
+                  <div className="text-dark-300 font-data">
                     {stock.current_price != null ? `$${stock.current_price.toFixed(2)}` : '-'}
                   </div>
-                  <div className={stock.projected_growth != null && stock.projected_growth >= 0 ? 'text-green-400' : stock.projected_growth != null ? 'text-red-400' : 'text-dark-500'}>
-                    {stock.projected_growth != null ? `${stock.projected_growth >= 0 ? '+' : ''}${stock.projected_growth.toFixed(0)}% proj` : '-'}
-                  </div>
+                  <PnlText
+                    value={stock.projected_growth}
+                    className="text-xs"
+                    prefix=""
+                  />
+                  {stock.projected_growth != null && (
+                    <span className="text-dark-500 text-[10px]"> proj</span>
+                  )}
                 </div>
-              )}
-              {compact && (
-                <div className="text-[10px] text-dark-400">
-                  ${stock.current_price?.toFixed(0) || '-'}
-                </div>
-              )}
-            </div>
-          </Link>
-        ))}
+              </div>
+            </Link>
+          )
+        )}
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// TopGrowthStocks
+// ---------------------------------------------------------------------------
 function TopGrowthStocks({ stocks, loading }) {
   if (loading) {
     return (
-      <div className="card mb-3">
-        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-          <span className="text-green-400">↗</span> Top Growth Stocks
-        </div>
+      <Card variant="glass" className="mb-3">
+        <CardHeader title={<><span className="text-green-400 mr-1">{'\u2197'}</span> Top Growth Stocks</>} />
         <div className="animate-pulse space-y-2">
           {[1,2,3,4,5].map(i => <div key={i} className="h-6 bg-dark-700 rounded" />)}
         </div>
-      </div>
+      </Card>
     )
   }
 
   if (!stocks || stocks.length === 0) {
     return (
-      <div className="card mb-3">
-        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-          <span className="text-green-400">↗</span> Top Growth Stocks
-        </div>
+      <Card variant="glass" className="mb-3">
+        <CardHeader title={<><span className="text-green-400 mr-1">{'\u2197'}</span> Top Growth Stocks</>} />
         <div className="text-dark-400 text-xs py-4 text-center">
           No growth stocks found yet. Run a scan to analyze stocks.
         </div>
-      </div>
+      </Card>
     )
   }
 
   return (
-    <div className="card mb-3">
-      <div className="flex justify-between items-center mb-2">
-        <div className="font-semibold text-sm flex items-center gap-2">
-          <span className="text-green-400">↗</span> Top Growth Stocks
-        </div>
-        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">Growth Mode</span>
-      </div>
+    <Card variant="glass" className="mb-3">
+      <CardHeader
+        title={<><span className="text-green-400 mr-1">{'\u2197'}</span> Top Growth Stocks</>}
+        action={<TagBadge>Growth Mode</TagBadge>}
+      />
 
       <div className="space-y-1">
         {stocks.map((stock, index) => (
-          <Link
+          <RankedStockRow
             key={stock.ticker}
-            to={`/stock/${stock.ticker}`}
-            className="flex justify-between items-center py-1.5 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+            stock={stock}
+            index={index}
+            rankColor="bg-green-500/20 text-green-400"
+            scoreValue={stock.growth_mode_score}
+            scoreClass="bg-green-500/20 text-green-400"
+            subtitle={stock.revenue_growth_pct != null ? `Rev +${stock.revenue_growth_pct.toFixed(0)}%` : stock.sector?.slice(0,12) || '-'}
+            badges={
+              stock.is_breaking_out
+                ? <TagBadge color="amber">BO</TagBadge>
+                : null
+            }
           >
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 text-[10px] rounded-full bg-green-500/20 text-green-400 flex items-center justify-center font-bold">
-                {index + 1}
-              </div>
-              <div>
-                <div className="flex items-center gap-1">
-                  <span className="font-medium text-sm">{stock.ticker}</span>
-                  {stock.is_breaking_out && (
-                    <span className="text-[9px] bg-yellow-500/20 text-yellow-400 px-1 rounded" title="Breaking out!">BO</span>
-                  )}
-                </div>
-                <div className="text-dark-500 text-[10px]">
-                  {stock.revenue_growth_pct != null ? `Rev +${stock.revenue_growth_pct.toFixed(0)}%` : stock.sector?.slice(0,12) || '-'}
-                </div>
-              </div>
+            <div className="text-[10px] text-dark-400 font-data">
+              ${stock.current_price?.toFixed(0) || '-'}
             </div>
-            <div className="text-right">
-              <div className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">
-                {formatScore(stock.growth_mode_score)}
-              </div>
-              <div className="text-[10px] text-dark-400">
-                ${stock.current_price?.toFixed(0) || '-'}
-              </div>
-            </div>
-          </Link>
+          </RankedStockRow>
         ))}
       </div>
 
       <div className="text-[10px] text-dark-500 mt-2 pt-2 border-t border-dark-700">
         Growth Mode: Revenue-focused scoring for high-growth stocks
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// BreakingOutStocks
+// ---------------------------------------------------------------------------
 function BreakingOutStocks({ stocks, loading }) {
   if (loading) {
     return (
-      <div className="card mb-3">
-        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-          <span className="text-yellow-400">⚡</span> Breaking Out
-        </div>
+      <Card variant="glass" className="mb-3">
+        <CardHeader title={<><span className="text-yellow-400 mr-1">{'\u26A1'}</span> Breaking Out</>} />
         <div className="animate-pulse space-y-2">
           {[1,2,3,4,5].map(i => <div key={i} className="h-6 bg-dark-700 rounded" />)}
         </div>
-      </div>
+      </Card>
     )
   }
 
   if (!stocks || stocks.length === 0) {
     return (
-      <div className="card mb-3">
-        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-          <span className="text-yellow-400">⚡</span> Breaking Out
-        </div>
+      <Card variant="glass" className="mb-3">
+        <CardHeader title={<><span className="text-yellow-400 mr-1">{'\u26A1'}</span> Breaking Out</>} />
         <div className="text-dark-400 text-xs py-4 text-center">
           No breakouts detected. Stocks break out when price clears a base pattern with strong volume.
         </div>
-      </div>
+      </Card>
     )
   }
 
   return (
-    <div className="card mb-3">
-      <div className="flex justify-between items-center mb-2">
-        <div className="font-semibold text-sm flex items-center gap-2">
-          <span className="text-yellow-400">⚡</span> Breaking Out
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">Buy Zone</span>
-          <Link to="/breakouts" className="text-primary-500 text-xs">See All</Link>
-        </div>
-      </div>
+    <Card variant="glass" className="mb-3">
+      <CardHeader
+        title={<><span className="text-yellow-400 mr-1">{'\u26A1'}</span> Breaking Out</>}
+        action={
+          <div className="flex items-center gap-2">
+            <TagBadge color="amber">Buy Zone</TagBadge>
+            <Link to="/breakouts" className="text-primary-500 text-xs">See All</Link>
+          </div>
+        }
+      />
 
       <div className="space-y-1">
         {stocks.map((stock, index) => (
-          <Link
+          <RankedStockRow
             key={stock.ticker}
-            to={`/stock/${stock.ticker}`}
-            className="flex justify-between items-center py-1.5 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+            stock={stock}
+            index={index}
+            rankColor="bg-yellow-500/20 text-yellow-400"
+            subtitle={stock.breakout_volume_ratio ? `Vol ${stock.breakout_volume_ratio.toFixed(1)}x` : stock.sector?.slice(0,12) || '-'}
+            badges={
+              stock.base_type && stock.base_type !== 'none'
+                ? <TagBadge color="cyan">{stock.base_type}</TagBadge>
+                : null
+            }
           >
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 text-[10px] rounded-full bg-yellow-500/20 text-yellow-400 flex items-center justify-center font-bold">
-                {index + 1}
-              </div>
-              <div>
-                <div className="flex items-center gap-1">
-                  <span className="font-medium text-sm">{stock.ticker}</span>
-                  {stock.base_type && stock.base_type !== 'none' && (
-                    <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1 rounded" title={`${stock.weeks_in_base}w ${stock.base_type} base`}>
-                      {stock.base_type}
-                    </span>
-                  )}
-                </div>
-                <div className="text-dark-500 text-[10px]">
-                  {stock.breakout_volume_ratio ? `Vol ${stock.breakout_volume_ratio.toFixed(1)}x` : stock.sector?.slice(0,12) || '-'}
-                </div>
-              </div>
+            <div className="text-[10px] text-dark-400 font-data">
+              ${stock.current_price?.toFixed(0) || '-'}
             </div>
-            <div className="text-right">
-              <div className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${getScoreClass(stock.canslim_score)}`}>
-                {formatScore(stock.canslim_score)}
-              </div>
-              <div className="text-[10px] text-dark-400">
-                ${stock.current_price?.toFixed(0) || '-'}
-              </div>
-            </div>
-          </Link>
+          </RankedStockRow>
         ))}
       </div>
 
       <div className="text-[10px] text-dark-500 mt-2 pt-2 border-t border-dark-700">
         Stocks clearing base patterns with 40%+ above-average volume
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// CoiledSpringAlerts
+// ---------------------------------------------------------------------------
 function CoiledSpringAlerts({ candidates, loading }) {
   if (loading) {
     return (
-      <div className="card mb-3 border border-purple-500/30 bg-purple-500/5">
-        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-          <span className="text-purple-400">🌀</span> Coiled Spring Alerts
-        </div>
+      <Card variant="accent" accent="purple" className="mb-3 bg-purple-500/5">
+        <CardHeader title={<><span className="text-purple-400 mr-1">{'\uD83C\uDF00'}</span> Coiled Spring Alerts</>} />
         <div className="animate-pulse space-y-2">
           {[1,2,3].map(i => <div key={i} className="h-6 bg-dark-700 rounded" />)}
         </div>
-      </div>
+      </Card>
     )
   }
 
@@ -427,76 +442,63 @@ function CoiledSpringAlerts({ candidates, loading }) {
   }
 
   return (
-    <div className="card mb-3 border border-purple-500/30 bg-purple-500/5">
-      <div className="flex justify-between items-center mb-2">
-        <div className="font-semibold text-sm flex items-center gap-2">
-          <span className="text-purple-400">🌀</span> Coiled Spring Alerts
-          <span className="text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
-            {candidates.length} found
+    <Card variant="accent" accent="purple" className="mb-3 bg-purple-500/5">
+      <CardHeader
+        title={
+          <span className="flex items-center gap-2">
+            <span className="text-purple-400">{'\uD83C\uDF00'}</span> Coiled Spring Alerts
+            <TagBadge color="purple">{candidates.length} found</TagBadge>
           </span>
-        </div>
-        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">
-          Pre-Earnings Catalyst
-        </span>
-      </div>
+        }
+        action={<TagBadge>Pre-Earnings Catalyst</TagBadge>}
+      />
 
       <div className="space-y-1">
         {candidates.slice(0, 5).map((stock, index) => (
-          <Link
+          <RankedStockRow
             key={stock.ticker}
-            to={`/stock/${stock.ticker}`}
-            className="flex justify-between items-center py-1.5 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+            stock={stock}
+            index={index}
+            rankColor="bg-purple-500/20 text-purple-400"
+            subtitle={
+              <span className="flex gap-2">
+                <span>{stock.earnings_beat_streak} beats</span>
+                <span>{'\u2022'}</span>
+                <span>{stock.days_to_earnings}d to earn</span>
+                <span>{'\u2022'}</span>
+                <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
+              </span>
+            }
+            badges={
+              stock.base_type && stock.base_type !== 'none'
+                ? <TagBadge color="cyan">{stock.weeks_in_base}w {stock.base_type}</TagBadge>
+                : null
+            }
           >
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 text-[10px] rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold">
-                {index + 1}
-              </div>
-              <div>
-                <div className="flex items-center gap-1">
-                  <span className="font-medium text-sm">{stock.ticker}</span>
-                  {stock.base_type && stock.base_type !== 'none' && (
-                    <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1 rounded">
-                      {stock.weeks_in_base}w {stock.base_type}
-                    </span>
-                  )}
-                </div>
-                <div className="text-dark-500 text-[10px] flex gap-2">
-                  <span>{stock.earnings_beat_streak} beats</span>
-                  <span>•</span>
-                  <span>{stock.days_to_earnings}d to earn</span>
-                  <span>•</span>
-                  <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
-                </div>
-              </div>
+            <div className="text-[10px] text-purple-400 font-medium font-data">
+              +{stock.cs_bonus} CS
             </div>
-            <div className="text-right">
-              <div className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${getScoreClass(stock.canslim_score)}`}>
-                {formatScore(stock.canslim_score)}
-              </div>
-              <div className="text-[10px] text-purple-400 font-medium">
-                +{stock.cs_bonus} CS
-              </div>
-            </div>
-          </Link>
+          </RankedStockRow>
         ))}
       </div>
 
       <div className="text-[10px] text-dark-500 mt-2 pt-2 border-t border-dark-700">
         Stocks with long bases, earnings beat streaks, approaching earnings - high conviction setups
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// CoiledSpringStats
+// ---------------------------------------------------------------------------
 function CoiledSpringStats({ stats, loading }) {
   if (loading) {
     return (
-      <div className="card mb-3 border border-purple-500/20 bg-purple-500/5">
-        <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-          <span className="text-purple-400">📊</span> CS Performance
-        </div>
+      <Card variant="accent" accent="purple" className="mb-3 bg-purple-500/5">
+        <CardHeader title={<><span className="text-purple-400 mr-1">{'\uD83D\uDCCA'}</span> CS Performance</>} />
         <div className="animate-pulse h-16 bg-dark-700 rounded" />
-      </div>
+      </Card>
     )
   }
 
@@ -513,47 +515,26 @@ function CoiledSpringStats({ stats, loading }) {
   // Get top performing base type
   const baseTypes = cumulative_stats.by_base_type || {}
   const sortedBases = Object.entries(baseTypes)
-    .filter(([_, data]) => data.with_outcome >= 3)  // Only show if enough data
+    .filter(([_, data]) => data.with_outcome >= 3)
     .sort((a, b) => b[1].win_rate - a[1].win_rate)
 
   return (
-    <div className="card mb-3 border border-purple-500/20 bg-purple-500/5">
-      <div className="flex justify-between items-center mb-3">
-        <div className="font-semibold text-sm flex items-center gap-2">
-          <span className="text-purple-400">📊</span> CS Performance
-        </div>
-        <span className="text-[10px] text-dark-400 bg-dark-700 px-1.5 py-0.5 rounded">
-          {cumulative_stats.total_alerts_all_time} alerts tracked
-        </span>
-      </div>
+    <Card variant="accent" accent="purple" className="mb-3 bg-purple-500/5">
+      <CardHeader
+        title={<><span className="text-purple-400 mr-1">{'\uD83D\uDCCA'}</span> CS Performance</>}
+        action={<TagBadge>{cumulative_stats.total_alerts_all_time} alerts tracked</TagBadge>}
+      />
 
-      {/* Main Stats Row */}
-      <div className="grid grid-cols-4 gap-2 mb-3">
-        <div className="text-center">
-          <div className={`text-lg font-bold ${winRateColor}`}>
-            {cumulative_stats.overall_win_rate}%
-          </div>
-          <div className="text-[10px] text-dark-400">Win Rate</div>
-        </div>
-        <div className="text-center">
-          <div className="text-lg font-bold text-green-400">
-            {cumulative_stats.wins}
-          </div>
-          <div className="text-[10px] text-dark-400">Wins</div>
-        </div>
-        <div className="text-center">
-          <div className="text-lg font-bold text-red-400">
-            {cumulative_stats.losses}
-          </div>
-          <div className="text-[10px] text-dark-400">Losses</div>
-        </div>
-        <div className="text-center">
-          <div className="text-lg font-bold text-blue-400">
-            {cumulative_stats.big_wins}
-          </div>
-          <div className="text-[10px] text-dark-400">Big Wins</div>
-        </div>
-      </div>
+      <StatGrid
+        columns={4}
+        stats={[
+          { label: 'Win Rate', value: `${cumulative_stats.overall_win_rate}%`, color: winRateColor },
+          { label: 'Wins', value: cumulative_stats.wins, color: 'text-green-400' },
+          { label: 'Losses', value: cumulative_stats.losses, color: 'text-red-400' },
+          { label: 'Big Wins', value: cumulative_stats.big_wins, color: 'text-blue-400' },
+        ]}
+        className="mb-3"
+      />
 
       {/* Best Pattern */}
       {sortedBases.length > 0 && (
@@ -562,38 +543,35 @@ function CoiledSpringStats({ stats, loading }) {
           {sortedBases[0][0].replace('_', ' ')} ({sortedBases[0][1].win_rate}% win rate, {sortedBases[0][1].with_outcome} samples)
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// QuickStats
+// ---------------------------------------------------------------------------
 function QuickStats({ stats }) {
   if (!stats) return null
 
   return (
-    <div className="card mb-4">
-      <div className="font-semibold mb-3">Quick Stats</div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <div className="text-dark-400 text-xs">Stocks Analyzed</div>
-          <div className="font-semibold text-lg">{stats.total_stocks || 0}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Score 80+</div>
-          <div className="font-semibold text-lg text-green-400">{stats.high_score_count || 0}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Portfolio Positions</div>
-          <div className="font-semibold text-lg">{stats.portfolio_count || 0}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Watchlist</div>
-          <div className="font-semibold text-lg">{stats.watchlist_count || 0}</div>
-        </div>
-      </div>
-    </div>
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Quick Stats" />
+      <StatGrid
+        columns={2}
+        stats={[
+          { label: 'Stocks Analyzed', value: stats.total_stocks || 0 },
+          { label: 'Score 80+', value: stats.high_score_count || 0, color: 'text-green-400' },
+          { label: 'Portfolio Positions', value: stats.portfolio_count || 0 },
+          { label: 'Watchlist', value: stats.watchlist_count || 0 },
+        ]}
+      />
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// ScanControls
+// ---------------------------------------------------------------------------
 function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -610,7 +588,7 @@ function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
         onClick={() => setExpanded(!expanded)}
         className="text-dark-500 text-xs hover:text-dark-300 flex items-center gap-1 mb-2"
       >
-        <span className="text-[10px]">{expanded ? '▼' : '▶'}</span>
+        <span className="text-[10px]">{expanded ? '\u25BC' : '\u25B6'}</span>
         <span>Manual Scan</span>
       </button>
 
@@ -641,6 +619,9 @@ function ScanControls({ onScan, scanning, scanSource, setScanSource }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// ContinuousScanner
+// ---------------------------------------------------------------------------
 function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
   const [source, setSource] = useState(scannerStatus?.source || 'all')
   const [interval, setInterval] = useState(scannerStatus?.interval_minutes || 90)
@@ -666,7 +647,6 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
 
   const handleSourceChange = (newSource) => {
     setSource(newSource)
-    // Auto-suggest interval based on source
     const suggested = sourceOptions.find(o => o.value === newSource)?.interval || 15
     setInterval(suggested)
     if (scannerStatus?.enabled) {
@@ -688,7 +668,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
   }
 
   return (
-    <div className="card mb-4">
+    <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-3">
         <div className="font-semibold">Auto-Scan</div>
         <button
@@ -707,7 +687,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
       {scannerStatus?.enabled && (
         <div className="mb-3 p-2 bg-green-500/10 border border-green-500/30 rounded-lg">
           <div className="flex items-center gap-2 text-green-400 text-sm">
-            <span className="animate-pulse">●</span>
+            <span className="animate-pulse">{'\u25CF'}</span>
             <span>
               {scannerStatus?.is_scanning ? (
                 scannerStatus?.phase === 'saving' ? 'Saving to database...' :
@@ -731,7 +711,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
                   style={{ width: `${(scannerStatus.stocks_scanned / scannerStatus.total_stocks * 100)}%` }}
                 />
               </div>
-              <div className="flex justify-between text-xs text-dark-400 mt-1">
+              <div className="flex justify-between text-xs text-dark-400 mt-1 font-data">
                 <span>{scannerStatus.stocks_scanned} / {scannerStatus.total_stocks} stocks</span>
                 <span>
                   {scannerStatus.last_scan_start && (() => {
@@ -752,7 +732,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
                     {scannerStatus.phase === 'ai_trading' && 'Phase 3: AI Trading'}
                   </span>
                   {scannerStatus.phase_detail && (
-                    <span className="text-dark-400">— {scannerStatus.phase_detail}</span>
+                    <span className="text-dark-400">{'\u2014'} {scannerStatus.phase_detail}</span>
                   )}
                 </div>
               )}
@@ -799,10 +779,13 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
       <div className="text-xs text-dark-500 mt-2">
         Continuously scans stocks to keep data fresh. Stays within API limits.
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// ScanProgress
+// ---------------------------------------------------------------------------
 function ScanProgress({ scanJob, scanStartTime }) {
   const [elapsed, setElapsed] = useState(0)
 
@@ -834,10 +817,10 @@ function ScanProgress({ scanJob, scanStartTime }) {
     : 0
 
   return (
-    <div className="card mb-4">
+    <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-2">
         <div className="text-sm text-dark-400">Scan Progress</div>
-        <div className="text-sm font-mono">{formatTime(elapsed)}</div>
+        <div className="text-sm font-data">{formatTime(elapsed)}</div>
       </div>
       <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
         <div
@@ -845,14 +828,17 @@ function ScanProgress({ scanJob, scanStartTime }) {
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="flex justify-between text-xs text-dark-400 mt-1">
+      <div className="flex justify-between text-xs text-dark-400 mt-1 font-data">
         <span>{scanJob.tickers_processed} / {scanJob.tickers_total} stocks</span>
-        <span>{rate}/s {remaining > 0 && `· ~${formatTime(remaining)} left`}</span>
+        <span>{rate}/s {remaining > 0 && `\u00B7 ~${formatTime(remaining)} left`}</span>
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard (main export)
+// ---------------------------------------------------------------------------
 export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState(null)
@@ -987,16 +973,13 @@ export default function Dashboard() {
     try {
       const result = await api.refreshMarket()
       if (result && !result.error) {
-        // Update market data in state with new multi-index format
         setData(prev => ({
           ...prev,
           market: {
             ...prev?.market,
-            // Legacy fields (for backward compat)
             spy_price: result.indexes?.SPY?.price || result.spy_price,
             spy_50_ma: result.indexes?.SPY?.ma_50 || result.spy_50_ma,
             spy_200_ma: result.indexes?.SPY?.ma_200 || result.spy_200_ma,
-            // New multi-index fields
             indexes: result.indexes,
             weighted_signal: result.weighted_signal,
             trend: result.market_trend,
@@ -1011,7 +994,7 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="p-4">
+      <div className="p-4 md:p-6">
         <div className="skeleton h-8 w-48 mb-4" />
         <div className="skeleton h-32 rounded-2xl mb-4" />
         <div className="skeleton h-48 rounded-2xl mb-4" />
@@ -1021,23 +1004,27 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="p-4">
-      <div className="flex justify-between items-center mb-4">
-        <div>
-          <div className="text-dark-400 text-sm">CANSLIM</div>
-          <h1 className="text-xl font-bold">Stock Analyzer</h1>
-        </div>
-      </div>
+    <div className="p-4 md:p-6">
+      <PageHeader
+        title="Stock Analyzer"
+        subtitle="CANSLIM"
+      />
 
       <MarketStatus market={data?.market} onRefresh={handleMarketRefresh} />
+
+      <SectionLabel>Catalysts</SectionLabel>
 
       <CoiledSpringAlerts candidates={csAlerts} loading={csLoading} />
 
       <CoiledSpringStats stats={csStats} loading={csStatsLoading} />
 
+      <SectionLabel>Overview</SectionLabel>
+
       <QuickStats stats={data?.stats} />
 
       {/* Stock Lists Grid - 2x2 on larger screens */}
+      <SectionLabel>Stock Lists</SectionLabel>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
         <TopStocksList stocks={data?.top_stocks?.slice(0, 10)} title="Top CANSLIM" compact />
         <TopGrowthStocks stocks={growthStocks} loading={growthLoading} />
@@ -1048,6 +1035,8 @@ export default function Dashboard() {
       {scanJob && scanJob.status === 'running' && (
         <ScanProgress scanJob={scanJob} scanStartTime={scanStartTime} />
       )}
+
+      <SectionLabel>Scanner</SectionLabel>
 
       <ScanControls
         onScan={handleScan}

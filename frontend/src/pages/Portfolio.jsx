@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatScore, getScoreClass, formatCurrency, formatPercent } from '../api'
+import { api, formatScore, formatCurrency, formatPercent } from '../api'
+import Card, { CardHeader, SectionLabel } from '../components/Card'
+import { ScoreBadge, ActionBadge, TagBadge } from '../components/Badge'
+import StatGrid, { StatRow } from '../components/StatGrid'
+import Modal from '../components/Modal'
+import PageHeader from '../components/PageHeader'
 
 function PortfolioSummary({ positions }) {
   if (!positions || positions.length === 0) return null
@@ -10,34 +15,29 @@ function PortfolioSummary({ positions }) {
   const totalGain = totalValue - totalCost
   const totalGainPct = totalCost > 0 ? (totalGain / totalCost * 100) : 0
 
+  const summaryStats = [
+    { label: 'Positions', value: positions.length },
+    { label: 'Cost Basis', value: formatCurrency(totalCost) },
+    {
+      label: 'Avg Score',
+      value: formatScore(positions.reduce((sum, p) => sum + (p.canslim_score || 0), 0) / positions.length),
+    },
+  ]
+
   return (
-    <div className="card mb-4">
-      <div className="text-dark-400 text-sm mb-1">Portfolio Value</div>
-      <div className="text-3xl font-bold mb-1">{formatCurrency(totalValue)}</div>
-      <div className={`text-sm flex items-center gap-1 ${totalGain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-        <span>{totalGain >= 0 ? '▲' : '▼'}</span>
-        <span>{formatCurrency(Math.abs(totalGain))}</span>
-        <span>({formatPercent(Math.abs(totalGainPct))})</span>
-        <span className="text-dark-500 ml-1">total</span>
+    <Card variant="glass" className="mb-4">
+      <div className="text-dark-400 text-[10px] font-semibold tracking-wider uppercase mb-1">Portfolio Value</div>
+      <div className="text-3xl font-bold font-data text-dark-50 mb-1">{formatCurrency(totalValue)}</div>
+      <div className={`text-sm flex items-center gap-1 ${totalGain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+        <span className="font-data">{totalGain >= 0 ? '+' : ''}{formatCurrency(Math.abs(totalGain))}</span>
+        <span className="font-data">({formatPercent(Math.abs(totalGainPct))})</span>
+        <span className="text-dark-500 ml-1 text-xs">total</span>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-dark-700">
-        <div>
-          <div className="text-dark-400 text-xs">Positions</div>
-          <div className="font-semibold">{positions.length}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Cost Basis</div>
-          <div className="font-semibold">{formatCurrency(totalCost)}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Avg Score</div>
-          <div className="font-semibold">
-            {formatScore(positions.reduce((sum, p) => sum + (p.canslim_score || 0), 0) / positions.length)}
-          </div>
-        </div>
+      <div className="mt-4 pt-4 border-t border-dark-700/50">
+        <StatGrid stats={summaryStats} columns={3} />
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -48,44 +48,29 @@ function PositionRow({ position, onDelete, onEdit }) {
     : 0
   const isPositive = gainLoss >= 0
 
-  const getRecommendationStyle = (rec) => {
-    switch (rec) {
-      case 'buy': return 'bg-green-500/20 text-green-400'
-      case 'add': return 'bg-blue-500/20 text-blue-400'
-      case 'hold': return 'bg-yellow-500/20 text-yellow-400'
-      case 'trim': return 'bg-orange-500/20 text-orange-400'
-      case 'sell': return 'bg-red-500/20 text-red-400'
-      default: return 'bg-dark-600 text-dark-300'
-    }
-  }
-
   return (
-    <div className="border-b border-dark-700 last:border-0 py-3">
+    <div className="border-b border-dark-700/30 last:border-0 py-3">
       <div className="flex justify-between items-start">
         <Link to={`/stock/${position.ticker}`} className="flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-semibold">{position.ticker}</span>
+            <span className="font-semibold text-dark-100">{position.ticker}</span>
             {position.is_growth_stock && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
-                Growth
-              </span>
+              <TagBadge color="purple">Growth</TagBadge>
             )}
             {position.recommendation && (
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getRecommendationStyle(position.recommendation)}`}>
-                {position.recommendation.toUpperCase()}
-              </span>
+              <ActionBadge action={position.recommendation.toUpperCase()} />
             )}
           </div>
-          <div className="text-dark-400 text-sm">
+          <div className="text-dark-400 text-xs font-data mt-0.5">
             {position.shares} shares @ {formatCurrency(position.cost_basis)}
           </div>
         </Link>
 
         <div className="text-right">
-          <div className="font-semibold">{formatCurrency(position.current_value)}</div>
-          <div className={`text-sm ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
+          <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
+          <div className={`text-sm font-data ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
             {isPositive ? '+' : ''}{formatCurrency(gainLoss)}
-            <span className="text-xs ml-1">({formatPercent(gainLossPct, true)})</span>
+            <span className="text-xs ml-1 opacity-70">({formatPercent(gainLossPct, true)})</span>
           </div>
         </div>
       </div>
@@ -94,25 +79,21 @@ function PositionRow({ position, onDelete, onEdit }) {
         <div className="flex items-center gap-3 text-sm">
           {/* Show primary score based on stock type */}
           {position.is_growth_stock ? (
-            <div>
-              <span className="text-purple-400">Growth: </span>
-              <span className={`font-medium ${getScoreClass(position.growth_mode_score)}`}>
-                {formatScore(position.growth_mode_score)}
-              </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-purple-400 text-xs">Growth:</span>
+              <ScoreBadge score={position.growth_mode_score} size="xs" />
               {position.canslim_score > 0 && (
-                <span className="text-dark-400 text-xs ml-2">
+                <span className="text-dark-500 text-[10px] font-data ml-1">
                   (CANSLIM: {position.canslim_score?.toFixed(0)})
                 </span>
               )}
             </div>
           ) : (
-            <div>
-              <span className="text-dark-400">CANSLIM: </span>
-              <span className={`font-medium ${getScoreClass(position.canslim_score)}`}>
-                {formatScore(position.canslim_score)}
-              </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-dark-400 text-xs">CANSLIM:</span>
+              <ScoreBadge score={position.canslim_score} size="xs" />
               {position.growth_mode_score > 0 && (
-                <span className="text-purple-400 text-xs ml-2">
+                <span className="text-purple-400 text-[10px] font-data ml-1">
                   (Growth: {position.growth_mode_score?.toFixed(0)})
                 </span>
               )}
@@ -120,23 +101,23 @@ function PositionRow({ position, onDelete, onEdit }) {
           )}
           {position.data_quality === 'low' && (
             <span
-              className="text-yellow-500 text-xs cursor-help"
+              className="text-amber-500 text-[10px] cursor-help"
               title="Limited analyst data - projections may be less reliable"
             >
-              ⚠
+              Low Data
             </span>
           )}
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => onEdit(position)}
-            className="text-primary-400 text-sm hover:text-primary-300"
+            className="text-primary-400 text-xs hover:text-primary-300 transition-colors"
           >
             Edit
           </button>
           <button
             onClick={() => onDelete(position.id)}
-            className="text-red-400 text-sm hover:text-red-300"
+            className="text-red-400 text-xs hover:text-red-300 transition-colors"
           >
             Remove
           </button>
@@ -144,7 +125,7 @@ function PositionRow({ position, onDelete, onEdit }) {
       </div>
 
       {position.notes && (
-        <div className="text-dark-400 text-xs mt-2 italic">
+        <div className="text-dark-500 text-[10px] mt-2 italic">
           {position.notes}
         </div>
       )}
@@ -152,19 +133,19 @@ function PositionRow({ position, onDelete, onEdit }) {
   )
 }
 
+const gameplanAccentColors = {
+  SELL: 'red',
+  TRIM: 'amber',
+  BUY: 'green',
+  ADD: 'green',
+  WATCH: 'purple',
+}
+
 function GameplanCard({ action, onAddToWatchlist }) {
   const [adding, setAdding] = useState(false)
   const [added, setAdded] = useState(false)
 
-  const actionStyles = {
-    SELL: { bg: 'bg-red-500/10', border: 'border-red-500/30', icon: '🔴', label: 'SELL', textColor: 'text-red-400' },
-    TRIM: { bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: '🟠', label: 'TAKE PROFITS', textColor: 'text-orange-400' },
-    BUY: { bg: 'bg-green-500/10', border: 'border-green-500/30', icon: '🟢', label: 'BUY', textColor: 'text-green-400' },
-    ADD: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', icon: '🔵', label: 'ADD MORE', textColor: 'text-blue-400' },
-    WATCH: { bg: 'bg-purple-500/10', border: 'border-purple-500/30', icon: '👁️', label: 'WATCH', textColor: 'text-purple-400' },
-  }
-
-  const style = actionStyles[action.action] || actionStyles.WATCH
+  const accentColor = gameplanAccentColors[action.action] || 'purple'
 
   const handleAddToWatchlist = async () => {
     if (adding || added) return
@@ -180,50 +161,49 @@ function GameplanCard({ action, onAddToWatchlist }) {
   }
 
   return (
-    <div className={`card mb-3 ${style.bg} border ${style.border}`}>
+    <Card variant="accent" accent={accentColor} className="mb-3">
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-2">
-          <span className="text-lg">{style.icon}</span>
-          <span className={`font-bold ${style.textColor}`}>{style.label}</span>
-          <Link to={`/stock/${action.ticker}`} className="font-semibold text-lg hover:text-primary-400">
+          <ActionBadge action={action.action} />
+          <Link to={`/stock/${action.ticker}`} className="font-semibold text-lg text-dark-100 hover:text-primary-400 transition-colors">
             {action.ticker}
           </Link>
         </div>
         {action.estimated_value > 0 && (
           <div className="text-right">
-            <div className="text-dark-400 text-xs">Est. Value</div>
-            <div className="font-semibold">{formatCurrency(action.estimated_value)}</div>
+            <div className="text-dark-500 text-[10px]">Est. Value</div>
+            <div className="font-semibold font-data text-dark-100">{formatCurrency(action.estimated_value)}</div>
           </div>
         )}
       </div>
 
       <div className="mb-3">
-        <div className="font-medium text-sm">{action.reason}</div>
+        <div className="font-medium text-sm text-dark-200">{action.reason}</div>
       </div>
 
       {action.shares_action > 0 && (
-        <div className="flex items-center gap-4 mb-3 p-2 bg-dark-700/50 rounded-lg">
+        <div className="flex items-center gap-4 mb-3 p-2.5 bg-dark-850/50 rounded-lg border border-dark-700/30">
           <div>
-            <div className="text-dark-400 text-xs">Shares to {action.action === 'SELL' || action.action === 'TRIM' ? 'Sell' : 'Buy'}</div>
-            <div className="font-bold text-lg">{action.shares_action}</div>
+            <div className="text-dark-500 text-[10px]">Shares to {action.action === 'SELL' || action.action === 'TRIM' ? 'Sell' : 'Buy'}</div>
+            <div className="font-bold text-lg font-data text-dark-50">{action.shares_action}</div>
           </div>
           {action.shares_current > 0 && (
             <div>
-              <div className="text-dark-400 text-xs">Current Position</div>
-              <div className="font-semibold">{action.shares_current} shares</div>
+              <div className="text-dark-500 text-[10px]">Current Position</div>
+              <div className="font-semibold font-data text-dark-200">{action.shares_current} shares</div>
             </div>
           )}
           <div>
-            <div className="text-dark-400 text-xs">Price</div>
-            <div className="font-semibold">{formatCurrency(action.current_price)}</div>
+            <div className="text-dark-500 text-[10px]">Price</div>
+            <div className="font-semibold font-data text-dark-200">{formatCurrency(action.current_price)}</div>
           </div>
         </div>
       )}
 
       <div className="space-y-1">
         {action.details?.filter(d => d).map((detail, i) => (
-          <div key={i} className="text-dark-300 text-sm flex items-start gap-2">
-            <span className="text-dark-500">•</span>
+          <div key={i} className="text-dark-300 text-xs flex items-start gap-2">
+            <span className="text-dark-600 mt-0.5">&#8226;</span>
             <span>{detail}</span>
           </div>
         ))}
@@ -233,16 +213,16 @@ function GameplanCard({ action, onAddToWatchlist }) {
         <button
           onClick={handleAddToWatchlist}
           disabled={adding || added}
-          className={`mt-3 w-full py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`mt-3 w-full py-2 rounded-lg text-xs font-semibold transition-colors border ${
             added
-              ? 'bg-green-500/20 text-green-400 cursor-default'
-              : 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-400'
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 cursor-default'
+              : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border-purple-500/20'
           }`}
         >
-          {added ? '✓ Added to Watchlist' : adding ? 'Adding...' : '+ Add to Watchlist'}
+          {added ? 'Added to Watchlist' : adding ? 'Adding...' : '+ Add to Watchlist'}
         </button>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -259,11 +239,10 @@ function Gameplan({ gameplan, loading, onAddToWatchlist }) {
 
   if (!gameplan || gameplan.length === 0) {
     return (
-      <div className="card mb-4 text-center py-6">
-        <div className="text-3xl mb-2">✅</div>
-        <div className="font-semibold">No Actions Needed</div>
-        <div className="text-dark-400 text-sm">Your portfolio looks good! Check back after running a scan.</div>
-      </div>
+      <Card variant="glass" className="mb-4 text-center py-6">
+        <div className="font-semibold text-dark-200 mb-1">No Actions Needed</div>
+        <div className="text-dark-400 text-xs">Your portfolio looks good! Check back after running a scan.</div>
+      </Card>
     )
   }
 
@@ -273,59 +252,40 @@ function Gameplan({ gameplan, loading, onAddToWatchlist }) {
   const addActions = gameplan.filter(a => a.action === 'ADD')
   const watchActions = gameplan.filter(a => a.action === 'WATCH')
 
+  const sections = [
+    { key: 'sell', actions: sellActions, type: 'SELL' },
+    { key: 'trim', actions: trimActions, type: 'TRIM' },
+    { key: 'buy', actions: buyActions, type: 'BUY' },
+    { key: 'add', actions: addActions, type: 'ADD' },
+    { key: 'watch', actions: watchActions, type: 'WATCH' },
+  ]
+
   return (
     <div className="mb-4">
-      <h2 className="text-lg font-bold mb-3">Gameplan</h2>
+      <SectionLabel>Gameplan</SectionLabel>
 
-      {sellActions.length > 0 && (
-        <div className="mb-4">
-          <div className="text-red-400 font-semibold text-sm mb-2">SELL POSITIONS ({sellActions.length})</div>
-          {sellActions.map((action, i) => (
-            <GameplanCard key={`sell-${i}`} action={action} />
-          ))}
-        </div>
-      )}
-
-      {trimActions.length > 0 && (
-        <div className="mb-4">
-          <div className="text-orange-400 font-semibold text-sm mb-2">TAKE PROFITS ({trimActions.length})</div>
-          {trimActions.map((action, i) => (
-            <GameplanCard key={`trim-${i}`} action={action} />
-          ))}
-        </div>
-      )}
-
-      {buyActions.length > 0 && (
-        <div className="mb-4">
-          <div className="text-green-400 font-semibold text-sm mb-2">NEW BUYS ({buyActions.length})</div>
-          {buyActions.map((action, i) => (
-            <GameplanCard key={`buy-${i}`} action={action} />
-          ))}
-        </div>
-      )}
-
-      {addActions.length > 0 && (
-        <div className="mb-4">
-          <div className="text-blue-400 font-semibold text-sm mb-2">ADD TO POSITIONS ({addActions.length})</div>
-          {addActions.map((action, i) => (
-            <GameplanCard key={`add-${i}`} action={action} />
-          ))}
-        </div>
-      )}
-
-      {watchActions.length > 0 && (
-        <div className="mb-4">
-          <div className="text-purple-400 font-semibold text-sm mb-2">WATCHLIST ({watchActions.length})</div>
-          {watchActions.map((action, i) => (
-            <GameplanCard key={`watch-${i}`} action={action} onAddToWatchlist={onAddToWatchlist} />
-          ))}
-        </div>
-      )}
+      {sections
+        .filter(s => s.actions.length > 0)
+        .map(({ key, actions, type }) => (
+          <div key={key} className="mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <ActionBadge action={type} />
+              <span className="text-[10px] text-dark-500 font-data">{actions.length}</span>
+            </div>
+            {actions.map((action, i) => (
+              <GameplanCard
+                key={`${key}-${i}`}
+                action={action}
+                onAddToWatchlist={type === 'WATCH' ? onAddToWatchlist : undefined}
+              />
+            ))}
+          </div>
+        ))}
     </div>
   )
 }
 
-function AddPositionModal({ onClose, onAdd }) {
+function AddPositionModal({ open, onClose, onAdd }) {
   const [ticker, setTicker] = useState('')
   const [shares, setShares] = useState('')
   const [costBasis, setCostBasis] = useState('')
@@ -344,78 +304,85 @@ function AddPositionModal({ onClose, onAdd }) {
     onClose()
   }
 
+  const inputCls = 'w-full bg-dark-850 border border-dark-700/50 rounded-lg px-3 py-2 text-sm font-data text-dark-100 focus:outline-none focus:border-primary-500/50 transition-colors'
+  const labelCls = 'text-[10px] font-semibold tracking-wider uppercase text-dark-400 block mb-1'
+
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
-      <div className="bg-dark-800 w-full max-w-lg rounded-t-2xl p-4">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="font-semibold text-lg">Add Position</h2>
-          <button onClick={onClose} className="text-dark-400 text-xl">&times;</button>
+    <Modal open={open} onClose={onClose} title="Add Position">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className={labelCls}>Ticker Symbol</label>
+          <input
+            type="text"
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            placeholder="AAPL"
+            className={inputCls}
+            required
+          />
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-dark-400 text-sm">Ticker Symbol</label>
+            <label className={labelCls}>Shares</label>
             <input
-              type="text"
-              value={ticker}
-              onChange={(e) => setTicker(e.target.value.toUpperCase())}
-              placeholder="AAPL"
-              className="w-full mt-1"
+              type="number"
+              step="0.001"
+              value={shares}
+              onChange={(e) => setShares(e.target.value)}
+              placeholder="10"
+              className={inputCls}
               required
             />
           </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-dark-400 text-sm">Shares</label>
-              <input
-                type="number"
-                step="0.001"
-                value={shares}
-                onChange={(e) => setShares(e.target.value)}
-                placeholder="10"
-                className="w-full mt-1"
-                required
-              />
-            </div>
-            <div>
-              <label className="text-dark-400 text-sm">Cost per Share</label>
-              <input
-                type="number"
-                step="0.01"
-                value={costBasis}
-                onChange={(e) => setCostBasis(e.target.value)}
-                placeholder="150.00"
-                className="w-full mt-1"
-              />
-            </div>
-          </div>
-
           <div>
-            <label className="text-dark-400 text-sm">Notes (optional)</label>
+            <label className={labelCls}>Cost per Share</label>
             <input
-              type="text"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Entry reason, target price, etc."
-              className="w-full mt-1"
+              type="number"
+              step="0.01"
+              value={costBasis}
+              onChange={(e) => setCostBasis(e.target.value)}
+              placeholder="150.00"
+              className={inputCls}
             />
           </div>
+        </div>
 
-          <button type="submit" className="w-full btn-primary">
-            Add Position
-          </button>
-        </form>
-      </div>
-    </div>
+        <div>
+          <label className={labelCls}>Notes (optional)</label>
+          <input
+            type="text"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Entry reason, target price, etc."
+            className={inputCls}
+          />
+        </div>
+
+        <button
+          type="submit"
+          className="w-full bg-primary-500 hover:bg-primary-400 rounded-lg py-2.5 text-sm font-semibold transition-colors"
+        >
+          Add Position
+        </button>
+      </form>
+    </Modal>
   )
 }
 
-function EditPositionModal({ position, onClose, onSave }) {
-  const [shares, setShares] = useState(position.shares?.toString() || '')
-  const [costBasis, setCostBasis] = useState(position.cost_basis?.toString() || '')
-  const [notes, setNotes] = useState(position.notes || '')
+function EditPositionModal({ open, position, onClose, onSave }) {
+  const [shares, setShares] = useState(position?.shares?.toString() || '')
+  const [costBasis, setCostBasis] = useState(position?.cost_basis?.toString() || '')
+  const [notes, setNotes] = useState(position?.notes || '')
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (position) {
+      setShares(position.shares?.toString() || '')
+      setCostBasis(position.cost_basis?.toString() || '')
+      setNotes(position.notes || '')
+    }
+  }, [position])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -436,101 +403,96 @@ function EditPositionModal({ position, onClose, onSave }) {
     }
   }
 
+  const inputCls = 'w-full bg-dark-850 border border-dark-700/50 rounded-lg px-3 py-2 text-sm font-data text-dark-100 focus:outline-none focus:border-primary-500/50 transition-colors'
+  const labelCls = 'text-[10px] font-semibold tracking-wider uppercase text-dark-400 block mb-1'
+
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
-      <div className="bg-dark-800 w-full max-w-lg rounded-t-2xl p-4">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="font-semibold text-lg">Edit {position.ticker}</h2>
-          <button onClick={onClose} className="text-dark-400 text-xl">&times;</button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-dark-400 text-sm">Shares</label>
-              <input
-                type="number"
-                step="0.001"
-                min="0.001"
-                value={shares}
-                onChange={(e) => setShares(e.target.value)}
-                placeholder="10"
-                className="w-full mt-1"
-                required
-              />
-            </div>
-            <div>
-              <label className="text-dark-400 text-sm">Cost per Share</label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={costBasis}
-                onChange={(e) => setCostBasis(e.target.value)}
-                placeholder="150.00"
-                className="w-full mt-1"
-              />
-            </div>
-          </div>
-
+    <Modal open={open} onClose={onClose} title={`Edit ${position?.ticker || ''}`}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-dark-400 text-sm">Notes (optional)</label>
+            <label className={labelCls}>Shares</label>
             <input
-              type="text"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Entry reason, target price, etc."
-              className="w-full mt-1"
+              type="number"
+              step="0.001"
+              min="0.001"
+              value={shares}
+              onChange={(e) => setShares(e.target.value)}
+              placeholder="10"
+              className={inputCls}
+              required
             />
           </div>
+          <div>
+            <label className={labelCls}>Cost per Share</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={costBasis}
+              onChange={(e) => setCostBasis(e.target.value)}
+              placeholder="150.00"
+              className={inputCls}
+            />
+          </div>
+        </div>
 
-          {position.current_price > 0 && shares && costBasis && (
-            <div className="p-3 bg-dark-700 rounded-lg">
-              <div className="text-dark-400 text-xs mb-1">Preview</div>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  <span className="text-dark-400">Value: </span>
-                  <span className="font-medium">{formatCurrency(parseFloat(shares) * position.current_price)}</span>
-                </div>
-                <div>
-                  <span className="text-dark-400">Cost: </span>
-                  <span className="font-medium">{formatCurrency(parseFloat(shares) * parseFloat(costBasis))}</span>
-                </div>
-                <div className="col-span-2">
-                  <span className="text-dark-400">Gain/Loss: </span>
-                  {(() => {
-                    const gain = (parseFloat(shares) * position.current_price) - (parseFloat(shares) * parseFloat(costBasis))
-                    const gainPct = ((position.current_price / parseFloat(costBasis)) - 1) * 100
-                    return (
-                      <span className={gain >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {gain >= 0 ? '+' : ''}{formatCurrency(gain)} ({gainPct >= 0 ? '+' : ''}{gainPct.toFixed(2)}%)
-                      </span>
-                    )
-                  })()}
-                </div>
+        <div>
+          <label className={labelCls}>Notes (optional)</label>
+          <input
+            type="text"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Entry reason, target price, etc."
+            className={inputCls}
+          />
+        </div>
+
+        {position?.current_price > 0 && shares && costBasis && (
+          <Card variant="stat" padding="p-3">
+            <div className="text-dark-500 text-[10px] font-semibold tracking-wider uppercase mb-2">Preview</div>
+            <div className="grid grid-cols-2 gap-2">
+              <StatRow label="Value" value={formatCurrency(parseFloat(shares) * position.current_price)} />
+              <StatRow label="Cost" value={formatCurrency(parseFloat(shares) * parseFloat(costBasis))} />
+              <div className="col-span-2">
+                {(() => {
+                  const gain = (parseFloat(shares) * position.current_price) - (parseFloat(shares) * parseFloat(costBasis))
+                  const gainPct = ((position.current_price / parseFloat(costBasis)) - 1) * 100
+                  return (
+                    <StatRow
+                      label="Gain/Loss"
+                      value={
+                        <span className={`font-data text-sm ${gain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {gain >= 0 ? '+' : ''}{formatCurrency(gain)}
+                        </span>
+                      }
+                      sublabel={`${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(2)}%`}
+                    />
+                  )
+                })()}
               </div>
             </div>
-          )}
+          </Card>
+        )}
 
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 btn-secondary"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex-1 btn-primary disabled:opacity-50"
-            >
-              {saving ? 'Saving...' : 'Save Changes'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg py-2.5 text-sm font-semibold transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="flex-1 bg-primary-500 hover:bg-primary-400 disabled:bg-dark-700 disabled:text-dark-500 rounded-lg py-2.5 text-sm font-semibold transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
@@ -618,7 +580,7 @@ export default function Portfolio() {
 
   if (loading) {
     return (
-      <div className="p-4">
+      <div className="p-4 md:p-6">
         <div className="skeleton h-8 w-32 mb-4" />
         <div className="skeleton h-40 rounded-2xl mb-4" />
         <div className="skeleton h-32 rounded-2xl mb-4" />
@@ -628,61 +590,67 @@ export default function Portfolio() {
   }
 
   return (
-    <div className="p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-xl font-bold">Portfolio</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="btn-secondary text-sm flex items-center gap-1"
-          >
-            {refreshing ? (
-              <>
-                <span className="animate-spin">⟳</span>
-                <span>Refreshing...</span>
-              </>
-            ) : (
-              <>
-                <span>🔄</span>
-                <span>Refresh</span>
-              </>
-            )}
-          </button>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="btn-primary text-sm"
-          >
-            + Add
-          </button>
-        </div>
-      </div>
+    <div className="p-4 md:p-6">
+      <PageHeader
+        title="Portfolio"
+        actions={
+          <>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="text-xs bg-dark-700 hover:bg-dark-600 text-dark-200 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5"
+            >
+              {refreshing ? (
+                <>
+                  <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 12a8 8 0 018-8" strokeLinecap="round" />
+                  </svg>
+                  <span>Refreshing...</span>
+                </>
+              ) : (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M1 4v6h6M23 20v-6h-6" />
+                    <path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" />
+                  </svg>
+                  <span>Refresh</span>
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="text-xs bg-primary-500 hover:bg-primary-400 text-dark-950 px-3 py-1.5 rounded-lg font-semibold transition-colors"
+            >
+              + Add
+            </button>
+          </>
+        }
+      />
 
       {positions.length === 0 ? (
-        <div className="card text-center py-8">
-          <div className="text-4xl mb-3">💼</div>
-          <div className="font-semibold mb-2">No Positions Yet</div>
-          <div className="text-dark-400 text-sm mb-4">
+        <Card variant="glass" className="text-center py-8">
+          <div className="font-semibold text-dark-200 mb-2">No Positions Yet</div>
+          <div className="text-dark-400 text-xs mb-4">
             Add stocks to your portfolio to track performance and get CANSLIM recommendations.
           </div>
           <button
             onClick={() => setShowAddModal(true)}
-            className="btn-primary"
+            className="bg-primary-500 hover:bg-primary-400 text-dark-950 px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
           >
             Add First Position
           </button>
-        </div>
+        </Card>
       ) : (
         <>
           <PortfolioSummary positions={positions} />
 
-          <div className="card mb-4">
-            <div className="flex justify-between items-center mb-3">
-              <div className="font-semibold">Positions</div>
-              <div className="flex items-center gap-3 text-[10px] text-dark-400">
-                <span className="text-yellow-500" title="Limited analyst data">⚠ Low data</span>
-              </div>
-            </div>
+          <Card variant="glass" className="mb-4">
+            <CardHeader
+              title="Positions"
+              subtitle={
+                <span className="text-amber-500 text-[10px]" title="Limited analyst data">Low data = limited projections</span>
+              }
+            />
             {[...positions].sort((a, b) => a.ticker.localeCompare(b.ticker)).map(position => (
               <PositionRow
                 key={position.id}
@@ -691,26 +659,24 @@ export default function Portfolio() {
                 onEdit={setEditingPosition}
               />
             ))}
-          </div>
+          </Card>
 
           <Gameplan gameplan={gameplan} loading={gameplanLoading} onAddToWatchlist={handleAddToWatchlist} />
         </>
       )}
 
-      {showAddModal && (
-        <AddPositionModal
-          onClose={() => setShowAddModal(false)}
-          onAdd={handleAdd}
-        />
-      )}
+      <AddPositionModal
+        open={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onAdd={handleAdd}
+      />
 
-      {editingPosition && (
-        <EditPositionModal
-          position={editingPosition}
-          onClose={() => setEditingPosition(null)}
-          onSave={handleUpdate}
-        />
-      )}
+      <EditPositionModal
+        open={!!editingPosition}
+        position={editingPosition}
+        onClose={() => setEditingPosition(null)}
+        onSave={handleUpdate}
+      />
 
       <div className="h-4" />
     </div>

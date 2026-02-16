@@ -7,49 +7,60 @@
 }
 
 html {
-  background-color: #000000;
+  background-color: #06060c;
 }
 
 body {
-  @apply bg-dark-900 text-white min-h-screen;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  @apply bg-dark-950 text-dark-100 min-h-screen;
+  font-family: 'Sora', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ─── Card System ─── */
 .card {
-  @apply bg-dark-800 rounded-2xl p-4;
+  @apply bg-dark-800 rounded-xl p-4 border border-dark-700/50;
 }
 
+.card-glass {
+  @apply bg-dark-800/60 backdrop-blur-sm rounded-xl p-4 border border-white/[0.04];
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.card-glass:hover {
+  @apply border-white/[0.08] bg-dark-800/80;
+}
+
+/* ─── Skeleton Loading ─── */
 .skeleton {
   @apply bg-dark-700 animate-pulse rounded-lg;
 }
 
-/* Score badge colors */
+/* ─── Score Badge Colors ─── */
 .score-excellent {
-  @apply bg-green-500/20 text-green-400;
+  @apply bg-emerald-500/15 text-emerald-400 border border-emerald-500/20;
 }
 
 .score-good {
-  @apply bg-emerald-500/20 text-emerald-400;
+  @apply bg-green-500/15 text-green-400 border border-green-500/20;
 }
 
 .score-average {
-  @apply bg-yellow-500/20 text-yellow-400;
+  @apply bg-yellow-500/15 text-yellow-400 border border-yellow-500/20;
 }
 
 .score-poor {
-  @apply bg-orange-500/20 text-orange-400;
+  @apply bg-orange-500/15 text-orange-400 border border-orange-500/20;
 }
 
 .score-bad {
-  @apply bg-red-500/20 text-red-400;
+  @apply bg-red-500/15 text-red-400 border border-red-500/20;
 }
 
-/* Custom scrollbar */
+/* ─── Scrollbar ─── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -57,31 +68,122 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-dark-600 rounded-full;
+  @apply bg-dark-600/50 rounded-full;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-dark-500;
 }
 
-/* Input styles */
-input, select {
-  @apply bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white outline-none transition-colors;
+/* ─── Form Elements ─── */
+input, select, textarea {
+  @apply bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-dark-100 outline-none transition-all duration-200 text-sm;
+  font-family: 'Sora', system-ui, sans-serif;
 }
 
-input:focus, select:focus {
-  @apply border-primary-500;
+input:focus, select:focus, textarea:focus {
+  @apply border-primary-500/50 ring-1 ring-primary-500/20;
 }
 
-input::placeholder {
-  @apply text-dark-400;
+input::placeholder, textarea::placeholder {
+  @apply text-dark-500;
 }
 
-/* Button styles */
+select {
+  @apply cursor-pointer;
+}
+
+/* ─── Buttons ─── */
 .btn-primary {
-  @apply bg-primary-500 hover:bg-primary-600 text-white font-semibold px-4 py-2 rounded-lg transition-colors;
+  @apply bg-primary-600 hover:bg-primary-500 text-dark-950 font-semibold px-4 py-2 rounded-lg transition-all duration-200 text-sm;
 }
 
 .btn-secondary {
-  @apply bg-dark-700 hover:bg-dark-600 text-white font-semibold px-4 py-2 rounded-lg transition-colors;
+  @apply bg-dark-700 hover:bg-dark-600 text-dark-200 font-medium px-4 py-2 rounded-lg transition-all duration-200 border border-dark-600 text-sm;
+}
+
+.btn-ghost {
+  @apply text-dark-300 hover:text-dark-100 hover:bg-dark-700/50 px-3 py-1.5 rounded-lg transition-all duration-200 text-sm;
+}
+
+/* ─── Monospace Data ─── */
+.font-data {
+  font-family: 'JetBrains Mono', monospace;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ─── Stagger Animation Delays ─── */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.10s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.20s; }
+.stagger-5 { animation-delay: 0.25s; }
+.stagger-6 { animation-delay: 0.30s; }
+.stagger-7 { animation-delay: 0.35s; }
+.stagger-8 { animation-delay: 0.40s; }
+
+/* ─── Glow Effects ─── */
+.glow-green {
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.glow-red {
+  text-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+}
+
+.glow-cyan {
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
+}
+
+/* ─── Accent Lines ─── */
+.accent-line-left {
+  @apply border-l-2 border-primary-500/40 pl-3;
+}
+
+.accent-line-top {
+  position: relative;
+}
+
+.accent-line-top::before {
+  content: '';
+  @apply absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-primary-500/30 to-transparent;
+}
+
+/* ─── Safe Area Padding ─── */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* ─── Table Styles ─── */
+.table-row-alt:nth-child(even) {
+  @apply bg-dark-800/30;
+}
+
+/* ─── Recharts Overrides ─── */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+
+.recharts-default-tooltip {
+  @apply bg-dark-800/95 !important;
+  border: 1px solid rgba(34, 34, 51, 0.8) !important;
+  border-radius: 8px !important;
+  backdrop-filter: blur(8px);
+  font-family: 'Sora', system-ui, sans-serif !important;
+}
+
+.recharts-tooltip-label {
+  @apply text-dark-300 !important;
+  font-size: 11px !important;
+}
+
+.recharts-tooltip-item {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 12px !important;
+}
+
+/* ─── Transition Utilities ─── */
+.transition-height {
+  transition: max-height 0.3s ease, opacity 0.3s ease;
+  overflow: hidden;
 }

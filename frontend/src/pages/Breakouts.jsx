@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatScore, getScoreClass, formatCurrency } from '../api'
+import { api, formatCurrency } from '../api'
+import Card, { CardHeader, SectionLabel } from '../components/Card'
+import { ScoreBadge, TagBadge } from '../components/Badge'
+import PageHeader from '../components/PageHeader'
 
 function BreakoutRow({ stock }) {
   const pctFromHigh = stock.week_52_high && stock.current_price
@@ -10,24 +13,26 @@ function BreakoutRow({ stock }) {
   return (
     <Link
       to={`/stock/${stock.ticker}`}
-      className="flex justify-between items-center py-3 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-4 px-4 transition-colors"
+      className="flex justify-between items-center py-3 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-4 px-4 transition-colors"
     >
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-yellow-500/20 text-yellow-400 flex items-center justify-center text-lg">
-          ⚡
+        <div className="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center text-lg">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="13 2 13 9 20 9" />
+            <polygon points="13 2 20 9 20 22 4 22 4 2 13 2" />
+            <polyline points="7 13 10 16 17 9" />
+          </svg>
         </div>
         <div>
           <div className="flex items-center gap-2">
-            <span className="font-semibold">{stock.ticker}</span>
+            <span className="font-semibold text-dark-50">{stock.ticker}</span>
             {stock.base_type && stock.base_type !== 'none' && (
-              <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded">
+              <TagBadge color="cyan">
                 {stock.base_type === 'cup_with_handle' ? 'cup+handle' : stock.base_type}
-              </span>
+              </TagBadge>
             )}
             {stock.is_breaking_out && (
-              <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
-                Breakout
-              </span>
+              <TagBadge color="green">Breakout</TagBadge>
             )}
           </div>
           <div className="text-dark-400 text-sm truncate max-w-[180px]">
@@ -37,13 +42,11 @@ function BreakoutRow({ stock }) {
       </div>
 
       <div className="text-right">
-        <div className="font-semibold">{formatCurrency(stock.current_price)}</div>
-        <div className="flex items-center gap-2 justify-end">
-          <span className={`text-sm px-2 py-0.5 rounded ${getScoreClass(stock.canslim_score)}`}>
-            {formatScore(stock.canslim_score)}
-          </span>
+        <div className="font-data font-semibold text-dark-100">{formatCurrency(stock.current_price)}</div>
+        <div className="flex items-center gap-2 justify-end mt-1">
+          <ScoreBadge score={stock.canslim_score} size="sm" />
           {stock.volume_ratio != null && (
-            <span className={`text-xs ${stock.volume_ratio >= 1.5 ? 'text-green-400' : 'text-dark-400'}`}>
+            <span className={`text-[10px] font-data ${stock.volume_ratio >= 1.5 ? 'text-emerald-400' : 'text-dark-500'}`}>
               {stock.volume_ratio.toFixed(1)}x vol
             </span>
           )}
@@ -74,37 +77,33 @@ export default function Breakouts() {
 
   if (loading) {
     return (
-      <div className="p-4">
-        <h1 className="text-xl font-bold mb-4">Breaking Out</h1>
-        <div className="card">
-          <div className="animate-pulse space-y-3">
+      <div className="p-4 md:p-6">
+        <PageHeader title="Breaking Out" />
+        <Card variant="glass">
+          <div className="space-y-3">
             {[1, 2, 3, 4, 5, 6, 7, 8].map(i => (
-              <div key={i} className="h-16 bg-dark-700 rounded" />
+              <div key={i} className="h-16 bg-dark-750/50 rounded-lg animate-pulse" />
             ))}
           </div>
-        </div>
+        </Card>
       </div>
     )
   }
 
   return (
-    <div className="p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <span className="text-yellow-400">⚡</span> Breaking Out
-        </h1>
-        <span className="text-sm text-dark-400">{stocks.length} stocks</span>
-      </div>
+    <div className="p-4 md:p-6">
+      <PageHeader
+        title="Breaking Out"
+        subtitle="Stocks clearing base patterns with strong volume"
+        badge={
+          <span className="text-xs font-data text-dark-400">{stocks.length} stocks</span>
+        }
+      />
 
-      <div className="card mb-4">
-        <div className="text-sm text-dark-400 mb-3">
-          Stocks clearing base patterns with strong volume - ideal CANSLIM buy points.
-        </div>
-
+      <Card variant="glass" className="mb-4">
         {stocks.length === 0 ? (
           <div className="text-center py-8">
-            <div className="text-4xl mb-3">📊</div>
-            <div className="font-semibold mb-2">No Breakouts Detected</div>
+            <div className="font-semibold text-dark-100 mb-2">No Breakouts Detected</div>
             <div className="text-dark-400 text-sm">
               Breakouts occur when stocks clear consolidation patterns with above-average volume.
               Check back after market activity.
@@ -117,20 +116,29 @@ export default function Breakouts() {
             ))}
           </div>
         )}
-      </div>
+      </Card>
 
-      <div className="card bg-dark-800/50">
-        <div className="font-semibold text-sm mb-2">What is a Breakout?</div>
+      <Card variant="glass" className="bg-dark-850/30">
+        <CardHeader title="What is a Breakout?" />
         <div className="text-dark-400 text-sm space-y-2">
           <p>A breakout occurs when a stock's price moves above a resistance level (pivot point) with increased volume.</p>
-          <p><strong>Key signals:</strong></p>
-          <ul className="list-disc list-inside space-y-1 ml-2">
-            <li><strong>Base pattern:</strong> Flat base, cup-with-handle, or double-bottom</li>
-            <li><strong>Volume surge:</strong> 40%+ above average on breakout day</li>
-            <li><strong>Price action:</strong> Within 5% above the pivot point</li>
+          <SectionLabel>Key Signals</SectionLabel>
+          <ul className="space-y-1.5 ml-1">
+            <li className="flex items-start gap-2">
+              <span className="text-primary-500 mt-1 shrink-0">--</span>
+              <span><span className="text-dark-200 font-medium">Base pattern:</span> Flat base, cup-with-handle, or double-bottom</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-primary-500 mt-1 shrink-0">--</span>
+              <span><span className="text-dark-200 font-medium">Volume surge:</span> 40%+ above average on breakout day</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-primary-500 mt-1 shrink-0">--</span>
+              <span><span className="text-dark-200 font-medium">Price action:</span> Within 5% above the pivot point</span>
+            </li>
           </ul>
         </div>
-      </div>
+      </Card>
 
       <div className="h-4" />
     </div>

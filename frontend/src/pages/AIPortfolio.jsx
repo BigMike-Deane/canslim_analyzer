@@ -1,16 +1,48 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, formatPercent, formatScore, getScoreClass } from '../api'
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell } from 'recharts'
+import { api, formatCurrency, formatPercent } from '../api'
+import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
+import Card, { CardHeader, SectionLabel } from '../components/Card'
+import { ScoreBadge, ActionBadge, TagBadge } from '../components/Badge'
+import StatGrid, { StatRow } from '../components/StatGrid'
+import PageHeader from '../components/PageHeader'
+import Modal from '../components/Modal'
 
+// ── Collapsible Section (local helper) ──────────────────────────────
+function CollapsibleSection({ title, badge, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center justify-between w-full mb-2 group"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{title}</span>
+          {badge}
+        </div>
+        <svg
+          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round"
+          className={`text-dark-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && children}
+    </div>
+  )
+}
+
+// ── Performance Chart ───────────────────────────────────────────────
 function PerformanceChart({ history, startingCash }) {
   const [timeRange, setTimeRange] = useState('all')
 
   if (!history || history.length < 2) {
     return (
-      <div className="card mb-4 h-48 flex items-center justify-center text-dark-400">
+      <Card variant="glass" className="mb-4 h-48 flex items-center justify-center text-dark-400">
         Not enough data for chart yet
-      </div>
+      </Card>
     )
   }
 
@@ -80,12 +112,15 @@ function PerformanceChart({ history, startingCash }) {
     { value: 'all', label: 'All' },
   ]
 
+  const lineColor = isPositive ? '#10b981' : '#ef4444'
+  const gradientId = isPositive ? 'perfGradientGreen' : 'perfGradientRed'
+
   return (
-    <div className="card mb-4">
+    <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-2">
-        <div className="text-dark-400 text-xs">Performance</div>
+        <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Performance</span>
         <div className="flex items-center gap-2">
-          <div className="flex bg-dark-800 rounded-lg p-0.5">
+          <div className="flex bg-dark-850 rounded-lg p-0.5">
             {timeRanges.map(({ value, label }) => (
               <button
                 key={value}
@@ -100,19 +135,26 @@ function PerformanceChart({ history, startingCash }) {
               </button>
             ))}
           </div>
-          <div className="text-dark-500 text-xs">{filteredHistory.length} pts</div>
+          <span className="text-dark-500 text-[10px] font-data">{filteredHistory.length} pts</span>
         </div>
       </div>
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={filteredHistory}>
-            <Line
+          <AreaChart data={filteredHistory}>
+            <defs>
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={lineColor} stopOpacity={0.25} />
+                <stop offset="100%" stopColor={lineColor} stopOpacity={0.0} />
+              </linearGradient>
+            </defs>
+            <Area
               type="monotone"
               dataKey="total_value"
-              stroke={isPositive ? '#34c759' : '#ff3b30'}
+              stroke={lineColor}
               strokeWidth={2}
+              fill={`url(#${gradientId})`}
               dot={filteredHistory.length <= 50}
-              activeDot={{ r: 4, fill: isPositive ? '#34c759' : '#ff3b30' }}
+              activeDot={{ r: 4, fill: lineColor }}
             />
             <ReferenceLine
               y={startingCash}
@@ -121,8 +163,14 @@ function PerformanceChart({ history, startingCash }) {
               label={{ value: 'Start', position: 'right', fill: '#666', fontSize: 10 }}
             />
             <Tooltip
-              contentStyle={{ background: '#2c2c2e', border: 'none', borderRadius: '8px' }}
-              labelStyle={{ color: '#8e8e93' }}
+              contentStyle={{
+                background: 'rgba(20, 20, 31, 0.95)',
+                border: '1px solid #222233',
+                borderRadius: '10px',
+                fontFamily: 'JetBrains Mono',
+                fontSize: 12,
+              }}
+              labelStyle={{ color: '#6e6e82' }}
               formatter={(value) => [formatCurrency(value), 'Value']}
               labelFormatter={(_, payload) => {
                 if (payload && payload[0]) {
@@ -133,105 +181,96 @@ function PerformanceChart({ history, startingCash }) {
             />
             <XAxis dataKey="timestamp" hide />
             <YAxis hide domain={['dataMin - 500', 'dataMax + 500']} />
-          </LineChart>
+          </AreaChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ── Summary Card ────────────────────────────────────────────────────
 function SummaryCard({ summary, config }) {
   if (!summary) return null
 
   const isPositive = summary.total_return >= 0
 
   return (
-    <div className="card mb-4">
-      <div className="text-dark-400 text-sm mb-1">AI Portfolio Value</div>
-      <div className="text-3xl font-bold mb-1">
+    <Card variant="glass" className="mb-4">
+      <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">AI Portfolio Value</span>
+      <div className="text-3xl font-bold font-data mt-1 mb-1">
         {formatCurrency(summary.total_value)}
       </div>
-      <div className={`text-sm flex items-center gap-1 ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-        <span>{isPositive ? '↑' : '↓'}</span>
-        <span>{formatCurrency(Math.abs(summary.total_return))}</span>
+      <div className={`text-sm flex items-center gap-1.5 font-data ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+        <span>{isPositive ? '+' : ''}{formatCurrency(Math.abs(summary.total_return))}</span>
         <span className="text-dark-500">({formatPercent(summary.total_return_pct, true)})</span>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-dark-700">
-        <div>
-          <div className="text-dark-400 text-xs">Cash</div>
-          <div className="font-semibold">{formatCurrency(summary.cash)}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Invested</div>
-          <div className="font-semibold">{formatCurrency(summary.positions_value)}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Positions</div>
-          <div className="font-semibold">{summary.positions_count} / {config?.max_positions || 15}</div>
-        </div>
+      <div className="border-t border-dark-700/50 mt-4 pt-3">
+        <StatGrid
+          columns={3}
+          stats={[
+            { label: 'Cash', value: formatCurrency(summary.cash) },
+            { label: 'Invested', value: formatCurrency(summary.positions_value) },
+            { label: 'Positions', value: `${summary.positions_count} / ${config?.max_positions || 15}` },
+          ]}
+        />
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ── Positions List ──────────────────────────────────────────────────
 function PositionsList({ positions }) {
   if (!positions || positions.length === 0) {
     return (
-      <div className="card mb-4 text-center py-8 text-dark-400">
+      <Card variant="glass" className="mb-4 text-center py-8 text-dark-400">
         No positions yet. Initialize the portfolio to start trading.
-      </div>
+      </Card>
     )
   }
 
   return (
-    <div className="card mb-4">
-      <div className="font-semibold mb-3">Positions ({positions.length})</div>
-      <div className="space-y-3">
+    <Card variant="glass" className="mb-4">
+      <CardHeader title={`Positions (${positions.length})`} />
+      <div className="space-y-1">
         {positions.map(position => (
           <Link
             key={position.id}
             to={`/stock/${position.ticker}`}
-            className="flex justify-between items-center py-2 border-b border-dark-700 last:border-0 hover:bg-dark-700/50 -mx-2 px-2 rounded transition-colors"
+            className="flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
           >
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="font-medium">{position.ticker}</span>
+                <span className="font-medium text-dark-100">{position.ticker}</span>
                 {position.is_growth_stock && (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-400">
-                    Growth
-                  </span>
+                  <TagBadge color="purple">Growth</TagBadge>
                 )}
               </div>
-              <div className="text-dark-400 text-xs">
+              <div className="text-dark-400 text-[10px] font-data mt-0.5">
                 {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
               </div>
             </div>
             <div className="text-right">
-              <div className="font-semibold">{formatCurrency(position.current_value)}</div>
-              <div className={`text-xs ${position.gain_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
+              <span className={`text-[10px] font-data ${position.gain_loss_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                 {position.gain_loss_pct >= 0 ? '+' : ''}{position.gain_loss_pct?.toFixed(2)}%
-              </div>
+              </span>
             </div>
             <div className="ml-3 text-right">
               {/* Show appropriate score based on stock type */}
               {position.is_growth_stock ? (
-                <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(position.current_growth_score)}`}>
-                  {formatScore(position.current_growth_score)}
-                </div>
+                <ScoreBadge score={position.current_growth_score} size="sm" />
               ) : (
-                <div className={`px-2 py-1 rounded text-sm font-medium ${getScoreClass(position.current_score)}`}>
-                  {formatScore(position.current_score)}
-                </div>
+                <ScoreBadge score={position.current_score} size="sm" />
               )}
               {/* Show secondary score if available */}
               {position.is_growth_stock && position.current_score > 0 && (
-                <div className="text-[10px] text-dark-400 mt-0.5">
+                <div className="text-[10px] text-dark-400 font-data mt-0.5">
                   CANSLIM: {position.current_score?.toFixed(0)}
                 </div>
               )}
               {!position.is_growth_stock && position.current_growth_score > 0 && (
-                <div className="text-[10px] text-dark-400 mt-0.5">
+                <div className="text-[10px] text-dark-400 font-data mt-0.5">
                   Growth: {position.current_growth_score?.toFixed(0)}
                 </div>
               )}
@@ -239,10 +278,11 @@ function PositionsList({ positions }) {
           </Link>
         ))}
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ── Trade Detail Modal ──────────────────────────────────────────────
 function TradeDetailModal({ trade, onClose }) {
   if (!trade) return null
 
@@ -269,106 +309,80 @@ function TradeDetailModal({ trade, onClose }) {
     : null
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-dark-800 rounded-lg max-w-md w-full p-5 shadow-xl" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex justify-between items-start mb-4">
-          <div className="flex items-center gap-3">
-            <span className={`px-3 py-1 rounded font-bold ${
-              trade.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-            }`}>
-              {trade.action}
-            </span>
-            <div>
-              <Link
-                to={`/stock/${trade.ticker}`}
-                className="text-xl font-bold text-primary-400 hover:underline"
-                onClick={onClose}
-              >
-                {trade.ticker}
-              </Link>
-              {trade.is_growth_stock && (
-                <span className="ml-2 px-2 py-0.5 rounded text-xs bg-purple-500/20 text-purple-400">Growth</span>
-              )}
-            </div>
-          </div>
-          <button onClick={onClose} className="text-dark-400 hover:text-white text-xl">&times;</button>
-        </div>
-
-        {/* Trade Details */}
-        <div className="space-y-3 text-sm">
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Date & Time</span>
-            <span className="font-medium">{formatDateTime(trade.executed_at)}</span>
-          </div>
-
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Shares</span>
-            <span className="font-medium">{trade.shares.toFixed(4)}</span>
-          </div>
-
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Price</span>
-            <span className="font-medium">{formatCurrency(trade.price)}</span>
-          </div>
-
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Total Value</span>
-            <span className="font-medium">{formatCurrency(trade.total_value)}</span>
-          </div>
-
-          {trade.action === 'SELL' && trade.cost_basis && (
-            <div className="flex justify-between py-2 border-b border-dark-700">
-              <span className="text-dark-400">Cost Basis</span>
-              <span className="font-medium">{formatCurrency(trade.cost_basis)}/share</span>
-            </div>
-          )}
-
-          {trade.realized_gain != null && (
-            <div className="flex justify-between py-2 border-b border-dark-700">
-              <span className="text-dark-400">Realized Gain/Loss</span>
-              <span className={`font-medium ${trade.realized_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {trade.realized_gain >= 0 ? '+' : ''}{formatCurrency(trade.realized_gain)}
-                {gainPct != null && ` (${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}%)`}
-              </span>
-            </div>
-          )}
-
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">CANSLIM Score</span>
-            <span className="font-medium">{trade.canslim_score?.toFixed(1) || 'N/A'}</span>
-          </div>
-
-          {trade.is_growth_stock && trade.growth_mode_score && (
-            <div className="flex justify-between py-2 border-b border-dark-700">
-              <span className="text-dark-400">Growth Mode Score</span>
-              <span className="font-medium">{trade.growth_mode_score.toFixed(1)}</span>
-            </div>
-          )}
-
-          {/* Reason Section */}
-          <div className="pt-2">
-            <div className="text-dark-400 mb-2">Reason</div>
-            <div className="bg-dark-700 rounded p-3 text-sm">
-              {trade.reason || 'No reason recorded'}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="mt-5 flex justify-end">
-          <button
+    <Modal
+      open={!!trade}
+      onClose={onClose}
+      title={
+        <div className="flex items-center gap-2">
+          <ActionBadge action={trade.action} />
+          <Link
+            to={`/stock/${trade.ticker}`}
+            className="text-sm font-bold text-primary-400 hover:underline"
             onClick={onClose}
-            className="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded text-sm"
           >
-            Close
-          </button>
+            {trade.ticker}
+          </Link>
+          {trade.is_growth_stock && <TagBadge color="purple">Growth</TagBadge>}
+        </div>
+      }
+    >
+      <div className="space-y-0">
+        <StatRow label="Date & Time" value={formatDateTime(trade.executed_at)} />
+
+        <div className="border-b border-dark-700/30" />
+        <StatRow label="Shares" value={<span className="font-data">{trade.shares.toFixed(4)}</span>} />
+
+        <div className="border-b border-dark-700/30" />
+        <StatRow label="Price" value={<span className="font-data">{formatCurrency(trade.price)}</span>} />
+
+        <div className="border-b border-dark-700/30" />
+        <StatRow label="Total Value" value={<span className="font-data">{formatCurrency(trade.total_value)}</span>} />
+
+        {trade.action === 'SELL' && trade.cost_basis && (
+          <>
+            <div className="border-b border-dark-700/30" />
+            <StatRow label="Cost Basis" value={<span className="font-data">{formatCurrency(trade.cost_basis)}/share</span>} />
+          </>
+        )}
+
+        {trade.realized_gain != null && (
+          <>
+            <div className="border-b border-dark-700/30" />
+            <StatRow
+              label="Realized Gain/Loss"
+              value={
+                <span className={`font-data font-medium ${trade.realized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {trade.realized_gain >= 0 ? '+' : ''}{formatCurrency(trade.realized_gain)}
+                  {gainPct != null && ` (${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}%)`}
+                </span>
+              }
+            />
+          </>
+        )}
+
+        <div className="border-b border-dark-700/30" />
+        <StatRow label="CANSLIM Score" value={<span className="font-data">{trade.canslim_score?.toFixed(1) || 'N/A'}</span>} />
+
+        {trade.is_growth_stock && trade.growth_mode_score && (
+          <>
+            <div className="border-b border-dark-700/30" />
+            <StatRow label="Growth Mode Score" value={<span className="font-data">{trade.growth_mode_score.toFixed(1)}</span>} />
+          </>
+        )}
+
+        {/* Reason Section */}
+        <div className="pt-3">
+          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Reason</span>
+          <div className="bg-dark-850 rounded-lg p-3 text-sm text-dark-200 mt-1.5">
+            {trade.reason || 'No reason recorded'}
+          </div>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
+// ── Trade History ───────────────────────────────────────────────────
 function TradeHistory({ trades }) {
   const [selectedTrade, setSelectedTrade] = useState(null)
 
@@ -377,49 +391,44 @@ function TradeHistory({ trades }) {
   }
 
   return (
-    <div className="card mb-4">
-      <div className="font-semibold mb-3">Recent Trades</div>
-      <div className="space-y-2 max-h-64 overflow-y-auto">
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Recent Trades" />
+      <div className="space-y-1 max-h-64 overflow-y-auto">
         {trades.slice(0, 20).map(trade => (
           <div
             key={trade.id}
             onClick={() => setSelectedTrade(trade)}
-            className="flex justify-between items-center py-2 border-b border-dark-700 last:border-0 text-sm cursor-pointer hover:bg-dark-700/50 rounded px-2 -mx-2 transition-colors"
+            className="flex justify-between items-center py-2 border-b border-dark-700/30 last:border-0 text-sm cursor-pointer hover:bg-dark-750/50 rounded px-2 -mx-2 transition-colors"
           >
             <div className="flex items-center gap-2">
-              <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                trade.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              }`}>
-                {trade.action}
-              </span>
-              <span className="font-medium">{trade.ticker}</span>
-              {trade.is_growth_stock && (
-                <span className="px-1 py-0.5 rounded text-[9px] bg-purple-500/20 text-purple-400">G</span>
-              )}
+              <ActionBadge action={trade.action} />
+              <span className="font-medium text-dark-100">{trade.ticker}</span>
+              {trade.is_growth_stock && <TagBadge color="purple">G</TagBadge>}
             </div>
             <div className="text-right">
-              <div>{trade.shares.toFixed(2)} @ {formatCurrency(trade.price)}</div>
-              <div className="text-dark-400 text-xs truncate max-w-[150px]">{trade.reason}</div>
+              <div className="font-data text-dark-200">
+                {trade.shares.toFixed(2)} @ {formatCurrency(trade.price)}
+              </div>
+              <div className="text-dark-400 text-[10px] truncate max-w-[150px]">{trade.reason}</div>
             </div>
             {trade.realized_gain != null && (
-              <div className={`ml-2 text-xs ${trade.realized_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`ml-2 text-xs font-data ${trade.realized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                 {trade.realized_gain >= 0 ? '+' : ''}{formatCurrency(trade.realized_gain)}
-              </div>
+              </span>
             )}
           </div>
         ))}
       </div>
 
       {/* Trade Detail Modal */}
-      {selectedTrade && (
-        <TradeDetailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />
-      )}
-    </div>
+      <TradeDetailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />
+    </Card>
   )
 }
 
-const SECTOR_COLORS = ['#34c759', '#5ac8fa', '#ff9500', '#ff3b30', '#af52de',
-  '#ff2d55', '#5856d6', '#007aff', '#30d158', '#ffd60a']
+// ── Sector Allocation Chart ─────────────────────────────────────────
+const SECTOR_COLORS = ['#10b981', '#22d3ee', '#f59e0b', '#ef4444', '#a855f7',
+  '#ec4899', '#6366f1', '#3b82f6', '#22c55e', '#eab308']
 
 function SectorAllocationChart({ riskData, cashPct }) {
   if (!riskData?.sector_concentration || riskData.sector_concentration.length === 0) return null
@@ -436,15 +445,15 @@ function SectorAllocationChart({ riskData, cashPct }) {
     const x = cx + radius * Math.cos(-midAngle * RADIAN)
     const y = cy + radius * Math.sin(-midAngle * RADIAN)
     return (
-      <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={10}>
+      <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={10} fontFamily="JetBrains Mono">
         {Math.round(value)}%
       </text>
     )
   }
 
   return (
-    <div className="card mb-4">
-      <h3 className="text-sm font-bold mb-2">Sector Allocation</h3>
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Sector Allocation" />
       <div className="flex items-center">
         <div className="w-1/2 h-40">
           <ResponsiveContainer width="100%" height="100%">
@@ -460,10 +469,19 @@ function SectorAllocationChart({ riskData, cashPct }) {
                 labelLine={false}
               >
                 {chartData.map((entry, i) => (
-                  <Cell key={i} fill={entry.name === 'Cash' ? '#636366' : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
+                  <Cell key={i} fill={entry.name === 'Cash' ? '#4a4a5e' : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip formatter={(v) => `${v.toFixed(1)}%`} />
+              <Tooltip
+                contentStyle={{
+                  background: 'rgba(20, 20, 31, 0.95)',
+                  border: '1px solid #222233',
+                  borderRadius: '10px',
+                  fontFamily: 'JetBrains Mono',
+                  fontSize: 12,
+                }}
+                formatter={(v) => `${v.toFixed(1)}%`}
+              />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -471,17 +489,18 @@ function SectorAllocationChart({ riskData, cashPct }) {
           {chartData.map((entry, i) => (
             <div key={entry.name} className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: entry.name === 'Cash' ? '#636366' : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
+                style={{ backgroundColor: entry.name === 'Cash' ? '#4a4a5e' : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
               <span className="text-dark-300 truncate">{entry.name}</span>
-              <span className="text-dark-400 ml-auto">{entry.value.toFixed(0)}%</span>
+              <span className="text-dark-400 ml-auto font-data">{entry.value.toFixed(0)}%</span>
             </div>
           ))}
         </div>
       </div>
-    </div>
+    </Card>
   )
 }
 
+// ── Config Panel ────────────────────────────────────────────────────
 function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, waitingForTrades }) {
   const [isActive, setIsActive] = useState(config?.is_active || false)
   const [updating, setUpdating] = useState(false)
@@ -532,16 +551,15 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
     }
   }
 
-
   return (
-    <div className="card mb-4">
+    <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-3">
-        <div className="font-semibold">AI Trading</div>
+        <CardHeader title="AI Trading" className="mb-0" />
         <button
           onClick={handleToggle}
           disabled={updating}
           className={`relative w-12 h-6 rounded-full transition-colors ${
-            isActive ? 'bg-green-500' : 'bg-dark-600'
+            isActive ? 'bg-emerald-500' : 'bg-dark-600'
           }`}
         >
           <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -551,41 +569,39 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       </div>
 
       {isActive && (
-        <div className="mb-3 p-2 bg-green-500/10 border border-green-500/30 rounded-lg">
-          <div className="flex items-center gap-2 text-green-400 text-sm">
-            <span className="animate-pulse">●</span>
+        <div className="mb-3 p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+          <div className="flex items-center gap-2 text-emerald-400 text-sm">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>AI Trading Active - Trades execute after each scan</span>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-        <div>
-          <div className="text-dark-400 text-xs">Min Score to Buy</div>
-          <div className="font-medium">72</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Strategy</div>
-          <div className="font-medium capitalize">{config?.strategy || 'balanced'}</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Take Profit</div>
-          <div className="font-medium text-green-400">+75%</div>
-        </div>
-        <div>
-          <div className="text-dark-400 text-xs">Stop Loss</div>
-          <div className="font-medium text-red-400">-8%</div>
-        </div>
+      <div className="border-t border-dark-700/30 pt-3 mb-3">
+        <StatGrid
+          columns={2}
+          stats={[
+            { label: 'Min Score to Buy', value: '72' },
+            { label: 'Strategy', value: config?.strategy || 'balanced' },
+            { label: 'Take Profit', value: '+75%', color: 'text-emerald-400' },
+            { label: 'Stop Loss', value: '-8%', color: 'text-red-400' },
+          ]}
+          className="text-sm"
+        />
       </div>
-
 
       <div className="flex gap-2 mb-2">
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="flex-1 py-2 bg-dark-600 hover:bg-dark-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          className="flex-1 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
         >
-          <span className={refreshing ? 'animate-spin' : ''}>⟳</span>
+          <svg
+            width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            className={refreshing ? 'animate-spin' : ''}
+          >
+            <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" />
+          </svg>
           <span>{refreshing ? 'Refreshing...' : 'Refresh Prices'}</span>
         </button>
         <button
@@ -593,7 +609,11 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
           disabled={waitingForTrades}
           className="flex-1 py-2 bg-primary-500 hover:bg-primary-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
         >
-          {waitingForTrades && <span className="animate-spin">⟳</span>}
+          {waitingForTrades && (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
+              <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+          )}
           <span>{waitingForTrades ? 'Running...' : 'Run Trading Cycle'}</span>
         </button>
       </div>
@@ -612,10 +632,189 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       >
         Run Historical Backtest
       </Link>
-    </div>
+    </Card>
   )
 }
 
+// ── Coiled Spring Alerts Section ────────────────────────────────────
+function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
+  if (!csAlerts || csAlerts.length === 0) return null
+
+  return (
+    <Card variant="accent" accent="purple" className="mb-4 bg-purple-500/[0.03]">
+      <CollapsibleSection
+        title="Coiled Spring Alerts"
+        badge={<TagBadge color="purple">{csAlerts.length} candidates</TagBadge>}
+        defaultOpen={csExpanded}
+      >
+        <div className="text-[10px] text-dark-400 mb-2">
+          High-conviction pre-earnings plays: long bases + beat streaks + approaching earnings
+        </div>
+        <div className="space-y-1">
+          {csAlerts.map((stock) => (
+            <Link
+              key={stock.ticker}
+              to={`/stock/${stock.ticker}`}
+              className="flex justify-between items-center py-2 px-2 -mx-2 rounded hover:bg-dark-750/50 transition-colors border-b border-dark-700/30 last:border-0"
+            >
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-dark-100">{stock.ticker}</span>
+                  {stock.base_type && stock.base_type !== 'none' && (
+                    <TagBadge color="cyan">{stock.weeks_in_base}w {stock.base_type}</TagBadge>
+                  )}
+                  {stock.is_breaking_out && (
+                    <TagBadge color="amber">Breakout</TagBadge>
+                  )}
+                </div>
+                <div className="text-[10px] text-dark-400 flex gap-2 mt-0.5 font-data">
+                  <span>C:{stock.c_score?.toFixed(0)}</span>
+                  <span>L:{stock.l_score?.toFixed(1)}</span>
+                  <span className="text-dark-500">|</span>
+                  <span>{stock.earnings_beat_streak} beats</span>
+                  <span className="text-dark-500">|</span>
+                  <span className="text-amber-400">{stock.days_to_earnings}d to earnings</span>
+                  <span className="text-dark-500">|</span>
+                  <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <ScoreBadge score={stock.canslim_score} size="sm" />
+                <div className="text-[10px] text-purple-400 font-data mt-0.5">+{stock.cs_bonus} bonus</div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </CollapsibleSection>
+    </Card>
+  )
+}
+
+// ── Risk Monitor Section ────────────────────────────────────────────
+function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
+  if (!riskData) return null
+
+  const heatColor = riskData.heat_status === 'danger' ? 'red'
+    : riskData.heat_status === 'warning' ? 'amber' : 'green'
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CollapsibleSection
+        title="Risk Monitor"
+        badge={
+          <div className="flex items-center gap-1.5">
+            <TagBadge color={heatColor}>Heat: {riskData.portfolio_heat}%</TagBadge>
+            {riskData.position_alerts?.length > 0 && (
+              <TagBadge color="red">{riskData.position_alerts.length} alerts</TagBadge>
+            )}
+          </div>
+        }
+        defaultOpen={riskExpanded}
+      >
+        <div className="space-y-3 mt-1">
+          {/* Heat bar */}
+          <div>
+            <div className="text-[10px] text-dark-400 mb-1">Portfolio Heat</div>
+            <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  riskData.portfolio_heat < 10 ? 'bg-emerald-500' :
+                  riskData.portfolio_heat < 15 ? 'bg-amber-500' : 'bg-red-500'
+                }`}
+                style={{ width: `${Math.min(riskData.portfolio_heat / 20 * 100, 100)}%` }}
+              />
+            </div>
+          </div>
+          {/* Sector concentration */}
+          {riskData.sector_concentration?.length > 0 && (
+            <div>
+              <div className="text-[10px] text-dark-400 mb-1">Sector Concentration</div>
+              <div className="flex flex-wrap gap-1">
+                {riskData.sector_concentration.map(s => (
+                  <TagBadge
+                    key={s.sector}
+                    color={s.count >= 3 ? 'amber' : 'default'}
+                  >
+                    {s.sector}: {s.count} ({s.pct}%)
+                  </TagBadge>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Stop distances */}
+          {riskData.stop_distances?.length > 0 && (
+            <div>
+              <div className="text-[10px] text-dark-400 mb-1">Distance to Stop</div>
+              {riskData.stop_distances.slice(0, 5).map(s => (
+                <div key={s.ticker} className="flex justify-between text-xs py-0.5">
+                  <span className="font-medium text-dark-200">{s.ticker}</span>
+                  <span className={`font-data ${s.distance_pct < 5 ? 'text-red-400' : 'text-dark-300'}`}>
+                    {s.distance_pct}% ({s.gain_pct >= 0 ? '+' : ''}{s.gain_pct}%)
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </CollapsibleSection>
+    </Card>
+  )
+}
+
+// ── Earnings Calendar Section ───────────────────────────────────────
+function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarningsExpanded }) {
+  if (!earningsCalendar || !earningsCalendar.positions?.length) return null
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CollapsibleSection
+        title="Earnings Calendar"
+        badge={
+          <div className="flex items-center gap-1.5">
+            {earningsCalendar.upcoming_count?.high > 0 && (
+              <TagBadge color="red">{earningsCalendar.upcoming_count.high} this week</TagBadge>
+            )}
+            {earningsCalendar.upcoming_count?.medium > 0 && (
+              <TagBadge color="amber">{earningsCalendar.upcoming_count.medium} next week</TagBadge>
+            )}
+          </div>
+        }
+        defaultOpen={earningsExpanded}
+      >
+        <div className="space-y-1 mt-1">
+          {earningsCalendar.positions.map(p => (
+            <div key={p.ticker} className={`flex justify-between items-center py-1.5 px-2 -mx-2 rounded ${
+              p.risk_level === 'high' ? 'bg-red-500/5' : ''
+            }`}>
+              <div>
+                <span className="font-medium text-sm text-dark-100">{p.ticker}</span>
+                <span className="text-dark-400 text-xs ml-2 font-data">
+                  {p.next_earnings_date || `${p.days_to_earnings}d`}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-dark-400 font-data">{p.beat_streak} beats</span>
+                <TagBadge color={
+                  p.risk_level === 'high' ? 'red' :
+                  p.risk_level === 'medium' ? 'amber' : 'green'
+                }>
+                  {p.days_to_earnings}d
+                </TagBadge>
+                <span className={`text-xs font-data ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct}%
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CollapsibleSection>
+    </Card>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ── Main Page Component ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
 export default function AIPortfolio() {
   const [loading, setLoading] = useState(true)
   const [portfolio, setPortfolio] = useState(null)
@@ -811,277 +1010,117 @@ export default function AIPortfolio() {
     }
   }
 
+  // ── Loading skeleton ────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="p-4">
-        <div className="skeleton h-8 w-48 mb-4" />
-        <div className="skeleton h-48 rounded-2xl mb-4" />
-        <div className="skeleton h-32 rounded-2xl mb-4" />
-        <div className="skeleton h-48 rounded-2xl" />
+      <div className="p-4 md:p-6">
+        <div className="skeleton h-8 w-48 mb-5 rounded-lg" />
+        <div className="skeleton h-48 rounded-xl mb-4" />
+        <div className="skeleton h-32 rounded-xl mb-4" />
+        <div className="skeleton h-48 rounded-xl" />
       </div>
     )
   }
 
+  // ── Page render ─────────────────────────────────────────────────────
   return (
-    <div className="p-4">
-      <div className="flex justify-between items-center mb-4">
-        <div>
-          <div className="text-dark-400 text-sm">Autonomous</div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold">AI Portfolio</h1>
-            {portfolio?.config?.strategy === 'growth' && (
-              <span className="text-xs bg-purple-900 text-purple-400 px-2 py-0.5 rounded font-medium">Growth Mode</span>
+    <div className="p-4 md:p-6">
+      {/* Page Header */}
+      <PageHeader
+        title="AI Portfolio"
+        subtitle={
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+            <span>Started: <span className="font-data">{formatCurrency(portfolio?.config?.starting_cash || 25000)}</span></span>
+            {lastUpdated && (
+              <span>Data: <span className="font-data">{lastUpdated.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST</span></span>
             )}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-dark-400 text-xs">
-            Started: {formatCurrency(portfolio?.config?.starting_cash || 25000)}
-          </div>
-          {lastUpdated && (
-            <div className="text-dark-500 text-xs">
-              Data: {lastUpdated.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
-            </div>
-          )}
-          {lastPriceRefresh && (
-            <div className="text-dark-500 text-xs">
-              Prices: {lastPriceRefresh.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
-            </div>
-          )}
-        </div>
-      </div>
+            {lastPriceRefresh && (
+              <span>Prices: <span className="font-data">{lastPriceRefresh.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST</span></span>
+            )}
+          </span>
+        }
+        badge={
+          portfolio?.config?.strategy === 'growth'
+            ? <TagBadge color="purple">Growth Mode</TagBadge>
+            : null
+        }
+      />
 
       {/* Auto-refresh toggle */}
-      <div className="card mb-4 p-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className={`text-lg ${isRefreshingPrices ? 'animate-spin' : ''}`}>
-            {isRefreshingPrices ? '⟳' : '💹'}
-          </span>
-          <div>
-            <div className="text-sm font-medium">Auto-Refresh Prices</div>
-            <div className="text-xs text-dark-400">
-              {autoRefresh ? 'Every 5 min during market hours' : 'Disabled'}
+      <Card variant="glass" className="mb-4" padding="p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <svg
+              width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              className={`text-primary-400 ${isRefreshingPrices ? 'animate-spin' : ''}`}
+            >
+              <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+            <div>
+              <div className="text-sm font-medium text-dark-100">Auto-Refresh Prices</div>
+              <div className="text-[10px] text-dark-400">
+                {autoRefresh ? 'Every 5 min during market hours' : 'Disabled'}
+              </div>
             </div>
           </div>
-        </div>
-        <button
-          onClick={() => setAutoRefresh(!autoRefresh)}
-          className={`relative w-12 h-6 rounded-full transition-colors ${
-            autoRefresh ? 'bg-green-500' : 'bg-dark-600'
-          }`}
-        >
-          <span
-            className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-200 ${
-              autoRefresh ? 'translate-x-6' : ''
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`relative w-12 h-6 rounded-full transition-colors ${
+              autoRefresh ? 'bg-emerald-500' : 'bg-dark-600'
             }`}
-          />
-        </button>
-      </div>
-
-      {waitingForTrades && (
-        <div className="card mb-4 p-3 bg-primary-500/10 border border-primary-500/30">
-          <div className="flex items-center gap-2 text-primary-400">
-            <span className="animate-spin">⟳</span>
-            <span className="font-medium">Executing trades... This may take up to 2 minutes.</span>
-          </div>
-          <div className="text-dark-400 text-xs mt-1">Page will auto-update when complete.</div>
+          >
+            <span
+              className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-200 ${
+                autoRefresh ? 'translate-x-6' : ''
+              }`}
+            />
+          </button>
         </div>
+      </Card>
+
+      {/* Waiting for trades banner */}
+      {waitingForTrades && (
+        <Card variant="glass" className="mb-4 border-primary-500/30 bg-primary-500/5" padding="p-3">
+          <div className="flex items-center gap-2 text-primary-400">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
+              <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+            <span className="font-medium text-sm">Executing trades... This may take up to 2 minutes.</span>
+          </div>
+          <div className="text-dark-400 text-[10px] mt-1">Page will auto-update when complete.</div>
+        </Card>
       )}
 
       {/* Coiled Spring Alerts */}
-      {csAlerts && csAlerts.length > 0 && (
-        <div className="card mb-4 border border-purple-500/30 bg-purple-500/5">
-          <button
-            onClick={() => setCsExpanded(!csExpanded)}
-            className="w-full flex justify-between items-center"
-          >
-            <div className="font-semibold text-sm flex items-center gap-2">
-              <span className="text-purple-400">🌀</span>
-              Coiled Spring Alerts
-              <span className="text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
-                {csAlerts.length} candidates
-              </span>
-            </div>
-            <span className="text-dark-400">{csExpanded ? '▼' : '▶'}</span>
-          </button>
-
-          {csExpanded && (
-            <div className="mt-3 space-y-2">
-              <div className="text-[10px] text-dark-400 mb-2">
-                High-conviction pre-earnings plays: long bases + beat streaks + approaching earnings
-              </div>
-              {csAlerts.map((stock) => (
-                <Link
-                  key={stock.ticker}
-                  to={`/stock/${stock.ticker}`}
-                  className="flex justify-between items-center py-2 px-2 -mx-2 rounded hover:bg-dark-700/50 transition-colors border-b border-dark-700 last:border-0"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{stock.ticker}</span>
-                      {stock.base_type && stock.base_type !== 'none' && (
-                        <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1 rounded">
-                          {stock.weeks_in_base}w {stock.base_type}
-                        </span>
-                      )}
-                      {stock.is_breaking_out && (
-                        <span className="text-[9px] bg-yellow-500/20 text-yellow-400 px-1 rounded">
-                          Breakout
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-dark-400 flex gap-2 mt-0.5">
-                      <span>C:{stock.c_score?.toFixed(0)}</span>
-                      <span>L:{stock.l_score?.toFixed(1)}</span>
-                      <span>•</span>
-                      <span>{stock.earnings_beat_streak} beats</span>
-                      <span>•</span>
-                      <span className="text-yellow-400">{stock.days_to_earnings}d to earnings</span>
-                      <span>•</span>
-                      <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-sm font-medium">{stock.canslim_score?.toFixed(0)}</div>
-                    <div className="text-[10px] text-purple-400">+{stock.cs_bonus} bonus</div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      <CoiledSpringSection
+        csAlerts={csAlerts}
+        csExpanded={csExpanded}
+        setCsExpanded={setCsExpanded}
+      />
 
       {/* Paper Mode Banner */}
       {portfolio?.config?.paper_mode && (
-        <div className="card mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30">
-          <div className="flex items-center gap-2 text-yellow-400">
-            <span className="text-lg">PAPER MODE</span>
-            <span className="text-xs text-dark-400">Trades are simulated - no real positions affected</span>
+        <Card variant="glass" className="mb-4 border-amber-500/30 bg-amber-500/5" padding="p-3">
+          <div className="flex items-center gap-2 text-amber-400">
+            <span className="text-sm font-semibold">PAPER MODE</span>
+            <span className="text-[10px] text-dark-400">Trades are simulated - no real positions affected</span>
           </div>
-        </div>
+        </Card>
       )}
 
       {/* Risk Monitor */}
-      {riskData && (
-        <div className="card mb-4 border border-dark-600">
-          <button onClick={() => setRiskExpanded(!riskExpanded)} className="w-full flex justify-between items-center">
-            <div className="font-semibold text-sm flex items-center gap-2">
-              Risk Monitor
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                riskData.heat_status === 'danger' ? 'bg-red-500/20 text-red-400' :
-                riskData.heat_status === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
-                'bg-green-500/20 text-green-400'
-              }`}>
-                Heat: {riskData.portfolio_heat}%
-              </span>
-              {riskData.position_alerts?.length > 0 && (
-                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">
-                  {riskData.position_alerts.length} alerts
-                </span>
-              )}
-            </div>
-            <span className="text-dark-400">{riskExpanded ? '▼' : '▶'}</span>
-          </button>
-          {riskExpanded && (
-            <div className="mt-3 space-y-3">
-              {/* Heat bar */}
-              <div>
-                <div className="text-xs text-dark-400 mb-1">Portfolio Heat</div>
-                <div className="h-2 bg-dark-600 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${
-                      riskData.portfolio_heat < 10 ? 'bg-green-500' :
-                      riskData.portfolio_heat < 15 ? 'bg-yellow-500' : 'bg-red-500'
-                    }`}
-                    style={{ width: `${Math.min(riskData.portfolio_heat / 20 * 100, 100)}%` }}
-                  />
-                </div>
-              </div>
-              {/* Sector concentration */}
-              {riskData.sector_concentration?.length > 0 && (
-                <div>
-                  <div className="text-xs text-dark-400 mb-1">Sector Concentration</div>
-                  <div className="flex flex-wrap gap-1">
-                    {riskData.sector_concentration.map(s => (
-                      <span key={s.sector} className={`text-[10px] px-2 py-0.5 rounded ${
-                        s.count >= 3 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-dark-600 text-dark-300'
-                      }`}>
-                        {s.sector}: {s.count} ({s.pct}%)
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Stop distances */}
-              {riskData.stop_distances?.length > 0 && (
-                <div>
-                  <div className="text-xs text-dark-400 mb-1">Distance to Stop</div>
-                  {riskData.stop_distances.slice(0, 5).map(s => (
-                    <div key={s.ticker} className="flex justify-between text-xs py-0.5">
-                      <span className="font-medium">{s.ticker}</span>
-                      <span className={s.distance_pct < 5 ? 'text-red-400' : 'text-dark-300'}>
-                        {s.distance_pct}% ({s.gain_pct >= 0 ? '+' : ''}{s.gain_pct}%)
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      <RiskMonitorSection
+        riskData={riskData}
+        riskExpanded={riskExpanded}
+        setRiskExpanded={setRiskExpanded}
+      />
 
       {/* Earnings Calendar */}
-      {earningsCalendar && earningsCalendar.positions?.length > 0 && (
-        <div className="card mb-4 border border-dark-600">
-          <button onClick={() => setEarningsExpanded(!earningsExpanded)} className="w-full flex justify-between items-center">
-            <div className="font-semibold text-sm flex items-center gap-2">
-              Earnings Calendar
-              {earningsCalendar.upcoming_count?.high > 0 && (
-                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">
-                  {earningsCalendar.upcoming_count.high} this week
-                </span>
-              )}
-              {earningsCalendar.upcoming_count?.medium > 0 && (
-                <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">
-                  {earningsCalendar.upcoming_count.medium} next week
-                </span>
-              )}
-            </div>
-            <span className="text-dark-400">{earningsExpanded ? '▼' : '▶'}</span>
-          </button>
-          {earningsExpanded && (
-            <div className="mt-3 space-y-1">
-              {earningsCalendar.positions.map(p => (
-                <div key={p.ticker} className={`flex justify-between items-center py-1.5 px-2 -mx-2 rounded ${
-                  p.risk_level === 'high' ? 'bg-red-500/5' : ''
-                }`}>
-                  <div>
-                    <span className="font-medium text-sm">{p.ticker}</span>
-                    <span className="text-dark-400 text-xs ml-2">
-                      {p.next_earnings_date || `${p.days_to_earnings}d`}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-dark-400">{p.beat_streak} beats</span>
-                    <span className={`px-1.5 py-0.5 rounded ${
-                      p.risk_level === 'high' ? 'bg-red-500/20 text-red-400' :
-                      p.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                      'bg-green-500/20 text-green-400'
-                    }`}>
-                      {p.days_to_earnings}d
-                    </span>
-                    <span className={p.gain_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
-                      {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct}%
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      <EarningsCalendarSection
+        earningsCalendar={earningsCalendar}
+        earningsExpanded={earningsExpanded}
+        setEarningsExpanded={setEarningsExpanded}
+      />
 
       <PerformanceChart
         history={history}
@@ -1114,11 +1153,12 @@ export default function AIPortfolio() {
       <TradeHistory trades={trades} />
 
       {/* Links */}
-      <div className="flex gap-3 mt-4">
-        <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300">
+      <SectionLabel>More</SectionLabel>
+      <div className="flex gap-4 mb-4">
+        <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
           Trade Analytics
         </Link>
-        <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300">
+        <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
           Run Backtest
         </Link>
       </div>
