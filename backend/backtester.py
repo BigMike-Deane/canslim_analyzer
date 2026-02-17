@@ -9,6 +9,8 @@ import logging
 import math
 import sys
 import os
+import sqlite3
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -26,6 +28,10 @@ from backend.market_state import MarketStateManager, MarketState
 from canslim_scorer import calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
+
+# Bump this version when scoring logic changes to invalidate cached scores
+SCORE_CACHE_VERSION = 1
+SCORE_CACHE_DIR = "/tmp/backtest_cache"
 
 
 def get_strategy_profile(strategy_name: str = "balanced") -> dict:
@@ -163,6 +169,77 @@ class BacktestEngine:
         self._score_cache: Dict[str, Dict[str, dict]] = {}  # {date_str: {ticker: score_dict}}
         self._score_cache_date: Optional[str] = None  # Current cache date
 
+        # Persistent score cache (SQLite on disk, survives across backtest runs)
+        self._persistent_cache_conn: Optional[sqlite3.Connection] = None
+        self._persistent_cache_writes: int = 0  # Batch commit counter
+
+    def _init_persistent_score_cache(self):
+        """Initialize SQLite-based persistent score cache on disk."""
+        try:
+            os.makedirs(SCORE_CACHE_DIR, exist_ok=True)
+            db_path = os.path.join(SCORE_CACHE_DIR, f"scores_v{SCORE_CACHE_VERSION}.db")
+            self._persistent_cache_conn = sqlite3.connect(db_path)
+            self._persistent_cache_conn.execute("PRAGMA journal_mode=WAL")
+            self._persistent_cache_conn.execute("PRAGMA synchronous=NORMAL")
+            self._persistent_cache_conn.execute("""
+                CREATE TABLE IF NOT EXISTS scores (
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    score_json TEXT NOT NULL,
+                    PRIMARY KEY (ticker, date)
+                )
+            """)
+            self._persistent_cache_conn.commit()
+            count = self._persistent_cache_conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0]
+            logger.info(f"Backtest {self.backtest.id}: Persistent score cache opened ({count:,} entries)")
+        except Exception as e:
+            logger.warning(f"Backtest {self.backtest.id}: Could not init persistent score cache: {e}")
+            self._persistent_cache_conn = None
+
+    def _get_persistent_scores(self, date_str: str, tickers: List[str]) -> Dict[str, dict]:
+        """Batch-fetch cached scores from SQLite for a given date."""
+        if not self._persistent_cache_conn or not tickers:
+            return {}
+        try:
+            placeholders = ",".join("?" for _ in tickers)
+            rows = self._persistent_cache_conn.execute(
+                f"SELECT ticker, score_json FROM scores WHERE date = ? AND ticker IN ({placeholders})",
+                [date_str] + tickers
+            ).fetchall()
+            return {row[0]: json.loads(row[1]) for row in rows}
+        except Exception:
+            return {}
+
+    def _save_persistent_scores(self, date_str: str, scores: Dict[str, dict]):
+        """Batch-save computed scores to SQLite."""
+        if not self._persistent_cache_conn or not scores:
+            return
+        try:
+            rows = [(ticker, date_str, json.dumps(s)) for ticker, s in scores.items()]
+            self._persistent_cache_conn.executemany(
+                "INSERT OR IGNORE INTO scores (ticker, date, score_json) VALUES (?, ?, ?)",
+                rows
+            )
+            self._persistent_cache_writes += len(rows)
+            # Commit every 5000 writes to balance durability and performance
+            if self._persistent_cache_writes >= 5000:
+                self._persistent_cache_conn.commit()
+                self._persistent_cache_writes = 0
+        except Exception as e:
+            logger.debug(f"Persistent cache write error: {e}")
+
+    def _close_persistent_score_cache(self):
+        """Flush and close the persistent score cache."""
+        if self._persistent_cache_conn:
+            try:
+                self._persistent_cache_conn.commit()
+                count = self._persistent_cache_conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0]
+                logger.info(f"Backtest {self.backtest.id}: Persistent score cache closed ({count:,} entries)")
+                self._persistent_cache_conn.close()
+            except Exception:
+                pass
+            self._persistent_cache_conn = None
+
     def run(self) -> BacktestRun:
         """
         Execute the backtest day by day.
@@ -178,6 +255,9 @@ class BacktestEngine:
 
             # Initialize data provider
             self.data_provider = HistoricalDataProvider(tickers)
+
+            # Initialize persistent score cache (reused across backtest runs)
+            self._init_persistent_score_cache()
 
             # Preload historical data
             def update_progress(pct):
@@ -288,6 +368,9 @@ class BacktestEngine:
             # Calculate final metrics
             self._calculate_final_metrics()
 
+            # Close persistent score cache (flush remaining writes)
+            self._close_persistent_score_cache()
+
             self.backtest.status = "completed"
             self.backtest.completed_at = datetime.now(timezone.utc)
             self.backtest.progress_pct = 100
@@ -311,6 +394,7 @@ class BacktestEngine:
             return self.backtest
 
         except Exception as e:
+            self._close_persistent_score_cache()
             if "Cancelled by user" in str(e):
                 logger.info(f"Backtest {self.backtest.id} cancelled during data loading")
                 self.backtest.status = "cancelled"
@@ -1296,7 +1380,7 @@ class BacktestEngine:
 
         ticker_list = tickers if tickers is not None else self.data_provider.get_available_tickers()
 
-        # Separate cached vs uncached tickers
+        # Layer 1: Check in-memory cache (same-day reuse)
         uncached_tickers = []
         for ticker in ticker_list:
             if ticker in self._score_cache:
@@ -1304,7 +1388,17 @@ class BacktestEngine:
             else:
                 uncached_tickers.append(ticker)
 
-        # Only calculate scores for tickers not already cached today
+        # Layer 2: Check persistent disk cache (cross-run reuse)
+        if uncached_tickers:
+            persistent_hits = self._get_persistent_scores(date_str, uncached_tickers)
+            if persistent_hits:
+                for ticker, cached_score in persistent_hits.items():
+                    scores[ticker] = cached_score
+                    self._score_cache[ticker] = cached_score  # Promote to in-memory
+                uncached_tickers = [t for t in uncached_tickers if t not in persistent_hits]
+
+        # Layer 3: Compute scores for tickers not in any cache
+        newly_computed = {}
         for ticker in uncached_tickers:
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
@@ -1532,6 +1626,11 @@ class BacktestEngine:
             }
             scores[ticker] = score_result
             self._score_cache[ticker] = score_result  # Cache for reuse within same day
+            newly_computed[ticker] = score_result
+
+        # Persist newly computed scores to disk for future backtest runs
+        if newly_computed:
+            self._save_persistent_scores(date_str, newly_computed)
 
         return scores
 
