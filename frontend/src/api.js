@@ -18,6 +18,7 @@ const CACHE_TTL = {
   '/api/ai-portfolio': 120,        // 2 min (price sensitive)
   '/api/backtests': 600,
   '/api/earnings-audit': 300,      // 5 min
+  '/api/insider-sentiment': 300,   // 5 min
 }
 
 function getCacheTTL(endpoint) {
@@ -323,6 +324,20 @@ export const api = {
   getEarningsAudits: (limit = 30, minConfidence = 0) =>
     request(`/api/earnings-audit?limit=${limit}&min_confidence=${minConfidence}`),
   getEarningsAudit: (ticker) => request(`/api/earnings-audit/${ticker}`),
+
+  // Insider Sentiment
+  getInsiderSentiment: (params = {}) => {
+    const searchParams = new URLSearchParams()
+    if (params.sentiment) searchParams.set('sentiment', params.sentiment)
+    if (params.min_score != null) searchParams.set('min_score', params.min_score)
+    if (params.sort_by) searchParams.set('sort_by', params.sort_by)
+    if (params.sort_dir) searchParams.set('sort_dir', params.sort_dir)
+    if (params.sector) searchParams.set('sector', params.sector)
+    if (params.limit) searchParams.set('limit', params.limit)
+    if (params.offset) searchParams.set('offset', params.offset)
+    const query = searchParams.toString()
+    return request(`/api/insider-sentiment${query ? `?${query}` : ''}`)
+  },
 }
 
 // Formatting utilities
@@ -371,6 +386,16 @@ export function formatMarketCap(value) {
   if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`
   if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`
   return formatCurrency(value)
+}
+
+export function formatCompactValue(value) {
+  if (value == null) return '-'
+  const abs = Math.abs(value)
+  const sign = value >= 0 ? '+' : '-'
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1)}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}K`
+  return `${sign}$${abs.toFixed(0)}`
 }
 
 export { APIError, cache }

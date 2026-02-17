@@ -1133,6 +1133,128 @@ async def get_breaking_out_stocks(
     }
 
 
+# ============== Insider Sentiment ==============
+
+@app.get("/api/insider-sentiment")
+async def get_insider_sentiment(
+    sentiment: str = Query("bullish", regex="^(bullish|bearish|all)$"),
+    min_score: float = Query(40),
+    sort_by: str = Query("insider_net_value", regex="^(insider_net_value|insider_buy_count|canslim_score|insider_buy_value)$"),
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    sector: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Get stocks ranked by insider trading activity with CANSLIM score filter"""
+    from sqlalchemy import nullslast
+
+    latest_market = db.query(MarketSnapshot).order_by(
+        desc(MarketSnapshot.snapshot_date)
+    ).first()
+    current_m_score = latest_market.market_score if latest_market else 0
+
+    # Base query: must have insider data and meet minimum score
+    base_filter = [
+        Stock.canslim_score >= min_score,
+        Stock.insider_updated_at != None,
+    ]
+
+    # Sentiment filter
+    if sentiment != "all":
+        base_filter.append(Stock.insider_sentiment == sentiment)
+
+    # Sector filter
+    if sector:
+        base_filter.append(Stock.sector == sector)
+
+    # Summary stats (across all matching stocks, ignoring pagination)
+    summary_q = db.query(
+        func.count(Stock.id).filter(Stock.insider_sentiment == "bullish").label("total_bullish"),
+        func.count(Stock.id).filter(Stock.insider_sentiment == "bearish").label("total_bearish"),
+        func.count(Stock.id).label("total_with_data"),
+        func.sum(Stock.insider_net_value).label("net_insider_value"),
+        func.avg(
+            case(
+                (Stock.insider_sentiment == "bullish", Stock.canslim_score),
+                else_=None,
+            )
+        ).label("avg_score_bullish"),
+    ).filter(
+        Stock.canslim_score >= min_score,
+        Stock.insider_updated_at != None,
+    ).first()
+
+    # Get distinct sectors that have insider data
+    sectors = [
+        r[0] for r in db.query(Stock.sector).filter(
+            Stock.canslim_score >= min_score,
+            Stock.insider_updated_at != None,
+            Stock.sector != None,
+        ).distinct().order_by(Stock.sector).all()
+    ]
+
+    # Sort column mapping
+    sort_col_map = {
+        "insider_net_value": Stock.insider_net_value,
+        "insider_buy_count": Stock.insider_buy_count,
+        "canslim_score": Stock.canslim_score,
+        "insider_buy_value": Stock.insider_buy_value,
+    }
+    sort_col = sort_col_map[sort_by]
+    order = desc(sort_col) if sort_dir == "desc" else sort_col.asc()
+
+    # Main query with pagination (fetch extra for dedup)
+    stocks_raw = db.query(Stock).filter(
+        *base_filter
+    ).order_by(
+        nullslast(order)
+    ).limit((limit + offset) * 2).all()
+
+    stocks = filter_duplicate_stocks(stocks_raw, limit + offset)
+    paginated = stocks[offset:offset + limit]
+
+    # Count total for pagination
+    total = db.query(func.count(Stock.id)).filter(*base_filter).scalar() or 0
+
+    summary = {
+        "total_bullish": summary_q.total_bullish or 0,
+        "total_bearish": summary_q.total_bearish or 0,
+        "total_with_data": summary_q.total_with_data or 0,
+        "net_insider_value": float(summary_q.net_insider_value or 0),
+        "avg_score_bullish": round(float(summary_q.avg_score_bullish or 0), 1),
+        "sectors": sectors,
+    }
+
+    return {
+        "summary": summary,
+        "stocks": [{
+            "ticker": s.ticker,
+            "name": s.name,
+            "sector": s.sector,
+            "canslim_score": adjust_score_for_market(s, current_m_score),
+            "current_price": s.current_price,
+            "market_cap": s.market_cap,
+            "projected_growth": s.projected_growth,
+            "insider_sentiment": s.insider_sentiment,
+            "insider_buy_count": s.insider_buy_count,
+            "insider_sell_count": s.insider_sell_count,
+            "insider_net_value": s.insider_net_value,
+            "insider_buy_value": s.insider_buy_value,
+            "insider_sell_value": s.insider_sell_value,
+            "insider_largest_buy": s.insider_largest_buy,
+            "insider_largest_buyer_title": s.insider_largest_buyer_title,
+            "insider_updated_at": (s.insider_updated_at.isoformat() + "Z") if s.insider_updated_at else None,
+            "short_interest_pct": s.short_interest_pct,
+            "base_type": s.base_type,
+            "is_breaking_out": s.is_breaking_out or False,
+        } for s in paginated],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 # ============== Single Stock Analysis ==============
 
 @app.get("/api/stocks/{ticker}")

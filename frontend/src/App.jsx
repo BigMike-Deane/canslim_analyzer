@@ -15,6 +15,7 @@ import Breakouts from './pages/Breakouts'
 import Backtest from './pages/Backtest'
 import Analytics from './pages/Analytics'
 import CoiledSpringHistory from './pages/CoiledSpringHistory'
+import InsiderSentiment from './pages/InsiderSentiment'
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -44,6 +45,7 @@ export default function App() {
               <Route path="/backtest" element={<Backtest />} />
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />
+              <Route path="/insider-sentiment" element={<InsiderSentiment />} />
             </Routes>
           </div>
         </main>
