@@ -859,3 +859,45 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state:
       enabled: false
+
+  # Hybrid: balanced safety + lean bull performance
+  # PRESSURE 75% (vs balanced 60%, lean 85%) — moderate pullback tolerance
+  # RECOVERY 50% (vs balanced 30%) — faster re-deployment after FTD
+  # CONFIRMED 65% (vs balanced 55%, lean 70%) — bridge between caution and opportunity
+  hybrid:
+    label: "Hybrid"
+    description: "Balanced safety + lean bull performance. Higher PRESSURE/CONFIRMED exposure for faster capital deployment."
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops:
+      gain_50_plus: 20
+      gain_30_to_50: 15
+      gain_20_to_30: 10
+      gain_10_to_20: 8
+    seed_count: 3
+    seed_pct: 10
+    half_size_initial: true
+    max_seed_investment_pct: 50
+    quality_filters:
+      min_c_score: 10
+      min_l_score: 8
+    scoring_weights:
+      growth_projection: 0.20
+      canslim_score: 0.25
+      momentum: 0.25
+      breakout: 0.20
+      base_quality: 0.10
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state:
+      exposure_limits:
+        trending: 1.00
+        pressure: 0.75       # Balanced 0.60, lean 0.85 — moderate pullback tolerance
+        correction: 0.00     # Full crash protection (same as balanced)
+        recovery: 0.50       # Balanced 0.30 — faster re-deployment after FTD
+        confirmed: 0.65      # Balanced 0.55, lean 0.70 — faster capital deployment
