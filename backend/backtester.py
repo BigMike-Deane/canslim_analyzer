@@ -178,9 +178,10 @@ class BacktestEngine:
         try:
             os.makedirs(SCORE_CACHE_DIR, exist_ok=True)
             db_path = os.path.join(SCORE_CACHE_DIR, f"scores_v{SCORE_CACHE_VERSION}.db")
-            self._persistent_cache_conn = sqlite3.connect(db_path)
+            self._persistent_cache_conn = sqlite3.connect(db_path, timeout=10)
             self._persistent_cache_conn.execute("PRAGMA journal_mode=WAL")
             self._persistent_cache_conn.execute("PRAGMA synchronous=NORMAL")
+            self._persistent_cache_conn.execute("PRAGMA busy_timeout=5000")  # 5s retry on lock
             self._persistent_cache_conn.execute("""
                 CREATE TABLE IF NOT EXISTS scores (
                     ticker TEXT NOT NULL,
@@ -352,6 +353,7 @@ class BacktestEngine:
                     self.db.refresh(self.backtest)
                     if self.backtest.cancel_requested or self.backtest.status == "cancelled":
                         logger.info(f"Backtest {self.backtest.id} cancelled by user at {i}/{total_days} days")
+                        self._close_persistent_score_cache()
                         self.backtest.status = "cancelled"
                         self.backtest.error_message = f"Cancelled by user at {progress:.0f}% progress"
                         self.db.commit()
