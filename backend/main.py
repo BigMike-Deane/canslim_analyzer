@@ -1150,7 +1150,7 @@ async def get_insider_sentiment(
     from sqlalchemy import nullslast
 
     latest_market = db.query(MarketSnapshot).order_by(
-        desc(MarketSnapshot.snapshot_date)
+        desc(MarketSnapshot.date)
     ).first()
     current_m_score = latest_market.market_score if latest_market else 0
 
