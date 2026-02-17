@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { api, formatCurrency, APIError } from '../api'
-import { Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, Area, AreaChart } from 'recharts'
+import { Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, Area, AreaChart, ReferenceLine, ComposedChart } from 'recharts'
 import Card, { CardHeader } from '../components/Card'
 import { StatusBadge, ActionBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -16,41 +16,85 @@ function PerformanceChart({ data, startingCash }) {
     )
   }
 
-  const finalValue = data[data.length - 1]?.value || startingCash
-  const isPositive = finalValue >= startingCash
+  const finalReturn = data[data.length - 1]?.return_pct || 0
+  const finalSpy = data[data.length - 1]?.spy_return_pct || 0
+  const isPositive = finalReturn >= 0
+  const beatsSpy = finalReturn >= finalSpy
   const strokeColor = isPositive ? '#34d399' : '#f87171'
-  const gradientId = 'portfolioGradient'
+  const spyColor = '#f59e0b' // Amber — high contrast on dark bg
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null
+    const port = payload.find(p => p.dataKey === 'return_pct')
+    const spy = payload.find(p => p.dataKey === 'spy_return_pct')
+    const pv = port?.value ?? 0
+    const sv = spy?.value ?? 0
+    const spread = pv - sv
+    return (
+      <div className="bg-dark-900 border border-dark-700/60 rounded-xl px-3 py-2 shadow-lg">
+        <div className="text-[10px] text-dark-500 mb-1">{label}</div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="w-2 h-2 rounded-full" style={{ background: strokeColor }} />
+          <span className="text-dark-300">Portfolio</span>
+          <span className={`font-data ml-auto ${pv >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{pv >= 0 ? '+' : ''}{pv.toFixed(1)}%</span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="w-2 h-2 rounded-full" style={{ background: spyColor }} />
+          <span className="text-dark-300">SPY</span>
+          <span className="font-data ml-auto text-amber-400">{sv >= 0 ? '+' : ''}{sv.toFixed(1)}%</span>
+        </div>
+        <div className="border-t border-dark-700/40 mt-1.5 pt-1.5 flex items-center gap-2 text-xs">
+          <span className="text-dark-500">vs SPY</span>
+          <span className={`font-data font-semibold ml-auto ${spread >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{spread >= 0 ? '+' : ''}{spread.toFixed(1)}pp</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <Card variant="glass" className="mb-4">
-      <CardHeader title="Portfolio vs SPY (Buy & Hold)" />
-      <div className="h-52">
+      <div className="flex items-center justify-between px-4 pt-3 pb-1">
+        <span className="text-xs font-semibold text-dark-200">Portfolio vs SPY</span>
+        <div className="flex items-center gap-3 text-[10px]">
+          <span className="flex items-center gap-1"><span className="w-3 h-0.5 rounded" style={{ background: strokeColor }} /> Portfolio</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-0.5 rounded" style={{ background: spyColor }} /> SPY</span>
+          <span className={`font-data font-semibold ${beatsSpy ? 'text-emerald-400' : 'text-red-400'}`}>
+            {beatsSpy ? '+' : ''}{(finalReturn - finalSpy).toFixed(1)}pp
+          </span>
+        </div>
+      </div>
+      <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data}>
+          <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
             <defs>
-              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={strokeColor} stopOpacity={0.25} />
+              <linearGradient id="portGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={strokeColor} stopOpacity={0.20} />
                 <stop offset="100%" stopColor={strokeColor} stopOpacity={0} />
               </linearGradient>
+              <linearGradient id="spyGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={spyColor} stopOpacity={0.12} />
+                <stop offset="100%" stopColor={spyColor} stopOpacity={0} />
+              </linearGradient>
             </defs>
+            <Area
+              type="monotone"
+              dataKey="spy_return_pct"
+              name="SPY"
+              stroke={spyColor}
+              strokeWidth={2}
+              fill="url(#spyGrad)"
+              dot={false}
+            />
             <Area
               type="monotone"
               dataKey="return_pct"
               name="Portfolio"
               stroke={strokeColor}
-              strokeWidth={2}
-              fill={`url(#${gradientId})`}
+              strokeWidth={2.5}
+              fill="url(#portGrad)"
               dot={false}
             />
-            <Line
-              type="monotone"
-              dataKey="spy_return_pct"
-              name="SPY"
-              stroke="#6b7280"
-              strokeWidth={1}
-              strokeDasharray="5 5"
-              dot={false}
-            />
+            <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
             <XAxis
               dataKey="date"
               tick={{ fontSize: 10, fill: '#6b7280' }}
@@ -59,20 +103,18 @@ function PerformanceChart({ data, startingCash }) {
                 return `${date.getMonth()+1}/${date.getDate()}`
               }}
               interval="preserveStartEnd"
+              axisLine={{ stroke: '#1f2937' }}
+              tickLine={false}
             />
             <YAxis
               tick={{ fontSize: 10, fill: '#6b7280' }}
               tickFormatter={(v) => `${v.toFixed(0)}%`}
               domain={['dataMin - 5', 'dataMax + 5']}
+              axisLine={false}
+              tickLine={false}
             />
-            <Tooltip
-              contentStyle={{ background: '#14141f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}
-              labelStyle={{ color: '#6b7280', fontSize: 11 }}
-              itemStyle={{ fontSize: 12 }}
-              formatter={(value, name) => [`${value?.toFixed(2)}%`, name]}
-            />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
-          </AreaChart>
+            <Tooltip content={<CustomTooltip />} />
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     </Card>
@@ -189,17 +231,22 @@ function ComparisonView({ comparison, onClose }) {
       {/* Overlaid chart */}
       <Card variant="glass">
         <CardHeader title="Return % Over Time" />
-        <div className="h-52">
+        <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chart_data}>
+            <ComposedChart data={chart_data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
               <defs>
                 {backtests.map((_, i) => (
                   <linearGradient key={i} id={gradientIds[i]} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={colors[i % colors.length]} stopOpacity={0.15} />
+                    <stop offset="0%" stopColor={colors[i % colors.length]} stopOpacity={0.10} />
                     <stop offset="100%" stopColor={colors[i % colors.length]} stopOpacity={0} />
                   </linearGradient>
                 ))}
+                <linearGradient id="compSpyGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.10} />
+                  <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+                </linearGradient>
               </defs>
+              <Area type="monotone" dataKey="spy_return" name="SPY" stroke="#f59e0b" strokeWidth={2} fill="url(#compSpyGrad)" dot={false} connectNulls />
               {backtests.map((bt, i) => (
                 <Area
                   key={bt.id}
@@ -213,16 +260,16 @@ function ComparisonView({ comparison, onClose }) {
                   connectNulls
                 />
               ))}
-              <Line type="monotone" dataKey="spy_return" name="SPY" stroke="#6b7280" strokeWidth={1} strokeDasharray="5 5" dot={false} connectNulls />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(d) => { const p = d.split('-'); return `${p[1]}/${p[2]}` }} interval="preserveStartEnd" />
-              <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} />
+              <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(d) => { const p = d.split('-'); return `${p[1]}/${p[2]}` }} interval="preserveStartEnd" axisLine={{ stroke: '#1f2937' }} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={{ background: '#14141f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}
                 labelStyle={{ color: '#6b7280', fontSize: 11 }}
                 formatter={(v, n) => [`${v?.toFixed(2)}%`, n]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-            </AreaChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       </Card>
