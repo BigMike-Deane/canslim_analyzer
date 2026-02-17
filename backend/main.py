@@ -4,6 +4,7 @@ CANSLIM Analyzer Web API
 FastAPI backend wrapping the existing CANSLIM analysis modules.
 """
 
+import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -100,17 +101,20 @@ async def lifespan(app: FastAPI):
 
     # Auto-start scanner after a short delay to allow full startup
     import asyncio
-    async def auto_start_scanner():
-        await asyncio.sleep(5)  # Wait for app to fully initialize
-        try:
-            from backend.scheduler import start_continuous_scanning
-            logger.info("Auto-starting scanner: source=all, interval=30 minutes")
-            start_continuous_scanning(source="all", interval_minutes=30)
-            logger.info("Scanner auto-started successfully")
-        except Exception as e:
-            logger.error(f"Failed to auto-start scanner: {e}")
+    if os.environ.get("DISABLE_SCHEDULER") == "true":
+        logger.info("Scheduler disabled via DISABLE_SCHEDULER env var")
+    else:
+        async def auto_start_scanner():
+            await asyncio.sleep(5)  # Wait for app to fully initialize
+            try:
+                from backend.scheduler import start_continuous_scanning
+                logger.info("Auto-starting scanner: source=all, interval=30 minutes")
+                start_continuous_scanning(source="all", interval_minutes=30)
+                logger.info("Scanner auto-started successfully")
+            except Exception as e:
+                logger.error(f"Failed to auto-start scanner: {e}")
 
-    asyncio.create_task(auto_start_scanner())
+        asyncio.create_task(auto_start_scanner())
 
     yield
     logger.info("Shutting down...")
@@ -1126,6 +1130,128 @@ async def get_breaking_out_stocks(
             "is_breaking_out": s.is_breaking_out or False
         } for s in stocks],
         "total": len(stocks)
+    }
+
+
+# ============== Insider Sentiment ==============
+
+@app.get("/api/insider-sentiment")
+async def get_insider_sentiment(
+    sentiment: str = Query("bullish", regex="^(bullish|bearish|all)$"),
+    min_score: float = Query(40),
+    sort_by: str = Query("insider_net_value", regex="^(insider_net_value|insider_buy_count|canslim_score|insider_buy_value)$"),
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    sector: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Get stocks ranked by insider trading activity with CANSLIM score filter"""
+    from sqlalchemy import nullslast
+
+    latest_market = db.query(MarketSnapshot).order_by(
+        desc(MarketSnapshot.date)
+    ).first()
+    current_m_score = latest_market.market_score if latest_market else 0
+
+    # Base query: must have insider data and meet minimum score
+    base_filter = [
+        Stock.canslim_score >= min_score,
+        Stock.insider_updated_at != None,
+    ]
+
+    # Sentiment filter
+    if sentiment != "all":
+        base_filter.append(Stock.insider_sentiment == sentiment)
+
+    # Sector filter
+    if sector:
+        base_filter.append(Stock.sector == sector)
+
+    # Summary stats (across all matching stocks, ignoring pagination)
+    summary_q = db.query(
+        func.count(Stock.id).filter(Stock.insider_sentiment == "bullish").label("total_bullish"),
+        func.count(Stock.id).filter(Stock.insider_sentiment == "bearish").label("total_bearish"),
+        func.count(Stock.id).label("total_with_data"),
+        func.sum(Stock.insider_net_value).label("net_insider_value"),
+        func.avg(
+            case(
+                (Stock.insider_sentiment == "bullish", Stock.canslim_score),
+                else_=None,
+            )
+        ).label("avg_score_bullish"),
+    ).filter(
+        Stock.canslim_score >= min_score,
+        Stock.insider_updated_at != None,
+    ).first()
+
+    # Get distinct sectors that have insider data
+    sectors = [
+        r[0] for r in db.query(Stock.sector).filter(
+            Stock.canslim_score >= min_score,
+            Stock.insider_updated_at != None,
+            Stock.sector != None,
+        ).distinct().order_by(Stock.sector).all()
+    ]
+
+    # Sort column mapping
+    sort_col_map = {
+        "insider_net_value": Stock.insider_net_value,
+        "insider_buy_count": Stock.insider_buy_count,
+        "canslim_score": Stock.canslim_score,
+        "insider_buy_value": Stock.insider_buy_value,
+    }
+    sort_col = sort_col_map[sort_by]
+    order = desc(sort_col) if sort_dir == "desc" else sort_col.asc()
+
+    # Main query with pagination (fetch extra for dedup)
+    stocks_raw = db.query(Stock).filter(
+        *base_filter
+    ).order_by(
+        nullslast(order)
+    ).limit((limit + offset) * 2).all()
+
+    stocks = filter_duplicate_stocks(stocks_raw, limit + offset)
+    paginated = stocks[offset:offset + limit]
+
+    # Count total for pagination
+    total = db.query(func.count(Stock.id)).filter(*base_filter).scalar() or 0
+
+    summary = {
+        "total_bullish": summary_q.total_bullish or 0,
+        "total_bearish": summary_q.total_bearish or 0,
+        "total_with_data": summary_q.total_with_data or 0,
+        "net_insider_value": float(summary_q.net_insider_value or 0),
+        "avg_score_bullish": round(float(summary_q.avg_score_bullish or 0), 1),
+        "sectors": sectors,
+    }
+
+    return {
+        "summary": summary,
+        "stocks": [{
+            "ticker": s.ticker,
+            "name": s.name,
+            "sector": s.sector,
+            "canslim_score": adjust_score_for_market(s, current_m_score),
+            "current_price": s.current_price,
+            "market_cap": s.market_cap,
+            "projected_growth": s.projected_growth,
+            "insider_sentiment": s.insider_sentiment,
+            "insider_buy_count": s.insider_buy_count,
+            "insider_sell_count": s.insider_sell_count,
+            "insider_net_value": s.insider_net_value,
+            "insider_buy_value": s.insider_buy_value,
+            "insider_sell_value": s.insider_sell_value,
+            "insider_largest_buy": s.insider_largest_buy,
+            "insider_largest_buyer_title": s.insider_largest_buyer_title,
+            "insider_updated_at": (s.insider_updated_at.isoformat() + "Z") if s.insider_updated_at else None,
+            "short_interest_pct": s.short_interest_pct,
+            "base_type": s.base_type,
+            "is_breaking_out": s.is_breaking_out or False,
+        } for s in paginated],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
     }
 
 
@@ -2373,6 +2499,78 @@ async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int
     }
 
 
+def _get_deduped_cs_alert_ids(db):
+    """Return IDs of CS alerts deduplicated: one per ticker per earnings cycle.
+
+    For each ticker, alerts within 21 days of each other are considered the same
+    earnings event. We keep the first alert (lowest ID) per cycle, preferring
+    the one with an outcome if available.
+    """
+    from backend.database import CoiledSpringAlert
+    from datetime import timedelta
+
+    all_alerts = db.query(CoiledSpringAlert).order_by(
+        CoiledSpringAlert.ticker, CoiledSpringAlert.alert_date
+    ).all()
+
+    keep_ids = []
+    # Group alerts by ticker, then by earnings cycle (21-day window)
+    ticker_alerts = {}
+    for a in all_alerts:
+        ticker_alerts.setdefault(a.ticker, []).append(a)
+
+    for ticker, alerts in ticker_alerts.items():
+        # Walk through alerts chronologically, grouping by 21-day windows
+        cycle_start = None
+        cycle_best = None
+        for a in alerts:
+            if cycle_start is None or (a.alert_date - cycle_start) > timedelta(days=21):
+                # New cycle — save the best from previous cycle
+                if cycle_best is not None:
+                    keep_ids.append(cycle_best.id)
+                cycle_start = a.alert_date
+                cycle_best = a
+            else:
+                # Same cycle — prefer the one with an outcome, else keep first
+                if not cycle_best.outcome and a.outcome:
+                    cycle_best = a
+        # Don't forget the last cycle
+        if cycle_best is not None:
+            keep_ids.append(cycle_best.id)
+
+    return keep_ids
+
+
+def _get_deduped_cs_alerts(db):
+    """Return deduped CS alert query."""
+    from backend.database import CoiledSpringAlert
+    keep_ids = _get_deduped_cs_alert_ids(db)
+    return db.query(CoiledSpringAlert).filter(CoiledSpringAlert.id.in_(keep_ids))
+
+
+def _cs_stats(alerts_list):
+    """Compute CS stats from a list of alert objects."""
+    with_outcome = [a for a in alerts_list if a.outcome]
+    wins = sum(1 for a in with_outcome if a.outcome in ('win', 'big_win'))
+    big_wins = sum(1 for a in with_outcome if a.outcome == 'big_win')
+    losses = sum(1 for a in with_outcome if a.outcome == 'loss')
+    flat = sum(1 for a in with_outcome if a.outcome == 'flat')
+    pending = sum(1 for a in alerts_list if not a.outcome)
+    win_rate = round(wins / len(with_outcome) * 100, 1) if with_outcome else 0
+    big_win_rate = round(big_wins / len(with_outcome) * 100, 1) if with_outcome else 0
+    return {
+        "total": len(alerts_list),
+        "with_outcome": len(with_outcome),
+        "wins": wins,
+        "big_wins": big_wins,
+        "losses": losses,
+        "flat": flat,
+        "pending": pending,
+        "win_rate": win_rate,
+        "big_win_rate": big_win_rate,
+    }
+
+
 @app.get("/api/coiled-spring/history")
 async def get_coiled_spring_history(
     db: Session = Depends(get_db),
@@ -2381,49 +2579,29 @@ async def get_coiled_spring_history(
 ):
     """
     Get historical Coiled Spring alerts with outcomes for success rate tracking.
-    Supports pagination with page and page_size parameters.
-    Includes cumulative stats across all alerts (not just current page).
+    Deduplicates alerts (one per ticker per date). Supports pagination.
     """
     from backend.database import CoiledSpringAlert
-    from sqlalchemy import func
 
-    # Get total count for pagination
-    total = db.query(CoiledSpringAlert).count()
+    # Deduped query base
+    deduped_q = _get_deduped_cs_alerts(db)
+    total = deduped_q.count()
 
-    # Apply pagination
-    alerts = db.query(CoiledSpringAlert).order_by(
+    # Paginated alerts
+    alerts = deduped_q.order_by(
         CoiledSpringAlert.alert_date.desc()
     ).offset((page - 1) * page_size).limit(page_size).all()
 
-    # Calculate page stats (current page only - for quick reference)
-    page_with_outcome = 0
-    page_wins = 0
-    page_big_wins = 0
-    for a in alerts:
-        if a.outcome:
-            page_with_outcome += 1
-            if a.outcome in ('win', 'big_win'):
-                page_wins += 1
-            if a.outcome == 'big_win':
-                page_big_wins += 1
+    # Page stats
+    page_stats = _cs_stats(alerts)
 
-    page_win_rate = (page_wins / page_with_outcome * 100) if page_with_outcome > 0 else 0
-    page_big_win_rate = (page_big_wins / page_with_outcome * 100) if page_with_outcome > 0 else 0
+    # Cumulative stats (all deduped alerts)
+    all_deduped = deduped_q.all()
+    cumulative = _cs_stats(all_deduped)
 
-    # Calculate CUMULATIVE stats (all alerts)
-    all_alerts = db.query(CoiledSpringAlert).all()
-    total_with_outcome = sum(1 for a in all_alerts if a.outcome)
-    total_wins = sum(1 for a in all_alerts if a.outcome in ('win', 'big_win'))
-    total_big_wins = sum(1 for a in all_alerts if a.outcome == 'big_win')
-    total_losses = sum(1 for a in all_alerts if a.outcome == 'loss')
-    total_flat = sum(1 for a in all_alerts if a.outcome == 'flat')
-
-    overall_win_rate = (total_wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
-    overall_big_win_rate = (total_big_wins / total_with_outcome * 100) if total_with_outcome > 0 else 0
-
-    # Group by base_type for pattern analysis
+    # Group by base_type
     by_base_type = {}
-    for a in all_alerts:
+    for a in all_deduped:
         base = a.base_type or 'unknown'
         if base not in by_base_type:
             by_base_type[base] = {'total': 0, 'with_outcome': 0, 'wins': 0, 'big_wins': 0}
@@ -2434,17 +2612,8 @@ async def get_coiled_spring_history(
                 by_base_type[base]['wins'] += 1
             if a.outcome == 'big_win':
                 by_base_type[base]['big_wins'] += 1
-
-    # Calculate win rates per base type
     for base, stats in by_base_type.items():
-        if stats['with_outcome'] > 0:
-            stats['win_rate'] = round(stats['wins'] / stats['with_outcome'] * 100, 1)
-        else:
-            stats['win_rate'] = 0
-
-    # Group by entry status (based on whether stock was breaking out at alert time)
-    # Note: We don't have entry_status stored directly, but we can infer from price position
-    # For now, we'll track alerts that have the data
+        stats['win_rate'] = round(stats['wins'] / stats['with_outcome'] * 100, 1) if stats['with_outcome'] > 0 else 0
 
     return {
         "alerts": [{
@@ -2470,20 +2639,20 @@ async def get_coiled_spring_history(
             "pages": (total + page_size - 1) // page_size
         },
         "page_stats": {
-            "total_alerts": len(alerts),
-            "with_outcome": page_with_outcome,
-            "win_rate": round(page_win_rate, 1),
-            "big_win_rate": round(page_big_win_rate, 1)
+            "total_alerts": page_stats["total"],
+            "with_outcome": page_stats["with_outcome"],
+            "win_rate": page_stats["win_rate"],
+            "big_win_rate": page_stats["big_win_rate"],
         },
         "cumulative_stats": {
-            "total_alerts_all_time": total,
-            "with_outcome": total_with_outcome,
-            "wins": total_wins,
-            "big_wins": total_big_wins,
-            "losses": total_losses,
-            "flat": total_flat,
-            "overall_win_rate": round(overall_win_rate, 1),
-            "overall_big_win_rate": round(overall_big_win_rate, 1),
+            "total_alerts_all_time": cumulative["total"],
+            "with_outcome": cumulative["with_outcome"],
+            "wins": cumulative["wins"],
+            "big_wins": cumulative["big_wins"],
+            "losses": cumulative["losses"],
+            "flat": cumulative["flat"],
+            "overall_win_rate": cumulative["win_rate"],
+            "overall_big_win_rate": cumulative["big_win_rate"],
             "by_base_type": by_base_type
         }
     }
@@ -2532,6 +2701,31 @@ async def record_coiled_spring_alert(ticker: str, db: Session = Depends(get_db))
     db.commit()
 
     return {"status": "recorded", "id": alert.id}
+
+
+@app.post("/api/coiled-spring/cleanup-duplicates")
+async def cleanup_cs_duplicates(db: Session = Depends(get_db), dry_run: bool = Query(True)):
+    """Delete duplicate CS alerts, keeping one per ticker per earnings cycle (21 days).
+    Prefers alerts with outcomes. Use dry_run=false to actually delete."""
+    from backend.database import CoiledSpringAlert
+
+    keep_ids = set(_get_deduped_cs_alert_ids(db))
+    all_alerts = db.query(CoiledSpringAlert).all()
+
+    dupes = [a for a in all_alerts if a.id not in keep_ids]
+    deleted_info = [{"id": d.id, "ticker": d.ticker, "date": str(d.alert_date), "outcome": d.outcome} for d in dupes]
+
+    if not dry_run:
+        for d in dupes:
+            db.delete(d)
+        db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "would_delete" if dry_run else "deleted": len(deleted_info),
+        "keeping": len(keep_ids),
+        "details": deleted_info
+    }
 
 
 @app.post("/api/coiled-spring/update-outcomes")
@@ -3985,18 +4179,12 @@ async def get_command_center(db: Session = Depends(get_db)):
             "base_type": s.base_type,
         } for s in cs_candidates]
 
-        # Aggregate stats from all alerts
-        all_cs = db.query(CoiledSpringAlert).all()
-        cs_with_outcome = [a for a in all_cs if a.outcome]
-        cs_wins = sum(1 for a in cs_with_outcome if a.outcome in ('win', 'big_win'))
-        cs_big_wins = sum(1 for a in cs_with_outcome if a.outcome == 'big_win')
-        cs_losses = sum(1 for a in cs_with_outcome if a.outcome == 'loss')
-        cs_flat = sum(1 for a in cs_with_outcome if a.outcome == 'flat')
-        cs_pending = sum(1 for a in all_cs if not a.outcome)
-        cs_win_rate = round(cs_wins / len(cs_with_outcome) * 100, 1) if cs_with_outcome else 0
+        # Aggregate stats from deduped alerts
+        all_deduped = _get_deduped_cs_alerts(db).all()
+        cs_stats = _cs_stats(all_deduped)
 
-        # Recent resolved alerts (last 5 with outcomes)
-        recent_resolved = db.query(CoiledSpringAlert).filter(
+        # Recent resolved alerts (last 5 with outcomes, deduped)
+        deduped_resolved = _get_deduped_cs_alerts(db).filter(
             CoiledSpringAlert.outcome.isnot(None)
         ).order_by(desc(CoiledSpringAlert.outcome_updated_at)).limit(5).all()
 
@@ -4005,19 +4193,11 @@ async def get_command_center(db: Session = Depends(get_db)):
             "outcome": a.outcome,
             "price_change_pct": a.price_change_pct,
             "alert_date": a.alert_date.isoformat() if a.alert_date else None,
-        } for a in recent_resolved]
+        } for a in deduped_resolved]
 
         cs_data = {
             "candidates": cs_candidates_data,
-            "stats": {
-                "total": len(all_cs),
-                "wins": cs_wins,
-                "big_wins": cs_big_wins,
-                "losses": cs_losses,
-                "flat": cs_flat,
-                "pending": cs_pending,
-                "win_rate": cs_win_rate,
-            },
+            "stats": cs_stats,
             "recent_results": cs_recent,
         }
     except Exception as e:
