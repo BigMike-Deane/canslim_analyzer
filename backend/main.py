@@ -99,6 +99,29 @@ async def lifespan(app: FastAPI):
     logger.info("Starting CANSLIM Analyzer API...")
     init_db()
 
+    # Start backtest queue worker
+    from backend.backtest_queue import backtest_queue
+    backtest_queue.start()
+
+    # Re-queue orphaned backtests (pending/running from previous crash)
+    from backend.database import SessionLocal
+    orphan_db = SessionLocal()
+    try:
+        orphans = orphan_db.query(BacktestRun).filter(
+            BacktestRun.status.in_(["pending", "running"])
+        ).order_by(BacktestRun.created_at).all()
+        for bt in orphans:
+            bt.status = "pending"  # Reset running → pending
+            bt.progress_pct = 0
+            orphan_db.commit()
+            backtest_queue.enqueue(bt.id)
+        if orphans:
+            logger.info(f"Re-queued {len(orphans)} orphaned backtests: {[bt.id for bt in orphans]}")
+    except Exception as e:
+        logger.error(f"Failed to re-queue orphaned backtests: {e}")
+    finally:
+        orphan_db.close()
+
     # Auto-start scanner after a short delay to allow full startup
     import asyncio
     if os.environ.get("DISABLE_SCHEDULER") == "true":
@@ -117,6 +140,9 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(auto_start_scanner())
 
     yield
+
+    # Shutdown: stop queue worker
+    backtest_queue.stop()
     logger.info("Shutting down...")
 
 
@@ -3163,34 +3189,14 @@ class BacktestCreate(BaseModel):
     force_refresh: bool = False  # Force fresh FMP earnings fetch (ignore cache)
 
 
-def run_backtest_background(backtest_id: int):
-    """Background task to run a backtest"""
-    from backend.database import SessionLocal
-    from backend.backtester import run_backtest
-
-    db = SessionLocal()
-    try:
-        run_backtest(db, backtest_id)
-    except Exception as e:
-        logger.error(f"Backtest {backtest_id} failed: {e}")
-        backtest = db.query(BacktestRun).get(backtest_id)
-        if backtest:
-            backtest.status = "failed"
-            backtest.error_message = str(e)
-            db.commit()
-    finally:
-        db.close()
-
-
 @app.post("/api/backtests")
 async def create_backtest(
     config: BacktestCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """
-    Create and start a new backtest.
-    Returns immediately with backtest ID; simulation runs in background.
+    Create and enqueue a new backtest.
+    Returns immediately with backtest ID; simulation runs via queue worker.
     """
     # Validate dates
     if config.end_date <= config.start_date:
@@ -3227,13 +3233,16 @@ async def create_backtest(
     db.commit()
     db.refresh(backtest)
 
-    # Start backtest in background
-    background_tasks.add_task(run_backtest_background, backtest.id)
+    # Enqueue for sequential execution
+    from backend.backtest_queue import backtest_queue
+    backtest_queue.enqueue(backtest.id)
+    queue_pos = backtest_queue.get_queue_position(backtest.id)
 
     return {
         "id": backtest.id,
         "status": "pending",
-        "message": "Backtest started"
+        "message": "Backtest queued",
+        "queue_position": queue_pos
     }
 
 
@@ -3243,6 +3252,7 @@ async def list_backtests(
     db: Session = Depends(get_db)
 ):
     """List all backtests, most recent first"""
+    from backend.backtest_queue import backtest_queue
     backtests = db.query(BacktestRun).order_by(desc(BacktestRun.created_at)).limit(limit).all()
 
     return [
@@ -3262,6 +3272,7 @@ async def list_backtests(
             "sharpe_ratio": b.sharpe_ratio,
             "strategy": getattr(b, 'strategy', None) or "balanced",
             "progress_pct": b.progress_pct,
+            "queue_position": backtest_queue.get_queue_position(b.id) if b.status == "pending" else None,
             "created_at": b.created_at.isoformat() + "Z" if b.created_at else None,
             "completed_at": b.completed_at.isoformat() + "Z" if b.completed_at else None
         }
@@ -3364,15 +3375,14 @@ async def get_backtest_presets():
 
 @app.post("/api/backtests/multi")
 async def create_multi_backtest(
-    background_tasks: BackgroundTasks,
     starting_cash: float = Query(25000.0, ge=1000, le=1000000),
     stock_universe: str = Query("all"),
     strategy: str = Query("balanced"),
     force_refresh: bool = Query(False),
     db: Session = Depends(get_db)
 ):
-    """Launch backtests for all preset periods simultaneously"""
-    from backend.backtester import run_backtest
+    """Launch backtests for all preset periods sequentially via queue"""
+    from backend.backtest_queue import backtest_queue
 
     strategy_label = f" [{strategy.upper()}]" if strategy != "balanced" else ""
     created_ids = []
@@ -3392,25 +3402,80 @@ async def create_multi_backtest(
         db.flush()
         created_ids.append(bt.id)
 
-        def run_in_background(bt_id=bt.id):
-            from backend.database import SessionLocal
-            bg_db = SessionLocal()
-            try:
-                run_backtest(bg_db, bt_id)
-            except Exception as e:
-                logger.error(f"Multi-backtest {bt_id} failed: {e}")
-                bt_obj = bg_db.query(BacktestRun).get(bt_id)
-                if bt_obj:
-                    bt_obj.status = "failed"
-                    bt_obj.error_message = str(e)[:500]
-                    bg_db.commit()
-            finally:
-                bg_db.close()
+    db.commit()
 
-        background_tasks.add_task(run_in_background)
+    # Enqueue all sequentially — cache warming benefits each subsequent run
+    for bt_id in created_ids:
+        backtest_queue.enqueue(bt_id)
+
+    return {"message": f"Queued {len(created_ids)} backtests", "backtest_ids": created_ids}
+
+
+class BatchBacktestCreate(BaseModel):
+    """Request model for creating a batch of backtests across strategies"""
+    strategies: List[str]
+    start_date: date
+    end_date: date
+    starting_cash: float = 25000.0
+    stock_universe: str = "all"
+    force_refresh: bool = False
+
+
+@app.post("/api/backtests/batch")
+async def create_batch_backtest(
+    config: BatchBacktestCreate,
+    db: Session = Depends(get_db)
+):
+    """Create one backtest per strategy for the same date range, enqueued sequentially for cache reuse."""
+    from backend.backtest_queue import backtest_queue
+
+    if config.end_date <= config.start_date:
+        raise HTTPException(400, "end_date must be after start_date")
+    if (config.end_date - config.start_date).days > 1600:
+        raise HTTPException(400, "Maximum backtest period is ~4.5 years (1600 days)")
+    if config.end_date > date.today():
+        raise HTTPException(400, "end_date cannot be in the future")
+
+    from config_loader import config as yaml_config
+    default_min_score = yaml_config.get('ai_trader.allocation.min_score_to_buy', 72)
+    default_stop_loss = yaml_config.get('ai_trader.stops.normal_stop_loss_pct', 10.0)
+
+    created_ids = []
+    for strategy in config.strategies:
+        strategy_label = f" [{strategy.upper()}]" if strategy != "balanced" else ""
+        bt = BacktestRun(
+            name=f"{config.stock_universe.upper()} | {config.start_date} to {config.end_date} | ${config.starting_cash:,.0f}{strategy_label}",
+            start_date=config.start_date,
+            end_date=config.end_date,
+            starting_cash=config.starting_cash,
+            stock_universe=config.stock_universe,
+            strategy=strategy,
+            min_score_to_buy=default_min_score,
+            stop_loss_pct=default_stop_loss,
+            force_refresh=config.force_refresh,
+            status="pending",
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(bt)
+        db.flush()
+        created_ids.append(bt.id)
 
     db.commit()
-    return {"message": f"Started {len(created_ids)} backtests", "backtest_ids": created_ids}
+
+    for bt_id in created_ids:
+        backtest_queue.enqueue(bt_id)
+
+    return {
+        "message": f"Queued {len(created_ids)} backtests for {len(config.strategies)} strategies",
+        "backtest_ids": created_ids
+    }
+
+
+@app.get("/api/backtests/queue")
+async def get_backtest_queue():
+    """Return current queue state: running backtest + queued IDs."""
+    from backend.backtest_queue import backtest_queue
+    return backtest_queue.get_queue_snapshot()
 
 
 @app.get("/api/backtests/{backtest_id}")
@@ -3490,6 +3555,7 @@ async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
 @app.get("/api/backtests/{backtest_id}/status")
 async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
     """Get backtest progress (for polling during run)"""
+    from backend.backtest_queue import backtest_queue
     backtest = db.query(BacktestRun).get(backtest_id)
     if not backtest:
         raise HTTPException(404, "Backtest not found")
@@ -3498,6 +3564,7 @@ async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
         "id": backtest.id,
         "status": backtest.status,
         "progress_pct": backtest.progress_pct,
+        "queue_position": backtest_queue.get_queue_position(backtest.id) if backtest.status == "pending" else None,
         "error": backtest.error_message,
         "completed_at": backtest.completed_at.isoformat() + "Z" if backtest.completed_at else None
     }

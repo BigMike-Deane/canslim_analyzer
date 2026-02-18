@@ -308,6 +308,16 @@ export const api = {
     return result
   },
 
+  createBatchBacktest: async (config) => {
+    const result = await request('/api/backtests/batch', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    })
+    cache.invalidate('/api/backtests')
+    return result
+  },
+  getBacktestQueue: () => request('/api/backtests/queue'),
+
   // Trade Analytics
   getTradeAnalytics: () => request('/api/analytics/trades'),
 

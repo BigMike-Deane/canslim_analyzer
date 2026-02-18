@@ -365,24 +365,41 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
           </div>
           {(row.status === 'running' || row.status === 'pending') && (
             <div className="mt-1.5">
-              <div className="h-1 bg-dark-700/50 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-primary-500 rounded-full transition-all duration-300"
-                  style={{ width: `${row.progress_pct || 0}%` }}
-                />
-              </div>
-              <div className="flex items-center justify-between mt-1">
-                <span className="text-[10px] text-dark-500 font-data">{(row.progress_pct || 0).toFixed(0)}%</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onCancel(row.id)
-                  }}
-                  className="text-[10px] text-red-400 hover:text-red-300 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
+              {row.status === 'pending' && row.queue_position != null ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-amber-400 font-data">Queued (position {row.queue_position + 1})</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onCancel(row.id)
+                    }}
+                    className="text-[10px] text-red-400 hover:text-red-300 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="h-1 bg-dark-700/50 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary-500 rounded-full transition-all duration-300"
+                      style={{ width: `${row.progress_pct || 0}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-[10px] text-dark-500 font-data">{(row.progress_pct || 0).toFixed(0)}%</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onCancel(row.id)
+                      }}
+                      className="text-[10px] text-red-400 hover:text-red-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
