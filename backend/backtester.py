@@ -165,6 +165,9 @@ class BacktestEngine:
         # Stores realized_gain_pct for each completed (non-partial) sell
         self.recent_trade_outcomes: deque = deque(maxlen=10)
 
+        # SPY cash sweep: park idle cash in SPY when SPY > 50MA
+        self.spy_sweep_shares: float = 0.0
+
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
         self.spy_shares: float = 0.0  # Hypothetical SPY buy-and-hold
@@ -855,6 +858,55 @@ class BacktestEngine:
 
         return 999  # No throttle active
 
+    def _liquidate_spy_sweep(self, current_date: date, reason: str = ""):
+        """Sell all SPY sweep shares and return cash to portfolio."""
+        if self.spy_sweep_shares <= 0:
+            return
+        spy_price = self.data_provider.get_spy_price_on_date(current_date)
+        if not spy_price:
+            return
+        sweep_value = self.spy_sweep_shares * spy_price
+        self.cash += sweep_value
+        logger.debug(f"SPY SWEEP SOLD: {self.spy_sweep_shares:.1f} shares @ ${spy_price:.2f} "
+                     f"= ${sweep_value:,.0f} ({reason})")
+        self.spy_sweep_shares = 0.0
+
+    def _handle_spy_sweep(self, current_date: date):
+        """
+        Park idle cash in SPY when SPY is above its 50MA.
+        Sell sweep when SPY drops below 50MA (bear protection).
+        """
+        sweep_config = self.profile.get('spy_sweep', {})
+        if not sweep_config.get('enabled', False):
+            return
+
+        spy_price = self.data_provider.get_spy_price_on_date(current_date)
+        if not spy_price or spy_price <= 0:
+            return
+
+        spy_data = self.data_provider.get_spy_daily_data(current_date)
+        spy_ma50 = spy_data.get('ma50', 0)
+        spy_above_50ma = spy_price > spy_ma50 if spy_ma50 > 0 else False
+
+        # Sell sweep if SPY below 50MA (bear protection)
+        if self.spy_sweep_shares > 0 and not spy_above_50ma:
+            self._liquidate_spy_sweep(current_date, "SPY < 50MA")
+            return
+
+        # Buy sweep with idle cash if SPY above 50MA
+        if spy_above_50ma and self.cash > 0:
+            portfolio_value = self._get_portfolio_value(current_date)
+            min_idle_pct = sweep_config.get('min_idle_pct', 20) / 100
+            cash_reserve = portfolio_value * 0.05  # Keep 5% cash reserve
+            idle_cash = self.cash - cash_reserve
+
+            if idle_cash > portfolio_value * min_idle_pct:
+                sweep_shares = idle_cash / spy_price
+                self.cash -= idle_cash
+                self.spy_sweep_shares += sweep_shares
+                logger.debug(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${spy_price:.2f} "
+                             f"= ${idle_cash:,.0f}")
+
     def _simulate_day(self, current_date: date):
         """Simulate one trading day with two-tier scoring for performance."""
         # Update position prices and peak tracking
@@ -1222,10 +1274,16 @@ class BacktestEngine:
             # Legacy idle re-seed
             if can_buy and not self.positions and self.idle_days >= 10:
                 logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, re-seeding on {current_date}")
+                self._liquidate_spy_sweep(current_date, "idle re-seed")
                 self.is_seed_day = True
                 self._seed_initial_positions(current_date)
+                self._handle_spy_sweep(current_date)
                 self._take_snapshot(current_date)
                 return
+
+        # Liquidate SPY sweep before evaluating buys (active picks get first dibs on cash)
+        if can_buy and self.spy_sweep_shares > 0:
+            self._liquidate_spy_sweep(current_date, "freeing cash for active buys")
 
         if can_buy:
             # Score full universe when we can buy
@@ -1283,6 +1341,9 @@ class BacktestEngine:
             pyramids = self._evaluate_pyramids(current_date, held_scores)
             for trade in pyramids[:3]:
                 self._execute_pyramid(current_date, trade)
+
+        # Re-sweep idle cash into SPY after buys are done
+        self._handle_spy_sweep(current_date)
 
         # Take daily snapshot
         self._take_snapshot(current_date)
@@ -2980,7 +3041,12 @@ class BacktestEngine:
             pos.shares * (self.data_provider.get_price_on_date(pos.ticker, current_date) or 0)
             for pos in self.positions.values()
         )
-        total_value = self.cash + positions_value
+        # Include SPY sweep value
+        sweep_value = 0.0
+        if self.spy_sweep_shares > 0:
+            spy_price = self.data_provider.get_spy_price_on_date(current_date)
+            sweep_value = self.spy_sweep_shares * (spy_price or 0)
+        total_value = self.cash + positions_value + sweep_value
 
         # Track peak and drawdown
         if total_value > self.peak_portfolio_value:
@@ -3028,13 +3094,19 @@ class BacktestEngine:
                 pos.shares * (self.data_provider.get_price_on_date(pos.ticker, current_date) or pos.cost_basis)
                 for pos in self.positions.values()
             )
+            # Include SPY cash sweep value
+            sweep_value = 0.0
+            if self.spy_sweep_shares > 0:
+                spy_price = self.data_provider.get_spy_price_on_date(current_date)
+                sweep_value = self.spy_sweep_shares * (spy_price or 0)
         else:
             # Fallback to cost basis if no date provided
             positions_value = sum(
                 pos.shares * pos.cost_basis
                 for pos in self.positions.values()
             )
-        return self.cash + positions_value
+            sweep_value = 0.0
+        return self.cash + positions_value + sweep_value
 
     def _check_sector_limit(self, sector: str) -> bool:
         """Check if we can add another position in this sector"""

@@ -972,17 +972,87 @@ def get_buy_throttle_limit(db: Session, profile: dict) -> int:
     return 999
 
 
+def liquidate_spy_sweep(db: Session, config, reason: str = ""):
+    """Sell all SPY sweep shares and return cash to portfolio."""
+    spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
+    if spy_sweep_shares <= 0:
+        return
+
+    spy_price = fetch_live_price('SPY')
+    if not spy_price:
+        return
+
+    sweep_value = spy_sweep_shares * spy_price
+    config.current_cash += sweep_value
+    config.spy_sweep_shares = 0.0
+    logger.info(f"SPY SWEEP SOLD: {spy_sweep_shares:.1f} shares @ ${spy_price:.2f} = ${sweep_value:,.0f} ({reason})")
+
+
+def handle_spy_sweep(db: Session, config, profile: dict):
+    """
+    Park idle cash in SPY when SPY is above its 50MA.
+    Sell sweep when SPY drops below 50MA (bear protection).
+    """
+    sweep_config = profile.get('spy_sweep', {})
+    if not sweep_config.get('enabled', False):
+        return
+
+    from data_fetcher import get_cached_market_direction
+    market_data = get_cached_market_direction()
+    if not market_data or not market_data.get('success'):
+        return
+
+    spy_info = market_data.get('spy', {})
+    spy_price = spy_info.get('price', 0)
+    spy_ma50 = spy_info.get('ma_50', 0)
+
+    if not spy_price or spy_price <= 0:
+        return
+
+    spy_above_50ma = spy_price > spy_ma50 if spy_ma50 > 0 else False
+    spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
+
+    # Sell sweep if SPY below 50MA (bear protection)
+    if spy_sweep_shares > 0 and not spy_above_50ma:
+        liquidate_spy_sweep(db, config, "SPY < 50MA")
+        return
+
+    # Buy sweep with idle cash if SPY above 50MA
+    if spy_above_50ma and config.current_cash > 0:
+        portfolio = get_portfolio_value(db)
+        total_value = portfolio["total_value"]
+        min_idle_pct = sweep_config.get('min_idle_pct', 20) / 100
+        cash_reserve = total_value * 0.05  # Keep 5% cash reserve
+        idle_cash = config.current_cash - cash_reserve
+
+        if idle_cash > total_value * min_idle_pct:
+            sweep_shares = idle_cash / spy_price
+            config.current_cash -= idle_cash
+            config.spy_sweep_shares = (spy_sweep_shares + sweep_shares)
+            logger.info(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${spy_price:.2f} = ${idle_cash:,.0f}")
+
+
 def get_portfolio_value(db: Session) -> dict:
     """Calculate current portfolio value"""
     config = get_or_create_config(db)
     positions = db.query(AIPortfolioPosition).all()
 
     positions_value = sum(p.current_value or 0 for p in positions)
-    total_value = config.current_cash + positions_value
+
+    # Include SPY sweep value
+    sweep_value = 0.0
+    spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
+    if spy_sweep_shares > 0:
+        spy_price = fetch_live_price('SPY')
+        if spy_price:
+            sweep_value = spy_sweep_shares * spy_price
+
+    total_value = config.current_cash + positions_value + sweep_value
 
     return {
         "cash": config.current_cash,
         "positions_value": positions_value,
+        "sweep_value": sweep_value,
         "total_value": total_value,
         "positions_count": len(positions),
         "starting_cash": config.starting_cash,
@@ -3004,6 +3074,11 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 heat_penalty_active = True
                 logger.info(f"Portfolio heat {total_heat:.1f}% > {max_heat}% - applying score penalty + half-size buys")
 
+        # Liquidate SPY sweep before evaluating buys (active picks get first dibs on cash)
+        spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
+        if spy_sweep_shares > 0 and not drawdown_halt:
+            liquidate_spy_sweep(db, config, "freeing cash for active buys")
+
         if drawdown_halt:
             logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
         elif config.current_cash < min_cash_reserve:
@@ -3130,6 +3205,9 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 })
         else:
             logger.info(f"Already at max positions ({position_count}), skipping buys")
+
+        # Re-sweep idle cash into SPY after buys are done
+        handle_spy_sweep(db, config, profile)
 
         try:
             db.commit()

@@ -637,6 +637,7 @@ class AIPortfolioConfig(Base):
     is_active = Column(Boolean, default=True)
     strategy = Column(String, default="balanced")  # balanced, growth
     peak_portfolio_value = Column(Float, default=0.0)  # Track peak for drawdown circuit breaker
+    spy_sweep_shares = Column(Float, default=0.0)  # SPY cash sweep: shares parked in SPY
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
