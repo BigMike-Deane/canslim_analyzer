@@ -3196,8 +3196,8 @@ async def create_backtest(
     if config.end_date <= config.start_date:
         raise HTTPException(400, "end_date must be after start_date")
 
-    if (config.end_date - config.start_date).days > 800:
-        raise HTTPException(400, "Maximum backtest period is ~2 years (800 days)")
+    if (config.end_date - config.start_date).days > 1600:
+        raise HTTPException(400, "Maximum backtest period is ~4.5 years (1600 days)")
 
     if config.end_date > date.today():
         raise HTTPException(400, "end_date cannot be in the future")
