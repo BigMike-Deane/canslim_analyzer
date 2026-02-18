@@ -11,6 +11,7 @@ import sys
 import os
 import sqlite3
 import json
+from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -159,6 +160,10 @@ class BacktestEngine:
         # positions separately so they don't inflate circuit breaker drawdown
         self.experimental_realized_losses: float = 0.0  # Cumulative $ lost on experimental positions
         self.experimental_capital_deployed: float = 0.0  # Current $ in experimental positions
+
+        # Buy throttle: track recent full-sell outcomes to slow buying during losing streaks
+        # Stores realized_gain_pct for each completed (non-partial) sell
+        self.recent_trade_outcomes: deque = deque(maxlen=10)
 
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
@@ -813,6 +818,43 @@ class BacktestEngine:
 
         return total_heat
 
+    def _get_buy_throttle_limit(self) -> int:
+        """
+        Check recent trade outcomes and return max buys allowed today.
+
+        Buy throttle reduces buying during losing streaks to prevent churn.
+        Counts consecutive losses from the most recent trade backward.
+        Returns 999 (unlimited) when throttle is off or not triggered.
+        """
+        throttle_config = self.profile.get('buy_throttle', {})
+        if not throttle_config.get('enabled', False):
+            return 999
+
+        # Need minimum trades before throttle can activate
+        min_trades = throttle_config.get('min_trades', 3)
+        if len(self.recent_trade_outcomes) < min_trades:
+            return 999
+
+        # Count consecutive losses from most recent trade backward
+        consecutive_losses = 0
+        for outcome in reversed(self.recent_trade_outcomes):
+            if outcome < 0:
+                consecutive_losses += 1
+            else:
+                break  # A win breaks the streak
+
+        pause_after = throttle_config.get('pause_after', 5)
+        reduce_after = throttle_config.get('reduce_after', 3)
+
+        if consecutive_losses >= pause_after:
+            logger.info(f"BUY THROTTLE: PAUSED ({consecutive_losses} consecutive losses)")
+            return 0
+        elif consecutive_losses >= reduce_after:
+            logger.debug(f"BUY THROTTLE: REDUCED to 1 buy ({consecutive_losses} consecutive losses)")
+            return 1
+
+        return 999  # No throttle active
+
     def _simulate_day(self, current_date: date):
         """Simulate one trading day with two-tier scoring for performance."""
         # Update position prices and peak tracking
@@ -1195,10 +1237,14 @@ class BacktestEngine:
             for trade in pyramids[:3]:
                 self._execute_pyramid(current_date, trade)
 
-            # Evaluate and execute buys (with market state exposure cap)
+            # Evaluate and execute buys (with market state exposure cap + buy throttle)
             buys = self._evaluate_buys(current_date, all_scores)
+            buy_throttle_limit = self._get_buy_throttle_limit()
+            buys_executed_today = 0
             for trade in buys:
                 if self.cash < 100:
+                    break
+                if buys_executed_today >= buy_throttle_limit:
                     break
 
                 # In nibble mode, cap positions at nibble limit (not profile max)
@@ -1231,6 +1277,7 @@ class BacktestEngine:
                     if trade_value > available_invest:
                         trade.shares = available_invest / trade.price
                 self._execute_buy(current_date, trade)
+                buys_executed_today += 1
         else:
             # Only evaluate pyramids for held positions
             pyramids = self._evaluate_pyramids(current_date, held_scores)
@@ -2846,6 +2893,10 @@ class BacktestEngine:
             # FULL SELL - remove position entirely and record for cooldown
             del self.positions[trade.ticker]
             self.recently_sold[trade.ticker] = (current_date, trade.reason)
+
+            # Track outcome for buy throttle (full sells only, not partials)
+            gain_pct = ((trade.price - cost_basis) / cost_basis) * 100 if cost_basis > 0 else 0
+            self.recent_trade_outcomes.append(gain_pct)
 
         self._record_trade(
             current_date, trade,

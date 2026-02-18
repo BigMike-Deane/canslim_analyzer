@@ -921,6 +921,57 @@ def evaluate_pyramids(db: Session) -> list:
     return pyramids
 
 
+def get_buy_throttle_limit(db: Session, profile: dict) -> int:
+    """
+    Check recent trade outcomes and return max buys allowed this cycle.
+
+    Buy throttle reduces buying during losing streaks to prevent churn.
+    Counts consecutive losses from the most recent trade backward.
+    Returns 999 (unlimited) when throttle is off or not triggered.
+    """
+    throttle_config = profile.get('buy_throttle', {})
+    if not throttle_config.get('enabled', False):
+        return 999
+
+    lookback = throttle_config.get('lookback', 10)
+    min_trades = throttle_config.get('min_trades', 3)
+
+    # Query recent full sells (not partials) from the database
+    recent_sells = (
+        db.query(AIPortfolioTrade)
+        .filter(
+            AIPortfolioTrade.action == "SELL",
+            AIPortfolioTrade.realized_gain.isnot(None),
+        )
+        .order_by(AIPortfolioTrade.executed_at.desc())
+        .limit(lookback)
+        .all()
+    )
+
+    if len(recent_sells) < min_trades:
+        return 999
+
+    # Count consecutive losses from most recent trade backward
+    consecutive_losses = 0
+    for trade in recent_sells:
+        if trade.realized_gain < 0:
+            consecutive_losses += 1
+        else:
+            break
+
+    pause_after = throttle_config.get('pause_after', 5)
+    reduce_after = throttle_config.get('reduce_after', 3)
+
+    if consecutive_losses >= pause_after:
+        logger.info(f"BUY THROTTLE: PAUSED ({consecutive_losses} consecutive losses)")
+        return 0
+    elif consecutive_losses >= reduce_after:
+        logger.info(f"BUY THROTTLE: REDUCED to 1 buy ({consecutive_losses} consecutive losses)")
+        return 1
+
+    return 999
+
+
 def get_portfolio_value(db: Session) -> dict:
     """Calculate current portfolio value"""
     config = get_or_create_config(db)
@@ -2967,7 +3018,16 @@ def run_ai_trading_cycle(db: Session) -> dict:
             if not buys:
                 logger.warning("No buy candidates found! Check if Stock table has data with scores >= 65")
 
+            # Buy throttle: limit buys during losing streaks
+            buy_throttle_limit = get_buy_throttle_limit(db, profile)
+            buys_executed_count = 0
+
             for buy in buys:
+                # Buy throttle check
+                if buys_executed_count >= buy_throttle_limit:
+                    logger.info(f"Buy throttle limit ({buy_throttle_limit}) reached, stopping buys")
+                    break
+
                 # Re-check dynamic cash reserve on each buy
                 portfolio = get_portfolio_value(db)
                 min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
@@ -3052,6 +3112,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     )
                     db.add(new_position)
                     position_count += 1
+                    buys_executed_count += 1
 
                 stock_type = "Growth" if is_growth else "CANSLIM"
                 effective = buy.get("effective_score", stock.canslim_score)
