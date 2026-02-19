@@ -2228,6 +2228,16 @@ class BacktestEngine:
         require_strong_det = soft_config.get('require_strong_deterministic', False)
         det_min_for_soft = soft_config.get('deterministic_min', 50)
 
+        # Diagnostic: log score distribution when decay is active (helps debug empty candidate pools)
+        if self.underinvested_days >= 15:
+            above_threshold = sum(1 for _, d in scores.items() if d["total_score"] >= effective_min_score and _ not in current_tickers)
+            top5 = sorted([(t, d["total_score"], d.get("c_score", 0), d.get("l_score", 0))
+                           for t, d in scores.items() if t not in current_tickers],
+                          key=lambda x: x[1], reverse=True)[:5]
+            logger.info(f"DECAY DIAG: {self.underinvested_days}d idle, eff_min={effective_min_score:.0f}, "
+                        f"{above_threshold} candidates above threshold, "
+                        f"top5: {[(t, f's={s:.0f} c={c:.0f} l={l:.0f}') for t, s, c, l in top5]}")
+
         # Get candidates: full-position (above threshold) + soft-zone (graduated)
         soft_zone_floor = effective_min_score - soft_zone_width if soft_enabled else effective_min_score
         candidates = []
