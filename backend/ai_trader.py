@@ -1919,9 +1919,14 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     if cooldown_tickers:
         logger.info(f"Re-entry cooldown active for: {', '.join(sorted(cooldown_tickers))}")
 
+    # Load strategy profile early so we can check market_state config
+    strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
+    profile = get_strategy_profile(strategy)
+
     # MARKET STATE MACHINE: Graduated exposure system (replaces binary regime gate)
     # In bull markets (SPY > 50MA), this is always TRENDING at 100% — identical to before.
-    market_state_config = yaml_config.get('market_state', {})
+    # Read from profile first (nostate_optimized has market_state.enabled: false), fallback to global config
+    market_state_config = profile.get('market_state', yaml_config.get('market_state', {}))
     market_state_enabled = market_state_config.get('enabled', True) and MarketStateManager is not None
     market_state_mgr = None
     if market_state_enabled:
@@ -1943,7 +1948,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             state_name = market_state_mgr.state.value
             logger.info(f"MARKET STATE ({state_name}): SPY ${spy_px:.2f}, 50MA ${spy_50:.2f}, "
                        f"skipping all buys")
-            return {"buys": [], "reason": f"Market state: {state_name} (SPY below 50MA)"}
+            return []
     else:
         # Legacy fallback: binary regime gate
         regime_gate_config = yaml_config.get('ai_trader.market_regime_gate', {})
@@ -1955,7 +1960,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             spy_50 = spy_info.get('ma_50', 0)
             if spy_px and spy_50 and spy_px < spy_50:
                 logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
-                return {"buys": [], "reason": f"Market regime gate: SPY below 50MA"}
+                return []
 
     # Build set of tickers to exclude (already own or own a duplicate)
     excluded_tickers = set(current_tickers) | cooldown_tickers
@@ -1964,10 +1969,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             if ticker in group:
                 excluded_tickers.update(group)  # Exclude all in the group
 
-    # Load strategy profile (balanced or growth)
-    strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
-    profile = get_strategy_profile(strategy)
-
+    # Profile already loaded above (before market state check)
     max_positions = profile.get('max_positions', 8)
 
     # Read min_score from strategy profile → YAML config → DB fallback
