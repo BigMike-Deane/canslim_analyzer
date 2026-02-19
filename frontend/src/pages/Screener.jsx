@@ -148,6 +148,7 @@ function StockRow({ stock }) {
 
 export default function Screener() {
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [stocks, setStocks] = useState([])
   const [sectors, setSectors] = useState([])
   const [filters, setFilters] = useState({
@@ -164,6 +165,7 @@ export default function Screener() {
       const data = await api.getStocks(filters)
       setStocks(data.stocks || [])
       setTotal(data.total || 0)
+      setError(null)
 
       // Extract unique sectors
       if (data.stocks?.length > 0) {
@@ -175,6 +177,7 @@ export default function Screener() {
       }
     } catch (err) {
       console.error('Failed to fetch stocks:', err)
+      setError(err.message)
     } finally {
       setLoading(false)
     }
@@ -201,13 +204,19 @@ export default function Screener() {
         sectors={sectors}
       />
 
+      {error && !loading && stocks.length === 0 && (
+        <Card variant="glass" className="text-center py-8 text-red-400 mb-4">
+          Failed to load stocks: {error}
+        </Card>
+      )}
+
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3, 4, 5].map(i => (
             <div key={i} className="h-20 rounded-xl bg-dark-800/40 animate-pulse" />
           ))}
         </div>
-      ) : stocks.length === 0 ? (
+      ) : stocks.length === 0 && !error ? (
         <Card variant="glass" className="text-center py-8">
           <div className="font-semibold text-dark-100 mb-2">No Stocks Found</div>
           <div className="text-dark-400 text-sm">

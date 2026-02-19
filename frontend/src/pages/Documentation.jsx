@@ -466,18 +466,18 @@ export default function Documentation() {
         </p>
         <div className="space-y-2">
           {[
-            { bonus: '+30', label: 'Pre-Breakout (5-15% below pivot)', desc: 'Best entry - before the crowd notices. 30% larger position size.', color: 'emerald' },
-            { bonus: '+25', label: 'At Pivot (0-5% below)', desc: 'Optimal timing - coiled for breakout. 20% larger position size.', color: 'blue' },
-            { bonus: '+20', label: 'Breakout (0-5% above pivot)', desc: 'Confirmed move but slightly extended. 15% larger position size.', color: 'amber' },
-            { bonus: '-20', label: 'Extended (>10% above pivot)', desc: 'Chasing - higher risk of pullback. Avoid buying.', color: 'red' },
+            { bonus: '+30', label: 'Pre-Breakout (5-15% below pivot)', desc: 'Best entry - before the crowd notices. 30% larger position size.', borderCls: 'border-l-emerald-500/40', textCls: 'text-emerald-400' },
+            { bonus: '+25', label: 'At Pivot (0-5% below)', desc: 'Optimal timing - coiled for breakout. 20% larger position size.', borderCls: 'border-l-blue-500/40', textCls: 'text-blue-400' },
+            { bonus: '+20', label: 'Breakout (0-5% above pivot)', desc: 'Confirmed move but slightly extended. 15% larger position size.', borderCls: 'border-l-amber-500/40', textCls: 'text-amber-400' },
+            { bonus: '-20', label: 'Extended (>10% above pivot)', desc: 'Chasing - higher risk of pullback. Avoid buying.', borderCls: 'border-l-red-500/40', textCls: 'text-red-400' },
           ].map(entry => (
             <Card key={entry.label} variant="stat" padding="p-2.5" rounded="rounded-lg"
-              className={`border-l-2 border-l-${entry.color}-500/40`}
+              className={`border-l-2 ${entry.borderCls}`}
             >
               <div className="flex items-center gap-3">
-                <span className={`text-${entry.color}-400 font-bold font-data text-lg w-8 shrink-0`}>{entry.bonus}</span>
+                <span className={`${entry.textCls} font-bold font-data text-lg w-8 shrink-0`}>{entry.bonus}</span>
                 <div>
-                  <div className={`text-${entry.color}-400 font-medium text-sm`}>{entry.label}</div>
+                  <div className={`${entry.textCls} font-medium text-sm`}>{entry.label}</div>
                   <div className="text-dark-400 text-[10px]">{entry.desc}</div>
                 </div>
               </div>
@@ -530,13 +530,13 @@ export default function Documentation() {
         <h3 className="font-semibold text-red-400 text-sm mb-3">Sell Signals</h3>
         <div className="space-y-2">
           {[
-            { title: 'Stop Loss (-8%)', desc: "O'Neil's cardinal rule - cut losses before they grow. Automatic exit.", color: 'red' },
-            { title: 'Trailing Stop (8-15%)', desc: 'Locks in gains: 15% stop at 50%+ gain, 12% at 30%+, 10% at 20%+, 8% at 10%+', color: 'red' },
-            { title: 'Score Crash (2 consecutive scans)', desc: 'Score drops below 50 AND drops 20+ points for 2+ scans. Avoids single-blip sells.', color: 'red' },
-            { title: 'Partial Profit Taking', desc: 'Sells 25% at +25% gain, 50% at +40% gain (if score >= 60). Lets winners run.', color: 'orange' },
+            { title: 'Stop Loss (-8%)', desc: "O'Neil's cardinal rule - cut losses before they grow. Automatic exit.", textCls: 'text-red-400' },
+            { title: 'Trailing Stop (8-15%)', desc: 'Locks in gains: 15% stop at 50%+ gain, 12% at 30%+, 10% at 20%+, 8% at 10%+', textCls: 'text-red-400' },
+            { title: 'Score Crash (2 consecutive scans)', desc: 'Score drops below 50 AND drops 20+ points for 2+ scans. Avoids single-blip sells.', textCls: 'text-red-400' },
+            { title: 'Partial Profit Taking', desc: 'Sells 25% at +25% gain, 50% at +40% gain (if score >= 60). Lets winners run.', textCls: 'text-orange-400' },
           ].map(sell => (
             <Card key={sell.title} variant="stat" padding="p-2.5" rounded="rounded-lg">
-              <div className={`text-${sell.color}-400 font-medium text-sm`}>{sell.title}</div>
+              <div className={`${sell.textCls} font-medium text-sm`}>{sell.title}</div>
               <div className="text-dark-400 text-[10px]">{sell.desc}</div>
             </Card>
           ))}

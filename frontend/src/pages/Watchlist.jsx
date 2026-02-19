@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency } from '../api'
+import { api, formatCurrency, formatDate } from '../api'
 import Card from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
@@ -92,7 +92,7 @@ function WatchlistItem({ item, onRemove }) {
 
       <div className="flex justify-between items-center mt-2">
         <div className="text-dark-500 text-[10px] font-data">
-          Added {new Date(item.added_at).toLocaleDateString('en-US', { timeZone: 'America/Chicago' })}
+          Added {formatDate(item.added_at)}
         </div>
         <button
           onClick={() => onRemove(item.id)}
@@ -138,7 +138,7 @@ function AddWatchlistForm({ onClose, onAdd }) {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         <div>
           <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Target Price</label>
           <input

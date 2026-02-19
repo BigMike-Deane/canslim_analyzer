@@ -47,6 +47,19 @@ logger = logging.getLogger(__name__)
 from pydantic import Field, field_validator
 import re
 
+def get_latest_market_snapshot(db: Session):
+    """Get the most recent market snapshot."""
+    return db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+
+
+def validate_ticker_param(ticker: str) -> str:
+    """Validate and normalize a ticker path parameter."""
+    ticker = ticker.upper().strip()
+    if not ticker or not re.match(r'^[A-Z0-9.\-]{1,10}$', ticker):
+        raise HTTPException(status_code=400, detail=f"Invalid ticker format: {ticker}")
+    return ticker
+
+
 class PositionCreate(BaseModel):
     ticker: str = Field(..., min_length=1, max_length=10)
     shares: float = Field(..., gt=0, le=1_000_000_000)
@@ -924,7 +937,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
 @app.get("/api/market")
 async def get_market_data(db: Session = Depends(get_db)):
     """Get current market direction data (SPY price, MAs, trend)"""
-    latest = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    latest = get_latest_market_snapshot(db)
 
     if not latest:
         return {"error": "No market data available", "spy_price": None}
@@ -945,7 +958,7 @@ async def refresh_market_data(db: Session = Depends(get_db)):
     """Force refresh SPY price and moving averages - call this independently of scans"""
     try:
         update_market_snapshot(db)
-        latest = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+        latest = get_latest_market_snapshot(db)
 
         if latest:
             return {
@@ -999,7 +1012,7 @@ async def get_stocks(
 ):
     """Get filtered and sorted stock list"""
     # Get current market M score for dynamic adjustment
-    latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    latest_market = get_latest_market_snapshot(db)
     current_m_score = latest_market.market_score if latest_market else 0
 
     query = db.query(Stock).filter(Stock.canslim_score != None)
@@ -1076,7 +1089,7 @@ async def get_top_growth_stocks(
     Growth Mode scoring is designed for pre-revenue/high-growth companies.
     """
     # Get current market M score
-    latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    latest_market = get_latest_market_snapshot(db)
     current_m_score = latest_market.market_score if latest_market else 0
 
     # Query stocks with growth_mode_score (fetch extra to allow for duplicate filtering)
@@ -1136,7 +1149,7 @@ async def get_breaking_out_stocks(
     2. Fallback: Stocks within 5% of 52-week high with decent volume/score
     """
     # Get current market M score for consistent scoring
-    latest_market = db.query(MarketSnapshot).order_by(desc(MarketSnapshot.date)).first()
+    latest_market = get_latest_market_snapshot(db)
     current_m_score = latest_market.market_score if latest_market else 0
 
     # First: Get stocks with is_breaking_out flag
@@ -1306,7 +1319,7 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
     """Get detailed stock analysis with background refresh for stale data"""
     from backend.database import SessionLocal
 
-    ticker = ticker.upper()
+    ticker = validate_ticker_param(ticker)
 
     # Check cache first
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
@@ -1438,7 +1451,7 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
 @app.post("/api/stocks/{ticker}/refresh")
 async def refresh_stock(ticker: str, db: Session = Depends(get_db)):
     """Force refresh a stock's analysis"""
-    ticker = ticker.upper()
+    ticker = validate_ticker_param(ticker)
 
     analysis = analyze_stock(ticker)
     if not analysis:
@@ -3079,15 +3092,23 @@ async def get_watchlist(db: Session = Depends(get_db)):
     """Get watchlist with current stock data"""
     watchlist = db.query(Watchlist).all()
 
+    # Batch-fetch all stocks to avoid N+1 queries
+    tickers = [w.ticker for w in watchlist]
+    stocks_by_ticker = {}
+    if tickers:
+        stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in stocks}
+
     items = []
     for w in watchlist:
-        stock = db.query(Stock).filter(Stock.ticker == w.ticker).first()
+        stock = stocks_by_ticker.get(w.ticker)
         items.append({
             "id": w.id,
             "ticker": w.ticker,
             "added_at": w.added_at.isoformat() if w.added_at else None,
             "notes": w.notes,
             "target_price": w.target_price,
+            "alert_score": w.alert_score,
             "current_price": stock.current_price if stock else None,
             "canslim_score": stock.canslim_score if stock else None,
             "projected_growth": stock.projected_growth if stock else None
@@ -3661,10 +3682,17 @@ async def get_trade_analytics(db: Session = Depends(get_db)):
         "total_realized": sum(t.realized_gain or 0 for t in sells),
     }
 
+    # Batch-fetch all stocks for sector lookup (avoids N+1 queries)
+    sell_tickers = list(set(t.ticker for t in sells))
+    stocks_by_ticker = {}
+    if sell_tickers:
+        _stocks = db.query(Stock).filter(Stock.ticker.in_(sell_tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in _stocks}
+
     # By sector
     sector_data = {}
     for t in sells:
-        stock = db.query(Stock).filter(Stock.ticker == t.ticker).first()
+        stock = stocks_by_ticker.get(t.ticker)
         sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
         if sector not in sector_data:
             sector_data[sector] = {"trades": 0, "wins": 0, "pnl": 0}
@@ -4023,8 +4051,9 @@ async def get_earnings_audit_ticker(ticker: str, db: Session = Depends(get_db)):
     """Get the latest earnings audit for a specific ticker."""
     from backend.database import EarningsAudit
 
+    ticker = validate_ticker_param(ticker)
     audit = db.query(EarningsAudit).filter(
-        EarningsAudit.ticker == ticker.upper(),
+        EarningsAudit.ticker == ticker,
     ).order_by(EarningsAudit.audited_at.desc()).first()
 
     if not audit:

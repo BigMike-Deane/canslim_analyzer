@@ -6,6 +6,7 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Modal from '../components/Modal'
+import { useToast } from '../components/Toast'
 
 /* ─── Score Gauge (SVG ring) ──────────────────────────────────────── */
 
@@ -703,6 +704,7 @@ function TechnicalAnalysis({ stock }) {
 export default function StockDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
+  const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [stock, setStock] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -738,9 +740,9 @@ export default function StockDetail() {
   const handleAddToWatchlist = async () => {
     try {
       await api.addToWatchlist({ ticker })
-      alert('Added to watchlist!')
+      toast.success(`${ticker} added to watchlist`)
     } catch (err) {
-      console.error('Failed to add to watchlist:', err)
+      toast.error(err.message || 'Failed to add to watchlist')
     }
   }
 
@@ -754,9 +756,9 @@ export default function StockDetail() {
           shares: parseFloat(shares),
           cost_basis: parseFloat(costBasis)
         })
-        alert('Added to portfolio!')
+        toast.success(`${ticker} added to portfolio`)
       } catch (err) {
-        console.error('Failed to add to portfolio:', err)
+        toast.error(err.message || 'Failed to add to portfolio')
       }
     }
   }

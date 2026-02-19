@@ -6,6 +6,7 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, ActionBadge, TagBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
+import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
 
 // ── Collapsible Section (local helper) ──────────────────────────────
@@ -824,6 +825,7 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
 // ── Main Page Component ─────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════
 export default function AIPortfolio() {
+  const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [portfolio, setPortfolio] = useState(null)
   const [history, setHistory] = useState([])
@@ -1005,7 +1007,7 @@ export default function AIPortfolio() {
 
       const result = await api.runAITradingCycle()
       if (result.status === 'market_closed' || result.status === 'busy') {
-        alert(result.message)
+        toast.warning(result.message)
         setWaitingForTrades(false)
         fetchData()
       } else if (result.status !== 'started') {
