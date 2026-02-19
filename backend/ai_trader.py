@@ -3342,25 +3342,29 @@ def take_portfolio_snapshot(db: Session):
     logger.info(f"Portfolio snapshot taken: ${portfolio['total_value']:.2f} ({portfolio['positions_count']} positions)")
 
 
-def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
-    """Initialize or reset the AI portfolio with aggressive growth settings"""
+def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0, strategy: str = "balanced"):
+    """Initialize or reset the AI portfolio with the specified strategy profile"""
+    # Load strategy profile to get correct config values
+    profile = get_strategy_profile(strategy)
+
     # Clear existing data
     db.query(AIPortfolioPosition).delete()
     db.query(AIPortfolioTrade).delete()
     db.query(AIPortfolioSnapshot).delete()
     db.query(AIPortfolioConfig).delete()
 
-    # Create new config - CANSLIM concentrated strategy
+    # Create new config from strategy profile
     config = AIPortfolioConfig(
         starting_cash=starting_cash,
         current_cash=starting_cash,
-        max_positions=20,
-        max_position_pct=12.0,
-        min_score_to_buy=72,  # CANSLIM quality threshold
+        max_positions=profile.get("max_positions", 8),
+        max_position_pct=profile.get("max_single_position_pct", 25.0),
+        min_score_to_buy=profile.get("min_score", 72),
         sell_score_threshold=45,
-        take_profit_pct=40.0,
-        stop_loss_pct=8.0,  # O'Neil standard 8% stop
-        is_active=True
+        take_profit_pct=profile.get("take_profit_pct", 75.0),
+        stop_loss_pct=profile.get("stop_loss_pct", 7.0),
+        is_active=True,
+        strategy=strategy
     )
     db.add(config)
     db.commit()
@@ -3369,13 +3373,14 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0):
     take_portfolio_snapshot(db)
 
     return {
-        "message": "AI Portfolio reset. Click 'Run Trading Cycle' to build positions.",
+        "message": f"AI Portfolio reset with '{strategy}' strategy. Click 'Run Trading Cycle' to build positions.",
         "starting_cash": starting_cash,
+        "strategy_name": strategy,
         "strategy": {
-            "min_score": 72,
-            "max_positions": 20,
-            "stop_loss": "8%",
-            "take_profit": "40%",
-            "focus": "High growth + momentum stocks"
+            "min_score": profile.get("min_score", 72),
+            "max_positions": profile.get("max_positions", 8),
+            "stop_loss": f"{profile.get('stop_loss_pct', 7.0)}%",
+            "take_profit": f"{profile.get('take_profit_pct', 75.0)}%",
+            "market_state": "disabled" if not profile.get("market_state", {}).get("enabled", True) else "enabled"
         }
     }
