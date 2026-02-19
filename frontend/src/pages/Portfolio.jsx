@@ -6,6 +6,7 @@ import { ScoreBadge, ActionBadge, TagBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Modal from '../components/Modal'
 import PageHeader from '../components/PageHeader'
+import { useToast } from '../components/Toast'
 
 function PortfolioSummary({ positions }) {
   if (!positions || positions.length === 0) return null
@@ -503,6 +504,7 @@ export default function Portfolio() {
   const [editingPosition, setEditingPosition] = useState(null)
   const [gameplan, setGameplan] = useState([])
   const [gameplanLoading, setGameplanLoading] = useState(true)
+  const toast = useToast()
 
   const fetchPortfolio = async () => {
     try {
@@ -534,8 +536,10 @@ export default function Portfolio() {
       await api.refreshPortfolio()
       await fetchPortfolio()
       await fetchGameplan()
+      toast.success('Portfolio refreshed')
     } catch (err) {
       console.error('Failed to refresh portfolio:', err)
+      toast.error(err.message || 'Failed to refresh portfolio')
     } finally {
       setRefreshing(false)
     }
@@ -549,9 +553,11 @@ export default function Portfolio() {
   const handleAdd = async (position) => {
     try {
       await api.addPosition(position)
+      toast.success(`${position.ticker} added to portfolio`)
       fetchPortfolio()
     } catch (err) {
       console.error('Failed to add position:', err)
+      toast.error(err.message || 'Failed to add position')
     }
   }
 
@@ -560,8 +566,10 @@ export default function Portfolio() {
     try {
       await api.deletePosition(id)
       setPositions(prev => prev.filter(p => p.id !== id))
+      toast.success('Position removed')
     } catch (err) {
       console.error('Failed to delete position:', err)
+      toast.error(err.message || 'Failed to remove position')
     }
   }
 

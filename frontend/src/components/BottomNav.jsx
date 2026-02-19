@@ -77,6 +77,20 @@ export default function BottomNav() {
         <div className="fixed inset-0 z-40 md:hidden" onClick={() => setMoreOpen(false)}>
           <div className="absolute inset-0 bg-dark-950/80 animate-fade-in" />
           <div className="absolute bottom-16 left-3 right-3 bg-dark-800 border border-dark-700/50 rounded-xl p-2 animate-slide-up shadow-xl">
+            {/* Search bar */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setMoreOpen(false)
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2.5 mb-2 rounded-lg bg-dark-700/50 border border-dark-600 text-dark-400 text-xs"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+              </svg>
+              <span>Search stocks or pages...</span>
+            </button>
             <div className="grid grid-cols-4 gap-1">
               {moreItems.map(item => (
                 <button

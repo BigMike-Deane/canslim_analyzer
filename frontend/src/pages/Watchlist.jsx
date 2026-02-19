@@ -5,6 +5,7 @@ import Card from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
+import { useToast } from '../components/Toast'
 
 function WatchlistItem({ item, onRemove }) {
   const [stock, setStock] = useState(null)
@@ -187,6 +188,7 @@ export default function Watchlist() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState([])
   const [showAddModal, setShowAddModal] = useState(false)
+  const toast = useToast()
 
   const fetchWatchlist = async () => {
     try {
@@ -207,9 +209,11 @@ export default function Watchlist() {
   const handleAdd = async (item) => {
     try {
       await api.addToWatchlist(item)
+      toast.success(`${item.ticker} added to watchlist`)
       fetchWatchlist()
     } catch (err) {
       console.error('Failed to add to watchlist:', err)
+      toast.error(err.message || 'Failed to add to watchlist')
     }
   }
 
@@ -218,8 +222,10 @@ export default function Watchlist() {
     try {
       await api.removeFromWatchlist(id)
       setItems(prev => prev.filter(i => i.id !== id))
+      toast.success('Removed from watchlist')
     } catch (err) {
       console.error('Failed to remove:', err)
+      toast.error(err.message || 'Failed to remove')
     }
   }
 
