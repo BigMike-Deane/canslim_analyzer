@@ -1973,6 +1973,49 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # Read min_score from strategy profile → YAML config → DB fallback
     min_score_to_buy = profile.get('min_score', yaml_config.get('ai_trader.allocation.min_score_to_buy', portfolio_config.min_score_to_buy))
 
+    # Score floor decay: lower min_score when under-invested in a bull market
+    decay_config = profile.get('score_floor_decay', {})
+    if decay_config.get('enabled', False):
+        max_positions_for_decay = decay_config.get('max_positions', 2)
+        position_count = len(positions)
+        if position_count <= max_positions_for_decay:
+            # Check if SPY is above 50MA (bull market)
+            from data_fetcher import get_cached_market_direction
+            _mkt = get_cached_market_direction()
+            spy_info = _mkt.get('spy', {}) if _mkt else {}
+            spy_px = spy_info.get('price', 0)
+            spy_50 = spy_info.get('ma_50', 0)
+            if spy_px and spy_50 and spy_px > spy_50:
+                # Count how many consecutive trading days we've been under-invested
+                # by looking at recent snapshots where positions_count <= max_positions_for_decay
+                recent_snaps = (
+                    db.query(AIPortfolioSnapshot)
+                    .filter(AIPortfolioSnapshot.positions_count <= max_positions_for_decay)
+                    .order_by(AIPortfolioSnapshot.timestamp.desc())
+                    .limit(60)
+                    .all()
+                )
+                # Count consecutive under-invested days from most recent
+                underinvested_days = 0
+                for snap in recent_snaps:
+                    if snap.positions_count <= max_positions_for_decay:
+                        underinvested_days += 1
+                    else:
+                        break
+
+                if underinvested_days > 0:
+                    steps = decay_config.get('steps', [
+                        {'after_days': 15, 'min_score': 68},
+                        {'after_days': 30, 'min_score': 65},
+                        {'after_days': 45, 'min_score': 62},
+                    ])
+                    for step in sorted(steps, key=lambda s: s['after_days'], reverse=True):
+                        if underinvested_days >= step['after_days']:
+                            logger.info(f"SCORE DECAY: {underinvested_days} under-invested days, "
+                                        f"min_score {min_score_to_buy} -> {step['min_score']}")
+                            min_score_to_buy = step['min_score']
+                            break
+
     # PERCENTILE-BASED THRESHOLD: Adapt to current market score distribution
     # Instead of a fixed 72, use the lower of (config threshold, top 5% percentile)
     # This ensures we always have candidates even when scores are compressed

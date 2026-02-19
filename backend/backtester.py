@@ -168,6 +168,9 @@ class BacktestEngine:
         # SPY cash sweep: park idle cash in SPY when SPY > 50MA
         self.spy_sweep_shares: float = 0.0
 
+        # Score floor decay: count consecutive trading days under-invested in a bull market
+        self.underinvested_days: int = 0
+
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
         self.spy_shares: float = 0.0  # Hypothetical SPY buy-and-hold
@@ -1271,6 +1274,16 @@ class BacktestEngine:
                     logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys")
                     can_buy = False
 
+            # Score floor decay: track under-invested days in bull market
+            decay_config = self.profile.get('score_floor_decay', {})
+            if decay_config.get('enabled', False):
+                max_positions_for_decay = decay_config.get('max_positions', 2)
+                if can_buy and len(self.positions) <= max_positions_for_decay:
+                    self.underinvested_days += 1
+                elif len(self.positions) > max_positions_for_decay:
+                    self.underinvested_days = 0
+                # Note: when SPY < 50MA (can_buy=False), counter freezes — we WANT to hold cash in bears
+
             # Legacy idle re-seed
             if can_buy and not self.positions and self.idle_days >= 10:
                 logger.info(f"Backtest {self.backtest.id}: Portfolio idle {self.idle_days} days, re-seeding on {current_date}")
@@ -2143,6 +2156,23 @@ class BacktestEngine:
 
         # Use strategy profile min_score (falls back to backtest record value)
         profile_min_score = self.profile.get('min_score', self.backtest.min_score_to_buy)
+
+        # Score floor decay: lower min_score when under-invested in a bull market
+        decay_config = self.profile.get('score_floor_decay', {})
+        if decay_config.get('enabled', False) and self.underinvested_days > 0:
+            steps = decay_config.get('steps', [
+                {'after_days': 15, 'min_score': 68},
+                {'after_days': 30, 'min_score': 65},
+                {'after_days': 45, 'min_score': 62},
+            ])
+            # Apply the most aggressive step that has been reached
+            for step in sorted(steps, key=lambda s: s['after_days'], reverse=True):
+                if self.underinvested_days >= step['after_days']:
+                    old_score = profile_min_score
+                    profile_min_score = step['min_score']
+                    logger.info(f"SCORE DECAY: {self.underinvested_days} under-invested days, "
+                                f"min_score {old_score} -> {profile_min_score}")
+                    break
 
         if weighted_signal >= bullish_threshold:
             effective_min_score = profile_min_score - 5  # Easier in bull
