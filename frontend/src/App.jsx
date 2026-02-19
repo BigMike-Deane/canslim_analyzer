@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import BottomNav from './components/BottomNav'
+import QuickSearch from './components/QuickSearch'
 import CommandCenter from './pages/CommandCenter'
 import Dashboard from './pages/Dashboard'
 import Screener from './pages/Screener'
@@ -53,6 +54,7 @@ export default function App() {
         {/* Mobile Bottom Nav */}
         <BottomNav />
       </div>
+      <QuickSearch />
     </ToastProvider>
   )
 }

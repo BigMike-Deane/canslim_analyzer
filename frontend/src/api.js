@@ -102,6 +102,8 @@ export const api = {
     return request(`/api/stocks${query ? `?${query}` : ''}`)
   },
 
+  searchStocks: (q) => request(`/api/stocks/search?q=${encodeURIComponent(q)}&limit=8`),
+
   getStock: (ticker) => request(`/api/stocks/${ticker}`),
 
   refreshStock: async (ticker) => {

@@ -87,6 +87,24 @@ export default function Sidebar({ collapsed, onToggle }) {
         )}
       </div>
 
+      {/* Search shortcut */}
+      <button
+        onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
+        className={`mx-2 mt-3 mb-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-dark-500 hover:text-dark-300 bg-dark-800/50 border border-dark-700/40 hover:border-dark-600 transition-colors ${collapsed ? 'justify-center' : ''}`}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+        </svg>
+        {!collapsed && (
+          <>
+            <span className="flex-1 text-left">Search...</span>
+            <kbd className="text-[9px] text-dark-600 bg-dark-700/50 px-1 py-0.5 rounded border border-dark-700">
+              {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
+            </kbd>
+          </>
+        )}
+      </button>
+
       {/* Nav Groups */}
       <nav className="flex-1 overflow-y-auto py-3 px-2">
         {navGroups.map(group => (

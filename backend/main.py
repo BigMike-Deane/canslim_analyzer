@@ -1072,6 +1072,30 @@ async def get_stocks(
     }
 
 
+@app.get("/api/stocks/search")
+async def search_stocks(
+    q: str = Query(..., min_length=1, max_length=10),
+    limit: int = Query(8, ge=1, le=20),
+    db: Session = Depends(get_db)
+):
+    """Quick search stocks by ticker or name prefix."""
+    q = q.upper().strip()
+    results = db.query(
+        Stock.ticker, Stock.name, Stock.canslim_score, Stock.sector
+    ).filter(
+        (Stock.ticker.ilike(f"{q}%")) | (Stock.name.ilike(f"%{q}%"))
+    ).order_by(
+        # Exact ticker match first, then by score
+        case((Stock.ticker == q, 0), else_=1),
+        desc(Stock.canslim_score)
+    ).limit(limit).all()
+
+    return [
+        {"ticker": r.ticker, "name": r.name, "score": r.canslim_score, "sector": r.sector}
+        for r in results
+    ]
+
+
 @app.get("/api/stocks/sectors")
 async def get_sectors(db: Session = Depends(get_db)):
     """Get list of available sectors"""
