@@ -170,14 +170,17 @@ function HoldDurationBreakdown({ data }) {
 export default function Analytics() {
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         const data = await api.getTradeAnalytics()
         setAnalytics(data)
+        setError(null)
       } catch (err) {
         console.error('Failed to fetch analytics:', err)
+        setError(err.message || 'Failed to load analytics')
       } finally {
         setLoading(false)
       }
@@ -194,6 +197,18 @@ export default function Analytics() {
           <div className="skeleton h-48 rounded-2xl" />
           <div className="skeleton h-40 rounded-2xl" />
         </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="p-4 md:p-6 max-w-4xl mx-auto">
+        <PageHeader title="Trade Analytics" />
+        <Card variant="glass" className="text-center py-8">
+          <div className="text-red-400 text-sm mb-2">Failed to load analytics</div>
+          <div className="text-dark-500 text-xs">{error}</div>
+        </Card>
       </div>
     )
   }

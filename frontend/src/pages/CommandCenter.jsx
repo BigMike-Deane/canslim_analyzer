@@ -5,6 +5,7 @@ import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import Sparkline from '../components/Sparkline'
+import { useToast } from '../components/Toast'
 
 // Auto-refresh during market hours (M-F 8:30am-4pm CST)
 function useMarketRefresh(callback, intervalMs = 60000) {
@@ -205,6 +206,7 @@ export default function CommandCenter() {
   const [error, setError] = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
   const [runningAction, setRunningAction] = useState(null)
+  const toast = useToast()
 
   const fetchData = useCallback(async () => {
     try {
@@ -225,11 +227,17 @@ export default function CommandCenter() {
   const handleAction = async (action) => {
     setRunningAction(action)
     try {
-      if (action === 'cycle') await api.runAITradingCycle()
-      if (action === 'scan') await api.startScanner('all', 90)
+      if (action === 'cycle') {
+        await api.runAITradingCycle()
+        toast.success('Trading cycle complete')
+      }
+      if (action === 'scan') {
+        await api.startScanner('all', 90)
+        toast.info('Scan started')
+      }
       fetchData()
     } catch (e) {
-      console.error(e)
+      toast.error(e.message || `Failed to ${action}`)
     } finally {
       setRunningAction(null)
     }
@@ -271,7 +279,7 @@ export default function CommandCenter() {
   }
 
   const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner, coiled_spring } = data || {}
-  const marketState = market?.market_state?.current_state || market?.regime?.toUpperCase()
+  const marketState = market?.market_state || market?.regime?.toUpperCase()
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
 
@@ -476,6 +484,11 @@ export default function CommandCenter() {
                 )}
                 {positions?.map(p => <PositionRow key={p.ticker} p={p} />)}
               </div>
+              {positions?.length > 0 && (
+                <Link to="/ai-portfolio" className="block text-center text-[10px] text-primary-400 hover:text-primary-300 mt-2 pt-2 border-t border-dark-700/30 transition-colors">
+                  View All in AI Portfolio &rarr;
+                </Link>
+              )}
             </CollapsibleSection>
           </Card>
 
@@ -491,6 +504,11 @@ export default function CommandCenter() {
                 )}
                 {candidates?.map(c => <CandidateRow key={c.ticker} c={c} />)}
               </div>
+              {candidates?.length > 0 && (
+                <Link to="/screener" className="block text-center text-[10px] text-primary-400 hover:text-primary-300 mt-2 pt-2 border-t border-dark-700/30 transition-colors">
+                  View All in Screener &rarr;
+                </Link>
+              )}
             </CollapsibleSection>
           </Card>
         </div>
@@ -539,21 +557,33 @@ export default function CommandCenter() {
               {(!trades || trades.length === 0) ? (
                 <div className="text-dark-500 text-xs py-4 text-center">No recent trades</div>
               ) : (
-                <div className="space-y-0.5">
-                  {trades.slice(0, 6).map((t, i) => (
-                    <div key={i} className="flex items-center justify-between py-1.5">
-                      <div className="flex items-center gap-2">
-                        <ActionBadge action={t.action} />
-                        <Link to={`/stock/${t.ticker}`} className="text-xs font-medium text-primary-400 hover:text-primary-300 transition-colors">
-                          {t.ticker}
-                        </Link>
+                <>
+                  <div className="space-y-0.5">
+                    {trades.slice(0, 6).map((t, i) => (
+                      <div key={i} className="flex items-center justify-between py-1.5">
+                        <div className="flex items-center gap-2">
+                          <ActionBadge action={t.action} />
+                          <Link to={`/stock/${t.ticker}`} className="text-xs font-medium text-primary-400 hover:text-primary-300 transition-colors">
+                            {t.ticker}
+                          </Link>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {t.realized_gain != null && (
+                            <span className={`text-[10px] font-data font-medium ${t.realized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {t.realized_gain >= 0 ? '+' : ''}{formatCurrency(t.realized_gain)}
+                            </span>
+                          )}
+                          <span className="text-[10px] font-data text-dark-500">
+                            {t.executed_at ? formatRelativeTime(t.executed_at) : '-'}
+                          </span>
+                        </div>
                       </div>
-                      <span className="text-[10px] font-data text-dark-500">
-                        {t.executed_at ? formatRelativeTime(t.executed_at) : '-'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                  <Link to="/analytics" className="block text-center text-[10px] text-primary-400 hover:text-primary-300 mt-2 pt-2 border-t border-dark-700/30 transition-colors">
+                    View All Trades &rarr;
+                  </Link>
+                </>
               )}
             </CollapsibleSection>
           </Card>
@@ -599,13 +629,21 @@ export default function CommandCenter() {
                     {scanner.stocks_scanned}/{scanner.total_stocks}
                   </span>
                 )}
-                {scanner?.last_scan_end && (
+                {scanner?.last_scan_end && !scanner?.is_scanning && (
                   <span className="text-[10px] font-data text-dark-500">
                     {formatRelativeTime(scanner.last_scan_end)}
                   </span>
                 )}
               </div>
             </div>
+            {scanner?.is_scanning && scanner?.total_stocks > 0 && (
+              <div className="mt-2 h-1 bg-dark-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary-500/60 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, ((scanner.stocks_scanned || 0) / scanner.total_stocks) * 100)}%` }}
+                />
+              </div>
+            )}
           </Card>
         </div>
       </div>

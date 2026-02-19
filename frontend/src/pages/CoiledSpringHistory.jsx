@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatShortDate } from '../api'
+import { api, formatShortDate, formatCurrency } from '../api'
 import Card from '../components/Card'
 import { OutcomeBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -58,7 +58,7 @@ export default function CoiledSpringHistory() {
       key: 'alert_date',
       label: 'Date',
       sortable: true,
-      render: (val) => val ? formatShortDate(val + 'T00:00:00') : '-',
+      render: (val) => val ? formatShortDate(val) : '-',
     },
     {
       key: 'base_type',
@@ -73,7 +73,7 @@ export default function CoiledSpringHistory() {
       mono: true,
       sortable: true,
       render: (val) =>
-        val != null ? <span className="font-data text-xs">${val.toFixed(2)}</span> : '-',
+        val != null ? <span className="font-data text-xs">{formatCurrency(val)}</span> : '-',
     },
     {
       key: 'price_after_earnings',
@@ -82,7 +82,7 @@ export default function CoiledSpringHistory() {
       mono: true,
       sortable: true,
       render: (val) =>
-        val != null ? <span className="font-data text-xs">${val.toFixed(2)}</span> : '-',
+        val != null ? <span className="font-data text-xs">{formatCurrency(val)}</span> : '-',
     },
     {
       key: 'price_change_pct',

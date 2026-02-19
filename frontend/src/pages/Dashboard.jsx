@@ -115,7 +115,7 @@ function MarketStatus({ market, onRefresh }) {
       />
 
       {/* Three Index Cards */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <IndexCard
           ticker="SPY"
           label="S&P 500"

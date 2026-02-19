@@ -321,7 +321,7 @@ function AddPositionModal({ open, onClose, onAdd }) {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className={labelCls}>Shares</label>
             <input
@@ -408,7 +408,7 @@ function EditPositionModal({ open, position, onClose, onSave }) {
   return (
     <Modal open={open} onClose={onClose} title={`Edit ${position?.ticker || ''}`}>
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className={labelCls}>Shares</label>
             <input

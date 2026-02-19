@@ -59,6 +59,7 @@ function BreakoutRow({ stock }) {
 export default function Breakouts() {
   const [loading, setLoading] = useState(true)
   const [stocks, setStocks] = useState([])
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     const fetchBreakouts = async () => {
@@ -66,8 +67,10 @@ export default function Breakouts() {
         setLoading(true)
         const data = await api.getBreakingOutStocks(50) // Get up to 50
         setStocks(data.stocks || [])
+        setError(null)
       } catch (err) {
         console.error('Failed to fetch breakouts:', err)
+        setError(err.message || 'Failed to load breakouts')
       } finally {
         setLoading(false)
       }
@@ -101,7 +104,12 @@ export default function Breakouts() {
       />
 
       <Card variant="glass" className="mb-4">
-        {stocks.length === 0 ? (
+        {error ? (
+          <div className="text-center py-8">
+            <div className="text-red-400 text-sm mb-2">Failed to load breakouts</div>
+            <div className="text-dark-500 text-xs">{error}</div>
+          </div>
+        ) : stocks.length === 0 ? (
           <div className="text-center py-8">
             <div className="font-semibold text-dark-100 mb-2">No Breakouts Detected</div>
             <div className="text-dark-400 text-sm">

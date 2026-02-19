@@ -4138,8 +4138,20 @@ async def get_command_center(db: Session = Depends(get_db)):
         spy_above_200 = latest_market.spy_price > latest_market.spy_200_ma if latest_market.spy_200_ma else None
         regime = "bullish" if spy_above_50 and spy_above_200 else ("bearish" if not spy_above_50 else "neutral")
 
+        # Approximate market state from signals (simple heuristic)
+        ws = latest_market.weighted_signal or 0
+        if ws >= 1.0:
+            approx_state = "TRENDING"
+        elif ws >= 0.3:
+            approx_state = "CONFIRMED"
+        elif ws >= -0.3:
+            approx_state = "PRESSURE"
+        else:
+            approx_state = "CORRECTION"
+
         market_data = {
             "regime": regime,
+            "market_state": approx_state,
             "spy": {
                 "price": latest_market.spy_price,
                 "ma50": latest_market.spy_50_ma,
@@ -4166,6 +4178,7 @@ async def get_command_center(db: Session = Depends(get_db)):
     portfolio_summary = {
         "total_value": portfolio["total_value"],
         "cash": portfolio["cash"],
+        "invested": portfolio["positions_value"],
         "positions_value": portfolio["positions_value"],
         "total_return": portfolio.get("total_return", 0),
         "total_return_pct": portfolio.get("total_return_pct", 0),
@@ -4313,6 +4326,7 @@ async def get_command_center(db: Session = Depends(get_db)):
             "shares": t.shares,
             "price": t.price,
             "value": round(t.shares * t.price, 2) if t.shares and t.price else None,
+            "realized_gain": round(t.realized_gain, 2) if t.realized_gain else None,
             "reason": t.reason[:80] if t.reason else None,
             "executed_at": t.executed_at.isoformat() + "Z" if t.executed_at else None,
         }
