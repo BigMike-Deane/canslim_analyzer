@@ -2187,15 +2187,23 @@ class BacktestEngine:
         # Detect if earnings data is limited (historical backtests lose C/A scores)
         # When _filter_available_earnings strips too many quarters, C=0 and A=0 for
         # all stocks. Without these 30 points, the normal threshold (72) is unreachable.
+        # Check C and A independently — in some periods C data is gone but A survives.
         max_c_in_universe = max((data.get('c_score', 0) for _, data in scores.items()), default=0)
         max_a_in_universe = max((data.get('a_score', 0) for _, data in scores.items()), default=0)
-        earnings_data_limited = (max_c_in_universe < 5 and max_a_in_universe < 5)
+        c_data_limited = (max_c_in_universe < 5)
+        a_data_limited = (max_a_in_universe < 5)
+        earnings_data_limited = (c_data_limited or a_data_limited)
 
         if earnings_data_limited:
-            # C+A worth up to 30 points — reduce threshold to match available range
-            # This mirrors seeding logic which uses threshold 35 instead of 72
-            effective_min_score = max(effective_min_score - 30, 35)
-            logger.debug(f"Earnings data limited (max C={max_c_in_universe:.0f}, A={max_a_in_universe:.0f}), "
+            # Reduce threshold by the points lost from limited components
+            lost_points = 0
+            if c_data_limited:
+                lost_points += 15  # C is worth up to 15 points
+            if a_data_limited:
+                lost_points += 15  # A is worth up to 15 points
+            effective_min_score = max(effective_min_score - lost_points, 35)
+            logger.debug(f"Earnings data limited (max C={max_c_in_universe:.0f}, A={max_a_in_universe:.0f}, "
+                         f"c_limited={c_data_limited}, a_limited={a_data_limited}), "
                          f"adjusted min_score to {effective_min_score:.0f}")
 
         # PERCENTILE-BASED THRESHOLD: Adapt to score distribution
@@ -2351,17 +2359,14 @@ class BacktestEngine:
             is_growth_stock = score_data.get('is_growth_stock', False)
 
             # Skip if not meeting quality thresholds (unless growth stock or limited earnings)
-            if not (is_growth_stock and skip_growth) and not earnings_data_limited:
-                if c_score < min_c_score:
+            # Check C and A independently — bypass whichever component lacks data
+            if not (is_growth_stock and skip_growth):
+                if not c_data_limited and c_score < min_c_score:
                     logger.debug(f"Skipping {ticker}: C score {c_score} < {min_c_score}")
                     _funnel["c_filter"] += 1
                     continue
                 if l_score < min_l_score:
                     logger.debug(f"Skipping {ticker}: L score {l_score} < {min_l_score}")
-                    _funnel["l_filter"] += 1
-                    continue
-            elif earnings_data_limited:
-                if l_score < min_l_score:
                     _funnel["l_filter"] += 1
                     continue
 
