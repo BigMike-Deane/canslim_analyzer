@@ -581,10 +581,10 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
         <StatGrid
           columns={2}
           stats={[
-            { label: 'Min Score to Buy', value: '72' },
-            { label: 'Strategy', value: config?.strategy || 'balanced' },
-            { label: 'Take Profit', value: '+75%', color: 'text-emerald-400' },
-            { label: 'Stop Loss', value: '-8%', color: 'text-red-400' },
+            { label: 'Min Score to Buy', value: config?.min_score_to_buy || '72' },
+            { label: 'Strategy', value: config?.strategy?.replace(/_/g, ' ') || 'balanced' },
+            { label: 'Take Profit', value: `+${config?.take_profit_pct || 75}%`, color: 'text-emerald-400' },
+            { label: 'Stop Loss', value: `-${config?.stop_loss_pct || 7}%`, color: 'text-red-400' },
           ]}
           className="text-sm"
         />
@@ -1040,8 +1040,10 @@ export default function AIPortfolio() {
           </span>
         }
         badge={
-          portfolio?.config?.strategy === 'growth'
-            ? <TagBadge color="purple">Growth Mode</TagBadge>
+          portfolio?.config?.strategy && portfolio.config.strategy !== 'balanced'
+            ? <TagBadge color={portfolio.config.strategy === 'growth' ? 'purple' : 'blue'}>
+                {portfolio.config.strategy.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </TagBadge>
             : null
         }
       />
