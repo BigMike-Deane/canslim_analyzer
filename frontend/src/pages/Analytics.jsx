@@ -189,7 +189,11 @@ export default function Analytics() {
     return (
       <div className="p-4 md:p-6 max-w-4xl mx-auto">
         <PageHeader title="Trade Analytics" />
-        <div className="text-dark-400 text-center py-12 text-sm">Loading analytics...</div>
+        <div className="space-y-3">
+          <div className="skeleton h-24 rounded-2xl" />
+          <div className="skeleton h-48 rounded-2xl" />
+          <div className="skeleton h-40 rounded-2xl" />
+        </div>
       </div>
     )
   }

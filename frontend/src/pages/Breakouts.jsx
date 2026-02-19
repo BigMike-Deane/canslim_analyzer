@@ -35,7 +35,7 @@ function BreakoutRow({ stock }) {
               <TagBadge color="green">Breakout</TagBadge>
             )}
           </div>
-          <div className="text-dark-400 text-sm truncate max-w-[180px]">
+          <div className="text-dark-400 text-sm truncate max-w-[140px] sm:max-w-[220px]">
             {stock.name || stock.sector || '-'}
           </div>
         </div>

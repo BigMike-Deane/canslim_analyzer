@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, getScoreClass, formatCurrency } from '../api'
+import { api, getScoreClass, formatCurrency, formatTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -224,7 +224,18 @@ function RankedStockRow({ stock, index, rankColor = 'bg-dark-600 text-dark-100',
 // ---------------------------------------------------------------------------
 // TopStocksList
 // ---------------------------------------------------------------------------
-function TopStocksList({ stocks, title, compact = false }) {
+function TopStocksList({ stocks, title, compact = false, loading = false }) {
+  if (loading) {
+    return (
+      <Card variant="glass" className={compact ? 'mb-3' : 'mb-4'}>
+        <CardHeader title={title} />
+        <div className="animate-pulse space-y-2">
+          {[1,2,3,4,5].map(i => <div key={i} className="h-6 bg-dark-700 rounded" />)}
+        </div>
+      </Card>
+    )
+  }
+
   if (!stocks || stocks.length === 0) return null
 
   return (
@@ -663,8 +674,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
 
   const formatLastScan = (isoString) => {
     if (!isoString) return 'Never'
-    const date = new Date(isoString)
-    return date.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' }) + ' CST'
+    return formatTime(isoString)
   }
 
   return (
@@ -696,7 +706,7 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
               ) : 'Active'}
               {scannerStatus?.next_run && !scannerStatus?.is_scanning && (
                 <span className="text-dark-400 ml-2">
-                  Next: {new Date(scannerStatus.next_run).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST
+                  Next: {formatTime(scannerStatus.next_run)}
                 </span>
               )}
             </span>
@@ -801,7 +811,7 @@ function ScanProgress({ scanJob, scanStartTime }) {
     return () => clearInterval(interval)
   }, [scanStartTime])
 
-  const formatTime = (seconds) => {
+  const formatElapsed = (seconds) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
@@ -820,7 +830,7 @@ function ScanProgress({ scanJob, scanStartTime }) {
     <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-2">
         <div className="text-sm text-dark-400">Scan Progress</div>
-        <div className="text-sm font-data">{formatTime(elapsed)}</div>
+        <div className="text-sm font-data">{formatElapsed(elapsed)}</div>
       </div>
       <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
         <div
@@ -830,7 +840,7 @@ function ScanProgress({ scanJob, scanStartTime }) {
       </div>
       <div className="flex justify-between text-xs text-dark-400 mt-1 font-data">
         <span>{scanJob.tickers_processed} / {scanJob.tickers_total} stocks</span>
-        <span>{rate}/s {remaining > 0 && `\u00B7 ~${formatTime(remaining)} left`}</span>
+        <span>{rate}/s {remaining > 0 && `\u00B7 ~${formatElapsed(remaining)} left`}</span>
       </div>
     </Card>
   )
@@ -1026,9 +1036,9 @@ export default function Dashboard() {
       <SectionLabel>Stock Lists</SectionLabel>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-        <TopStocksList stocks={data?.top_stocks?.slice(0, 10)} title="Top CANSLIM" compact />
+        <TopStocksList stocks={data?.top_stocks?.slice(0, 10)} title="Top CANSLIM" compact loading={loading} />
         <TopGrowthStocks stocks={growthStocks} loading={growthLoading} />
-        <TopStocksList stocks={data?.top_stocks_under_25?.slice(0, 10)} title="Top Under $25" compact />
+        <TopStocksList stocks={data?.top_stocks_under_25?.slice(0, 10)} title="Top Under $25" compact loading={loading} />
         <BreakingOutStocks stocks={breakoutStocks} loading={breakoutLoading} />
       </div>
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { api, formatScore, getScoreClass, getScoreLabel, formatCurrency, formatPercent, formatMarketCap } from '../api'
+import { api, formatScore, getScoreClass, getScoreLabel, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
@@ -442,7 +442,13 @@ function PriceInfo({ stock }) {
 /* ─── Score History (Line Chart) ───────────────────────────────────── */
 
 function ScoreHistory({ history }) {
-  if (!history || history.length < 2) return null
+  if (!history || history.length < 2) {
+    return (
+      <Card variant="glass" className="mb-4 text-center py-6">
+        <div className="text-dark-500 text-xs">Not enough score history yet</div>
+      </Card>
+    )
+  }
 
   return (
     <Card variant="glass" className="mb-4">
@@ -500,7 +506,7 @@ function InsiderShortSection({ stock }) {
     <Card variant="glass" className="mb-4">
       <CardHeader title="Market Signals" />
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         {hasInsider && (
           <>
             <div>
@@ -628,7 +634,7 @@ function TechnicalAnalysis({ stock }) {
         }
       />
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         <div>
           <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Base Pattern</div>
           <div className="font-semibold text-sm capitalize">
@@ -786,8 +792,8 @@ export default function StockDetail() {
   return (
     <div className="p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-start justify-between mb-5">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-5 gap-3">
+        <div className="min-w-0">
           <button
             onClick={() => navigate(-1)}
             className="inline-flex items-center gap-1 text-xs text-dark-400 hover:text-dark-200 transition-colors mb-2"
@@ -801,10 +807,12 @@ export default function StockDetail() {
             <h1 className="text-xl font-bold text-dark-50">{stock.ticker}</h1>
             <ScoreBadge score={stock.canslim_score} size="md" />
           </div>
-          <div className="text-dark-300 text-sm">{stock.name}</div>
+          <div className="text-dark-300 text-sm truncate">{stock.name}</div>
           <div className="text-xs text-dark-400 mt-0.5">{stock.sector} / {stock.industry}</div>
         </div>
-        <ScoreGauge score={stock.canslim_score} label={getScoreLabel(stock.canslim_score)} />
+        <div className="flex-shrink-0 self-center sm:self-start">
+          <ScoreGauge score={stock.canslim_score} label={getScoreLabel(stock.canslim_score)} />
+        </div>
       </div>
 
       <PriceInfo stock={stock} />
@@ -821,7 +829,7 @@ export default function StockDetail() {
 
       {/* Actions */}
       <SectionLabel>Actions</SectionLabel>
-      <div className="grid grid-cols-2 gap-3 mb-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4">
         <button onClick={handleAddToWatchlist} className="btn-secondary">
           + Watchlist
         </button>
@@ -843,7 +851,7 @@ export default function StockDetail() {
       </button>
 
       <div className="text-dark-500 text-[10px] text-center mt-3">
-        Last updated: {stock.last_updated ? new Date(stock.last_updated).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' CST' : 'Never'}
+        Last updated: {stock.last_updated ? formatDateTime(stock.last_updated) : 'Never'}
       </div>
 
       <div className="h-4" />

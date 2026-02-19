@@ -335,6 +335,9 @@ export const api = {
     request(`/api/earnings-audit?limit=${limit}&min_confidence=${minConfidence}`),
   getEarningsAudit: (ticker) => request(`/api/earnings-audit/${ticker}`),
 
+  // Strategy Profiles
+  getStrategies: () => request('/api/strategies'),
+
   // Insider Sentiment
   getInsiderSentiment: (params = {}) => {
     const searchParams = new URLSearchParams()
@@ -406,6 +409,61 @@ export function formatCompactValue(value) {
   if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`
   if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}K`
   return `${sign}$${abs.toFixed(0)}`
+}
+
+// Date/time formatting — always CST for consistency
+const CST = 'America/Chicago'
+
+export function formatDateTime(dateStr) {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr)
+  if (isNaN(d)) return '-'
+  return d.toLocaleString('en-US', {
+    timeZone: CST, month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true
+  })
+}
+
+export function formatDate(dateStr) {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr)
+  if (isNaN(d)) return '-'
+  return d.toLocaleDateString('en-US', {
+    timeZone: CST, month: 'short', day: 'numeric', year: 'numeric'
+  })
+}
+
+export function formatTime(dateStr) {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr)
+  if (isNaN(d)) return '-'
+  return d.toLocaleTimeString('en-US', {
+    timeZone: CST, hour: 'numeric', minute: '2-digit', hour12: true
+  })
+}
+
+export function formatShortDate(dateStr) {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr)
+  if (isNaN(d)) return '-'
+  return d.toLocaleDateString('en-US', {
+    timeZone: CST, month: 'numeric', day: 'numeric'
+  })
+}
+
+export function formatRelativeTime(dateStr) {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr)
+  if (isNaN(d)) return '-'
+  const now = new Date()
+  const diffMs = now - d
+  const diffMins = Math.floor(diffMs / 60000)
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  const diffHrs = Math.floor(diffMins / 60)
+  if (diffHrs < 24) return `${diffHrs}h ago`
+  const diffDays = Math.floor(diffHrs / 24)
+  return `${diffDays}d ago`
 }
 
 export { APIError, cache }

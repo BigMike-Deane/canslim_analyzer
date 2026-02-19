@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { api, formatShortDate } from '../api'
 import Card from '../components/Card'
 import { OutcomeBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -58,13 +58,7 @@ export default function CoiledSpringHistory() {
       key: 'alert_date',
       label: 'Date',
       sortable: true,
-      render: (val) =>
-        val
-          ? new Date(val + 'T00:00:00').toLocaleDateString('en-US', {
-              month: 'short',
-              day: 'numeric',
-            })
-          : '-',
+      render: (val) => val ? formatShortDate(val + 'T00:00:00') : '-',
     },
     {
       key: 'base_type',

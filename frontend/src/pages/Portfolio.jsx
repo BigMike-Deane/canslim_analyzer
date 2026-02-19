@@ -75,25 +75,24 @@ function PositionRow({ position, onDelete, onEdit }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between mt-2">
-        <div className="flex items-center gap-3 text-sm">
-          {/* Show primary score based on stock type */}
+      <div className="flex flex-wrap items-center justify-between gap-y-1 mt-2">
+        <div className="flex items-center gap-2 text-sm">
           {position.is_growth_stock ? (
             <div className="flex items-center gap-1.5">
-              <span className="text-purple-400 text-xs">Growth:</span>
+              <span className="text-purple-400 text-xs whitespace-nowrap">Growth:</span>
               <ScoreBadge score={position.growth_mode_score} size="xs" />
               {position.canslim_score > 0 && (
-                <span className="text-dark-500 text-[10px] font-data ml-1">
+                <span className="text-dark-500 text-[10px] font-data">
                   (CANSLIM: {position.canslim_score?.toFixed(0)})
                 </span>
               )}
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
-              <span className="text-dark-400 text-xs">CANSLIM:</span>
+              <span className="text-dark-400 text-xs whitespace-nowrap">CANSLIM:</span>
               <ScoreBadge score={position.canslim_score} size="xs" />
               {position.growth_mode_score > 0 && (
-                <span className="text-purple-400 text-[10px] font-data ml-1">
+                <span className="text-purple-400 text-[10px] font-data">
                   (Growth: {position.growth_mode_score?.toFixed(0)})
                 </span>
               )}
@@ -182,14 +181,14 @@ function GameplanCard({ action, onAddToWatchlist }) {
       </div>
 
       {action.shares_action > 0 && (
-        <div className="flex items-center gap-4 mb-3 p-2.5 bg-dark-850/50 rounded-lg border border-dark-700/30">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-3 p-2.5 bg-dark-850/50 rounded-lg border border-dark-700/30">
           <div>
             <div className="text-dark-500 text-[10px]">Shares to {action.action === 'SELL' || action.action === 'TRIM' ? 'Sell' : 'Buy'}</div>
             <div className="font-bold text-lg font-data text-dark-50">{action.shares_action}</div>
           </div>
           {action.shares_current > 0 && (
             <div>
-              <div className="text-dark-500 text-[10px]">Current Position</div>
+              <div className="text-dark-500 text-[10px]">Current</div>
               <div className="font-semibold font-data text-dark-200">{action.shares_current} shares</div>
             </div>
           )}

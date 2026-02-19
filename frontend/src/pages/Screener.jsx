@@ -18,7 +18,7 @@ function FilterBar({ filters, onFilterChange, sectors }) {
             className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
           >
             <option value="">All Sectors</option>
-            {sectors.map(sector => (
+            {(sectors || []).map(sector => (
               <option key={sector} value={sector}>{sector}</option>
             ))}
           </select>
@@ -53,6 +53,7 @@ function FilterBar({ filters, onFilterChange, sectors }) {
 }
 
 function CANSLIMBreakdown({ stock }) {
+  if (!stock) return null
   const scores = [
     { key: 'C', label: 'Current Earnings', value: stock.c_score, max: 15 },
     { key: 'A', label: 'Annual Earnings', value: stock.a_score, max: 15 },
@@ -118,7 +119,7 @@ function StockRow({ stock }) {
         <div className="pb-3 px-4 -mx-4 bg-dark-800/40 border-t border-dark-700/20">
           <CANSLIMBreakdown stock={stock} />
 
-          <div className="grid grid-cols-3 gap-3 mt-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 mt-3">
             <MiniStat label="Price" value={formatCurrency(stock.current_price)} />
             <MiniStat label="52W High" value={formatCurrency(stock.week_52_high)} />
             <MiniStat

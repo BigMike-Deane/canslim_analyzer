@@ -91,6 +91,24 @@ class ScanRequest(BaseModel):
         return [t.upper().strip() for t in v if t and len(t) <= 10]
 
 
+def get_valid_strategy_names() -> list:
+    """Return list of valid strategy profile names from config."""
+    from config_loader import config as yaml_config
+    profiles = yaml_config.get('strategy_profiles', {})
+    return list(profiles.keys())
+
+
+def validate_strategy_name(strategy: str) -> str:
+    """Validate strategy name exists in config. Returns the name or raises HTTPException."""
+    valid = get_valid_strategy_names()
+    if strategy not in valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown strategy '{strategy}'. Valid strategies: {', '.join(sorted(valid))}"
+        )
+    return strategy
+
+
 # ============== Lifespan ==============
 
 @asynccontextmanager
@@ -3005,6 +3023,7 @@ async def initialize_ai_portfolio_endpoint(
     db: Session = Depends(get_db)
 ):
     """Initialize or reset the AI Portfolio"""
+    validate_strategy_name(strategy)
     result = initialize_ai_portfolio(db, starting_cash, strategy=strategy)
     return result
 
@@ -3910,6 +3929,7 @@ async def update_ai_portfolio_config_v2(
     if paper_mode is not None:
         config.paper_mode = paper_mode
     if strategy is not None:
+        validate_strategy_name(strategy)
         config.strategy = strategy
 
     db.commit()
@@ -3926,6 +3946,29 @@ async def update_ai_portfolio_config_v2(
             "strategy": getattr(config, 'strategy', None) or "balanced",
         }
     }
+
+
+# ============== Strategy Profiles ==============
+
+@app.get("/api/strategies")
+async def list_strategies():
+    """List all available strategy profiles with their descriptions."""
+    from config_loader import config as yaml_config
+    profiles = yaml_config.get('strategy_profiles', {})
+    result = []
+    for name, profile in profiles.items():
+        result.append({
+            "name": name,
+            "label": profile.get("label", name.replace("_", " ").title()),
+            "description": profile.get("description", ""),
+            "min_score": profile.get("min_score", 72),
+            "max_positions": profile.get("max_positions", 8),
+            "stop_loss_pct": profile.get("stop_loss_pct", 8.0),
+            "take_profit_pct": profile.get("take_profit_pct", 75.0),
+            "market_state_enabled": profile.get("market_state", {}).get("enabled", True) if isinstance(profile.get("market_state"), dict) else True,
+            "seed_count": profile.get("seed_count", 3),
+        })
+    return result
 
 
 # ============== Earnings Audit ==============

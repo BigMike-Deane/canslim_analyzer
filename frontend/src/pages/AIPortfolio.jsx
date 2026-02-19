@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, formatPercent } from '../api'
+import { api, formatCurrency, formatPercent, formatDateTime, formatTime } from '../api'
 import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, ActionBadge, TagBadge } from '../components/Badge'
@@ -88,22 +88,8 @@ function PerformanceChart({ history, startingCash }) {
   const firstValue = filteredHistory[0]?.total_value || startingCash
   const isPositive = latestValue >= firstValue
 
-  // Format timestamp for tooltip - convert to CST
-  const formatTimestamp = (ts) => {
-    if (!ts) return ''
-    try {
-      const date = new Date(ts)
-      return date.toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      }) + ' CST'
-    } catch {
-      return ts
-    }
-  }
+  // Format timestamp for tooltip - uses centralized CST formatter
+  const formatTimestamp = (ts) => ts ? formatDateTime(ts) : ''
 
   const timeRanges = [
     { value: '24h', label: '24H' },
@@ -286,23 +272,7 @@ function PositionsList({ positions }) {
 function TradeDetailModal({ trade, onClose }) {
   if (!trade) return null
 
-  const formatDateTime = (ts) => {
-    if (!ts) return 'N/A'
-    try {
-      const date = new Date(ts)
-      return date.toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      }) + ' CST'
-    } catch {
-      return ts
-    }
-  }
+  // Use centralized formatter (imported from api.js)
 
   const gainPct = trade.action === 'SELL' && trade.cost_basis
     ? ((trade.price - trade.cost_basis) / trade.cost_basis * 100)
@@ -506,9 +476,17 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [strategies, setStrategies] = useState([])
+  const [changingStrategy, setChangingStrategy] = useState(false)
+
   useEffect(() => {
     setIsActive(config?.is_active || false)
   }, [config])
+
+  // Load available strategies
+  useEffect(() => {
+    api.getStrategies().then(setStrategies).catch(() => {})
+  }, [])
 
   const handleToggle = async () => {
     setUpdating(true)
@@ -578,11 +556,41 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       )}
 
       <div className="border-t border-dark-700/30 pt-3 mb-3">
+        {/* Strategy Selector */}
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Strategy</span>
+          <div className="relative">
+            <select
+              value={config?.strategy || 'balanced'}
+              onChange={async (e) => {
+                setChangingStrategy(true)
+                try {
+                  await onUpdate({ strategy: e.target.value })
+                } finally {
+                  setChangingStrategy(false)
+                }
+              }}
+              disabled={changingStrategy}
+              className="appearance-none bg-dark-700 border border-dark-600 text-dark-200 text-xs rounded-lg px-3 py-1.5 pr-7 cursor-pointer hover:border-dark-500 focus:border-primary-500 focus:outline-none transition-colors disabled:opacity-50"
+            >
+              {strategies.length > 0 ? strategies.map(s => (
+                <option key={s.name} value={s.name}>{s.label}</option>
+              )) : (
+                <option value={config?.strategy || 'balanced'}>
+                  {(config?.strategy || 'balanced').replace(/_/g, ' ')}
+                </option>
+              )}
+            </select>
+            <svg className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-dark-400" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+        </div>
+
         <StatGrid
-          columns={2}
+          columns={3}
           stats={[
-            { label: 'Min Score to Buy', value: config?.min_score_to_buy || '72' },
-            { label: 'Strategy', value: config?.strategy?.replace(/_/g, ' ') || 'balanced' },
+            { label: 'Min Score', value: config?.min_score_to_buy || '72' },
             { label: 'Take Profit', value: `+${config?.take_profit_pct || 75}%`, color: 'text-emerald-400' },
             { label: 'Stop Loss', value: `-${config?.stop_loss_pct || 7}%`, color: 'text-red-400' },
           ]}
@@ -667,14 +675,14 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
                     <TagBadge color="amber">Breakout</TagBadge>
                   )}
                 </div>
-                <div className="text-[10px] text-dark-400 flex gap-2 mt-0.5 font-data">
+                <div className="text-[10px] text-dark-400 flex flex-wrap gap-x-1.5 gap-y-0 mt-0.5 font-data">
                   <span>C:{stock.c_score?.toFixed(0)}</span>
                   <span>L:{stock.l_score?.toFixed(1)}</span>
-                  <span className="text-dark-500">|</span>
+                  <span className="text-dark-600">{'\u00B7'}</span>
                   <span>{stock.earnings_beat_streak} beats</span>
-                  <span className="text-dark-500">|</span>
-                  <span className="text-amber-400">{stock.days_to_earnings}d to earnings</span>
-                  <span className="text-dark-500">|</span>
+                  <span className="text-dark-600">{'\u00B7'}</span>
+                  <span className="text-amber-400 whitespace-nowrap">{stock.days_to_earnings}d to earnings</span>
+                  <span className="text-dark-600">{'\u00B7'}</span>
                   <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
                 </div>
               </div>
@@ -1032,10 +1040,10 @@ export default function AIPortfolio() {
           <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
             <span>Started: <span className="font-data">{formatCurrency(portfolio?.config?.starting_cash || 25000)}</span></span>
             {lastUpdated && (
-              <span>Data: <span className="font-data">{lastUpdated.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST</span></span>
+              <span>Data: <span className="font-data">{formatTime(lastUpdated.toISOString())}</span></span>
             )}
             {lastPriceRefresh && (
-              <span>Prices: <span className="font-data">{lastPriceRefresh.toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} CST</span></span>
+              <span>Prices: <span className="font-data">{formatTime(lastPriceRefresh.toISOString())}</span></span>
             )}
           </span>
         }

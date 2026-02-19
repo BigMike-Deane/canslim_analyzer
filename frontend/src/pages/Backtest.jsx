@@ -132,6 +132,11 @@ function BacktestForm({ onSubmit, isLoading }) {
     stock_universe: 'sp500',
     strategy: 'balanced'
   })
+  const [strategies, setStrategies] = useState([])
+
+  useEffect(() => {
+    api.getStrategies().then(setStrategies).catch(() => {})
+  }, [])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -146,7 +151,7 @@ function BacktestForm({ onSubmit, isLoading }) {
       <form onSubmit={handleSubmit}>
         <CardHeader title="Run New Backtest" />
 
-        <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 mb-4">
           <div>
             <label className={labelCls}>Start Date</label>
             <input
@@ -192,8 +197,16 @@ function BacktestForm({ onSubmit, isLoading }) {
               onChange={(e) => setConfig({...config, strategy: e.target.value})}
               className={inputCls}
             >
-              <option value="balanced">Balanced (Default)</option>
-              <option value="growth">Growth Mode</option>
+              {strategies.length > 0 ? (
+                strategies.map(s => (
+                  <option key={s.name} value={s.name}>{s.label}</option>
+                ))
+              ) : (
+                <>
+                  <option value="balanced">Balanced (Default)</option>
+                  <option value="growth">Growth Mode</option>
+                </>
+              )}
             </select>
           </div>
         </div>
@@ -213,7 +226,7 @@ function BacktestForm({ onSubmit, isLoading }) {
 function ComparisonView({ comparison, onClose }) {
   if (!comparison) return null
 
-  const { backtests, chart_data, stats_table } = comparison
+  const { backtests = [], chart_data, stats_table } = comparison
   const colors = ['#34d399', '#22d3ee', '#fbbf24', '#f87171', '#a78bfa']
   const gradientIds = backtests.map((_, i) => `compGrad${i}`)
 
@@ -320,8 +333,9 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
 
   if (!backtests || backtests.length === 0) {
     return (
-      <Card variant="glass" className="text-center text-dark-400 py-8">
-        No backtests yet. Run one above!
+      <Card variant="glass" className="text-center py-10">
+        <div className="text-dark-300 font-medium mb-1">No backtests yet</div>
+        <div className="text-dark-500 text-xs">Configure and run your first backtest above to see historical performance.</div>
       </Card>
     )
   }
@@ -358,7 +372,11 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
           <div className="flex items-center gap-2">
             <span className="font-medium text-dark-100">{row.name}</span>
             <StatusBadge status={row.status} />
-            {row.strategy === 'growth' && <TagBadge color="purple">Growth</TagBadge>}
+            {row.strategy && row.strategy !== 'balanced' && (
+              <TagBadge color={row.strategy === 'growth' ? 'purple' : 'blue'}>
+                {row.strategy.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </TagBadge>
+            )}
           </div>
           <div className="text-dark-500 text-[10px] font-data mt-0.5">
             {row.start_date} to {row.end_date}
@@ -474,7 +492,7 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
 }
 
 function BacktestResults({ backtest, onClose }) {
-  const { backtest: bt, performance_chart, trades, statistics } = backtest
+  const { backtest: bt, performance_chart, trades = [], statistics } = backtest
 
   const vsSpy = bt.total_return_pct - bt.spy_return_pct
 

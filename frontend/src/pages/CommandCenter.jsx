@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, getScoreClass } from '../api'
+import { api, formatCurrency, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -25,11 +25,11 @@ function useMarketRefresh(callback, intervalMs = 60000) {
 }
 
 const MARKET_STATE_CFG = {
-  TRENDING:   { label: 'TRENDING',   color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', dot: 'bg-emerald-400' },
-  PRESSURE:   { label: 'PRESSURE',   color: 'text-amber-400',   bg: 'bg-amber-500/10 border-amber-500/20',   dot: 'bg-amber-400' },
-  CORRECTION: { label: 'CORRECTION', color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',       dot: 'bg-red-400' },
-  RECOVERY:   { label: 'RECOVERY',   color: 'text-blue-400',    bg: 'bg-blue-500/10 border-blue-500/20',     dot: 'bg-blue-400' },
-  CONFIRMED:  { label: 'CONFIRMED',  color: 'text-teal-400',    bg: 'bg-teal-500/10 border-teal-500/20',     dot: 'bg-teal-400' },
+  TRENDING:   { label: 'Trending',   color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', dot: 'bg-emerald-400' },
+  PRESSURE:   { label: 'Pressure',   color: 'text-amber-400',   bg: 'bg-amber-500/10 border-amber-500/20',   dot: 'bg-amber-400' },
+  CORRECTION: { label: 'Correction', color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',       dot: 'bg-red-400' },
+  RECOVERY:   { label: 'Recovery',   color: 'text-blue-400',    bg: 'bg-blue-500/10 border-blue-500/20',     dot: 'bg-blue-400' },
+  CONFIRMED:  { label: 'Confirmed',  color: 'text-teal-400',    bg: 'bg-teal-500/10 border-teal-500/20',     dot: 'bg-teal-400' },
 }
 
 function MarketStateBadge({ state }) {
@@ -90,7 +90,7 @@ function CoiledSpringSection({ cs }) {
   if (!hasData) return null
 
   return (
-    <Card variant="accent" accent="purple" className="mb-3 bg-purple-500/[0.03]">
+    <Card variant="accent" accent="purple" className="bg-purple-500/[0.03]">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-purple-300">Coiled Spring</span>
@@ -154,6 +154,48 @@ function CoiledSpringSection({ cs }) {
         </div>
       )}
     </Card>
+  )
+}
+
+function PositionRow({ p }) {
+  return (
+    <Link
+      to={`/stock/${p.ticker}`}
+      className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
+    >
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span className="text-xs font-semibold text-primary-400 w-11 shrink-0 group-hover:text-primary-300">{p.ticker}</span>
+        <span className="text-[10px] font-data text-dark-500">{p.position_pct?.toFixed(0)}%</span>
+      </div>
+      <div className="flex items-center gap-3">
+        <ScoreBadge score={p.score} size="xs" />
+        <span className={`font-data text-xs w-14 text-right ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+          {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct?.toFixed(1)}%
+        </span>
+      </div>
+    </Link>
+  )
+}
+
+function CandidateRow({ c }) {
+  return (
+    <Link
+      to={`/stock/${c.ticker}`}
+      className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
+    >
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span className="text-xs font-semibold text-primary-400 w-11 shrink-0 group-hover:text-primary-300">{c.ticker}</span>
+        <span className="text-[10px] text-dark-500 truncate max-w-[80px]">{c.sector?.split(' ')[0]}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <ScoreBadge score={c.score} size="xs" />
+        {c.projected_growth > 0 && (
+          <span className="text-emerald-400 text-[10px] font-data">
+            +{c.projected_growth?.toFixed(0)}%
+          </span>
+        )}
+      </div>
+    </Link>
   )
 }
 
@@ -221,8 +263,8 @@ export default function CommandCenter() {
       <div className="p-4 md:p-6">
         <Card className="text-center py-12">
           <div className="text-red-400 text-sm mb-2">Failed to load Command Center</div>
-          <div className="text-dark-500 text-xs">{error}</div>
-          <button onClick={fetchData} className="btn-primary mt-4 text-xs">Retry</button>
+          <div className="text-dark-500 text-xs mb-4">{error}</div>
+          <button onClick={fetchData} className="btn-primary text-xs">Retry</button>
         </Card>
       </div>
     )
@@ -230,20 +272,22 @@ export default function CommandCenter() {
 
   const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner, coiled_spring } = data || {}
   const marketState = market?.market_state?.current_state || market?.regime?.toUpperCase()
+  const strategyName = portfolio?.strategy || 'balanced'
+  const strategyLabel = strategyName.replace(/_/g, ' ')
 
   return (
     <div className="p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-5">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-dark-50">Command Center</h1>
-          {portfolio?.paper_mode && (
-            <TagBadge color="amber">PAPER</TagBadge>
-          )}
-          <MarketStateBadge state={marketState} />
+      <div className="flex items-center justify-between mb-4 md:mb-5">
+        <div className="flex items-center gap-2 md:gap-3 min-w-0">
+          <h1 className="text-base md:text-lg font-bold text-dark-50 shrink-0">Command Center</h1>
+          <div className="flex items-center gap-2">
+            {portfolio?.paper_mode && <TagBadge color="amber">PAPER</TagBadge>}
+            <MarketStateBadge state={marketState} />
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {/* Quick Actions */}
+        <div className="flex items-center gap-2 md:gap-3 shrink-0">
+          {/* Desktop Quick Actions */}
           <div className="hidden md:flex items-center gap-2">
             <button
               onClick={() => handleAction('cycle')}
@@ -260,17 +304,80 @@ export default function CommandCenter() {
               {runningAction === 'scan' ? 'Starting...' : 'Start Scan'}
             </button>
           </div>
-          <span className="text-[10px] text-dark-500 font-data">
-            {lastUpdate ? lastUpdate.toLocaleTimeString('en-US', {
-              timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit'
-            }) : ''}
+          <span className="text-[10px] text-dark-500 font-data hidden sm:inline">
+            {lastUpdate ? formatTime(lastUpdate.toISOString()) : ''}
           </span>
         </div>
       </div>
 
-      {/* 3-Column Desktop / Stacked Mobile */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-        {/* ═══ LEFT COLUMN ═══ */}
+      {/* ═══════════════════════════════════════════
+          MOBILE LAYOUT: optimized card order
+          Portfolio → Positions → Market → Candidates → Catalysts → rest
+          ═══════════════════════════════════════════ */}
+
+      {/* Mobile-only: Portfolio hero card */}
+      <div className="md:hidden mb-3">
+        <Card variant="glass">
+          <div className="flex items-center justify-between mb-2">
+            <SectionLabel>Portfolio</SectionLabel>
+            <span className="text-[10px] text-dark-500 capitalize font-medium">{strategyLabel}</span>
+          </div>
+          <div className="flex items-baseline gap-3 mb-2">
+            <span className={`text-2xl font-bold font-data ${
+              portfolio?.total_return >= 0 ? 'text-emerald-400' : 'text-red-400'
+            }`}>
+              {formatCurrency(portfolio?.total_value)}
+            </span>
+            <PnlText
+              value={portfolio?.total_return_pct}
+              className="text-sm"
+              prefix={portfolio?.total_return_pct >= 0 ? '+' : ''}
+            />
+          </div>
+          {sparkline && sparkline.length > 1 && (
+            <Sparkline data={sparkline} width={320} height={36} gradient className="w-full mb-2" />
+          )}
+          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-dark-700/30">
+            <div>
+              <div className="text-[10px] text-dark-500">Cash</div>
+              <div className="text-xs font-data font-medium text-dark-200">{formatCurrency(portfolio?.cash)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-dark-500">Invested</div>
+              <div className="text-xs font-data font-medium text-dark-200">{formatCurrency(portfolio?.invested)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-dark-500">Positions</div>
+              <div className="text-xs font-data font-medium text-dark-200">{portfolio?.positions_count}/{portfolio?.max_positions}</div>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Mobile-only: Quick Actions */}
+      <div className="flex gap-2 md:hidden mb-3">
+        <button
+          onClick={() => handleAction('cycle')}
+          disabled={!!runningAction}
+          className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-primary-600/15 text-primary-400 border border-primary-500/20 hover:bg-primary-600/25 transition-colors disabled:opacity-50"
+        >
+          {runningAction === 'cycle' ? 'Running...' : 'Run Cycle'}
+        </button>
+        <button
+          onClick={() => handleAction('scan')}
+          disabled={!!runningAction || scanner?.is_scanning}
+          className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600 transition-colors disabled:opacity-50"
+        >
+          {runningAction === 'scan' ? 'Starting...' : 'Start Scan'}
+        </button>
+      </div>
+
+      {/* ═══════════════════════════════════════════
+          DESKTOP LAYOUT: 3-column grid
+          ═══════════════════════════════════════════ */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-4">
+
+        {/* ═══ LEFT COLUMN (desktop only for market/portfolio/risk) ═══ */}
         <div className="md:col-span-3 space-y-3">
           {/* Market Regime */}
           <Card variant="glass" animate stagger={1}>
@@ -293,9 +400,12 @@ export default function CommandCenter() {
             )}
           </Card>
 
-          {/* Portfolio Summary */}
-          <Card variant="glass" animate stagger={2}>
-            <SectionLabel>Portfolio</SectionLabel>
+          {/* Portfolio Summary (desktop) */}
+          <Card variant="glass" animate stagger={2} className="hidden md:block">
+            <div className="flex items-center justify-between mb-1">
+              <SectionLabel>Portfolio</SectionLabel>
+              <span className="text-[10px] text-dark-500 capitalize font-medium">{strategyLabel}</span>
+            </div>
             <div className={`text-2xl font-bold font-data mb-1 ${
               portfolio?.total_return >= 0 ? 'text-emerald-400 glow-green' : 'text-red-400 glow-red'
             }`}>
@@ -313,7 +423,6 @@ export default function CommandCenter() {
               </span>
             </div>
 
-            {/* Sparkline */}
             {sparkline && sparkline.length > 1 && (
               <div className="mb-3">
                 <Sparkline data={sparkline} width={200} height={40} gradient className="w-full" />
@@ -332,7 +441,7 @@ export default function CommandCenter() {
             </div>
           </Card>
 
-          {/* Risk */}
+          {/* Risk (desktop) */}
           <Card variant="glass" animate stagger={3} className="hidden md:block">
             <SectionLabel>Risk</SectionLabel>
             <div className="flex items-center justify-between mb-2">
@@ -361,28 +470,11 @@ export default function CommandCenter() {
               title="Positions"
               badge={<span className="text-[10px] font-data text-dark-500">{positions?.length || 0}</span>}
             >
-              <div className="max-h-72 overflow-y-auto -mx-1">
-                {positions?.length === 0 && (
+              <div className="max-h-80 overflow-y-auto -mx-1">
+                {(!positions || positions.length === 0) && (
                   <div className="text-dark-500 text-xs py-6 text-center">No active positions</div>
                 )}
-                {positions?.map(p => (
-                  <Link
-                    key={p.ticker}
-                    to={`/stock/${p.ticker}`}
-                    className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-xs font-semibold text-primary-400 w-11 group-hover:text-primary-300">{p.ticker}</span>
-                      <span className="text-[10px] font-data text-dark-500">{p.position_pct?.toFixed(0)}%</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <ScoreBadge score={p.score} size="xs" />
-                      <span className={`font-data text-xs w-14 text-right ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct?.toFixed(1)}%
-                      </span>
-                    </div>
-                  </Link>
-                ))}
+                {positions?.map(p => <PositionRow key={p.ticker} p={p} />)}
               </div>
             </CollapsibleSection>
           </Card>
@@ -394,38 +486,10 @@ export default function CommandCenter() {
               badge={<span className="text-[10px] font-data text-dark-500">{candidates?.length || 0}</span>}
             >
               <div className="max-h-72 overflow-y-auto -mx-1">
-                {candidates?.length === 0 && (
+                {(!candidates || candidates.length === 0) && (
                   <div className="text-dark-500 text-xs py-6 text-center">No candidates above threshold</div>
                 )}
-                {candidates?.map(c => (
-                  <Link
-                    key={c.ticker}
-                    to={`/stock/${c.ticker}`}
-                    className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-xs font-semibold text-primary-400 w-11 group-hover:text-primary-300">{c.ticker}</span>
-                      <span className="text-[10px] text-dark-500 truncate max-w-[60px]">{c.sector?.split(' ')[0]}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <ScoreBadge score={c.score} size="xs" />
-                      {c.audit_confidence != null && (
-                        <span className={`text-[9px] font-data px-1 py-0.5 rounded ${
-                          c.audit_confidence >= 70 ? 'text-emerald-400 bg-emerald-500/10' :
-                          c.audit_confidence >= 50 ? 'text-amber-400 bg-amber-500/10' :
-                          'text-red-400 bg-red-500/10'
-                        }`}>
-                          A{c.audit_confidence?.toFixed(0)}
-                        </span>
-                      )}
-                      {c.projected_growth > 0 && (
-                        <span className="text-emerald-400 text-[10px] font-data">
-                          +{c.projected_growth?.toFixed(0)}%
-                        </span>
-                      )}
-                    </div>
-                  </Link>
-                ))}
+                {candidates?.map(c => <CandidateRow key={c.ticker} c={c} />)}
               </div>
             </CollapsibleSection>
           </Card>
@@ -441,11 +505,11 @@ export default function CommandCenter() {
           {/* Earnings Countdown */}
           <Card variant="glass" animate stagger={4}>
             <CollapsibleSection title="Earnings">
-              {earnings?.length === 0 ? (
+              {(!earnings || earnings.length === 0) ? (
                 <div className="text-dark-500 text-xs py-4 text-center">No upcoming earnings</div>
               ) : (
                 <div className="space-y-0.5">
-                  {earnings?.slice(0, 6).map(e => (
+                  {earnings.slice(0, 6).map(e => (
                     <div key={e.ticker} className="flex items-center justify-between py-1.5">
                       <Link to={`/stock/${e.ticker}`} className="text-xs font-medium text-primary-400 hover:text-primary-300 transition-colors">
                         {e.ticker}
@@ -472,27 +536,29 @@ export default function CommandCenter() {
           {/* Recent Trades */}
           <Card variant="glass" animate stagger={5}>
             <CollapsibleSection title="Trades">
-              <div className="space-y-0.5">
-                {trades?.slice(0, 6).map((t, i) => (
-                  <div key={i} className="flex items-center justify-between py-1.5">
-                    <div className="flex items-center gap-2">
-                      <ActionBadge action={t.action} />
-                      <Link to={`/stock/${t.ticker}`} className="text-xs font-medium text-primary-400 hover:text-primary-300 transition-colors">
-                        {t.ticker}
-                      </Link>
+              {(!trades || trades.length === 0) ? (
+                <div className="text-dark-500 text-xs py-4 text-center">No recent trades</div>
+              ) : (
+                <div className="space-y-0.5">
+                  {trades.slice(0, 6).map((t, i) => (
+                    <div key={i} className="flex items-center justify-between py-1.5">
+                      <div className="flex items-center gap-2">
+                        <ActionBadge action={t.action} />
+                        <Link to={`/stock/${t.ticker}`} className="text-xs font-medium text-primary-400 hover:text-primary-300 transition-colors">
+                          {t.ticker}
+                        </Link>
+                      </div>
+                      <span className="text-[10px] font-data text-dark-500">
+                        {t.executed_at ? formatRelativeTime(t.executed_at) : '-'}
+                      </span>
                     </div>
-                    <span className="text-[10px] font-data text-dark-500">
-                      {t.executed_at ? new Date(t.executed_at).toLocaleDateString('en-US', {
-                        month: 'numeric', day: 'numeric', timeZone: 'America/Chicago'
-                      }) : '-'}
-                    </span>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CollapsibleSection>
           </Card>
 
-          {/* Mobile Risk (hidden on desktop, shown above) */}
+          {/* Mobile Risk (collapsed by default) */}
           <Card variant="glass" className="md:hidden">
             <CollapsibleSection title="Risk" defaultOpen={false}>
               <div className="flex items-center justify-between mb-2">
@@ -535,32 +601,12 @@ export default function CommandCenter() {
                 )}
                 {scanner?.last_scan_end && (
                   <span className="text-[10px] font-data text-dark-500">
-                    {new Date(scanner.last_scan_end).toLocaleTimeString('en-US', {
-                      timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit'
-                    })}
+                    {formatRelativeTime(scanner.last_scan_end)}
                   </span>
                 )}
               </div>
             </div>
           </Card>
-
-          {/* Mobile Quick Actions */}
-          <div className="flex gap-2 md:hidden">
-            <button
-              onClick={() => handleAction('cycle')}
-              disabled={!!runningAction}
-              className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-primary-600/15 text-primary-400 border border-primary-500/20 hover:bg-primary-600/25 transition-colors disabled:opacity-50"
-            >
-              {runningAction === 'cycle' ? 'Running...' : 'Run Cycle'}
-            </button>
-            <button
-              onClick={() => handleAction('scan')}
-              disabled={!!runningAction || scanner?.is_scanning}
-              className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600 transition-colors disabled:opacity-50"
-            >
-              {runningAction === 'scan' ? 'Starting...' : 'Start Scan'}
-            </button>
-          </div>
         </div>
       </div>
     </div>
