@@ -2293,9 +2293,15 @@ class BacktestEngine:
 
         portfolio_value = self._get_portfolio_value(current_date)
 
+        # Funnel diagnostic counters (only active during decay idle periods)
+        _funnel_diag = self.underinvested_days >= 15
+        _funnel = {"candidates": len(candidates), "no_price": 0, "cooldown": 0, "sector": 0,
+                   "c_filter": 0, "l_filter": 0, "volume": 0, "earnings_prox": 0, "passed": 0}
+
         for ticker, score_data in candidates:
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
+                _funnel["no_price"] += 1
                 continue
 
             score = score_data["total_score"]
@@ -2320,11 +2326,13 @@ class BacktestEngine:
                 else:
                     cooldown = 0  # No cooldown for score crash, protect gains, etc.
                 if cooldown > 0 and days_since < cooldown:
+                    _funnel["cooldown"] += 1
                     continue
 
             # Check sector limits
             sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
             if not self._check_sector_limit(sector):
+                _funnel["sector"] += 1
                 continue
 
             # QUALITY FILTERS: Only buy stocks with strong fundamentals
@@ -2346,12 +2354,15 @@ class BacktestEngine:
             if not (is_growth_stock and skip_growth) and not earnings_data_limited:
                 if c_score < min_c_score:
                     logger.debug(f"Skipping {ticker}: C score {c_score} < {min_c_score}")
+                    _funnel["c_filter"] += 1
                     continue
                 if l_score < min_l_score:
                     logger.debug(f"Skipping {ticker}: L score {l_score} < {min_l_score}")
+                    _funnel["l_filter"] += 1
                     continue
             elif earnings_data_limited:
                 if l_score < min_l_score:
+                    _funnel["l_filter"] += 1
                     continue
 
             # VOLUME GATE: Only buy when volume confirms interest
@@ -2365,9 +2376,11 @@ class BacktestEngine:
                     vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
                 if volume_ratio < vol_threshold:
                     logger.debug(f"Skipping {ticker}: Volume ratio {volume_ratio:.2f} < {vol_threshold} (volume gate)")
+                    _funnel["volume"] += 1
                     continue
             elif volume_ratio < min_volume_ratio and not score_data.get('is_breaking_out', False):
                 logger.debug(f"Skipping {ticker}: Volume ratio {volume_ratio:.2f} < {min_volume_ratio}")
+                _funnel["volume"] += 1
                 continue
 
             # Earnings proximity check with Coiled Spring exception
@@ -2392,6 +2405,7 @@ class BacktestEngine:
                 else:
                     # Standard block for stocks without CS qualification (within 3 days)
                     if days_to_earnings <= 3:
+                        _funnel["earnings_prox"] += 1
                         continue
 
             # Get breakout status and volume ratio from cached scores
@@ -2755,6 +2769,7 @@ class BacktestEngine:
             if deterministic_boost_val > 0:
                 signal_factors["deterministic_boost"] = deterministic_boost_val
 
+            _funnel["passed"] += 1
             buys.append(SimulatedTrade(
                 ticker=ticker,
                 action="BUY",
@@ -2766,6 +2781,15 @@ class BacktestEngine:
             ))
             # Stash signal_factors on trade for recording
             buys[-1]._signal_factors = signal_factors
+
+        # Log funnel diagnostics when decay is active
+        if _funnel_diag and _funnel["candidates"] > 0:
+            logger.info(f"DECAY FUNNEL: {_funnel['candidates']} candidates -> "
+                        f"no_price={_funnel['no_price']}, cooldown={_funnel['cooldown']}, "
+                        f"sector={_funnel['sector']}, c_filter={_funnel['c_filter']}, "
+                        f"l_filter={_funnel['l_filter']}, volume={_funnel['volume']}, "
+                        f"earnings_prox={_funnel['earnings_prox']} -> "
+                        f"{_funnel['passed']} passed -> {len(buys)} buys")
 
         buys.sort(key=lambda x: x.priority)
 
