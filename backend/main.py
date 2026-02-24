@@ -3841,8 +3841,13 @@ async def get_earnings_calendar(db: Session = Depends(get_db)):
     earnings_data = []
     counts = {"high": 0, "medium": 0, "low": 0}
 
+    # Batch-fetch stocks for all positions (avoids N+1)
+    pos_tickers = [p.ticker for p in positions]
+    pos_stocks = db.query(Stock).filter(Stock.ticker.in_(pos_tickers)).all() if pos_tickers else []
+    stocks_map = {s.ticker: s for s in pos_stocks}
+
     for pos in positions:
-        stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+        stock = stocks_map.get(pos.ticker)
         if not stock:
             continue
 
@@ -3914,10 +3919,13 @@ async def get_portfolio_risk(db: Session = Depends(get_db)):
 
     heat_status = "normal" if total_heat < 10 else ("warning" if total_heat < 15 else "danger")
 
-    # Sector concentration
+    # Sector concentration (batch-fetch stocks to avoid N+1)
+    risk_tickers = [p.ticker for p in positions]
+    risk_stocks = db.query(Stock).filter(Stock.ticker.in_(risk_tickers)).all() if risk_tickers else []
+    risk_stocks_map = {s.ticker: s for s in risk_stocks}
     sector_data = {}
     for pos in positions:
-        stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+        stock = risk_stocks_map.get(pos.ticker)
         sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
         if sector not in sector_data:
             sector_data[sector] = {"count": 0, "value": 0}
