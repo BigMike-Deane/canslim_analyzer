@@ -2409,10 +2409,9 @@ class BacktestEngine:
                     coiled_spring_bonus = cs_result.get('cs_score', 0)
                     logger.debug(f"Backtest CS: {ticker} ({cs_result['cs_details']})")
                 else:
-                    # Block non-CS stocks within avoidance window (matches ai_trader)
-                    if days_to_earnings <= avoidance_days:
-                        _funnel["earnings_prox"] += 1
-                        continue
+                    # NON-CS: Block ALL stocks in the earnings window
+                    _funnel["earnings_prox"] += 1
+                    continue
 
             # Get breakout status and volume ratio from cached scores
             is_breaking_out = score_data.get("is_breaking_out", False)
@@ -2574,7 +2573,7 @@ class BacktestEngine:
                 # Add the weighted bonus on top of total score
                 effective_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
-            growth_projection = min(score_data.get("projected_growth", score * 0.3), 50)
+            growth_projection = min(score_data.get("projected_growth", effective_score * 0.3), 50)
             composite_score = (
                 (growth_projection * w_growth) +
                 (effective_score * w_score) +

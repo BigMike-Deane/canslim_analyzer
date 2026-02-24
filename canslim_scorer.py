@@ -772,10 +772,10 @@ def calculate_coiled_spring_score(data, score, config: dict = None) -> dict:
     days_to_earnings = getattr(data, 'days_to_earnings', None)
     institutional_pct = getattr(data, 'institutional_holders_pct', 0) or 0
 
-    # Get scores
-    c_score = score.c_score if hasattr(score, 'c_score') else 0
-    l_score = score.l_score if hasattr(score, 'l_score') else 0
-    total_score = score.total_score if hasattr(score, 'total_score') else 0
+    # Get scores (guard against None values)
+    c_score = (score.c_score or 0) if hasattr(score, 'c_score') else 0
+    l_score = (score.l_score or 0) if hasattr(score, 'l_score') else 0
+    total_score = (score.total_score or 0) if hasattr(score, 'total_score') else 0
 
     # Store factors for debugging
     factors = {
