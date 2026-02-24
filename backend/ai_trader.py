@@ -1014,7 +1014,24 @@ def check_and_execute_stop_losses(db: Session) -> dict:
     - Score-based sells
     - Take profit sells
     - Partial profit taking
+
+    Uses the trading cycle lock to prevent double-execution with run_ai_trading_cycle().
     """
+    from backend.database import Stock
+
+    # Acquire lock to prevent concurrent execution with the main trading cycle
+    if not _trading_cycle_lock.acquire(blocking=False):
+        logger.info("Stop loss check skipped - trading cycle in progress")
+        return {"message": "Trading cycle in progress, stop losses checked there", "sells_executed": []}
+
+    try:
+        return _check_and_execute_stop_losses_impl(db)
+    finally:
+        _trading_cycle_lock.release()
+
+
+def _check_and_execute_stop_losses_impl(db: Session) -> dict:
+    """Internal implementation of stop loss checking (lock must be held)."""
     from backend.database import Stock
 
     config = get_or_create_config(db)

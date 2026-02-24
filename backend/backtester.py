@@ -810,7 +810,7 @@ class BacktestEngine:
         base_stop = stop_loss_config.get('normal_stop_loss_pct', 8.0)
 
         total_heat = 0.0
-        for ticker, position in self.positions.items():
+        for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
                 continue
@@ -1347,6 +1347,9 @@ class BacktestEngine:
                     trade_value = trade.shares * trade.price
                     if trade_value > available_invest:
                         trade.shares = available_invest / trade.price
+                    # Skip if adjusted position is too small to be meaningful
+                    if trade.shares * trade.price < 100:
+                        continue
                 self._execute_buy(current_date, trade)
                 buys_executed_today += 1
         else:
@@ -1469,7 +1472,7 @@ class BacktestEngine:
 
     def _update_positions(self, current_date: date):
         """Update position prices and track peak for trailing stops"""
-        for ticker, position in self.positions.items():
+        for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if price and price > 0:
                 # Track peak price for trailing stop
@@ -2855,7 +2858,7 @@ class BacktestEngine:
         pyramids = []
         portfolio_value = self._get_portfolio_value(current_date)
 
-        for ticker, position in self.positions.items():
+        for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if not price or price <= 0:
                 continue
