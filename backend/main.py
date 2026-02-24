@@ -1574,8 +1574,9 @@ async def start_scan(
                             # Update progress every few stocks
                             if processed % 4 == 0 or processed == len(tickers):
                                 scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
-                                scan_job.tickers_processed = processed
-                                scan_db.commit()
+                                if scan_job:
+                                    scan_job.tickers_processed = processed
+                                    scan_db.commit()
                     except Exception as e:
                         logger.error(f"Future error for {ticker}: {e}")
                         with lock:
@@ -1583,15 +1584,17 @@ async def start_scan(
 
             # Mark complete
             scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
-            scan_job.status = "completed"
-            scan_job.completed_at = datetime.now(timezone.utc)
-            scan_db.commit()
+            if scan_job:
+                scan_job.status = "completed"
+                scan_job.completed_at = datetime.now(timezone.utc)
+                scan_db.commit()
 
         except Exception as e:
             scan_job = scan_db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
-            scan_job.status = "failed"
-            scan_job.error_message = str(e)
-            scan_db.commit()
+            if scan_job:
+                scan_job.status = "failed"
+                scan_job.error_message = str(e)
+                scan_db.commit()
         finally:
             scan_db.close()
 

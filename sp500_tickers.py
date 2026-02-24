@@ -690,16 +690,16 @@ def get_russell2000_from_sector_etfs() -> list[str]:
         smallcap = get_sp600_smallcap_tickers()
         all_tickers.update(smallcap)
         logger.debug(f"Added {len(smallcap)} from S&P SmallCap 600")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to fetch S&P SmallCap 600: {e}")
 
     # Get small caps from Finviz screener (small market cap < $2B)
     try:
         finviz_tickers = get_finviz_smallcaps()
         all_tickers.update(finviz_tickers)
         logger.debug(f"Added {len(finviz_tickers)} from Finviz screener")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to fetch Finviz small caps: {e}")
 
     # Add curated Russell 2000 tickers
     curated = get_fallback_russell2000_tickers()
