@@ -22,10 +22,17 @@ async def _fmp_get(path: str, params: dict[str, Any] | None = None) -> dict | li
     params = params or {}
     params["apikey"] = FMP_API_KEY
     url = f"{FMP_BASE}/{path}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"FMP API error {e.response.status_code} for {path}")
+    except httpx.TimeoutException:
+        raise ValueError(f"FMP API timeout for {path}")
+    except Exception as e:
+        raise ValueError(f"FMP request failed for {path}: {e}")
 
 
 @mcp.tool()

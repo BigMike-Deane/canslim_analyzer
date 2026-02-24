@@ -937,7 +937,11 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
             if not item_date_str:
                 continue
 
-            item_date = datetime.strptime(item_date_str, '%Y-%m-%d').date()
+            try:
+                item_date = datetime.strptime(item_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Bad date format in earnings for {ticker}: {item_date_str}")
+                continue
 
             # Future earnings (no actual yet)
             if actual is None and item_date >= today:
@@ -956,13 +960,17 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
         if not next_earnings_date and data:
             last_date_str = data[0].get('date')
             if last_date_str:
-                last_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
-                # Estimate next earnings ~90 days after last
-                est_next = last_date + timedelta(days=90)
-                while est_next <= today:
-                    est_next += timedelta(days=90)
-                next_earnings_date = est_next.strftime('%Y-%m-%d')
-                days_to_earnings = (est_next - today).days
+                try:
+                    last_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+                except ValueError:
+                    last_date = None
+                if last_date:
+                    # Estimate next earnings ~90 days after last
+                    est_next = last_date + timedelta(days=90)
+                    while est_next <= today:
+                        est_next += timedelta(days=90)
+                    next_earnings_date = est_next.strftime('%Y-%m-%d')
+                    days_to_earnings = (est_next - today).days
 
         if next_earnings_date or beat_streak > 0:
             return {
