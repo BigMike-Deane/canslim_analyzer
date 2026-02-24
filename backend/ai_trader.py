@@ -2624,6 +2624,11 @@ def run_ai_trading_cycle(db: Session) -> dict:
             if is_partial:
                 # PARTIAL SELL - only sell a percentage of shares
                 shares_to_sell = position.shares * (sell_pct / 100)
+                # Guard: never sell more shares than we own
+                if shares_to_sell > position.shares:
+                    logger.error(f"SELL GUARD: {position.ticker} sell_pct={sell_pct}% would sell "
+                                 f"{shares_to_sell:.2f} of {position.shares:.2f} shares, capping")
+                    shares_to_sell = position.shares
                 value_to_sell = shares_to_sell * position.current_price
                 realized_gain = (position.current_price - position.cost_basis) * shares_to_sell
 

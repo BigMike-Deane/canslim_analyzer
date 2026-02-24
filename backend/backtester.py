@@ -3020,6 +3020,11 @@ class BacktestEngine:
 
         if trade.is_partial:
             # PARTIAL SELL - reduce position but don't delete
+            # Guard: never sell more shares than position holds
+            if trade.shares > position.shares:
+                logger.error(f"SELL GUARD: {trade.ticker} trying to sell {trade.shares:.2f} "
+                             f"of {position.shares:.2f} shares, capping")
+                trade.shares = position.shares
             position.shares -= trade.shares
             position.partial_profit_taken += trade.sell_pct
 

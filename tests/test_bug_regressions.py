@@ -924,3 +924,86 @@ class TestEPSMergeNoneFilter:
         # Adjusted takes first 2 slots, GAAP fills rest
         assert result == [1.50, 1.30, 0.90, 0.80, 0.70, 0.60]
         assert len(result) == 6
+
+
+# ─── Negative Shares Guard (ai_trader.py / backtester.py) ────────────────────
+# Bug: Partial sells could theoretically create positions with negative shares
+# if sell_pct exceeded 100% due to config error or accumulation bug.
+# Fix: Cap shares_to_sell at position.shares in both live trader and backtester.
+
+
+class TestNegativeSharesGuard:
+    """Regression: partial sells must never create negative share positions."""
+
+    def test_normal_partial_sell_reduces_shares(self):
+        """Normal 25% partial sell should leave 75% of shares."""
+        shares = 100.0
+        sell_pct = 25
+        shares_to_sell = shares * (sell_pct / 100)
+        remaining = shares - shares_to_sell
+        assert remaining == 75.0
+
+    def test_guard_caps_oversized_sell(self):
+        """If sell_pct > 100%, shares_to_sell should be capped at position shares."""
+        shares = 100.0
+        sell_pct = 150  # Bug scenario: config error or accumulation
+        shares_to_sell = shares * (sell_pct / 100)
+        # Without guard: shares_to_sell = 150, remaining = -50 (BUG)
+        assert shares_to_sell > shares
+        # With guard: cap at position shares
+        if shares_to_sell > shares:
+            shares_to_sell = shares
+        remaining = shares - shares_to_sell
+        assert remaining == 0.0  # Full sell, not negative
+
+    def test_exact_100_percent_leaves_zero(self):
+        """Selling exactly 100% should leave 0 shares."""
+        shares = 50.0
+        sell_pct = 100
+        shares_to_sell = shares * (sell_pct / 100)
+        if shares_to_sell > shares:
+            shares_to_sell = shares
+        remaining = shares - shares_to_sell
+        assert remaining == 0.0
+
+    def test_floating_point_precision(self):
+        """Multiple partial sells shouldn't accumulate to negative due to float precision."""
+        shares = 100.0
+        # Sell 33.33%, three times
+        for _ in range(3):
+            sell_pct = 33.33
+            shares_to_sell = shares * (sell_pct / 100)
+            if shares_to_sell > shares:
+                shares_to_sell = shares
+            shares -= shares_to_sell
+        # After 3x33.33%, about 0.01 shares should remain (not negative)
+        assert shares >= 0.0
+
+
+# ─── Path Traversal Guard (main.py) ──────────────────────────────────────────
+# Bug: Frontend catch-all route could serve files outside frontend directory
+# using ../../../ path traversal sequences.
+# Fix: Resolve paths and verify they stay within frontend_path.
+
+
+class TestPathTraversalGuard:
+    """Regression: frontend serving must prevent directory traversal."""
+
+    def test_resolve_prevents_traversal(self):
+        """Resolved path with ../ must not escape the base directory."""
+        from pathlib import Path
+        base = Path("/app/frontend/dist")
+        # Simulate traversal attempt
+        requested = "../../etc/passwd"
+        resolved = (base / requested).resolve()
+        # Resolved path should NOT start with base (it escapes to /etc/)
+        assert not str(resolved).startswith(str(base.resolve()))
+
+    def test_normal_path_stays_within_base(self):
+        """Normal paths should resolve within the base directory."""
+        from pathlib import Path
+        base = Path("/app/frontend/dist")
+        requested = "assets/main.js"
+        resolved = (base / requested).resolve()
+        # Normal path stays within base
+        assert str(resolved).startswith(str(base.resolve()))

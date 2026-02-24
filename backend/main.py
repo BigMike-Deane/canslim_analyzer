@@ -4428,7 +4428,8 @@ if frontend_path.exists():
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API endpoint not found")
 
-        file_path = frontend_path / full_path
-        if file_path.exists() and file_path.is_file():
+        file_path = (frontend_path / full_path).resolve()
+        # Prevent directory traversal: resolved path must stay within frontend_path
+        if str(file_path).startswith(str(frontend_path.resolve())) and file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(frontend_path / "index.html")
