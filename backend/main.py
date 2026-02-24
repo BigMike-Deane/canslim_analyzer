@@ -2416,8 +2416,15 @@ async def get_coiled_spring_alerts(
         stocks = db.query(Stock).filter(Stock.ticker.in_(alert_tickers)).all()
         stocks_by_ticker = {s.ticker: s for s in stocks}
 
-    return {
-        "alerts": [{
+    result_alerts = []
+    for a in alerts:
+        # Determine if alert is stale (earnings likely passed but no outcome recorded)
+        is_stale = False
+        if a.outcome is None and a.days_to_earnings is not None:
+            estimated_earnings = a.alert_date + timedelta(days=a.days_to_earnings)
+            is_stale = estimated_earnings < date.today()
+
+        result_alerts.append({
             "id": a.id,
             "ticker": a.ticker,
             "alert_date": a.alert_date.isoformat(),
@@ -2432,10 +2439,15 @@ async def get_coiled_spring_alerts(
             "base_type": stocks_by_ticker.get(a.ticker, {}).base_type if stocks_by_ticker.get(a.ticker) else None,
             "outcome": a.outcome,
             "price_change_pct": a.price_change_pct,
-            "email_sent": a.email_sent
-        } for a in alerts],
-        "total": len(alerts),
-        "today_count": sum(1 for a in alerts if a.alert_date == date.today())
+            "email_sent": a.email_sent,
+            "is_stale": is_stale
+        })
+
+    return {
+        "alerts": result_alerts,
+        "total": len(result_alerts),
+        "today_count": sum(1 for a in alerts if a.alert_date == date.today()),
+        "actionable_count": sum(1 for r in result_alerts if not r.get("is_stale") and r.get("outcome") is None)
     }
 
 
