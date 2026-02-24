@@ -243,8 +243,8 @@ class HistoricalDataProvider:
                 "volume": quotes.get("volume", [])
             })
 
-            # Remove rows with None values
-            df = df.dropna(subset=["close"])
+            # Remove rows with None/NaN in essential OHLCV columns
+            df = df.dropna(subset=["close", "high", "low", "volume"])
             df = df.reset_index(drop=True)
 
             return df

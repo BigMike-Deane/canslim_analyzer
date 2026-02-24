@@ -355,6 +355,7 @@ class BacktestEngine:
 
             # Simulate each trading day
             total_days = len(trading_days)
+            progress = 30.0  # Start at 30% (data loading complete)
             for i, current_date in enumerate(trading_days):
                 # G: Clear seed day flag after day 1
                 if i > 0:
@@ -483,7 +484,7 @@ class BacktestEngine:
             self.static_data[stock.ticker] = {
                 "sector": stock.sector or "Unknown",
                 "name": stock.name or stock.ticker,
-                "institutional_holders_pct": getattr(stock, 'institutional_holders_pct', 0) or 0,
+                "institutional_holders_pct": (stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0,
                 "roe": roe,
                 "analyst_target_price": analyst_target,
                 "num_analyst_opinions": num_analysts,

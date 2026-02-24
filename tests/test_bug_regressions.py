@@ -1231,3 +1231,115 @@ class TestBacktesterScoreAvailableGuard:
         assert guard_pos < crash_pos, (
             "score_available guard must appear before score crash check"
         )
+
+
+# ─── Cost Basis Division by Zero (main.py) ────────────────────────────────
+# Bug: PositionCreate and PositionUpdate allowed cost_basis=0 via Pydantic's
+# ge=0 constraint. A position with cost_basis=0 would cause ZeroDivisionError
+# when computing gain_loss_pct = (current_price - cost_basis) / cost_basis * 100.
+# Fix: Changed ge=0 to gt=0 in both Pydantic models.
+
+class TestCostBasisValidation:
+    """Regression: cost_basis=0 must be rejected by Pydantic validation."""
+
+    def test_cost_basis_zero_causes_division_by_zero(self):
+        """Demonstrate that cost_basis=0 causes ZeroDivisionError."""
+        cost_basis = 0
+        current_price = 100.0
+        with pytest.raises(ZeroDivisionError):
+            gain_loss_pct = (current_price - cost_basis) / cost_basis * 100
+
+    def test_pydantic_rejects_zero_cost_basis(self):
+        """PositionCreate must reject cost_basis=0."""
+        import sys
+        sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent / 'backend'))
+        from main import PositionCreate
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PositionCreate(ticker="AAPL", shares=10, cost_basis=0)
+
+    def test_pydantic_allows_positive_cost_basis(self):
+        """PositionCreate must accept positive cost_basis."""
+        import sys
+        sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent / 'backend'))
+        from main import PositionCreate
+        pos = PositionCreate(ticker="AAPL", shares=10, cost_basis=50.0)
+        assert pos.cost_basis == 50.0
+
+
+# ─── Historical Data dropna Completeness (historical_data.py) ──────────────
+# Bug: dropna(subset=["close"]) only removed rows with NaN in close column.
+# NaN in high/low/volume could propagate to ATR, 52w high, and volume ratio.
+# Fix: dropna on all essential OHLCV columns.
+
+class TestDropNACompleteness:
+    """Regression: historical data must drop rows with NaN in any OHLCV column."""
+
+    def test_dropna_includes_all_ohlcv(self):
+        """dropna must filter on close, high, low, and volume."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "historical_data.py").read_text()
+        assert 'dropna(subset=["close", "high", "low", "volume"])' in source, (
+            "dropna must filter all essential OHLCV columns, not just close"
+        )
+
+    def test_nan_volume_not_caught_by_not_check(self):
+        """Demonstrate that 'not float(nan)' does NOT catch NaN."""
+        import math
+        val = float('nan')
+        # bool(NaN) is True, so 'not NaN' is False — NaN passes 'if not val' checks
+        assert not (not val), "NaN passes through 'if not val' checks undetected"
+
+
+# ─── Backtester Institutional % Source (backtester.py) ──────────────────────
+# Bug: backtester loaded institutional_holders_pct from Stock model via getattr,
+# but Stock model doesn't have this column. It always returned 0, making the
+# coiled spring institutional filter a no-op.
+# Fix: Extract from score_details JSON (same as ai_trader).
+
+class TestBacktesterInstitutionalPct:
+    """Regression: backtester must extract institutional % from score_details."""
+
+    def test_backtester_uses_score_details_for_inst_pct(self):
+        """Backtester static_data must extract institutional_pct from score_details."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        # Must use score_details, not getattr(stock, 'institutional_holders_pct')
+        assert "score_details or {}).get('i', {}).get('institutional_pct'" in source, (
+            "Backtester must extract institutional % from score_details JSON, "
+            "not from Stock model (which doesn't have this column)"
+        )
+
+    def test_stock_model_lacks_institutional_holders_pct(self):
+        """Stock model must NOT have institutional_holders_pct column."""
+        from backend.database import Stock
+        from sqlalchemy import inspect
+        mapper = inspect(Stock)
+        column_names = [col.key for col in mapper.column_attrs]
+        assert "institutional_holders_pct" not in column_names, (
+            "Stock model has no institutional_holders_pct column — "
+            "getattr would silently return default 0"
+        )
+
+
+# ─── Backtester Progress Variable Init (backtester.py) ────────────────────
+# Bug: progress variable was used in cancellation error message at i=0 before
+# being assigned in the loop body, causing UnboundLocalError.
+# Fix: Initialize progress before the loop.
+
+class TestProgressVariableInit:
+    """Regression: progress must be initialized before the simulation loop."""
+
+    def test_progress_initialized_before_loop(self):
+        """progress variable must be defined before the for loop uses it."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        # progress must be initialized before the loop
+        init_pos = source.find("progress = 30.0")
+        loop_pos = source.find("for i, current_date in enumerate(trading_days):")
+        assert init_pos > 0, "progress initialization not found"
+        assert loop_pos > 0, "simulation loop not found"
+        assert init_pos < loop_pos, (
+            "progress must be initialized BEFORE the simulation loop to prevent "
+            "UnboundLocalError when cancellation is detected at i=0"
+        )

@@ -63,7 +63,7 @@ def validate_ticker_param(ticker: str) -> str:
 class PositionCreate(BaseModel):
     ticker: str = Field(..., min_length=1, max_length=10)
     shares: float = Field(..., gt=0, le=1_000_000_000)
-    cost_basis: Optional[float] = Field(None, ge=0, le=1_000_000)
+    cost_basis: Optional[float] = Field(None, gt=0, le=1_000_000)
     notes: Optional[str] = Field(None, max_length=500)
 
     @field_validator('ticker')
@@ -76,7 +76,7 @@ class PositionCreate(BaseModel):
 
 class PositionUpdate(BaseModel):
     shares: Optional[float] = Field(None, gt=0, le=1_000_000_000)
-    cost_basis: Optional[float] = Field(None, ge=0, le=1_000_000)
+    cost_basis: Optional[float] = Field(None, gt=0, le=1_000_000)
     notes: Optional[str] = Field(None, max_length=500)
 
 class WatchlistCreate(BaseModel):
