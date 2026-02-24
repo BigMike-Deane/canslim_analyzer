@@ -257,6 +257,7 @@ class MarketStateManager:
             # Track correction exits for post-correction damping
             if old_state == MarketState.CORRECTION and self.state != MarketState.CORRECTION:
                 self.last_correction_exit_date = current_date
+                self.v_bottom_triggered = False  # Reset for next correction cycle
 
             self.state_entry_date = current_date
             self.state_days_count = 0
@@ -302,9 +303,6 @@ class MarketStateManager:
             return False  # Already fired this cycle
 
         if self.state != MarketState.CORRECTION:
-            # Reset for next correction cycle
-            if self.v_bottom_triggered:
-                self.v_bottom_triggered = False
             return False
 
         if self.spy_52w_high <= 0 or self.correction_low <= 0:

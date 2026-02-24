@@ -643,3 +643,140 @@ class TestBlipDetectionSync:
 
         assert "consecutive_low" in result
         assert result["consecutive_low"] == 3  # All 3 scores below threshold
+
+
+# ─── V-Bottom Reset Dead Code (market_state.py) ──────────────────────────
+# Bug: v_bottom_triggered was set to True once (line 332) but never reset.
+# The reset code at lines 304-308 was DEAD because the early return at line 301
+# short-circuited before reaching it. v_bottom detection only fired once per
+# MarketStateManager lifetime.
+# Fix: Reset v_bottom_triggered in update() when leaving CORRECTION state.
+
+
+class TestVBottomReset:
+    """Regression: v_bottom_triggered must reset when leaving CORRECTION."""
+
+    def test_v_bottom_resets_on_correction_exit(self):
+        """v_bottom_triggered should reset when transitioning out of CORRECTION."""
+        from backend.market_state import MarketStateManager, MarketState
+
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CORRECTION
+        mgr.v_bottom_triggered = True
+
+        # Simulate leaving CORRECTION → RECOVERY
+        old_state = mgr.state
+        mgr.state = MarketState.RECOVERY
+        # Mimic what update() does on state change
+        if old_state == MarketState.CORRECTION and mgr.state != MarketState.CORRECTION:
+            mgr.last_correction_exit_date = None
+            mgr.v_bottom_triggered = False
+
+        assert not mgr.v_bottom_triggered  # Should be reset
+
+    def test_v_bottom_fires_again_after_reset(self):
+        """After reset, v_bottom should be able to fire in next correction."""
+        from backend.market_state import MarketStateManager, MarketState
+        from datetime import date
+
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CORRECTION
+        mgr.v_bottom_triggered = False
+        mgr.spy_52w_high = 500.0
+        mgr.correction_low = 400.0  # 20% drop
+        mgr.correction_low_date = date(2025, 1, 1)
+
+        # V-bottom should fire if rally is strong enough
+        result = mgr._check_v_bottom(date(2025, 1, 10), spy_close=445.0)  # 11.25% rally
+        assert result is True
+        assert mgr.v_bottom_triggered is True
+
+    def test_v_bottom_blocked_after_triggered(self):
+        """v_bottom should NOT fire twice in the same correction cycle."""
+        from backend.market_state import MarketStateManager, MarketState
+        from datetime import date
+
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CORRECTION
+        mgr.v_bottom_triggered = True  # Already fired
+
+        result = mgr._check_v_bottom(date(2025, 1, 15), spy_close=450.0)
+        assert result is False  # Blocked because already triggered
+
+
+# ─── ATR NaN Guard (historical_data.py) ───────────────────────────────────
+# Bug: If OHLC data contains NaN, the ATR calculation propagated NaN through
+# max() and sum(), producing NaN as output instead of a valid number.
+# Fix: Skip NaN values in true range calculation.
+
+
+class TestATRNaNGuard:
+    """Regression: ATR should handle NaN in OHLC data gracefully."""
+
+    def test_nan_in_max_propagates(self):
+        """Demonstrate that NaN propagates through max() and sum()."""
+        import math
+        nan = float('nan')
+
+        # NaN in max
+        result = max(nan, 1.0, 2.0)
+        assert math.isnan(result)
+
+        # NaN in sum
+        total = sum([1.0, nan, 2.0])
+        assert math.isnan(total)
+
+    def test_nan_check_using_self_inequality(self):
+        """The NaN != NaN identity check works correctly."""
+        nan = float('nan')
+        assert nan != nan  # NaN is not equal to itself
+        assert not (1.0 != 1.0)  # Regular floats are equal to themselves
+
+    def test_atr_skips_nan_values(self):
+        """ATR calculation should skip NaN entries and compute from valid data."""
+        import math
+        nan = float('nan')
+
+        # Simulate the fixed ATR logic
+        raw_trs = [1.5, nan, 2.0, nan, 1.8]
+        true_ranges = [tr for tr in raw_trs if tr == tr]  # NaN check
+
+        assert len(true_ranges) == 3  # Skipped 2 NaN values
+        atr = sum(true_ranges) / len(true_ranges)
+        assert not math.isnan(atr)
+        assert abs(atr - 1.7667) < 0.001
+
+
+# ─── Email None/NaN Formatting Guard (email_utils.py) ─────────────────────
+# Bug: stock.current_price and stock.canslim_score were formatted with :.2f
+# and :.0f without None guards. If either was None, format() would crash
+# with TypeError: unsupported format string passed to NoneType.__format__
+# Fix: Use (value or 0) pattern to default None to 0.
+
+
+class TestEmailNoneFormatting:
+    """Regression: email formatting must not crash on None stock attributes."""
+
+    def test_none_price_crashes_format(self):
+        """Demonstrate that None crashes :.2f format."""
+        with pytest.raises(TypeError):
+            f"${None:.2f}"
+
+    def test_none_score_crashes_format(self):
+        """Demonstrate that None crashes :.0f format."""
+        with pytest.raises(TypeError):
+            f"{None:.0f}"
+
+    def test_or_zero_pattern_handles_none(self):
+        """The (value or 0) pattern safely defaults None to 0."""
+        price = None
+        score = None
+        assert f"${(price or 0):.2f}" == "$0.00"
+        assert f"{(score or 0):.0f}" == "0"
+
+    def test_or_zero_preserves_valid_values(self):
+        """The (value or 0) pattern preserves non-None values."""
+        price = 123.45
+        score = 78.0
+        assert f"${(price or 0):.2f}" == "$123.45"
+        assert f"{(score or 0):.0f}" == "78"

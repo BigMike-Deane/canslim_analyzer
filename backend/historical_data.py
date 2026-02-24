@@ -772,6 +772,9 @@ class HistoricalDataProvider:
             prev_close = float(history.iloc[i - 1]["close"])
 
             tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            # Skip NaN values from missing/invalid OHLC data
+            if tr != tr:  # NaN check (NaN != NaN is True)
+                continue
             true_ranges.append(tr)
 
         if not true_ranges:

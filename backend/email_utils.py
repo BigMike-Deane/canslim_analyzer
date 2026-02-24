@@ -102,11 +102,11 @@ def send_watchlist_alert_email(item, stock, reasons: list) -> bool:
             <h3 style="margin-top: 0;">{item.ticker} - {stock.name if stock.name else 'Unknown'}</h3>
             <div class="metric">
                 <div style="color: #666;">Current Price</div>
-                <div class="metric-value">${stock.current_price:.2f}</div>
+                <div class="metric-value">${(stock.current_price or 0):.2f}</div>
             </div>
             <div class="metric">
                 <div style="color: #666;">CANSLIM Score</div>
-                <div class="metric-value">{stock.canslim_score:.0f}</div>
+                <div class="metric-value">{(stock.canslim_score or 0):.0f}</div>
             </div>
         </div>
 
@@ -129,8 +129,8 @@ def send_watchlist_alert_email(item, stock, reasons: list) -> bool:
 Reasons:
 {chr(10).join(f'- {r}' for r in reasons)}
 
-Current Price: ${stock.current_price:.2f}
-CANSLIM Score: {stock.canslim_score:.0f}
+Current Price: ${(stock.current_price or 0):.2f}
+CANSLIM Score: {(stock.canslim_score or 0):.0f}
 {f'Your Notes: {item.notes}' if item.notes else ''}
 """
 
@@ -227,8 +227,8 @@ def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
     title = f"🌀 Coiled Spring: {stock.ticker}"
     message = (
         f"{stock.ticker} - {getattr(stock, 'name', 'Unknown')}\n"
-        f"Price: ${stock.current_price:.2f}\n"
-        f"Score: {stock.canslim_score:.0f}\n"
+        f"Price: ${(stock.current_price or 0):.2f}\n"
+        f"Score: {(stock.canslim_score or 0):.0f}\n"
         f"Earnings in {days_to_earnings} days\n"
         f"Base: {base_type} ({weeks}w), {beat_streak} beat streak"
     )
