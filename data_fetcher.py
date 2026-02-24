@@ -596,10 +596,10 @@ def get_delisted_tickers() -> set:
 
         # Only exclude tickers with 3+ failures whose recheck window hasn't passed
         # This prevents temporary API issues from permanently excluding valid stocks
-        from datetime import datetime, timezone
+        # Note: recheck_after is stored as naive datetime via datetime.now(), so compare with naive
         delisted = db.query(DelistedTicker.ticker).filter(
             DelistedTicker.failure_count >= 3,
-            DelistedTicker.recheck_after > datetime.now(timezone.utc)
+            DelistedTicker.recheck_after > datetime.now()
         ).all()
 
         return {t.ticker for t in delisted}
@@ -1733,7 +1733,8 @@ class DataFetcher:
                     # Partial data - merge with GAAP EPS
                     logger.debug(f"{ticker}: Partial adjusted EPS ({len(adjusted_eps)} quarters), supplementing with GAAP")
                     # Prefer adjusted for available quarters, fill rest with GAAP
-                    gaap_eps = stock_data.quarterly_earnings
+                    # Filter None values to prevent NaN propagation in CANSLIM scorer
+                    gaap_eps = [x for x in (stock_data.quarterly_earnings or []) if x is not None]
                     merged = adjusted_eps + gaap_eps[len(adjusted_eps):] if len(gaap_eps) > len(adjusted_eps) else adjusted_eps
                     stock_data.quarterly_earnings = merged[:8]
 
