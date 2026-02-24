@@ -43,8 +43,8 @@ function PortfolioSummary({ positions }) {
 }
 
 function PositionRow({ position, onDelete, onEdit }) {
-  const gainLoss = position.current_value - (position.cost_basis * position.shares)
-  const gainLossPct = position.cost_basis > 0
+  const gainLoss = (position.current_value || 0) - (position.cost_basis * position.shares)
+  const gainLossPct = position.cost_basis > 0 && position.current_price
     ? ((position.current_price / position.cost_basis - 1) * 100)
     : 0
   const isPositive = gainLoss >= 0
@@ -456,8 +456,9 @@ function EditPositionModal({ open, position, onClose, onSave }) {
               <StatRow label="Cost" value={formatCurrency(parseFloat(shares) * parseFloat(costBasis))} />
               <div className="col-span-2">
                 {(() => {
-                  const gain = (parseFloat(shares) * position.current_price) - (parseFloat(shares) * parseFloat(costBasis))
-                  const gainPct = ((position.current_price / parseFloat(costBasis)) - 1) * 100
+                  const costBasisNum = parseFloat(costBasis) || 0
+                  const gain = (parseFloat(shares) * position.current_price) - (parseFloat(shares) * costBasisNum)
+                  const gainPct = costBasisNum > 0 ? ((position.current_price / costBasisNum) - 1) * 100 : 0
                   return (
                     <StatRow
                       label="Gain/Loss"

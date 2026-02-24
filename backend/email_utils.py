@@ -341,9 +341,9 @@ def send_morning_briefing_push(briefing_data: dict) -> bool:
     candidates = briefing_data.get("top_candidates", [])
     heat = briefing_data.get("portfolio_heat", 0)
 
-    total_value = portfolio.get("total_value", 0)
-    total_return_pct = portfolio.get("total_return_pct", 0)
-    cash = portfolio.get("cash", 0)
+    total_value = portfolio.get("total_value") or 0
+    total_return_pct = portfolio.get("total_return_pct") or 0
+    cash = portfolio.get("cash") or 0
     regime_name = (regime.get("regime") or "unknown").upper()
 
     title = f"Morning Briefing - ${total_value:,.0f} ({total_return_pct:+.1f}%)"
@@ -455,9 +455,9 @@ def send_morning_briefing_email(briefing_data: dict) -> bool:
     heat = briefing_data.get("portfolio_heat", 0)
     earnings_this_week = briefing_data.get("earnings_this_week", [])
 
-    total_value = portfolio.get("total_value", 0)
-    total_return_pct = portfolio.get("total_return_pct", 0)
-    cash = portfolio.get("cash", 0)
+    total_value = portfolio.get("total_value") or 0
+    total_return_pct = portfolio.get("total_return_pct") or 0
+    cash = portfolio.get("cash") or 0
     regime_name = (regime.get("regime") or "unknown").upper()
 
     subject = f"CANSLIM Morning Briefing - ${total_value:,.0f} ({total_return_pct:+.1f}%)"
