@@ -992,6 +992,7 @@ def run_continuous_scan():
         failed = 0
         try:
             for i, analysis in enumerate(analysis_results):
+                nested = None
                 try:
                     # Use savepoint so a single failure doesn't rollback the batch
                     nested = db.begin_nested()
@@ -1008,7 +1009,8 @@ def run_continuous_scan():
                 except Exception as e:
                     failed += 1
                     logger.error(f"Error saving {analysis.get('ticker', 'unknown')}: {e}")
-                    nested.rollback()  # Only rollback this one stock's savepoint
+                    if nested:
+                        nested.rollback()  # Only rollback this one stock's savepoint
 
             # Final commit for remaining stocks
             try:
