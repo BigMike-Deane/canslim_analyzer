@@ -4445,12 +4445,16 @@ async def get_command_center(db: Session = Depends(get_db)):
             func.count(case((CoiledSpringAlert.outcome != None, 1))).label('with_outcome'),
             func.count(case((CoiledSpringAlert.outcome.in_(['win', 'big_win']), 1))).label('wins'),
             func.count(case((CoiledSpringAlert.outcome == 'big_win', 1))).label('big_wins'),
+            func.count(case((CoiledSpringAlert.outcome == 'loss', 1))).label('losses'),
+            func.count(case((CoiledSpringAlert.outcome == 'flat', 1))).label('flat'),
         ).filter(CoiledSpringAlert.id.in_(keep_ids)).first()
         cs_stats = {
             "total": cum_row.total,
             "with_outcome": cum_row.with_outcome,
             "wins": cum_row.wins,
             "big_wins": cum_row.big_wins,
+            "losses": cum_row.losses,
+            "flat": cum_row.flat,
             "win_rate": round(cum_row.wins / cum_row.with_outcome * 100, 1) if cum_row.with_outcome else 0,
         }
 
