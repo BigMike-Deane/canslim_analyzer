@@ -266,7 +266,7 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
             # Only update if we have actual data (don't overwrite with None)
             if data.get("target_price"):
                 record.analyst_target_price = data.get("target_price")
-            if data.get("count"):
+            if data.get("count") is not None:
                 record.analyst_count = data.get("count")
             record.analyst_updated_at = now
 
@@ -277,23 +277,23 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
                 record.institutional_updated_at = now
 
         elif data_type == "key_metrics" and isinstance(data, dict):
-            # Only update fields that have actual values
-            if data.get("roe"):
+            # Only update fields that have actual values (use is not None to preserve valid 0.0)
+            if data.get("roe") is not None:
                 record.roe = data.get("roe")
-            if data.get("trailing_pe"):
+            if data.get("trailing_pe") is not None:
                 record.trailing_pe = data.get("trailing_pe")
-            if data.get("forward_pe"):
+            if data.get("forward_pe") is not None:
                 record.forward_pe = data.get("forward_pe")
-            if data.get("peg_ratio"):
+            if data.get("peg_ratio") is not None:
                 record.peg_ratio = data.get("peg_ratio")
             record.metrics_updated_at = now
 
         elif data_type == "yahoo_info" and isinstance(data, dict):
             # Comprehensive Yahoo data - update all relevant fields
-            if data.get("roe"):
+            if data.get("roe") is not None:
                 record.roe = data.get("roe")
                 record.metrics_updated_at = now
-            if data.get("institutional_holders_pct"):
+            if data.get("institutional_holders_pct") is not None:
                 record.institutional_holders_pct = data.get("institutional_holders_pct")
                 record.institutional_updated_at = now
             if data.get("analyst_target_price"):
