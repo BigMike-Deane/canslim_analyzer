@@ -1744,7 +1744,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             spy_info = mkt.get('spy', {}) if mkt else {}
             spy_px = spy_info.get('price', 0)
             spy_50 = spy_info.get('ma_50', 0)
-            if spy_px and spy_50 and spy_px < spy_50:
+            if not spy_px or not spy_50:
+                logger.warning(f"REGIME GATE: SPY data missing (price={spy_px}, ma50={spy_50}), skipping all buys")
+                return []
+            if spy_px < spy_50:
                 logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
                 return []
 
@@ -2390,6 +2393,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         position_value = adjusted_value
 
         if position_value < 100:  # Minimum $100 position
+            continue
+
+        if not stock.current_price or stock.current_price <= 0:
             continue
 
         shares = position_value / stock.current_price

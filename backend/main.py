@@ -3278,6 +3278,15 @@ class BacktestCreate(BaseModel):
     strategy: str = "balanced"  # balanced, growth
     force_refresh: bool = False  # Force fresh FMP earnings fetch (ignore cache)
 
+    @field_validator('custom_tickers')
+    @classmethod
+    def validate_custom_tickers(cls, v):
+        if v is not None:
+            if len(v) > 500:
+                raise ValueError('Maximum 500 custom tickers allowed')
+            v = [t.upper().strip() for t in v if t and t.strip()]
+        return v
+
 
 @app.post("/api/backtests")
 async def create_backtest(

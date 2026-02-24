@@ -1137,3 +1137,31 @@ class TestNoDeadConfigOptions:
             assert "half_size" not in source, (
                 f"{filename} references half_size but it was never implemented"
             )
+
+
+# ─── SPY Gate Fail-Safe (ai_trader.py / backtester.py) ──────────────────
+# Bug: When SPY price or 50MA data was missing (0 or None), the regime gate
+# silently allowed buys instead of conservatively blocking them.
+# This is a fail-unsafe pattern: the safety mechanism fails OPEN instead of CLOSED.
+# Fix: Missing SPY data now assumes bearish (blocks buys).
+
+
+class TestSPYGateFailSafe:
+    """Regression: missing SPY data must block buys, not allow them."""
+
+    def test_ai_trader_blocks_on_missing_spy(self):
+        """ai_trader regime gate must return [] when SPY data is missing."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        # Must check for missing data before the price comparison
+        assert "not spy_px or not spy_50" in source or "not spy_px" in source, (
+            "ai_trader.py regime gate must block buys when SPY data is missing"
+        )
+
+    def test_backtester_blocks_on_missing_spy(self):
+        """backtester regime gate must block buys when SPY data is missing."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        assert "not spy_price or not spy_ma50" in source, (
+            "backtester.py regime gate must block buys when SPY data is missing"
+        )

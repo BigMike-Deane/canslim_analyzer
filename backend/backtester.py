@@ -1270,7 +1270,11 @@ class BacktestEngine:
                 spy_data = market_for_cash.get('spy', {}) if market_for_cash else {}
                 spy_price = spy_data.get('price', 0)
                 spy_ma50 = spy_data.get('ma_50', 0)
-                if spy_price and spy_ma50 and spy_price < spy_ma50:
+                if not spy_price or not spy_ma50:
+                    # Missing SPY data — assume bearish (conservative)
+                    logger.debug(f"REGIME GATE: SPY data missing (price={spy_price}, ma50={spy_ma50}), skipping buys")
+                    can_buy = False
+                elif spy_price < spy_ma50:
                     logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys")
                     can_buy = False
 
