@@ -2734,6 +2734,22 @@ class BacktestEngine:
             if position_value < 100:
                 continue
 
+            # Check sector allocation % limit (matches live trader)
+            if portfolio_value > 0:
+                sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
+                sector_value = sum(
+                    p.shares * (self.data_provider.get_price_on_date(p.ticker, current_date) or p.cost_basis)
+                    for p in self.positions.values() if p.sector == sector
+                )
+                current_alloc = sector_value / portfolio_value
+                new_alloc = current_alloc + (position_value / portfolio_value)
+                if new_alloc > MAX_SECTOR_ALLOCATION:
+                    remaining_room = MAX_SECTOR_ALLOCATION - current_alloc
+                    if remaining_room <= 0.02:  # Less than 2% room
+                        _funnel["sector"] += 1
+                        continue
+                    position_value = remaining_room * portfolio_value
+
             shares = position_value / price
 
             # Build reason string

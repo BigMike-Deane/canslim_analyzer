@@ -1704,3 +1704,35 @@ class TestSilentExceptionLogging:
                             f"bare except:pass still present — must log exception"
                         )
                         break
+
+
+# ─── Backtester Sector Allocation % Limit (backtester.py) ─────────────────
+# Bug: Backtester _check_sector_limit only checked stock COUNT per sector,
+# not allocation PERCENTAGE. Live trader checks both count AND 30% allocation cap.
+# This let backtester overweight a sector, making backtests look better than live.
+# Fix: Added allocation % check after position sizing in _evaluate_buys.
+
+
+class TestBacktesterSectorAllocationLimit:
+    """Regression: Backtester was missing sector allocation % cap that live trader has."""
+
+    def test_max_sector_allocation_constant_exists(self):
+        """MAX_SECTOR_ALLOCATION must be defined in backtester module."""
+        from backend.backtester import MAX_SECTOR_ALLOCATION
+        assert 0 < MAX_SECTOR_ALLOCATION <= 1.0  # Must be a valid percentage
+
+    def test_backtester_has_allocation_check_in_evaluate_buys(self):
+        """The sector allocation % check must exist in backtester's buy evaluation."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        assert "MAX_SECTOR_ALLOCATION" in source
+        # Must appear in _evaluate_buys context (after position sizing, not just at module level)
+        # Check that it's used in a comparison, not just defined
+        assert "new_alloc > MAX_SECTOR_ALLOCATION" in source
+
+    def test_earnings_drift_gate_in_ai_trader(self):
+        """ai_trader earnings drift must require days_to_earnings is not None."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        # The gate must exist: beat_streak >= 3 AND days_to_earnings is not None
+        assert "days_to_earnings is not None" in source

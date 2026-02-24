@@ -2230,10 +2230,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         drift_config = yaml_config.get('earnings_drift', {})
         if drift_config.get('enabled', True):
             beat_streak = getattr(stock, 'earnings_beat_streak', 0) or 0
-            if beat_streak >= 4:
-                earnings_drift_bonus = drift_config.get('bonus_points', 5)
-            elif beat_streak >= 3:
-                earnings_drift_bonus = 3
+            days_to_earnings = getattr(stock, 'days_to_earnings', None)
+            if beat_streak >= 3 and days_to_earnings is not None:
+                if beat_streak >= 4:
+                    earnings_drift_bonus = drift_config.get('bonus_points', 5)
+                elif beat_streak >= 3:
+                    earnings_drift_bonus = 3
 
         # Calculate composite score with strategy-specific weights
         scoring_weights = profile.get('scoring_weights', {})
