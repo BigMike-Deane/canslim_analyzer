@@ -447,7 +447,7 @@ def get_system_health() -> str:
             cur.execute("""
                 SELECT COUNT(*) as positions,
                        COALESCE(SUM(current_value), 0) as total_value,
-                       COALESCE(SUM(unrealized_gain), 0) as total_pnl
+                       COALESCE(SUM(gain_loss), 0) as total_pnl
                 FROM ai_portfolio_positions
             """)
             result["portfolio"] = dict(cur.fetchone())
