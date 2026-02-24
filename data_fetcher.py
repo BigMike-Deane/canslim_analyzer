@@ -596,10 +596,10 @@ def get_delisted_tickers() -> set:
 
         # Only exclude tickers with 3+ failures whose recheck window hasn't passed
         # This prevents temporary API issues from permanently excluding valid stocks
-        from datetime import datetime
+        from datetime import datetime, timezone
         delisted = db.query(DelistedTicker.ticker).filter(
             DelistedTicker.failure_count >= 3,
-            DelistedTicker.recheck_after > datetime.utcnow()
+            DelistedTicker.recheck_after > datetime.now(timezone.utc)
         ).all()
 
         return {t.ticker for t in delisted}

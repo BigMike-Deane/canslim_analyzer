@@ -2967,10 +2967,10 @@ async def get_ai_portfolio_history(
     db: Session = Depends(get_db)
 ):
     """Get AI Portfolio performance history for charts - includes all snapshots from scans"""
-    from datetime import timedelta, datetime as dt
+    from datetime import timedelta, datetime as dt, timezone
     from sqlalchemy import or_
 
-    start_date = dt.utcnow() - timedelta(days=days)
+    start_date = dt.now(timezone.utc) - timedelta(days=days)
     start_date_only = date.today() - timedelta(days=days)
 
     # Get all snapshots - include both timestamp-based (new) and date-based (old/migrated)
