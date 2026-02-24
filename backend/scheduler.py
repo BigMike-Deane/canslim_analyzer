@@ -843,13 +843,9 @@ def run_continuous_scan():
         stock.m_score = analysis.get("m_score")
         stock.score_details = analysis.get("score_details")
         stock.projected_growth = analysis.get("projected_growth")
-        stock.confidence = analysis.get("confidence")
-        stock.analyst_target = analysis.get("analyst_target") or stock.analyst_target
-        stock.pe_ratio = analysis.get("pe_ratio") or stock.pe_ratio
+        stock.growth_confidence = analysis.get("confidence")
         stock.week_52_high = analysis.get("week_52_high") or stock.week_52_high
         stock.week_52_low = analysis.get("week_52_low") or stock.week_52_low
-        stock.relative_strength = analysis.get("relative_strength")
-        stock.institutional_ownership = analysis.get("institutional_ownership")
         stock.last_updated = datetime.now(timezone.utc)
 
         # RS values for momentum confirmation

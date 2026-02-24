@@ -1007,3 +1007,49 @@ class TestPathTraversalGuard:
         resolved = (base / requested).resolve()
         # Normal path stays within base
         assert str(resolved).startswith(str(base.resolve()))
+
+
+# ─── Ghost Field Writes (scheduler.py) ────────────────────────────────────
+# Bug: scheduler.save_stock_to_db() wrote stock.confidence instead of
+# stock.growth_confidence. SQLAlchemy silently created a Python instance
+# attribute that never persisted to the database. This meant growth_confidence
+# was NULL for stocks only scanned via batch (never via individual API call).
+# Also removed 4 other dead field writes (analyst_target, pe_ratio,
+# relative_strength, institutional_ownership) — columns no longer exist.
+# Fix: Changed stock.confidence → stock.growth_confidence.
+
+
+class TestGhostFieldWrites:
+    """Regression: ORM field writes must target actual database columns."""
+
+    def test_stock_model_has_growth_confidence(self):
+        """Stock model must have growth_confidence column, not confidence."""
+        from backend.database import Stock
+        from sqlalchemy import inspect
+        mapper = inspect(Stock)
+        column_names = [col.key for col in mapper.column_attrs]
+        assert "growth_confidence" in column_names
+        assert "confidence" not in column_names
+
+    def test_stock_model_lacks_legacy_columns(self):
+        """Stock model should NOT have legacy columns that were removed."""
+        from backend.database import Stock
+        from sqlalchemy import inspect
+        mapper = inspect(Stock)
+        column_names = [col.key for col in mapper.column_attrs]
+        # These columns were removed from the schema but writes remained
+        assert "analyst_target" not in column_names
+        assert "pe_ratio" not in column_names
+        assert "relative_strength" not in column_names
+        assert "institutional_ownership" not in column_names
+
+    def test_scheduler_save_uses_growth_confidence(self):
+        """Scheduler save function must use growth_confidence, not confidence."""
+        from pathlib import Path
+        scheduler_path = Path(__file__).parent.parent / "backend" / "scheduler.py"
+        source = scheduler_path.read_text()
+        # The save function must write to growth_confidence, not confidence
+        assert "stock.growth_confidence" in source
+        # Must NOT have the buggy stock.confidence write (note: string "growth_confidence"
+        # contains "confidence" so we check for exact "stock.confidence" without "growth_" prefix)
+        assert "stock.confidence " not in source
