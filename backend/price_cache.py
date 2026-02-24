@@ -127,7 +127,8 @@ class PriceHistoryCache:
                 if created_at.tzinfo is None:
                     created_at = created_at.replace(tzinfo=timezone.utc)
 
-                age_days = (datetime.now(timezone.utc) - created_at).days
+                age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+                age_days = age_seconds / 86400
                 if age_days > self.expiry_days:
                     # Expired - delete and return None
                     conn.execute("DELETE FROM price_cache WHERE cache_key = ?", (cache_key,))
