@@ -234,11 +234,12 @@ async def _init_async_primitives():
     MUST be called as an async function to properly bind primitives to the current event loop.
     This fixes 'Semaphore bound to a different event loop' errors.
     """
-    global api_semaphore, _rate_lock, _rate_limiter
+    global api_semaphore, _rate_lock, _rate_limiter, _yahoo_semaphore
     # Get current running loop to ensure primitives bind to it
     loop = asyncio.get_running_loop()
     api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     _rate_lock = asyncio.Lock()
+    _yahoo_semaphore = asyncio.Semaphore(3)
     # Reset rate limiter state for fresh scan
     _rate_limiter["calls_this_minute"] = 0
     _rate_limiter["minute_start"] = None
@@ -604,7 +605,7 @@ async def fetch_fmp_key_metrics_async(session: aiohttp.ClientSession, ticker: st
     url = f"{FMP_BASE_URL}/key-metrics?symbol={ticker}&limit=1&apikey={FMP_API_KEY}"
     data = await fetch_json_async(session, url)
 
-    if data and len(data) > 0:
+    if isinstance(data, list) and len(data) > 0:
         metrics = data[0]
         return {
             "roe": metrics.get("returnOnEquity", 0) or 0,
@@ -625,7 +626,7 @@ async def fetch_fmp_balance_sheet_async(session: aiohttp.ClientSession, ticker: 
     url = f"{FMP_BASE_URL}/balance-sheet-statement?symbol={ticker}&limit=1&apikey={FMP_API_KEY}"
     data = await fetch_json_async(session, url)
 
-    if data and len(data) > 0:
+    if isinstance(data, list) and len(data) > 0:
         bs = data[0]
         return {
             "cash_and_equivalents": bs.get("cashAndCashEquivalents", 0) or 0,
@@ -676,7 +677,7 @@ async def fetch_fmp_earnings_surprise_async(session: aiohttp.ClientSession, tick
     url = f"{FMP_BASE_URL}/earnings-surprises?symbol={ticker}&apikey={FMP_API_KEY}"
     data = await fetch_json_async(session, url)
 
-    if data and len(data) > 0:
+    if isinstance(data, list) and len(data) > 0:
         latest = data[0]
         latest_surprise = 0
         if latest.get("estimatedEarning") and latest.get("actualEarningResult"):
@@ -700,7 +701,10 @@ async def fetch_fmp_earnings_surprise_async(session: aiohttp.ClientSession, tick
         for record in data[:8]:
             actual = record.get("actualEarningResult")
             if actual is not None:
-                quarterly_adjusted_eps.append(float(actual))
+                try:
+                    quarterly_adjusted_eps.append(float(actual))
+                except (ValueError, TypeError):
+                    pass  # Skip non-numeric values like "N/A"
 
         return {
             "latest_surprise_pct": latest_surprise,
@@ -1195,6 +1199,7 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
             # Get annual earnings if missing
             if not stock_data.annual_earnings:
                 try:
+                    stock = yf.Ticker(ticker)
                     annual = stock.financials
                     if annual is not None and not annual.empty and 'Net Income' in annual.index:
                         net_income = annual.loc['Net Income'].dropna()
@@ -1423,11 +1428,14 @@ async def get_stock_data_async(
         timestamps = chart_data.get("timestamps", [])
 
         if len(close_prices) >= 50:
-            dates = pd.to_datetime(timestamps, unit='s')
-            stock_data.price_history = pd.DataFrame({
-                'Close': close_prices,
-                'Volume': volumes
-            }, index=dates)
+            try:
+                dates = pd.to_datetime(timestamps, unit='s')
+                stock_data.price_history = pd.DataFrame({
+                    'Close': close_prices,
+                    'Volume': volumes
+                }, index=dates)
+            except (ValueError, OverflowError) as e:
+                logger.warning(f"{ticker}: Failed to parse chart timestamps: {e}")
 
             if volumes:
                 recent_volumes = [v for v in volumes[-50:] if v]
@@ -1635,11 +1643,14 @@ def get_price_data_only(ticker: str) -> StockData:
         timestamps = chart_data.get("timestamps", [])
 
         if len(close_prices) >= 50:
-            dates = pd.to_datetime(timestamps, unit='s')
-            stock_data.price_history = pd.DataFrame({
-                'Close': close_prices,
-                'Volume': volumes
-            }, index=dates)
+            try:
+                dates = pd.to_datetime(timestamps, unit='s')
+                stock_data.price_history = pd.DataFrame({
+                    'Close': close_prices,
+                    'Volume': volumes
+                }, index=dates)
+            except (ValueError, OverflowError) as e:
+                logger.warning(f"{ticker}: Failed to parse chart timestamps: {e}")
 
             if volumes:
                 recent_volumes = [v for v in volumes[-50:] if v]
