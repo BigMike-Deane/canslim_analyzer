@@ -1121,8 +1121,7 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             else:
                 logger.warning(f"{ticker}: Cached data too old ({cache_age:.1f} days) - not using stale fallback")
                 _fallback_tracker["stocks_no_data"].add(ticker)
-                # Mark as potentially delisted - hasn't had fresh data in over 7 days
-                mark_ticker_as_delisted(ticker, reason="stale_data", source="async_fetcher")
+                # Don't mark as delisted — stale cache could be from API outage, not delisting
                 return {"success": False, "cache_too_old": True, "cache_age_days": cache_age}
 
         logger.warning(f"{ticker}: No cached data available - stock will have incomplete data")

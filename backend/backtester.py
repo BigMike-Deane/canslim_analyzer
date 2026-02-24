@@ -2409,9 +2409,10 @@ class BacktestEngine:
                     coiled_spring_bonus = cs_result.get('cs_score', 0)
                     logger.debug(f"Backtest CS: {ticker} ({cs_result['cs_details']})")
                 else:
-                    # NON-CS: Block ALL stocks in the earnings window
-                    _funnel["earnings_prox"] += 1
-                    continue
+                    # NON-CS: Block stocks within avoidance window only
+                    if days_to_earnings <= avoidance_days:
+                        _funnel["earnings_prox"] += 1
+                        continue
 
             # Get breakout status and volume ratio from cached scores
             is_breaking_out = score_data.get("is_breaking_out", False)

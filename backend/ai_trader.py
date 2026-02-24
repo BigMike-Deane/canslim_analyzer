@@ -2283,10 +2283,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 # Record alert (respects daily limits)
                 record_coiled_spring_alert(db, stock.ticker, cs_result, stock)
             else:
-                # NON-CS: Block ALL stocks in the earnings window
-                # (avoidance_days and allow_buy_days both represent risk zones)
-                logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified)")
-                continue
+                # NON-CS: Block stocks within avoidance window only
+                # (allow_buy_days is CS evaluation window, not a buy block)
+                if days_to_earnings <= avoidance_days:
+                    logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified, avoidance={avoidance_days}d)")
+                    continue
 
         # Check if stock is breaking out (best buying opportunity)
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
