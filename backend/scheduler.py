@@ -853,12 +853,13 @@ def run_continuous_scan():
             stock.previous_score = None
             stock.score_change = None
 
-        # Update stock data
-        stock.name = analysis.get("company_name")
-        stock.sector = analysis.get("sector")
-        stock.industry = analysis.get("industry")
-        stock.current_price = analysis.get("current_price")
-        stock.market_cap = analysis.get("market_cap")
+        # Update stock data (only overwrite with non-None values to prevent
+        # API failures from wiping existing good data)
+        stock.name = analysis.get("company_name") or stock.name
+        stock.sector = analysis.get("sector") or stock.sector
+        stock.industry = analysis.get("industry") or stock.industry
+        stock.current_price = analysis.get("current_price") or stock.current_price
+        stock.market_cap = analysis.get("market_cap") or stock.market_cap
         stock.canslim_score = new_score
         stock.c_score = analysis.get("c_score")
         stock.a_score = analysis.get("a_score")
@@ -870,10 +871,10 @@ def run_continuous_scan():
         stock.score_details = analysis.get("score_details")
         stock.projected_growth = analysis.get("projected_growth")
         stock.confidence = analysis.get("confidence")
-        stock.analyst_target = analysis.get("analyst_target")
-        stock.pe_ratio = analysis.get("pe_ratio")
-        stock.week_52_high = analysis.get("week_52_high")
-        stock.week_52_low = analysis.get("week_52_low")
+        stock.analyst_target = analysis.get("analyst_target") or stock.analyst_target
+        stock.pe_ratio = analysis.get("pe_ratio") or stock.pe_ratio
+        stock.week_52_high = analysis.get("week_52_high") or stock.week_52_high
+        stock.week_52_low = analysis.get("week_52_low") or stock.week_52_low
         stock.relative_strength = analysis.get("relative_strength")
         stock.institutional_ownership = analysis.get("institutional_ownership")
         stock.last_updated = datetime.now(timezone.utc)
