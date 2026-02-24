@@ -1507,3 +1507,41 @@ class TestBearExceptionSignalFactors:
             "Bear exception buy dict must include 'signal_factors' key "
             "to avoid KeyError when execute_trade logs the trade"
         )
+
+
+# ─── Trailing Stop Defaults Match Champion Strategy (ai_trader + backtester) ─
+# Bug: Hardcoded fallback defaults used old balanced values (15%, 12%, 10%)
+# instead of champion nostate_optimized values (25%, 18%, 12%).
+# Fix: Updated all defaults to match champion strategy.
+
+class TestTrailingStopDefaults:
+    """Regression: trailing stop defaults must match champion strategy values."""
+
+    @pytest.mark.parametrize("filename", ["ai_trader.py", "backtester.py"])
+    def test_trailing_stop_defaults_match_champion(self, filename):
+        """Trailing stop fallback defaults must use champion values, not old balanced."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / filename).read_text()
+
+        # Check that defaults match nostate_optimized champion values
+        assert "'gain_50_plus', 25)" in source or "'gain_50_plus', 25)" in source, (
+            f"{filename}: gain_50_plus default must be 25 (champion), not 15 (old balanced)"
+        )
+        assert "'gain_30_to_50', 18)" in source, (
+            f"{filename}: gain_30_to_50 default must be 18 (champion), not 12 (old balanced)"
+        )
+        assert "'gain_20_to_30', 12)" in source, (
+            f"{filename}: gain_20_to_30 default must be 12 (champion), not 10 (old balanced)"
+        )
+
+    def test_backtester_take_profit_default_matches_champion(self):
+        """Backtester take_profit_pct default must be 75.0 (champion), not 40.0."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "take_profit_pct', 40.0)" not in source, (
+            "Backtester still has 40.0 as take_profit default — must be 75.0"
+        )
+        assert "take_profit_pct', 75.0)" in source, (
+            "Backtester take_profit_pct default must be 75.0 (champion)"
+        )

@@ -203,7 +203,7 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
             max_position_pct=12.0,  # Larger positions for conviction picks
             min_score_to_buy=72,  # CANSLIM quality threshold
             sell_score_threshold=45,  # Hold slightly longer
-            take_profit_pct=40.0,  # Let winners run
+            take_profit_pct=75.0,  # Let winners run (champion: 75%)
             stop_loss_pct=8.0,  # O'Neil standard 8% stop
             is_active=True
         )
@@ -1180,11 +1180,11 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
             profile_trailing = profile.get('trailing_stops', {})
             trailing_stop_pct = None
             if peak_gain_pct >= 50:
-                trailing_stop_pct = profile_trailing.get('gain_50_plus', 15)
+                trailing_stop_pct = profile_trailing.get('gain_50_plus', 25)
             elif peak_gain_pct >= 30:
-                trailing_stop_pct = profile_trailing.get('gain_30_to_50', 12)
+                trailing_stop_pct = profile_trailing.get('gain_30_to_50', 18)
             elif peak_gain_pct >= 20:
-                trailing_stop_pct = profile_trailing.get('gain_20_to_30', 10)
+                trailing_stop_pct = profile_trailing.get('gain_20_to_30', 12)
             elif peak_gain_pct >= 10:
                 trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
 
@@ -1450,11 +1450,11 @@ def evaluate_sells(db: Session) -> list:
             profile_trailing = profile.get('trailing_stops', {})
             trailing_stop_pct = None
             if peak_gain_pct >= 50:
-                trailing_stop_pct = profile_trailing.get('gain_50_plus', 15)
+                trailing_stop_pct = profile_trailing.get('gain_50_plus', 25)
             elif peak_gain_pct >= 30:
-                trailing_stop_pct = profile_trailing.get('gain_30_to_50', 12)
+                trailing_stop_pct = profile_trailing.get('gain_30_to_50', 18)
             elif peak_gain_pct >= 20:
-                trailing_stop_pct = profile_trailing.get('gain_20_to_30', 10)
+                trailing_stop_pct = profile_trailing.get('gain_20_to_30', 12)
             elif peak_gain_pct >= 10:
                 trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
 
@@ -1547,8 +1547,8 @@ def evaluate_sells(db: Session) -> list:
                             consecutive_low=consecutive_low,
                             consecutive_required=consecutive_required,
                         )
-                    except Exception:
-                        pass  # Non-critical, don't break trading logic
+                    except Exception as e:
+                        logger.debug(f"Score crash warning push failed (non-critical): {e}")
                 continue
 
             # Build detailed reason with component breakdown

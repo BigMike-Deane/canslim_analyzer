@@ -1942,11 +1942,11 @@ class BacktestEngine:
                 profile_trailing = self.profile.get('trailing_stops', {})
                 trailing_stop_pct = None
                 if peak_gain_pct >= 50:
-                    trailing_stop_pct = profile_trailing.get('gain_50_plus', 15)
+                    trailing_stop_pct = profile_trailing.get('gain_50_plus', 25)
                 elif peak_gain_pct >= 30:
-                    trailing_stop_pct = profile_trailing.get('gain_30_to_50', 12)
+                    trailing_stop_pct = profile_trailing.get('gain_30_to_50', 18)
                 elif peak_gain_pct >= 20:
-                    trailing_stop_pct = profile_trailing.get('gain_20_to_30', 10)
+                    trailing_stop_pct = profile_trailing.get('gain_20_to_30', 12)
                 elif peak_gain_pct >= 10:
                     trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
 
@@ -2088,7 +2088,7 @@ class BacktestEngine:
                     continue  # Don't add more sell signals for this position
 
             # Winners (gain >= 20%): protect gains or take profit (matches ai_trader structure)
-            profile_take_profit = self.profile.get('take_profit_pct', 40.0)
+            profile_take_profit = self.profile.get('take_profit_pct', 75.0)
             if gain_pct >= 20:
                 if current_score < self.backtest.sell_score_threshold:
                     # PROTECT GAINS: winner with weak score — sell to lock in gains
