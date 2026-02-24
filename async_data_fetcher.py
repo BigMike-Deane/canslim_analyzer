@@ -751,7 +751,10 @@ async def fetch_fmp_analyst_estimates_async(session: aiohttp.ClientSession, tick
         for item in data:
             item_date = item.get("date", "")
             if item_date:
-                item_year = int(item_date[:4])
+                try:
+                    item_year = int(item_date[:4])
+                except (ValueError, IndexError):
+                    continue  # Skip malformed dates
                 if item_year == current_year and current is None:
                     current = item
                 elif item_year == current_year - 1 and prior is None:
