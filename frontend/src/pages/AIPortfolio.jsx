@@ -920,6 +920,7 @@ export default function AIPortfolio() {
     if (!autoRefresh) return
 
     const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000 // 5 minutes
+    const pendingTimeouts = []
 
     const refreshPrices = async () => {
       // Check if market is likely open (rough check - M-F 8:30am-4pm CST)
@@ -939,8 +940,8 @@ export default function AIPortfolio() {
         await api.refreshAIPortfolio()
         setLastPriceRefresh(new Date())
         // Fetch updated data after refresh completes
-        setTimeout(() => fetchData(false), 10000)
-        setTimeout(() => setIsRefreshingPrices(false), 12000)
+        pendingTimeouts.push(setTimeout(() => fetchData(false), 10000))
+        pendingTimeouts.push(setTimeout(() => setIsRefreshingPrices(false), 12000))
       } catch (err) {
         console.error('Auto-refresh failed:', err)
         setIsRefreshingPrices(false)
@@ -951,7 +952,10 @@ export default function AIPortfolio() {
     refreshPrices()
     const interval = setInterval(refreshPrices, AUTO_REFRESH_INTERVAL)
 
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      pendingTimeouts.forEach(t => clearTimeout(t))
+    }
   }, [autoRefresh])
 
   // Persist auto-refresh preference
