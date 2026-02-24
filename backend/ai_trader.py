@@ -46,11 +46,6 @@ def get_cst_now():
     return datetime.now(CENTRAL_TZ).replace(tzinfo=None)  # Store without tz for SQLite compatibility
 
 
-def get_eastern_now():
-    """Get current time in Eastern Time (handles EST/EDT automatically)"""
-    return datetime.now(EASTERN_TZ)
-
-
 def _get_us_market_holidays() -> set:
     """Return set of date objects for US market holidays (NYSE closures) in 2026 and 2027.
 
@@ -126,7 +121,7 @@ from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
     AIPortfolioTrade, AIPortfolioSnapshot, StockScore, CoiledSpringAlert
 )
-from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore, TechnicalAnalyzer
+from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore
 
 # Import historical data provider for market timing, RS line, VIX, correlation
 try:
@@ -222,135 +217,6 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
 MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
 MAX_STOCKS_PER_SECTOR = config.get('ai_trader.allocation.max_stocks_per_sector', default=4)
 MAX_POSITION_ALLOCATION = config.get('ai_trader.allocation.max_single_position', default=0.15)
-
-
-def get_portfolio_drawdown(db: Session) -> dict:
-    """
-    Calculate current drawdown from portfolio high water mark.
-    Returns dict with:
-    - drawdown_pct: current drawdown from peak (0 = at peak, 15 = down 15%)
-    - position_multiplier: 0.5 to 1.0 (reduce positions when in drawdown)
-    - high_water_mark: highest portfolio value ever
-    - detail: explanation string
-    """
-    from sqlalchemy import func
-
-    drawdown_config = config.get('ai_trader.drawdown_protection', {})
-    if not drawdown_config.get('enabled', True):
-        return {
-            "drawdown_pct": 0,
-            "position_multiplier": 1.0,
-            "high_water_mark": 0,
-            "detail": "Drawdown protection disabled"
-        }
-
-    # Get current portfolio value
-    portfolio = get_portfolio_value(db)
-    current_value = portfolio["total_value"]
-
-    # Get high water mark from snapshots
-    high_water_mark = db.query(func.max(AIPortfolioSnapshot.total_value)).scalar()
-
-    if not high_water_mark or high_water_mark <= 0:
-        return {
-            "drawdown_pct": 0,
-            "position_multiplier": 1.0,
-            "high_water_mark": current_value,
-            "detail": "No historical data for drawdown"
-        }
-
-    # Calculate drawdown
-    drawdown_pct = 0
-    if current_value < high_water_mark:
-        drawdown_pct = ((high_water_mark - current_value) / high_water_mark) * 100
-
-    # Get thresholds from config
-    level_1_threshold = drawdown_config.get('level_1_threshold', 10)  # 10% drawdown
-    level_2_threshold = drawdown_config.get('level_2_threshold', 15)  # 15% drawdown
-    level_1_multiplier = drawdown_config.get('level_1_multiplier', 0.75)
-    level_2_multiplier = drawdown_config.get('level_2_multiplier', 0.50)
-
-    # Determine position multiplier based on drawdown level
-    if drawdown_pct >= level_2_threshold:
-        position_multiplier = level_2_multiplier
-        detail = f"Level 2 drawdown: {drawdown_pct:.1f}% from peak (50% smaller positions)"
-    elif drawdown_pct >= level_1_threshold:
-        position_multiplier = level_1_multiplier
-        detail = f"Level 1 drawdown: {drawdown_pct:.1f}% from peak (25% smaller positions)"
-    else:
-        position_multiplier = 1.0
-        detail = f"No significant drawdown ({drawdown_pct:.1f}%)"
-
-    return {
-        "drawdown_pct": round(drawdown_pct, 2),
-        "position_multiplier": position_multiplier,
-        "high_water_mark": high_water_mark,
-        "current_value": current_value,
-        "detail": detail
-    }
-
-
-def calculate_sector_momentum(db: Session) -> dict:
-    """
-    Calculate average L score by sector to identify leading/lagging sectors.
-    Returns dict with sector -> {avg_l_score, is_leading, is_lagging, stock_count}
-    """
-    from sqlalchemy import func
-
-    sector_config = config.get('ai_trader.sector_rotation', {})
-    if not sector_config.get('enabled', True):
-        return {}
-
-    leading_threshold = sector_config.get('leading_threshold', 10)
-    lagging_threshold = sector_config.get('lagging_threshold', 5)
-
-    # Calculate average L score by sector
-    sector_stats = db.query(
-        Stock.sector,
-        func.avg(Stock.l_score).label('avg_l'),
-        func.count(Stock.id).label('count')
-    ).filter(
-        Stock.l_score.isnot(None),
-        Stock.sector.isnot(None)
-    ).group_by(Stock.sector).all()
-
-    result = {}
-    for sector, avg_l, count in sector_stats:
-        if not sector or count < 5:  # Skip small sectors
-            continue
-
-        avg_l_score = float(avg_l) if avg_l else 0
-        result[sector] = {
-            "avg_l_score": round(avg_l_score, 2),
-            "is_leading": avg_l_score >= leading_threshold,
-            "is_lagging": avg_l_score < lagging_threshold,
-            "stock_count": count
-        }
-
-    return result
-
-
-def get_sector_rotation_bonus(db: Session, sector: str) -> tuple[int, str]:
-    """
-    Get sector rotation bonus/penalty for a specific sector.
-    Returns (bonus_points, detail_string)
-    """
-    sector_config = config.get('ai_trader.sector_rotation', {})
-    if not sector_config.get('enabled', True):
-        return 0, ""
-
-    leading_bonus = sector_config.get('leading_bonus', 5)
-    lagging_penalty = sector_config.get('lagging_penalty', -3)
-
-    sector_momentum = calculate_sector_momentum(db)
-    sector_info = sector_momentum.get(sector, {})
-
-    if sector_info.get("is_leading"):
-        return leading_bonus, f"Leading sector (L avg: {sector_info['avg_l_score']:.1f})"
-    elif sector_info.get("is_lagging"):
-        return lagging_penalty, f"Lagging sector (L avg: {sector_info['avg_l_score']:.1f})"
-
-    return 0, ""
 
 
 def get_market_regime(db: Session = None) -> dict:
@@ -647,109 +513,6 @@ def check_sector_limit(db: Session, ticker: str, buy_amount: float) -> tuple[flo
             return adjusted_amount, f"Reduced for sector limit"
 
     return buy_amount, ""
-
-
-def check_correlation(db: Session, ticker: str) -> tuple[str, str]:
-    """
-    Check correlation with existing positions.
-    Returns: (status, detail)
-    - "ok": Low correlation, proceed normally
-    - "high_correlation": Already have 3+ stocks in same sector
-    """
-    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
-    sector = stock.sector if stock and stock.sector else "Unknown"
-
-    sector_info = get_sector_allocations(db)
-    current_count = sector_info.get("counts", {}).get(sector, 0)
-
-    if current_count >= 3:
-        return "high_correlation", f"Already own {current_count} stocks in {sector}"
-
-    return "ok", ""
-
-
-def check_portfolio_correlation(db: Session, ticker: str) -> dict:
-    """
-    Enhanced correlation check that evaluates both sector AND industry concentration.
-    Returns dict with:
-    - status: "ok", "sector_concentrated", "industry_concentrated", "both_concentrated"
-    - position_multiplier: 0.5 to 1.0 (reduce position for high correlation)
-    - detail: explanation string
-    """
-    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
-    if not stock:
-        return {"status": "ok", "position_multiplier": 1.0, "detail": "Stock not found"}
-
-    sector = stock.sector if stock.sector else "Unknown"
-    industry = stock.industry if stock.industry else "Unknown"
-
-    positions = db.query(AIPortfolioPosition).all()
-    if not positions:
-        return {"status": "ok", "position_multiplier": 1.0, "detail": "No existing positions"}
-
-    # Batch fetch all stocks in one query
-    position_tickers = [pos.ticker for pos in positions]
-    position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all()
-    ticker_to_stock = {s.ticker: s for s in position_stocks}
-
-    # Count positions by sector and industry
-    sector_count = 0
-    industry_count = 0
-    sector_value = 0
-    industry_value = 0
-    total_value = sum(pos.current_value or 0 for pos in positions)
-
-    for pos in positions:
-        pos_stock = ticker_to_stock.get(pos.ticker)
-        if not pos_stock:
-            continue
-
-        if pos_stock.sector == sector:
-            sector_count += 1
-            sector_value += pos.current_value or 0
-
-        if pos_stock.industry == industry and industry != "Unknown":
-            industry_count += 1
-            industry_value += pos.current_value or 0
-
-    # Determine correlation level and position multiplier
-    position_multiplier = 1.0
-    issues = []
-
-    # Sector concentration check (more than 30% in same sector or 4+ stocks)
-    sector_pct = (sector_value / total_value * 100) if total_value > 0 else 0
-    if sector_count >= 4 or sector_pct >= 30:
-        position_multiplier *= 0.7  # 30% reduction
-        issues.append(f"Sector: {sector_count} stocks, {sector_pct:.0f}%")
-
-    # Industry concentration check (2+ stocks in same industry is risky)
-    if industry_count >= 2 and industry != "Unknown":
-        industry_pct = (industry_value / total_value * 100) if total_value > 0 else 0
-        position_multiplier *= 0.8  # Additional 20% reduction
-        issues.append(f"Industry: {industry_count} stocks, {industry_pct:.0f}%")
-
-    # Determine status
-    if sector_count >= 4 and industry_count >= 2:
-        status = "both_concentrated"
-    elif sector_count >= 4 or sector_pct >= 30:
-        status = "sector_concentrated"
-    elif industry_count >= 2:
-        status = "industry_concentrated"
-    else:
-        status = "ok"
-
-    # Cap minimum multiplier at 0.5
-    position_multiplier = max(position_multiplier, 0.5)
-
-    return {
-        "status": status,
-        "position_multiplier": position_multiplier,
-        "detail": "; ".join(issues) if issues else "Low correlation",
-        "sector": sector,
-        "sector_count": sector_count,
-        "industry": industry,
-        "industry_count": industry_count
-    }
 
 
 def evaluate_pyramids(db: Session) -> list:
@@ -1534,8 +1297,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                                        gain_pct)
             else:
                 send_trade_webhook(ticker, "SELL", shares, price, reason, gain_pct)
-        except Exception:
-            pass  # Never block trading on webhook failure
+        except Exception as e:
+            logger.warning(f"Trade webhook failed for SELL {ticker}: {e}")
     else:
         logger.info(f"AI {action}: {ticker} - {shares:.2f} shares @ ${price:.2f} "
                     f"({stock_type} {effective:.0f}) - {reason}")
@@ -1544,8 +1307,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         try:
             from backend.email_utils import send_trade_webhook
             send_trade_webhook(ticker, "BUY", shares, price, reason)
-        except Exception:
-            pass  # Never block trading on webhook failure
+        except Exception as e:
+            logger.warning(f"Trade webhook failed for BUY {ticker}: {e}")
 
     return trade
 
@@ -2120,7 +1883,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # EARNINGS AUDIT: Batch-fetch latest audit data for all candidates
     audit_map = {}  # ticker -> {fundamental_confidence, breakdown, ...}
     try:
-        from backend.earnings_audit import get_latest_audit, get_audit_bonus
+        from backend.earnings_audit import get_latest_audit
         audit_config = yaml_config.get('ai_trader.earnings_audit', {})
         if audit_config.get('enabled', True):
             freshness = audit_config.get('freshness_hours', 24)
@@ -3278,11 +3041,14 @@ def run_ai_trading_cycle(db: Session) -> dict:
             # Re-check heat for alerting
             if heat_penalty_active:
                 send_risk_alert_webhook("heat", f"Portfolio heat {total_heat:.1f}% exceeds {max_heat}% warning threshold")
-            # Check sector concentration
+            # Check sector concentration (batch-fetch to avoid N+1)
             positions = db.query(AIPortfolioPosition).all()
+            pos_tickers = [p.ticker for p in positions]
+            pos_stocks = db.query(Stock).filter(Stock.ticker.in_(pos_tickers)).all() if pos_tickers else []
+            ticker_stock_map = {s.ticker: s for s in pos_stocks}
             sector_counts = {}
             for pos in positions:
-                stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+                stock = ticker_stock_map.get(pos.ticker)
                 sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
                 sector_counts[sector] = sector_counts.get(sector, 0) + 1
             max_per_sector = config.get('ai_trader.allocation.max_stocks_per_sector', 4)
@@ -3295,7 +3061,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 send_risk_alert_webhook("drawdown",
                                         f"Portfolio drawdown {current_drawdown:.1f}% approaching halt threshold {halt_threshold}%")
         except Exception as e:
-            logger.debug(f"Risk alert webhooks skipped: {e}")
+            logger.warning(f"Risk alert webhooks failed: {e}")
 
         logger.info(f"Trading cycle complete: {len(results['buys_executed'])} buys, {len(results['sells_executed'])} sells")
         return results

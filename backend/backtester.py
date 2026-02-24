@@ -12,8 +12,8 @@ import os
 import sqlite3
 import json
 from collections import deque
-from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from datetime import date, datetime, timezone
+from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
@@ -22,9 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import config
 
 from backend.database import (
-    BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, Stock
+    BacktestRun, BacktestSnapshot, BacktestTrade, Stock
 )
-from backend.historical_data import HistoricalDataProvider, HistoricalStockData
+from backend.historical_data import HistoricalDataProvider
 from backend.market_state import MarketStateManager, MarketState
 from canslim_scorer import calculate_coiled_spring_score
 

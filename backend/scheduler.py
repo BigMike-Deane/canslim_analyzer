@@ -198,33 +198,6 @@ def get_scan_status():
     }
 
 
-def should_rescan_stock(stock, min_age_minutes: int = 30) -> bool:
-    """
-    Check if a stock should be re-scanned based on freshness.
-
-    Args:
-        stock: Stock model instance
-        min_age_minutes: Minimum minutes since last update to allow rescan
-
-    Returns:
-        True if stock should be rescanned, False if still fresh
-    """
-    if stock is None or stock.last_updated is None:
-        return True
-
-    # Handle both timezone-aware and naive datetimes
-    last_updated = stock.last_updated
-    now = datetime.now(timezone.utc)
-
-    # If last_updated is naive, assume it's UTC
-    if last_updated.tzinfo is None:
-        from datetime import timezone as tz
-        last_updated = last_updated.replace(tzinfo=tz.utc)
-
-    age = now - last_updated
-    return age > timedelta(minutes=min_age_minutes)
-
-
 def auto_record_coiled_spring_alerts():
     """
     Automatically check for and record Coiled Spring alerts after each scan.
@@ -1017,35 +990,36 @@ def run_continuous_scan():
         db = SessionLocal()
         successful = 0
         failed = 0
-        for i, analysis in enumerate(analysis_results):
-            try:
-                # Use savepoint so a single failure doesn't rollback the batch
-                nested = db.begin_nested()
-                save_stock_to_db(db, analysis)
-                nested.commit()
-                successful += 1
-                # Update progress in real-time
-                _scan_config["stocks_scanned"] = successful
-
-                # Batch commit every BATCH_SIZE stocks
-                if successful % BATCH_SIZE == 0:
-                    db.commit()
-                    logger.debug(f"DB batch commit: {successful} stocks saved")
-            except Exception as e:
-                failed += 1
-                logger.error(f"Error saving {analysis.get('ticker', 'unknown')}: {e}")
-                nested.rollback()  # Only rollback this one stock's savepoint
-
-        # Final commit for remaining stocks
         try:
-            db.commit()
-            if failed:
-                logger.warning(f"Stock save: {successful} succeeded, {failed} failed")
-        except Exception as e:
-            logger.error(f"Final commit error: {e}")
-            db.rollback()
+            for i, analysis in enumerate(analysis_results):
+                try:
+                    # Use savepoint so a single failure doesn't rollback the batch
+                    nested = db.begin_nested()
+                    save_stock_to_db(db, analysis)
+                    nested.commit()
+                    successful += 1
+                    # Update progress in real-time
+                    _scan_config["stocks_scanned"] = successful
 
-        db.close()
+                    # Batch commit every BATCH_SIZE stocks
+                    if successful % BATCH_SIZE == 0:
+                        db.commit()
+                        logger.debug(f"DB batch commit: {successful} stocks saved")
+                except Exception as e:
+                    failed += 1
+                    logger.error(f"Error saving {analysis.get('ticker', 'unknown')}: {e}")
+                    nested.rollback()  # Only rollback this one stock's savepoint
+
+            # Final commit for remaining stocks
+            try:
+                db.commit()
+                if failed:
+                    logger.warning(f"Stock save: {successful} succeeded, {failed} failed")
+            except Exception as e:
+                logger.error(f"Final commit error: {e}")
+                db.rollback()
+        finally:
+            db.close()
 
         total_time = time.time() - start_time
         _scan_config["stocks_scanned"] = successful
@@ -1145,12 +1119,15 @@ def run_continuous_scan():
         _scan_config["phase"] = "cleanup"
         _scan_config["phase_detail"] = "Cleaning up old score records..."
 
+        cleanup_db = None
         try:
             cleanup_db = SessionLocal()
             cleanup_old_stock_scores(cleanup_db, days_to_keep=30)
-            cleanup_db.close()
         except Exception as e:
             logger.error(f"StockScore cleanup failed: {e}")
+        finally:
+            if cleanup_db:
+                cleanup_db.close()
 
         # Phase 5: Check watchlist alerts
         _scan_config["phase_detail"] = "Checking watchlist alerts..."

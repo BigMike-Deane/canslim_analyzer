@@ -1875,9 +1875,14 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
     scanned = 0
     errors = []
 
+    # Batch-fetch all position stocks to avoid N+1 queries
+    position_tickers = [p.ticker for p in positions]
+    position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all() if position_tickers else []
+    stocks_by_ticker = {s.ticker: s for s in position_stocks}
+
     # First pass: identify and scan stocks without data
     for position in positions:
-        stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+        stock = stocks_by_ticker.get(position.ticker)
         if not stock or stock.canslim_score is None:
             logger.info(f"Auto-scanning {position.ticker} (no existing data)")
             try:
@@ -1899,11 +1904,16 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
     if total_value == 0:
         total_value = 10000  # Default for calculations
 
+    # Re-fetch stocks after first pass scanning may have added new ones
+    if scanned > 0:
+        position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all() if position_tickers else []
+        stocks_by_ticker = {s.ticker: s for s in position_stocks}
+
     # Second pass: update all positions with current prices and scores
     for position in positions:
         try:
             # Get stock data for CANSLIM score (may have just been scanned)
-            stock = db.query(Stock).filter(Stock.ticker == position.ticker).first()
+            stock = stocks_by_ticker.get(position.ticker)
 
             current_price = fetch_price_yahoo_chart(position.ticker)
 

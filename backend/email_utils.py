@@ -55,7 +55,7 @@ def send_email(subject: str, html_content: str, text_content: str) -> bool:
     msg.attach(part2)
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as server:
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
         logger.info(f"Email sent successfully to {RECIPIENT_EMAIL}")
