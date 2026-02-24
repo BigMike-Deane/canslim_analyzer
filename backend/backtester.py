@@ -1541,7 +1541,8 @@ class BacktestEngine:
             # ===== C SCORE (15 pts): Current Quarterly Earnings =====
             c_score = 0
             eps_growth = 0.0  # Track for projected_growth calculation
-            quarterly_earnings = stock_data.quarterly_earnings or []
+            quarterly_earnings = [e for e in (stock_data.quarterly_earnings or [])
+                                  if e is not None and not (isinstance(e, float) and math.isnan(e))]
             if len(quarterly_earnings) >= 2:
                 # Calculate YoY growth (compare current quarter to same quarter last year)
                 current_eps = quarterly_earnings[0] if quarterly_earnings else 0
@@ -1568,7 +1569,8 @@ class BacktestEngine:
             # ===== A SCORE (15 pts): Annual Earnings Growth =====
             a_score = 0
             annual_cagr = 0.0  # Track for projected_growth calculation
-            annual_earnings = stock_data.annual_earnings or []
+            annual_earnings = [e for e in (stock_data.annual_earnings or [])
+                               if e is not None and not (isinstance(e, float) and math.isnan(e))]
             roe = static_data.get("roe", 0)
 
             if len(annual_earnings) >= 3:
