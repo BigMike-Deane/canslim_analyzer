@@ -287,7 +287,7 @@ def get_nasdaq100_tickers() -> list[str]:
                         if len(cells) > ticker_col:
                             ticker = cells[ticker_col].text.strip()
                             ticker = ticker.replace('.', '-')  # BRK.B -> BRK-B
-                            if ticker and ticker.isalpha():
+                            if ticker and ticker.replace('-', '').isalpha():
                                 tickers.append(ticker)
 
                     if len(tickers) >= 90:  # Nasdaq 100 should have ~100-103 tickers
@@ -607,6 +607,10 @@ def get_russell2000_tickers() -> list[str]:
 
     Falls back to curated list if all fetches fail.
     """
+    # Check cache first (prevents redundant API calls on every scan cycle)
+    if _is_cache_valid('russell2000'):
+        return _ticker_cache['russell2000']
+
     # Try FMP ETF Holdings API (IWM = iShares Russell 2000 ETF)
     if FMP_API_KEY:
         try:
@@ -620,6 +624,7 @@ def get_russell2000_tickers() -> list[str]:
                 tickers = [item.get('asset') for item in data if item.get('asset')]
                 if len(tickers) > 1000:  # Should be ~2000 holdings
                     logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from IWM ETF (FMP)")
+                    _update_cache('russell2000', tickers)
                     return tickers
                 else:
                     logger.warning(f"FMP IWM holdings returned only {len(tickers)} tickers")
@@ -650,6 +655,7 @@ def get_russell2000_tickers() -> list[str]:
             tickers = holdings.index.tolist()
             if len(tickers) > 500:
                 logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from Yahoo Finance IWM")
+                _update_cache('russell2000', tickers)
                 return tickers
 
     except Exception as e:
@@ -660,13 +666,16 @@ def get_russell2000_tickers() -> list[str]:
         sector_etfs = get_russell2000_from_sector_etfs()
         if len(sector_etfs) > 1000:
             logger.info(f"Fetched {len(sector_etfs)} Russell 2000 tickers from sector ETFs")
+            _update_cache('russell2000', sector_etfs)
             return sector_etfs
     except Exception as e:
         logger.warning(f"Sector ETF fetch failed: {e}")
 
     # Fallback to curated list
     logger.info("Using curated Russell 2000 list")
-    return get_fallback_russell2000_tickers()
+    fallback = get_fallback_russell2000_tickers()
+    _update_cache('russell2000', fallback)
+    return fallback
 
 
 def get_russell2000_from_sector_etfs() -> list[str]:

@@ -3,10 +3,16 @@ CANSLIM Scorer Module
 Implements scoring logic for all 7 CANSLIM criteria
 """
 
+import math
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
 from data_fetcher import StockData, DataFetcher, get_cached_market_direction
+
+
+def _clean_earnings(earnings_list: list) -> list:
+    """Remove None and NaN values from an earnings list."""
+    return [e for e in earnings_list if e is not None and not (isinstance(e, float) and math.isnan(e))]
 
 
 @dataclass
@@ -113,8 +119,8 @@ class CANSLIMScorer:
         accel_max = 5  # Bonus for acceleration (increased from 3 - strong predictor)
         surprise_max = 2  # Bonus for earnings surprise
 
-        # Filter out None values from earnings
-        earnings = [e for e in data.quarterly_earnings if e is not None]
+        # Filter out None and NaN values from earnings
+        earnings = _clean_earnings(data.quarterly_earnings)
 
         # Need at least 8 quarters for TTM vs prior TTM comparison
         if len(earnings) < 8:
@@ -177,18 +183,18 @@ class CANSLIMScorer:
         else:
             base_score = max(0, (1 + ttm_growth / 50) * base_max * 0.3)
 
-        # EPS Acceleration bonus (up to 3 pts)
+        # EPS Acceleration bonus (up to 5 pts)
         # Check if most recent quarter's YoY growth > prior quarter's YoY growth
         accel_score = 0
         accel_detail = ""
-        if len(data.quarterly_earnings) >= 5:
+        if len(earnings) >= 5:
             # Current quarter vs same quarter last year
-            current_q = data.quarterly_earnings[0]
-            prior_year_q = data.quarterly_earnings[4] if len(data.quarterly_earnings) > 4 else 0
+            current_q = earnings[0]
+            prior_year_q = earnings[4] if len(earnings) > 4 else 0
 
             # Previous quarter vs same quarter last year
-            prev_q = data.quarterly_earnings[1]
-            prev_prior_year_q = data.quarterly_earnings[5] if len(data.quarterly_earnings) > 5 else 0
+            prev_q = earnings[1]
+            prev_prior_year_q = earnings[5] if len(earnings) > 5 else 0
 
             if prior_year_q > 0 and prev_prior_year_q > 0:
                 current_q_growth = ((current_q - prior_year_q) / abs(prior_year_q)) * 100
@@ -263,8 +269,8 @@ class CANSLIMScorer:
         Filters out extreme QoQ swings (>50%) that are likely one-time items.
         IMPORTANT: Companies with negative earnings get penalized regardless of "growth" trend.
         """
-        # Filter out None values first
-        earnings = [e for e in data.quarterly_earnings[:4] if e is not None]
+        # Filter out None and NaN values
+        earnings = _clean_earnings(data.quarterly_earnings[:4])
 
         if len(earnings) < 2:
             return 0, "Insufficient data"
@@ -326,12 +332,13 @@ class CANSLIMScorer:
         cagr_max = 12  # Base score for CAGR
         roe_max = 3    # Bonus for strong ROE
 
-        if len(data.annual_earnings) < 3:
+        annual = _clean_earnings(data.annual_earnings)
+        if len(annual) < 3:
             return 0, "Insufficient data"
 
         # Calculate 3-year CAGR
-        recent = data.annual_earnings[0]
-        older = data.annual_earnings[2]  # 3 years ago
+        recent = annual[0]
+        older = annual[2]  # 3 years ago
 
         if older <= 0 or recent <= 0:
             if recent > 0 and older <= 0:
@@ -365,7 +372,9 @@ class CANSLIMScorer:
         roe = getattr(data, 'roe', 0) or 0
 
         # ROE from FMP is already a decimal (e.g., 0.25 = 25%)
-        roe_pct = roe * 100 if roe < 1 else roe  # Handle both formats
+        # Use abs(roe) < 5 to detect decimal format: catches 0-500% ROE as decimal,
+        # while values >= 5 are treated as already-percentage (no company has 500%+ ROE)
+        roe_pct = roe * 100 if abs(roe) < 5 else roe
 
         if roe_pct >= 25:
             roe_score = roe_max

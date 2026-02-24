@@ -70,9 +70,14 @@ class Config:
         return self.get(section, {})
 
     def reload(self):
-        """Reload configuration from files"""
-        self._config = {}
-        self._load_config()
+        """Reload configuration from files (atomic swap: old config preserved on failure)"""
+        old_config = self._config
+        try:
+            self._config = {}
+            self._load_config()
+        except Exception:
+            self._config = old_config
+            raise
 
     # Convenience properties for common config sections
     @property

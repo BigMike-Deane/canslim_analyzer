@@ -315,6 +315,9 @@ def compute_fundamental_confidence(audit_data: Dict, stock_data: Dict = None) ->
         revision_score * w_revisions
     )
 
+    # Clamp to valid range (weights from config could sum != 1.0)
+    confidence = max(0, min(100, confidence))
+
     return round(confidence, 1), breakdown
 
 
