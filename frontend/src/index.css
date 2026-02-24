@@ -18,10 +18,6 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Hardware-accelerated scroll container */
-#root {
-  will-change: transform;
-}
 
 /* ─── Card System ─── */
 .card {

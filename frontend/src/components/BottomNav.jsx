@@ -112,7 +112,7 @@ export default function BottomNav() {
       )}
 
       {/* Bottom Nav Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-dark-900/95 backdrop-blur-md border-t border-dark-700/40 pb-safe md:hidden z-30" style={{ willChange: 'transform' }}>
+      <nav className="fixed bottom-0 left-0 right-0 bg-dark-900/95 backdrop-blur-md border-t border-dark-700/40 pb-safe md:hidden z-30">
         <div className="flex justify-around py-1.5">
           {mainTabs.map(item => (
             <NavLink
