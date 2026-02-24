@@ -248,8 +248,8 @@ class BacktestEngine:
                 count = self._persistent_cache_conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0]
                 logger.info(f"Backtest {self.backtest.id}: Persistent score cache closed ({count:,} entries)")
                 self._persistent_cache_conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Backtest cache cleanup error: {e}")
             self._persistent_cache_conn = None
 
     def run(self) -> BacktestRun:

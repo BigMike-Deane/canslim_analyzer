@@ -1932,8 +1932,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 avg = sum(r[0] for r in recent) / len(recent)
                 if abs(avg - current_score) >= 3:
                     return avg
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Score smoothing failed for {ticker}: {e}")
         return current_score
 
     # Pre-compute portfolio value once (avoids 100+ DB queries inside the loop)

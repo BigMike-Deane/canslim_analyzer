@@ -641,8 +641,8 @@ def get_russell2000_tickers() -> list[str]:
         if hasattr(etf, 'funds_data'):
             try:
                 holdings = etf.funds_data.top_holdings
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"ETF holdings extraction failed: {e}")
 
         # Alternative: Try institutional holders as proxy (limited but better than nothing)
         if holdings is None or holdings.empty:
@@ -761,7 +761,8 @@ def get_finviz_smallcaps() -> list[str]:
                 import time
                 time.sleep(0.2)
 
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Finviz pagination error on page, stopping: {e}")
                 break
 
         return tickers

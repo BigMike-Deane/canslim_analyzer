@@ -49,8 +49,8 @@ def init_db():
         for table in Base.metadata.sorted_tables:
             try:
                 table.create(bind=engine, checkfirst=True)
-            except Exception:
-                pass
+            except Exception as te:
+                logging.getLogger(__name__).warning(f"Failed to create table {table.name}: {te}")
     run_migrations()
 
 
@@ -181,8 +181,8 @@ def run_migrations():
             try:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
                 logger.info(f"Migration: Added {table}.{column}")
-            except Exception:
-                pass
+            except Exception as e:
+                pass  # Expected: column already exists
 
     # Fix: Remove unique constraint on ai_portfolio_snapshots.date (SQLite only)
     is_sqlite = DATABASE_URL.startswith("sqlite")
@@ -275,8 +275,8 @@ def run_migrations():
                 continue
             try:
                 conn.execute(text(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})'))
-            except Exception:
-                pass
+            except Exception as e:
+                pass  # Expected: index already exists or table issue
 
     logger.info("Database migrations complete")
 

@@ -941,8 +941,8 @@ async def fetch_short_interest_async(ticker: str) -> dict:
             short_pct = info.get("shortPercentOfFloat", 0) or 0
             short_ratio = info.get("shortRatio", 0) or 0
 
-            # Convert to percentage if needed
-            if short_pct > 0 and short_pct < 1:
+            # Yahoo returns as decimal (0.15 = 15%). Can exceed 1.0 for heavily shorted.
+            if short_pct > 0 and short_pct < 3.0:
                 short_pct = short_pct * 100
 
             return {
@@ -1056,17 +1056,17 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
 
             # Short interest
             short_pct = info.get('shortPercentOfFloat', 0) or 0
-            # Convert to percentage if needed (Yahoo sometimes returns as decimal)
-            if 0 < short_pct < 1:
+            # Yahoo returns as decimal (0.15 = 15%). Can exceed 1.0 for heavily shorted stocks.
+            if 0 < short_pct < 3.0:
                 short_pct = short_pct * 100
             result["short_interest_pct"] = short_pct
             result["short_ratio"] = info.get('shortRatio', 0) or 0
 
             # Institutional ownership
             # Yahoo returns decimal (0.65 = 65%, 1.00002 = 100.002%)
-            # Convert to percentage if value looks like a decimal (< 1.5)
+            # Convert to percentage if value looks like a decimal (< 3.0 = 300%)
             inst_pct = info.get('heldPercentInstitutions', 0) or 0
-            result["institutional_holders_pct"] = (inst_pct * 100) if 0 < inst_pct <= 1.5 else inst_pct
+            result["institutional_holders_pct"] = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
 
             result["success"] = True
             logger.debug(f"{ticker}: Yahoo info fetched successfully")
@@ -1163,7 +1163,7 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
                 if not stock_data.institutional_holders_pct:
                     inst_pct = info.get('heldPercentInstitutions', 0) or 0
                     # Convert decimal to percentage (Yahoo returns 0.65 = 65%, 1.00002 = 100.002%)
-                    stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct <= 1.5 else inst_pct
+                    stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
                 if not stock_data.roe:
                     roe = info.get('returnOnEquity')
                     stock_data.roe = roe if roe else 0  # Store as decimal

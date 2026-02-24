@@ -431,8 +431,8 @@ def send_morning_briefing_if_due():
             provider = HistoricalDataProvider(['SPY'])
             provider.preload_data(date.today() - timedelta(days=60), date.today())
             timing_info = provider.get_follow_through_day_status(date.today())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load market timing info: {e}")
 
         # Portfolio heat
         heat = 0.0

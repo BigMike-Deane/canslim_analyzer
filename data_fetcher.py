@@ -82,7 +82,8 @@ def _get_db_session():
     try:
         from backend.database import SessionLocal
         return SessionLocal()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to create DB session for cache: {e}")
         return None
 
 
@@ -1238,8 +1239,8 @@ def fetch_short_interest(ticker: str) -> dict:
             short_pct = info.get("shortPercentOfFloat", 0) or 0
             short_ratio = info.get("shortRatio", 0) or 0
 
-            # Convert to percentage if needed
-            if short_pct > 0 and short_pct < 1:
+            # Yahoo returns as decimal (0.15 = 15%). Can exceed 1.0 for heavily shorted stocks.
+            if short_pct > 0 and short_pct < 3.0:
                 short_pct = short_pct * 100
 
             logger.debug(f"{ticker}: Short interest - {short_pct:.2f}% of float, {short_ratio:.1f} days to cover")
@@ -1810,7 +1811,7 @@ class DataFetcher:
                     if not stock_data.institutional_holders_pct:
                         inst_pct = info.get('heldPercentInstitutions', 0) or 0
                         # Convert decimal to percentage (Yahoo returns 0.65 = 65%, 1.00002 = 100.002%)
-                        stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct <= 1.5 else inst_pct
+                        stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
                     # Get ROE (critical for A score quality check)
                     # Store as decimal (e.g., 0.05 = 5%) - same format as FMP
                     if not stock_data.roe:

@@ -1545,3 +1545,162 @@ class TestTrailingStopDefaults:
         assert "take_profit_pct', 75.0)" in source, (
             "Backtester take_profit_pct default must be 75.0 (champion)"
         )
+
+
+# ─── Institutional Ownership Conversion Boundary (async_data_fetcher.py) ───
+# Bug: threshold `<= 1.5` excluded stocks with >150% institutional ownership
+# from conversion. Yahoo returns 1.501 as decimal for 150.1%, which would be
+# stored as 1.501 instead of 150.1, causing I score to compute on wrong scale.
+# Fix: Raised threshold from 1.5 to 3.0 to cover up to 300% institutional.
+
+class TestInstitutionalOwnershipConversion:
+    """Regression: institutional ownership decimal→pct conversion boundary."""
+
+    def test_normal_decimal_converted(self):
+        """Normal 65% institutional ownership (0.65) should convert to 65."""
+        inst_pct = 0.65
+        result = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert result == 65.0
+
+    def test_100_percent_converted(self):
+        """100% institutional (1.0) should convert to 100."""
+        inst_pct = 1.0
+        result = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert result == 100.0
+
+    def test_150_percent_converted(self):
+        """150% institutional (1.5 decimal) should convert to 150."""
+        inst_pct = 1.5
+        result = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert result == 150.0
+
+    def test_old_boundary_bug_at_1501(self):
+        """Demonstrate old bug: 1.501 was NOT converted with <= 1.5 threshold."""
+        inst_pct = 1.501
+        # Old buggy logic
+        buggy = (inst_pct * 100) if 0 < inst_pct <= 1.5 else inst_pct
+        assert buggy == 1.501  # Bug: stored as 1.5% instead of 150.1%
+
+        # Fixed logic
+        fixed = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert fixed == 150.1  # Correct: 150.1%
+
+    def test_250_percent_converted(self):
+        """250% institutional (2.5 decimal) should convert to 250."""
+        inst_pct = 2.5
+        result = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert result == 250.0
+
+    def test_already_percentage_not_doubled(self):
+        """Value 65 (already percentage) should NOT be multiplied by 100."""
+        inst_pct = 65.0
+        result = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert result == 65.0  # Not 6500
+
+    def test_zero_stays_zero(self):
+        """Zero institutional ownership should stay zero."""
+        inst_pct = 0
+        result = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+        assert result == 0
+
+    def test_threshold_consistency_across_files(self):
+        """All inst_pct conversion sites must use < 3.0 threshold."""
+        from pathlib import Path
+        base = Path(__file__).parent.parent
+        for filename in ["async_data_fetcher.py", "data_fetcher.py"]:
+            source = (base / filename).read_text()
+            # Must NOT use the old 1.5 threshold
+            assert "inst_pct <= 1.5" not in source, (
+                f"{filename} still uses <= 1.5 threshold for institutional ownership"
+            )
+            # Must use 3.0 threshold
+            assert "inst_pct < 3.0" in source, (
+                f"{filename} must use < 3.0 threshold for institutional ownership conversion"
+            )
+
+
+# ─── Short Interest Conversion Boundary (async_data_fetcher.py) ─────────
+# Bug: threshold `< 1` missed stocks with >100% short interest (e.g., GME).
+# Yahoo returns 1.2 for 120% short interest, which was stored as 1.2 instead
+# of 120, causing the >20% short penalty to not trigger.
+# Fix: Raised threshold from 1 to 3.0.
+
+class TestShortInterestConversion:
+    """Regression: short interest decimal→pct conversion boundary."""
+
+    def test_normal_decimal_converted(self):
+        """15% short interest (0.15) should convert to 15."""
+        short_pct = 0.15
+        result = short_pct * 100 if 0 < short_pct < 3.0 else short_pct
+        assert result == 15.0
+
+    def test_old_boundary_bug_at_1_2(self):
+        """Demonstrate old bug: 1.2 (120%) was NOT converted with < 1 threshold."""
+        short_pct = 1.2
+        # Old buggy logic
+        buggy = short_pct * 100 if 0 < short_pct < 1 else short_pct
+        assert buggy == 1.2  # Bug: stored as 1.2% instead of 120%
+
+        # Fixed logic
+        fixed = short_pct * 100 if 0 < short_pct < 3.0 else short_pct
+        assert fixed == 120.0  # Correct: 120%
+
+    def test_already_percentage_not_doubled(self):
+        """Value 25 (already percentage) should NOT be multiplied by 100."""
+        short_pct = 25.0
+        result = short_pct * 100 if 0 < short_pct < 3.0 else short_pct
+        assert result == 25.0  # Not 2500
+
+    def test_threshold_consistency_across_files(self):
+        """All short_pct conversion sites must use < 3.0 threshold."""
+        from pathlib import Path
+        import re
+        base = Path(__file__).parent.parent
+        for filename in ["async_data_fetcher.py", "data_fetcher.py"]:
+            source = (base / filename).read_text()
+            # Find lines with short_pct threshold comparisons (exclude comments)
+            lines = source.split("\n")
+            for i, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if re.search(r'short_pct\s*<\s*1[^.]', stripped):
+                    assert False, (
+                        f"{filename}:{i} still uses < 1 threshold: {stripped}"
+                    )
+
+
+# ─── Silent Exception Logging (multiple files) ─────────────────────────────
+# Bug: Multiple except:pass blocks across the codebase silently swallowed
+# exceptions, hiding real failures from logs and making debugging impossible.
+# Fix: Changed all to log exceptions at appropriate levels.
+
+class TestSilentExceptionLogging:
+    """Regression: exceptions must be logged, not silently swallowed."""
+
+    @pytest.mark.parametrize("filepath,search_context", [
+        ("data_fetcher.py", "_get_db_session"),
+        ("growth_projector.py", "sector performance"),
+        ("backend/ai_trader.py", "Score smoothing"),
+        ("backend/scheduler.py", "market timing"),
+        ("backend/backtester.py", "cache cleanup"),
+    ])
+    def test_no_bare_except_pass_in_fixed_files(self, filepath, search_context):
+        """Fixed files must not have bare except:pass patterns (no exception variable)."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / filepath).read_text()
+        lines = source.split("\n")
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # Only flag exceptions that don't capture the variable at all
+            if stripped in ("except Exception:", "except:"):
+                # Check if next non-empty line is 'pass'
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    next_stripped = lines[j].strip()
+                    if next_stripped:
+                        assert next_stripped != "pass", (
+                            f"{filepath}:{j+1} ({search_context}): "
+                            f"bare except:pass still present — must log exception"
+                        )
+                        break

@@ -3,11 +3,14 @@ Growth Projector Module
 Projects 6-month growth potential based on multiple factors
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from data_fetcher import StockData, DataFetcher
 from canslim_scorer import CANSLIMScore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,8 +77,8 @@ class GrowthProjector:
                     if len(prices) >= 126:  # ~6 months of trading days
                         perf = (prices.iloc[-1] / prices.iloc[-126] - 1) * 100
                         self.SECTOR_PERFORMANCE[sector] = perf
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to fetch sector performance for {sector}: {e}")
 
     def project_growth(self, stock_data: StockData, canslim_score: CANSLIMScore) -> GrowthProjection:
         """
