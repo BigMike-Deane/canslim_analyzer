@@ -257,9 +257,11 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
     growth_projector = GrowthProjector(data_fetcher)
 
     results = []
+    skipped = 0
     for stock_data in stock_data_list:
         try:
             if not stock_data or not stock_data.is_valid:
+                skipped += 1
                 continue
 
             # Inject P1 data into stock_data BEFORE scoring so C score can use it
@@ -430,7 +432,8 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             continue
 
     total_time = (datetime.now() - start_time).total_seconds()
-    logger.info(f"✓ Analyzed {len(results)} stocks in {total_time:.1f}s total")
+    logger.info(f"✓ Analyzed {len(results)} stocks in {total_time:.1f}s total"
+                f" ({skipped} skipped due to invalid/missing data)")
 
     return results
 
