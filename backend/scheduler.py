@@ -107,13 +107,17 @@ def check_watchlist_alerts():
 
         if not items:
             logger.debug("No watchlist items with alerts configured")
-            db.close()
             return
 
         logger.info(f"Checking {len(items)} watchlist items for alerts...")
 
+        # Batch-fetch all stocks for watchlist items (avoids N+1 queries)
+        item_tickers = [item.ticker for item in items]
+        stocks = db.query(Stock).filter(Stock.ticker.in_(item_tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in stocks}
+
         for item in items:
-            stock = db.query(Stock).filter(Stock.ticker == item.ticker).first()
+            stock = stocks_by_ticker.get(item.ticker)
             if not stock or not stock.current_price:
                 continue
 
@@ -325,10 +329,15 @@ def update_coiled_spring_outcomes():
 
         logger.info(f"Checking outcomes for {len(alerts_to_update)} CS alerts...")
 
+        # Batch-fetch all stocks for alerts (avoids N+1 queries)
+        alert_tickers = list(set(a.ticker for a in alerts_to_update))
+        alert_stocks = db.query(Stock).filter(Stock.ticker.in_(alert_tickers)).all()
+        stocks_by_ticker = {s.ticker: s for s in alert_stocks}
+
         updated = 0
         for alert in alerts_to_update:
             # Get current stock price
-            stock = db.query(Stock).filter(Stock.ticker == alert.ticker).first()
+            stock = stocks_by_ticker.get(alert.ticker)
             if not stock or not stock.current_price:
                 continue
 
@@ -423,15 +432,12 @@ def send_morning_briefing_if_due():
 
         # Current positions
         positions = db.query(AIPortfolioPosition).all()
-        pos_data = []
-        for p in positions:
-            stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
-            pos_data.append({
-                "ticker": p.ticker,
-                "price": p.current_price or 0,
-                "gain_pct": p.gain_loss_pct or 0,
-                "score": get_effective_score(p, use_current=True)
-            })
+        pos_data = [{
+            "ticker": p.ticker,
+            "price": p.current_price or 0,
+            "gain_pct": p.gain_loss_pct or 0,
+            "score": get_effective_score(p, use_current=True)
+        } for p in positions]
 
         # Top candidates (evaluate without executing)
         try:
@@ -1005,16 +1011,17 @@ def run_continuous_scan():
         _scan_config["stocks_scanned"] = 0  # Reset for save progress
 
         # Save results to database with BATCHED COMMITS for performance
-        # Commit every 50 stocks instead of per-stock (reduces I/O overhead)
+        # Uses savepoints so one bad stock doesn't lose the entire batch
         BATCH_SIZE = 50
         db = SessionLocal()
         successful = 0
+        failed = 0
         for i, analysis in enumerate(analysis_results):
             try:
-                # Debug: log first 5 stocks' market_cap before save
-                if i < 5:
-                    logger.info(f"BEFORE SAVE {analysis.get('ticker')}: market_cap={analysis.get('market_cap')}, type={type(analysis.get('market_cap'))}")
+                # Use savepoint so a single failure doesn't rollback the batch
+                nested = db.begin_nested()
                 save_stock_to_db(db, analysis)
+                nested.commit()
                 successful += 1
                 # Update progress in real-time
                 _scan_config["stocks_scanned"] = successful
@@ -1024,12 +1031,15 @@ def run_continuous_scan():
                     db.commit()
                     logger.debug(f"DB batch commit: {successful} stocks saved")
             except Exception as e:
+                failed += 1
                 logger.error(f"Error saving {analysis.get('ticker', 'unknown')}: {e}")
-                db.rollback()  # Rollback on error, continue with next batch
+                nested.rollback()  # Only rollback this one stock's savepoint
 
         # Final commit for remaining stocks
         try:
             db.commit()
+            if failed:
+                logger.warning(f"Stock save: {successful} succeeded, {failed} failed")
         except Exception as e:
             logger.error(f"Final commit error: {e}")
             db.rollback()
@@ -1060,14 +1070,17 @@ def run_continuous_scan():
             logger.error(f"Rate limit stats error: {e}")
 
         # Update market snapshot (SPY price, MAs, trend)
+        market_db = None
         try:
             from backend.main import update_market_snapshot
             market_db = SessionLocal()
             update_market_snapshot(market_db)
-            market_db.close()
             logger.info("Market snapshot updated")
         except Exception as e:
             logger.error(f"Market snapshot error: {e}")
+        finally:
+            if market_db:
+                market_db.close()
 
         # Phase 2.5: Auto-record Coiled Spring alerts
         _scan_config["phase"] = "coiled_spring"
