@@ -1008,7 +1008,7 @@ async def get_stocks(
     max_price: Optional[float] = None,
     min_price: Optional[float] = None,
     limit: int = Query(50, le=200),
-    offset: int = Query(0)
+    offset: int = Query(0, ge=0)
 ):
     """Get filtered and sorted stock list"""
     # Get current market M score for dynamic adjustment
@@ -2452,7 +2452,7 @@ async def get_coiled_spring_alerts(
 
 
 @app.get("/api/coiled-spring/candidates")
-async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int = 10, pre_breakout_only: bool = False):
+async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int = Query(10, ge=1, le=100), pre_breakout_only: bool = False):
     """
     Get current stocks that qualify as Coiled Spring candidates.
     These are stocks that meet CS criteria based on current data,
@@ -2770,6 +2770,7 @@ async def record_coiled_spring_alert(ticker: str, db: Session = Depends(get_db))
     Record a Coiled Spring alert for tracking.
     Called when a CS candidate is identified for the watchlist.
     """
+    ticker = validate_ticker_param(ticker)
     from backend.database import CoiledSpringAlert
     from datetime import date
 
@@ -3202,7 +3203,7 @@ async def remove_from_watchlist(item_id: int, db: Session = Depends(get_db)):
 
 class WatchlistBulkImport(BaseModel):
     """Request model for bulk watchlist import"""
-    tickers: str  # Comma or whitespace separated list of tickers
+    tickers: str = Field(..., max_length=10000)  # Comma or whitespace separated list of tickers
 
 
 @app.post("/api/watchlist/bulk")
@@ -3266,16 +3267,16 @@ async def bulk_add_to_watchlist(data: WatchlistBulkImport, db: Session = Depends
 
 class BacktestCreate(BaseModel):
     """Request model for creating a backtest"""
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=200)
     start_date: date
     end_date: date
-    starting_cash: float = 25000.0
+    starting_cash: float = Field(25000.0, ge=1000, le=10_000_000)
     stock_universe: str = "all"  # sp500, all, custom
     custom_tickers: Optional[List[str]] = None
-    max_positions: Optional[int] = None
-    min_score_to_buy: Optional[int] = None
-    stop_loss_pct: Optional[float] = None
-    strategy: str = "balanced"  # balanced, growth
+    max_positions: Optional[int] = Field(None, ge=1, le=50)
+    min_score_to_buy: Optional[int] = Field(None, ge=0, le=100)
+    stop_loss_pct: Optional[float] = Field(None, ge=1.0, le=50.0)
+    strategy: str = "balanced"
     force_refresh: bool = False  # Force fresh FMP earnings fetch (ignore cache)
 
     @field_validator('custom_tickers')
@@ -3297,6 +3298,9 @@ async def create_backtest(
     Create and enqueue a new backtest.
     Returns immediately with backtest ID; simulation runs via queue worker.
     """
+    # Validate strategy name
+    validate_strategy_name(config.strategy)
+
     # Validate dates
     if config.end_date <= config.start_date:
         raise HTTPException(400, "end_date must be after start_date")
@@ -3347,7 +3351,7 @@ async def create_backtest(
 
 @app.get("/api/backtests")
 async def list_backtests(
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db)
 ):
     """List all backtests, most recent first"""
@@ -3401,6 +3405,8 @@ async def compare_backtests(
 
     if len(bt_ids) < 2:
         raise HTTPException(400, "Need at least 2 backtest IDs to compare")
+    if len(bt_ids) > 10:
+        raise HTTPException(400, "Maximum 10 backtests can be compared at once")
 
     backtests_data = []
     all_dates = set()
@@ -3512,10 +3518,10 @@ async def create_multi_backtest(
 
 class BatchBacktestCreate(BaseModel):
     """Request model for creating a batch of backtests across strategies"""
-    strategies: List[str]
+    strategies: List[str] = Field(..., min_length=1, max_length=20)
     start_date: date
     end_date: date
-    starting_cash: float = 25000.0
+    starting_cash: float = Field(25000.0, ge=1000, le=10_000_000)
     stock_universe: str = "all"
     force_refresh: bool = False
 
@@ -3534,6 +3540,10 @@ async def create_batch_backtest(
         raise HTTPException(400, "Maximum backtest period is ~4.5 years (1600 days)")
     if config.end_date > date.today():
         raise HTTPException(400, "end_date cannot be in the future")
+
+    # Validate all strategy names upfront
+    for strategy in config.strategies:
+        validate_strategy_name(strategy)
 
     from config_loader import config as yaml_config
     default_min_score = yaml_config.get('ai_trader.allocation.min_score_to_buy', 72)
