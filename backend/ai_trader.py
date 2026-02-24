@@ -1832,14 +1832,16 @@ def evaluate_sells(db: Session) -> list:
 
         # Check for lower tier partial at configured gain threshold
         elif gain_pct >= pp_25_gain and score >= pp_25_min_score and partial_taken < pp_25_sell:
-            sells.append({
-                "position": position,
-                "reason": f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
-                "priority": 5,
-                "is_partial": True,
-                "sell_pct": pp_25_sell
-            })
-            continue  # Don't add more sell signals for this position
+            take_pct = pp_25_sell - partial_taken  # Take what's left to reach target
+            if take_pct > 0:
+                sells.append({
+                    "position": position,
+                    "reason": f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {score:.0f} still strong",
+                    "priority": 5,
+                    "is_partial": True,
+                    "sell_pct": take_pct
+                })
+                continue  # Don't add more sell signals for this position
 
         # For winners, use additional score-based logic
         profile_take_profit = profile.get('take_profit_pct', portfolio_config.take_profit_pct)

@@ -1895,11 +1895,6 @@ class BacktestEngine:
                     effective_stop_loss_pct = min(effective_stop_loss_pct, max_stop_pct)  # Cap
 
             # F: NEW POSITION GUARD — tighter stop for new positions in first N days
-            guard_config = config.get('ai_trader.conviction_sizing.new_position_guard', {}) or config.get('ai_trader.new_position_guard', {})
-            if not guard_config:
-                guard_config = config.get('ai_trader', {})
-                guard_config = guard_config.get('new_position_guard', {}) if isinstance(guard_config, dict) else {}
-            # Try dedicated dotted key
             guard_config = config.get('ai_trader.new_position_guard', {})
             if guard_config.get('enabled', False):
                 guard_days = guard_config.get('guard_days', 21)
@@ -2058,55 +2053,56 @@ class BacktestEngine:
 
             # Check for lower tier partial at +25% gain
             elif gain_pct >= pp_25_gain and current_score >= pp_25_min_score and partial_taken < pp_25_sell:
-                shares_to_sell = position.shares * (pp_25_sell / 100)
-                trade = SimulatedTrade(
-                    ticker=ticker,
-                    action="SELL",
-                    shares=shares_to_sell,
-                    price=price,
-                    reason=f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
-                    score=current_score,
-                    priority=5,
-                    is_partial=True,
-                    sell_pct=pp_25_sell
-                )
-                trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": pp_25_sell}
-                sells.append(trade)
-                continue  # Don't add more sell signals for this position
+                take_pct = pp_25_sell - partial_taken  # Take what's left to reach target
+                if take_pct > 0:
+                    shares_to_sell = position.shares * (take_pct / 100)
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=shares_to_sell,
+                        price=price,
+                        reason=f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
+                        score=current_score,
+                        priority=5,
+                        is_partial=True,
+                        sell_pct=take_pct
+                    )
+                    trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
+                    sells.append(trade)
+                    continue  # Don't add more sell signals for this position
 
-            # TAKE PROFIT: Full sell at profile threshold if score declining significantly
-            take_profit_pct = self.profile.get('take_profit_pct', 40.0)
-            if gain_pct >= take_profit_pct and current_score < position.purchase_score - 15:
-                trade = SimulatedTrade(
-                    ticker=ticker,
-                    action="SELL",
-                    shares=position.shares,
-                    price=price,
-                    reason=f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly ({position.purchase_score:.0f} -> {current_score:.0f})",
-                    score=current_score,
-                    priority=7
-                )
-                trade._signal_factors = {"sell_reason": "TAKE PROFIT", "gain_pct": round(gain_pct, 1)}
-                sells.append(trade)
-                continue
+            # Winners (gain >= 20%): protect gains or take profit (matches ai_trader structure)
+            profile_take_profit = self.profile.get('take_profit_pct', 40.0)
+            if gain_pct >= 20:
+                if current_score < self.backtest.sell_score_threshold:
+                    # PROTECT GAINS: winner with weak score — sell to lock in gains
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=position.shares,
+                        price=price,
+                        reason=f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({current_score:.0f})",
+                        score=current_score,
+                        priority=6
+                    )
+                    trade._signal_factors = {"sell_reason": "PROTECT GAINS", "gain_pct": round(gain_pct, 1)}
+                    sells.append(trade)
+                elif gain_pct >= profile_take_profit and current_score < position.purchase_score - 15:
+                    # TAKE PROFIT: big winner with significantly declining score
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=position.shares,
+                        price=price,
+                        reason=f"TAKE PROFIT: Up {gain_pct:.1f}%, score declining significantly ({position.purchase_score:.0f} -> {current_score:.0f})",
+                        score=current_score,
+                        priority=7
+                    )
+                    trade._signal_factors = {"sell_reason": "TAKE PROFIT", "gain_pct": round(gain_pct, 1)}
+                    sells.append(trade)
 
-            # Protect gains - winners with weak scores
-            if gain_pct >= 20 and current_score < self.backtest.sell_score_threshold:
-                trade = SimulatedTrade(
-                    ticker=ticker,
-                    action="SELL",
-                    shares=position.shares,
-                    price=price,
-                    reason=f"PROTECT GAINS: Up {gain_pct:.1f}% but score weak ({current_score:.0f})",
-                    score=current_score,
-                    priority=6
-                )
-                trade._signal_factors = {"sell_reason": "PROTECT GAINS", "gain_pct": round(gain_pct, 1)}
-                sells.append(trade)
-                continue
-
-            # Weak flat positions
-            if gain_pct < 10 and current_score < self.backtest.sell_score_threshold:
+            # Weak flat/losing positions — cut and redeploy capital
+            elif gain_pct < 10 and current_score < self.backtest.sell_score_threshold:
                 trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
@@ -2390,27 +2386,31 @@ class BacktestEngine:
                 continue
 
             # Earnings proximity check with Coiled Spring exception
+            # Synced with ai_trader.py evaluate_buys() earnings logic
             static_data = self.static_data.get(ticker, {})
             days_to_earnings = static_data.get('days_to_earnings')
             cs_config = config.get('coiled_spring', {})
+            earnings_config = config.get('ai_trader.earnings', {})
             allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
             block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
+            avoidance_days = earnings_config.get('avoidance_days', 5)
+            cs_override_enabled = earnings_config.get('cs_override', True)
 
             # Initialize CS result
             cs_result = None
             coiled_spring_bonus = 0
 
-            if days_to_earnings is not None and 0 < days_to_earnings <= allow_buy_days:
+            if days_to_earnings is not None and 0 < days_to_earnings <= max(allow_buy_days, avoidance_days):
                 # Check for Coiled Spring qualification using static_data
                 cs_result = self._calculate_coiled_spring_for_backtest(ticker, score_data, static_data, cs_config)
 
-                if cs_result["is_coiled_spring"] and days_to_earnings > block_days:
+                if cs_result["is_coiled_spring"] and days_to_earnings > block_days and cs_override_enabled:
                     # ALLOW - high conviction earnings catalyst
                     coiled_spring_bonus = cs_result.get('cs_score', 0)
                     logger.debug(f"Backtest CS: {ticker} ({cs_result['cs_details']})")
                 else:
-                    # Standard block for stocks without CS qualification (within 3 days)
-                    if days_to_earnings <= 3:
+                    # Block non-CS stocks within avoidance window (matches ai_trader)
+                    if days_to_earnings <= avoidance_days:
                         _funnel["earnings_prox"] += 1
                         continue
 
