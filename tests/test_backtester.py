@@ -28,7 +28,7 @@ def make_mock_db(min_score=65, max_positions=8, stop_loss_pct=8.0):
         status="pending"
     )
 
-    mock_session.query.return_value.get.return_value = mock_backtest
+    mock_session.get.return_value = mock_backtest
     mock_session.query.return_value.all.return_value = []
 
     return mock_session, mock_backtest
@@ -105,7 +105,7 @@ class TestBacktestEngine:
             status="pending"
         )
 
-        mock_session.query.return_value.get.return_value = mock_backtest
+        mock_session.get.return_value = mock_backtest
         mock_session.query.return_value.all.return_value = []
 
         return mock_session, mock_backtest
@@ -223,7 +223,7 @@ class TestTrailingStopLogic:
             status="pending"
         )
 
-        mock_session.query.return_value.get.return_value = mock_backtest
+        mock_session.get.return_value = mock_backtest
         mock_session.query.return_value.all.return_value = []
 
         return mock_session, mock_backtest
@@ -378,7 +378,7 @@ class TestPreBreakoutBonuses:
             status="pending"
         )
 
-        mock_session.query.return_value.get.return_value = mock_backtest
+        mock_session.get.return_value = mock_backtest
         mock_session.query.return_value.all.return_value = []
 
         return mock_session, mock_backtest
@@ -458,7 +458,7 @@ class TestScoreStability:
             status="pending"
         )
 
-        mock_session.query.return_value.get.return_value = mock_backtest
+        mock_session.get.return_value = mock_backtest
         mock_session.query.return_value.all.return_value = []
 
         return mock_session, mock_backtest
@@ -560,7 +560,7 @@ class TestMomentumConfirmation:
             status="pending"
         )
 
-        mock_session.query.return_value.get.return_value = mock_backtest
+        mock_session.get.return_value = mock_backtest
         mock_session.query.return_value.all.return_value = []
 
         return mock_session, mock_backtest

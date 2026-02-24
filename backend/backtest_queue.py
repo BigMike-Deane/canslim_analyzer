@@ -107,7 +107,7 @@ class BacktestQueueManager:
             # Check if cancelled before starting
             db = SessionLocal()
             try:
-                bt = db.query(BacktestRun).get(backtest_id)
+                bt = db.get(BacktestRun, backtest_id)
                 if bt and bt.cancel_requested:
                     logger.info(f"Backtest {backtest_id} was cancelled before starting, skipping")
                     if bt.status == "pending":
@@ -132,7 +132,7 @@ class BacktestQueueManager:
             except Exception as e:
                 logger.error(f"Backtest {backtest_id} failed: {e}")
                 try:
-                    bt = db.query(BacktestRun).get(backtest_id)
+                    bt = db.get(BacktestRun, backtest_id)
                     if bt and bt.status not in ("cancelled", "completed"):
                         bt.status = "failed"
                         bt.error_message = str(e)[:500]

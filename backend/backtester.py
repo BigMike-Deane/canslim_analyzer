@@ -89,7 +89,7 @@ class BacktestEngine:
 
     def __init__(self, db: Session, backtest_id: int):
         self.db = db
-        self.backtest = db.query(BacktestRun).get(backtest_id)
+        self.backtest = db.get(BacktestRun, backtest_id)
 
         if not self.backtest:
             raise ValueError(f"Backtest {backtest_id} not found")

@@ -225,7 +225,7 @@ class RedisCache:
             return {
                 "enabled": True,
                 "connected": True,
-                "total_keys": info.get('db0', {}).get('keys', 0),
+                "total_keys": keyspace.get('db0', {}).get('keys', 0),
                 "canslim_keys": canslim_keys,
                 "total_commands": info.get('total_commands_processed', 0),
                 "keyspace_hits": info.get('keyspace_hits', 0),

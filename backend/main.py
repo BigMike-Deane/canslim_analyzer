@@ -3385,7 +3385,7 @@ async def compare_backtests(
     all_dates = set()
 
     for bt_id in bt_ids:
-        bt = db.query(BacktestRun).get(bt_id)
+        bt = db.get(BacktestRun, bt_id)
         if not bt or bt.status != "completed":
             continue
 
@@ -3559,7 +3559,7 @@ async def get_backtest_queue():
 @app.get("/api/backtests/{backtest_id}")
 async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
     """Get detailed backtest results including performance chart data"""
-    backtest = db.query(BacktestRun).get(backtest_id)
+    backtest = db.get(BacktestRun, backtest_id)
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3634,7 +3634,7 @@ async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
 async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
     """Get backtest progress (for polling during run)"""
     from backend.backtest_queue import backtest_queue
-    backtest = db.query(BacktestRun).get(backtest_id)
+    backtest = db.get(BacktestRun, backtest_id)
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3651,7 +3651,7 @@ async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
 @app.delete("/api/backtests/{backtest_id}")
 async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
     """Delete a backtest and all associated data"""
-    backtest = db.query(BacktestRun).get(backtest_id)
+    backtest = db.get(BacktestRun, backtest_id)
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3664,7 +3664,7 @@ async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
 @app.post("/api/backtests/{backtest_id}/cancel")
 async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
     """Cancel a running backtest - handles stuck backtests that may have lost their process"""
-    backtest = db.query(BacktestRun).get(backtest_id)
+    backtest = db.get(BacktestRun, backtest_id)
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
