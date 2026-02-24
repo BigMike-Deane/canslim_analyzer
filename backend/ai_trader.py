@@ -230,7 +230,7 @@ def get_market_regime(db: Session = None) -> dict:
     """
     from data_fetcher import get_cached_market_direction
 
-    market_data = get_cached_market_direction()
+    market_data = get_cached_market_direction() or {}
     regime_config = config.get('ai_trader.market_regime', {})
 
     if not regime_config.get('enabled', True):
@@ -771,7 +771,7 @@ def handle_spy_sweep(db: Session, config, profile: dict):
         return
 
     from data_fetcher import get_cached_market_direction
-    market_data = get_cached_market_direction()
+    market_data = get_cached_market_direction() or {}
     if not market_data or not market_data.get('success'):
         return
 
@@ -1070,7 +1070,7 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
 
     # Get market condition for market-aware stop losses
     from data_fetcher import get_cached_market_direction
-    market_data = get_cached_market_direction()
+    market_data = get_cached_market_direction() or {}
     is_bearish_market = False
     if market_data.get("success"):
         spy_data = market_data.get("spy", {})
@@ -1312,8 +1312,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
     if action == "SELL":
         gain_pct = ((price / cost_basis) - 1) * 100 if cost_basis and cost_basis > 0 else 0
         logger.info(f"AI SELL: {ticker} - {shares:.2f} shares @ ${price:.2f} "
-                    f"(cost: ${cost_basis:.2f}, gain: {gain_pct:+.1f}%, P/L: ${realized_gain:.2f}) "
-                    f"Score: {effective:.0f} - {reason}")
+                    f"(cost: ${(cost_basis or 0):.2f}, gain: {gain_pct:+.1f}%, P/L: ${(realized_gain or 0):.2f}) "
+                    f"Score: {(effective or 0):.0f} - {reason}")
 
         # Send webhook notification for sells
         try:
@@ -1366,7 +1366,7 @@ def evaluate_sells(db: Session) -> list:
 
     # Get market condition for market-aware stop losses
     from data_fetcher import get_cached_market_direction
-    market_data = get_cached_market_direction()
+    market_data = get_cached_market_direction() or {}
     is_bearish_market = False
     if market_data.get("success"):
         spy_data = market_data.get("spy", {})
@@ -1936,6 +1936,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             pass
         return current_score
 
+    # Pre-compute portfolio value once (avoids 100+ DB queries inside the loop)
+    portfolio_value = get_portfolio_value(db)["total_value"]
+
     for stock in candidates:
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
@@ -2310,7 +2313,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
         # Calculate position size - aligned with backtester
-        portfolio_value = get_portfolio_value(db)["total_value"]
+        # portfolio_value is pre-computed before the loop (line ~1940)
 
         # Get market regime for position size limits
         market_regime = get_market_regime(db)
@@ -2504,7 +2507,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         for stock in bear_exception_candidates[:3]:  # Max 3 exceptions
             is_growth = stock.is_growth_stock or False
             effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
-            portfolio_value = get_portfolio_value(db)["total_value"]
+            # portfolio_value is pre-computed before the loop (line ~1940)
             # Half position size for bear exceptions
             position_value = portfolio_value * 0.05 * bear_exception_position_mult  # ~2.5% positions
             position_value = min(position_value, portfolio_config.current_cash * 0.50)
@@ -2521,7 +2524,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 "is_growth_stock": is_growth,
                 "effective_score": effective_score,
                 "is_breaking_out": False,
-                "position_pct": 5.0 * bear_exception_position_mult
+                "position_pct": 5.0 * bear_exception_position_mult,
+                "signal_factors": {
+                    "entry_type": "bear_exception",
+                    "market_regime": "bear",
+                    "composite_score": round(effective_score, 1),
+                }
             })
 
     return final_buys

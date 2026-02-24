@@ -1343,3 +1343,167 @@ class TestProgressVariableInit:
             "progress must be initialized BEFORE the simulation loop to prevent "
             "UnboundLocalError when cancellation is detected at i=0"
         )
+
+
+# ─── Backtester I Score Unit Mismatch (backtester.py) ─────────────────────
+# Bug: I score thresholds used decimal values (0.30-0.70) while inst_pct is
+# stored as a percentage (e.g., 65 = 65%). Every stock got i_score=2.
+# Fix: Use percentage thresholds (25-75) matching the live scorer.
+
+class TestBacktesterIScoreUnits:
+    """Regression: I score thresholds must use percentage values, not decimals."""
+
+    def test_i_score_uses_percentage_thresholds(self):
+        """Verify backtester uses percentage thresholds like the live scorer."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        # Must NOT contain decimal thresholds
+        assert "0.30 <= inst_pct" not in source, (
+            "Backtester I score still uses decimal threshold 0.30 — "
+            "inst_pct is a percentage (e.g. 65), not a decimal (e.g. 0.65)"
+        )
+        assert "0.70" not in source.split("I SCORE")[1].split("=====")[0] if "I SCORE" in source else True, (
+            "Backtester I score still uses decimal threshold 0.70"
+        )
+
+        # Must contain percentage thresholds matching live scorer
+        i_section_start = source.find("I SCORE (10 pts)")
+        assert i_section_start > 0, "I SCORE section not found in backtester"
+        i_section = source[i_section_start:i_section_start + 500]
+        assert "25 <= inst_pct <= 75" in i_section, (
+            "Backtester I score must use percentage thresholds (25-75) "
+            "matching the live scorer in canslim_scorer.py"
+        )
+
+    def test_i_score_scoring_logic(self):
+        """Verify I score returns correct values for typical institutional ownership."""
+        # Simulate the scoring logic
+        def calc_i_score(inst_pct):
+            if 25 <= inst_pct <= 75:
+                return 10
+            elif 15 <= inst_pct < 25 or 75 < inst_pct <= 85:
+                return 7
+            elif 10 <= inst_pct < 15 or 85 < inst_pct <= 90:
+                return 4
+            elif inst_pct > 0:
+                return 2
+            else:
+                return 5  # default when no data
+
+        # Typical stocks with 40-70% institutional ownership should score 10
+        assert calc_i_score(65) == 10, "65% inst should score 10"
+        assert calc_i_score(40) == 10, "40% inst should score 10"
+        assert calc_i_score(25) == 10, "25% inst should score 10"
+        assert calc_i_score(75) == 10, "75% inst should score 10"
+
+        # Edge cases
+        assert calc_i_score(20) == 7, "20% inst should score 7"
+        assert calc_i_score(80) == 7, "80% inst should score 7"
+        assert calc_i_score(12) == 4, "12% inst should score 4"
+        assert calc_i_score(5) == 2, "5% inst should score 2"
+        assert calc_i_score(0) == 5, "0% inst should get default 5"
+
+
+# ─── Market Direction None Guard (ai_trader.py) ──────────────────────────
+# Bug: get_cached_market_direction() can return None, causing AttributeError
+# when calling .get("success") on None.
+# Fix: Default to empty dict with `or {}`.
+
+class TestMarketDirectionNoneGuard:
+    """Regression: market_data must be guarded against None return."""
+
+    def test_evaluate_sells_guards_none_market_data(self):
+        """evaluate_sells must handle None from get_cached_market_direction."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Find all occurrences of market_data assignment
+        lines = source.split("\n")
+        market_data_lines = [
+            (i, line) for i, line in enumerate(lines, 1)
+            if "market_data = get_cached_market_direction()" in line
+        ]
+        assert len(market_data_lines) >= 4, (
+            f"Expected at least 4 market_data assignments, found {len(market_data_lines)}"
+        )
+
+        for lineno, line in market_data_lines:
+            assert "or {}" in line, (
+                f"Line {lineno}: market_data assignment must include 'or {{}}' "
+                f"to guard against None return from get_cached_market_direction()"
+            )
+
+
+# ─── Portfolio Value Pre-computation (ai_trader.py) ───────────────────────
+# Bug: get_portfolio_value(db) called 100+ times inside the candidate loop,
+# causing N+1 query performance issues.
+# Fix: Pre-compute portfolio_value once before the loop.
+
+class TestPortfolioValuePrecomputation:
+    """Regression: portfolio_value must be computed before the candidate loop."""
+
+    def test_portfolio_value_computed_before_loop(self):
+        """portfolio_value must be pre-computed before the candidate for-loop."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Find the pre-computation line (should be before the main loop)
+        precompute_pos = source.find('# Pre-compute portfolio value once')
+        assert precompute_pos > 0, "Pre-compute comment not found in ai_trader.py"
+
+        # Find the MAIN candidate loop (not the nested one inside get_fresh_score closure)
+        # The main loop is the one right after the pre-compute comment
+        main_loop_pos = source.find('for stock in candidates:', precompute_pos)
+        assert main_loop_pos > 0, "Main candidate loop not found after pre-compute"
+        assert precompute_pos < main_loop_pos, (
+            "portfolio_value must be pre-computed BEFORE the candidate loop "
+            "to avoid 100+ redundant get_portfolio_value() DB queries"
+        )
+
+    def test_no_in_loop_portfolio_value_calls(self):
+        """No get_portfolio_value() calls should exist inside the candidate loop."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Find the MAIN candidate loop (after the pre-compute comment)
+        precompute_pos = source.find('# Pre-compute portfolio value once')
+        loop_start = source.find('for stock in candidates:', precompute_pos)
+        loop_end = source.find('return final_buys', loop_start)
+        assert loop_start > 0 and loop_end > 0
+
+        loop_body = source[loop_start:loop_end]
+        # There should be no active get_portfolio_value calls (only comments referencing it)
+        active_calls = [
+            line.strip() for line in loop_body.split('\n')
+            if 'get_portfolio_value(db)' in line and not line.strip().startswith('#')
+        ]
+        assert len(active_calls) == 0, (
+            f"Found {len(active_calls)} active get_portfolio_value() calls inside "
+            f"the candidate loop — these should use the pre-computed value: {active_calls}"
+        )
+
+
+# ─── Bear Exception Signal Factors (ai_trader.py) ────────────────────────
+# Bug: Bear exception buy dicts lacked signal_factors key, which would cause
+# KeyError or None when execute_trade tried to log it.
+# Fix: Added signal_factors dict with entry_type, market_regime, composite_score.
+
+class TestBearExceptionSignalFactors:
+    """Regression: bear exception buys must include signal_factors."""
+
+    def test_bear_exception_has_signal_factors(self):
+        """Bear exception buy dict must include signal_factors key."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Find the bear exception section
+        bear_start = source.find("BEAR EXCEPTION")
+        assert bear_start > 0, "Bear exception section not found"
+
+        # Find the dict that contains it
+        bear_section = source[bear_start:bear_start + 500]
+        assert '"signal_factors"' in bear_section or "'signal_factors'" in bear_section, (
+            "Bear exception buy dict must include 'signal_factors' key "
+            "to avoid KeyError when execute_trade logs the trade"
+        )

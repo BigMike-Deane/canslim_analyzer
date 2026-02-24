@@ -1679,12 +1679,12 @@ class BacktestEngine:
             # ===== I SCORE (10 pts): Institutional Ownership =====
             i_score = 0
             inst_pct = static_data.get("institutional_holders_pct", 0)
-            # Ideal is 30-70% institutional ownership
-            if 0.30 <= inst_pct <= 0.70:
+            # inst_pct is stored as percentage (e.g., 65 = 65%), matching live scorer
+            if 25 <= inst_pct <= 75:
                 i_score = 10
-            elif 0.20 <= inst_pct < 0.30 or 0.70 < inst_pct <= 0.80:
+            elif 15 <= inst_pct < 25 or 75 < inst_pct <= 85:
                 i_score = 7
-            elif 0.10 <= inst_pct < 0.20 or 0.80 < inst_pct <= 0.90:
+            elif 10 <= inst_pct < 15 or 85 < inst_pct <= 90:
                 i_score = 4
             elif inst_pct > 0:
                 i_score = 2
