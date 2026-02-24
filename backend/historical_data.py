@@ -379,7 +379,8 @@ class HistoricalDataProvider:
         if len(history) < 20:  # Need at least 20 days
             return 0.0
 
-        return float(history["volume"].mean())
+        result = float(history["volume"].mean())
+        return result if result == result else 0.0  # NaN guard (NaN != NaN)
 
     def get_moving_average(self, ticker: str, as_of_date: date, period: int) -> float:
         """Calculate moving average as of a specific date"""
@@ -387,7 +388,8 @@ class HistoricalDataProvider:
         if len(history) < period:
             return 0.0
 
-        return float(history["close"].tail(period).mean())
+        result = float(history["close"].tail(period).mean())
+        return result if result == result else 0.0  # NaN guard (NaN != NaN)
 
     def precompute_market_direction(self):
         """Pre-compute market direction for all trading days (call after preload_data)."""

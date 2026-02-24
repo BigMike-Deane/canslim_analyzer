@@ -482,7 +482,7 @@ def send_morning_briefing_email(briefing_data: dict) -> bool:
             <td style="padding:6px 10px;">{c.get('ticker','')}</td>
             <td style="padding:6px 10px;">${c.get('price',0):.2f}</td>
             <td style="padding:6px 10px;">{c.get('score',0):.0f}</td>
-            <td style="padding:6px 10px;">{c.get('reason','')[:60]}</td>
+            <td style="padding:6px 10px;">{html.escape(str(c.get('reason',''))[:60])}</td>
         </tr>"""
 
     # Build earnings this week section
