@@ -556,3 +556,90 @@ class TestPriceCacheExpiry:
         # Fix: precise check says "expired" (30.96 > 30 = True)
         fixed_expired = age.total_seconds() / 86400 > ttl_days
         assert fixed_expired  # Correct: 30.96 > 30
+
+
+# ─── Score Stability Blip Detection Sync (ai_trader.py) ────────────────────
+# Bug: ai_trader's blip detection did NOT include `consecutive_low < 2` guard.
+# When 3+ consecutive low scores occurred, the blip detector still flagged it
+# as a blip → is_stable=False → sell skipped. Backtester had the guard and
+# would correctly sell. Live trading was MORE protective than backtesting.
+# Fix: Added `consecutive_low < 2` to blip condition, matching backtester.
+
+
+class TestBlipDetectionSync:
+    """Regression: ai_trader blip detection missed consecutive_low guard."""
+
+    def test_single_low_is_blip(self):
+        """One low score after high averages should be a blip (skip sell)."""
+        # current=40, avg=70, variance=30, consecutive_low=1
+        current = 40
+        threshold = 50
+        avg = 70
+        variance = abs(current - avg)
+        consecutive_low = 1
+
+        is_blip = (current < threshold and
+                   avg > threshold + 10 and
+                   variance > 15 and
+                   consecutive_low < 2)
+
+        assert is_blip  # Single low = blip, skip sell
+
+    def test_two_consecutive_lows_not_blip(self):
+        """Two+ consecutive low scores should NOT be a blip (allow sell)."""
+        current = 40
+        threshold = 50
+        avg = 70
+        variance = abs(current - avg)
+        consecutive_low = 2
+
+        is_blip = (current < threshold and
+                   avg > threshold + 10 and
+                   variance > 15 and
+                   consecutive_low < 2)
+
+        assert not is_blip  # Multiple lows = real drop, allow sell
+
+    def test_buggy_detection_without_guard(self):
+        """Demonstrate the bug: without consecutive_low guard, blip fires incorrectly."""
+        current = 40
+        threshold = 50
+        avg = 70
+        variance = abs(current - avg)
+        consecutive_low = 3  # Three consecutive lows — SHOULD sell
+
+        # Bug: no consecutive_low guard
+        buggy_is_blip = (current < threshold and
+                         avg > threshold + 10 and
+                         variance > 15)
+        assert buggy_is_blip  # Bug: would skip sell even with 3 low scans!
+
+        # Fix: with consecutive_low guard
+        fixed_is_blip = (current < threshold and
+                         avg > threshold + 10 and
+                         variance > 15 and
+                         consecutive_low < 2)
+        assert not fixed_is_blip  # Correct: 3 lows = real drop
+
+    def test_stability_returns_consecutive_low(self):
+        """check_score_stability should return pre-computed consecutive_low."""
+        import backend.ai_trader as ai_trader
+        from unittest.mock import MagicMock
+
+        mock_db = MagicMock()
+        mock_stock = MagicMock()
+        mock_stock.id = 1
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_stock
+
+        # Mock 3 recent scores — all below threshold
+        mock_scores = [
+            MagicMock(total_score=40.0),
+            MagicMock(total_score=42.0),
+            MagicMock(total_score=38.0),
+        ]
+        mock_db.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = mock_scores
+
+        result = ai_trader.check_score_stability(mock_db, "TEST", 40.0, threshold=50.0)
+
+        assert "consecutive_low" in result
+        assert result["consecutive_low"] == 3  # All 3 scores below threshold

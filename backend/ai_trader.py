@@ -399,12 +399,14 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
 def check_score_stability(db: Session, ticker: str, current_score: float, threshold: float = 50) -> dict:
     """
     Check if a low score is consistent across recent scans (not a one-time blip).
+    Matches backtester._check_score_stability() logic.
 
     Returns:
         dict with:
         - is_stable: True if score has been consistently low (not a blip)
         - recent_scores: list of recent scores
         - avg_score: average of recent scores
+        - consecutive_low: count of consecutive low scores
         - warning: any warning message
     """
     from datetime import timedelta
@@ -412,7 +414,8 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
     # Get the stock
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
     if not stock:
-        return {"is_stable": True, "recent_scores": [], "avg_score": current_score, "warning": "Stock not found"}
+        return {"is_stable": True, "recent_scores": [], "avg_score": current_score,
+                "consecutive_low": 1 if current_score < threshold else 0, "warning": "Stock not found"}
 
     # Get scores from last 3 scans (roughly last 4-5 hours if scanning every 90 min)
     recent_scores = db.query(StockScore).filter(
@@ -421,33 +424,40 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
 
     if len(recent_scores) < 2:
         # Not enough history, trust current score
-        return {"is_stable": True, "recent_scores": [current_score], "avg_score": current_score, "warning": "Limited history"}
+        return {"is_stable": True, "recent_scores": [current_score], "avg_score": current_score,
+                "consecutive_low": 1 if current_score < threshold else 0, "warning": "Limited history"}
 
     scores = [s.total_score for s in recent_scores if s.total_score is not None]
     if not scores:
-        return {"is_stable": True, "recent_scores": [], "avg_score": current_score, "warning": "No score history"}
+        return {"is_stable": True, "recent_scores": [], "avg_score": current_score,
+                "consecutive_low": 0, "warning": "No score history"}
 
     avg_score = sum(scores) / len(scores)
+
+    # Count consecutive low scores from most recent
+    consecutive_low = 0
+    for score in scores:
+        if score < threshold:
+            consecutive_low += 1
+        else:
+            break
 
     # Check if current score is significantly lower than average (potential blip)
     score_variance = abs(current_score - avg_score)
 
-    # If current score is much lower than recent average, it might be a blip
-    is_blip = current_score < threshold and avg_score > threshold + 10 and score_variance > 15
-
-    if is_blip:
-        return {
-            "is_stable": False,
-            "recent_scores": scores,
-            "avg_score": avg_score,
-            "warning": f"Possible data blip: current {current_score:.0f} vs avg {avg_score:.0f}"
-        }
+    # If current score is much lower than recent average AND only 1 low scan, it might be a blip
+    # Require consecutive_low < 2 to flag as blip — if 2+ consecutive low, it's a real drop
+    is_blip = (current_score < threshold and
+               avg_score > threshold + 10 and
+               score_variance > 15 and
+               consecutive_low < 2)
 
     return {
-        "is_stable": True,
+        "is_stable": not is_blip,
         "recent_scores": scores,
         "avg_score": avg_score,
-        "warning": None
+        "consecutive_low": consecutive_low,
+        "warning": f"Possible data blip: current {current_score:.0f} vs avg {avg_score:.0f}" if is_blip else None
     }
 
 
@@ -1520,14 +1530,8 @@ def evaluate_sells(db: Session) -> list:
                 continue  # Skip this sell, wait for next scan to confirm
 
             # Require N consecutive low scores before selling (configurable, default 3)
-            # Count from most recent — stop at first score above threshold
-            recent_scores = stability.get("recent_scores", [])
-            consecutive_low = 0
-            for s in recent_scores:
-                if s < score_threshold:
-                    consecutive_low += 1
-                else:
-                    break
+            # Use pre-computed consecutive_low from stability check (synced with backtester)
+            consecutive_low = stability.get("consecutive_low", 0)
             if consecutive_low < consecutive_required:
                 logger.debug(f"{position.ticker}: SKIPPING SELL - only {consecutive_low} "
                             f"consecutive low score(s), need {consecutive_required}+")
