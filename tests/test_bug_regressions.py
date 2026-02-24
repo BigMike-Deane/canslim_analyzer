@@ -1165,3 +1165,69 @@ class TestSPYGateFailSafe:
         assert "not spy_price or not spy_ma50" in source, (
             "backtester.py regime gate must block buys when SPY data is missing"
         )
+
+
+# ─── Variable Scoping in evaluate_buys (ai_trader.py) ──────────────────────
+# Bug: has_base and pivot_price were used in volume gate BEFORE being defined.
+# On first loop iteration this would NameError; on subsequent iterations it used
+# stale values from the previous stock's base pattern data.
+# Fix: Move base pattern extraction before volume gate.
+
+class TestVariableScopingBuys:
+    """Regression: has_base/pivot_price must be defined before volume gate uses them."""
+
+    def test_has_base_defined_before_volume_gate(self):
+        """has_base and pivot_price must appear before the volume gate block."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        # Find where has_base is first DEFINED (assigned)
+        define_pos = source.find("has_base = base_type not in")
+        # Find where has_base is first USED (in volume gate)
+        use_pos = source.find("elif has_base and pivot_price")
+        assert define_pos > 0, "has_base definition not found"
+        assert use_pos > 0, "has_base usage in volume gate not found"
+        assert define_pos < use_pos, (
+            f"has_base defined at position {define_pos} but used at {use_pos} — "
+            "variable used before definition"
+        )
+
+
+# ─── Correlation Sizing Default (backtester.py) ─────────────────────────────
+# Bug: backtester defaulted to enabled=True for correlation sizing when config
+# section was missing, while ai_trader had it removed entirely. This caused
+# silent divergence in position sizing between live and backtest.
+# Fix: Default to False, matching ai_trader behavior.
+
+class TestCorrelationSizingDefault:
+    """Regression: correlation sizing must default to disabled."""
+
+    def test_backtester_defaults_to_disabled(self):
+        """Correlation sizing must default to False when config is missing."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        assert "corr_config.get('enabled', False)" in source, (
+            "Correlation sizing must default to disabled (False) to match ai_trader"
+        )
+
+
+# ─── Score Available Guard in Backtester Sells ──────────────────────────────
+# Bug: backtester evaluate_sells had no guard for score=0 (data gap), causing
+# false score crash sells when historical score data was missing. ai_trader had
+# a score_available guard but backtester did not.
+# Fix: Add score_available = current_score > 0 guard before score-dependent sells.
+
+class TestBacktesterScoreAvailableGuard:
+    """Regression: backtester must skip score-dependent sells when score=0."""
+
+    def test_backtester_has_score_available_guard(self):
+        """backtester _evaluate_sells must check score_available before score crash."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        # The guard must appear in the evaluate_sells method
+        guard_pos = source.find("score_available = current_score > 0")
+        assert guard_pos > 0, "score_available guard not found in backtester"
+        # It must come before score crash check
+        crash_pos = source.find("Score crash check with stability")
+        assert guard_pos < crash_pos, (
+            "score_available guard must appear before score crash check"
+        )

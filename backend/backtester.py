@@ -1992,6 +1992,12 @@ class BacktestEngine:
                             sells.append(trade)
                         continue
 
+            # Skip all score-dependent sells if score data is missing (matches ai_trader)
+            score_available = current_score > 0
+            if not score_available:
+                logger.debug(f"{ticker}: Score=0 (data missing), skipping score-dependent sells")
+                continue
+
             # Score crash check with stability verification and profitability exception
             # Get score crash config
             score_crash_config = config.get('ai_trader.score_crash', {})
@@ -2681,7 +2687,7 @@ class BacktestEngine:
 
             # CORRELATION-AWARE SIZING: Reduce position if highly correlated with existing holdings
             corr_config = config.get('correlation_sizing', {})
-            if corr_config.get('enabled', True) and self.positions:
+            if corr_config.get('enabled', False) and self.positions:
                 corr_threshold = corr_config.get('high_correlation_threshold', 0.70)
                 corr_multiplier = corr_config.get('high_correlation_multiplier', 0.75)
                 max_correlated = corr_config.get('max_correlated_positions', 3)

@@ -2011,6 +2011,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         l_score = getattr(stock, 'l_score', 0) or 0
         volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
+        breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
+
+        # Base pattern data for pre-breakout detection (needed by volume gate below)
+        base_type = getattr(stock, 'base_type', 'none') or 'none'
+        weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+        pivot_price = getattr(stock, 'pivot_price', 0) or 0
+        has_base = base_type not in ('none', '', None)
 
         # Skip if not meeting quality thresholds (unless growth stock)
         if not (is_growth and skip_growth):
@@ -2075,17 +2082,6 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 if days_to_earnings <= avoidance_days:
                     logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified, avoidance={avoidance_days}d)")
                     continue
-
-        # Check if stock is breaking out (best buying opportunity)
-        is_breaking_out = getattr(stock, 'is_breaking_out', False)
-        breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
-        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
-
-        # Base pattern data for pre-breakout detection
-        base_type = getattr(stock, 'base_type', 'none') or 'none'
-        weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
-        pivot_price = getattr(stock, 'pivot_price', 0) or 0
-        has_base = base_type not in ('none', '', None)
 
         # Calculate momentum, breakout, pre-breakout, and extended scores
         momentum_score = 0
