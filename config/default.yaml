@@ -727,7 +727,6 @@ strategy_profiles:
       gain_10_to_20: 8
     seed_count: 3                            # Ralph Loop optimized: 3 is optimal (tested 2-5)
     seed_pct: 10
-    half_size_initial: true
     max_seed_investment_pct: 50            # Ralph Loop optimized: 50% is optimal (was 60)
     quality_filters:
       min_c_score: 10
@@ -759,7 +758,6 @@ strategy_profiles:
       gain_10_to_20: 8                  # Match balanced
     seed_count: 4                       # Fewer seeds — more selective on day 1
     seed_pct: 10                        # Match balanced per-seed size
-    half_size_initial: true             # Half-size entries — prove it first
     max_seed_investment_pct: 50          # E: Max 50% of capital in initial seeds (growth is more selective)
     quality_filters:
       min_c_score: 12                   # Higher C bar — demand strong earnings
@@ -800,7 +798,7 @@ strategy_profiles:
       gain_10_to_20: 8
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters:
       min_c_score: 10
@@ -844,7 +842,7 @@ strategy_profiles:
       gain_10_to_20: 8
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters:
       min_c_score: 10
@@ -874,7 +872,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
     seed_count: 4
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -895,7 +893,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
     seed_count: 4
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -921,7 +919,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
     seed_count: 4
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -949,7 +947,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
     seed_count: 4
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -976,7 +974,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 2
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -997,7 +995,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 4
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1019,7 +1017,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1040,7 +1038,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1061,7 +1059,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1083,7 +1081,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1104,7 +1102,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1125,7 +1123,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1147,7 +1145,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 15, gain_30_to_50: 12, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1168,7 +1166,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 18, gain_30_to_50: 14, gain_20_to_30: 10, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1189,7 +1187,7 @@ strategy_profiles:
     trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters: { min_c_score: 10, min_l_score: 8 }
     scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
@@ -1218,7 +1216,7 @@ strategy_profiles:
       gain_10_to_20: 8
     seed_count: 3
     seed_pct: 10
-    half_size_initial: true
+
     max_seed_investment_pct: 50
     quality_filters:
       min_c_score: 10

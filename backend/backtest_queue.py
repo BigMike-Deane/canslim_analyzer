@@ -131,16 +131,25 @@ class BacktestQueueManager:
                 logger.info(f"Backtest {backtest_id} completed successfully")
             except Exception as e:
                 logger.error(f"Backtest {backtest_id} failed: {e}")
+                # Use a FRESH session for the error update — the original
+                # session may be corrupted (connection lost, transaction aborted)
+                db.close()
+                error_db = SessionLocal()
                 try:
-                    bt = db.get(BacktestRun, backtest_id)
+                    bt = error_db.get(BacktestRun, backtest_id)
                     if bt and bt.status not in ("cancelled", "completed"):
                         bt.status = "failed"
                         bt.error_message = str(e)[:500]
-                        db.commit()
+                        bt.completed_at = datetime.now(timezone.utc)
+                        error_db.commit()
                 except Exception:
                     logger.exception(f"Failed to update status for backtest {backtest_id}")
+                finally:
+                    error_db.close()
+                db = None  # Prevent double-close in outer finally
             finally:
-                db.close()
+                if db is not None:
+                    db.close()
                 self._current_backtest_id = None
 
         logger.info("Backtest queue worker loop exited")

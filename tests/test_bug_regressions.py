@@ -1053,3 +1053,87 @@ class TestGhostFieldWrites:
         # Must NOT have the buggy stock.confidence write (note: string "growth_confidence"
         # contains "confidence" so we check for exact "stock.confidence" without "growth_" prefix)
         assert "stock.confidence " not in source
+
+
+# ─── Watchlist Alert Cooldown Bug (scheduler.py) ─────────────────────────
+# Bug: alert_sent flag was checked BEFORE cooldown, creating a permanent
+# block that prevented alerts from ever re-firing after the first send.
+# The cooldown timer was correct but unreachable.
+# Also: email failure silently committed last_check_price, so the trigger
+# condition (price crossing above target) would never re-fire.
+# Fix: Removed permanent alert_sent block, set trigger timestamp before
+# sending to prevent retry storms even on failure.
+
+
+class TestWatchlistAlertCooldown:
+    """Regression: watchlist alerts must re-fire after cooldown expires."""
+
+    def test_no_permanent_alert_sent_block_in_scheduler(self):
+        """Scheduler must NOT have alert_sent as a permanent block before cooldown."""
+        from pathlib import Path
+        scheduler_path = Path(__file__).parent.parent / "backend" / "scheduler.py"
+        source = scheduler_path.read_text()
+        # The old bug: checked alert_sent AFTER cooldown, blocking forever
+        # Should NOT have: if item.alert_sent: ... continue (as a standalone block)
+        # It's OK to SET alert_sent, just not to use it as a blocking gate
+        lines = source.split("\n")
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == "if item.alert_sent:":
+                # Next non-empty line should NOT be a continue/skip
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    next_stripped = lines[j].strip()
+                    if next_stripped:
+                        assert next_stripped != "continue", (
+                            f"Line {j+1}: alert_sent used as permanent block "
+                            f"(prevents alerts from re-firing after cooldown)"
+                        )
+                        break
+
+    def test_alert_triggered_at_set_before_email_send(self):
+        """Trigger timestamp must be set BEFORE attempting email send."""
+        from pathlib import Path
+        scheduler_path = Path(__file__).parent.parent / "backend" / "scheduler.py"
+        source = scheduler_path.read_text()
+        # Find the alert-sending section — look for the actual CALL, not the import
+        trigger_pos = source.find("item.alert_triggered_at = datetime.now")
+        send_pos = source.find("if send_watchlist_alert_email(")
+        # alert_triggered_at must be set BEFORE the email send call
+        assert trigger_pos > 0, "alert_triggered_at assignment not found"
+        assert send_pos > 0, "send_watchlist_alert_email call not found"
+        assert trigger_pos < send_pos, (
+            "alert_triggered_at must be set BEFORE send_watchlist_alert_email "
+            "to prevent retry storms on email failure"
+        )
+
+
+# ─── Dead Config: half_size_initial ──────────────────────────────────────
+# Bug: half_size_initial was defined in all strategy profile YAMLs but never
+# read or used by any Python code in ai_trader.py or backtester.py.
+# The champion backtest (+184.4%) was achieved without this feature.
+# Fix: Removed from all YAML profiles to avoid confusion.
+
+
+class TestNoDeadConfigOptions:
+    """Regression: YAML config options must have corresponding Python code."""
+
+    def test_half_size_initial_not_in_yaml(self):
+        """half_size_initial should be removed from config (no implementation exists)."""
+        from pathlib import Path
+        config_path = Path(__file__).parent.parent / "config" / "default.yaml"
+        source = config_path.read_text()
+        assert "half_size_initial" not in source, (
+            "half_size_initial still in config but has no implementation "
+            "in ai_trader.py or backtester.py"
+        )
+
+    def test_half_size_not_referenced_in_trading_code(self):
+        """No trading code should reference half_size to prevent re-introduction."""
+        from pathlib import Path
+        base = Path(__file__).parent.parent
+        for filename in ["backend/ai_trader.py", "backend/backtester.py"]:
+            filepath = base / filename
+            source = filepath.read_text()
+            assert "half_size" not in source, (
+                f"{filename} references half_size but it was never implemented"
+            )

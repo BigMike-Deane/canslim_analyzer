@@ -152,24 +152,23 @@ def check_watchlist_alerts():
                         logger.debug(f"Skipping {item.ticker} alert - within {cooldown_hours}h cooldown")
                         continue
 
-                # Check if alert was already sent (and not reset)
-                if item.alert_sent:
-                    logger.debug(f"Skipping {item.ticker} alert - already sent")
-                    continue
-
                 # Send the alert
                 try:
                     from email_utils import send_watchlist_alert_email
 
+                    # Record trigger time before sending to prevent retry storms
+                    item.alert_triggered_at = datetime.now(timezone.utc)
+                    item.alert_sent = True
+
                     if send_watchlist_alert_email(item, stock, reasons):
-                        item.alert_triggered_at = datetime.now(timezone.utc)
-                        item.alert_sent = True
                         alerts_sent += 1
                         logger.info(f"Watchlist alert sent for {item.ticker}: {', '.join(reasons)}")
                     else:
-                        logger.warning(f"Failed to send watchlist alert for {item.ticker}")
+                        logger.warning(f"Failed to send watchlist alert email for {item.ticker}")
                 except Exception as e:
                     logger.error(f"Error sending watchlist alert for {item.ticker}: {e}")
+                    # Still mark as triggered to prevent retry storms
+                    item.alert_triggered_at = datetime.now(timezone.utc)
 
         db.commit()
 

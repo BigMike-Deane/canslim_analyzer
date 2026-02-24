@@ -3235,8 +3235,8 @@ async def bulk_add_to_watchlist(data: WatchlistBulkImport, db: Session = Depends
     )
 
     for ticker in ticker_list:
-        # Basic ticker validation (1-5 uppercase letters)
-        if not re.match(r'^[A-Z]{1,5}$', ticker):
+        # Ticker validation (letters, numbers, dots, hyphens — e.g. BRK.B)
+        if not re.match(r'^[A-Z0-9.\-]{1,10}$', ticker):
             invalid.append(ticker)
             continue
 
