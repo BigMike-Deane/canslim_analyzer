@@ -2701,25 +2701,48 @@ async def get_coiled_spring_history(
     # Page stats
     page_stats = _cs_stats(alerts)
 
-    # Cumulative stats (all deduped alerts)
-    all_deduped = deduped_q.all()
-    cumulative = _cs_stats(all_deduped)
+    # Cumulative stats via SQL aggregation (avoids loading all alerts into memory)
+    keep_ids = _get_deduped_cs_alert_ids(db)
+    cum_row = db.query(
+        func.count(CoiledSpringAlert.id).label('total'),
+        func.count(case((CoiledSpringAlert.outcome != None, 1))).label('with_outcome'),
+        func.count(case((CoiledSpringAlert.outcome.in_(['win', 'big_win']), 1))).label('wins'),
+        func.count(case((CoiledSpringAlert.outcome == 'big_win', 1))).label('big_wins'),
+        func.count(case((CoiledSpringAlert.outcome == 'loss', 1))).label('losses'),
+        func.count(case((CoiledSpringAlert.outcome == 'flat', 1))).label('flat'),
+        func.count(case((CoiledSpringAlert.outcome == None, 1))).label('pending'),
+    ).filter(CoiledSpringAlert.id.in_(keep_ids)).first()
+    cumulative = {
+        "total": cum_row.total,
+        "with_outcome": cum_row.with_outcome,
+        "wins": cum_row.wins,
+        "big_wins": cum_row.big_wins,
+        "losses": cum_row.losses,
+        "flat": cum_row.flat,
+        "pending": cum_row.pending,
+        "win_rate": round(cum_row.wins / cum_row.with_outcome * 100, 1) if cum_row.with_outcome else 0,
+        "big_win_rate": round(cum_row.big_wins / cum_row.with_outcome * 100, 1) if cum_row.with_outcome else 0,
+    }
 
-    # Group by base_type
+    # Group by base_type via SQL aggregation
+    base_rows = db.query(
+        func.coalesce(CoiledSpringAlert.base_type, 'unknown').label('base'),
+        func.count(CoiledSpringAlert.id).label('total'),
+        func.count(case((CoiledSpringAlert.outcome != None, 1))).label('with_outcome'),
+        func.count(case((CoiledSpringAlert.outcome.in_(['win', 'big_win']), 1))).label('wins'),
+        func.count(case((CoiledSpringAlert.outcome == 'big_win', 1))).label('big_wins'),
+    ).filter(CoiledSpringAlert.id.in_(keep_ids)).group_by(
+        func.coalesce(CoiledSpringAlert.base_type, 'unknown')
+    ).all()
     by_base_type = {}
-    for a in all_deduped:
-        base = a.base_type or 'unknown'
-        if base not in by_base_type:
-            by_base_type[base] = {'total': 0, 'with_outcome': 0, 'wins': 0, 'big_wins': 0}
-        by_base_type[base]['total'] += 1
-        if a.outcome:
-            by_base_type[base]['with_outcome'] += 1
-            if a.outcome in ('win', 'big_win'):
-                by_base_type[base]['wins'] += 1
-            if a.outcome == 'big_win':
-                by_base_type[base]['big_wins'] += 1
-    for base, stats in by_base_type.items():
-        stats['win_rate'] = round(stats['wins'] / stats['with_outcome'] * 100, 1) if stats['with_outcome'] > 0 else 0
+    for row in base_rows:
+        by_base_type[row.base] = {
+            'total': row.total,
+            'with_outcome': row.with_outcome,
+            'wins': row.wins,
+            'big_wins': row.big_wins,
+            'win_rate': round(row.wins / row.with_outcome * 100, 1) if row.with_outcome > 0 else 0
+        }
 
     return {
         "alerts": [{
@@ -3723,9 +3746,15 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
 # ============== Trade Analytics ==============
 
 @app.get("/api/analytics/trades")
-async def get_trade_analytics(db: Session = Depends(get_db)):
+async def get_trade_analytics(
+    days: int = Query(365, ge=30, le=1825),
+    db: Session = Depends(get_db)
+):
     """Analyze historical trade performance with breakdowns"""
-    trades = db.query(AIPortfolioTrade).all()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    trades = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.executed_at >= cutoff
+    ).all()
 
     if not trades:
         return {"summary": {}, "by_sector": [], "monthly_pnl": [], "by_entry_type": []}
@@ -4409,9 +4438,21 @@ async def get_command_center(db: Session = Depends(get_db)):
             "base_type": s.base_type,
         } for s in cs_candidates]
 
-        # Aggregate stats from deduped alerts
-        all_deduped = _get_deduped_cs_alerts(db).all()
-        cs_stats = _cs_stats(all_deduped)
+        # Aggregate stats from deduped alerts via SQL (avoids loading all into memory)
+        keep_ids = _get_deduped_cs_alert_ids(db)
+        cum_row = db.query(
+            func.count(CoiledSpringAlert.id).label('total'),
+            func.count(case((CoiledSpringAlert.outcome != None, 1))).label('with_outcome'),
+            func.count(case((CoiledSpringAlert.outcome.in_(['win', 'big_win']), 1))).label('wins'),
+            func.count(case((CoiledSpringAlert.outcome == 'big_win', 1))).label('big_wins'),
+        ).filter(CoiledSpringAlert.id.in_(keep_ids)).first()
+        cs_stats = {
+            "total": cum_row.total,
+            "with_outcome": cum_row.with_outcome,
+            "wins": cum_row.wins,
+            "big_wins": cum_row.big_wins,
+            "win_rate": round(cum_row.wins / cum_row.with_outcome * 100, 1) if cum_row.with_outcome else 0,
+        }
 
         # Recent resolved alerts (last 5 with outcomes, deduped)
         deduped_resolved = _get_deduped_cs_alerts(db).filter(
