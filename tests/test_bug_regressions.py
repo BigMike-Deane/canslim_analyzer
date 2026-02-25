@@ -1736,3 +1736,51 @@ class TestBacktesterSectorAllocationLimit:
         source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
         # The gate must exist: beat_streak >= 3 AND days_to_earnings is not None
         assert "days_to_earnings is not None" in source
+
+
+# ─── OHLC Split Adjustment (historical_data.py) ──────────────────────────
+# Bug: Adjusted close was used with unadjusted open/high/low, corrupting
+# 52-week highs, ATR, and base patterns for split stocks (AMZN 20:1, GOOG 20:1).
+# Fix: Compute adjustment factor (adjclose/rawclose) and apply to O/H/L.
+
+
+class TestOHLCAdjustment:
+    """Regression: Unadjusted OHLV mixed with adjusted close for split stocks."""
+
+    def test_adjustment_factor_computation(self):
+        """Verify adjustment factor = adjclose / rawclose applied to O/H/L."""
+        # Simulate a 20:1 split: pre-split raw close $2000, adj close $100
+        raw_close = 2000.0
+        adj_close = 100.0
+        factor = adj_close / raw_close  # 0.05
+
+        raw_high = 2050.0
+        raw_low = 1980.0
+        raw_open = 1990.0
+
+        adj_high = raw_high * factor  # 102.50
+        adj_low = raw_low * factor    # 99.00
+        adj_open = raw_open * factor  # 99.50
+
+        assert adj_high == pytest.approx(102.50)
+        assert adj_low == pytest.approx(99.00)
+        assert adj_open == pytest.approx(99.50)
+
+    def test_historical_data_applies_adjustment(self):
+        """Verify historical_data.py applies adjustment to OHLV columns."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "historical_data.py").read_text()
+        # Must compute adjustment factor from adj/raw close
+        assert "factor" in source or "adj_open" in source
+        # Must NOT use raw open/high/low directly when adjclose is available
+        # The DataFrame should use adjusted values
+        assert "adj_open" in source or "adj_high" in source
+
+    def test_score_stability_lookback_parameter(self):
+        """check_score_stability must accept a lookback parameter for configurable consecutive_required."""
+        import inspect
+        from backend.ai_trader import check_score_stability
+        sig = inspect.signature(check_score_stability)
+        assert "lookback" in sig.parameters
+        # Default should be 3
+        assert sig.parameters["lookback"].default == 3

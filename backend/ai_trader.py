@@ -396,7 +396,7 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
     return True
 
 
-def check_score_stability(db: Session, ticker: str, current_score: float, threshold: float = 50) -> dict:
+def check_score_stability(db: Session, ticker: str, current_score: float, threshold: float = 50, lookback: int = 3) -> dict:
     """
     Check if a low score is consistent across recent scans (not a one-time blip).
     Matches backtester._check_score_stability() logic.
@@ -417,10 +417,10 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
         return {"is_stable": True, "recent_scores": [], "avg_score": current_score,
                 "consecutive_low": 1 if current_score < threshold else 0, "warning": "Stock not found"}
 
-    # Get scores from last 3 scans (roughly last 4-5 hours if scanning every 90 min)
+    # Get scores from last N scans (roughly last 4-5 hours if scanning every 90 min)
     recent_scores = db.query(StockScore).filter(
         StockScore.stock_id == stock.id
-    ).order_by(StockScore.timestamp.desc()).limit(3).all()
+    ).order_by(StockScore.timestamp.desc()).limit(lookback).all()
 
     if len(recent_scores) < 2:
         # Not enough history, trust current score
@@ -1521,7 +1521,7 @@ def evaluate_sells(db: Session) -> list:
             stock = ticker_to_stock.get(position.ticker)
 
             # SAFEGUARD: Check score stability - is this a consistent low or a one-time blip?
-            stability = check_score_stability(db, position.ticker, score, threshold=score_threshold)
+            stability = check_score_stability(db, position.ticker, score, threshold=score_threshold, lookback=max(3, consecutive_required))
 
             if not stability["is_stable"]:
                 # This looks like a data blip - DON'T SELL, just log warning

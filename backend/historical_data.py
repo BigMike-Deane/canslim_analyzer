@@ -11,7 +11,7 @@ import sys
 import requests
 import pandas as pd
 import numpy as np
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -202,8 +202,8 @@ class HistoricalDataProvider:
         """
         try:
             # Convert dates to timestamps
-            start_ts = int(datetime.combine(start_date, datetime.min.time()).timestamp())
-            end_ts = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+            start_ts = int(datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp())
+            end_ts = int(datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp())
 
             url = YAHOO_CHART_URL.format(ticker=ticker)
             params = {
@@ -229,18 +229,44 @@ class HistoricalDataProvider:
             if not timestamps or not quotes:
                 return None
 
-            # Use adjusted close if available, otherwise regular close
-            close_prices = quotes.get("close", [])
+            # Use adjusted close if available, and adjust OHLV to match
+            raw_close = quotes.get("close", [])
+            raw_open = quotes.get("open", [])
+            raw_high = quotes.get("high", [])
+            raw_low = quotes.get("low", [])
+            raw_volume = quotes.get("volume", [])
+
             if adj_close and adj_close[0].get("adjclose"):
-                close_prices = adj_close[0]["adjclose"]
+                adj_prices = adj_close[0]["adjclose"]
+                # Compute adjustment factor per day to apply to O/H/L
+                # This handles stock splits (e.g., AMZN 20:1, GOOG 20:1, TSLA 3:1)
+                adj_open = []
+                adj_high = []
+                adj_low = []
+                for i in range(len(raw_close)):
+                    rc = raw_close[i] if i < len(raw_close) else None
+                    ap = adj_prices[i] if i < len(adj_prices) else None
+                    if rc and ap and rc != 0:
+                        factor = ap / rc
+                    else:
+                        factor = 1.0
+                    adj_open.append((raw_open[i] * factor) if i < len(raw_open) and raw_open[i] is not None else None)
+                    adj_high.append((raw_high[i] * factor) if i < len(raw_high) and raw_high[i] is not None else None)
+                    adj_low.append((raw_low[i] * factor) if i < len(raw_low) and raw_low[i] is not None else None)
+                close_prices = adj_prices
+            else:
+                close_prices = raw_close
+                adj_open = raw_open
+                adj_high = raw_high
+                adj_low = raw_low
 
             df = pd.DataFrame({
                 "date": pd.to_datetime(timestamps, unit="s").date,
-                "open": quotes.get("open", []),
-                "high": quotes.get("high", []),
-                "low": quotes.get("low", []),
+                "open": adj_open,
+                "high": adj_high,
+                "low": adj_low,
                 "close": close_prices,
-                "volume": quotes.get("volume", [])
+                "volume": raw_volume
             })
 
             # Remove rows with None/NaN in essential OHLCV columns
