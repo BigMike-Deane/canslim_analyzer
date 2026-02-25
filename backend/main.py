@@ -1924,7 +1924,7 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
                 position.current_price = current_price
                 position.current_value = current_price * position.shares
 
-                if position.cost_basis:
+                if position.cost_basis and position.cost_basis > 0:
                     position.gain_loss = (current_price - position.cost_basis) * position.shares
                     position.gain_loss_pct = (current_price - position.cost_basis) / position.cost_basis * 100
 
@@ -2178,13 +2178,13 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
             elif is_breaking_out:
                 entry_signal = "🚀 Breaking out with volume"
             elif has_base:
-                if stock.week_52_high and stock.current_price:
+                if stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
                     pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
                     if pct_from_high <= 15:
                         entry_signal = f"📈 Pre-breakout: {base_type} base ({weeks_in_base}w), {pct_from_high:.0f}% from pivot"
                     else:
                         entry_signal = f"Base forming: {base_type} ({weeks_in_base}w)"
-            elif stock.week_52_high and stock.current_price:
+            elif stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
                 pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
                 if pct_from_high <= 10:
                     entry_signal = f"Within {pct_from_high:.0f}% of 52-week high (no base detected)"
@@ -2193,7 +2193,7 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
             priority = 2
             if is_breaking_out and has_base:
                 priority = 1  # Highest priority - confirmed breakout from base
-            elif has_base and stock.week_52_high and stock.current_price:
+            elif has_base and stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
                 pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
                 if pct_from_high <= 15:
                     priority = 1  # High priority - pre-breakout with base
@@ -2249,7 +2249,7 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
             current_value = p.current_value or 0
             add_value = min(target_value - current_value, total_value * 0.05)  # Add up to 5% more
 
-            if add_value > 500 and stock.current_price:  # Min $500 to add
+            if add_value > 500 and stock.current_price and stock.current_price > 0:  # Min $500 to add
                 add_shares = int(add_value / stock.current_price)
                 actions.append({
                     "action": "ADD",
@@ -2301,7 +2301,7 @@ async def get_portfolio_gameplan(db: Session = Depends(get_db)):
             effective_score = stock.canslim_score or 0
             score_type = "CANSLIM"
 
-        if effective_score >= 70 and stock.week_52_high and stock.current_price:
+        if effective_score >= 70 and stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
 
             # Get base pattern info
@@ -2886,6 +2886,8 @@ async def update_coiled_spring_outcomes(db: Session = Depends(get_db)):
             continue  # Earnings haven't happened yet
 
         # Calculate outcome
+        if not alert.price_at_alert or alert.price_at_alert <= 0:
+            continue
         price_change_pct = ((stock.current_price - alert.price_at_alert) / alert.price_at_alert) * 100
 
         if price_change_pct >= 15:

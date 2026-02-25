@@ -420,7 +420,8 @@ def send_morning_briefing_if_due():
                 "score": b.get("effective_score", 0),
                 "reason": b.get("reason", "")
             } for b in buys]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to evaluate buy candidates for briefing: {e}")
             candidates = []
 
         # Market timing info

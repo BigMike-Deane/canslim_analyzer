@@ -2895,6 +2895,8 @@ class BacktestEngine:
             score_data = scores.get(ticker, {})
             current_score = score_data.get("total_score", 0)
 
+            if position.cost_basis <= 0:
+                continue
             gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100
             current_value = position.shares * price
             current_allocation = current_value / portfolio_value if portfolio_value > 0 else 0
