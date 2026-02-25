@@ -2111,7 +2111,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             elif weeks_in_base >= 5:
                 base_quality_bonus += 1
 
-        if stock.week_52_high and stock.current_price:
+        if stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
             pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
 
             # Calculate pct_from_pivot if we have a valid pivot price
@@ -2218,7 +2218,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if rs_line_config.get('enabled', True):
             # Use L score as proxy for RS line in live trader (avoids expensive historical calc)
             # RS new high = L score >= 13 (top quartile) and stock is NOT at price new high
-            if l_score >= 13 and stock.week_52_high and stock.current_price:
+            if l_score >= 13 and stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
                 pct_from_high_check = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
                 if pct_from_high_check > 2:  # RS strong but price hasn't caught up
                     rs_line_bonus = rs_line_config.get('bonus_points', 8)
