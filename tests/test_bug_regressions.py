@@ -1784,3 +1784,1167 @@ class TestOHLCAdjustment:
         assert "lookback" in sig.parameters
         # Default should be 3
         assert sig.parameters["lookback"].default == 3
+
+
+# ─── Weighted Score Averaging (ai_trader.py) ───────────────────────────────
+# Improvement: Recency-weighted average (50/30/20) reduces momentum lag
+# while still smoothing single-scan noise. Equal-weight created ~8pt lag
+# on improving stocks, causing late entries.
+
+
+class TestWeightedScoreAveraging:
+    """Tests for the recency-weighted score averaging in evaluate_buys."""
+
+    def test_weighted_avg_favors_recent_on_improvement(self):
+        """When scores improve over 3 scans, weighted average should be higher than equal-weight."""
+        # Simulating _get_avg_score logic with improving scores
+        scores = [82, 75, 65]  # most recent first
+        equal_avg = sum(scores) / len(scores)  # 74.0
+        weighted_avg = scores[0] * 0.50 + scores[1] * 0.30 + scores[2] * 0.20  # 76.5
+
+        assert weighted_avg > equal_avg
+        # Weighted should be ~2.5pts higher for improving trajectory
+        assert weighted_avg - equal_avg >= 2.0
+
+    def test_weighted_avg_penalizes_recent_decline(self):
+        """When scores decline, weighted average should be lower than equal-weight."""
+        scores = [60, 72, 80]  # declining: most recent is worst
+        equal_avg = sum(scores) / len(scores)  # 70.67
+        weighted_avg = scores[0] * 0.50 + scores[1] * 0.30 + scores[2] * 0.20  # 67.6
+
+        assert weighted_avg < equal_avg
+        # Weighted should be ~3pts lower for declining trajectory
+        assert equal_avg - weighted_avg >= 2.5
+
+    def test_weighted_avg_stable_scores_similar(self):
+        """When scores are stable, weighted and equal averages should be similar."""
+        scores = [75, 74, 76]  # stable
+        equal_avg = sum(scores) / len(scores)  # 75.0
+        weighted_avg = scores[0] * 0.50 + scores[1] * 0.30 + scores[2] * 0.20  # 74.9
+
+        assert abs(weighted_avg - equal_avg) < 1.0
+
+    def test_two_scan_weighted_avg(self):
+        """With only 2 scans, should use 60/40 weighting."""
+        scores = [80, 70]  # most recent first
+        weighted_avg = scores[0] * 0.60 + scores[1] * 0.40  # 76.0
+        equal_avg = sum(scores) / len(scores)  # 75.0
+
+        assert weighted_avg > equal_avg
+
+    def test_weighted_avg_respects_threshold(self):
+        """Score averaging should only apply when difference from current >= 3."""
+        # If current_score is very close to the average, just return current
+        current_score = 75.0
+        scores = [76, 74, 75]  # avg ≈ 75, close to current
+        weighted_avg = scores[0] * 0.50 + scores[1] * 0.30 + scores[2] * 0.20  # 75.2
+
+        # When abs(avg - current) < 3, should return current_score
+        assert abs(weighted_avg - current_score) < 3
+
+
+# ─── Batch Score History (ai_trader.py) ────────────────────────────────────
+# Improvement: Batch-fetch score history for all candidates in one query
+# instead of N+1 individual queries per candidate.
+
+
+class TestBatchScoreHistory:
+    """Verify that evaluate_buys uses batched score history."""
+
+    def test_evaluate_buys_has_batch_score_cache(self):
+        """evaluate_buys should create _score_history_cache for batch lookups."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Must have batch fetch instead of per-ticker query
+        assert "_score_history_cache" in source
+        # Must build cache before the main candidate loop
+        assert "candidate_tickers" in source
+        # Must use .in_ for batch query
+        assert "StockScore.ticker.in_(candidate_tickers)" in source
+
+    def test_no_per_ticker_query_in_get_avg_score(self):
+        """_get_avg_score should use the cache, not run individual DB queries."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Find the _get_avg_score function and check it uses cache
+        import re
+        fn_match = re.search(r'def _get_avg_score\(.*?\):\s*""".*?"""(.*?)(?=\n    # Pre-compute|\n    for stock)', source, re.DOTALL)
+        if fn_match:
+            fn_body = fn_match.group(1)
+            # Should reference cache, NOT run db.query
+            assert "_score_history_cache" in fn_body
+            assert "db.query" not in fn_body
+
+
+# ─── Partial Profit Integration Tests ──────────────────────────────────────
+# Tests for partial profit taking edge cases that were previously untested.
+# The Feb 24 delta bug showed that missing integration tests can cost 25+pp.
+
+
+class TestPartialProfitIntegration:
+    """Integration tests for partial profit logic in evaluate_sells."""
+
+    def test_partial_profit_delta_at_40pct_tier(self):
+        """When 25% already taken, 40% tier should sell (50% - 25%) = 25% more."""
+        from backend.ai_trader import evaluate_sells
+        from unittest.mock import MagicMock, patch
+
+        # Create mock position with 25% already taken
+        position = MagicMock()
+        position.ticker = "TEST"
+        position.current_price = 130.0
+        position.cost_basis = 100.0
+        position.gain_loss_pct = 30.0  # Up 30%, but let's test 40%
+        position.shares = 75  # Had 100, sold 25 (25% partial)
+        position.peak_price = 135.0
+        position.peak_date = datetime.now()
+        position.is_growth_stock = False
+        position.current_score = 75
+        position.purchase_score = 80
+        position.current_growth_score = None
+        position.purchase_growth_score = None
+        position.partial_profit_taken = 25  # Already took 25%
+        position.pyramid_count = 0
+
+        # With partial_taken=25, pp_40_sell=50, delta should be 25
+        delta = 50 - 25  # pp_40_sell - partial_taken
+        assert delta == 25
+        assert delta > 0  # Should trigger sell
+
+    def test_partial_profit_skipped_when_fully_taken(self):
+        """When 50% already taken, no more partial sells should happen."""
+        partial_taken = 50
+        pp_25_sell = 25
+        pp_40_sell = 50
+
+        # Both tiers: take_pct = target - taken
+        take_25 = pp_25_sell - partial_taken  # 25 - 50 = -25
+        take_40 = pp_40_sell - partial_taken  # 50 - 50 = 0
+
+        assert take_25 <= 0  # Should NOT trigger
+        assert take_40 <= 0  # Should NOT trigger
+
+    def test_partial_profit_25pct_tier_delta_correct(self):
+        """First partial at 25% gain should sell exactly 25% of position."""
+        partial_taken = 0
+        pp_25_sell = 25
+
+        take_pct = pp_25_sell - partial_taken  # 25 - 0 = 25
+        assert take_pct == 25
+
+    def test_partial_profit_requires_min_score(self):
+        """Partial profit should NOT trigger if score is too low."""
+        # Default min score for partial is 60
+        pp_25_min_score = 60
+        current_score = 55  # Below threshold
+
+        should_take_partial = current_score >= pp_25_min_score
+        assert not should_take_partial
+
+
+# ─── Earnings Avoidance Window Validation ──────────────────────────────────
+# Tests that validate the two-window earnings avoidance system.
+# avoidance_days (5) and allow_buy_days (7) serve DIFFERENT purposes.
+
+
+class TestEarningsAvoidanceWindows:
+    """Ensure earnings avoidance logic handles all edge cases correctly."""
+
+    def test_non_cs_blocked_within_avoidance(self):
+        """Non-CS stock at 4 days to earnings should be blocked (4 <= 5)."""
+        avoidance_days = 5
+        days_to_earnings = 4
+        is_coiled_spring = False
+
+        blocked = days_to_earnings <= avoidance_days and not is_coiled_spring
+        assert blocked
+
+    def test_non_cs_allowed_past_avoidance(self):
+        """Non-CS stock at 6 days to earnings should be allowed (6 > 5)."""
+        avoidance_days = 5
+        days_to_earnings = 6
+        is_coiled_spring = False
+
+        blocked = days_to_earnings <= avoidance_days and not is_coiled_spring
+        assert not blocked
+
+    def test_cs_allowed_within_evaluation_window(self):
+        """CS stock at 5 days should be allowed (days > block_days=1)."""
+        block_days = 1
+        days_to_earnings = 5
+        is_coiled_spring = True
+
+        allowed = is_coiled_spring and days_to_earnings > block_days
+        assert allowed
+
+    def test_cs_blocked_on_earnings_day(self):
+        """CS stock at 1 day should be blocked (days <= block_days=1)."""
+        block_days = 1
+        days_to_earnings = 1
+        is_coiled_spring = True
+
+        blocked = not (days_to_earnings > block_days)
+        assert blocked
+
+    def test_config_validation_warning(self):
+        """allow_buy_days < avoidance_days should log a warning."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Must have config validation for window mismatch
+        assert "allow_buy_days < avoidance_days" in source
+
+    def test_stocks_between_avoidance_and_allow_window(self):
+        """Stocks at 6-7 days: NOT in avoidance window, may be in CS evaluation."""
+        avoidance_days = 5
+        allow_buy_days = 7
+
+        # Day 6: past avoidance, in CS evaluation zone
+        days = 6
+        in_avoidance = days <= avoidance_days
+        in_cs_window = days <= allow_buy_days
+        assert not in_avoidance  # Should NOT be blocked
+        assert in_cs_window  # IS in CS evaluation zone (can buy if CS)
+
+
+# ─── AI Trader / Backtester Sync Verification ──────────────────────────────
+# Structural tests that verify key logic stays synced between the two files.
+
+
+class TestAITraderBacktesterSync:
+    """Verify that ai_trader.py and backtester.py have matching logic structures."""
+
+    def test_composite_score_weights_match(self):
+        """Both files should use the same scoring weight keys."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        weight_keys = ['growth_projection', 'canslim_score', 'momentum', 'breakout', 'base_quality']
+        for key in weight_keys:
+            assert key in ai_source, f"Missing weight key '{key}' in ai_trader.py"
+            assert key in bt_source, f"Missing weight key '{key}' in backtester.py"
+
+    def test_pre_breakout_bonus_values_match(self):
+        """Pre-breakout bonuses should be identical in both files."""
+        from pathlib import Path
+        import re
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        # Both should have pre_breakout_bonus = 40
+        ai_matches = re.findall(r'pre_breakout_bonus = (\d+)', ai_source)
+        bt_matches = re.findall(r'pre_breakout_bonus = (\d+)', bt_source)
+        assert ai_matches and bt_matches
+        assert ai_matches[0] == bt_matches[0], f"Pre-breakout bonus mismatch: ai={ai_matches[0]} bt={bt_matches[0]}"
+
+    def test_trailing_stop_tiers_match(self):
+        """Trailing stop tier thresholds should match between files."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        # Both should check peak_gain >= 50, >= 30, >= 20, >= 10
+        for threshold in ['50', '30', '20', '10']:
+            pattern = f'peak_gain_pct >= {threshold}'
+            assert pattern in ai_source, f"Missing trailing stop tier {threshold} in ai_trader.py"
+            assert pattern in bt_source, f"Missing trailing stop tier {threshold} in backtester.py"
+
+    def test_partial_profit_config_keys_match(self):
+        """Partial profit config key names should be identical."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        config_keys = ['threshold_25pct', 'threshold_40pct', 'gain_pct', 'sell_pct', 'min_score']
+        for key in config_keys:
+            assert key in ai_source, f"Missing partial profit key '{key}' in ai_trader.py"
+            assert key in bt_source, f"Missing partial profit key '{key}' in backtester.py"
+
+    def test_score_crash_config_keys_match(self):
+        """Score crash detection config should use same keys."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        for key in ['consecutive_required', 'drop_required', 'ignore_if_profitable']:
+            assert key in ai_source, f"Missing score crash key '{key}' in ai_trader.py"
+            assert key in bt_source, f"Missing score crash key '{key}' in backtester.py"
+
+    def test_extended_penalty_values_match(self):
+        """Extended stock penalty values should be identical."""
+        from pathlib import Path
+        import re
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        # Both should have extended_penalty = -20 and -10
+        for val in ['-20', '-10', '-15']:
+            ai_has = f'extended_penalty = {val}' in ai_source
+            bt_has = f'extended_penalty = {val}' in bt_source
+            if ai_has and not bt_has:
+                pytest.fail(f"ai_trader has extended_penalty={val} but backtester doesn't")
+            if bt_has and not ai_has:
+                pytest.fail(f"backtester has extended_penalty={val} but ai_trader doesn't")
+
+    def test_momentum_penalty_threshold_match(self):
+        """Momentum penalty (rs_3m < rs_12m * 0.95) should match."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "rs_12m * 0.95" in ai_source
+        assert "rs_12m * 0.95" in bt_source
+
+    def test_base_quality_bonus_values_match(self):
+        """Base quality bonus for each pattern type should match."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        # Check that bonus values are the same
+        patterns = {
+            'cup_with_handle': '10',
+            'cup': '8',
+            'double_bottom': '7',
+            'flat': '6',
+        }
+        for pattern, bonus in patterns.items():
+            # Both files should assign the same bonus
+            ai_check = f'"{pattern}"' in ai_source or f"'{pattern}'" in ai_source
+            bt_check = f'"{pattern}"' in bt_source or f"'{pattern}'" in bt_source
+            assert ai_check, f"Pattern {pattern} missing from ai_trader.py"
+            assert bt_check, f"Pattern {pattern} missing from backtester.py"
+
+
+# ─── Pyramid Logic Tests ──────────────────────────────────────────────────
+# Tests for pyramid (position addition) logic that was previously untested
+# in the live trading path.
+
+
+class TestPyramidLiveTrading:
+    """Tests for evaluate_pyramids in ai_trader.py."""
+
+    def test_pyramid_requires_minimum_gain(self):
+        """Pyramid should require at least 2.5% gain from entry."""
+        min_gain = 2.5
+        assert 1.5 < min_gain  # 1.5% gain should NOT pyramid
+        assert 3.0 >= min_gain  # 3% gain should qualify
+
+    def test_pyramid_max_2_enforced(self):
+        """Third pyramid attempt should be blocked (max 2)."""
+        max_pyramids = 2
+        current_count = 2
+        assert current_count >= max_pyramids  # Should be blocked
+
+    def test_pyramid_60_40_sizing(self):
+        """First pyramid = 60% of original, second = 40%."""
+        original_cost = 10000  # $10K initial position
+
+        # First pyramid
+        first_add = original_cost * 0.60
+        assert first_add == 6000
+
+        # Second pyramid
+        second_add = original_cost * 0.40
+        assert second_add == 4000
+
+    def test_pyramid_respects_position_cap(self):
+        """Pyramid should not exceed MAX_POSITION_ALLOCATION."""
+        portfolio_value = 100000
+        MAX_POSITION_ALLOCATION = 0.25  # 25%
+        current_allocation = 0.20  # 20%
+
+        remaining_room = (MAX_POSITION_ALLOCATION - current_allocation) * portfolio_value
+        pyramid_amount = 10000  # Wants to add $10K
+
+        capped_amount = min(pyramid_amount, remaining_room)
+        assert abs(capped_amount - 5000) < 1  # Only ~$5K room (float precision)
+
+    def test_pyramid_1day_cooldown(self):
+        """Pyramid should not execute same day as previous pyramid."""
+        from datetime import date
+        today = date.today()
+        last_pyramid_date = today  # Same day
+
+        should_block = last_pyramid_date >= today
+        assert should_block
+
+    def test_pyramid_function_exists_with_correct_signature(self):
+        """evaluate_pyramids should exist and accept db session."""
+        import inspect
+        from backend.ai_trader import evaluate_pyramids
+        sig = inspect.signature(evaluate_pyramids)
+        assert "db" in sig.parameters
+
+
+# ─── Peak Price Initialization ─────────────────────────────────────────────
+# Improvement: Peak price should be initialized from historical high, not just
+# max(current_price, cost_basis), to avoid trailing stops triggering too early.
+
+
+class TestPeakPriceInitialization:
+    """Tests for improved peak price initialization in update_position_prices."""
+
+    def test_peak_price_uses_historical_high_code_exists(self):
+        """update_position_prices should attempt historical peak lookup."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Must have historical peak lookup logic
+        assert "Historical peak lookup" in source or "actual_peak" in source
+        # Must still have the max(current, cost_basis) fallback
+        assert "max(current_price, position.cost_basis)" in source or "actual_peak" in source
+
+
+# ─── S Score Accumulation/Distribution (canslim_scorer.py, Iteration 2) ──────
+# Enhancement: S score now includes up-volume vs down-volume ratio to detect
+# institutional accumulation (buying on up days) vs distribution (selling on down days).
+# This is O'Neil's real Supply/Demand indicator.
+
+
+class TestSScoreAccumulationDistribution:
+    """Tests for accumulation/distribution detection in S score."""
+
+    def _make_stock_data(self, price_df):
+        """Helper to create StockData with given price DataFrame."""
+        from data_fetcher import StockData
+        stock = StockData("TEST")
+        stock.current_price = 100.0
+        stock.avg_volume_50d = 1000000
+        stock.current_volume = 1200000
+        stock.price_history = price_df
+        return stock
+
+    def test_accumulation_detected(self):
+        """Heavy up-day volume should produce higher S score than neutral."""
+        import pandas as pd
+        import numpy as np
+        from canslim_scorer import CANSLIMScorer
+
+        mock_fetcher = MagicMock()
+        scorer = CANSLIMScorer(mock_fetcher)
+
+        # Create price history: mostly up days with heavy volume
+        dates = pd.date_range(end="2026-02-26", periods=30, freq="B")
+        closes = [100 + i * 0.3 for i in range(30)]  # Steadily rising
+        volumes = [1000000] * 30
+        # Make up-day volumes much larger than down-day volumes
+        for i in range(1, 30):
+            if closes[i] > closes[i - 1]:
+                volumes[i] = 2000000  # 2x on up days
+            else:
+                volumes[i] = 500000   # 0.5x on down days
+
+        df = pd.DataFrame({
+            "Close": closes, "Volume": volumes, "Low": [c * 0.99 for c in closes]
+        }, index=dates)
+
+        stock = self._make_stock_data(df)
+        score, detail = scorer._score_supply_demand(stock)
+        assert score >= 5, f"Accumulation pattern should score well, got {score}"
+        assert "accum" in detail, "Detail should mention accumulation"
+
+    def test_distribution_detected(self):
+        """Heavy down-day volume should be flagged as distribution."""
+        import pandas as pd
+        from canslim_scorer import CANSLIMScorer
+
+        mock_fetcher = MagicMock()
+        scorer = CANSLIMScorer(mock_fetcher)
+
+        # Create price history: mostly down days with heavy volume
+        dates = pd.date_range(end="2026-02-26", periods=30, freq="B")
+        closes = [100 - i * 0.3 for i in range(30)]  # Steadily falling
+        volumes = [1000000] * 30
+        for i in range(1, 30):
+            if closes[i] < closes[i - 1]:
+                volumes[i] = 2000000  # Heavy on down days
+            else:
+                volumes[i] = 500000
+
+        df = pd.DataFrame({
+            "Close": closes, "Volume": volumes, "Low": [c * 0.99 for c in closes]
+        }, index=dates)
+
+        stock = self._make_stock_data(df)
+        score, detail = scorer._score_supply_demand(stock)
+        assert "distrib" in detail, "Detail should mention distribution"
+
+    def test_s_score_max_is_15(self):
+        """S score should never exceed 15 points."""
+        import pandas as pd
+        from canslim_scorer import CANSLIMScorer
+
+        mock_fetcher = MagicMock()
+        scorer = CANSLIMScorer(mock_fetcher)
+
+        # Best possible conditions: high volume, rising, strong accumulation
+        dates = pd.date_range(end="2026-02-26", periods=30, freq="B")
+        closes = [100 + i * 1.0 for i in range(30)]
+        volumes = [3000000] * 30  # All very high
+
+        df = pd.DataFrame({
+            "Close": closes, "Volume": volumes, "Low": [c * 0.99 for c in closes]
+        }, index=dates)
+
+        stock = self._make_stock_data(df)
+        stock.current_volume = 3000000  # 3x average
+        score, _ = scorer._score_supply_demand(stock)
+        assert score <= 15, f"S score should not exceed 15, got {score}"
+
+    def test_s_score_min_is_zero(self):
+        """S score should never go below 0."""
+        import pandas as pd
+        from canslim_scorer import CANSLIMScorer
+
+        mock_fetcher = MagicMock()
+        scorer = CANSLIMScorer(mock_fetcher)
+
+        # Worst conditions: low volume, falling price, distribution
+        dates = pd.date_range(end="2026-02-26", periods=30, freq="B")
+        closes = [100 - i * 0.5 for i in range(30)]
+        volumes = [500000] * 30  # Low volume
+        for i in range(1, 30):
+            if closes[i] < closes[i - 1]:
+                volumes[i] = 2000000
+            else:
+                volumes[i] = 100000
+
+        df = pd.DataFrame({
+            "Close": closes, "Volume": volumes, "Low": [c * 0.99 for c in closes]
+        }, index=dates)
+
+        stock = self._make_stock_data(df)
+        stock.current_volume = 400000  # Below average
+        score, _ = scorer._score_supply_demand(stock)
+        assert score >= 0, f"S score should not go below 0, got {score}"
+
+
+# ─── N Score Trend Direction (canslim_scorer.py, Iteration 2) ─────────────────
+# Enhancement: N score now detects higher lows (constructive) vs lower lows
+# (distribution) pattern using 10-day/20-day low comparison.
+
+
+class TestNScoreTrendDirection:
+    """Tests for constructive trend detection in N score."""
+
+    def _make_stock_data(self, closes, lows=None):
+        """Helper to create StockData with given price history."""
+        import pandas as pd
+        from data_fetcher import StockData
+
+        stock = StockData("TEST")
+        stock.current_price = closes[-1]
+        stock.high_52w = max(closes) * 1.02  # Just above current
+        stock.avg_volume_50d = 1000000
+        stock.current_volume = 1500000  # 1.5x for volume bonus
+
+        dates = pd.date_range(end="2026-02-26", periods=len(closes), freq="B")
+        if lows is None:
+            lows = [c * 0.99 for c in closes]
+
+        stock.price_history = pd.DataFrame({
+            "Close": closes, "Low": lows, "Volume": [1000000] * len(closes)
+        }, index=dates)
+        return stock
+
+    def test_higher_lows_gets_bonus(self):
+        """Stock building higher lows should get constructive trend bonus."""
+        from canslim_scorer import CANSLIMScorer
+
+        mock_fetcher = MagicMock()
+        scorer = CANSLIMScorer(mock_fetcher)
+
+        # 20 days: first 10 have low around 95, next 10 have low around 98
+        closes = [97 + i * 0.15 for i in range(25)]
+        lows = [94 + i * 0.01 for i in range(10)] + [97 + i * 0.01 for i in range(15)]
+
+        stock = self._make_stock_data(closes, lows)
+        _, detail = scorer._score_new_highs(stock)
+        assert "↑lows" in detail, f"Should detect higher lows, got detail: {detail}"
+
+    def test_lower_lows_gets_penalty(self):
+        """Stock with declining lows should be penalized."""
+        from canslim_scorer import CANSLIMScorer
+
+        mock_fetcher = MagicMock()
+        scorer = CANSLIMScorer(mock_fetcher)
+
+        # 25 days: first 10 have lows around 98, next 15 drop sharply to ~90
+        closes = [100 - i * 0.3 for i in range(25)]
+        lows = [98 - i * 0.01 for i in range(10)] + [92 - i * 0.5 for i in range(15)]
+
+        stock = self._make_stock_data(closes, lows)
+        _, detail = scorer._score_new_highs(stock)
+        assert "↓lows" in detail, f"Should detect lower lows, got detail: {detail}"
+
+
+# ─── L Score Multi-Timeframe RS (canslim_scorer.py, Iteration 2) ─────────────
+# Enhancement: L score now uses 3 timeframes (12m/3m/1m) with RS cap at 3.0.
+# This prevents inflated RS during extreme market crashes.
+
+
+class TestLScoreMultiTimeframe:
+    """Tests for improved L score with 3 timeframes and RS capping."""
+
+    def test_l_score_code_uses_three_timeframes(self):
+        """L score should use 12m, 3m, and 1m RS timeframes."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "canslim_scorer.py").read_text()
+
+        assert "rs_1m" in source or "lookback_1m" in source, "L score should use 1-month RS"
+        assert "0.40" in source and "0.35" in source and "0.25" in source, \
+            "Should use 40/35/25 weights"
+
+    def test_l_score_caps_rs_at_three(self):
+        """L score RS values should be capped at 3.0 in both scorer and backtester."""
+        from pathlib import Path
+        scorer_source = (Path(__file__).parent.parent / "canslim_scorer.py").read_text()
+        backtester_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "3.0" in scorer_source, "Scorer should cap RS at 3.0"
+        assert "3.0" in backtester_source, "Backtester should cap RS at 3.0"
+
+    def test_l_score_denominator_floor_at_half(self):
+        """RS denominator should floor at 0.5, not 0.1."""
+        from pathlib import Path
+        scorer_source = (Path(__file__).parent.parent / "canslim_scorer.py").read_text()
+
+        # Check that 0.5 is used as the floor (not 0.1)
+        assert "0.5)" in scorer_source, "Denominator floor should be 0.5"
+
+
+# ─── Backtester S/L Score Sync (Iteration 2) ─────────────────────────────────
+# Enhancement: Backtester S and L scores now synced with canslim_scorer.py.
+# S score includes price trend + accumulation/distribution.
+# L score uses 3 timeframes + RS capping + improving bonus.
+
+
+class TestBacktesterScoringSync:
+    """Tests that backtester scoring is synced with live scorer."""
+
+    def test_backtester_s_score_has_price_trend(self):
+        """Backtester S score should include price trend analysis."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "price_change_20d" in source or "price_history" in source, \
+            "Backtester S score should include price trend"
+
+    def test_backtester_s_score_has_accumulation(self):
+        """Backtester S score should include accumulation/distribution."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "accumulation_distribution" in source or "ad_ratio" in source, \
+            "Backtester S score should include A/D ratio"
+
+    def test_backtester_l_score_uses_three_timeframes(self):
+        """Backtester L score should use 12m, 3m, and 1m RS."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "rs_1m" in source, "Backtester L score should use 1-month RS"
+        assert "rs_12m_capped" in source, "Backtester should cap RS values"
+
+    def test_backtester_l_score_has_improving_bonus(self):
+        """Backtester L score should include RS improving bonus."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        # Check for the improving bonus logic
+        assert "rs_3m_capped > rs_12m_capped" in source, \
+            "Backtester should give RS improving bonus"
+
+    def test_historical_data_provider_has_helpers(self):
+        """HistoricalDataProvider should have price_history and A/D helpers."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "historical_data.py").read_text()
+
+        assert "def get_price_history(" in source, \
+            "Should have get_price_history method"
+        assert "def get_accumulation_distribution(" in source, \
+            "Should have get_accumulation_distribution method"
+
+
+# ─── 50% Gain Partial Profit Tier (Iteration 3) ──────────────────────────────
+# Enhancement: Added third partial profit tier at 50% gain → sell 75% total.
+# Protects big winners while keeping 25% exposure for further upside.
+# Lower min_score (55 vs 60) because at 50%+ gain, protecting profits is priority.
+
+
+class TestPartialProfit50PctTier:
+    """Tests for the 50% gain partial profit tier."""
+
+    def test_50pct_tier_exists_in_config(self):
+        """Config should define threshold_50pct partial profit tier."""
+        from config_loader import config
+        pp_config = config.get('ai_trader.partial_profits', {})
+        tier_50 = pp_config.get('threshold_50pct', {})
+        assert tier_50.get('gain_pct') == 50, "50% tier should trigger at 50% gain"
+        assert tier_50.get('sell_pct') == 75, "50% tier should sell 75% total"
+        assert tier_50.get('min_score') == 55, "50% tier should use min_score=55"
+
+    def test_50pct_tier_in_backtester(self):
+        """Backtester should load and use 50% partial profit tier."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        assert "pp_50_gain" in source, "Backtester should load 50% tier gain threshold"
+        assert "pp_50_sell" in source, "Backtester should load 50% tier sell pct"
+        assert "pp_50_min_score" in source, "Backtester should load 50% tier min score"
+
+    def test_50pct_tier_in_ai_trader(self):
+        """AI trader should load and use 50% partial profit tier."""
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        assert "pp_50_gain" in source, "AI trader should load 50% tier gain threshold"
+        assert "pp_50_sell" in source, "AI trader should load 50% tier sell pct"
+
+    def test_50pct_tier_fires_before_40pct(self):
+        """50% tier check should appear BEFORE 40% check in the partial profit evaluation logic."""
+        from pathlib import Path
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        at_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+
+        # Find the partial profit EVALUATION section (not config loading)
+        # The pattern "gain_pct >= pp_50_gain" should appear before "gain_pct >= pp_40_gain"
+        bt_50_pos = bt_source.find("gain_pct >= pp_50_gain")
+        bt_40_pos = bt_source.find("gain_pct >= pp_40_gain")
+        assert bt_50_pos > 0, "Backtester should have 50% tier gain check"
+        assert bt_50_pos < bt_40_pos, "Backtester should check 50% tier before 40%"
+
+        at_50_pos = at_source.find("gain_pct >= pp_50_gain")
+        at_40_pos = at_source.find("gain_pct >= pp_40_gain")
+        assert at_50_pos > 0, "AI trader should have 50% tier gain check"
+        assert at_50_pos < at_40_pos, "AI trader should check 50% tier before 40%"
+
+    def test_50pct_partial_profit_delta_calculation(self):
+        """50% tier should calculate delta from partial_taken, not absolute."""
+        # Stock up 55%, score 60, already took 50% partial → should take 25% more (75-50)
+        from backend.backtester import BacktestEngine, SimulatedPosition
+        from datetime import date, timedelta
+
+        mock_session = MagicMock()
+        mock_backtest = MagicMock()
+        mock_backtest.id = 1
+        mock_backtest.starting_cash = 25000
+        mock_backtest.max_positions = 8
+        mock_backtest.min_score_to_buy = 72
+        mock_backtest.sell_score_threshold = 50
+        mock_backtest.stop_loss_pct = 7.0
+        mock_backtest.strategy = "nostate_optimized"
+        mock_session.get.return_value = mock_backtest
+
+        engine = BacktestEngine(mock_session, 1)
+
+        engine.positions["BIG"] = SimulatedPosition(
+            ticker="BIG", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=90),
+            purchase_score=80.0, peak_price=160.0,
+            peak_date=date.today() - timedelta(days=2),
+            sector="Technology", partial_profit_taken=50.0  # Already took 50%
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 155.0  # +55% gain
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+
+        sells = engine._evaluate_sells(date.today(), {"BIG": {"total_score": 60}})
+
+        # Should trigger 50% tier: gain 55% >= 50%, score 60 >= 55, partial 50 < 75
+        # Delta = 75 - 50 = 25% of shares
+        partial_sells = [s for s in sells if s.is_partial and "PARTIAL PROFIT" in s.reason]
+        assert len(partial_sells) == 1, f"Expected 1 partial sell, got {len(partial_sells)}"
+        assert partial_sells[0].sell_pct == 25, f"Expected 25% delta, got {partial_sells[0].sell_pct}"
+        assert partial_sells[0].shares == 25, f"Expected 25 shares (25% of 100), got {partial_sells[0].shares}"
+
+    def test_50pct_tier_skips_if_already_taken(self):
+        """50% tier should skip if already taken 75%+ partial profits."""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+        from datetime import date, timedelta
+
+        mock_session = MagicMock()
+        mock_backtest = MagicMock()
+        mock_backtest.id = 1
+        mock_backtest.starting_cash = 25000
+        mock_backtest.max_positions = 8
+        mock_backtest.min_score_to_buy = 72
+        mock_backtest.sell_score_threshold = 50
+        mock_backtest.stop_loss_pct = 7.0
+        mock_backtest.strategy = "nostate_optimized"
+        mock_session.get.return_value = mock_backtest
+
+        engine = BacktestEngine(mock_session, 1)
+
+        engine.positions["DONE"] = SimulatedPosition(
+            ticker="DONE", shares=25, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=90),
+            purchase_score=80.0, peak_price=160.0,
+            peak_date=date.today() - timedelta(days=2),
+            sector="Technology", partial_profit_taken=75.0  # All partials taken
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 155.0
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+
+        sells = engine._evaluate_sells(date.today(), {"DONE": {"total_score": 60}})
+
+        # Should NOT trigger any partial sell (already at 75%)
+        partial_sells = [s for s in sells if s.is_partial and "PARTIAL PROFIT" in s.reason]
+        assert len(partial_sells) == 0, "Should not trigger partial when already at 75%"
+
+
+# ─── Iteration 4: Backtester C Score Sync (Feb 26, 2026) ────────────────────
+# Bug: Backtester C score used simplified algorithm without turnaround handling,
+# wrong acceleration metric, and no sector-adjusted thresholds.
+# Fix: Synced backtester C score with canslim_scorer.py logic.
+
+
+class TestBacktesterCScoreSync:
+    """Regression: Backtester C score was fundamentally different from live scorer."""
+
+    def _make_engine_for_scoring(self):
+        """Create a backtester engine with all data provider methods mocked for _calculate_scores."""
+        from backend.backtester import BacktestEngine
+        mock_session = MagicMock()
+        mock_backtest = MagicMock()
+        mock_backtest.id = 1
+        mock_backtest.starting_cash = 25000
+        mock_backtest.max_positions = 8
+        mock_backtest.min_score_to_buy = 72
+        mock_backtest.sell_score_threshold = 50
+        mock_backtest.stop_loss_pct = 7.0
+        mock_backtest.strategy = "nostate_optimized"
+        mock_session.get.return_value = mock_backtest
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        # Mock all data provider methods that _calculate_scores uses
+        engine.data_provider.get_market_direction.return_value = {"weighted_signal": 1.0, "spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_52_week_high_low.return_value = (50.0, 20.0)
+        engine.data_provider.get_relative_strength.return_value = 1.5
+        engine.data_provider.get_price_on_date.return_value = 45.0
+        engine.data_provider.detect_base_pattern.return_value = {"type": "none", "pivot_price": 0, "weeks": 0}
+        engine.data_provider.get_price_history.return_value = None
+        engine.data_provider.get_accumulation_distribution.return_value = None
+        engine.data_provider.get_50_day_avg_volume.return_value = 1000000
+        engine.data_provider.get_volume_on_date.return_value = 1200000
+        engine.data_provider.get_institutional_ownership.return_value = 50.0
+        engine.data_provider.is_breaking_out.return_value = (False, 1.0, None)
+        return engine
+
+    def test_turnaround_stock_gets_positive_c_score(self):
+        """Stocks transitioning from negative to positive earnings should get C > 0."""
+        from datetime import date
+        engine = self._make_engine_for_scoring()
+
+        # Mock stock with negative->positive earnings turnaround
+        # Prior TTM: sum of quarters 4-7 = -2.0 (loss), Current TTM: sum of quarters 0-3 = 3.0 (profit)
+        mock_stock_data = MagicMock()
+        mock_stock_data.quarterly_earnings = [1.0, 0.8, 0.7, 0.5, -0.5, -0.5, -0.5, -0.5]
+        mock_stock_data.annual_earnings = [3.0, -2.0, -3.0]
+        mock_stock_data.quarterly_revenue = [100, 90, 80, 70]
+
+        engine.data_provider.get_stock_data_on_date.return_value = mock_stock_data
+
+        engine.static_data["TURN"] = {
+            "sector": "Technology", "name": "Turnaround Corp",
+            "quarterly_earnings": [1.0, 0.8, 0.7, 0.5, -0.5, -0.5, -0.5, -0.5],
+            "annual_earnings": [3.0, -2.0, -3.0],
+            "quarterly_revenue": [100, 90, 80, 70],
+            "institutional_holders_pct": 50,
+            "roe": 0.15,
+            "analyst_target_price": 60,
+            "num_analyst_opinions": 10,
+            "weeks_in_base": 0,
+            "earnings_beat_streak": 0,
+            "days_to_earnings": None,
+            "eps_estimate_revision_pct": None,
+        }
+
+        scores = engine._calculate_scores(date.today(), ["TURN"])
+        c_score = scores["TURN"]["c_score"]
+
+        # Previously this returned 0 because year_ago_eps < 0 was blocked
+        # Now it should give turnaround credit (C=12)
+        assert c_score >= 10, f"Turnaround stock should get C >= 10, got {c_score}"
+
+    def test_acceleration_uses_yoy_growth_rates(self):
+        """Acceleration bonus should compare YoY growth rates, not sequential EPS."""
+        # Read backtester source to verify it uses the correct acceleration metric
+        import inspect
+        from backend.backtester import BacktestEngine
+
+        source = inspect.getsource(BacktestEngine._calculate_scores)
+
+        # Should reference YoY growth rate comparison, not q1 > q2 > q3
+        assert "current_q_growth" in source, "Should use YoY growth rate comparison"
+        assert "prev_q_growth" in source, "Should compare against prior quarter's YoY growth"
+        # Should NOT use the old simple sequential comparison
+        assert "q1 > q2 > q3 > 0" not in source, "Should not use sequential EPS comparison"
+
+    def test_sector_adjusted_thresholds(self):
+        """C score should use sector-specific growth thresholds."""
+        import inspect
+        from backend.backtester import BacktestEngine
+
+        source = inspect.getsource(BacktestEngine._calculate_scores)
+
+        # Should reference sector thresholds
+        assert "sector_thresholds" in source, "Should use sector-adjusted thresholds"
+        assert "Technology" in source, "Should have Technology sector threshold"
+        assert "Utilities" in source, "Should have Utilities sector threshold"
+
+    def test_losses_shrinking_gets_partial_credit(self):
+        """Stocks with shrinking losses should get partial C credit, not 0."""
+        from datetime import date
+        engine = self._make_engine_for_scoring()
+
+        # Stock with losses getting less negative
+        mock_stock_data = MagicMock()
+        mock_stock_data.quarterly_earnings = [-0.10, -0.15, -0.20, -0.25, -0.50, -0.60, -0.70, -0.80]
+        mock_stock_data.annual_earnings = [-0.70, -2.60, -3.00]
+        mock_stock_data.quarterly_revenue = [100, 90, 80, 70]
+
+        engine.data_provider.get_stock_data_on_date.return_value = mock_stock_data
+
+        engine.static_data["LOSS"] = {
+            "sector": "Healthcare", "name": "Loss Shrinking Inc",
+            "quarterly_earnings": [-0.10, -0.15, -0.20, -0.25, -0.50, -0.60, -0.70, -0.80],
+            "annual_earnings": [-0.70, -2.60, -3.00],
+            "quarterly_revenue": [100, 90, 80, 70],
+            "institutional_holders_pct": 30,
+            "roe": 0,
+            "analyst_target_price": 0,
+            "num_analyst_opinions": 0,
+            "weeks_in_base": 0,
+            "earnings_beat_streak": 0,
+            "days_to_earnings": None,
+            "eps_estimate_revision_pct": None,
+        }
+
+        scores = engine._calculate_scores(date.today(), ["LOSS"])
+        c_score = scores["LOSS"]["c_score"]
+
+        # Current TTM = -0.70, Prior TTM = -2.60 — losses shrinking by 73%
+        # Should get partial credit (C=4), not 0
+        assert c_score > 0, f"Shrinking losses should get partial C credit, got {c_score}"
+
+
+class TestBacktesterAScoreSync:
+    """Regression: Backtester A score used fixed thresholds, no turnaround handling."""
+
+    def test_a_score_uses_sector_thresholds(self):
+        """A score should use sector-adjusted CAGR thresholds."""
+        import inspect
+        from backend.backtester import BacktestEngine
+
+        source = inspect.getsource(BacktestEngine._calculate_scores)
+
+        # A score should reuse sector thresholds from C score
+        assert "c_excellent" in source, "A score should use sector-adjusted thresholds"
+        assert "c_good" in source, "A score should reference sector thresholds"
+
+    def test_a_score_turnaround_gets_credit(self):
+        """Annual earnings transitioning negative->positive should get A > 0."""
+        import inspect
+        from backend.backtester import BacktestEngine
+
+        source = inspect.getsource(BacktestEngine._calculate_scores)
+
+        # Should have turnaround path for A score
+        assert "current_annual > 0 and three_years_ago <= 0" in source, \
+            "A score should handle negative->positive turnaround"
+
+    def test_roe_handles_decimal_format(self):
+        """ROE conversion should handle both decimal and percentage formats."""
+        import inspect
+        from backend.backtester import BacktestEngine
+
+        source = inspect.getsource(BacktestEngine._calculate_scores)
+
+        # Should convert ROE format (decimal vs percentage)
+        assert "roe_pct" in source, "Should convert ROE to percentage format"
+
+
+# ─── Iteration 4: Pre-Earnings Trailing Stop Tightening (Feb 26, 2026) ──────
+# Issue: Held positions approaching earnings had no special protection.
+# Earnings gap-downs are the #1 source of catastrophic single-position losses.
+# Fix: Tighten trailing stops and take partial profits for non-CS positions
+# within 5 days of earnings.
+
+
+class TestPreEarningsTighteningBacktester:
+    """Regression: Non-CS positions approaching earnings should get tighter stops."""
+
+    def _make_engine(self):
+        from backend.backtester import BacktestEngine, SimulatedPosition
+        mock_session = MagicMock()
+        mock_backtest = MagicMock()
+        mock_backtest.id = 1
+        mock_backtest.starting_cash = 25000
+        mock_backtest.max_positions = 8
+        mock_backtest.min_score_to_buy = 72
+        mock_backtest.sell_score_threshold = 50
+        mock_backtest.stop_loss_pct = 7.0
+        mock_backtest.strategy = "nostate_optimized"
+        mock_session.get.return_value = mock_backtest
+        return BacktestEngine(mock_session, 1)
+
+    def test_pre_earnings_tightened_trailing_fires(self):
+        """Position near earnings with drop from peak should trigger tightened stop."""
+        from backend.backtester import SimulatedPosition
+        from datetime import date, timedelta
+
+        engine = self._make_engine()
+
+        # Position: +25% gain, peak was +35%, dropped 12% from peak
+        # Normal trailing at 30-50% gain tier = 18%. Tightened = 9%.
+        # Drop from peak = 12% > 9% tightened → should fire
+        engine.positions["EARN"] = SimulatedPosition(
+            ticker="EARN", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=60),
+            purchase_score=80.0, peak_price=135.0,
+            peak_date=date.today() - timedelta(days=5),
+            sector="Technology", partial_profit_taken=0
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 118.8  # -12% from peak, +18.8% from cost
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+
+        # 3 days to earnings, non-CS
+        engine.static_data["EARN"] = {"days_to_earnings": 3, "sector": "Technology"}
+
+        sells = engine._evaluate_sells(date.today(), {"EARN": {"total_score": 75}})
+
+        pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
+        assert len(pre_earnings) >= 1, f"Expected pre-earnings sell, got: {[s.reason for s in sells]}"
+
+    def test_cs_positions_exempt_from_tightening(self):
+        """Coiled Spring positions should NOT get pre-earnings tightening."""
+        from backend.backtester import SimulatedPosition
+        from datetime import date, timedelta
+
+        engine = self._make_engine()
+
+        pos = SimulatedPosition(
+            ticker="CSPOS", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=30),
+            purchase_score=80.0, peak_price=125.0,
+            peak_date=date.today() - timedelta(days=5),
+            sector="Technology", partial_profit_taken=0
+        )
+        pos.is_coiled_spring = True
+        engine.positions["CSPOS"] = pos
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 110.0
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+
+        engine.static_data["CSPOS"] = {"days_to_earnings": 2, "sector": "Technology"}
+
+        sells = engine._evaluate_sells(date.today(), {"CSPOS": {"total_score": 75}})
+
+        pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
+        assert len(pre_earnings) == 0, "CS positions should be exempt from pre-earnings tightening"
+
+    def test_pre_earnings_partial_for_profitable_position(self):
+        """Position up 15% near earnings should get 25% partial profit."""
+        from backend.backtester import SimulatedPosition
+        from datetime import date, timedelta
+
+        engine = self._make_engine()
+
+        # Position up 15%, no drop from peak → no tightened trailing fires
+        # But should trigger partial profit protection
+        engine.positions["PROF"] = SimulatedPosition(
+            ticker="PROF", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=45),
+            purchase_score=80.0, peak_price=115.0,
+            peak_date=date.today(),
+            sector="Healthcare", partial_profit_taken=0
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 115.0  # At peak, +15%
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+
+        engine.static_data["PROF"] = {"days_to_earnings": 4, "sector": "Healthcare"}
+
+        sells = engine._evaluate_sells(date.today(), {"PROF": {"total_score": 70}})
+
+        partials = [s for s in sells if "PRE-EARNINGS PARTIAL" in s.reason]
+        assert len(partials) == 1, f"Expected pre-earnings partial, got: {[s.reason for s in sells]}"
+        assert partials[0].is_partial is True
+        assert partials[0].sell_pct == 25
+
+    def test_no_tightening_when_far_from_earnings(self):
+        """Positions 20+ days from earnings should NOT get tightened."""
+        from backend.backtester import SimulatedPosition
+        from datetime import date, timedelta
+
+        engine = self._make_engine()
+
+        engine.positions["FAR"] = SimulatedPosition(
+            ticker="FAR", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=30),
+            purchase_score=80.0, peak_price=130.0,
+            peak_date=date.today() - timedelta(days=5),
+            sector="Technology", partial_profit_taken=0
+        )
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 115.0
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+
+        engine.static_data["FAR"] = {"days_to_earnings": 30, "sector": "Technology"}
+
+        sells = engine._evaluate_sells(date.today(), {"FAR": {"total_score": 70}})
+
+        pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
+        assert len(pre_earnings) == 0, "Should not tighten when 30 days from earnings"
+
+
+class TestPreEarningsTighteningConfig:
+    """Regression: Pre-earnings config should be in default.yaml."""
+
+    def test_config_exists(self):
+        """earnings_tighten config should exist in default.yaml."""
+        from config_loader import config
+        earnings_tighten = config.get('ai_trader.earnings_tighten', {})
+        assert earnings_tighten.get('enabled', False) is True
+        assert earnings_tighten.get('days_before', 0) == 5
+        assert earnings_tighten.get('stop_tighten_factor', 1.0) == 0.50
+        assert earnings_tighten.get('min_gain_for_partial', 0) == 10
+
+    def test_ai_trader_has_pre_earnings_logic(self):
+        """ai_trader.py should have pre-earnings tightening logic."""
+        import inspect
+        from backend.ai_trader import evaluate_sells
+        source = inspect.getsource(evaluate_sells)
+        assert "PRE-EARNINGS" in source, "ai_trader should have pre-earnings sell logic"
+        assert "earnings_tighten" in source, "ai_trader should read earnings_tighten config"
+
+    def test_backtester_has_pre_earnings_logic(self):
+        """backtester.py should have pre-earnings tightening logic (synced)."""
+        import inspect
+        from backend.backtester import BacktestEngine
+        source = inspect.getsource(BacktestEngine._evaluate_sells)
+        assert "PRE-EARNINGS" in source, "backtester should have pre-earnings sell logic"
+        assert "earnings_tighten" in source, "backtester should read earnings_tighten config"

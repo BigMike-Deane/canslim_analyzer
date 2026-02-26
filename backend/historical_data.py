@@ -408,6 +408,47 @@ class HistoricalDataProvider:
         result = float(history["volume"].mean())
         return result if result == result else 0.0  # NaN guard (NaN != NaN)
 
+    def get_price_history(self, ticker: str, as_of_date: date, lookback_days: int = 20) -> list:
+        """Get list of closing prices for a stock over the lookback period.
+        Returns list of floats (oldest to newest) or None if insufficient data."""
+        history = self.get_price_history_up_to(ticker, as_of_date, lookback_days)
+        if history.empty or len(history) < 2:
+            return None
+        try:
+            prices = history["close"].dropna().tolist()
+            return prices if len(prices) >= 2 else None
+        except (KeyError, IndexError):
+            return None
+
+    def get_accumulation_distribution(self, ticker: str, as_of_date: date,
+                                       lookback_days: int = 20) -> dict:
+        """Calculate up-volume vs down-volume ratio for a stock.
+        Measures whether institutional investors are accumulating (buying) or distributing (selling).
+        Returns dict with ad_ratio, or None if insufficient data."""
+        history = self.get_price_history_up_to(ticker, as_of_date, lookback_days + 1)
+        if history.empty or len(history) < 10:
+            return None
+        try:
+            up_vol = 0.0
+            down_vol = 0.0
+            for i in range(1, len(history)):
+                curr_close = float(history.iloc[i]["close"])
+                prev_close = float(history.iloc[i - 1]["close"])
+                curr_vol = float(history.iloc[i]["volume"])
+                if prev_close <= 0 or curr_vol <= 0:
+                    continue
+                if curr_close > prev_close:
+                    up_vol += curr_vol
+                elif curr_close < prev_close:
+                    down_vol += curr_vol
+            if down_vol > 0:
+                return {"ad_ratio": up_vol / down_vol}
+            elif up_vol > 0:
+                return {"ad_ratio": 2.0}  # All up, no down = strong accumulation
+            return {"ad_ratio": 1.0}
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
     def get_moving_average(self, ticker: str, as_of_date: date, period: int) -> float:
         """Calculate moving average as of a specific date"""
         history = self.get_price_history_up_to(ticker, as_of_date, lookback_days=period)
@@ -545,11 +586,9 @@ class HistoricalDataProvider:
         spy_return = (spy_end - spy_start) / spy_start
 
         # Relative strength: stock return / SPY return
-        if spy_return == 0:
-            self._rs_cache[cache_key] = 1.0
-            return 1.0
-
-        result = (1 + stock_return) / (1 + spy_return)
+        # Floor denominator at 0.5 to prevent RS inflation during severe crashes
+        spy_denom = max(1 + spy_return, 0.5)
+        result = min((1 + stock_return) / spy_denom, 3.0)  # Cap at 3.0
         self._rs_cache[cache_key] = result
         return result
 

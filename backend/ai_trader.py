@@ -918,8 +918,23 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
 
             # Track peak price for trailing stop loss
             # Initialize peak_price if not set (new position or migration)
+            # Query recent price history to find actual peak (not just current price)
             if position.peak_price is None:
-                position.peak_price = max(current_price, position.cost_basis)
+                actual_peak = max(current_price, position.cost_basis)
+                try:
+                    if HistoricalDataProvider:
+                        from backend.historical_data import HistoricalDataProvider as HDP
+                        provider = HDP([position.ticker])
+                        buy_date = position.purchase_date.date() if hasattr(position.purchase_date, 'date') and position.purchase_date else date.today() - timedelta(days=30)
+                        provider.preload_data(buy_date, date.today())
+                        hist_prices = provider.get_price(position.ticker, date.today())
+                        if hist_prices and hist_prices.get('high', 0) > actual_peak:
+                            actual_peak = hist_prices['high']
+                except Exception as e:
+                    logger.debug(f"Historical peak lookup for {position.ticker}: {e}")
+                if actual_peak > current_price:
+                    logger.info(f"{position.ticker}: Peak initialized to ${actual_peak:.2f} (current ${current_price:.2f})")
+                position.peak_price = actual_peak
                 position.peak_date = get_cst_now()
             elif current_price > position.peak_price:
                 # New high reached
@@ -1388,6 +1403,9 @@ def evaluate_sells(db: Session) -> list:
     pp_40_gain = partial_profit_config.get('threshold_40pct', {}).get('gain_pct', 40)
     pp_40_sell = partial_profit_config.get('threshold_40pct', {}).get('sell_pct', 50)
     pp_40_min_score = partial_profit_config.get('threshold_40pct', {}).get('min_score', 60)
+    pp_50_gain = partial_profit_config.get('threshold_50pct', {}).get('gain_pct', 50)
+    pp_50_sell = partial_profit_config.get('threshold_50pct', {}).get('sell_pct', 75)
+    pp_50_min_score = partial_profit_config.get('threshold_50pct', {}).get('min_score', 55)
 
     # Use tighter stop loss in bearish market (7% vs 8% normal)
     effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
@@ -1496,6 +1514,58 @@ def evaluate_sells(db: Session) -> list:
                 logger.info(f"{position.ticker}: Trailing stop triggered - peak ${position.peak_price:.2f}, now ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
                 continue
 
+        # PRE-EARNINGS TRAILING STOP TIGHTENING (synced with backtester)
+        # Non-CS positions approaching earnings get tighter trailing stops to protect gains
+        earnings_tighten_config = yaml_config.get('ai_trader.earnings_tighten', {})
+        if earnings_tighten_config.get('enabled', True):
+            earnings_tighten_days = earnings_tighten_config.get('days_before', 5)
+            earnings_tighten_factor = earnings_tighten_config.get('stop_tighten_factor', 0.50)
+            earnings_min_gain_for_partial = earnings_tighten_config.get('min_gain_for_partial', 10)
+            days_to_earn = getattr(stock, 'days_to_earnings', None) if stock else None
+            is_cs = getattr(position, 'is_coiled_spring', False)
+
+            if (days_to_earn is not None and isinstance(days_to_earn, (int, float))
+                    and 0 < days_to_earn <= earnings_tighten_days and not is_cs):
+                # Tighten trailing stop for non-CS positions near earnings
+                if position.peak_price and position.peak_price > 0 and gain_pct > 0:
+                    drop_from_peak = ((position.peak_price - position.current_price) / position.peak_price) * 100
+                    peak_gain_pct = ((position.peak_price - position.cost_basis) / position.cost_basis) * 100
+
+                    tightened_trailing = None
+                    profile_trailing = profile.get('trailing_stops', {})
+                    if peak_gain_pct >= 50:
+                        tightened_trailing = profile_trailing.get('gain_50_plus', 25) * earnings_tighten_factor
+                    elif peak_gain_pct >= 30:
+                        tightened_trailing = profile_trailing.get('gain_30_to_50', 18) * earnings_tighten_factor
+                    elif peak_gain_pct >= 20:
+                        tightened_trailing = profile_trailing.get('gain_20_to_30', 12) * earnings_tighten_factor
+                    elif peak_gain_pct >= 10:
+                        tightened_trailing = profile_trailing.get('gain_10_to_20', 8) * earnings_tighten_factor
+
+                    if tightened_trailing and drop_from_peak >= tightened_trailing:
+                        sells.append({
+                            "position": position,
+                            "reason": f"PRE-EARNINGS STOP: {int(days_to_earn)}d to earnings, peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%, tightened to {tightened_trailing:.0f}%)",
+                            "priority": 2
+                        })
+                        logger.info(f"{position.ticker}: Pre-earnings stop triggered - {int(days_to_earn)}d to earnings")
+                        continue
+
+                # Partial profit protection for profitable positions near earnings
+                partial_taken = getattr(position, 'partial_profit_taken', 0) or 0
+                if gain_pct >= earnings_min_gain_for_partial and partial_taken < 25:
+                    take_pct = 25 - partial_taken
+                    if take_pct > 0:
+                        sells.append({
+                            "position": position,
+                            "reason": f"PRE-EARNINGS PARTIAL: {int(days_to_earn)}d to earnings, up {gain_pct:.1f}% - protecting gains",
+                            "priority": 3,
+                            "is_partial": True,
+                            "sell_pct": take_pct
+                        })
+                        logger.info(f"{position.ticker}: Pre-earnings partial profit - {int(days_to_earn)}d to earnings, +{gain_pct:.1f}%")
+                        continue
+
         # Skip all score-dependent sells if score data is missing
         if not score_available:
             logger.debug(f"{position.ticker}: Score=0 (data missing), skipping score-dependent sells but stops still active")
@@ -1598,11 +1668,24 @@ def evaluate_sells(db: Session) -> list:
             continue
 
         # PARTIAL PROFIT TAKING - let winners run while locking in gains
-        # Thresholds from YAML config
+        # Thresholds from YAML config (check highest tier first)
         partial_taken = getattr(position, 'partial_profit_taken', 0) or 0
 
-        # Check for higher tier partial at configured gain threshold
-        if gain_pct >= pp_40_gain and score >= pp_40_min_score and partial_taken < pp_40_sell:
+        # Check for highest tier partial at +50% gain (lock in 75%)
+        if gain_pct >= pp_50_gain and score >= pp_50_min_score and partial_taken < pp_50_sell:
+            take_pct = pp_50_sell - partial_taken
+            if take_pct > 0:
+                sells.append({
+                    "position": position,
+                    "reason": f"PARTIAL PROFIT {pp_50_sell}%: Up {gain_pct:.1f}%, score {score:.0f} - protecting big winner",
+                    "priority": 3,
+                    "is_partial": True,
+                    "sell_pct": take_pct
+                })
+                continue
+
+        # Check for middle tier partial at configured gain threshold
+        elif gain_pct >= pp_40_gain and score >= pp_40_min_score and partial_taken < pp_40_sell:
             take_pct = pp_40_sell - partial_taken  # Take what's left to get to target
             if take_pct > 0:
                 sells.append({
@@ -1921,19 +2004,46 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         logger.warning(f"Earnings audit lookup failed (non-fatal): {e}")
 
     # MULTI-SCAN AVERAGING (live-only): Smooth score wobble from FMP rate limits
+    # Uses recency-weighted average (50/30/20) to reduce momentum lag while smoothing noise.
+    # Equal-weight averaging created ~8pt lag on improving stocks, causing late entries.
     from backend.database import StockScore
-    def _get_avg_score(ticker, current_score):
-        """Average last 3 StockScore records to smooth scan-to-scan noise."""
+
+    # Batch-fetch recent scores for ALL candidate tickers in one query (fixes N+1)
+    candidate_tickers = [s.ticker for s in candidates]
+    _score_history_cache = {}  # ticker -> [most_recent, ..., oldest]
+    if candidate_tickers:
         try:
-            recent = db.query(StockScore.total_score).filter(
-                StockScore.ticker == ticker
-            ).order_by(StockScore.timestamp.desc()).limit(3).all()
-            if len(recent) >= 2:
-                avg = sum(r[0] for r in recent) / len(recent)
-                if abs(avg - current_score) >= 3:
-                    return avg
+            from sqlalchemy import func
+            # Get last 3 scores per ticker using a subquery approach
+            all_recent_scores = (
+                db.query(StockScore.ticker, StockScore.total_score)
+                .filter(StockScore.ticker.in_(candidate_tickers))
+                .order_by(StockScore.ticker, StockScore.timestamp.desc())
+                .all()
+            )
+            # Group by ticker, keeping only the 3 most recent per ticker
+            from collections import defaultdict
+            _temp_scores = defaultdict(list)
+            for ticker, score in all_recent_scores:
+                if score is not None and len(_temp_scores[ticker]) < 3:
+                    _temp_scores[ticker].append(score)
+            _score_history_cache = dict(_temp_scores)
         except Exception as e:
-            logger.debug(f"Score smoothing failed for {ticker}: {e}")
+            logger.debug(f"Batch score history fetch failed: {e}")
+
+    def _get_avg_score(ticker, current_score):
+        """Recency-weighted average of last 3 StockScore records to smooth scan-to-scan noise.
+        Weights: most recent 50%, middle 30%, oldest 20%.
+        This reduces momentum lag vs equal-weight while still smoothing single-scan noise."""
+        recent = _score_history_cache.get(ticker, [])
+        if len(recent) >= 3:
+            avg = recent[0] * 0.50 + recent[1] * 0.30 + recent[2] * 0.20
+            if abs(avg - current_score) >= 3:
+                return avg
+        elif len(recent) >= 2:
+            avg = recent[0] * 0.60 + recent[1] * 0.40
+            if abs(avg - current_score) >= 3:
+                return avg
         return current_score
 
     # Pre-compute portfolio value once (avoids 100+ DB queries inside the loop)
@@ -2064,6 +2174,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Non-CS earnings avoidance settings
         avoidance_days = earnings_config.get('avoidance_days', 5)
         cs_override_enabled = earnings_config.get('cs_override', True)
+
+        # Config validation: allow_buy_days should be >= avoidance_days
+        # These windows serve DIFFERENT purposes (see MEMORY.md) - warn if misconfigured
+        if allow_buy_days < avoidance_days:
+            logger.warning(f"Config issue: allow_buy_days ({allow_buy_days}) < avoidance_days ({avoidance_days}). "
+                          f"CS evaluation window should be >= non-CS avoidance window.")
 
         # Initialize CS result
         cs_result = None

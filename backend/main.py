@@ -27,7 +27,7 @@ from backend.database import (
     Watchlist, AnalysisJob, MarketSnapshot,
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
     BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert,
-    EarningsAudit
+    EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade
 )
 from backend.config import settings
 from pydantic import BaseModel
@@ -4491,6 +4491,364 @@ async def get_command_center(db: Session = Depends(get_db)):
         "trades": trades_data,
         "scanner": scanner_status,
         "coiled_spring": cs_data,
+    }
+
+
+# ============== Fidelity Sync ==============
+
+from fastapi import UploadFile, File
+
+@app.post("/api/fidelity/upload-positions")
+async def upload_fidelity_positions(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Upload a Fidelity Positions CSV export.
+    Parses positions for account Z27804829 and stores a snapshot.
+    """
+    from backend.database import FidelitySnapshot, FidelityPosition
+    from backend.fidelity_sync import parse_positions_csv
+
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    try:
+        csv_text = content.decode('utf-8')
+    except UnicodeDecodeError:
+        csv_text = content.decode('latin-1')
+
+    result = parse_positions_csv(csv_text)
+
+    if not result["positions"]:
+        raise HTTPException(status_code=400, detail="No positions found for account Z27804829")
+
+    # Create snapshot
+    snapshot = FidelitySnapshot(
+        snapshot_date=date.fromisoformat(result["snapshot_date"]),
+        cash_balance=result["cash_balance"],
+        total_value=result["total_value"],
+        positions_count=len(result["positions"]),
+    )
+    db.add(snapshot)
+    db.flush()  # Get snapshot.id
+
+    # Create position records
+    for pos in result["positions"]:
+        db.add(FidelityPosition(
+            snapshot_id=snapshot.id,
+            symbol=pos["symbol"],
+            description=pos["description"],
+            quantity=pos["quantity"],
+            last_price=pos["last_price"],
+            current_value=pos["current_value"],
+            total_gain_loss=pos["total_gain_loss"],
+            total_gain_loss_pct=pos["total_gain_loss_pct"],
+            cost_basis_total=pos["cost_basis_total"],
+            average_cost_basis=pos["average_cost_basis"],
+            percent_of_account=pos["percent_of_account"],
+            position_type=pos["type"],
+        ))
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "snapshot_id": snapshot.id,
+        "snapshot_date": result["snapshot_date"],
+        "positions_count": len(result["positions"]),
+        "cash_balance": result["cash_balance"],
+        "total_value": result["total_value"],
+        "parse_errors": result["parse_errors"],
+    }
+
+
+@app.post("/api/fidelity/upload-activity")
+async def upload_fidelity_activity(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Upload a Fidelity Activity/History CSV export.
+    Parses trades for account Z27804829 and stores them.
+    Deduplicates against existing trades by (date, symbol, action).
+    """
+    from backend.database import FidelityTrade
+    from backend.fidelity_sync import parse_activity_csv
+
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    try:
+        csv_text = content.decode('utf-8')
+    except UnicodeDecodeError:
+        csv_text = content.decode('latin-1')
+
+    result = parse_activity_csv(csv_text)
+
+    # Deduplicate: skip trades that already exist
+    new_count = 0
+    skipped = 0
+    for t in result["trades"]:
+        trade_date = date.fromisoformat(t["run_date"])
+        existing = db.query(FidelityTrade).filter(
+            FidelityTrade.run_date == trade_date,
+            FidelityTrade.symbol == t["symbol"],
+            FidelityTrade.action == t["action"],
+        ).first()
+
+        if existing:
+            skipped += 1
+            continue
+
+        db.add(FidelityTrade(
+            run_date=trade_date,
+            action=t["action"],
+            symbol=t["symbol"],
+            description=t["description"],
+            price=t["price"],
+            quantity=t["quantity"],
+            amount=t["amount"],
+            commission=t["commission"],
+            fees=t["fees"],
+            settlement_date=date.fromisoformat(t["settlement_date"]) if t.get("settlement_date") else None,
+            raw_action=t["raw_action"],
+        ))
+        new_count += 1
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "new_trades": new_count,
+        "skipped_duplicates": skipped,
+        "total_in_file": len(result["trades"]),
+        "dividends_found": len(result["dividends"]),
+        "parse_errors": result["parse_errors"],
+    }
+
+
+@app.get("/api/fidelity/snapshots")
+async def get_fidelity_snapshots(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """List Fidelity position snapshots, newest first."""
+    from backend.database import FidelitySnapshot
+
+    snapshots = db.query(FidelitySnapshot).order_by(
+        desc(FidelitySnapshot.snapshot_date)
+    ).limit(limit).all()
+
+    return {
+        "snapshots": [
+            {
+                "id": s.id,
+                "snapshot_date": s.snapshot_date.isoformat() if s.snapshot_date else None,
+                "uploaded_at": s.uploaded_at.isoformat() + "Z" if s.uploaded_at else None,
+                "cash_balance": s.cash_balance,
+                "total_value": s.total_value,
+                "positions_count": s.positions_count,
+            }
+            for s in snapshots
+        ]
+    }
+
+
+@app.get("/api/fidelity/latest")
+async def get_fidelity_latest(db: Session = Depends(get_db)):
+    """Get the most recent Fidelity snapshot with full position details."""
+    from backend.database import FidelitySnapshot, FidelityPosition
+
+    snapshot = db.query(FidelitySnapshot).order_by(
+        desc(FidelitySnapshot.snapshot_date)
+    ).first()
+
+    if not snapshot:
+        return {"snapshot": None, "positions": []}
+
+    positions = db.query(FidelityPosition).filter(
+        FidelityPosition.snapshot_id == snapshot.id
+    ).order_by(desc(FidelityPosition.current_value)).all()
+
+    return {
+        "snapshot": {
+            "id": snapshot.id,
+            "snapshot_date": snapshot.snapshot_date.isoformat() if snapshot.snapshot_date else None,
+            "uploaded_at": snapshot.uploaded_at.isoformat() + "Z" if snapshot.uploaded_at else None,
+            "cash_balance": snapshot.cash_balance,
+            "total_value": snapshot.total_value,
+            "positions_count": snapshot.positions_count,
+        },
+        "positions": [
+            {
+                "symbol": p.symbol,
+                "description": p.description,
+                "quantity": p.quantity,
+                "last_price": p.last_price,
+                "current_value": p.current_value,
+                "total_gain_loss": p.total_gain_loss,
+                "total_gain_loss_pct": p.total_gain_loss_pct,
+                "cost_basis_total": p.cost_basis_total,
+                "average_cost_basis": p.average_cost_basis,
+                "percent_of_account": p.percent_of_account,
+                "type": p.position_type,
+            }
+            for p in positions
+        ],
+    }
+
+
+@app.get("/api/fidelity/trades")
+async def get_fidelity_trades(
+    limit: int = Query(50, ge=1, le=500),
+    symbol: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Get parsed Fidelity trades, newest first."""
+    from backend.database import FidelityTrade
+
+    query = db.query(FidelityTrade)
+    if symbol:
+        query = query.filter(FidelityTrade.symbol == symbol.upper())
+    trades = query.order_by(desc(FidelityTrade.run_date)).limit(limit).all()
+
+    return {
+        "trades": [
+            {
+                "id": t.id,
+                "run_date": t.run_date.isoformat() if t.run_date else None,
+                "action": t.action,
+                "symbol": t.symbol,
+                "description": t.description,
+                "price": t.price,
+                "quantity": t.quantity,
+                "amount": t.amount,
+                "commission": t.commission,
+                "fees": t.fees,
+                "settlement_date": t.settlement_date.isoformat() if t.settlement_date else None,
+            }
+            for t in trades
+        ],
+        "count": len(trades),
+    }
+
+
+@app.get("/api/fidelity/reconciliation")
+async def get_fidelity_reconciliation(db: Session = Depends(get_db)):
+    """
+    Compare the latest Fidelity snapshot against AI portfolio positions.
+    Shows matches, discrepancies, and positions unique to each.
+    """
+    from backend.database import FidelitySnapshot, FidelityPosition
+    from backend.fidelity_sync import reconcile_portfolios
+
+    # Get latest Fidelity snapshot
+    snapshot = db.query(FidelitySnapshot).order_by(
+        desc(FidelitySnapshot.snapshot_date)
+    ).first()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No Fidelity snapshot uploaded yet")
+
+    fid_positions = db.query(FidelityPosition).filter(
+        FidelityPosition.snapshot_id == snapshot.id
+    ).all()
+
+    # Get AI portfolio positions
+    ai_positions = db.query(AIPortfolioPosition).all()
+
+    # Build comparable dicts
+    fid_list = [
+        {
+            "symbol": p.symbol,
+            "quantity": p.quantity,
+            "current_value": p.current_value,
+            "total_gain_loss_pct": p.total_gain_loss_pct,
+            "average_cost_basis": p.average_cost_basis,
+        }
+        for p in fid_positions
+    ]
+
+    ai_list = [
+        {
+            "ticker": p.ticker,
+            "shares": p.shares,
+            "current_value": p.current_value,
+            "gain_loss_pct": p.gain_loss_pct,
+            "current_score": p.current_score,
+        }
+        for p in ai_positions
+    ]
+
+    result = reconcile_portfolios(fid_list, ai_list)
+    result["snapshot_date"] = snapshot.snapshot_date.isoformat() if snapshot.snapshot_date else None
+    result["snapshot_id"] = snapshot.id
+
+    return result
+
+
+@app.post("/api/fidelity/sync-to-portfolio")
+async def sync_fidelity_to_portfolio(db: Session = Depends(get_db)):
+    """
+    Sync the latest Fidelity snapshot positions into the manual Portfolio.
+    Creates/updates PortfolioPosition records to match Fidelity.
+    """
+    from backend.database import FidelitySnapshot, FidelityPosition
+
+    snapshot = db.query(FidelitySnapshot).order_by(
+        desc(FidelitySnapshot.snapshot_date)
+    ).first()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No Fidelity snapshot uploaded yet")
+
+    fid_positions = db.query(FidelityPosition).filter(
+        FidelityPosition.snapshot_id == snapshot.id
+    ).all()
+
+    added = 0
+    updated = 0
+
+    for fp in fid_positions:
+        existing = db.query(PortfolioPosition).filter(
+            PortfolioPosition.ticker == fp.symbol
+        ).first()
+
+        if existing:
+            existing.shares = fp.quantity
+            existing.cost_basis = fp.average_cost_basis
+            existing.current_price = fp.last_price
+            existing.current_value = fp.current_value
+            existing.gain_loss = fp.total_gain_loss
+            existing.gain_loss_pct = fp.total_gain_loss_pct
+            updated += 1
+        else:
+            db.add(PortfolioPosition(
+                ticker=fp.symbol,
+                shares=fp.quantity,
+                cost_basis=fp.average_cost_basis,
+                current_price=fp.last_price,
+                current_value=fp.current_value,
+                gain_loss=fp.total_gain_loss,
+                gain_loss_pct=fp.total_gain_loss_pct,
+            ))
+            added += 1
+
+    # Remove portfolio positions not in Fidelity snapshot
+    fid_symbols = {fp.symbol for fp in fid_positions}
+    stale_positions = db.query(PortfolioPosition).filter(
+        ~PortfolioPosition.ticker.in_(fid_symbols) if fid_symbols else True
+    ).all()
+    removed = 0
+    for sp in stale_positions:
+        db.delete(sp)
+        removed += 1
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "snapshot_date": snapshot.snapshot_date.isoformat() if snapshot.snapshot_date else None,
     }
 
 

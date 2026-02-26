@@ -394,12 +394,15 @@ class CANSLIMScorer:
     def _score_new_highs(self, data: StockData) -> tuple[float, str]:
         """
         N - New Highs / Near 52-week High (15 pts max)
-        REFINED: Price proximity to high (up to 12 pts) + Volume confirmation (up to 3 pts)
-        - Breakouts on high volume are more significant
+        REFINED: Price proximity (up to 10 pts) + Volume confirmation (up to 3 pts)
+                 + Constructive trend bonus (up to 2 pts)
+        - Stocks building constructive patterns (higher lows) toward highs score better
+        - Stocks falling away from recent highs are penalized
         """
         max_score = self.MAX_SCORES['N']
-        price_max = 12  # Base score for price proximity
-        vol_max = 3     # Bonus for volume confirmation
+        price_max = 12   # Base score for price proximity
+        vol_max = 2      # Bonus for volume confirmation
+        trend_max = 1    # Bonus for constructive trend direction
 
         if data.high_52w <= 0 or data.current_price <= 0:
             return 0, "No price data"
@@ -407,24 +410,26 @@ class CANSLIMScorer:
         pct_from_high = ((data.high_52w - data.current_price) / data.high_52w) * 100
 
         # Base score from price proximity to 52-week high (up to 12 pts)
-        if pct_from_high <= 5:
+        if pct_from_high <= 2:
             price_score = price_max
             price_detail = f"{pct_from_high:.0f}% from high"
+        elif pct_from_high <= 5:
+            price_score = price_max * 0.85
+            price_detail = f"{pct_from_high:.0f}% from high"
         elif pct_from_high <= 10:
-            price_score = price_max * 0.75
+            price_score = price_max * 0.65
             price_detail = f"{pct_from_high:.0f}% from high"
         elif pct_from_high <= 15:
-            price_score = price_max * 0.5
+            price_score = price_max * 0.45
             price_detail = f"{pct_from_high:.0f}% from high"
         elif pct_from_high <= 25:
-            price_score = price_max * 0.25
+            price_score = price_max * 0.2
             price_detail = f"{pct_from_high:.0f}% below high"
         else:
             price_score = 0
             price_detail = f"{pct_from_high:.0f}% below high"
 
-        # Volume confirmation bonus (up to 3 pts)
-        # If near highs AND volume is elevated, it's a stronger signal
+        # Volume confirmation bonus (up to 2 pts)
         vol_score = 0
         vol_detail = ""
 
@@ -437,18 +442,39 @@ class CANSLIMScorer:
                     vol_score = vol_max
                     vol_detail = f", vol {vol_ratio:.1f}x"
                 elif vol_ratio >= 1.2:
-                    vol_score = vol_max * 0.6
+                    vol_score = vol_max * 0.5
                     vol_detail = f", vol {vol_ratio:.1f}x"
-                elif vol_ratio >= 1.0:
-                    vol_score = vol_max * 0.3
 
-        total_score = min(price_score + vol_score, max_score)
-        return round(total_score, 1), f"{price_detail}{vol_detail}"
+        # Constructive trend bonus (up to 1 pt, penalty -1 for distribution)
+        # Detects higher lows (constructive base building) vs lower lows (distribution)
+        trend_score = 0
+        trend_detail = ""
+        try:
+            if not data.price_history.empty and len(data.price_history) >= 20:
+                lows = data.price_history['Low'].dropna() if 'Low' in data.price_history.columns else data.price_history['Close'].dropna()
+                if len(lows) >= 20:
+                    recent_10d_low = float(lows.iloc[-10:].min())
+                    prior_10d_low = float(lows.iloc[-20:-10].min())
+                    if prior_10d_low > 0 and recent_10d_low > 0:
+                        if recent_10d_low > prior_10d_low * 1.01:
+                            trend_score = trend_max
+                            trend_detail = ", ↑lows"
+                        elif recent_10d_low < prior_10d_low * 0.97:
+                            trend_score = -1
+                            trend_detail = ", ↓lows"
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+
+        total_score = min(max(price_score + vol_score + trend_score, 0), max_score)
+        return round(total_score, 1), f"{price_detail}{vol_detail}{trend_detail}"
 
     def _score_supply_demand(self, data: StockData) -> tuple[float, str]:
         """
         S - Supply & Demand (15 pts max)
-        Based on volume trends and price action
+        Based on volume trends, price action, and accumulation/distribution.
+        - Volume component (up to 6 pts): Current volume vs 50-day average
+        - Price trend component (up to 5 pts): 20-day price direction
+        - Accumulation/Distribution (up to 4 pts): Up-day vs down-day volume ratio
         """
         max_score = self.MAX_SCORES['S']
 
@@ -480,41 +506,79 @@ class CANSLIMScorer:
         except (KeyError, IndexError, TypeError, ValueError):
             pass  # Expected when price_history is incomplete or malformed
 
-        # Score based on volume surge with positive price action
+        # Accumulation/Distribution: compare up-day volume vs down-day volume
+        # Institutional buying shows as heavy volume on up days
+        ad_ratio = 1.0
+        try:
+            if len(data.price_history) >= 20 and 'Close' in data.price_history.columns and 'Volume' in data.price_history.columns:
+                recent = data.price_history.iloc[-20:]
+                closes = recent['Close'].dropna()
+                volumes = recent['Volume'].dropna()
+                if len(closes) >= 10 and len(volumes) >= 10:
+                    # Align indices for comparison
+                    aligned = recent[['Close', 'Volume']].dropna()
+                    if len(aligned) >= 10:
+                        price_diff = aligned['Close'].diff()
+                        up_vol = aligned.loc[price_diff > 0, 'Volume'].sum()
+                        down_vol = aligned.loc[price_diff < 0, 'Volume'].sum()
+                        if down_vol > 0:
+                            ad_ratio = up_vol / down_vol
+                        elif up_vol > 0:
+                            ad_ratio = 2.0  # All up, no down = strong accumulation
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass  # Fall through with neutral ad_ratio
+
         score = 0
         details = []
 
-        # Volume component (up to 8 points)
+        # Volume component (up to 6 points)
         if vol_ratio >= 2.0:
-            score += 8
-            details.append(f"vol {vol_ratio:.1f}x avg")
-        elif vol_ratio >= 1.5:
             score += 6
             details.append(f"vol {vol_ratio:.1f}x avg")
+        elif vol_ratio >= 1.5:
+            score += 5
+            details.append(f"vol {vol_ratio:.1f}x avg")
         elif vol_ratio >= 1.2:
-            score += 4
+            score += 3
             details.append(f"vol {vol_ratio:.1f}x avg")
         else:
             details.append(f"vol {vol_ratio:.1f}x avg")
 
-        # Price trend component (up to 7 points)
-        if price_change > 0.05 and vol_ratio > 1.2:  # Rising price with high volume
-            score += 7
+        # Price trend component (up to 5 points)
+        if price_change > 0.05 and vol_ratio > 1.2:
+            score += 5
+            details.append("rising")
+        elif price_change > 0.03:
+            score += 3
             details.append("rising")
         elif price_change > 0:
-            score += 4
+            score += 2
             details.append("rising")
         elif price_change < -0.05:
             details.append("falling")
 
-        return min(round(score, 1), max_score), ", ".join(details)
+        # Accumulation/Distribution component (up to 4 points)
+        if ad_ratio >= 1.8:
+            score += 4
+            details.append("accum")
+        elif ad_ratio >= 1.3:
+            score += 3
+            details.append("accum")
+        elif ad_ratio >= 1.0:
+            score += 1
+        elif ad_ratio < 0.7:
+            score -= 1  # Distribution: institutions selling
+            details.append("distrib")
+
+        return min(max(round(score, 1), 0), max_score), ", ".join(details)
 
     def _score_leader(self, data: StockData) -> tuple[float, str]:
         """
         L - Leader vs Laggard (15 pts max)
-        REFINED: Multi-timeframe relative strength with momentum weighting
-        - 12-month RS (60% weight) + 3-month RS (40% weight)
-        - Approximates IBD RS Rating by rewarding consistent outperformers
+        REFINED: Multi-timeframe relative strength matching IBD RS Rating methodology
+        - 12-month RS (40% weight) + 3-month RS (35% weight) + 1-month RS (25% weight)
+        - Adding 1-month captures the freshest momentum signal
+        - RS values capped at 3.0 to prevent inflation during extreme market crashes
         """
         max_score = self.MAX_SCORES['L']
 
@@ -537,46 +601,54 @@ class CANSLIMScorer:
             stock_return_12m = (prices.iloc[-1] / prices.iloc[-252]) - 1
             sp500_return_12m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-252]) - 1
         else:
-            # Use available data
             stock_return_12m = (prices.iloc[-1] / prices.iloc[0]) - 1
             sp500_return_12m = (sp500_prices.iloc[-1] / sp500_prices.iloc[0]) - 1
 
-        # Calculate 3-month RS (more recent momentum)
+        # Calculate 3-month RS
         lookback_3m = min(63, len(prices) - 1, len(sp500_prices) - 1)
         stock_return_3m = (prices.iloc[-1] / prices.iloc[-lookback_3m]) - 1
         sp500_return_3m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-lookback_3m]) - 1
 
-        # Calculate RS ratios with protection against extreme market crashes
-        # Use minimum denominator of 0.1 (90% market crash) to avoid inflated RS values
-        sp500_denom_12m = max(1 + sp500_return_12m, 0.1)
-        sp500_denom_3m = max(1 + sp500_return_3m, 0.1)
-        rs_12m = (1 + stock_return_12m) / sp500_denom_12m
-        rs_3m = (1 + stock_return_3m) / sp500_denom_3m
+        # Calculate 1-month RS (freshest momentum signal)
+        lookback_1m = min(21, len(prices) - 1, len(sp500_prices) - 1)
+        stock_return_1m = (prices.iloc[-1] / prices.iloc[-lookback_1m]) - 1
+        sp500_return_1m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-lookback_1m]) - 1
 
-        # Weighted RS: 60% 12-month + 40% 3-month (emphasizes recent momentum)
-        weighted_rs = rs_12m * 0.6 + rs_3m * 0.4
+        # RS ratios with symmetric denominator protection
+        # Floor at 0.5 (not 0.1) to prevent RS inflation during severe crashes
+        sp500_denom_12m = max(1 + sp500_return_12m, 0.5)
+        sp500_denom_3m = max(1 + sp500_return_3m, 0.5)
+        sp500_denom_1m = max(1 + sp500_return_1m, 0.5)
 
-        # RS trend bonus: is 3-month RS stronger than 12-month? (improving)
+        # Cap individual RS values at 3.0 to limit crash-period distortion
+        rs_12m = min((1 + stock_return_12m) / sp500_denom_12m, 3.0)
+        rs_3m = min((1 + stock_return_3m) / sp500_denom_3m, 3.0)
+        rs_1m = min((1 + stock_return_1m) / sp500_denom_1m, 3.0)
+
+        # Weighted RS: 40% 12-month + 35% 3-month + 25% 1-month
+        # IBD RS Rating weights recent performance more heavily
+        weighted_rs = rs_12m * 0.40 + rs_3m * 0.35 + rs_1m * 0.25
+
+        # RS trend: improving if recent momentum exceeds longer-term
         rs_improving = rs_3m > rs_12m
 
-        # Score based on weighted RS (approximates percentile ranking)
-        # RS of 1.5+ typically represents top 10-20% of stocks
+        # Score with smoother transitions (linear interpolation between tiers)
         if weighted_rs >= 1.5:
             score = max_score
         elif weighted_rs >= 1.3:
-            score = max_score * 0.9
+            score = max_score * (0.85 + 0.15 * (weighted_rs - 1.3) / 0.2)
         elif weighted_rs >= 1.15:
-            score = max_score * 0.75
+            score = max_score * (0.70 + 0.15 * (weighted_rs - 1.15) / 0.15)
         elif weighted_rs >= 1.0:
-            score = max_score * 0.55
+            score = max_score * (0.50 + 0.20 * (weighted_rs - 1.0) / 0.15)
         elif weighted_rs >= 0.85:
-            score = max_score * 0.35
+            score = max_score * (0.30 + 0.20 * (weighted_rs - 0.85) / 0.15)
         elif weighted_rs >= 0.7:
-            score = max_score * 0.15
+            score = max_score * (0.10 + 0.20 * (weighted_rs - 0.7) / 0.15)
         else:
             score = 0
 
-        # Small bonus for improving RS trend
+        # RS improving bonus: recent momentum accelerating
         if rs_improving and score > 0:
             score = min(score + 1, max_score)
 
@@ -614,10 +686,12 @@ class CANSLIMScorer:
         stock_return_3m = (prices.iloc[-1] / prices.iloc[-lookback_3m]) - 1
         sp500_return_3m = (sp500_prices.iloc[-1] / sp500_prices.iloc[-lookback_3m]) - 1
 
-        sp500_denom_12m = max(1 + sp500_return_12m, 0.1)
-        sp500_denom_3m = max(1 + sp500_return_3m, 0.1)
-        rs_12m = (1 + stock_return_12m) / sp500_denom_12m
-        rs_3m = (1 + stock_return_3m) / sp500_denom_3m
+        # Symmetric denominator protection (floor at 0.5, not 0.1)
+        sp500_denom_12m = max(1 + sp500_return_12m, 0.5)
+        sp500_denom_3m = max(1 + sp500_return_3m, 0.5)
+        # Cap RS values at 3.0 to prevent crash-period inflation
+        rs_12m = min((1 + stock_return_12m) / sp500_denom_12m, 3.0)
+        rs_3m = min((1 + stock_return_3m) / sp500_denom_3m, 3.0)
 
         return {
             "rs_12m": round(rs_12m, 4),

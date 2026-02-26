@@ -19,6 +19,10 @@ const CACHE_TTL = {
   '/api/backtests': 600,
   '/api/earnings-audit': 300,      // 5 min
   '/api/insider-sentiment': 300,   // 5 min
+  '/api/fidelity/latest': 120,     // 2 min
+  '/api/fidelity/snapshots': 300,  // 5 min
+  '/api/fidelity/trades': 300,     // 5 min
+  '/api/fidelity/reconciliation': 120, // 2 min
 }
 
 function getCacheTTL(endpoint) {
@@ -352,6 +356,56 @@ export const api = {
     if (params.offset) searchParams.set('offset', params.offset)
     const query = searchParams.toString()
     return request(`/api/insider-sentiment${query ? `?${query}` : ''}`)
+  },
+
+  // Fidelity Sync
+  uploadFidelityPositions: async (file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await fetch(`${API_BASE}/api/fidelity/upload-positions`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new APIError(data.detail || 'Upload failed', response.status)
+    }
+    cache.invalidate('/api/fidelity/latest')
+    cache.invalidate('/api/fidelity/snapshots')
+    cache.invalidate('/api/fidelity/reconciliation')
+    return response.json()
+  },
+
+  uploadFidelityActivity: async (file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await fetch(`${API_BASE}/api/fidelity/upload-activity`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new APIError(data.detail || 'Upload failed', response.status)
+    }
+    cache.invalidate('/api/fidelity/trades')
+    return response.json()
+  },
+
+  getFidelityLatest: () => request('/api/fidelity/latest'),
+  getFidelitySnapshots: () => request('/api/fidelity/snapshots'),
+  getFidelityTrades: (limit = 50, symbol = null) => {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', limit)
+    if (symbol) params.set('symbol', symbol)
+    return request(`/api/fidelity/trades?${params}`)
+  },
+  getFidelityReconciliation: () => request('/api/fidelity/reconciliation'),
+
+  syncFidelityToPortfolio: async () => {
+    const result = await request('/api/fidelity/sync-to-portfolio', { method: 'POST' })
+    cache.invalidate('/api/portfolio')
+    cache.invalidate('/api/fidelity/reconciliation')
+    return result
   },
 }
 

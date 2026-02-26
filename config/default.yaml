@@ -171,6 +171,15 @@ ai_trader:
     avoidance_days: 5             # Block non-CS stocks within 5 days of earnings
     cs_override: true             # Allow CS stocks to override avoidance
 
+  # Pre-earnings trailing stop tightening for HELD positions
+  # Non-CS positions approaching earnings get tighter stops to protect gains
+  # CS (Coiled Spring) positions are earnings plays — they hold through intentionally
+  earnings_tighten:
+    enabled: true
+    days_before: 5                # Tighten stops within 5 days of earnings
+    stop_tighten_factor: 0.50     # Use 50% of normal trailing stop (e.g., 25% -> 12.5%)
+    min_gain_for_partial: 10      # Take 25% partial if up 10%+ near earnings
+
   # Earnings Audit: Deep FMP fundamental check for buy candidates
   # Runs between scan and AI trading to enrich composite scores
   earnings_audit:
@@ -267,6 +276,10 @@ ai_trader:
       gain_pct: 40         # Take more at 40% gain
       sell_pct: 50         # Sell 50% total (25% additional)
       min_score: 60        # Only if score still strong
+    threshold_50pct:
+      gain_pct: 50         # Final tier at 50% gain
+      sell_pct: 75         # Sell 75% total (25% additional)
+      min_score: 55        # Slightly lower bar - protect big gains
 
   # Momentum confirmation
   momentum_confirmation:

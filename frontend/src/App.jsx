@@ -17,6 +17,7 @@ import Backtest from './pages/Backtest'
 import Analytics from './pages/Analytics'
 import CoiledSpringHistory from './pages/CoiledSpringHistory'
 import InsiderSentiment from './pages/InsiderSentiment'
+import FidelitySync from './pages/FidelitySync'
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -47,6 +48,7 @@ export default function App() {
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />
               <Route path="/insider-sentiment" element={<InsiderSentiment />} />
+              <Route path="/fidelity" element={<FidelitySync />} />
             </Routes>
           </div>
         </main>

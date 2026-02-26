@@ -738,14 +738,14 @@ class TestPyramidAwareTrailingStops:
 
         # Position peaked at $200 (100% gain from $100), now at $170 (15% from peak)
         # With 3 pyramids, trailing stop = 15% + 6% = 21%, so 15% drop should NOT trigger
-        # Set partial_profit_taken=50 to skip the partial profit check (which would trigger at +70%)
+        # Set partial_profit_taken=75 to skip ALL partial profit tiers (25%/40%/50%)
         engine.positions["AAPL"] = SimulatedPosition(
             ticker="AAPL", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=60),
             purchase_score=80.0, peak_price=200.0,
             peak_date=date.today() - timedelta(days=5),
             sector="Technology", pyramid_count=3,
-            partial_profit_taken=50.0  # Already took profits, skip that check
+            partial_profit_taken=75.0  # Already took all partial profits
         )
 
         engine.data_provider = MagicMock()
@@ -1651,7 +1651,7 @@ class TestTakeProfit:
             purchase_date=date.today() - timedelta(days=90),
             purchase_score=80.0, peak_price=185.0,
             peak_date=date.today() - timedelta(days=5),
-            sector="Technology", partial_profit_taken=50.0  # Already took partials
+            sector="Technology", partial_profit_taken=75.0  # Already took all partial profits
         )
 
         engine.data_provider = MagicMock()

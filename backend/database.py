@@ -941,6 +941,72 @@ class StockDataCache(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+# ============== Fidelity Sync Models ==============
+
+class FidelitySnapshot(Base):
+    """A point-in-time snapshot from a Fidelity positions CSV upload."""
+    __tablename__ = "fidelity_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Account summary
+    account_number = Column(String, default="Z27804829")
+    cash_balance = Column(Float, default=0)
+    total_value = Column(Float, default=0)
+    positions_count = Column(Integer, default=0)
+
+    # Relationships
+    positions = relationship("FidelityPosition", back_populates="snapshot", cascade="all, delete-orphan")
+
+
+class FidelityPosition(Base):
+    """Individual position within a Fidelity snapshot."""
+    __tablename__ = "fidelity_positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_id = Column(Integer, ForeignKey("fidelity_snapshots.id"), nullable=False, index=True)
+
+    symbol = Column(String, nullable=False, index=True)
+    description = Column(String)
+    quantity = Column(Float, nullable=False)
+    last_price = Column(Float)
+    current_value = Column(Float)
+    total_gain_loss = Column(Float)
+    total_gain_loss_pct = Column(Float)
+    cost_basis_total = Column(Float)
+    average_cost_basis = Column(Float)
+    percent_of_account = Column(Float)
+    position_type = Column(String)  # Margin, Cash
+
+    snapshot = relationship("FidelitySnapshot", back_populates="positions")
+
+
+class FidelityTrade(Base):
+    """Parsed trade from a Fidelity activity CSV upload."""
+    __tablename__ = "fidelity_trades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    run_date = Column(Date, nullable=False, index=True)
+    action = Column(String, nullable=False)  # BUY, SELL
+    symbol = Column(String, nullable=False, index=True)
+    description = Column(String)
+    price = Column(Float)
+    quantity = Column(Float)
+    amount = Column(Float)
+    commission = Column(Float, default=0)
+    fees = Column(Float, default=0)
+    settlement_date = Column(Date)
+    raw_action = Column(String)  # Original Fidelity action text
+
+    __table_args__ = (
+        Index('ix_fidelity_trades_symbol_date', 'symbol', 'run_date'),
+    )
+
+
 class DelistedTicker(Base):
     """
     Tracks tickers that are delisted, invalid, or consistently fail to fetch.

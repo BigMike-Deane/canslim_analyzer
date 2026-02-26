@@ -1544,34 +1544,106 @@ class BacktestEngine:
             rs_3m = self.data_provider.get_relative_strength(ticker, current_date, 3)
 
             # ===== C SCORE (15 pts): Current Quarterly Earnings =====
+            # Synced with canslim_scorer.py: TTM growth + acceleration + turnaround handling
+            # Base (10 pts) + acceleration (3 pts) + surprise/revision (2 pts) = 15 max
             c_score = 0
             eps_growth = 0.0  # Track for projected_growth calculation
             quarterly_earnings = [e for e in (stock_data.quarterly_earnings or [])
                                   if e is not None and not (isinstance(e, float) and math.isnan(e))]
-            if len(quarterly_earnings) >= 2:
-                # Calculate YoY growth (compare current quarter to same quarter last year)
-                current_eps = quarterly_earnings[0] if quarterly_earnings else 0
-                year_ago_eps = quarterly_earnings[4] if len(quarterly_earnings) > 4 else 0
 
-                if year_ago_eps > 0 and current_eps > 0:
-                    eps_growth = ((current_eps - year_ago_eps) / year_ago_eps) * 100
-                    if eps_growth >= 50:
-                        c_score = 15
-                    elif eps_growth >= 25:
-                        c_score = 12
-                    elif eps_growth >= 15:
-                        c_score = 9
-                    elif eps_growth >= 5:
-                        c_score = 6
-                    elif eps_growth > 0:
-                        c_score = 3
-                    # Bonus for acceleration (each quarter better than last)
-                    if len(quarterly_earnings) >= 3:
-                        q1, q2, q3 = quarterly_earnings[0], quarterly_earnings[1], quarterly_earnings[2]
-                        if q1 > q2 > q3 > 0:
-                            c_score = min(15, c_score + 2)
+            # Get sector for threshold adjustment (synced with canslim_scorer)
+            sector = static_data.get("sector", "default")
+            sector_thresholds = {
+                'Technology': {'excellent': 30, 'good': 20},
+                'Communication Services': {'excellent': 25, 'good': 18},
+                'Consumer Discretionary': {'excellent': 25, 'good': 18},
+                'Healthcare': {'excellent': 25, 'good': 15},
+                'Financials': {'excellent': 20, 'good': 12},
+                'Industrials': {'excellent': 20, 'good': 12},
+                'Consumer Staples': {'excellent': 15, 'good': 10},
+                'Materials': {'excellent': 18, 'good': 12},
+                'Energy': {'excellent': 18, 'good': 10},
+                'Real Estate': {'excellent': 15, 'good': 10},
+                'Utilities': {'excellent': 12, 'good': 8},
+            }.get(sector, {'excellent': 25, 'good': 15})
+            c_excellent = sector_thresholds['excellent']
+            c_good = sector_thresholds['good']
+
+            if len(quarterly_earnings) >= 5:
+                # TTM comparison (sum of last 4 quarters vs prior 4)
+                if len(quarterly_earnings) >= 8:
+                    current_ttm = sum(quarterly_earnings[0:4])
+                    prior_ttm = sum(quarterly_earnings[4:8])
+                else:
+                    # Fallback: single quarter YoY
+                    current_ttm = quarterly_earnings[0]
+                    prior_ttm = quarterly_earnings[4]
+
+                # Handle turnaround: negative->positive earnings (synced with canslim_scorer)
+                if current_ttm > 0 and prior_ttm < 0:
+                    # Turnaround stock — give strong credit
+                    eps_growth = ((current_ttm - prior_ttm) / abs(prior_ttm)) * 100
+                    c_score = 12  # 80% of max, same as canslim_scorer turnaround path
+                elif current_ttm < 0:
+                    if prior_ttm < 0 and current_ttm > prior_ttm:
+                        # Losses shrinking — partial credit
+                        c_score = 4
+                        eps_growth = 0
+                    else:
+                        c_score = 0
+                        eps_growth = 0
+                elif abs(prior_ttm) < 0.01:
+                    if current_ttm > 0:
+                        c_score = 10
+                        eps_growth = 100
+                    else:
+                        c_score = 0
+                        eps_growth = 0
+                else:
+                    # Normal case: both positive
+                    eps_growth = ((current_ttm - prior_ttm) / abs(prior_ttm)) * 100
+                    # Sector-adjusted scoring (synced with canslim_scorer)
+                    if eps_growth >= c_excellent:
+                        c_score = 10  # base_max
+                    elif eps_growth >= c_good:
+                        range_pct = (eps_growth - c_good) / (c_excellent - c_good)
+                        c_score = round(10 * (0.6 + 0.4 * range_pct), 1)
+                    elif eps_growth >= 0:
+                        c_score = round((eps_growth / c_good) * 10 * 0.6, 1)
+                    else:
+                        c_score = round(max(0, (1 + eps_growth / 50) * 10 * 0.3), 1)
+
+                    # YoY acceleration bonus (up to 3 pts) — synced with canslim_scorer
+                    # Compare current quarter's YoY growth vs prior quarter's YoY growth
+                    if len(quarterly_earnings) >= 6:
+                        current_q = quarterly_earnings[0]
+                        year_ago_q = quarterly_earnings[4]
+                        prev_q = quarterly_earnings[1]
+                        prev_year_ago_q = quarterly_earnings[5]
+
+                        if year_ago_q > 0 and prev_year_ago_q > 0:
+                            current_q_growth = ((current_q - year_ago_q) / abs(year_ago_q)) * 100
+                            prev_q_growth = ((prev_q - prev_year_ago_q) / abs(prev_year_ago_q)) * 100
+                            if current_q_growth > prev_q_growth and current_q_growth > 0:
+                                c_score = min(15, c_score + 3)  # Full acceleration bonus
+                            elif current_q_growth > 0 and current_q_growth >= prev_q_growth * 0.9:
+                                c_score = min(15, c_score + 1)  # Maintaining growth
+
+                c_score = min(15, max(0, c_score))
+
+            elif len(quarterly_earnings) >= 2:
+                # Limited data fallback: simple QoQ comparison
+                current_eps = quarterly_earnings[0]
+                prior_eps = quarterly_earnings[1]
+                if prior_eps > 0 and current_eps > 0:
+                    eps_growth = ((current_eps - prior_eps) / abs(prior_eps)) * 100
+                    c_score = min(8, max(0, round((eps_growth / 25) * 8, 1)))  # Cap at 8 for limited data
+                elif current_eps > 0 and prior_eps <= 0:
+                    c_score = 6  # Turnaround with limited data
+                    eps_growth = 50
 
             # ===== A SCORE (15 pts): Annual Earnings Growth =====
+            # Synced with canslim_scorer.py: sector-adjusted CAGR + ROE + turnaround
             a_score = 0
             annual_cagr = 0.0  # Track for projected_growth calculation
             annual_earnings = [e for e in (stock_data.annual_earnings or [])
@@ -1581,25 +1653,32 @@ class BacktestEngine:
             if len(annual_earnings) >= 3:
                 # Calculate 3-year CAGR
                 current_annual = annual_earnings[0]
-                three_years_ago = annual_earnings[2] if len(annual_earnings) > 2 else annual_earnings[-1]
+                three_years_ago = annual_earnings[2]
 
                 if three_years_ago > 0 and current_annual > 0:
                     cagr = ((current_annual / three_years_ago) ** (1/3) - 1) * 100
                     annual_cagr = cagr  # Save for projected_growth
-                    if cagr >= 25:
+                    # Sector-adjusted thresholds (reuse from C score)
+                    if cagr >= c_excellent:
                         a_score = 12
-                    elif cagr >= 15:
-                        a_score = 9
-                    elif cagr >= 10:
-                        a_score = 6
-                    elif cagr > 0:
-                        a_score = 3
+                    elif cagr >= c_good:
+                        range_pct = (cagr - c_good) / (c_excellent - c_good)
+                        a_score = round(12 * (0.6 + 0.4 * range_pct), 1)
+                    elif cagr >= 0:
+                        a_score = round((cagr / c_good) * 12 * 0.6, 1)
+                    else:
+                        a_score = 0
+                elif current_annual > 0 and three_years_ago <= 0:
+                    # Turnaround: negative->positive annual earnings
+                    a_score = 10  # 70% of max, synced with canslim_scorer
+                    annual_cagr = 50  # Proxy for projected_growth
 
-                    # ROE bonus (17%+ is quality threshold)
-                    if roe >= 0.17:
-                        a_score = min(15, a_score + 3)
-                    elif roe >= 0.12:
-                        a_score = min(15, a_score + 1)
+                # ROE bonus (17%+ is quality threshold)
+                roe_pct = roe * 100 if abs(roe) < 5 else roe  # Handle decimal vs pct format
+                if roe_pct >= 17:
+                    a_score = min(15, a_score + 3)
+                elif roe_pct >= 12:
+                    a_score = min(15, a_score + 1)
 
             # ===== N SCORE (15 pts): New Highs / Pivot Proximity =====
             base_pattern = self.data_provider.detect_base_pattern(ticker, current_date)
@@ -1643,7 +1722,8 @@ class BacktestEngine:
                     else:
                         n_score = 0
 
-            # ===== S SCORE (15 pts): Supply/Demand (Volume) =====
+            # ===== S SCORE (15 pts): Supply/Demand (Volume + Price Trend + A/D) =====
+            # Synced with canslim_scorer.py: vol (6) + price trend (5) + accum/distrib (4)
             s_score = 0
             avg_volume = self.data_provider.get_50_day_avg_volume(ticker, current_date)
             current_volume = self.data_provider.get_volume_on_date(ticker, current_date) or 0
@@ -1651,30 +1731,83 @@ class BacktestEngine:
             if avg_volume > 0:
                 volume_ratio = current_volume / avg_volume if current_volume else 1.0
 
-                # Volume surge indicates institutional interest
+                # Volume component (up to 6 points)
                 if volume_ratio >= 2.0:
-                    s_score = 15
-                elif volume_ratio >= 1.5:
-                    s_score = 12
-                elif volume_ratio >= 1.2:
-                    s_score = 9
-                elif volume_ratio >= 0.8:
                     s_score = 6
-                else:
-                    s_score = 3  # Low volume is concerning
+                elif volume_ratio >= 1.5:
+                    s_score = 5
+                elif volume_ratio >= 1.2:
+                    s_score = 3
+
+                # Price trend component (up to 5 points)
+                try:
+                    price_history = self.data_provider.get_price_history(ticker, current_date, 20)
+                    if price_history is not None and isinstance(price_history, list) and len(price_history) >= 2:
+                        first_price = price_history[0] if price_history[0] > 0 else 1
+                        price_change_20d = (price_history[-1] - first_price) / first_price
+                        if price_change_20d > 0.05 and volume_ratio > 1.2:
+                            s_score += 5
+                        elif price_change_20d > 0.03:
+                            s_score += 3
+                        elif price_change_20d > 0:
+                            s_score += 2
+                except (TypeError, AttributeError):
+                    pass  # Data provider method may not exist or return unexpected type
+
+                # Accumulation/Distribution component (up to 4 points)
+                try:
+                    ad_data = self.data_provider.get_accumulation_distribution(ticker, current_date, 20)
+                    if ad_data is not None and isinstance(ad_data, dict):
+                        ad_ratio = ad_data.get("ad_ratio", 1.0)
+                        if isinstance(ad_ratio, (int, float)) and ad_ratio == ad_ratio:  # NaN guard
+                            if ad_ratio >= 1.8:
+                                s_score += 4
+                            elif ad_ratio >= 1.3:
+                                s_score += 3
+                            elif ad_ratio >= 1.0:
+                                s_score += 1
+                            elif ad_ratio < 0.7:
+                                s_score = max(0, s_score - 1)
+                except (TypeError, AttributeError):
+                    pass  # Data provider method may not exist or return unexpected type
+
+                s_score = min(s_score, 15)
 
             # ===== L SCORE (15 pts): Leader/Laggard (Relative Strength) =====
-            combined_rs = (rs_12m * 0.6) + (rs_3m * 0.4)
-            if combined_rs >= 1.3:
+            # Synced with canslim_scorer.py: 3-timeframe RS + improving bonus
+            try:
+                rs_1m = self.data_provider.get_relative_strength(ticker, current_date, 1)
+                if not isinstance(rs_1m, (int, float)) or rs_1m != rs_1m:
+                    rs_1m = 1.0
+            except (TypeError, AttributeError):
+                rs_1m = 1.0
+            # Cap RS values at 3.0 to prevent crash-period inflation
+            rs_12m_capped = min(rs_12m, 3.0) if isinstance(rs_12m, (int, float)) else 1.0
+            rs_3m_capped = min(rs_3m, 3.0) if isinstance(rs_3m, (int, float)) else 1.0
+            rs_1m_capped = min(rs_1m, 3.0)
+            # Weighted RS: 40% 12-month + 35% 3-month + 25% 1-month
+            combined_rs = rs_12m_capped * 0.40 + rs_3m_capped * 0.35 + rs_1m_capped * 0.25
+
+            # Smoother threshold transitions (linear interpolation)
+            if combined_rs >= 1.5:
                 l_score = 15
+            elif combined_rs >= 1.3:
+                l_score = 15 * (0.85 + 0.15 * (combined_rs - 1.3) / 0.2)
             elif combined_rs >= 1.15:
-                l_score = 12
+                l_score = 15 * (0.70 + 0.15 * (combined_rs - 1.15) / 0.15)
             elif combined_rs >= 1.0:
-                l_score = 8
+                l_score = 15 * (0.50 + 0.20 * (combined_rs - 1.0) / 0.15)
             elif combined_rs >= 0.85:
-                l_score = 4
+                l_score = 15 * (0.30 + 0.20 * (combined_rs - 0.85) / 0.15)
+            elif combined_rs >= 0.7:
+                l_score = 15 * (0.10 + 0.20 * (combined_rs - 0.7) / 0.15)
             else:
                 l_score = 0
+
+            # RS improving bonus
+            if rs_3m_capped > rs_12m_capped and l_score > 0:
+                l_score = min(l_score + 1, 15)
+            l_score = round(l_score, 1)
 
             # ===== I SCORE (10 pts): Institutional Ownership =====
             i_score = 0
@@ -1858,6 +1991,9 @@ class BacktestEngine:
         pp_40_gain = partial_profit_config.get('threshold_40pct', {}).get('gain_pct', 40)
         pp_40_sell = partial_profit_config.get('threshold_40pct', {}).get('sell_pct', 50)
         pp_40_min_score = partial_profit_config.get('threshold_40pct', {}).get('min_score', 60)
+        pp_50_gain = partial_profit_config.get('threshold_50pct', {}).get('gain_pct', 50)
+        pp_50_sell = partial_profit_config.get('threshold_50pct', {}).get('sell_pct', 75)
+        pp_50_min_score = partial_profit_config.get('threshold_50pct', {}).get('min_score', 55)
 
         # Partial trailing stop config
         partial_trailing_config = config.get('ai_trader.trailing_stops', {})
@@ -1993,6 +2129,70 @@ class BacktestEngine:
                             sells.append(trade)
                         continue
 
+            # PRE-EARNINGS TRAILING STOP TIGHTENING
+            # Non-CS positions approaching earnings get tighter trailing stops to protect gains
+            # CS (Coiled Spring) positions are earnings plays — they hold through intentionally
+            earnings_tighten_config = config.get('ai_trader.earnings_tighten', {})
+            if earnings_tighten_config.get('enabled', True):
+                earnings_tighten_days = earnings_tighten_config.get('days_before', 5)
+                earnings_tighten_factor = earnings_tighten_config.get('stop_tighten_factor', 0.50)
+                earnings_min_gain_for_partial = earnings_tighten_config.get('min_gain_for_partial', 10)
+                days_to_earn = self.static_data.get(ticker, {}).get('days_to_earnings')
+                is_cs = getattr(position, 'is_coiled_spring', False)
+
+                if (days_to_earn is not None and isinstance(days_to_earn, (int, float))
+                        and 0 < days_to_earn <= earnings_tighten_days and not is_cs):
+                    # Tighten trailing stop for non-CS positions near earnings
+                    if position.peak_price > 0 and gain_pct > 0:
+                        drop_from_peak = ((position.peak_price - price) / position.peak_price) * 100
+                        peak_gain_pct = ((position.peak_price - position.cost_basis) / position.cost_basis) * 100
+
+                        # Use tighter trailing stop (50% of normal)
+                        tightened_trailing = None
+                        profile_trailing = self.profile.get('trailing_stops', {})
+                        if peak_gain_pct >= 50:
+                            tightened_trailing = profile_trailing.get('gain_50_plus', 25) * earnings_tighten_factor
+                        elif peak_gain_pct >= 30:
+                            tightened_trailing = profile_trailing.get('gain_30_to_50', 18) * earnings_tighten_factor
+                        elif peak_gain_pct >= 20:
+                            tightened_trailing = profile_trailing.get('gain_20_to_30', 12) * earnings_tighten_factor
+                        elif peak_gain_pct >= 10:
+                            tightened_trailing = profile_trailing.get('gain_10_to_20', 8) * earnings_tighten_factor
+
+                        if tightened_trailing and drop_from_peak >= tightened_trailing:
+                            trade = SimulatedTrade(
+                                ticker=ticker,
+                                action="SELL",
+                                shares=position.shares,
+                                price=price,
+                                reason=f"PRE-EARNINGS STOP: {int(days_to_earn)}d to earnings, peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%, tightened to {tightened_trailing:.0f}%)",
+                                score=current_score,
+                                priority=2
+                            )
+                            trade._signal_factors = {"sell_reason": "PRE-EARNINGS STOP", "gain_pct": round(gain_pct, 1), "days_to_earnings": int(days_to_earn)}
+                            sells.append(trade)
+                            continue
+
+                    # Partial profit protection for profitable positions near earnings
+                    if gain_pct >= earnings_min_gain_for_partial and position.partial_profit_taken < 25:
+                        take_pct = 25 - position.partial_profit_taken
+                        if take_pct > 0:
+                            shares_to_sell = position.shares * (take_pct / 100)
+                            trade = SimulatedTrade(
+                                ticker=ticker,
+                                action="SELL",
+                                shares=shares_to_sell,
+                                price=price,
+                                reason=f"PRE-EARNINGS PARTIAL: {int(days_to_earn)}d to earnings, up {gain_pct:.1f}% - protecting gains",
+                                score=current_score,
+                                priority=3,
+                                is_partial=True,
+                                sell_pct=take_pct
+                            )
+                            trade._signal_factors = {"sell_reason": "PRE-EARNINGS PARTIAL", "gain_pct": round(gain_pct, 1), "days_to_earnings": int(days_to_earn)}
+                            sells.append(trade)
+                            continue
+
             # Skip all score-dependent sells if score data is missing (matches ai_trader)
             score_available = current_score > 0
             if not score_available:
@@ -2044,11 +2244,31 @@ class BacktestEngine:
                 continue
 
             # PARTIAL PROFIT TAKING - let winners run while locking in gains
-            # Thresholds from YAML config
+            # Thresholds from YAML config (check highest tier first)
             partial_taken = position.partial_profit_taken
 
-            # Check for higher tier partial at +40% gain (highest priority partial)
-            if gain_pct >= pp_40_gain and current_score >= pp_40_min_score and partial_taken < pp_40_sell:
+            # Check for highest tier partial at +50% gain (lock in 75%)
+            if gain_pct >= pp_50_gain and current_score >= pp_50_min_score and partial_taken < pp_50_sell:
+                take_pct = pp_50_sell - partial_taken
+                if take_pct > 0:
+                    shares_to_sell = position.shares * (take_pct / 100)
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=shares_to_sell,
+                        price=price,
+                        reason=f"PARTIAL PROFIT {pp_50_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} - protecting big winner",
+                        score=current_score,
+                        priority=3,
+                        is_partial=True,
+                        sell_pct=take_pct
+                    )
+                    trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
+                    sells.append(trade)
+                    continue
+
+            # Check for middle tier partial at +40% gain
+            elif gain_pct >= pp_40_gain and current_score >= pp_40_min_score and partial_taken < pp_40_sell:
                 take_pct = pp_40_sell - partial_taken  # Take what's left to get to target
                 if take_pct > 0:
                     shares_to_sell = position.shares * (take_pct / 100)
