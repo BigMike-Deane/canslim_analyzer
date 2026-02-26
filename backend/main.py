@@ -4853,6 +4853,7 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
 
     # Check market direction (SPY gate — same as AI trader binary gate)
     spy_below_50ma = False
+    is_bearish = False
     spy_status = "unknown"
     try:
         from data_fetcher import get_cached_market_direction
@@ -4865,7 +4866,7 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
             is_bearish = spy_below_50ma
             spy_status = f"SPY ${spy_px:.0f} {'below' if spy_below_50ma else 'above'} 50MA ${spy_50:.0f}"
     except Exception:
-        is_bearish = False
+        pass
 
     effective_stop_loss = bearish_stop_loss_pct if is_bearish else stop_loss_pct
 
