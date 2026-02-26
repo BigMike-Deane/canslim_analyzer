@@ -5040,7 +5040,7 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
                     ]
                 })
 
-    # ==================== BUY LOGIC (mirrors ai_trader evaluate_buys) ====================
+    # ==================== BUY LOGIC (mirrors ai_trader evaluate_buys composite scoring) ====================
 
     # SPY gate: if SPY below 50MA, no buy recommendations (same as AI trader)
     buy_blocked_reason = None
@@ -5053,36 +5053,53 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
             buy_blocked_reason = f"At max positions ({len(fid_positions)}/{max_positions})"
 
     if not buy_blocked_reason:
-        # Get top candidates (same query as AI trader)
+        # Get candidates (same query as AI trader — wider pool, then filter/rank)
         top_canslim_stocks = db.query(Stock).filter(
             Stock.canslim_score != None,
             Stock.canslim_score >= min_score_to_buy,
             Stock.current_price > 0,
-        ).order_by(desc(Stock.canslim_score)).limit(20).all()
+            Stock.projected_growth != None,
+        ).order_by(desc(Stock.canslim_score)).limit(50).all()
 
         top_growth_stocks = db.query(Stock).filter(
             Stock.growth_mode_score != None,
             Stock.growth_mode_score >= min_score_to_buy,
             Stock.is_growth_stock == True,
             Stock.current_price > 0,
-        ).order_by(desc(Stock.growth_mode_score)).limit(10).all()
+        ).order_by(desc(Stock.growth_mode_score)).limit(20).all()
 
         # Combine and dedupe
         seen_tickers = set()
-        top_stocks = []
+        candidate_stocks = []
         for stock in top_canslim_stocks:
             if stock.ticker not in seen_tickers:
                 seen_tickers.add(stock.ticker)
-                top_stocks.append(stock)
+                candidate_stocks.append(stock)
         for stock in top_growth_stocks:
             if stock.ticker not in seen_tickers:
                 seen_tickers.add(stock.ticker)
-                top_stocks.append(stock)
+                candidate_stocks.append(stock)
+
+        # Volume gate config (same as AI trader)
+        vol_gate_config = yaml_config.get('volume_gate', {})
+        vol_gate_enabled = vol_gate_config.get('enabled', True)
+
+        # Earnings avoidance config (same as AI trader)
+        earnings_config = yaml_config.get('ai_trader.earnings', {})
+        avoidance_days = earnings_config.get('avoidance_days', 5)
+
+        # Scoring weights (from strategy profile, same as AI trader)
+        scoring_weights = profile.get('scoring_weights', {})
+        w_growth = scoring_weights.get('growth_projection', 0.25)
+        w_score = scoring_weights.get('canslim_score', 0.25)
+        w_momentum = scoring_weights.get('momentum', 0.20)
+        w_breakout = scoring_weights.get('breakout', 0.20)
+        w_base = scoring_weights.get('base_quality', 0.10)
 
         recommended_groups = set()
-        max_position_value = total_value * max_single_position_pct / 100
+        scored_candidates = []
 
-        for stock in top_stocks:
+        for stock in candidate_stocks:
             if stock.ticker in owned_tickers:
                 continue
 
@@ -5111,61 +5128,259 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
                 if l_score < min_l_score:
                     continue
 
-            if effective_score < min_score_to_buy:
+            if not effective_score or effective_score < min_score_to_buy:
                 continue
 
-            # Position sizing: 10% default, up to max_single_position_pct
-            position_value = total_value * 0.10
-            shares_to_buy = int(position_value / stock.current_price) if stock.current_price else 0
-            buy_value = shares_to_buy * stock.current_price if shares_to_buy else position_value
-
-            # Entry signal (base pattern / breakout info)
+            # Base pattern data (same as AI trader)
             is_breaking_out = getattr(stock, 'is_breaking_out', False)
             base_type = getattr(stock, 'base_type', 'none') or 'none'
             weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+            pivot_price = getattr(stock, 'pivot_price', 0) or 0
             has_base = base_type not in ('none', '', None)
+            volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+            breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
 
-            entry_signal = ""
-            priority = 2
-            if is_breaking_out and has_base:
-                entry_signal = f"Breaking out of {base_type} base ({weeks_in_base}w)"
-                priority = 1
-            elif is_breaking_out:
-                entry_signal = "Breaking out with volume"
-                priority = 1
-            elif has_base and stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
+            # VOLUME GATE (same context-aware thresholds as AI trader)
+            if vol_gate_enabled:
+                if is_breaking_out:
+                    vol_threshold = vol_gate_config.get('breakout_min_volume_ratio', 1.5)
+                elif has_base and pivot_price > 0:
+                    pct_check = ((pivot_price - stock.current_price) / pivot_price) * 100 if pivot_price > 0 else 0
+                    if 0 <= pct_check <= 15:
+                        vol_threshold = vol_gate_config.get('pre_breakout_min_volume_ratio', 0.8)
+                    else:
+                        vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+                else:
+                    vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
+                if volume_ratio < vol_threshold:
+                    continue
+
+            # EARNINGS PROXIMITY (same as AI trader — block non-CS stocks within avoidance window)
+            days_to_earnings = getattr(stock, 'days_to_earnings', None)
+            if days_to_earnings is not None and 0 < days_to_earnings <= avoidance_days:
+                continue
+
+            # COMPOSITE SCORING (exact same logic as AI trader)
+            momentum_score = 0
+            breakout_bonus = 0
+            pre_breakout_bonus = 0
+            extended_penalty = 0
+            base_quality_bonus = 0
+
+            # Base pattern quality bonus (up to 15 points, same as AI trader)
+            if has_base:
+                base_quality_map = {"cup_with_handle": 10, "cup": 8, "double_bottom": 7, "flat": 6}
+                base_quality_bonus = base_quality_map.get(base_type, 4)
+                if weeks_in_base >= 8:
+                    base_quality_bonus += 5
+                elif weeks_in_base >= 6:
+                    base_quality_bonus += 3
+                elif weeks_in_base >= 5:
+                    base_quality_bonus += 1
+
+            entry_category = "NONE"
+            pct_from_high = 0
+            pct_from_pivot = 0
+
+            if stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
                 pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
-                if pct_from_high <= 15:
-                    entry_signal = f"Pre-breakout: {base_type} ({weeks_in_base}w), {pct_from_high:.0f}% from pivot"
-                    priority = 1
+
+                if pivot_price > 0:
+                    pct_from_pivot = ((pivot_price - stock.current_price) / pivot_price) * 100
+
+                # PRE-BREAKOUT: 5-15% below pivot (BEST entry — same as AI trader +40 bonus)
+                if has_base and pivot_price > 0 and 5 <= pct_from_pivot <= 15:
+                    pre_breakout_bonus = 40
+                    momentum_score = 35
+                    if volume_ratio >= 1.3:
+                        pre_breakout_bonus += 5
+                    if weeks_in_base >= 10:
+                        pre_breakout_bonus += 5
+                    entry_category = "PRE_BREAKOUT"
+
+                # AT PIVOT: 0-5% below pivot (ready to break out)
+                elif has_base and pivot_price > 0 and 0 <= pct_from_pivot < 5:
+                    pre_breakout_bonus = 35
+                    momentum_score = 30
+                    if volume_ratio >= 1.5:
+                        momentum_score += 5
+                    entry_category = "AT_PIVOT"
+
+                # BREAKOUT: Already past pivot (less ideal — AI trader only gives +10)
+                elif is_breaking_out:
+                    breakout_bonus = 10
+                    if breakout_volume_ratio >= 2.0:
+                        breakout_bonus += 5
+                    momentum_score = 15
+                    entry_category = "BREAKOUT"
+
+                # EXTENDED: >5% above pivot (the easy money is gone — AI trader penalizes)
+                elif has_base and pivot_price > 0 and pct_from_pivot < -5:
+                    if pct_from_pivot < -10:
+                        extended_penalty = -20
+                        momentum_score = 5
+                    else:
+                        extended_penalty = -10
+                        momentum_score = 10
+                    entry_category = "EXTENDED"
+
+                # NO BASE: At 52-week high = chasing (same penalty as AI trader)
+                elif not has_base:
+                    if pct_from_high <= 2:
+                        if effective_score < 85:
+                            extended_penalty = -15
+                            momentum_score = 5
+                            entry_category = "CHASING"
+                        else:
+                            momentum_score = 12
+                            entry_category = "NEW_HIGH"
+                    elif pct_from_high <= 10:
+                        momentum_score = 15
+                        if volume_ratio >= 1.5:
+                            momentum_score += 3
+                        entry_category = "NEAR_HIGH"
+                    elif pct_from_high <= 25:
+                        momentum_score = 8
+                        entry_category = "PULLBACK"
+                    else:
+                        momentum_score = -5
+                        entry_category = "DEEP_PULLBACK"
+
+            # MOMENTUM CONFIRMATION (same as AI trader — 15% penalty if fading)
+            rs_12m = getattr(stock, 'rs_12m', 1.0) or 1.0
+            rs_3m = getattr(stock, 'rs_3m', 1.0) or 1.0
+            momentum_penalty = 0
+            if rs_12m > 0 and rs_3m < rs_12m * 0.95:
+                momentum_penalty = -0.15
+
+            # Compute composite score (same weights and formula as AI trader)
+            growth_projection = min(stock.projected_growth or (effective_score * 0.3), 50)
+            composite_score = (
+                (growth_projection * w_growth) +
+                (effective_score * w_score) +
+                (momentum_score * w_momentum) +
+                ((breakout_bonus + pre_breakout_bonus) * w_breakout) +
+                (base_quality_bonus * w_base) +
+                extended_penalty
+            )
+            if momentum_penalty < 0:
+                composite_score *= (1 + momentum_penalty)
+
+            # Build entry signal description
+            if entry_category == "PRE_BREAKOUT":
+                entry_signal = f"PRE-BREAKOUT: {base_type} ({weeks_in_base}w), {pct_from_pivot:.0f}% below pivot"
+                entry_tag = "IDEAL ENTRY"
+            elif entry_category == "AT_PIVOT":
+                entry_signal = f"AT PIVOT: {base_type} ({weeks_in_base}w), {pct_from_pivot:.0f}% from pivot"
+                entry_tag = "GOOD ENTRY"
+            elif entry_category == "BREAKOUT":
+                entry_signal = f"Breaking out of {base_type} ({weeks_in_base}w), vol {breakout_volume_ratio:.1f}x"
+                entry_tag = "ACTIVE BREAKOUT"
+            elif entry_category == "EXTENDED":
+                entry_signal = f"EXTENDED: {abs(pct_from_pivot):.0f}% above pivot — easy money is gone"
+                entry_tag = "LATE ENTRY"
+            elif entry_category == "CHASING":
+                entry_signal = f"At 52-week high without base pattern — chasing"
+                entry_tag = "CHASING"
+            elif entry_category in ("NEW_HIGH", "NEAR_HIGH"):
+                entry_signal = f"{pct_from_high:.1f}% from 52-week high"
+                entry_tag = "NEAR HIGH"
+            elif entry_category == "PULLBACK":
+                entry_signal = f"{pct_from_high:.0f}% pullback from high"
+                entry_tag = "PULLBACK"
+            else:
+                entry_signal = f"Current price: ${stock.current_price:.2f}" if stock.current_price else ""
+                entry_tag = ""
+
+            # Position sizing: 10% default, adjusted for pre-breakout (same as AI trader)
+            position_pct = 10.0
+            pre_breakout_mult = profile.get('pre_breakout_multiplier', 1.40)
+            if entry_category == "PRE_BREAKOUT":
+                position_pct *= pre_breakout_mult
+            elif entry_category == "AT_PIVOT":
+                position_pct *= (pre_breakout_mult * 0.93)
+            position_value = total_value * position_pct / 100
+            shares_to_buy = int(position_value / stock.current_price) if stock.current_price else 0
+            buy_value = shares_to_buy * stock.current_price if shares_to_buy else position_value
+
+            scored_candidates.append({
+                "stock": stock,
+                "composite_score": composite_score,
+                "effective_score": effective_score,
+                "score_type": score_type,
+                "is_growth": is_growth,
+                "c_score": c_score,
+                "l_score": l_score,
+                "entry_category": entry_category,
+                "entry_signal": entry_signal,
+                "entry_tag": entry_tag,
+                "shares_to_buy": shares_to_buy,
+                "buy_value": buy_value,
+                "ticker_group": ticker_group,
+                "momentum_penalty": momentum_penalty,
+                "extended_penalty": extended_penalty,
+                "volume_ratio": volume_ratio,
+            })
+
+        # Sort by composite score (same ranking as AI trader) and take top 3
+        scored_candidates.sort(key=lambda x: x["composite_score"], reverse=True)
+
+        buy_count = 0
+        for cand in scored_candidates:
+            if buy_count >= 3:
+                break
+            stock = cand["stock"]
+            tg = cand["ticker_group"]
+            if tg and frozenset(tg) in recommended_groups:
+                continue
+
+            warnings = []
+            if cand["entry_category"] in ("EXTENDED", "CHASING"):
+                warnings.append(f"AI trader penalizes this entry ({cand['extended_penalty']:+d} composite pts)")
+            if cand["momentum_penalty"] < 0:
+                warnings.append("Momentum fading (3mo RS < 12mo RS) — 15% composite penalty")
 
             details = [
-                f"{score_type} Score: {effective_score:.0f}/100 (min: {min_score_to_buy})",
-                f"C={c_score:.0f} L={l_score:.0f} (quality gates: C>={min_c_score}, L>={min_l_score})",
-                entry_signal if entry_signal else f"Current price: ${stock.current_price:.2f}" if stock.current_price else None,
-                f"Sector: {stock.sector}" if stock.sector else None,
-                f"Suggested: {shares_to_buy} shares (~${buy_value:,.0f})" if shares_to_buy else None,
+                f"{cand['score_type']} Score: {cand['effective_score']:.0f}/100 (min: {min_score_to_buy})",
+                f"C={cand['c_score']:.0f} L={cand['l_score']:.0f} (quality gates: C>={min_c_score}, L>={min_l_score})",
+                f"Composite rank score: {cand['composite_score']:.1f}",
+                cand["entry_signal"],
             ]
             if stock.projected_growth:
-                details.insert(2, f"Projected growth: +{stock.projected_growth:.0f}%")
+                details.append(f"Projected growth: +{stock.projected_growth:.0f}%")
+            if cand["entry_tag"]:
+                details.append(f"Entry quality: {cand['entry_tag']}")
+            details.extend(warnings)
+            if stock.sector:
+                details.append(f"Sector: {stock.sector}")
+            if cand["shares_to_buy"]:
+                details.append(f"Suggested: {cand['shares_to_buy']} shares (~${cand['buy_value']:,.0f})")
+
+            # Priority: pre-breakout/at-pivot = 1, breakout = 2, everything else = 3
+            if cand["entry_category"] in ("PRE_BREAKOUT", "AT_PIVOT"):
+                priority = 1
+            elif cand["entry_category"] == "BREAKOUT":
+                priority = 2
+            else:
+                priority = 3
 
             actions.append({
                 "action": "BUY",
                 "priority": priority,
                 "ticker": stock.ticker,
-                "shares_action": shares_to_buy,
+                "shares_action": cand["shares_to_buy"],
                 "shares_current": 0,
                 "current_price": stock.current_price,
-                "estimated_value": buy_value,
-                "is_growth_stock": is_growth,
-                "reason": f"Strong candidate - {score_type} {effective_score:.0f}, C={c_score:.0f} L={l_score:.0f}",
+                "estimated_value": cand["buy_value"],
+                "is_growth_stock": cand["is_growth"],
+                "composite_score": round(cand["composite_score"], 1),
+                "reason": f"{cand['entry_tag'] + ': ' if cand['entry_tag'] else ''}{cand['score_type']} {cand['effective_score']:.0f}, composite {cand['composite_score']:.0f}",
                 "details": [d for d in details if d],
             })
 
-            if ticker_group:
-                recommended_groups.add(ticker_group)
-            if len([a for a in actions if a["action"] == "BUY"]) >= 3:
-                break
+            if tg:
+                recommended_groups.add(frozenset(tg))
+            buy_count += 1
 
     # ==================== ADD TO WINNERS ====================
     # (Supplementary recommendation — AI trader does this via pyramiding)
