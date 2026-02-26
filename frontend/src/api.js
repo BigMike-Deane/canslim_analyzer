@@ -373,6 +373,7 @@ export const api = {
     cache.invalidate('/api/fidelity/latest')
     cache.invalidate('/api/fidelity/snapshots')
     cache.invalidate('/api/fidelity/reconciliation')
+    cache.invalidate('/api/fidelity/gameplan')
     return response.json()
   },
 
@@ -400,6 +401,7 @@ export const api = {
     return request(`/api/fidelity/trades?${params}`)
   },
   getFidelityReconciliation: () => request('/api/fidelity/reconciliation'),
+  getFidelityGameplan: () => request('/api/fidelity/gameplan'),
 
   syncFidelityToPortfolio: async () => {
     const result = await request('/api/fidelity/sync-to-portfolio', { method: 'POST' })

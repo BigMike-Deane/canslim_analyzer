@@ -26,7 +26,7 @@ const navGroups = [
       { to: '/backtest', icon: 'rewind', label: 'Backtest' },
       { to: '/watchlist', icon: 'eye', label: 'Watchlist' },
       { to: '/portfolio', icon: 'briefcase', label: 'Portfolio' },
-      { to: '/fidelity', icon: 'sync', label: 'Fidelity Sync' },
+      { to: '/fidelity', icon: 'sync', label: 'My Portfolio' },
     ],
   },
   {

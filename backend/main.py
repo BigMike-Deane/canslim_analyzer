@@ -4667,6 +4667,37 @@ async def get_fidelity_latest(db: Session = Depends(get_db)):
         FidelityPosition.snapshot_id == snapshot.id
     ).order_by(desc(FidelityPosition.current_value)).all()
 
+    # Batch fetch CANSLIM scores for all Fidelity symbols
+    fid_symbols = [p.symbol for p in positions]
+    stocks_by_ticker = {}
+    if fid_symbols:
+        fid_stocks = db.query(Stock).filter(Stock.ticker.in_(fid_symbols)).all()
+        stocks_by_ticker = {s.ticker: s for s in fid_stocks}
+
+    enriched_positions = []
+    for p in positions:
+        stock = stocks_by_ticker.get(p.symbol)
+        pos_data = {
+            "symbol": p.symbol,
+            "description": p.description,
+            "quantity": p.quantity,
+            "last_price": p.last_price,
+            "current_value": p.current_value,
+            "total_gain_loss": p.total_gain_loss,
+            "total_gain_loss_pct": p.total_gain_loss_pct,
+            "cost_basis_total": p.cost_basis_total,
+            "average_cost_basis": p.average_cost_basis,
+            "percent_of_account": p.percent_of_account,
+            "type": p.position_type,
+            # Enriched CANSLIM data
+            "canslim_score": stock.canslim_score if stock else None,
+            "growth_mode_score": stock.growth_mode_score if stock else None,
+            "is_growth_stock": stock.is_growth_stock if stock else False,
+            "projected_growth": stock.projected_growth if stock else None,
+            "sector": stock.sector if stock else None,
+        }
+        enriched_positions.append(pos_data)
+
     return {
         "snapshot": {
             "id": snapshot.id,
@@ -4676,22 +4707,7 @@ async def get_fidelity_latest(db: Session = Depends(get_db)):
             "total_value": snapshot.total_value,
             "positions_count": snapshot.positions_count,
         },
-        "positions": [
-            {
-                "symbol": p.symbol,
-                "description": p.description,
-                "quantity": p.quantity,
-                "last_price": p.last_price,
-                "current_value": p.current_value,
-                "total_gain_loss": p.total_gain_loss,
-                "total_gain_loss_pct": p.total_gain_loss_pct,
-                "cost_basis_total": p.cost_basis_total,
-                "average_cost_basis": p.average_cost_basis,
-                "percent_of_account": p.percent_of_account,
-                "type": p.position_type,
-            }
-            for p in positions
-        ],
+        "positions": enriched_positions,
     }
 
 
@@ -4782,6 +4798,406 @@ async def get_fidelity_reconciliation(db: Session = Depends(get_db)):
     result["snapshot_id"] = snapshot.id
 
     return result
+
+
+@app.get("/api/fidelity/gameplan")
+async def get_fidelity_gameplan(db: Session = Depends(get_db)):
+    """
+    Generate actionable trading recommendations for Fidelity positions.
+    Uses the AI scoring engine to suggest SELL/TRIM/BUY/ADD/WATCH actions
+    based on actual Fidelity holdings and CANSLIM analysis.
+    """
+    from backend.database import FidelitySnapshot, FidelityPosition
+
+    snapshot = db.query(FidelitySnapshot).order_by(
+        desc(FidelitySnapshot.snapshot_date)
+    ).first()
+
+    if not snapshot:
+        return {"gameplan": [], "summary": {"total_actions": 0}}
+
+    fid_positions = db.query(FidelityPosition).filter(
+        FidelityPosition.snapshot_id == snapshot.id
+    ).all()
+
+    if not fid_positions:
+        return {"gameplan": [], "summary": {"total_actions": 0}}
+
+    # Calculate portfolio totals (include cash)
+    total_value = snapshot.total_value or sum(p.current_value or 0 for p in fid_positions)
+    if total_value == 0:
+        total_value = 10000
+
+    # Batch fetch CANSLIM scores for all Fidelity symbols
+    fid_symbols = [p.symbol for p in fid_positions]
+    stocks_by_ticker = {}
+    if fid_symbols:
+        fid_stocks = db.query(Stock).filter(Stock.ticker.in_(fid_symbols)).all()
+        stocks_by_ticker = {s.ticker: s for s in fid_stocks}
+
+    # Get top CANSLIM stocks for potential new buys
+    top_canslim_stocks = db.query(Stock).filter(
+        Stock.canslim_score != None,
+        Stock.canslim_score >= 65
+    ).order_by(desc(Stock.canslim_score)).limit(15).all()
+
+    top_growth_stocks = db.query(Stock).filter(
+        Stock.growth_mode_score != None,
+        Stock.growth_mode_score >= 65,
+        Stock.is_growth_stock == True
+    ).order_by(desc(Stock.growth_mode_score)).limit(10).all()
+
+    # Combine and dedupe top stocks
+    seen_tickers = set()
+    top_stocks = []
+    for stock in top_canslim_stocks:
+        if stock.ticker not in seen_tickers:
+            seen_tickers.add(stock.ticker)
+            top_stocks.append(stock)
+    for stock in top_growth_stocks:
+        if stock.ticker not in seen_tickers:
+            seen_tickers.add(stock.ticker)
+            top_stocks.append(stock)
+
+    owned_tickers = expand_tickers_with_duplicates(set(fid_symbols))
+    actions = []
+
+    # === SELL ACTIONS (Fidelity positions with weak scores + losses) ===
+    for p in fid_positions:
+        stock = stocks_by_ticker.get(p.symbol)
+        if not stock:
+            continue
+
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            score = stock.canslim_score or 0
+            score_type = "CANSLIM"
+        projected = stock.projected_growth or 0
+        gain_pct = p.total_gain_loss_pct or 0
+
+        if score < 35 and gain_pct < -10:
+            actions.append({
+                "action": "SELL",
+                "priority": 1,
+                "ticker": p.symbol,
+                "shares_action": p.quantity,
+                "shares_current": p.quantity,
+                "current_price": p.last_price,
+                "estimated_value": p.current_value,
+                "is_growth_stock": is_growth,
+                "reason": f"Weak fundamentals ({score_type} {score:.0f}) with loss of {gain_pct:.1f}%",
+                "details": [
+                    f"{score_type} Score: {score:.0f}/100 (below 35 threshold)",
+                    f"Current loss: {gain_pct:.1f}%",
+                    f"Cost basis: ${p.average_cost_basis:.2f}" if p.average_cost_basis else None,
+                    f"Projected growth: {projected:.1f}%" if projected else "No growth projection",
+                    "Cut losses early - O'Neil recommends selling at -7% to -8%"
+                ]
+            })
+        elif score < 40 and projected < -5:
+            actions.append({
+                "action": "SELL",
+                "priority": 2,
+                "ticker": p.symbol,
+                "shares_action": p.quantity,
+                "shares_current": p.quantity,
+                "current_price": p.last_price,
+                "estimated_value": p.current_value,
+                "is_growth_stock": is_growth,
+                "reason": f"Deteriorating outlook ({score_type} {score:.0f}, {projected:.1f}% projected)",
+                "details": [
+                    f"{score_type} Score: {score:.0f}/100",
+                    f"Negative growth projection: {projected:.1f}%",
+                    f"Current P&L: {gain_pct:+.1f}%",
+                    "Fundamentals weakening - consider exiting before further decline"
+                ]
+            })
+        elif gain_pct <= -7 and score < 55:
+            # Stop-loss style recommendation
+            actions.append({
+                "action": "SELL",
+                "priority": 2,
+                "ticker": p.symbol,
+                "shares_action": p.quantity,
+                "shares_current": p.quantity,
+                "current_price": p.last_price,
+                "estimated_value": p.current_value,
+                "is_growth_stock": is_growth,
+                "reason": f"Stop-loss trigger - down {gain_pct:.1f}% with mediocre score ({score:.0f})",
+                "details": [
+                    f"{score_type} Score: {score:.0f}/100 (not strong enough to hold through loss)",
+                    f"Loss: {gain_pct:.1f}% from cost basis ${p.average_cost_basis:.2f}" if p.average_cost_basis else f"Loss: {gain_pct:.1f}%",
+                    "O'Neil's #1 rule: Always cut losses at -7% to -8%",
+                    "Only hold through dips when fundamentals are strong (score 65+)"
+                ]
+            })
+
+    # === TRIM / TAKE PROFITS ===
+    for p in fid_positions:
+        gain_pct = p.total_gain_loss_pct or 0
+        position_weight = (p.current_value or 0) / total_value * 100
+
+        if gain_pct >= 50 and position_weight >= 15:
+            trim_shares = int(p.quantity * 0.3)
+            trim_value = trim_shares * (p.last_price or 0)
+            actions.append({
+                "action": "TRIM",
+                "priority": 3,
+                "ticker": p.symbol,
+                "shares_action": trim_shares,
+                "shares_current": p.quantity,
+                "current_price": p.last_price,
+                "estimated_value": trim_value,
+                "reason": f"Lock in gains - up {gain_pct:.0f}%, {position_weight:.0f}% of portfolio",
+                "details": [
+                    f"Position up {gain_pct:.1f}% (${p.total_gain_loss:,.0f} profit)" if p.total_gain_loss else f"Position up {gain_pct:.1f}%",
+                    f"Position is {position_weight:.1f}% of portfolio (overweight)",
+                    f"Trim {trim_shares} shares (~30%) to lock in ~${trim_value:,.0f}",
+                    "Reduce concentration risk while letting winner run"
+                ]
+            })
+        elif gain_pct >= 100:
+            trim_shares = int(p.quantity * 0.5)
+            trim_value = trim_shares * (p.last_price or 0)
+            actions.append({
+                "action": "TRIM",
+                "priority": 2,
+                "ticker": p.symbol,
+                "shares_action": trim_shares,
+                "shares_current": p.quantity,
+                "current_price": p.last_price,
+                "estimated_value": trim_value,
+                "reason": f"Exceptional gain of {gain_pct:.0f}% - secure profits",
+                "details": [
+                    f"Position doubled! Up {gain_pct:.1f}%",
+                    f"Trim {trim_shares} shares (50%) to recover original investment",
+                    "Let remaining shares ride as 'house money'",
+                    "Classic O'Neil strategy: sell half at 100% gain"
+                ]
+            })
+
+    # === BUY NEW POSITIONS ===
+    max_position_value = total_value * 0.10
+    recommended_groups = set()
+
+    for stock in top_stocks:
+        if stock.ticker in owned_tickers:
+            continue
+
+        # Duplicate group check
+        skip_duplicate = False
+        ticker_group = None
+        for group in DUPLICATE_TICKERS:
+            if stock.ticker in group:
+                ticker_group = frozenset(group)
+                if ticker_group in recommended_groups:
+                    skip_duplicate = True
+                break
+        if skip_duplicate:
+            continue
+
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            effective_score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            effective_score = stock.canslim_score or 0
+            score_type = "CANSLIM"
+
+        if effective_score >= 75 and (stock.projected_growth or 0) >= 15:
+            shares_to_buy = int(max_position_value / stock.current_price) if stock.current_price else 0
+            buy_value = shares_to_buy * stock.current_price if shares_to_buy else max_position_value
+
+            is_breaking_out = getattr(stock, 'is_breaking_out', False)
+            base_type = getattr(stock, 'base_type', 'none') or 'none'
+            weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+            has_base = base_type not in ('none', '', None)
+
+            entry_signal = ""
+            if is_breaking_out and has_base:
+                entry_signal = f"Breaking out of {base_type} base ({weeks_in_base}w)"
+            elif is_breaking_out:
+                entry_signal = "Breaking out with volume"
+            elif has_base:
+                if stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
+                    pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+                    if pct_from_high <= 15:
+                        entry_signal = f"Pre-breakout: {base_type} base ({weeks_in_base}w), {pct_from_high:.0f}% from pivot"
+
+            priority = 2
+            if is_breaking_out and has_base:
+                priority = 1
+            elif has_base and stock.week_52_high and stock.current_price:
+                pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+                if pct_from_high <= 15:
+                    priority = 1
+
+            actions.append({
+                "action": "BUY",
+                "priority": priority,
+                "ticker": stock.ticker,
+                "shares_action": shares_to_buy,
+                "shares_current": 0,
+                "current_price": stock.current_price,
+                "estimated_value": buy_value,
+                "is_growth_stock": is_growth,
+                "reason": f"Strong candidate - {score_type} {effective_score:.0f}, +{stock.projected_growth:.0f}% projected",
+                "details": [
+                    f"{score_type} Score: {effective_score:.0f}/100",
+                    f"Projected 6-month growth: +{stock.projected_growth:.0f}%",
+                    entry_signal if entry_signal else f"Current price: ${stock.current_price:.2f}" if stock.current_price else None,
+                    f"Sector: {stock.sector}" if stock.sector else None,
+                    f"Suggested position: {shares_to_buy} shares (~${buy_value:,.0f}, 10% of portfolio)" if shares_to_buy else None,
+                ]
+            })
+
+            if ticker_group:
+                recommended_groups.add(ticker_group)
+            if len([a for a in actions if a["action"] == "BUY"]) >= 3:
+                break
+
+    # === ADD TO WINNERS (Fidelity positions with strong scores on pullback) ===
+    for p in fid_positions:
+        stock = stocks_by_ticker.get(p.symbol)
+        if not stock:
+            continue
+
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            score = stock.canslim_score or 0
+            score_type = "CANSLIM"
+        projected = stock.projected_growth or 0
+        gain_pct = p.total_gain_loss_pct or 0
+        position_weight = (p.current_value or 0) / total_value * 100
+
+        if score >= 65 and projected >= 10 and -15 <= gain_pct <= 5 and position_weight < 12:
+            target_value = total_value * 0.10
+            current_value = p.current_value or 0
+            add_value = min(target_value - current_value, total_value * 0.05)
+
+            if add_value > 500 and p.last_price and p.last_price > 0:
+                add_shares = int(add_value / p.last_price)
+                actions.append({
+                    "action": "ADD",
+                    "priority": 3,
+                    "ticker": p.symbol,
+                    "shares_action": add_shares,
+                    "shares_current": p.quantity,
+                    "current_price": p.last_price,
+                    "estimated_value": add_value,
+                    "is_growth_stock": is_growth,
+                    "reason": f"Strong stock on pullback - {score_type} {score:.0f}, currently {gain_pct:+.1f}%",
+                    "details": [
+                        f"{score_type} Score: {score:.0f}/100 (strong)",
+                        f"Projected growth: +{projected:.0f}%",
+                        f"Current position: {gain_pct:+.1f}% (buying the dip)",
+                        f"Position weight: {position_weight:.1f}% (room to add)",
+                        f"Add {add_shares} shares (~${add_value:,.0f})"
+                    ]
+                })
+
+    # === WATCH LIST CANDIDATES ===
+    watch_actions = []
+    watched_groups = set()
+
+    for stock in top_stocks:
+        if stock.ticker in owned_tickers:
+            continue
+        if stock.ticker in [a["ticker"] for a in actions if a["action"] == "BUY"]:
+            continue
+
+        skip_watch = False
+        watch_ticker_group = None
+        for group in DUPLICATE_TICKERS:
+            if stock.ticker in group:
+                watch_ticker_group = frozenset(group)
+                if watch_ticker_group in watched_groups or watch_ticker_group in recommended_groups:
+                    skip_watch = True
+                break
+        if skip_watch:
+            continue
+
+        is_growth = stock.is_growth_stock or False
+        if is_growth and stock.growth_mode_score:
+            effective_score = stock.growth_mode_score
+            score_type = "Growth"
+        else:
+            effective_score = stock.canslim_score or 0
+            score_type = "CANSLIM"
+
+        if effective_score >= 70 and stock.week_52_high and stock.week_52_high > 0 and stock.current_price:
+            pct_from_high = ((stock.week_52_high - stock.current_price) / stock.week_52_high) * 100
+            base_type = getattr(stock, 'base_type', 'none') or 'none'
+            weeks_in_base = getattr(stock, 'weeks_in_base', 0) or 0
+            has_base = base_type not in ('none', '', None)
+
+            if 5 <= pct_from_high <= 15:
+                if has_base and weeks_in_base >= 5:
+                    watch_priority = 3
+                    watch_reason = f"Pre-breakout setup: {base_type} base ({weeks_in_base}w), {pct_from_high:.0f}% from pivot"
+                elif has_base:
+                    watch_priority = 4
+                    watch_reason = f"Base forming ({base_type}) - {pct_from_high:.0f}% from high"
+                else:
+                    watch_priority = 5
+                    watch_reason = f"Approaching 52-week high - {pct_from_high:.0f}% away"
+
+                details = [f"{score_type} Score: {effective_score:.0f}/100"]
+                if has_base:
+                    details.append(f"Base pattern: {base_type} ({weeks_in_base} weeks)")
+                details.extend([
+                    f"52-week high: ${stock.week_52_high:.2f}",
+                    f"Current: ${stock.current_price:.2f} ({pct_from_high:.1f}% below high)",
+                ])
+                if stock.projected_growth:
+                    details.append(f"Projected growth: +{stock.projected_growth:.0f}%")
+
+                watch_actions.append({
+                    "action": "WATCH",
+                    "priority": watch_priority,
+                    "ticker": stock.ticker,
+                    "shares_action": 0,
+                    "shares_current": 0,
+                    "current_price": stock.current_price,
+                    "estimated_value": 0,
+                    "is_growth_stock": is_growth,
+                    "reason": watch_reason,
+                    "details": [d for d in details if d]
+                })
+
+                if watch_ticker_group:
+                    watched_groups.add(watch_ticker_group)
+                if len(watch_actions) >= 3:
+                    break
+
+    actions.extend(watch_actions)
+
+    # Filter out None values from details
+    for a in actions:
+        a["details"] = [d for d in a.get("details", []) if d]
+
+    actions.sort(key=lambda x: (x["priority"], -x.get("estimated_value", 0)))
+
+    return {
+        "gameplan": actions,
+        "summary": {
+            "total_actions": len(actions),
+            "sell_count": len([a for a in actions if a["action"] == "SELL"]),
+            "trim_count": len([a for a in actions if a["action"] == "TRIM"]),
+            "buy_count": len([a for a in actions if a["action"] == "BUY"]),
+            "add_count": len([a for a in actions if a["action"] == "ADD"]),
+            "watch_count": len([a for a in actions if a["action"] == "WATCH"]),
+            "portfolio_value": total_value,
+            "cash_balance": snapshot.cash_balance,
+            "snapshot_date": snapshot.snapshot_date.isoformat() if snapshot.snapshot_date else None,
+        }
+    }
 
 
 @app.post("/api/fidelity/sync-to-portfolio")

@@ -29,7 +29,7 @@ const moreItems = [
   { to: '/analytics', label: 'Analytics', icon: 'chart' },
   { to: '/watchlist', label: 'Watchlist', icon: 'eye' },
   { to: '/portfolio', label: 'Portfolio', icon: 'briefcase' },
-  { to: '/fidelity', label: 'Fidelity', icon: 'sync' },
+  { to: '/fidelity', label: 'My Portfolio', icon: 'sync' },
   { to: '/docs', label: 'Documentation', icon: 'book' },
 ]
 
