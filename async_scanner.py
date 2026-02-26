@@ -399,6 +399,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "volume_ratio": volume_ratio,
                 "weeks_in_base": base_pattern.get("weeks", 0),
                 "base_type": base_pattern.get("type", "none"),
+                "pivot_price": base_pattern.get("pivot_price", 0),
                 "is_breaking_out": is_breaking_out,
                 "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
                 # Insider/Short (fetched asynchronously with caching)
