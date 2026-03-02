@@ -63,6 +63,7 @@ export default function CoiledSpringHistory() {
     {
       key: 'base_type',
       label: 'Base',
+      mobileHide: true,
       render: (val) =>
         val ? <TagBadge>{val}</TagBadge> : null,
     },
@@ -80,6 +81,7 @@ export default function CoiledSpringHistory() {
       label: 'Post-ER',
       align: 'right',
       mono: true,
+      mobileHide: true,
       sortable: true,
       render: (val) =>
         val != null ? <span className="font-data text-xs">{formatCurrency(val)}</span> : '-',
@@ -104,6 +106,7 @@ export default function CoiledSpringHistory() {
       label: 'Beats',
       align: 'right',
       mono: true,
+      mobileHide: true,
       sortable: true,
       render: (val) => <span className="font-data text-xs text-dark-400">{val || '-'}</span>,
     },
@@ -151,12 +154,12 @@ export default function CoiledSpringHistory() {
           </Card>
 
           {/* Filters */}
-          <div className="flex gap-2 mb-3 overflow-x-auto">
+          <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
             {FILTERS.map(f => (
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
-                className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-colors ${
+                className={`text-xs px-3.5 py-2 rounded-full whitespace-nowrap transition-colors ${
                   filter === f.key
                     ? 'bg-purple-500/30 text-purple-300 font-medium'
                     : 'bg-dark-700 text-dark-400 hover:bg-dark-600'

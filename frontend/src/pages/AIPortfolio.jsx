@@ -112,7 +112,7 @@ function PerformanceChart({ history, startingCash }) {
               <button
                 key={value}
                 onClick={() => setTimeRange(value)}
-                className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                className={`px-2.5 py-1 sm:px-2 sm:py-0.5 text-xs rounded transition-colors ${
                   timeRange === value
                     ? 'bg-primary-500 text-white'
                     : 'text-dark-400 hover:text-white'

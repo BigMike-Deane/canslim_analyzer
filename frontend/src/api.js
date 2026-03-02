@@ -332,6 +332,9 @@ export const api = {
   // Trade Analytics
   getTradeAnalytics: () => request('/api/analytics/trades'),
 
+  // Market Breadth
+  getMarketBreadth: () => request('/api/market-breadth'),
+
   // Earnings Calendar
   getEarningsCalendar: () => request('/api/ai-portfolio/earnings-calendar'),
 

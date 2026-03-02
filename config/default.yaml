@@ -499,9 +499,9 @@ coiled_spring:
     check_days_after_earnings: 3   # Days to wait after earnings to check outcome
     thresholds:
       big_win_pct: 15    # >= 15% gain = big_win
-      win_pct: 5         # >= 5% gain = win
+      win_pct: 3         # >= 3% gain = win (lowered from 5% — 3-5% post-earnings is still a solid signal)
       loss_pct: -5       # <= -5% = loss
-      # Between -5% and +5% = flat
+      # Between -5% and +3% = flat
 
 # Watchlist Alerts
 watchlist:

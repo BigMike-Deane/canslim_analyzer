@@ -1,6 +1,6 @@
 const colMap = {
   2: 'grid-cols-2',
-  3: 'grid-cols-3',
+  3: 'grid-cols-2 sm:grid-cols-3',
   4: 'grid-cols-2 sm:grid-cols-4',
   5: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-5',
   6: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-6',
@@ -8,10 +8,11 @@ const colMap = {
 
 export default function StatGrid({ stats, columns, className = '' }) {
   const colCls = columns
-    ? (colMap[columns] || 'grid-cols-3')
-    : stats.length <= 3 ? 'grid-cols-3'
-    : stats.length === 4 ? 'grid-cols-4'
-    : 'grid-cols-5'
+    ? (colMap[columns] || 'grid-cols-2 sm:grid-cols-3')
+    : stats.length <= 2 ? 'grid-cols-2'
+    : stats.length === 3 ? 'grid-cols-2 sm:grid-cols-3'
+    : stats.length === 4 ? 'grid-cols-2 sm:grid-cols-4'
+    : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-5'
 
   return (
     <div className={`grid ${colCls} gap-3 ${className}`}>

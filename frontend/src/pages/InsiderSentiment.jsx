@@ -99,6 +99,7 @@ export default function InsiderSentiment() {
       label: 'Sells',
       align: 'right',
       mono: true,
+      mobileHide: true,
       sortable: true,
       render: (val) => val ? <span className="font-data text-xs text-red-400">{val}</span> : <span className="text-dark-500">0</span>,
     },
@@ -119,13 +120,15 @@ export default function InsiderSentiment() {
       label: 'Largest Buy',
       align: 'right',
       mono: true,
+      mobileHide: true,
       sortable: true,
       render: (val) => val ? <span className="font-data text-xs text-emerald-300">{formatCompactValue(val)}</span> : <span className="text-dark-500">-</span>,
     },
     {
       key: 'insider_largest_buyer_title',
       label: 'Buyer Title',
-      render: (val) => val ? <span className="text-xs text-dark-300 truncate max-w-[120px] inline-block">{val}</span> : <span className="text-dark-500">-</span>,
+      mobileHide: true,
+      render: (val) => val ? <span className="text-xs text-dark-300 truncate max-w-[120px] sm:max-w-[160px] inline-block">{val}</span> : <span className="text-dark-500">-</span>,
     },
   ]
 
@@ -168,14 +171,14 @@ export default function InsiderSentiment() {
           </Card>
 
           {/* Filters Row */}
-          <div className="flex flex-wrap items-center gap-3 mb-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-3">
             {/* Sentiment pills */}
             <div className="flex gap-1.5">
               {SENTIMENTS.map(s => (
                 <button
                   key={s.key}
                   onClick={() => setSentiment(s.key)}
-                  className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-colors ${
+                  className={`text-xs px-3.5 py-2 rounded-full whitespace-nowrap transition-colors ${
                     sentiment === s.key
                       ? 'bg-emerald-500/30 text-emerald-300 font-medium'
                       : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
@@ -190,7 +193,7 @@ export default function InsiderSentiment() {
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value)}
-              className="text-xs bg-dark-700 text-dark-300 border border-dark-600 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-emerald-500/40"
+              className="text-xs bg-dark-700 text-dark-300 border border-dark-600 rounded-lg px-2.5 py-2 focus:outline-none focus:border-emerald-500/40"
             >
               {SORT_OPTIONS.map(o => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -202,7 +205,7 @@ export default function InsiderSentiment() {
               <select
                 value={sector}
                 onChange={e => setSector(e.target.value)}
-                className="text-xs bg-dark-700 text-dark-300 border border-dark-600 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-emerald-500/40"
+                className="text-xs bg-dark-700 text-dark-300 border border-dark-600 rounded-lg px-2.5 py-2 focus:outline-none focus:border-emerald-500/40"
               >
                 <option value="">All Sectors</option>
                 {summary.sectors.map(s => (

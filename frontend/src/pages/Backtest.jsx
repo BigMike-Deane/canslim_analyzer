@@ -214,7 +214,7 @@ function BacktestForm({ onSubmit, isLoading }) {
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full bg-primary-500 hover:bg-primary-400 disabled:bg-dark-700 disabled:text-dark-500 rounded-lg py-2.5 text-sm font-semibold transition-colors"
+          className="w-full bg-primary-500 hover:bg-primary-400 disabled:bg-dark-700 disabled:text-dark-500 rounded-lg py-3 sm:py-2.5 text-sm font-semibold transition-colors"
         >
           {isLoading ? 'Starting...' : 'Start Backtest'}
         </button>

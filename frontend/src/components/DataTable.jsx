@@ -44,17 +44,23 @@ export default function DataTable({
 
   const py = compact ? 'py-1.5' : 'py-2.5'
 
+  // Filter columns that should be hidden on mobile (col.mobileHide = true)
+  const visibleColumns = columns.map(col => ({
+    ...col,
+    hideCls: col.mobileHide ? 'hidden sm:table-cell' : '',
+  }))
+
   return (
-    <div className={`overflow-x-auto ${className}`}>
+    <div className={`overflow-x-auto -mx-1 sm:mx-0 ${className}`}>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-dark-700/50">
-            {columns.map(col => (
+            {visibleColumns.map(col => (
               <th
                 key={col.key}
-                className={`${py} px-2 text-[10px] font-semibold tracking-wider uppercase text-dark-400 ${
+                className={`${py} px-2 sm:px-2.5 text-[10px] font-semibold tracking-wider uppercase text-dark-400 ${
                   col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
-                } ${sortable && col.sortable ? 'cursor-pointer select-none hover:text-dark-200 transition-colors' : ''}`}
+                } ${sortable && col.sortable ? 'cursor-pointer select-none hover:text-dark-200 transition-colors' : ''} ${col.hideCls}`}
                 onClick={() => handleSort(col)}
               >
                 <span className="inline-flex items-center gap-1">
@@ -75,7 +81,7 @@ export default function DataTable({
         <tbody>
           {sortedData.length === 0 && (
             <tr>
-              <td colSpan={columns.length} className="text-center py-8 text-dark-500 text-xs">
+              <td colSpan={visibleColumns.length} className="text-center py-8 text-dark-500 text-xs">
                 {emptyMessage}
               </td>
             </tr>
@@ -88,12 +94,12 @@ export default function DataTable({
               } ${i % 2 === 1 ? 'bg-dark-850/30' : ''}`}
               onClick={() => onRowClick?.(row)}
             >
-              {columns.map(col => (
+              {visibleColumns.map(col => (
                 <td
                   key={col.key}
-                  className={`${py} px-2 ${
+                  className={`${py} px-2 sm:px-2.5 ${
                     col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
-                  } ${col.mono ? 'font-data' : ''} ${col.className || ''}`}
+                  } ${col.mono ? 'font-data' : ''} ${col.className || ''} ${col.hideCls}`}
                 >
                   {col.render ? col.render(row[col.key], row) : (row[col.key] ?? '-')}
                 </td>
@@ -114,7 +120,7 @@ export function Pagination({ page, pages, total, onPageChange, label = 'items' }
       <button
         onClick={() => onPageChange(Math.max(1, page - 1))}
         disabled={page <= 1}
-        className="text-xs px-3 py-1.5 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className="text-xs px-4 py-2 sm:px-3 sm:py-1.5 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
         Prev
       </button>
@@ -125,7 +131,7 @@ export function Pagination({ page, pages, total, onPageChange, label = 'items' }
       <button
         onClick={() => onPageChange(Math.min(pages, page + 1))}
         disabled={page >= pages}
-        className="text-xs px-3 py-1.5 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className="text-xs px-4 py-2 sm:px-3 sm:py-1.5 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
         Next
       </button>

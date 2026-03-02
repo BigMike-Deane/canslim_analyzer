@@ -18,6 +18,7 @@ import Analytics from './pages/Analytics'
 import CoiledSpringHistory from './pages/CoiledSpringHistory'
 import InsiderSentiment from './pages/InsiderSentiment'
 import FidelitySync from './pages/FidelitySync'
+import Breadth from './pages/Breadth'
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -49,6 +50,7 @@ export default function App() {
               <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />
               <Route path="/insider-sentiment" element={<InsiderSentiment />} />
               <Route path="/fidelity" element={<FidelitySync />} />
+              <Route path="/breadth" element={<Breadth />} />
             </Routes>
           </div>
         </main>

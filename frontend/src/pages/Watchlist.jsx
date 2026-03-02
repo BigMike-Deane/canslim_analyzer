@@ -49,7 +49,7 @@ function WatchlistItem({ item, onRemove }) {
             )}
           </div>
           {stock && (
-            <div className="text-dark-400 text-sm truncate max-w-[200px]">
+            <div className="text-dark-400 text-sm truncate max-w-[160px] sm:max-w-[240px]">
               {stock.name}
             </div>
           )}
@@ -69,7 +69,7 @@ function WatchlistItem({ item, onRemove }) {
 
       {/* Alerts & Notes */}
       {(item.target_price || item.alert_score) && (
-        <div className="flex items-center gap-4 mt-2 text-sm">
+        <div className="flex items-center gap-2 sm:gap-4 mt-2 text-sm">
           {item.target_price && (
             <div className={meetsTarget ? 'text-emerald-400' : 'text-dark-400'}>
               <span className="text-[10px] uppercase tracking-wider text-dark-500 mr-1">Target:</span>

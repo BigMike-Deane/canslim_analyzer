@@ -18,6 +18,7 @@ const navGroups = [
       { to: '/breakouts', icon: 'trending', label: 'Breakouts' },
       { to: '/coiled-spring/history', icon: 'zap', label: 'Coiled Spring' },
       { to: '/insider-sentiment', icon: 'users', label: 'Insider Sent.' },
+      { to: '/breadth', icon: 'activity', label: 'Breadth' },
     ],
   },
   {
@@ -68,6 +69,8 @@ function NavIcon({ name, size = 16 }) {
       return <svg {...props}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>
     case 'sync':
       return <svg {...props}><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
+    case 'activity':
+      return <svg {...props}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>
     default:
       return <svg {...props}><circle cx="12" cy="12" r="4" /></svg>
   }

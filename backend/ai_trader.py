@@ -355,15 +355,17 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
         logger.debug(f"CS alert limit reached ({today_count}/{max_per_day}), skipping {ticker}")
         return False
 
-    # Check if there's already a pending (unresolved) alert for this ticker.
-    # One alert per earnings cycle — once outcome is recorded, a new alert can be created.
-    pending_alert = db.query(CoiledSpringAlert).filter(
+    # Check if there's already an alert for this ticker within the last 21 days
+    # (one earnings cycle). This prevents duplicate alerts for the same earnings event,
+    # even after a prior alert's outcome has been resolved.
+    cycle_cutoff = today - timedelta(days=21)
+    recent_alert = db.query(CoiledSpringAlert).filter(
         CoiledSpringAlert.ticker == ticker,
-        CoiledSpringAlert.outcome.is_(None)
+        CoiledSpringAlert.alert_date >= cycle_cutoff
     ).first()
 
-    if pending_alert:
-        logger.debug(f"CS alert already pending for {ticker} (from {pending_alert.alert_date}), skipping")
+    if recent_alert:
+        logger.debug(f"CS alert already exists for {ticker} (from {recent_alert.alert_date}), skipping")
         return False
 
     # Record the alert

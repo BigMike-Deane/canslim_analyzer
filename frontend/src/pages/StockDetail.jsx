@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
+import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { api, formatScore, getScoreClass, getScoreLabel, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
@@ -440,9 +440,48 @@ function PriceInfo({ stock }) {
   )
 }
 
-/* ─── Score History (Line Chart) ───────────────────────────────────── */
+/* ─── Score Replay Chart (Dual-Axis: Score + Price) ───────────────── */
+
+const COMPONENT_COLORS = {
+  c: '#f87171', a: '#fb923c', n: '#fbbf24',
+  s: '#34d399', l: '#60a5fa', i: '#a78bfa', m: '#f472b6',
+}
+
+const TOOLTIP_STYLE = {
+  background: '#14141f',
+  border: '1px solid rgba(255,255,255,0.06)',
+  borderRadius: '8px',
+  boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+}
+
+function ScoreReplayTooltip({ active, payload, label, showComponents }) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload
+  if (!d) return null
+  return (
+    <div style={TOOLTIP_STYLE} className="px-3 py-2 text-xs">
+      <div className="text-dark-500 mb-1">{label}</div>
+      <div className="flex items-center gap-3 mb-1">
+        <span style={{ color: '#00e5ff' }}>Score: <b>{formatScore(d.total_score)}</b></span>
+        {d.price != null && <span style={{ color: '#a78bfa' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
+      </div>
+      {showComponents && (
+        <div className="grid grid-cols-4 gap-x-3 gap-y-0.5 mt-1 pt-1 border-t border-white/5">
+          {['c','a','n','s','l','i','m'].map(k => (
+            <span key={k} style={{ color: COMPONENT_COLORS[k] }}>
+              {k.toUpperCase()}: {d[k] != null ? Math.round(d[k]) : '-'}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function ScoreHistory({ history }) {
+  const [showComponents, setShowComponents] = useState(false)
+  const [period, setPeriod] = useState('30')
+
   if (!history || history.length < 2) {
     return (
       <Card variant="glass" className="mb-4 text-center py-6">
@@ -451,34 +490,143 @@ function ScoreHistory({ history }) {
     )
   }
 
+  // Filter by period
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - parseInt(period))
+  const filtered = period === 'all' ? history : history.filter(h => new Date(h.date) >= cutoff)
+  const data = filtered.length >= 2 ? filtered : history
+
+  // Compute price domain with 5% padding
+  const prices = data.map(d => d.price).filter(Boolean)
+  const priceMin = prices.length ? Math.floor(Math.min(...prices) * 0.95) : 0
+  const priceMax = prices.length ? Math.ceil(Math.max(...prices) * 1.05) : 100
+
+  const periods = [
+    { value: '14', label: '2W' },
+    { value: '30', label: '1M' },
+    { value: '90', label: '3M' },
+    { value: 'all', label: 'All' },
+  ]
+
   return (
     <Card variant="glass" className="mb-4">
-      <CardHeader title="Score History" />
-      <div className="h-40 -mx-2">
+      <div className="flex items-center justify-between mb-2">
+        <CardHeader title="Score Replay" />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowComponents(!showComponents)}
+            className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+              showComponents
+                ? 'border-cyan-500/40 text-cyan-400 bg-cyan-500/10'
+                : 'border-white/10 text-dark-500 hover:text-dark-400'
+            }`}
+          >
+            CANSLIM
+          </button>
+          <div className="flex bg-dark-900/50 rounded overflow-hidden border border-white/5">
+            {periods.map(p => (
+              <button
+                key={p.value}
+                onClick={() => setPeriod(p.value)}
+                className={`text-[10px] px-2 py-0.5 transition-colors ${
+                  period === p.value
+                    ? 'bg-white/10 text-white'
+                    : 'text-dark-500 hover:text-dark-400'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="h-56 -mx-2">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={history}>
-            <Line
+          <ComposedChart data={data} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#00e5ff" stopOpacity={0.15} />
+                <stop offset="100%" stopColor="#00e5ff" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: '#4b5563' }}
+              tickFormatter={d => { const p = d.split('-'); return `${p[1]}/${p[2]}` }}
+              interval="preserveStartEnd"
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis
+              yAxisId="score"
+              domain={[0, 100]}
+              tick={{ fontSize: 10, fill: '#00e5ff' }}
+              axisLine={false}
+              tickLine={false}
+              width={28}
+            />
+            <YAxis
+              yAxisId="price"
+              orientation="right"
+              domain={[priceMin, priceMax]}
+              tick={{ fontSize: 10, fill: '#a78bfa' }}
+              axisLine={false}
+              tickLine={false}
+              width={45}
+              tickFormatter={v => `$${v}`}
+            />
+            <Tooltip content={<ScoreReplayTooltip showComponents={showComponents} />} />
+            {/* Score area */}
+            <Area
+              yAxisId="score"
               type="monotone"
               dataKey="total_score"
               stroke="#00e5ff"
               strokeWidth={2}
+              fill="url(#scoreGrad)"
               dot={false}
+              name="Score"
             />
-            <Tooltip
-              contentStyle={{
-                background: '#14141f',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: '8px',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-              }}
-              labelStyle={{ color: '#6b7280', fontSize: '11px' }}
-              formatter={(value) => [formatScore(value), 'Score']}
-            />
-            <XAxis dataKey="date" hide />
-            <YAxis hide domain={[0, 100]} />
-          </LineChart>
+            {/* Price line */}
+            {prices.length > 0 && (
+              <Line
+                yAxisId="price"
+                type="monotone"
+                dataKey="price"
+                stroke="#a78bfa"
+                strokeWidth={1.5}
+                dot={false}
+                strokeDasharray="4 2"
+                name="Price"
+              />
+            )}
+            {/* CANSLIM component lines (toggled) */}
+            {showComponents && ['c','a','n','s','l','i','m'].map(k => (
+              <Line
+                key={k}
+                yAxisId="score"
+                type="monotone"
+                dataKey={k}
+                stroke={COMPONENT_COLORS[k]}
+                strokeWidth={1}
+                dot={false}
+                opacity={0.7}
+                name={k.toUpperCase()}
+              />
+            ))}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
+      {showComponents && (
+        <div className="flex flex-wrap gap-3 mt-2 px-1">
+          {Object.entries(COMPONENT_COLORS).map(([k, color]) => (
+            <span key={k} className="flex items-center gap-1 text-[10px]">
+              <span className="w-2.5 h-0.5 rounded" style={{ background: color }} />
+              <span style={{ color }}>{k.toUpperCase()}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </Card>
   )
 }

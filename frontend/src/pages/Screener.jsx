@@ -11,11 +11,11 @@ function FilterBar({ filters, onFilterChange, sectors }) {
     <Card variant="glass" className="mb-4">
       <SectionLabel>Filters</SectionLabel>
       <div className="space-y-3">
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <select
             value={filters.sector || ''}
             onChange={(e) => onFilterChange({ ...filters, sector: e.target.value || null })}
-            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
+            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
           >
             <option value="">All Sectors</option>
             {(sectors || []).map(sector => (
@@ -26,7 +26,7 @@ function FilterBar({ filters, onFilterChange, sectors }) {
           <select
             value={filters.sort_by || 'canslim_score'}
             onChange={(e) => onFilterChange({ ...filters, sort_by: e.target.value })}
-            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
+            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
           >
             <option value="canslim_score">Score (High to Low)</option>
             <option value="projected_growth">Growth Potential</option>
