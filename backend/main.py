@@ -8,10 +8,11 @@ import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text, case
 from datetime import datetime, date, timedelta, timezone
@@ -193,6 +194,55 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============== API Token Authentication ==============
+
+API_TOKEN = os.environ.get("API_TOKEN", "")
+
+# Paths that don't require authentication
+AUTH_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+
+class TokenAuthMiddleware(BaseHTTPMiddleware):
+    """Simple bearer token authentication middleware.
+
+    When API_TOKEN env var is set, all API requests require:
+        Authorization: Bearer <token>
+
+    Health check and static file paths are exempt.
+    If API_TOKEN is not set, auth is disabled (dev mode).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth if no token configured (dev mode)
+        if not API_TOKEN:
+            return await call_next(request)
+
+        path = request.url.path
+
+        # Exempt paths: health check, docs, static files
+        if path in AUTH_EXEMPT_PATHS or not path.startswith("/api"):
+            return await call_next(request)
+
+        # Check Authorization header
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            if token == API_TOKEN:
+                return await call_next(request)
+
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing API token"},
+        )
+
+
+if API_TOKEN:
+    app.add_middleware(TokenAuthMiddleware)
+    logger.info("API token authentication ENABLED")
+else:
+    logger.warning("API_TOKEN not set — authentication DISABLED (set API_TOKEN env var to secure API)")
 
 
 # ============== Analysis Helpers ==============

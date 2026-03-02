@@ -144,6 +144,9 @@ _trading_cycle_lock = threading.RLock()
 _trading_cycle_started = None  # Track when cycle started for timeout
 _trading_cycle_meta_lock = threading.Lock()  # Protects access to _trading_cycle_started
 
+# SPY gate state tracking — fires notification on state change
+_spy_gate_state = None  # None = unknown, "bullish" or "bearish"
+
 # Minimum cash reserve as percentage of portfolio (stop buying below this)
 # Trading allocation limits - loaded from config with fallbacks
 MIN_CASH_RESERVE_PCT = config.get('ai_trader.allocation.min_cash_reserve_pct', default=0.10)
@@ -1830,6 +1833,20 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             if not spy_px or not spy_50:
                 logger.warning(f"REGIME GATE: SPY data missing (price={spy_px}, ma50={spy_50}), skipping all buys")
                 return []
+
+            # Detect SPY gate state change and send notification
+            global _spy_gate_state
+            current_gate = "bullish" if spy_px >= spy_50 else "bearish"
+            if _spy_gate_state is not None and current_gate != _spy_gate_state:
+                logger.info(f"SPY GATE CHANGE: {_spy_gate_state} -> {current_gate} "
+                           f"(SPY ${spy_px:.2f}, 50MA ${spy_50:.2f})")
+                try:
+                    from email_utils import send_spy_gate_change_push
+                    send_spy_gate_change_push(current_gate, spy_px, spy_50)
+                except Exception as e:
+                    logger.warning(f"SPY gate change notification failed: {e}")
+            _spy_gate_state = current_gate
+
             if spy_px < spy_50:
                 logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
                 return []

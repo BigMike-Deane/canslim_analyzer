@@ -404,6 +404,34 @@ def send_scan_completion_push(stocks_scanned: int, total: int, scan_time: float,
     return send_webhook_notification(title, message, priority="low", tags=tags)
 
 
+def send_spy_gate_change_push(new_state: str, spy_price: float, spy_ma50: float) -> bool:
+    """Send push notification when SPY gate flips bullish/bearish.
+
+    Args:
+        new_state: "bullish" or "bearish"
+        spy_price: Current SPY price
+        spy_ma50: SPY 50-day moving average
+
+    Returns:
+        True if sent successfully
+    """
+    is_bullish = new_state == "bullish"
+    emoji = "green_circle" if is_bullish else "red_circle"
+    direction = "ABOVE" if is_bullish else "BELOW"
+    action = "Buys ENABLED" if is_bullish else "Buys BLOCKED"
+    diff = spy_price - spy_ma50
+    diff_pct = (diff / spy_ma50) * 100 if spy_ma50 else 0
+
+    title = f"SPY Gate: {new_state.upper()}"
+    message = (
+        f"SPY ${spy_price:.2f} crossed {direction} 50MA ${spy_ma50:.2f} ({diff_pct:+.2f}%)\n"
+        f"{action} — nostate_optimized binary gate flipped"
+    )
+
+    return send_webhook_notification(title, message, priority="high",
+                                     tags=[emoji, "rotating_light"])
+
+
 def send_score_crash_warning_push(ticker: str, purchase_score: float, current_score: float,
                                   gain_pct: float, consecutive_low: int,
                                   consecutive_required: int) -> bool:

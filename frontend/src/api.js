@@ -2,6 +2,9 @@ import { cache } from './cache'
 
 const API_BASE = ''
 
+// API token for authenticated requests (set via VITE_API_TOKEN env var at build time)
+const API_TOKEN = typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_TOKEN : ''
+
 // Cache TTL configuration (seconds)
 const CACHE_TTL = {
   '/api/command-center': 60,       // 1 min (primary dashboard)
@@ -57,9 +60,11 @@ async function request(endpoint, options = {}) {
     }
   }
 
+  const authHeaders = API_TOKEN ? { 'Authorization': `Bearer ${API_TOKEN}` } : {}
   const config = {
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
       ...options.headers
     },
     ...options

@@ -1141,18 +1141,8 @@ def run_continuous_scan():
         except Exception as e:
             logger.error(f"Morning briefing error: {e}")
 
-        # Phase 7: Scan completion push notification
-        try:
-            from email_utils import send_scan_completion_push
-            send_scan_completion_push(
-                stocks_scanned=successful,
-                total=len(tickers),
-                scan_time=total_time,
-                buys=ai_trading_result.get("buys_executed", []),
-                sells=ai_trading_result.get("sells_executed", []),
-            )
-        except Exception as e:
-            logger.error(f"Scan completion push error: {e}")
+        # Phase 7: Scan completion logging (push notification removed — user only wants trade/gate alerts)
+        logger.info(f"Scan complete: {successful}/{len(tickers)} stocks in {total_time:.0f}s")
 
     except Exception as e:
         logger.error(f"Scan error: {e}")

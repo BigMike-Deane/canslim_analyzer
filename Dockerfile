@@ -1,6 +1,9 @@
 # Build frontend
 FROM node:20-alpine AS frontend-builder
 
+ARG VITE_API_TOKEN=""
+ENV VITE_API_TOKEN=${VITE_API_TOKEN}
+
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
