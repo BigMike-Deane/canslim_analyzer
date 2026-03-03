@@ -70,10 +70,10 @@ class TestIsOptionSymbol:
 # ============== Positions CSV Parsing Tests ==============
 
 SAMPLE_POSITIONS_CSV = """Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Percent Of Account,Cost Basis Total,Average Cost Basis,Type
-Z27804829,Individual,SPAXX**,HELD IN MONEY MARKET,,,,$6534.41,,,,,36.69%,,,Cash,
-Z27804829,Individual,LCTX,LINEAGE CELL THERAPEUTICS INC COM,1000,$1.945,+$0.045,$1945.00,+$45.00,+2.36%,+$259.75,+15.41%,10.92%,$1685.25,$1.69,Margin,
-Z27804829,Individual,HUMA,HUMACYTE INC COM,430,$1.2052,+$0.0452,$518.23,+$19.43,+3.89%,-$1792.95,-77.58%,2.91%,$2311.18,$5.37,Margin,
-Z27804829,Individual,-ONDS260327C13,ONDS MAR 27 2026 $13 CALL,-1,$0.73,+$0.12,-$73.00,-$12.00,-19.68%,+$1.33,+1.78%,-0.41%,$74.33,$0.74,Margin,
+X99999999,Individual,SPAXX**,HELD IN MONEY MARKET,,,,$6534.41,,,,,36.69%,,,Cash,
+X99999999,Individual,LCTX,LINEAGE CELL THERAPEUTICS INC COM,1000,$1.945,+$0.045,$1945.00,+$45.00,+2.36%,+$259.75,+15.41%,10.92%,$1685.25,$1.69,Margin,
+X99999999,Individual,HUMA,HUMACYTE INC COM,430,$1.2052,+$0.0452,$518.23,+$19.43,+3.89%,-$1792.95,-77.58%,2.91%,$2311.18,$5.37,Margin,
+X99999999,Individual,-ONDS260327C13,ONDS MAR 27 2026 $13 CALL,-1,$0.73,+$0.12,-$73.00,-$12.00,-19.68%,+$1.33,+1.78%,-0.41%,$74.33,$0.74,Margin,
 41149,401K,FNSBX**,FIDELITY SUSTAINABLE BOND IDX,123.45,$10.00,,$1234.50,,,,,,,,Cash,
 
 "Date downloaded Feb-26-2026 11:27 a.m ET"
@@ -83,7 +83,7 @@ Z27804829,Individual,-ONDS260327C13,ONDS MAR 27 2026 $13 CALL,-1,$0.73,+$0.12,-$
 class TestParsePositionsCsv:
     def test_parses_positions(self):
         result = parse_positions_csv(SAMPLE_POSITIONS_CSV)
-        assert result["account"] == "Z27804829"
+        assert result["account"] == "X99999999"
         assert len(result["positions"]) == 2  # LCTX and HUMA (option skipped, 401K skipped)
 
     def test_filters_to_target_account(self):
@@ -132,12 +132,12 @@ class TestParsePositionsCsv:
 SAMPLE_ACTIVITY_CSV = """
 
 Run Date,Account,Account Number,Action,Symbol,Description,Type,Price ($),Quantity,Commission ($),Fees ($),Accrued Interest ($),Amount ($),Settlement Date
-02/25/2026,Individual,Z27804829,YOU BOUGHT ONDAS INC COMMON STOCK (ONDS) (Margin),ONDS,,Margin,10.30,50,,,,-$515.00,02/27/2026
-02/25/2026,Individual,Z27804829,YOU SOLD ARM HOLDINGS PLC SPON ADS (ARM) (Margin),ARM,,Margin,130.00,-12,,,,$1560.00,02/27/2026
-02/25/2026,Individual,Z27804829,YOU SOLD ARM HOLDINGS PLC SPON ADS (ARM) (Margin),ARM,,Margin,129.90,-0.082,,,,$10.65,02/27/2026
-02/20/2026,Individual,Z27804829, DIVIDEND RECEIVED,NANC,,,$0.50,70,,,,$35.00,02/20/2026
+02/25/2026,Individual,X99999999,YOU BOUGHT ONDAS INC COMMON STOCK (ONDS) (Margin),ONDS,,Margin,10.30,50,,,,-$515.00,02/27/2026
+02/25/2026,Individual,X99999999,YOU SOLD ARM HOLDINGS PLC SPON ADS (ARM) (Margin),ARM,,Margin,130.00,-12,,,,$1560.00,02/27/2026
+02/25/2026,Individual,X99999999,YOU SOLD ARM HOLDINGS PLC SPON ADS (ARM) (Margin),ARM,,Margin,129.90,-0.082,,,,$10.65,02/27/2026
+02/20/2026,Individual,X99999999, DIVIDEND RECEIVED,NANC,,,$0.50,70,,,,$35.00,02/20/2026
 02/18/2026,401K,41149,YOU BOUGHT SOMETHING (SPY),SPY,,Cash,500.00,10,,,,-$5000.00,02/20/2026
-02/15/2026,Individual,Z27804829,ASSIGNED -ONDS260117C10,,,-ONDS260117C10,,,,,,,
+02/15/2026,Individual,X99999999,ASSIGNED -ONDS260117C10,,,-ONDS260117C10,,,,,,,
 """
 
 

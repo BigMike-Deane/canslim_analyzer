@@ -1041,7 +1041,7 @@ class FidelitySnapshot(Base):
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Account summary
-    account_number = Column(String, default="Z27804829")
+    account_number = Column(String, default="")
     cash_balance = Column(Float, default=0)
     total_value = Column(Float, default=0)
     positions_count = Column(Integer, default=0)

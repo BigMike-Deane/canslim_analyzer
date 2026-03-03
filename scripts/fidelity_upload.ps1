@@ -10,7 +10,7 @@
 
 param(
     [string]$Folder = "$env:USERPROFILE\Downloads",
-    [string]$ApiUrl = "http://100.104.189.36:8001",
+    [string]$ApiUrl = "https://canslim.duckdns.org",
     [switch]$Watch,
     [switch]$Sync,
     [int]$Interval = 30

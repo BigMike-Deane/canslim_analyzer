@@ -8,6 +8,7 @@ AI portfolio recommendations.
 
 import csv
 import io
+import os
 import re
 import logging
 from datetime import datetime, date, timezone
@@ -15,8 +16,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Only process this Fidelity account
-TARGET_ACCOUNT = "Z27804829"
+# Only process this Fidelity account (set via env var or auto-detected from CSV)
+TARGET_ACCOUNT = os.environ.get("FIDELITY_ACCOUNT", "")
 
 
 def _clean_dollar(value: str) -> Optional[float]:
@@ -105,11 +106,14 @@ def parse_positions_csv(csv_content: str) -> dict:
         csv_content = csv_content[1:]
 
     reader = csv.DictReader(io.StringIO(csv_content))
+    detected_account = TARGET_ACCOUNT
 
     for row in reader:
-        # Skip rows not from target account
+        # Skip rows not from target account (auto-detect first account if not configured)
         account = (row.get('Account Number') or '').strip()
-        if account != TARGET_ACCOUNT:
+        if not detected_account and account:
+            detected_account = account
+        if detected_account and account != detected_account:
             continue
 
         symbol = (row.get('Symbol') or '').strip()
@@ -183,7 +187,7 @@ def parse_positions_csv(csv_content: str) -> dict:
         snapshot_date = date.today().isoformat()
 
     return {
-        "account": TARGET_ACCOUNT,
+        "account": detected_account,
         "positions": positions,
         "cash_balance": cash_balance,
         "total_value": total_value,
@@ -245,11 +249,14 @@ def parse_activity_csv(csv_content: str) -> dict:
     # Re-parse from the header line onward
     csv_body = '\n'.join(lines[header_idx:])
     reader = csv.DictReader(io.StringIO(csv_body))
+    detected_account = TARGET_ACCOUNT
 
     for row in reader:
-        # Skip rows not from target account
+        # Skip rows not from target account (auto-detect first account if not configured)
         account_num = (row.get('Account Number') or '').strip()
-        if account_num != TARGET_ACCOUNT:
+        if not detected_account and account_num:
+            detected_account = account_num
+        if detected_account and account_num != detected_account:
             continue
 
         raw_action = (row.get('Action') or '').strip()

@@ -20,9 +20,12 @@ frontend/dist/
 data/
 *.db
 
-# Personal portfolio data
+# Personal portfolio/brokerage data - NEVER commit!
 portfolio.csv
 portfolio_history.json
+Portfolio_Positions_*.csv
+Accounts_History*.csv
+*.csv
 
 # IDE
 .idea/
@@ -35,3 +38,4 @@ portfolio_history.json
 dist/
 build/
 CLAUDE.local.md
+.claude/

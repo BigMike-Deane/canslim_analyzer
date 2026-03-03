@@ -98,18 +98,13 @@ Key finding: 5-state market state machine HURTS over full cycles. NoState's bina
 - Key files: `test_backtester.py`, `test_canslim_scorer.py`, `test_bug_regressions.py`
 
 ## Deployment Commands
+See CLAUDE.local.md for deployment commands with actual VPS addresses.
 ```bash
-# Standard deploy
-ssh root@100.104.189.36 'cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build'
-
-# If ContainerConfig error
-ssh root@100.104.189.36 'cd /opt/canslim_analyzer && docker-compose down && docker rm -f canslim-analyzer 2>/dev/null; docker-compose up -d --build'
-
-# Force rebuild (frontend not updating)
-ssh root@100.104.189.36 'cd /opt/canslim_analyzer && docker-compose down && docker rmi $(docker images -q canslim_analyzer*) 2>/dev/null; docker-compose build --no-cache && docker-compose up -d'
+# Standard deploy pattern
+ssh root@$VPS_IP 'cd /opt/canslim_analyzer && git pull && docker-compose down && docker-compose up -d --build'
 
 # Start backtest (nostate_optimized)
-curl -X POST http://100.104.189.36:8001/api/backtests -H "Content-Type: application/json" \
+curl -X POST https://canslim.duckdns.org/api/backtests -H "Content-Type: application/json" \
   -d '{"start_date": "2022-01-01", "end_date": "2026-02-19", "starting_cash": 25000, "stock_universe": "all", "strategy": "nostate_optimized"}'
 ```
 

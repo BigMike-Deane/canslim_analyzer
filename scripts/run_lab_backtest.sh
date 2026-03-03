@@ -8,9 +8,9 @@
 
 set -euo pipefail
 
-VPS="root@100.104.189.36"
+VPS="root@${VPS_IP:?Set VPS_IP environment variable}"
 VPS_DIR="/opt/canslim_analyzer"
-API_BASE="http://100.104.189.36:8001"
+API_BASE="${CANSLIM_API_URL:-https://canslim.duckdns.org}"
 
 STARTING_CASH="${1:-25000}"
 END_DATE="${3:-$(date +%Y-%m-%d)}"

@@ -18,7 +18,7 @@ Usage:
 
 Configuration:
     Set CANSLIM_API_URL environment variable or edit the default below.
-    Default: http://100.104.189.36:8001 (Tailscale VPS)
+    Set CANSLIM_API_URL environment variable to your deployment URL.
 """
 
 import os
@@ -30,8 +30,8 @@ import requests
 from pathlib import Path
 from datetime import datetime
 
-# API endpoint - configurable via environment variable
-API_URL = os.environ.get('CANSLIM_API_URL', 'http://100.104.189.36:8001')
+# API endpoint - MUST be set via environment variable
+API_URL = os.environ.get('CANSLIM_API_URL', 'https://canslim.duckdns.org')
 
 
 def upload_positions(filepath: str) -> dict:

@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/fidelity", tags=["fidelity"])
 async def upload_fidelity_positions(file: UploadFile = File(...), current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Upload a Fidelity Positions CSV export.
-    Parses positions for account Z27804829 and stores a snapshot.
+    Parses positions for account the configured Fidelity account and stores a snapshot.
     """
     from backend.fidelity_sync import parse_positions_csv
 
@@ -35,7 +35,7 @@ async def upload_fidelity_positions(file: UploadFile = File(...), current_user: 
     result = parse_positions_csv(csv_text)
 
     if not result["positions"]:
-        raise HTTPException(status_code=400, detail="No positions found for account Z27804829")
+        raise HTTPException(status_code=400, detail="No positions found for account the configured Fidelity account")
 
     # Create snapshot
     snapshot = FidelitySnapshot(
@@ -82,7 +82,7 @@ async def upload_fidelity_positions(file: UploadFile = File(...), current_user: 
 async def upload_fidelity_activity(file: UploadFile = File(...), current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Upload a Fidelity Activity/History CSV export.
-    Parses trades for account Z27804829 and stores them.
+    Parses trades for account the configured Fidelity account and stores them.
     Deduplicates against existing trades by (date, symbol, action).
     """
 

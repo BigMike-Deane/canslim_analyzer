@@ -25,8 +25,8 @@ class Settings:
     def AUTH_ENABLED(self):
         return bool(self.AUTH_USERNAME and self.AUTH_PASSWORD)
 
-    # CORS settings
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+    # CORS settings (restrict in production)
+    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "https://canslim.duckdns.org").split(",")
 
     # Email settings (from existing .env)
     EMAIL_ADDRESS = os.getenv("CANSLIM_EMAIL", "")

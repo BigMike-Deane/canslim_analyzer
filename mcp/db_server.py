@@ -11,10 +11,9 @@ import psycopg2
 import psycopg2.extras
 from mcp.server.fastmcp import FastMCP
 
-DB_DSN = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://canslim:canslim_secure_pw@100.104.189.36:5432/canslim",
-)
+DB_DSN = os.environ.get("DATABASE_URL", "")
+if not DB_DSN:
+    raise RuntimeError("DATABASE_URL environment variable is required")
 
 mcp = FastMCP("canslim-database")
 

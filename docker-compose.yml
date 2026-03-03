@@ -17,11 +17,11 @@ services:
       - DEBUG=false
       - FMP_API_KEY=${FMP_API_KEY}
       - CANSLIM_ENV=production
-      - DATABASE_URL=postgresql://canslim:${POSTGRES_PASSWORD:-canslim_secure_pw}@postgres:5432/canslim
+      - DATABASE_URL=postgresql://canslim:${POSTGRES_PASSWORD}@postgres:5432/canslim
       - CANSLIM_WEBHOOK_URL=${CANSLIM_WEBHOOK_URL:-}
       - API_TOKEN=${API_TOKEN:-}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-secret-key-change-in-production}
-      - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@canslim.local}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
     depends_on:
@@ -45,7 +45,7 @@ services:
     environment:
       POSTGRES_DB: canslim
       POSTGRES_USER: canslim
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-canslim_secure_pw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
