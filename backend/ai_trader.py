@@ -195,9 +195,9 @@ def get_effective_score(stock_or_position, use_current: bool = True) -> float:
             return getattr(stock_or_position, 'purchase_score', None) or 0
 
 
-def get_or_create_config(db: Session) -> AIPortfolioConfig:
+def get_or_create_config(db: Session, user_id: int = 1) -> AIPortfolioConfig:
     """Get or create AI portfolio configuration"""
-    config = db.query(AIPortfolioConfig).first()
+    config = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.user_id == user_id).first()
     if not config:
         config = AIPortfolioConfig(
             starting_cash=25000.0,
@@ -208,7 +208,8 @@ def get_or_create_config(db: Session) -> AIPortfolioConfig:
             sell_score_threshold=45,  # Hold slightly longer
             take_profit_pct=75.0,  # Let winners run (champion: 75%)
             stop_loss_pct=8.0,  # O'Neil standard 8% stop
-            is_active=True
+            is_active=True,
+            user_id=user_id
         )
         db.add(config)
         db.commit()
@@ -466,10 +467,10 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
     }
 
 
-def get_sector_allocations(db: Session) -> dict:
+def get_sector_allocations(db: Session, user_id: int = 1) -> dict:
     """Calculate current allocation by sector (batch optimized)"""
-    positions = db.query(AIPortfolioPosition).all()
-    portfolio_value = get_portfolio_value(db)["total_value"]
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
+    portfolio_value = get_portfolio_value(db, user_id=user_id)["total_value"]
 
     if portfolio_value <= 0:
         return {}
@@ -497,7 +498,7 @@ def get_sector_allocations(db: Session) -> dict:
     }
 
 
-def check_sector_limit(db: Session, ticker: str, buy_amount: float) -> tuple[float, str]:
+def check_sector_limit(db: Session, ticker: str, buy_amount: float, user_id: int = 1) -> tuple[float, str]:
     """
     Check if a buy would exceed sector limits.
     Returns: (adjusted_amount, reason)
@@ -507,7 +508,7 @@ def check_sector_limit(db: Session, ticker: str, buy_amount: float) -> tuple[flo
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
     sector = stock.sector if stock and stock.sector else "Unknown"
 
-    sector_info = get_sector_allocations(db)
+    sector_info = get_sector_allocations(db, user_id=user_id)
     portfolio_value = sector_info.get("portfolio_value", 0)
     current_allocation = sector_info.get("allocations", {}).get(sector, 0)
     current_count = sector_info.get("counts", {}).get(sector, 0)
@@ -530,7 +531,7 @@ def check_sector_limit(db: Session, ticker: str, buy_amount: float) -> tuple[flo
     return buy_amount, ""
 
 
-def evaluate_pyramids(db: Session) -> list:
+def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
     """
     Evaluate existing positions for pyramid opportunities.
     Pyramid = add to a winning position that's still strong.
@@ -541,9 +542,9 @@ def evaluate_pyramids(db: Session) -> list:
     - Not already at max position size (15%)
     - Stock is showing accumulation (good volume)
     """
-    config = get_or_create_config(db)
-    positions = db.query(AIPortfolioPosition).all()
-    portfolio = get_portfolio_value(db)
+    config = get_or_create_config(db, user_id=user_id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
+    portfolio = get_portfolio_value(db, user_id=user_id)
     portfolio_value = portfolio["total_value"]
 
     # Batch fetch all stocks in one query (fixes N+1)
@@ -565,6 +566,7 @@ def evaluate_pyramids(db: Session) -> list:
     if tickers:
         pyramid_trades = (
             db.query(AIPortfolioTrade.ticker, func.max(AIPortfolioTrade.executed_at))
+            .filter(AIPortfolioTrade.user_id == user_id)
             .filter(AIPortfolioTrade.ticker.in_(tickers))
             .filter(AIPortfolioTrade.reason.like("PYRAMID:%"))
             .group_by(AIPortfolioTrade.ticker)
@@ -670,7 +672,7 @@ def evaluate_pyramids(db: Session) -> list:
             continue
 
         # Check sector limits
-        adjusted_amount, limit_reason = check_sector_limit(db, position.ticker, pyramid_amount)
+        adjusted_amount, limit_reason = check_sector_limit(db, position.ticker, pyramid_amount, user_id=user_id)
         if adjusted_amount < 100:
             continue
         pyramid_amount = adjusted_amount
@@ -699,7 +701,7 @@ def evaluate_pyramids(db: Session) -> list:
     return pyramids
 
 
-def get_buy_throttle_limit(db: Session, profile: dict) -> int:
+def get_buy_throttle_limit(db: Session, profile: dict, user_id: int = 1) -> int:
     """
     Check recent trade outcomes and return max buys allowed this cycle.
 
@@ -718,6 +720,7 @@ def get_buy_throttle_limit(db: Session, profile: dict) -> int:
     recent_sells = (
         db.query(AIPortfolioTrade)
         .filter(
+            AIPortfolioTrade.user_id == user_id,
             AIPortfolioTrade.action == "SELL",
             AIPortfolioTrade.realized_gain.isnot(None),
         )
@@ -750,7 +753,7 @@ def get_buy_throttle_limit(db: Session, profile: dict) -> int:
     return 999
 
 
-def liquidate_spy_sweep(db: Session, config, reason: str = ""):
+def liquidate_spy_sweep(db: Session, config, reason: str = "", user_id: int = 1):
     """Sell all SPY sweep shares and return cash to portfolio."""
     spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
     if spy_sweep_shares <= 0:
@@ -766,7 +769,7 @@ def liquidate_spy_sweep(db: Session, config, reason: str = ""):
     logger.info(f"SPY SWEEP SOLD: {spy_sweep_shares:.1f} shares @ ${spy_price:.2f} = ${sweep_value:,.0f} ({reason})")
 
 
-def handle_spy_sweep(db: Session, config, profile: dict):
+def handle_spy_sweep(db: Session, config, profile: dict, user_id: int = 1):
     """
     Park idle cash in SPY when SPY is above its 50MA.
     Sell sweep when SPY drops below 50MA (bear protection).
@@ -792,12 +795,12 @@ def handle_spy_sweep(db: Session, config, profile: dict):
 
     # Sell sweep if SPY below 50MA (bear protection)
     if spy_sweep_shares > 0 and not spy_above_50ma:
-        liquidate_spy_sweep(db, config, "SPY < 50MA")
+        liquidate_spy_sweep(db, config, "SPY < 50MA", user_id=user_id)
         return
 
     # Buy sweep with idle cash if SPY above 50MA
     if spy_above_50ma and config.current_cash > 0:
-        portfolio = get_portfolio_value(db)
+        portfolio = get_portfolio_value(db, user_id=user_id)
         total_value = portfolio["total_value"]
         min_idle_pct = sweep_config.get('min_idle_pct', 20) / 100
         cash_reserve = total_value * 0.05  # Keep 5% cash reserve
@@ -810,10 +813,10 @@ def handle_spy_sweep(db: Session, config, profile: dict):
             logger.info(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${spy_price:.2f} = ${idle_cash:,.0f}")
 
 
-def get_portfolio_value(db: Session) -> dict:
+def get_portfolio_value(db: Session, user_id: int = 1) -> dict:
     """Calculate current portfolio value"""
-    config = get_or_create_config(db)
-    positions = db.query(AIPortfolioPosition).all()
+    config = get_or_create_config(db, user_id=user_id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
 
     positions_value = sum(p.current_value or 0 for p in positions)
 
@@ -885,13 +888,13 @@ def fetch_live_price(ticker: str) -> float | None:
     return None
 
 
-def update_position_prices(db: Session, use_live_prices: bool = True):
+def update_position_prices(db: Session, use_live_prices: bool = True, user_id: int = 1):
     """Update all position prices - fetches live prices by default.
     Also tracks peak price for trailing stop loss.
     """
     import time
 
-    positions = db.query(AIPortfolioPosition).all()
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     updated = 0
 
     # Batch fetch all stocks in one query (fixes N+1)
@@ -960,11 +963,11 @@ def update_position_prices(db: Session, use_live_prices: bool = True):
     return updated
 
 
-def refresh_ai_portfolio(db: Session) -> dict:
+def refresh_ai_portfolio(db: Session, user_id: int = 1) -> dict:
     """Refresh position prices and take snapshot without trading"""
-    updated = update_position_prices(db)
-    take_portfolio_snapshot(db)
-    portfolio = get_portfolio_value(db)
+    updated = update_position_prices(db, user_id=user_id)
+    take_portfolio_snapshot(db, user_id=user_id)
+    portfolio = get_portfolio_value(db, user_id=user_id)
 
     return {
         "message": f"Refreshed {updated} positions",
@@ -1031,7 +1034,7 @@ def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) 
     return base_stop_pct
 
 
-def check_and_execute_stop_losses(db: Session) -> dict:
+def check_and_execute_stop_losses(db: Session, user_id: int = 1) -> dict:
     """
     Check stop loss conditions and execute sells if triggered.
     This runs independently of the full trading cycle for faster stop loss response.
@@ -1055,17 +1058,17 @@ def check_and_execute_stop_losses(db: Session) -> dict:
         return {"message": "Trading cycle in progress, stop losses checked there", "sells_executed": []}
 
     try:
-        return _check_and_execute_stop_losses_impl(db)
+        return _check_and_execute_stop_losses_impl(db, user_id=user_id)
     finally:
         _trading_cycle_lock.release()
 
 
-def _check_and_execute_stop_losses_impl(db: Session) -> dict:
+def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     """Internal implementation of stop loss checking (lock must be held)."""
     from backend.database import Stock
 
-    config = get_or_create_config(db)
-    positions = db.query(AIPortfolioPosition).all()
+    config = get_or_create_config(db, user_id=user_id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
 
     if not positions:
         return {"message": "No positions to check", "sells_executed": []}
@@ -1076,7 +1079,7 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
 
     # First update prices to get current values
     logger.info(f"Checking stop losses for {len(positions)} positions...")
-    update_position_prices(db, use_live_prices=True)
+    update_position_prices(db, use_live_prices=True, user_id=user_id)
 
     # Batch fetch all stocks in one query (fixes N+1)
     tickers = [pos.ticker for pos in positions]
@@ -1176,7 +1179,8 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
                 is_growth_stock=position.is_growth_stock or False,
                 cost_basis=position.cost_basis,
                 realized_gain=position.gain_loss,
-                signal_factors={"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(position_stop_pct, 1)}
+                signal_factors={"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(position_stop_pct, 1)},
+                user_id=user_id
             )
 
             # Update cash and remove position
@@ -1239,7 +1243,8 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
                         is_growth_stock=position.is_growth_stock or False,
                         cost_basis=position.cost_basis,
                         realized_gain=(position.current_price - position.cost_basis) * shares_to_sell,
-                        signal_factors={"sell_reason": "PARTIAL TRAILING", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1), "sell_pct": partial_sell_pct_config}
+                        signal_factors={"sell_reason": "PARTIAL TRAILING", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1), "sell_pct": partial_sell_pct_config},
+                        user_id=user_id
                     )
 
                     # Update position: reduce shares, reset peak
@@ -1272,7 +1277,8 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
                         is_growth_stock=position.is_growth_stock or False,
                         cost_basis=position.cost_basis,
                         realized_gain=position.gain_loss,
-                        signal_factors={"sell_reason": "TRAILING STOP", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1)}
+                        signal_factors={"sell_reason": "TRAILING STOP", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1)},
+                        user_id=user_id
                     )
 
                     config.current_cash += position.current_value
@@ -1289,7 +1295,7 @@ def _check_and_execute_stop_losses_impl(db: Session) -> dict:
 
     if sells_executed:
         logger.info(f"Stop loss check complete: {len(sells_executed)} sells executed")
-        take_portfolio_snapshot(db)
+        take_portfolio_snapshot(db, user_id=user_id)
     else:
         logger.info("Stop loss check complete: no stops triggered")
 
@@ -1303,7 +1309,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,
                   cost_basis: float = None, realized_gain: float = None,
-                  signal_factors: dict = None, is_paper: bool = False):
+                  signal_factors: dict = None, is_paper: bool = False,
+                  user_id: int = 1):
     """Record a trade in the database with detailed logging"""
     trade = AIPortfolioTrade(
         ticker=ticker,
@@ -1318,7 +1325,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         cost_basis=cost_basis,
         realized_gain=realized_gain,
         executed_at=get_cst_now(),  # Use CST timezone
-        signal_factors=signal_factors  # Trade journal: what drove this decision
+        signal_factors=signal_factors,  # Trade journal: what drove this decision
+        user_id=user_id
     )
     # Set is_paper if column exists
     if hasattr(trade, 'is_paper'):
@@ -1360,7 +1368,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
     return trade
 
 
-def evaluate_sells(db: Session) -> list:
+def evaluate_sells(db: Session, user_id: int = 1) -> list:
     """Evaluate positions for potential sells - uses effective score based on stock type.
 
     Includes:
@@ -1368,8 +1376,8 @@ def evaluate_sells(db: Session) -> list:
     - Trailing stop loss (protects gains from peak)
     - Score crash detection with profitability exception
     """
-    portfolio_config = get_or_create_config(db)
-    positions = db.query(AIPortfolioPosition).all()
+    portfolio_config = get_or_create_config(db, user_id=user_id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     sells = []
 
     # Load strategy profile for sell thresholds
@@ -1746,16 +1754,16 @@ def evaluate_sells(db: Session) -> list:
     return sells
 
 
-def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_active: bool = False) -> list:
+def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_active: bool = False, user_id: int = 1) -> list:
     """
     Evaluate stocks for potential buys - considers both CANSLIM and Growth Mode stocks.
     Uses appropriate score based on stock type for a balanced portfolio.
     """
-    portfolio_config = get_or_create_config(db)
-    portfolio = get_portfolio_value(db)
+    portfolio_config = get_or_create_config(db, user_id=user_id)
+    portfolio = get_portfolio_value(db, user_id=user_id)
     logger.info(f"evaluate_buys: cash=${portfolio_config.current_cash:.2f}, portfolio_value=${portfolio['total_value']:.2f}")
 
-    positions = db.query(AIPortfolioPosition).all()
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     current_tickers = {p.ticker for p in positions}
 
     # Define duplicate ticker groups (same company, different share classes)
@@ -1775,6 +1783,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # Query recent SELL trades to check for cooldowns
     cooldown_lookback = datetime.now(timezone.utc) - timedelta(days=max(stop_loss_cooldown_days, trailing_stop_cooldown_days))
     recent_sells = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == user_id,
         AIPortfolioTrade.action == "SELL",
         AIPortfolioTrade.executed_at >= cooldown_lookback
     ).all()
@@ -1883,6 +1892,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 # by looking at recent snapshots where positions_count <= max_positions_for_decay
                 recent_snaps = (
                     db.query(AIPortfolioSnapshot)
+                    .filter(AIPortfolioSnapshot.user_id == user_id)
                     .filter(AIPortfolioSnapshot.positions_count <= max_positions_for_decay)
                     .order_by(AIPortfolioSnapshot.timestamp.desc())
                     .limit(60)
@@ -2066,7 +2076,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         return current_score
 
     # Pre-compute portfolio value once (avoids 100+ DB queries inside the loop)
-    portfolio_value = get_portfolio_value(db)["total_value"]
+    portfolio_value = get_portfolio_value(db, user_id=user_id)["total_value"]
 
     for stock in candidates:
         # Determine if this is a growth stock and get effective score
@@ -2523,7 +2533,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         position_value = min(max_position_value, cash_limit)
 
         # Check sector limits
-        adjusted_value, sector_reason = check_sector_limit(db, stock.ticker, position_value)
+        adjusted_value, sector_reason = check_sector_limit(db, stock.ticker, position_value, user_id=user_id)
         if adjusted_value < 100:
             continue  # Skip if sector limit would be exceeded
         position_value = adjusted_value
@@ -2696,7 +2706,7 @@ def _categorize_sell_reason(reason: str) -> str:
     return "OTHER"
 
 
-def run_ai_trading_cycle(db: Session) -> dict:
+def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
     """
     Run a complete AI trading cycle:
     1. Update existing position prices (if any)
@@ -2728,7 +2738,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
     _set_cycle_started(get_cst_now())
 
     try:
-        config = get_or_create_config(db)
+        config = get_or_create_config(db, user_id=user_id)
         paper_mode = getattr(config, 'paper_mode', False) or False
         strategy = getattr(config, 'strategy', None) or "balanced"
         profile = get_strategy_profile(strategy)
@@ -2749,17 +2759,17 @@ def run_ai_trading_cycle(db: Session) -> dict:
         }
 
         # Get current positions
-        positions = db.query(AIPortfolioPosition).all()
+        positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
         position_count = len(positions)
         logger.info(f"Current positions: {position_count}")
 
         # Only fetch live prices for existing positions (skip if none)
         if position_count > 0:
             logger.info("Updating existing position prices...")
-            update_position_prices(db, use_live_prices=True)
+            update_position_prices(db, use_live_prices=True, user_id=user_id)
 
         # Evaluate and execute sells
-        sells = evaluate_sells(db)
+        sells = evaluate_sells(db, user_id=user_id)
         results["sells_considered"] = len(sells)
         logger.info(f"Sells to consider: {len(sells)}")
 
@@ -2794,7 +2804,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     cost_basis=position.cost_basis,
                     realized_gain=realized_gain,
                     signal_factors={"sell_reason": _categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1), "sell_pct": sell_pct},
-                    is_paper=paper_mode
+                    is_paper=paper_mode,
+                    user_id=user_id
                 )
 
                 if not paper_mode:
@@ -2844,7 +2855,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     cost_basis=position.cost_basis,
                     realized_gain=position.gain_loss,
                     signal_factors={"sell_reason": _categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1)},
-                    is_paper=paper_mode
+                    is_paper=paper_mode,
+                    user_id=user_id
                 )
 
                 if not paper_mode:
@@ -2868,10 +2880,10 @@ def run_ai_trading_cycle(db: Session) -> dict:
 
         # ===== DRAWDOWN CIRCUIT BREAKER (before pyramids and buys) =====
         # Re-fetch positions after sells (some may have been deleted)
-        positions = db.query(AIPortfolioPosition).all()
+        positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
         position_count = len(positions)
 
-        portfolio = get_portfolio_value(db)
+        portfolio = get_portfolio_value(db, user_id=user_id)
         total_value = portfolio["total_value"]
 
         # Update peak portfolio value
@@ -2901,7 +2913,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                         score=position.current_score, cost_basis=position.cost_basis,
                         realized_gain=position.gain_loss,
                         is_growth_stock=position.is_growth_stock or False,
-                        signal_factors={"sell_reason": "CIRCUIT BREAKER", "gain_pct": round(cb_gain_pct, 1), "drawdown_pct": round(current_drawdown, 1)}
+                        signal_factors={"sell_reason": "CIRCUIT BREAKER", "gain_pct": round(cb_gain_pct, 1), "drawdown_pct": round(current_drawdown, 1)},
+                        user_id=user_id
                     )
                     config.current_cash += position.current_value
                     results["sells_executed"].append({
@@ -2923,7 +2936,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
         # Evaluate and execute pyramid trades (add to winners) - blocked by circuit breaker
         results["pyramids_executed"] = []
         if not drawdown_halt:
-            pyramids = evaluate_pyramids(db)
+            pyramids = evaluate_pyramids(db, user_id=user_id)
             results["pyramids_considered"] = len(pyramids)
 
             if pyramids:
@@ -2962,7 +2975,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     score=position.current_score,
                     growth_score=position.current_growth_score,
                     is_growth_stock=position.is_growth_stock or False,
-                    is_paper=paper_mode
+                    is_paper=paper_mode,
+                    user_id=user_id
                 )
 
                 if not paper_mode:
@@ -3048,7 +3062,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             total_heat = 0.0
             pv = portfolio["total_value"]
             if pv > 0:
-                for pos in db.query(AIPortfolioPosition).all():
+                for pos in db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all():
                     if pos.current_price and pos.current_price > 0 and pos.cost_basis and pos.cost_basis > 0:
                         pos_pct = ((pos.current_value or 0) / pv) * 100
                         g_pct = ((pos.current_price - pos.cost_basis) / pos.cost_basis) * 100
@@ -3061,7 +3075,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
         # Liquidate SPY sweep before evaluating buys (active picks get first dibs on cash)
         spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
         if spy_sweep_shares > 0 and not drawdown_halt:
-            liquidate_spy_sweep(db, config, "freeing cash for active buys")
+            liquidate_spy_sweep(db, config, "freeing cash for active buys", user_id=user_id)
 
         if drawdown_halt:
             logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
@@ -3070,7 +3084,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
         elif position_count < max_positions:
             # Evaluate and execute buys (only if we have room for more positions)
             logger.info("Evaluating buy candidates from Stock table...")
-            buys = evaluate_buys(db, ftd_penalty_active=ftd_penalty_active, heat_penalty_active=heat_penalty_active)
+            buys = evaluate_buys(db, ftd_penalty_active=ftd_penalty_active, heat_penalty_active=heat_penalty_active, user_id=user_id)
             results["buys_considered"] = len(buys)
             logger.info(f"Buy candidates found: {len(buys)}")
 
@@ -3078,7 +3092,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                 logger.warning("No buy candidates found! Check if Stock table has data with scores >= 65")
 
             # Buy throttle: limit buys during losing streaks
-            buy_throttle_limit = get_buy_throttle_limit(db, profile)
+            buy_throttle_limit = get_buy_throttle_limit(db, profile, user_id=user_id)
             buys_executed_count = 0
 
             for buy in buys:
@@ -3088,7 +3102,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     break
 
                 # Re-check dynamic cash reserve on each buy
-                portfolio = get_portfolio_value(db)
+                portfolio = get_portfolio_value(db, user_id=user_id)
                 min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
                 if config.current_cash < min_cash_reserve:
                     logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve, stopping buys")
@@ -3143,7 +3157,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                     growth_score=stock.growth_mode_score,
                     is_growth_stock=is_growth,
                     signal_factors=buy.get("signal_factors"),
-                    is_paper=paper_mode
+                    is_paper=paper_mode,
+                    user_id=user_id
                 )
 
                 if not paper_mode:
@@ -3167,7 +3182,8 @@ def run_ai_trading_cycle(db: Session) -> dict:
                         current_growth_score=stock.growth_mode_score,
                         # Trailing stop loss tracking
                         peak_price=live_price,
-                        peak_date=get_cst_now()
+                        peak_date=get_cst_now(),
+                        user_id=user_id
                     )
                     db.add(new_position)
                     position_count += 1
@@ -3191,22 +3207,22 @@ def run_ai_trading_cycle(db: Session) -> dict:
             logger.info(f"Already at max positions ({position_count}), skipping buys")
 
         # Re-sweep idle cash into SPY after buys are done
-        handle_spy_sweep(db, config, profile)
+        handle_spy_sweep(db, config, profile, user_id=user_id)
 
         try:
             db.commit()
             logger.info("Commit successful")
 
             # Verify positions were saved
-            saved_positions = db.query(AIPortfolioPosition).count()
-            saved_config = db.query(AIPortfolioConfig).first()
+            saved_positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).count()
+            saved_config = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.user_id == user_id).first()
             logger.info(f"After commit: {saved_positions} positions, cash=${saved_config.current_cash:.2f}")
         except Exception as e:
             logger.error(f"Commit failed: {e}")
             db.rollback()
 
         # Take daily snapshot
-        take_portfolio_snapshot(db)
+        take_portfolio_snapshot(db, user_id=user_id)
 
         # ===== RISK ALERT WEBHOOKS (advisory only, never block) =====
         try:
@@ -3215,7 +3231,7 @@ def run_ai_trading_cycle(db: Session) -> dict:
             if heat_penalty_active:
                 send_risk_alert_webhook("heat", f"Portfolio heat {total_heat:.1f}% exceeds {max_heat}% warning threshold")
             # Check sector concentration (batch-fetch to avoid N+1)
-            positions = db.query(AIPortfolioPosition).all()
+            positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
             pos_tickers = [p.ticker for p in positions]
             pos_stocks = db.query(Stock).filter(Stock.ticker.in_(pos_tickers)).all() if pos_tickers else []
             ticker_stock_map = {s.ticker: s for s in pos_stocks}
@@ -3246,15 +3262,17 @@ def run_ai_trading_cycle(db: Session) -> dict:
         logger.info("Trading cycle lock released")
 
 
-def take_portfolio_snapshot(db: Session):
+def take_portfolio_snapshot(db: Session, user_id: int = 1):
     """Take a snapshot of current portfolio state - called after each scan"""
     from datetime import datetime as dt
 
-    portfolio = get_portfolio_value(db)
-    config = get_or_create_config(db)
+    portfolio = get_portfolio_value(db, user_id=user_id)
+    config = get_or_create_config(db, user_id=user_id)
 
     # Get previous snapshot for change calculation
-    prev_snapshot = db.query(AIPortfolioSnapshot).order_by(
+    prev_snapshot = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.user_id == user_id
+    ).order_by(
         desc(AIPortfolioSnapshot.timestamp)
     ).first()
 
@@ -3278,7 +3296,8 @@ def take_portfolio_snapshot(db: Session):
         total_return_pct=portfolio["total_return_pct"],
         prev_value=prev_value,
         value_change=value_change,
-        value_change_pct=value_change_pct
+        value_change_pct=value_change_pct,
+        user_id=user_id
     )
     db.add(snapshot)
     db.commit()
@@ -3286,16 +3305,16 @@ def take_portfolio_snapshot(db: Session):
     logger.info(f"Portfolio snapshot taken: ${portfolio['total_value']:.2f} ({portfolio['positions_count']} positions)")
 
 
-def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0, strategy: str = "balanced"):
+def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0, strategy: str = "balanced", user_id: int = 1):
     """Initialize or reset the AI portfolio with the specified strategy profile"""
     # Load strategy profile to get correct config values
     profile = get_strategy_profile(strategy)
 
-    # Clear existing data
-    db.query(AIPortfolioPosition).delete()
-    db.query(AIPortfolioTrade).delete()
-    db.query(AIPortfolioSnapshot).delete()
-    db.query(AIPortfolioConfig).delete()
+    # Clear existing data for this user only
+    db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).delete()
+    db.query(AIPortfolioTrade).filter(AIPortfolioTrade.user_id == user_id).delete()
+    db.query(AIPortfolioSnapshot).filter(AIPortfolioSnapshot.user_id == user_id).delete()
+    db.query(AIPortfolioConfig).filter(AIPortfolioConfig.user_id == user_id).delete()
 
     # Create new config from strategy profile
     config = AIPortfolioConfig(
@@ -3308,13 +3327,14 @@ def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0, strateg
         take_profit_pct=profile.get("take_profit_pct", 75.0),
         stop_loss_pct=profile.get("stop_loss_pct", 7.0),
         is_active=True,
-        strategy=strategy
+        strategy=strategy,
+        user_id=user_id
     )
     db.add(config)
     db.commit()
 
     # Take initial snapshot
-    take_portfolio_snapshot(db)
+    take_portfolio_snapshot(db, user_id=user_id)
 
     return {
         "message": f"AI Portfolio reset with '{strategy}' strategy. Click 'Run Trading Cycle' to build positions.",

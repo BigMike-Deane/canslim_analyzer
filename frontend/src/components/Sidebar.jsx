@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useState } from 'react'
+import { useAuth } from '../auth'
 
 const navGroups = [
   {
@@ -38,6 +39,19 @@ const navGroups = [
   },
 ]
 
+function getNavGroups(isAdmin) {
+  if (!isAdmin) return navGroups
+  return [
+    ...navGroups,
+    {
+      label: 'ADMIN',
+      items: [
+        { to: '/admin', icon: 'settings', label: 'Users' },
+      ],
+    },
+  ]
+}
+
 function NavIcon({ name, size = 16 }) {
   const s = size
   const props = { width: s, height: s, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' }
@@ -71,6 +85,8 @@ function NavIcon({ name, size = 16 }) {
       return <svg {...props}><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
     case 'activity':
       return <svg {...props}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>
+    case 'settings':
+      return <svg {...props}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" /></svg>
     default:
       return <svg {...props}><circle cx="12" cy="12" r="4" /></svg>
   }
@@ -78,6 +94,7 @@ function NavIcon({ name, size = 16 }) {
 
 export default function Sidebar({ collapsed, onToggle }) {
   const location = useLocation()
+  const { user, logout } = useAuth()
 
   return (
     <aside className={`hidden md:flex flex-col h-screen sticky top-0 bg-dark-900 border-r border-dark-700/40 transition-all duration-300 ${
@@ -113,7 +130,7 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       {/* Nav Groups */}
       <nav className="flex-1 overflow-y-auto py-3 px-2">
-        {navGroups.map(group => (
+        {getNavGroups(user?.is_admin).map(group => (
           <div key={group.label} className="mb-4">
             {!collapsed && (
               <div className="px-2 mb-1.5">
@@ -158,17 +175,44 @@ export default function Sidebar({ collapsed, onToggle }) {
         ))}
       </nav>
 
-      {/* Collapse Toggle */}
-      <button
-        onClick={onToggle}
-        className="flex items-center justify-center h-10 border-t border-dark-700/40 text-dark-400 hover:text-dark-200 transition-colors"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-          className={`transition-transform duration-300 ${collapsed ? 'rotate-180' : ''}`}
+      {/* User + Collapse */}
+      <div className="border-t border-dark-700/40">
+        {user && (
+          <div className={`flex items-center px-3 py-2 ${collapsed ? 'justify-center' : 'gap-2'}`}>
+            <div className="w-6 h-6 rounded-full bg-primary-600/20 border border-primary-500/30 flex items-center justify-center flex-shrink-0">
+              <span className="text-primary-400 text-[10px] font-bold">
+                {(user.display_name || user.email || '?')[0].toUpperCase()}
+              </span>
+            </div>
+            {!collapsed && (
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] text-dark-300 truncate">{user.display_name || user.email}</div>
+              </div>
+            )}
+            {!collapsed && (
+              <button
+                onClick={logout}
+                title="Sign out"
+                className="text-dark-500 hover:text-red-400 transition-colors p-1"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+        <button
+          onClick={onToggle}
+          className="flex items-center justify-center w-full h-9 text-dark-400 hover:text-dark-200 transition-colors"
         >
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </button>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+            className={`transition-transform duration-300 ${collapsed ? 'rotate-180' : ''}`}
+          >
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+      </div>
     </aside>
   )
 }

@@ -1,0 +1,3 @@
+canslim.duckdns.org {
+	reverse_proxy canslim:8001
+}

@@ -162,6 +162,16 @@ def run_migrations():
         ("ai_portfolio_trades", "is_paper", "BOOLEAN DEFAULT FALSE"),
         # Backtest force refresh (Feb 2026)
         ("backtest_runs", "force_refresh", "BOOLEAN DEFAULT FALSE"),
+        # Multi-user support (Mar 2026) — user_id FK on all user-scoped tables
+        ("ai_portfolio_config", "user_id", "INTEGER"),
+        ("ai_portfolio_positions", "user_id", "INTEGER"),
+        ("ai_portfolio_trades", "user_id", "INTEGER"),
+        ("ai_portfolio_snapshots", "user_id", "INTEGER"),
+        ("portfolio_positions", "user_id", "INTEGER"),
+        ("watchlist", "user_id", "INTEGER"),
+        ("backtest_runs", "user_id", "INTEGER"),
+        ("fidelity_snapshots", "user_id", "INTEGER"),
+        ("fidelity_trades", "user_id", "INTEGER"),
     ]
 
     # Build a cache of existing columns per table
@@ -246,6 +256,35 @@ def run_migrations():
             sqlite_conn.commit()
             sqlite_conn.close()
 
+    # Backfill user_id=1 for all existing data (multi-user migration)
+    user_id_tables = [
+        "ai_portfolio_config", "ai_portfolio_positions", "ai_portfolio_trades",
+        "ai_portfolio_snapshots", "portfolio_positions", "watchlist",
+        "backtest_runs", "fidelity_snapshots", "fidelity_trades",
+    ]
+    with engine.begin() as conn:
+        for table in user_id_tables:
+            if table not in existing_tables:
+                continue
+            if "user_id" not in columns_cache.get(table, set()):
+                continue  # Column wasn't added yet (first run will add it above)
+            try:
+                result = conn.execute(text(f"SELECT COUNT(*) FROM {table} WHERE user_id IS NULL"))
+                null_count = result.scalar()
+                if null_count and null_count > 0:
+                    conn.execute(text(f"UPDATE {table} SET user_id = 1 WHERE user_id IS NULL"))
+                    logger.info(f"Migration: Backfilled {null_count} rows in {table} with user_id=1")
+            except Exception as e:
+                logger.warning(f"Failed to backfill user_id in {table}: {e}")
+
+    # Make hashed_password nullable (Google Sign-In migration — no passwords needed)
+    if "users" in existing_tables and not is_sqlite:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ALTER COLUMN hashed_password DROP NOT NULL"))
+        except Exception:
+            pass  # Already nullable or doesn't exist
+
     # Create indexes (database-agnostic)
     index_migrations = [
         ('ix_stocks_sector', 'stocks', 'sector'),
@@ -267,6 +306,16 @@ def run_migrations():
         ('ix_stocks_earnings', 'stocks', 'days_to_earnings, canslim_score'),
         ('ix_earnings_audits_ticker', 'earnings_audits', 'ticker'),
         ('ix_earnings_audits_ticker_date', 'earnings_audits', 'ticker, audited_at'),
+        # Multi-user indexes
+        ('ix_ai_portfolio_config_user', 'ai_portfolio_config', 'user_id'),
+        ('ix_ai_portfolio_positions_user', 'ai_portfolio_positions', 'user_id'),
+        ('ix_ai_portfolio_trades_user', 'ai_portfolio_trades', 'user_id'),
+        ('ix_ai_portfolio_snapshots_user', 'ai_portfolio_snapshots', 'user_id'),
+        ('ix_portfolio_positions_user', 'portfolio_positions', 'user_id'),
+        ('ix_watchlist_user', 'watchlist', 'user_id'),
+        ('ix_backtest_runs_user', 'backtest_runs', 'user_id'),
+        ('ix_fidelity_snapshots_user', 'fidelity_snapshots', 'user_id'),
+        ('ix_fidelity_trades_user', 'fidelity_trades', 'user_id'),
     ]
 
     with engine.begin() as conn:
@@ -278,10 +327,42 @@ def run_migrations():
             except Exception as e:
                 pass  # Expected: index already exists or table issue
 
+    # Seed default admin user if users table is empty
+    if "users" in existing_tables:
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT COUNT(*) FROM users"))
+                count = result.scalar()
+                if count == 0:
+                    admin_email = os.environ.get("DEFAULT_ADMIN_EMAIL", "admin@canslim.local")
+                    conn.execute(text(
+                        "INSERT INTO users (email, hashed_password, display_name, is_active, is_admin, created_at, updated_at) "
+                        "VALUES (:email, '', :name, true, true, NOW(), NOW())"
+                    ), {"email": admin_email, "name": "Owner"})
+                    conn.commit()
+                    logger.info(f"Seeded default admin user: {admin_email} (id=1, Google Sign-In)")
+        except Exception as e:
+            logger.warning(f"Failed to seed admin user: {e}")
+
     logger.info("Database migrations complete")
 
 
 # ============== Models ==============
+
+class User(Base):
+    """Application user for multi-user support."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=True, default="")
+    display_name = Column(String)
+    is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
 
 class Stock(Base):
     """Cached stock information"""
@@ -432,6 +513,7 @@ class PortfolioPosition(Base):
     __tablename__ = "portfolio_positions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     ticker = Column(String, nullable=False, index=True)
     shares = Column(Float, nullable=False)
     cost_basis = Column(Float)  # Average cost per share
@@ -458,6 +540,7 @@ class Watchlist(Base):
     __tablename__ = "watchlist"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     ticker = Column(String, nullable=False, index=True)
     added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     notes = Column(Text)
@@ -626,6 +709,7 @@ class AIPortfolioConfig(Base):
     __tablename__ = "ai_portfolio_config"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     starting_cash = Column(Float, default=25000.0)
     current_cash = Column(Float, default=25000.0)
     max_positions = Column(Integer, default=15)
@@ -647,6 +731,7 @@ class AIPortfolioPosition(Base):
     __tablename__ = "ai_portfolio_positions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     ticker = Column(String, nullable=False, index=True)
     shares = Column(Float, nullable=False)
     cost_basis = Column(Float, nullable=False)  # Price per share when bought
@@ -684,6 +769,7 @@ class AIPortfolioTrade(Base):
     __tablename__ = "ai_portfolio_trades"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     ticker = Column(String, nullable=False, index=True)
     action = Column(String, nullable=False)  # BUY, SELL
     shares = Column(Float, nullable=False)
@@ -709,6 +795,7 @@ class AIPortfolioSnapshot(Base):
     __tablename__ = "ai_portfolio_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     timestamp = Column(DateTime, index=True, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     total_value = Column(Float, nullable=False)  # Cash + positions
@@ -734,6 +821,7 @@ class BacktestRun(Base):
     __tablename__ = "backtest_runs"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String)  # User-friendly name
     status = Column(String, default="pending")  # pending, running, completed, failed
 
@@ -948,6 +1036,7 @@ class FidelitySnapshot(Base):
     __tablename__ = "fidelity_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     snapshot_date = Column(Date, nullable=False, index=True)
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -988,6 +1077,7 @@ class FidelityTrade(Base):
     __tablename__ = "fidelity_trades"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     run_date = Column(Date, nullable=False, index=True)

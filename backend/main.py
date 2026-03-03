@@ -12,7 +12,6 @@ from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text, case
 from datetime import datetime, date, timedelta, timezone
@@ -28,8 +27,10 @@ from backend.database import (
     Watchlist, AnalysisJob, MarketSnapshot,
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
     BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert,
-    EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade
+    EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade,
+    User
 )
+from backend.auth import get_current_active_user, get_admin_user
 from backend.config import settings
 from pydantic import BaseModel
 
@@ -194,55 +195,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ============== API Token Authentication ==============
-
-API_TOKEN = os.environ.get("API_TOKEN", "")
-
-# Paths that don't require authentication
-AUTH_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
-
-
-class TokenAuthMiddleware(BaseHTTPMiddleware):
-    """Simple bearer token authentication middleware.
-
-    When API_TOKEN env var is set, all API requests require:
-        Authorization: Bearer <token>
-
-    Health check and static file paths are exempt.
-    If API_TOKEN is not set, auth is disabled (dev mode).
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        # Skip auth if no token configured (dev mode)
-        if not API_TOKEN:
-            return await call_next(request)
-
-        path = request.url.path
-
-        # Exempt paths: health check, docs, static files
-        if path in AUTH_EXEMPT_PATHS or not path.startswith("/api"):
-            return await call_next(request)
-
-        # Check Authorization header
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            if token == API_TOKEN:
-                return await call_next(request)
-
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Invalid or missing API token"},
-        )
-
-
-if API_TOKEN:
-    app.add_middleware(TokenAuthMiddleware)
-    logger.info("API token authentication ENABLED")
-else:
-    logger.warning("API_TOKEN not set — authentication DISABLED (set API_TOKEN env var to secure API)")
 
 
 # ============== Analysis Helpers ==============
@@ -551,6 +503,7 @@ def update_market_snapshot(db: Session, force_refresh: bool = False):
 @app.get("/api/market-direction")
 async def get_market_direction(
     refresh: bool = False,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -581,7 +534,7 @@ async def get_market_direction(
 
 
 @app.post("/api/market-direction/refresh")
-async def refresh_market_direction(db: Session = Depends(get_db)):
+async def refresh_market_direction(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Force refresh market direction data from Yahoo Finance."""
     update_market_snapshot(db, force_refresh=True)
 
@@ -788,7 +741,7 @@ async def health_check(db: Session = Depends(get_db)):
 # ============== Dashboard ==============
 
 @app.get("/api/dashboard")
-async def get_dashboard(db: Session = Depends(get_db)):
+async def get_dashboard(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get dashboard overview data"""
     # Update market snapshot if stale (older than 5 minutes during market hours)
     latest_market = db.query(MarketSnapshot).order_by(
@@ -867,7 +820,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
     score_trends = get_score_trends_batch(db, stock_ids, days=7)
 
     # Get portfolio summary
-    positions = db.query(PortfolioPosition).all()
+    positions = db.query(PortfolioPosition).filter(PortfolioPosition.user_id == current_user.id).all()
     total_value = sum(p.current_value or 0 for p in positions)
     total_gain = sum(p.gain_loss or 0 for p in positions)
 
@@ -885,7 +838,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         "total_stocks": stock_stats_row.total if stock_stats_row else 0,
         "high_score_count": stock_stats_row.high_score if stock_stats_row else 0
     }
-    watchlist_count = db.query(func.count(Watchlist.id)).scalar() or 0
+    watchlist_count = db.query(func.count(Watchlist.id)).filter(Watchlist.user_id == current_user.id).scalar() or 0
 
     def get_data_quality(stock):
         """Assess data quality based on available projection data"""
@@ -985,7 +938,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
 # ============== Market Data ==============
 
 @app.get("/api/market")
-async def get_market_data(db: Session = Depends(get_db)):
+async def get_market_data(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get current market direction data (SPY price, MAs, trend)"""
     latest = get_latest_market_snapshot(db)
 
@@ -1004,7 +957,7 @@ async def get_market_data(db: Session = Depends(get_db)):
 
 
 @app.post("/api/market/refresh")
-async def refresh_market_data(db: Session = Depends(get_db)):
+async def refresh_market_data(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Force refresh SPY price and moving averages - call this independently of scans"""
     try:
         update_market_snapshot(db)
@@ -1026,7 +979,7 @@ async def refresh_market_data(db: Session = Depends(get_db)):
 
 
 @app.get("/api/rate-limit-stats")
-async def get_rate_limit_stats():
+async def get_rate_limit_stats(current_user: User = Depends(get_current_active_user)):
     """Get FMP API rate limit statistics (429 errors tracked)"""
     from data_fetcher import get_rate_limit_stats
     stats = get_rate_limit_stats()
@@ -1039,7 +992,7 @@ async def get_rate_limit_stats():
 
 
 @app.post("/api/rate-limit-stats/reset")
-async def reset_rate_limit_stats():
+async def reset_rate_limit_stats(current_user: User = Depends(get_current_active_user)):
     """Reset FMP API rate limit statistics"""
     from data_fetcher import reset_rate_limit_stats
     reset_rate_limit_stats()
@@ -1050,6 +1003,7 @@ async def reset_rate_limit_stats():
 
 @app.get("/api/stocks")
 async def get_stocks(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
     sort_by: str = Query("canslim_score", enum=["canslim_score", "projected_growth", "current_price", "name"]),
     sort_dir: str = Query("desc", enum=["asc", "desc"]),
@@ -1126,6 +1080,7 @@ async def get_stocks(
 async def search_stocks(
     q: str = Query(..., min_length=1, max_length=10),
     limit: int = Query(8, ge=1, le=20),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Quick search stocks by ticker or name prefix."""
@@ -1147,7 +1102,7 @@ async def search_stocks(
 
 
 @app.get("/api/stocks/sectors")
-async def get_sectors(db: Session = Depends(get_db)):
+async def get_sectors(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get list of available sectors"""
     sectors = db.query(Stock.sector).distinct().filter(Stock.sector != None).all()
     return [s[0] for s in sectors if s[0]]
@@ -1155,6 +1110,7 @@ async def get_sectors(db: Session = Depends(get_db)):
 
 @app.get("/api/top-growth-stocks")
 async def get_top_growth_stocks(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
     limit: int = Query(10, le=50)
 ):
@@ -1211,6 +1167,7 @@ async def get_top_growth_stocks(
 
 @app.get("/api/stocks/breaking-out")
 async def get_breaking_out_stocks(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
     limit: int = Query(10, le=50)
 ):
@@ -1275,6 +1232,7 @@ async def get_insider_sentiment(
     sector: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Get stocks ranked by insider trading activity with CANSLIM score filter"""
@@ -1389,7 +1347,7 @@ async def get_insider_sentiment(
 # ============== Single Stock Analysis ==============
 
 @app.get("/api/stocks/{ticker}")
-async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
+async def get_stock(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
     """Get detailed stock analysis with background refresh for stale data"""
     from backend.database import SessionLocal
 
@@ -1537,7 +1495,7 @@ async def get_stock(ticker: str, db: Session = Depends(get_db), background_tasks
 
 
 @app.post("/api/stocks/{ticker}/refresh")
-async def refresh_stock(ticker: str, db: Session = Depends(get_db)):
+async def refresh_stock(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Force refresh a stock's analysis"""
     ticker = validate_ticker_param(ticker)
 
@@ -1555,6 +1513,7 @@ async def refresh_stock(ticker: str, db: Session = Depends(get_db)):
 @app.post("/api/analyze/scan")
 async def start_scan(
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
     data: Optional[ScanRequest] = None,
     source: str = Query("sp500", enum=["sp500", "top50", "russell", "all"]),
@@ -1675,7 +1634,7 @@ async def start_scan(
 
 
 @app.get("/api/analyze/jobs/{job_id}")
-async def get_job_status(job_id: int, db: Session = Depends(get_db)):
+async def get_job_status(job_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get status of an analysis job"""
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
     if not job:
@@ -1702,13 +1661,14 @@ from backend.scheduler import (
 )
 
 @app.get("/api/scanner/status")
-async def get_scanner_status():
+async def get_scanner_status(current_user: User = Depends(get_current_active_user)):
     """Get continuous scanner status"""
     return get_scan_status()
 
 
 @app.post("/api/scanner/start")
 async def start_scanner(
+    current_user: User = Depends(get_admin_user),
     source: str = Query("sp500", enum=["sp500", "top50", "russell", "all"]),
     interval: int = Query(15, ge=5, le=120, description="Scan interval in minutes")
 ):
@@ -1717,13 +1677,14 @@ async def start_scanner(
 
 
 @app.post("/api/scanner/stop")
-async def stop_scanner():
+async def stop_scanner(current_user: User = Depends(get_admin_user)):
     """Stop continuous scanning"""
     return stop_continuous_scanning()
 
 
 @app.patch("/api/scanner/config")
 async def update_scanner_config(
+    current_user: User = Depends(get_admin_user),
     source: str = Query(None, enum=["sp500", "top50", "russell", "all"]),
     interval: int = Query(None, ge=5, le=120)
 ):
@@ -1734,9 +1695,9 @@ async def update_scanner_config(
 # ============== Portfolio ==============
 
 @app.get("/api/portfolio")
-async def get_portfolio(db: Session = Depends(get_db)):
+async def get_portfolio(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get all portfolio positions with trend data"""
-    positions = db.query(PortfolioPosition).all()
+    positions = db.query(PortfolioPosition).filter(PortfolioPosition.user_id == current_user.id).all()
 
     total_value = sum(p.current_value or 0 for p in positions)
     total_cost = sum((p.cost_basis or 0) * (p.shares or 0) for p in positions)
@@ -1802,7 +1763,7 @@ async def get_portfolio(db: Session = Depends(get_db)):
 
 
 @app.post("/api/portfolio")
-async def add_position(data: PositionCreate, db: Session = Depends(get_db)):
+async def add_position(data: PositionCreate, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Add a new portfolio position"""
     # Pydantic validators handle input validation (ticker format, shares > 0, cost_basis limits)
     ticker = data.ticker  # Already uppercase from validator
@@ -1811,7 +1772,8 @@ async def add_position(data: PositionCreate, db: Session = Depends(get_db)):
 
     # Check if position already exists
     existing = db.query(PortfolioPosition).filter(
-        PortfolioPosition.ticker == ticker
+        PortfolioPosition.ticker == ticker,
+        PortfolioPosition.user_id == current_user.id
     ).first()
 
     if existing:
@@ -1827,7 +1789,8 @@ async def add_position(data: PositionCreate, db: Session = Depends(get_db)):
         cost_basis=cost_basis,
         current_price=current_price,
         current_value=current_price * shares if current_price else None,
-        canslim_score=stock.canslim_score if stock else None
+        canslim_score=stock.canslim_score if stock else None,
+        user_id=current_user.id
     )
 
     if current_price and cost_basis:
@@ -1841,10 +1804,11 @@ async def add_position(data: PositionCreate, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/portfolio/{position_id}")
-async def remove_position(position_id: int, db: Session = Depends(get_db)):
+async def remove_position(position_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Remove a portfolio position"""
     position = db.query(PortfolioPosition).filter(
-        PortfolioPosition.id == position_id
+        PortfolioPosition.id == position_id,
+        PortfolioPosition.user_id == current_user.id
     ).first()
 
     if not position:
@@ -1857,10 +1821,11 @@ async def remove_position(position_id: int, db: Session = Depends(get_db)):
 
 
 @app.put("/api/portfolio/{position_id}")
-async def update_position(position_id: int, data: PositionUpdate, db: Session = Depends(get_db)):
+async def update_position(position_id: int, data: PositionUpdate, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Update a portfolio position (shares, cost basis, notes)"""
     position = db.query(PortfolioPosition).filter(
-        PortfolioPosition.id == position_id
+        PortfolioPosition.id == position_id,
+        PortfolioPosition.user_id == current_user.id
     ).first()
 
     if not position:
@@ -1931,11 +1896,11 @@ def fetch_price_yahoo_chart(ticker: str) -> float | None:
 
 
 @app.post("/api/portfolio/refresh")
-async def refresh_portfolio(db: Session = Depends(get_db)):
+async def refresh_portfolio(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Refresh all portfolio positions with current prices and auto-scan missing stocks"""
     import time
 
-    positions = db.query(PortfolioPosition).all()
+    positions = db.query(PortfolioPosition).filter(PortfolioPosition.user_id == current_user.id).all()
     logger.info(f"Refreshing {len(positions)} positions")
 
     updated = 0
@@ -2050,9 +2015,9 @@ async def refresh_portfolio(db: Session = Depends(get_db)):
 # ============== Portfolio Gameplan ==============
 
 @app.get("/api/portfolio/gameplan")
-async def get_portfolio_gameplan(db: Session = Depends(get_db)):
+async def get_portfolio_gameplan(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Generate actionable gameplan based on portfolio analysis"""
-    positions = db.query(PortfolioPosition).all()
+    positions = db.query(PortfolioPosition).filter(PortfolioPosition.user_id == current_user.id).all()
 
     # Calculate portfolio totals
     total_value = sum(p.current_value or 0 for p in positions)
@@ -2454,6 +2419,7 @@ from backend.ai_trader import (
 
 @app.get("/api/coiled-spring/alerts")
 async def get_coiled_spring_alerts(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
     days: int = Query(7, ge=1, le=30, description="Number of days to look back")
 ):
@@ -2516,7 +2482,7 @@ async def get_coiled_spring_alerts(
 
 
 @app.get("/api/coiled-spring/candidates")
-async def get_coiled_spring_candidates(db: Session = Depends(get_db), limit: int = Query(10, ge=1, le=100), pre_breakout_only: bool = False):
+async def get_coiled_spring_candidates(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db), limit: int = Query(10, ge=1, le=100), pre_breakout_only: bool = False):
     """
     Get current stocks that qualify as Coiled Spring candidates.
     These are stocks that meet CS criteria based on current data,
@@ -2743,6 +2709,7 @@ def _cs_stats(alerts_list):
 
 @app.get("/api/coiled-spring/history")
 async def get_coiled_spring_history(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200)
@@ -2852,7 +2819,7 @@ async def get_coiled_spring_history(
 
 
 @app.post("/api/coiled-spring/record")
-async def record_coiled_spring_alert(ticker: str, db: Session = Depends(get_db)):
+async def record_coiled_spring_alert(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Record a Coiled Spring alert for tracking.
     Called when a CS candidate is identified for the watchlist.
@@ -2899,7 +2866,7 @@ async def record_coiled_spring_alert(ticker: str, db: Session = Depends(get_db))
 
 
 @app.post("/api/coiled-spring/cleanup-duplicates")
-async def cleanup_cs_duplicates(db: Session = Depends(get_db), dry_run: bool = Query(True)):
+async def cleanup_cs_duplicates(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db), dry_run: bool = Query(True)):
     """Delete duplicate CS alerts, keeping one per ticker per earnings cycle (21 days).
     Prefers alerts with outcomes. Use dry_run=false to actually delete."""
     from backend.database import CoiledSpringAlert
@@ -2924,7 +2891,7 @@ async def cleanup_cs_duplicates(db: Session = Depends(get_db), dry_run: bool = Q
 
 
 @app.post("/api/coiled-spring/update-outcomes")
-async def update_coiled_spring_outcomes(db: Session = Depends(get_db)):
+async def update_coiled_spring_outcomes(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Update outcomes for past CS alerts where earnings have occurred.
     Compares price_at_alert to current price.
@@ -2979,11 +2946,11 @@ async def update_coiled_spring_outcomes(db: Session = Depends(get_db)):
 
 
 @app.get("/api/ai-portfolio")
-async def get_ai_portfolio(db: Session = Depends(get_db)):
+async def get_ai_portfolio(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get AI Portfolio overview"""
-    config = get_or_create_config(db)
-    portfolio = get_portfolio_value(db)
-    positions = db.query(AIPortfolioPosition).all()
+    config = get_or_create_config(db, user_id=current_user.id)
+    portfolio = get_portfolio_value(db, user_id=current_user.id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == current_user.id).all()
 
     # Batch fetch all stocks for positions (avoid N+1 queries)
     position_tickers = [p.ticker for p in positions]
@@ -3070,6 +3037,7 @@ async def get_ai_portfolio(db: Session = Depends(get_db)):
 @app.get("/api/ai-portfolio/history")
 async def get_ai_portfolio_history(
     days: int = Query(30, le=365),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Get AI Portfolio performance history for charts - includes all snapshots from scans"""
@@ -3081,6 +3049,7 @@ async def get_ai_portfolio_history(
 
     # Get all snapshots - include both timestamp-based (new) and date-based (old/migrated)
     snapshots = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.user_id == current_user.id,
         or_(
             AIPortfolioSnapshot.timestamp >= start_date,
             AIPortfolioSnapshot.date >= start_date_only
@@ -3115,10 +3084,13 @@ async def get_ai_portfolio_history(
 
 
 @app.post("/api/ai-portfolio/refresh")
-async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, check_stops: bool = True):
+async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, current_user: User = Depends(get_current_active_user), check_stops: bool = True):
     """Refresh position prices and check stop losses (runs in background)"""
     from backend.database import SessionLocal
     from backend.ai_trader import take_portfolio_snapshot, check_and_execute_stop_losses
+
+    # Capture user_id before background task (request scope won't be available later)
+    user_id = current_user.id
 
     def refresh_background():
         db = SessionLocal()
@@ -3126,13 +3098,13 @@ async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, check
             logger.info("Refreshing AI portfolio prices in background...")
             if check_stops:
                 # Check stop losses and execute sells if triggered
-                result = check_and_execute_stop_losses(db)
+                result = check_and_execute_stop_losses(db, user_id=user_id)
                 sells = result.get("sells_executed", [])
                 if sells:
                     logger.info(f"STOP LOSS ALERT: {len(sells)} positions sold: {[s['ticker'] for s in sells]}")
             else:
                 # Just refresh prices without checking stops
-                result = refresh_ai_portfolio(db)
+                result = refresh_ai_portfolio(db, user_id=user_id)
             logger.info(f"AI portfolio refresh complete: {result.get('message')}")
         except Exception as e:
             logger.error(f"AI portfolio refresh error: {e}")
@@ -3148,10 +3120,13 @@ async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, check
 @app.get("/api/ai-portfolio/trades")
 async def get_ai_portfolio_trades(
     limit: int = Query(50, le=200),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Get AI Portfolio trade history"""
-    trades = db.query(AIPortfolioTrade).order_by(
+    trades = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id
+    ).order_by(
         desc(AIPortfolioTrade.executed_at)
     ).limit(limit).all()
 
@@ -3176,20 +3151,24 @@ async def get_ai_portfolio_trades(
 async def initialize_ai_portfolio_endpoint(
     starting_cash: float = Query(25000.0, ge=1000, le=1000000),
     strategy: str = Query("balanced"),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Initialize or reset the AI Portfolio"""
     validate_strategy_name(strategy)
-    result = initialize_ai_portfolio(db, starting_cash, strategy=strategy)
+    result = initialize_ai_portfolio(db, starting_cash, strategy=strategy, user_id=current_user.id)
     return result
 
 
 @app.post("/api/ai-portfolio/run-cycle")
-async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks, force: bool = Query(False)):
+async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks, current_user: User = Depends(get_current_active_user), force: bool = Query(False)):
     """Manually trigger an AI trading cycle (runs in background)"""
     from backend.database import SessionLocal
     from backend.ai_trader import take_portfolio_snapshot, _trading_cycle_lock, _trading_cycle_started, is_market_open
     from datetime import datetime
+
+    # Capture user_id before background task (request scope won't be available later)
+    user_id = current_user.id
 
     # Check if market is open (skip with force=true)
     if not force and not is_market_open():
@@ -3211,7 +3190,7 @@ async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks, force
         db = SessionLocal()
         try:
             logger.info("Starting AI trading cycle in background...")
-            result = run_ai_trading_cycle(db)
+            result = run_ai_trading_cycle(db, user_id=user_id)
             if result.get("status") == "busy":
                 logger.warning(f"Trading cycle was busy: {result.get('message')}")
             else:
@@ -3231,9 +3210,9 @@ async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks, force
 # ============== Watchlist ==============
 
 @app.get("/api/watchlist")
-async def get_watchlist(db: Session = Depends(get_db)):
+async def get_watchlist(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get watchlist with current stock data"""
-    watchlist = db.query(Watchlist).all()
+    watchlist = db.query(Watchlist).filter(Watchlist.user_id == current_user.id).all()
 
     # Batch-fetch all stocks to avoid N+1 queries
     tickers = [w.ticker for w in watchlist]
@@ -3261,11 +3240,11 @@ async def get_watchlist(db: Session = Depends(get_db)):
 
 
 @app.post("/api/watchlist")
-async def add_to_watchlist(data: WatchlistCreate, db: Session = Depends(get_db)):
+async def add_to_watchlist(data: WatchlistCreate, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Add stock to watchlist"""
     ticker = data.ticker.upper()
 
-    existing = db.query(Watchlist).filter(Watchlist.ticker == ticker).first()
+    existing = db.query(Watchlist).filter(Watchlist.ticker == ticker, Watchlist.user_id == current_user.id).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"{ticker} already in watchlist")
 
@@ -3273,7 +3252,8 @@ async def add_to_watchlist(data: WatchlistCreate, db: Session = Depends(get_db))
         ticker=ticker,
         notes=data.notes,
         target_price=data.target_price,
-        alert_score=data.alert_score
+        alert_score=data.alert_score,
+        user_id=current_user.id
     )
     db.add(item)
     db.commit()
@@ -3282,9 +3262,9 @@ async def add_to_watchlist(data: WatchlistCreate, db: Session = Depends(get_db))
 
 
 @app.delete("/api/watchlist/{item_id}")
-async def remove_from_watchlist(item_id: int, db: Session = Depends(get_db)):
+async def remove_from_watchlist(item_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Remove stock from watchlist"""
-    item = db.query(Watchlist).filter(Watchlist.id == item_id).first()
+    item = db.query(Watchlist).filter(Watchlist.id == item_id, Watchlist.user_id == current_user.id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
 
@@ -3300,7 +3280,7 @@ class WatchlistBulkImport(BaseModel):
 
 
 @app.post("/api/watchlist/bulk")
-async def bulk_add_to_watchlist(data: WatchlistBulkImport, db: Session = Depends(get_db)):
+async def bulk_add_to_watchlist(data: WatchlistBulkImport, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Bulk import tickers to watchlist.
 
@@ -3323,9 +3303,9 @@ async def bulk_add_to_watchlist(data: WatchlistBulkImport, db: Session = Depends
     skipped = []
     invalid = []
 
-    # Get existing watchlist tickers
+    # Get existing watchlist tickers for this user
     existing_tickers = set(
-        item.ticker for item in db.query(Watchlist.ticker).all()
+        item.ticker for item in db.query(Watchlist.ticker).filter(Watchlist.user_id == current_user.id).all()
     )
 
     for ticker in ticker_list:
@@ -3339,7 +3319,7 @@ async def bulk_add_to_watchlist(data: WatchlistBulkImport, db: Session = Depends
             continue
 
         # Add to watchlist
-        item = Watchlist(ticker=ticker)
+        item = Watchlist(ticker=ticker, user_id=current_user.id)
         db.add(item)
         added.append(ticker)
         existing_tickers.add(ticker)  # Track for duplicate detection in same batch
@@ -3385,6 +3365,7 @@ class BacktestCreate(BaseModel):
 @app.post("/api/backtests")
 async def create_backtest(
     config: BacktestCreate,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -3423,7 +3404,8 @@ async def create_backtest(
         min_score_to_buy=config.min_score_to_buy or default_min_score,
         stop_loss_pct=config.stop_loss_pct or default_stop_loss,
         force_refresh=config.force_refresh,
-        status="pending"
+        status="pending",
+        user_id=current_user.id
     )
     db.add(backtest)
     db.commit()
@@ -3445,11 +3427,12 @@ async def create_backtest(
 @app.get("/api/backtests")
 async def list_backtests(
     limit: int = Query(20, ge=1, le=200),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """List all backtests, most recent first"""
     from backend.backtest_queue import backtest_queue
-    backtests = db.query(BacktestRun).order_by(desc(BacktestRun.created_at)).limit(limit).all()
+    backtests = db.query(BacktestRun).filter(BacktestRun.user_id == current_user.id).order_by(desc(BacktestRun.created_at)).limit(limit).all()
 
     return [
         {
@@ -3488,6 +3471,7 @@ BACKTEST_PRESETS = [
 @app.get("/api/backtests/compare")
 async def compare_backtests(
     ids: str = Query(..., description="Comma-separated backtest IDs"),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Compare 2+ backtests side-by-side with overlaid equity curves"""
@@ -3505,7 +3489,7 @@ async def compare_backtests(
     all_dates = set()
 
     for bt_id in bt_ids:
-        bt = db.get(BacktestRun, bt_id)
+        bt = db.query(BacktestRun).filter(BacktestRun.id == bt_id, BacktestRun.user_id == current_user.id).first()
         if not bt or bt.status != "completed":
             continue
 
@@ -3566,7 +3550,7 @@ async def compare_backtests(
 
 
 @app.get("/api/backtests/presets")
-async def get_backtest_presets():
+async def get_backtest_presets(current_user: User = Depends(get_current_active_user)):
     """Get preset backtest periods for multi-period testing"""
     return BACKTEST_PRESETS
 
@@ -3577,6 +3561,7 @@ async def create_multi_backtest(
     stock_universe: str = Query("all"),
     strategy: str = Query("balanced"),
     force_refresh: bool = Query(False),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Launch backtests for all preset periods sequentially via queue"""
@@ -3594,7 +3579,8 @@ async def create_multi_backtest(
             stock_universe=stock_universe,
             strategy=strategy,
             force_refresh=force_refresh,
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc),
+            user_id=current_user.id
         )
         db.add(bt)
         db.flush()
@@ -3622,6 +3608,7 @@ class BatchBacktestCreate(BaseModel):
 @app.post("/api/backtests/batch")
 async def create_batch_backtest(
     config: BatchBacktestCreate,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Create one backtest per strategy for the same date range, enqueued sequentially for cache reuse."""
@@ -3656,6 +3643,7 @@ async def create_batch_backtest(
             stop_loss_pct=default_stop_loss,
             force_refresh=config.force_refresh,
             status="pending",
+            user_id=current_user.id,
             created_at=datetime.now(timezone.utc)
         )
         db.add(bt)
@@ -3674,16 +3662,16 @@ async def create_batch_backtest(
 
 
 @app.get("/api/backtests/queue")
-async def get_backtest_queue():
+async def get_backtest_queue(current_user: User = Depends(get_current_active_user)):
     """Return current queue state: running backtest + queued IDs."""
     from backend.backtest_queue import backtest_queue
     return backtest_queue.get_queue_snapshot()
 
 
 @app.get("/api/backtests/{backtest_id}")
-async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
+async def get_backtest(backtest_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get detailed backtest results including performance chart data"""
-    backtest = db.get(BacktestRun, backtest_id)
+    backtest = db.query(BacktestRun).filter(BacktestRun.id == backtest_id, BacktestRun.user_id == current_user.id).first()
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3755,10 +3743,10 @@ async def get_backtest(backtest_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/backtests/{backtest_id}/status")
-async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
+async def get_backtest_status(backtest_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get backtest progress (for polling during run)"""
     from backend.backtest_queue import backtest_queue
-    backtest = db.get(BacktestRun, backtest_id)
+    backtest = db.query(BacktestRun).filter(BacktestRun.id == backtest_id, BacktestRun.user_id == current_user.id).first()
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3773,9 +3761,9 @@ async def get_backtest_status(backtest_id: int, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/backtests/{backtest_id}")
-async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
+async def delete_backtest(backtest_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Delete a backtest and all associated data"""
-    backtest = db.get(BacktestRun, backtest_id)
+    backtest = db.query(BacktestRun).filter(BacktestRun.id == backtest_id, BacktestRun.user_id == current_user.id).first()
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3786,9 +3774,9 @@ async def delete_backtest(backtest_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/backtests/{backtest_id}/cancel")
-async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
+async def cancel_backtest(backtest_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Cancel a running backtest - handles stuck backtests that may have lost their process"""
-    backtest = db.get(BacktestRun, backtest_id)
+    backtest = db.query(BacktestRun).filter(BacktestRun.id == backtest_id, BacktestRun.user_id == current_user.id).first()
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
@@ -3816,7 +3804,7 @@ async def cancel_backtest(backtest_id: int, db: Session = Depends(get_db)):
 # ============== Market Breadth ==============
 
 @app.get("/api/market-breadth")
-async def get_market_breadth(db: Session = Depends(get_db)):
+async def get_market_breadth(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Compute market breadth metrics from the stock universe."""
     stocks = db.query(
         Stock.current_price, Stock.week_52_high, Stock.week_52_low,
@@ -3927,11 +3915,13 @@ async def get_market_breadth(db: Session = Depends(get_db)):
 @app.get("/api/analytics/trades")
 async def get_trade_analytics(
     days: int = Query(365, ge=30, le=1825),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Analyze historical trade performance with breakdowns"""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     trades = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id,
         AIPortfolioTrade.executed_at >= cutoff
     ).all()
 
@@ -4109,7 +4099,7 @@ async def get_trade_analytics(
     worst_trades = [_trade_summary(t) for t in worst_trades]
 
     # Realized vs unrealized P&L
-    positions = db.query(AIPortfolioPosition).all()
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == current_user.id).all()
     total_unrealized = sum(p.gain_loss or 0 for p in positions)
     total_cost_basis = sum((p.cost_basis or 0) * (p.shares or 0) for p in positions)
     total_current_value = sum(p.current_value or 0 for p in positions)
@@ -4153,11 +4143,11 @@ async def get_trade_analytics(
 # ============== Earnings Calendar ==============
 
 @app.get("/api/ai-portfolio/earnings-calendar")
-async def get_earnings_calendar(db: Session = Depends(get_db)):
+async def get_earnings_calendar(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get upcoming earnings dates for AI portfolio positions"""
     from backend.ai_trader import get_or_create_config
-    config = get_or_create_config(db)
-    positions = db.query(AIPortfolioPosition).all()
+    config = get_or_create_config(db, user_id=current_user.id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == current_user.id).all()
 
     earnings_data = []
     counts = {"high": 0, "medium": 0, "low": 0}
@@ -4209,14 +4199,14 @@ async def get_earnings_calendar(db: Session = Depends(get_db)):
 # ============== Portfolio Risk Monitor ==============
 
 @app.get("/api/ai-portfolio/risk")
-async def get_portfolio_risk(db: Session = Depends(get_db)):
+async def get_portfolio_risk(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get current portfolio risk metrics"""
     from backend.ai_trader import get_or_create_config, get_portfolio_value
     from config_loader import config as yaml_config
 
-    config = get_or_create_config(db)
-    portfolio = get_portfolio_value(db)
-    positions = db.query(AIPortfolioPosition).all()
+    config = get_or_create_config(db, user_id=current_user.id)
+    portfolio = get_portfolio_value(db, user_id=current_user.id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == current_user.id).all()
     pv = portfolio["total_value"]
 
     # Calculate portfolio heat
@@ -4291,11 +4281,12 @@ async def update_ai_portfolio_config_v2(
     stop_loss_pct: float = Query(None, ge=5, le=50),
     paper_mode: bool = Query(None),
     strategy: str = Query(None),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Update AI Portfolio configuration including paper mode and strategy"""
     from backend.ai_trader import get_or_create_config
-    config = get_or_create_config(db)
+    config = get_or_create_config(db, user_id=current_user.id)
 
     if is_active is not None:
         config.is_active = is_active
@@ -4332,7 +4323,7 @@ async def update_ai_portfolio_config_v2(
 # ============== Strategy Profiles ==============
 
 @app.get("/api/strategies")
-async def list_strategies():
+async def list_strategies(current_user: User = Depends(get_current_active_user)):
     """List all available strategy profiles with their descriptions."""
     from config_loader import config as yaml_config
     profiles = yaml_config.get('strategy_profiles', {})
@@ -4358,6 +4349,7 @@ async def list_strategies():
 async def get_earnings_audits(
     limit: int = Query(30, ge=1, le=100),
     min_confidence: float = Query(0, ge=0, le=100),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Get recent earnings audit results, sorted by confidence score."""
@@ -4400,7 +4392,7 @@ async def get_earnings_audits(
 
 
 @app.get("/api/earnings-audit/{ticker}")
-async def get_earnings_audit_ticker(ticker: str, db: Session = Depends(get_db)):
+async def get_earnings_audit_ticker(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get the latest earnings audit for a specific ticker."""
     from backend.database import EarningsAudit
 
@@ -4440,7 +4432,7 @@ async def get_earnings_audit_ticker(ticker: str, db: Session = Depends(get_db)):
 # ============== Command Center ==============
 
 @app.get("/api/command-center")
-async def get_command_center(db: Session = Depends(get_db)):
+async def get_command_center(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Consolidated endpoint for the Command Center dashboard.
     Returns market regime, portfolio summary, positions, risk alerts,
@@ -4451,9 +4443,9 @@ async def get_command_center(db: Session = Depends(get_db)):
     from config_loader import config as yaml_config
     from backend.scheduler import get_scan_status
 
-    config = get_or_create_config(db)
-    portfolio = get_portfolio_value(db)
-    positions = db.query(AIPortfolioPosition).all()
+    config = get_or_create_config(db, user_id=current_user.id)
+    portfolio = get_portfolio_value(db, user_id=current_user.id)
+    positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == current_user.id).all()
     pv = portfolio["total_value"]
 
     # --- 1. Market Regime ---
@@ -4522,6 +4514,7 @@ async def get_command_center(db: Session = Depends(get_db)):
     from datetime import timedelta as td
     sparkline_cutoff = datetime.now(timezone.utc) - td(days=30)
     snapshots = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.user_id == current_user.id,
         AIPortfolioSnapshot.timestamp >= sparkline_cutoff
     ).order_by(AIPortfolioSnapshot.timestamp).all()
 
@@ -4644,7 +4637,9 @@ async def get_command_center(db: Session = Depends(get_db)):
     earnings_data.sort(key=lambda x: x["days"])
 
     # --- 8. Recent Trades ---
-    recent_trades = db.query(AIPortfolioTrade).order_by(
+    recent_trades = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id
+    ).order_by(
         desc(AIPortfolioTrade.executed_at)
     ).limit(10).all()
 
@@ -4742,7 +4737,11 @@ async def get_command_center(db: Session = Depends(get_db)):
 
 # ============== Fidelity Sync (extracted to routes/fidelity.py) ==============
 from backend.routes.fidelity import router as fidelity_router
+from backend.routes.auth import router as auth_router
+from backend.routes.admin import router as admin_router
 app.include_router(fidelity_router)
+app.include_router(auth_router)
+app.include_router(admin_router)
 
 # ============== Serve Frontend ==============
 

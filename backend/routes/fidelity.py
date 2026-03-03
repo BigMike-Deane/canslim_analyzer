@@ -9,13 +9,14 @@ from datetime import date, datetime, timedelta, timezone
 
 from backend.database import (
     get_db, Stock, FidelitySnapshot, FidelityPosition, FidelityTrade,
-    AIPortfolioConfig, AIPortfolioPosition, StockScore
+    AIPortfolioConfig, AIPortfolioPosition, StockScore, User
 )
+from backend.auth import get_current_active_user
 
 router = APIRouter(prefix="/api/fidelity", tags=["fidelity"])
 
 @router.post("/upload-positions")
-async def upload_fidelity_positions(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_fidelity_positions(file: UploadFile = File(...), current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Upload a Fidelity Positions CSV export.
     Parses positions for account Z27804829 and stores a snapshot.
@@ -38,6 +39,7 @@ async def upload_fidelity_positions(file: UploadFile = File(...), db: Session = 
 
     # Create snapshot
     snapshot = FidelitySnapshot(
+        user_id=current_user.id,
         snapshot_date=date.fromisoformat(result["snapshot_date"]),
         cash_balance=result["cash_balance"],
         total_value=result["total_value"],
@@ -77,7 +79,7 @@ async def upload_fidelity_positions(file: UploadFile = File(...), db: Session = 
 
 
 @router.post("/upload-activity")
-async def upload_fidelity_activity(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_fidelity_activity(file: UploadFile = File(...), current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Upload a Fidelity Activity/History CSV export.
     Parses trades for account Z27804829 and stores them.
@@ -103,6 +105,7 @@ async def upload_fidelity_activity(file: UploadFile = File(...), db: Session = D
     for t in result["trades"]:
         trade_date = date.fromisoformat(t["run_date"])
         existing = db.query(FidelityTrade).filter(
+            FidelityTrade.user_id == current_user.id,
             FidelityTrade.run_date == trade_date,
             FidelityTrade.symbol == t["symbol"],
             FidelityTrade.action == t["action"],
@@ -113,6 +116,7 @@ async def upload_fidelity_activity(file: UploadFile = File(...), db: Session = D
             continue
 
         db.add(FidelityTrade(
+            user_id=current_user.id,
             run_date=trade_date,
             action=t["action"],
             symbol=t["symbol"],
@@ -142,12 +146,15 @@ async def upload_fidelity_activity(file: UploadFile = File(...), db: Session = D
 @router.get("/snapshots")
 async def get_fidelity_snapshots(
     limit: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """List Fidelity position snapshots, newest first."""
 
 
-    snapshots = db.query(FidelitySnapshot).order_by(
+    snapshots = db.query(FidelitySnapshot).filter(
+        FidelitySnapshot.user_id == current_user.id
+    ).order_by(
         desc(FidelitySnapshot.snapshot_date)
     ).limit(limit).all()
 
@@ -167,11 +174,13 @@ async def get_fidelity_snapshots(
 
 
 @router.get("/latest")
-async def get_fidelity_latest(db: Session = Depends(get_db)):
+async def get_fidelity_latest(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """Get the most recent Fidelity snapshot with full position details."""
 
 
-    snapshot = db.query(FidelitySnapshot).order_by(
+    snapshot = db.query(FidelitySnapshot).filter(
+        FidelitySnapshot.user_id == current_user.id
+    ).order_by(
         desc(FidelitySnapshot.snapshot_date)
     ).first()
 
@@ -230,12 +239,13 @@ async def get_fidelity_latest(db: Session = Depends(get_db)):
 async def get_fidelity_trades(
     limit: int = Query(50, ge=1, le=500),
     symbol: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Get parsed Fidelity trades, newest first."""
 
 
-    query = db.query(FidelityTrade)
+    query = db.query(FidelityTrade).filter(FidelityTrade.user_id == current_user.id)
     if symbol:
         query = query.filter(FidelityTrade.symbol == symbol.upper())
     trades = query.order_by(desc(FidelityTrade.run_date)).limit(limit).all()
@@ -262,7 +272,7 @@ async def get_fidelity_trades(
 
 
 @router.get("/reconciliation")
-async def get_fidelity_reconciliation(db: Session = Depends(get_db)):
+async def get_fidelity_reconciliation(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Compare the latest Fidelity snapshot against AI portfolio positions.
     Shows matches, discrepancies, and positions unique to each.
@@ -271,7 +281,9 @@ async def get_fidelity_reconciliation(db: Session = Depends(get_db)):
     from backend.fidelity_sync import reconcile_portfolios
 
     # Get latest Fidelity snapshot
-    snapshot = db.query(FidelitySnapshot).order_by(
+    snapshot = db.query(FidelitySnapshot).filter(
+        FidelitySnapshot.user_id == current_user.id
+    ).order_by(
         desc(FidelitySnapshot.snapshot_date)
     ).first()
 
@@ -283,7 +295,9 @@ async def get_fidelity_reconciliation(db: Session = Depends(get_db)):
     ).all()
 
     # Get AI portfolio positions
-    ai_positions = db.query(AIPortfolioPosition).all()
+    ai_positions = db.query(AIPortfolioPosition).filter(
+        AIPortfolioPosition.user_id == current_user.id
+    ).all()
 
     # Build comparable dicts
     fid_list = [
@@ -316,7 +330,7 @@ async def get_fidelity_reconciliation(db: Session = Depends(get_db)):
 
 
 @router.get("/gameplan")
-async def get_fidelity_gameplan(db: Session = Depends(get_db)):
+async def get_fidelity_gameplan(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Generate actionable trading recommendations for Fidelity positions.
     Mirrors the AI trader's actual decision logic (evaluate_sells + evaluate_buys)
@@ -325,7 +339,9 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
     from config_loader import config as yaml_config
     from backend.ai_trader import get_strategy_profile
 
-    snapshot = db.query(FidelitySnapshot).order_by(
+    snapshot = db.query(FidelitySnapshot).filter(
+        FidelitySnapshot.user_id == current_user.id
+    ).order_by(
         desc(FidelitySnapshot.snapshot_date)
     ).first()
 
@@ -1042,14 +1058,16 @@ async def get_fidelity_gameplan(db: Session = Depends(get_db)):
 
 
 @router.post("/sync-to-portfolio")
-async def sync_fidelity_to_portfolio(db: Session = Depends(get_db)):
+async def sync_fidelity_to_portfolio(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     """
     Sync the latest Fidelity snapshot positions into the manual Portfolio.
     Creates/updates PortfolioPosition records to match Fidelity.
     """
 
 
-    snapshot = db.query(FidelitySnapshot).order_by(
+    snapshot = db.query(FidelitySnapshot).filter(
+        FidelitySnapshot.user_id == current_user.id
+    ).order_by(
         desc(FidelitySnapshot.snapshot_date)
     ).first()
 

@@ -1093,22 +1093,36 @@ def run_continuous_scan():
         _scan_config["phase_detail"] = "Running AI trading cycle..."
 
         # Run AI trading cycle after scan completes (only during market hours)
+        # Iterates over ALL active users' portfolios
         ai_trading_result = {}
         try:
-            from backend.ai_trader import run_ai_trading_cycle, get_or_create_config, take_portfolio_snapshot, is_market_open
+            from backend.ai_trader import run_ai_trading_cycle, take_portfolio_snapshot, is_market_open
+            from backend.database import AIPortfolioConfig
             ai_db = SessionLocal()
-            config = get_or_create_config(ai_db)
-            if config.is_active:
-                if is_market_open():
-                    logger.info("Running AI trading cycle...")
-                    ai_trading_result = run_ai_trading_cycle(ai_db)
-                    logger.info(f"AI trading: {len(ai_trading_result.get('buys_executed', []))} buys, {len(ai_trading_result.get('sells_executed', []))} sells")
-                    # Note: run_ai_trading_cycle already takes a snapshot
-                else:
-                    logger.info("Market closed - skipping AI trading and snapshot")
-            else:
-                if is_market_open():
-                    take_portfolio_snapshot(ai_db)
+            active_configs = ai_db.query(AIPortfolioConfig).filter(AIPortfolioConfig.is_active == True).all()
+            if not active_configs:
+                logger.info("No active AI portfolio configs found")
+            for cfg in active_configs:
+                uid = cfg.user_id or 1
+                try:
+                    if is_market_open():
+                        logger.info(f"Running AI trading cycle for user {uid}...")
+                        result = run_ai_trading_cycle(ai_db, user_id=uid)
+                        logger.info(f"AI trading (user {uid}): {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
+                        ai_trading_result = result  # Keep last for backward compat
+                    else:
+                        logger.info("Market closed - skipping AI trading and snapshot")
+                except Exception as ue:
+                    logger.error(f"AI trading error for user {uid}: {ue}")
+            # For inactive configs, still take snapshot during market hours
+            inactive_configs = ai_db.query(AIPortfolioConfig).filter(AIPortfolioConfig.is_active == False).all()
+            for cfg in inactive_configs:
+                uid = cfg.user_id or 1
+                try:
+                    if is_market_open():
+                        take_portfolio_snapshot(ai_db, user_id=uid)
+                except Exception as ue:
+                    logger.error(f"Snapshot error for user {uid}: {ue}")
             ai_db.close()
         except Exception as e:
             logger.error(f"AI trading error: {e}")
@@ -1154,20 +1168,25 @@ def run_continuous_scan():
 
 
 def _refresh_portfolio_prices():
-    """Lightweight job: refresh position prices + take snapshot (runs every 15 min during market hours)"""
+    """Lightweight job: refresh position prices + take snapshot (runs every 15 min during market hours).
+    Iterates over all active users' portfolios."""
     try:
-        from backend.ai_trader import is_market_open, refresh_ai_portfolio, get_or_create_config
-        from backend.database import SessionLocal
+        from backend.ai_trader import is_market_open, refresh_ai_portfolio
+        from backend.database import SessionLocal, AIPortfolioConfig
+
+        if not is_market_open():
+            return
 
         db = SessionLocal()
         try:
-            config = get_or_create_config(db)
-            if not config.is_active:
-                return
-            if not is_market_open():
-                return
-            result = refresh_ai_portfolio(db)
-            logger.info(f"Portfolio price refresh: {result.get('message', 'done')}")
+            active_configs = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.is_active == True).all()
+            for cfg in active_configs:
+                uid = cfg.user_id or 1
+                try:
+                    result = refresh_ai_portfolio(db, user_id=uid)
+                    logger.info(f"Portfolio price refresh (user {uid}): {result.get('message', 'done')}")
+                except Exception as ue:
+                    logger.error(f"Portfolio price refresh error for user {uid}: {ue}")
         finally:
             db.close()
     except Exception as e:

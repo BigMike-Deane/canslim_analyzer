@@ -1,9 +1,7 @@
 import { cache } from './cache'
+import { ensureValidToken } from './auth'
 
 const API_BASE = ''
-
-// API token for authenticated requests (set via VITE_API_TOKEN env var at build time)
-const API_TOKEN = typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_TOKEN : ''
 
 // Cache TTL configuration (seconds)
 const CACHE_TTL = {
@@ -60,7 +58,9 @@ async function request(endpoint, options = {}) {
     }
   }
 
-  const authHeaders = API_TOKEN ? { 'Authorization': `Bearer ${API_TOKEN}` } : {}
+  // Get fresh JWT token (auto-refreshes if expiring)
+  const token = await ensureValidToken()
+  const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
   const config = {
     headers: {
       'Content-Type': 'application/json',
@@ -70,7 +70,39 @@ async function request(endpoint, options = {}) {
     ...options
   }
 
-  const response = await fetch(url, config)
+  let response = await fetch(url, config)
+
+  // On 401, try refreshing the token once
+  if (response.status === 401 && token) {
+    try {
+      const refreshToken = localStorage.getItem('refresh_token')
+      if (refreshToken) {
+        const refreshResp = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        })
+        if (refreshResp.ok) {
+          const tokens = await refreshResp.json()
+          localStorage.setItem('access_token', tokens.access_token)
+          localStorage.setItem('refresh_token', tokens.refresh_token)
+          // Retry the original request with the new token
+          config.headers['Authorization'] = `Bearer ${tokens.access_token}`
+          response = await fetch(url, config)
+        }
+      }
+    } catch {
+      // Refresh failed — fall through to error handling
+    }
+  }
+
+  // If still 401, redirect to login
+  if (response.status === 401) {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
+    window.location.href = '/'
+    throw new APIError('Session expired', 401)
+  }
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
@@ -93,6 +125,9 @@ async function request(endpoint, options = {}) {
 }
 
 export const api = {
+  // Auth
+  getMe: () => request('/api/auth/me'),
+
   // Health
   getHealth: () => request('/health'),
 
@@ -370,8 +405,11 @@ export const api = {
   uploadFidelityPositions: async (file) => {
     const formData = new FormData()
     formData.append('file', file)
+    const token = await ensureValidToken()
+    const headers = token ? { Authorization: `Bearer ${token}` } : {}
     const response = await fetch(`${API_BASE}/api/fidelity/upload-positions`, {
       method: 'POST',
+      headers,
       body: formData,
     })
     if (!response.ok) {
@@ -388,8 +426,11 @@ export const api = {
   uploadFidelityActivity: async (file) => {
     const formData = new FormData()
     formData.append('file', file)
+    const token = await ensureValidToken()
+    const headers = token ? { Authorization: `Bearer ${token}` } : {}
     const response = await fetch(`${API_BASE}/api/fidelity/upload-activity`, {
       method: 'POST',
+      headers,
       body: formData,
     })
     if (!response.ok) {
@@ -415,6 +456,25 @@ export const api = {
     const result = await request('/api/fidelity/sync-to-portfolio', { method: 'POST' })
     cache.invalidate('/api/portfolio')
     cache.invalidate('/api/fidelity/reconciliation')
+    return result
+  },
+
+  // Admin (user management)
+  getUsers: () => request('/api/admin/users'),
+
+  createUser: async (userData) => {
+    const result = await request('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(userData),
+    })
+    return result
+  },
+
+  updateUser: async (userId, data) => {
+    const result = await request(`/api/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
     return result
   },
 }
