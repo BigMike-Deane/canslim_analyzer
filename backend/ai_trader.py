@@ -3258,6 +3258,20 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
         logger.info(f"Trading cycle complete: {len(results['buys_executed'])} buys, {len(results['sells_executed'])} sells")
         return results
 
+    except Exception as e:
+        logger.error(f"CRITICAL: Trading cycle failed: {e}", exc_info=True)
+        try:
+            from backend.email_utils import send_webhook_notification
+            send_webhook_notification(
+                title="TRADING CYCLE FAILED",
+                message=f"AI trading error: {e}",
+                priority="urgent",
+                tags=["rotating_light", "chart_with_downwards_trend"]
+            )
+        except Exception:
+            pass  # Don't let webhook failure mask the real error
+        return {"status": "error", "message": str(e), "sells_executed": [], "buys_executed": []}
+
     finally:
         # Always release the lock - clear timestamp first using thread-safe setter
         _set_cycle_started(None)

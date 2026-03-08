@@ -9,10 +9,17 @@ services:
     container_name: canslim-analyzer
     ports:
       - "100.104.189.36:8001:8001"  # Tailscale-only direct access
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env:ro
       - backtest-cache:/tmp/backtest_cache
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     environment:
       - DEBUG=false
       - FMP_API_KEY=${FMP_API_KEY}
