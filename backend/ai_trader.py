@@ -1450,6 +1450,9 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         if not position.current_price:
             continue
 
+        # Get stock data for this position (used by earnings tighten + score crash sections)
+        stock = ticker_to_stock.get(position.ticker)
+
         # P0 FIX: When score==0 (data missing), still evaluate stop loss and trailing stop
         # Only skip score-dependent sells (score crash, partial profit, weak position)
         score_available = score > 0
