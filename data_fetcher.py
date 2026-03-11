@@ -1443,14 +1443,14 @@ def fetch_market_direction_data() -> dict:
         result["success"] = True
 
         # Convert weighted signal (-1 to +2) to M score (0 to 15)
-        # -1 -> 0, 0 -> 7.5, 1 -> 11.25, 2 -> 15
+        # Signal meaning: 2=above both MAs, 1=above 200 below 50, 0=below 200 above 50, -1=below both
         weighted_signal = result["weighted_signal"]
         if weighted_signal >= 1.5:
             result["market_score"] = 15.0
-            result["market_trend"] = "bullish"
+            result["market_trend"] = "bullish"       # Above both MAs — full risk-on
         elif weighted_signal >= 0.5:
             result["market_score"] = 12.0
-            result["market_trend"] = "bullish"
+            result["market_trend"] = "cautious"      # Above 200MA but below 50MA — pullback
         elif weighted_signal >= 0:
             result["market_score"] = 9.0
             result["market_trend"] = "neutral"
@@ -1459,7 +1459,7 @@ def fetch_market_direction_data() -> dict:
             result["market_trend"] = "neutral"
         else:
             result["market_score"] = 2.0
-            result["market_trend"] = "bearish"
+            result["market_trend"] = "bearish"       # Below both MAs — risk-off
 
         logger.info(f"Market Direction: weighted_signal={weighted_signal:.2f}, "
                    f"score={result['market_score']}, trend={result['market_trend']}")
