@@ -783,7 +783,7 @@ def handle_spy_sweep(db: Session, config, profile: dict, user_id: int = 1):
     if not market_data or not market_data.get('success'):
         return
 
-    spy_info = market_data.get('spy', {})
+    spy_info = market_data.get('indexes', {}).get('SPY', {})
     spy_price = spy_info.get('price', 0)
     spy_ma50 = spy_info.get('ma_50', 0)
 
@@ -1096,7 +1096,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     market_data = get_cached_market_direction() or {}
     is_bearish_market = False
     if market_data.get("success"):
-        spy_data = market_data.get("spy", {})
+        spy_data = market_data.get("indexes", {}).get("SPY", {})
         spy_price = spy_data.get("price", 0)
         spy_ma_50 = spy_data.get("ma_50", 0)
         is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
@@ -1397,7 +1397,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
     market_data = get_cached_market_direction() or {}
     is_bearish_market = False
     if market_data.get("success"):
-        spy_data = market_data.get("spy", {})
+        spy_data = market_data.get("indexes", {}).get("SPY", {})
         spy_price = spy_data.get("price", 0)
         spy_ma_50 = spy_data.get("ma_50", 0)
         is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
@@ -1818,7 +1818,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     if market_state_enabled:
         from data_fetcher import get_cached_market_direction
         mkt = get_cached_market_direction()
-        spy_info = mkt.get('spy', {}) if mkt else {}
+        spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
         spy_px = spy_info.get('price', 0)
         spy_50 = spy_info.get('ma_50', 0)
         spy_ema21 = spy_info.get('ema_21', spy_50)  # Fallback to 50MA if 21EMA unavailable
@@ -1841,7 +1841,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if regime_gate_config.get('enabled', True):
             from data_fetcher import get_cached_market_direction
             mkt = get_cached_market_direction()
-            spy_info = mkt.get('spy', {}) if mkt else {}
+            spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
             spy_px = spy_info.get('price', 0)
             spy_50 = spy_info.get('ma_50', 0)
             if not spy_px or not spy_50:
@@ -1887,7 +1887,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             # Check if SPY is above 50MA (bull market)
             from data_fetcher import get_cached_market_direction
             _mkt = get_cached_market_direction()
-            spy_info = _mkt.get('spy', {}) if _mkt else {}
+            spy_info = _mkt.get('indexes', {}).get('SPY', {}) if _mkt else {}
             spy_px = spy_info.get('price', 0)
             spy_50 = spy_info.get('ma_50', 0)
             if spy_px and spy_50 and spy_px > spy_50:
@@ -3322,7 +3322,7 @@ def take_portfolio_snapshot(db: Session, user_id: int = 1):
     logger.info(f"Portfolio snapshot taken: ${portfolio['total_value']:.2f} ({portfolio['positions_count']} positions)")
 
 
-def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0, strategy: str = "balanced", user_id: int = 1):
+def initialize_ai_portfolio(db: Session, starting_cash: float = 25000.0, strategy: str = "nostate_optimized", user_id: int = 1):
     """Initialize or reset the AI portfolio with the specified strategy profile"""
     # Load strategy profile to get correct config values
     profile = get_strategy_profile(strategy)

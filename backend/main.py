@@ -3150,7 +3150,7 @@ async def get_ai_portfolio_trades(
 @app.post("/api/ai-portfolio/initialize")
 async def initialize_ai_portfolio_endpoint(
     starting_cash: float = Query(25000.0, ge=1000, le=1000000),
-    strategy: str = Query("balanced"),
+    strategy: str = Query("nostate_optimized"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
