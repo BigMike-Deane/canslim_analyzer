@@ -1330,8 +1330,8 @@ MARKET_INDEX_WEIGHTS = {
 
 def calculate_index_signal(price: float, ma_50: float, ma_200: float) -> int:
     """
-    Calculate signal for a single index based on MA positions.
-    Returns: -1 (bearish), 0 (neutral), 1 (bullish), 2 (strong bullish)
+    Calculate discrete signal for a single index (used for display/logging).
+    Returns: -1 (bearish), 0 (neutral), 1 (cautious), 2 (bullish)
     """
     if price <= 0 or ma_200 <= 0:
         return 0  # No data, neutral
@@ -1340,13 +1340,56 @@ def calculate_index_signal(price: float, ma_50: float, ma_200: float) -> int:
     above_50 = price > ma_50 if ma_50 > 0 else True
 
     if above_200 and above_50:
-        return 2  # Strong bullish - above both MAs
+        return 2  # Bullish - above both MAs
     elif above_200 and not above_50:
-        return 1  # Bullish - above 200 but below 50 (minor pullback)
+        return 1  # Cautious - above 200 but below 50 (pullback in uptrend)
     elif not above_200 and above_50:
         return 0  # Neutral - below 200 but above 50 (recovery attempt)
     else:
         return -1  # Bearish - below both MAs
+
+
+def calculate_index_m_score(price: float, ma_50: float, ma_200: float) -> float:
+    """
+    Calculate continuous M score contribution for a single index (0.0 to 1.0).
+
+    Based on O'Neil/IBD Market Direction principles:
+    - 50MA relationship is primary (60% weight) — O'Neil's key trend signal
+    - 200MA relationship is secondary (30% weight) — long-term context
+    - MA structure / golden-death cross (10% weight) — trend health
+
+    Distance matters: barely below 50MA ≠ 10% below 50MA.
+    Scores are clamped and scaled so the math stays in [0, 1].
+    """
+    if price <= 0 or ma_200 <= 0:
+        return 0.5  # No data, neutral
+
+    # --- Component 1: Price vs 50MA (60% of score) ---
+    # Positive = above, negative = below. Scale so ±5% maps to full range.
+    if ma_50 > 0:
+        pct_from_50 = (price - ma_50) / ma_50  # e.g., -0.014 = 1.4% below
+        # Map: +5% or more -> 1.0, 0% -> 0.5, -5% or worse -> 0.0
+        ma50_score = max(0.0, min(1.0, 0.5 + (pct_from_50 / 0.10)))
+    else:
+        ma50_score = 0.5
+
+    # --- Component 2: Price vs 200MA (30% of score) ---
+    pct_from_200 = (price - ma_200) / ma_200  # e.g., +0.03 = 3% above
+    # Map: +10% or more -> 1.0, 0% -> 0.5, -10% or worse -> 0.0
+    ma200_score = max(0.0, min(1.0, 0.5 + (pct_from_200 / 0.20)))
+
+    # --- Component 3: MA Structure (10% of score) ---
+    # 50MA above 200MA = healthy trend structure (golden cross)
+    if ma_50 > 0:
+        ma_spread = (ma_50 - ma_200) / ma_200  # positive = golden cross
+        # Map: +5% spread -> 1.0, 0% -> 0.5, -5% -> 0.0
+        structure_score = max(0.0, min(1.0, 0.5 + (ma_spread / 0.10)))
+    else:
+        structure_score = 0.5
+
+    # Weighted combination
+    composite = (ma50_score * 0.60) + (ma200_score * 0.30) + (structure_score * 0.10)
+    return composite
 
 
 def fetch_market_direction_data() -> dict:
@@ -1368,7 +1411,8 @@ def fetch_market_direction_data() -> dict:
 
     indexes_data = {}
     total_weight = 0
-    weighted_sum = 0
+    weighted_signal_sum = 0
+    weighted_m_sum = 0.0
 
     for ticker, weight in MARKET_INDEX_WEIGHTS.items():
         index_data = {
@@ -1377,6 +1421,7 @@ def fetch_market_direction_data() -> dict:
             "ma_50": 0,
             "ma_200": 0,
             "signal": 0,
+            "m_score": 0.5,
             "status": "unknown",
         }
 
@@ -1396,16 +1441,23 @@ def fetch_market_direction_data() -> dict:
                         index_data["ma_50"],
                         index_data["ma_200"]
                     )
+                    index_data["m_score"] = calculate_index_m_score(
+                        index_data["price"],
+                        index_data["ma_50"],
+                        index_data["ma_200"]
+                    )
                     index_data["status"] = "ok"
 
-                    # Add to weighted calculation
-                    weighted_sum += index_data["signal"] * weight
+                    # Add to weighted calculations
+                    weighted_signal_sum += index_data["signal"] * weight
+                    weighted_m_sum += index_data["m_score"] * weight
                     total_weight += weight
 
                     logger.info(f"Market {ticker}: ${index_data['price']:.2f}, "
                                f"50MA: ${index_data['ma_50']:.2f}, "
                                f"200MA: ${index_data['ma_200']:.2f}, "
-                               f"signal: {index_data['signal']}")
+                               f"signal: {index_data['signal']}, "
+                               f"m_contrib: {index_data['m_score']:.3f}")
                 elif len(close_prices) >= 50:
                     # Partial data - use what we have
                     index_data["price"] = close_prices[-1]
@@ -1417,8 +1469,14 @@ def fetch_market_direction_data() -> dict:
                         index_data["ma_50"],
                         index_data["ma_200"]
                     )
+                    index_data["m_score"] = calculate_index_m_score(
+                        index_data["price"],
+                        index_data["ma_50"],
+                        index_data["ma_200"]
+                    )
                     index_data["status"] = "partial"
-                    weighted_sum += index_data["signal"] * weight
+                    weighted_signal_sum += index_data["signal"] * weight
+                    weighted_m_sum += index_data["m_score"] * weight
                     total_weight += weight
                     logger.warning(f"Market {ticker}: Using partial data ({len(close_prices)} days)")
                 else:
@@ -1439,30 +1497,29 @@ def fetch_market_direction_data() -> dict:
 
     # Calculate weighted signal and market score
     if total_weight > 0:
-        result["weighted_signal"] = weighted_sum / total_weight
+        result["weighted_signal"] = weighted_signal_sum / total_weight
         result["success"] = True
 
-        # Convert weighted signal (-1 to +2) to M score (0 to 15)
-        # Signal meaning: 2=above both MAs, 1=above 200 below 50, 0=below 200 above 50, -1=below both
-        weighted_signal = result["weighted_signal"]
-        if weighted_signal >= 1.5:
-            result["market_score"] = 15.0
-            result["market_trend"] = "bullish"       # Above both MAs — full risk-on
-        elif weighted_signal >= 0.5:
-            result["market_score"] = 12.0
-            result["market_trend"] = "cautious"      # Above 200MA but below 50MA — pullback
-        elif weighted_signal >= 0:
-            result["market_score"] = 9.0
-            result["market_trend"] = "neutral"
-        elif weighted_signal >= -0.5:
-            result["market_score"] = 5.0
-            result["market_trend"] = "neutral"
-        else:
-            result["market_score"] = 2.0
-            result["market_trend"] = "bearish"       # Below both MAs — risk-off
+        # Granular M score from continuous per-index scoring
+        # Weighted composite is 0.0-1.0, map to 0-15 M score
+        composite_m = weighted_m_sum / total_weight
+        result["market_score"] = round(composite_m * 15.0, 1)
 
-        logger.info(f"Market Direction: weighted_signal={weighted_signal:.2f}, "
-                   f"score={result['market_score']}, trend={result['market_trend']}")
+        # Trend label based on composite (O'Neil/IBD-inspired thresholds)
+        if composite_m >= 0.65:
+            result["market_trend"] = "bullish"       # Confirmed uptrend
+        elif composite_m >= 0.50:
+            result["market_trend"] = "cautious"      # Uptrend under pressure
+        elif composite_m >= 0.35:
+            result["market_trend"] = "neutral"       # Mixed signals
+        elif composite_m >= 0.20:
+            result["market_trend"] = "bearish"       # Market in correction
+        else:
+            result["market_trend"] = "severe_bear"   # Deep correction
+
+        logger.info(f"Market Direction: weighted_signal={result['weighted_signal']:.2f}, "
+                   f"composite_m={composite_m:.3f}, "
+                   f"M_score={result['market_score']}/15, trend={result['market_trend']}")
     else:
         result["error"] = "Could not fetch any index data"
         logger.error("Market Direction: No index data available, using defaults")

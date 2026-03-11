@@ -484,17 +484,20 @@ class HistoricalDataProvider:
 
     def _compute_market_direction(self, as_of_date: date) -> dict:
         """Compute market direction from scratch for a given date."""
-        result = {"weighted_signal": 0.0, "is_bullish": False}
+        result = {"weighted_signal": 0.0, "composite_m": 0.5, "is_bullish": False}
+
+        total_weight = 0
+        weighted_m_sum = 0.0
 
         for index in MARKET_INDEXES:
             df = self._index_cache.get(index)
             if df is None:
-                result[index.lower()] = {"price": 0, "ma_50": 0, "ma_200": 0, "signal": 0}
+                result[index.lower()] = {"price": 0, "ma_50": 0, "ma_200": 0, "signal": 0, "m_score": 0.5}
                 continue
 
             history = df[df["date"] <= as_of_date].tail(252)
             if len(history) < 50:
-                result[index.lower()] = {"price": 0, "ma_50": 0, "ma_200": 0, "signal": 0}
+                result[index.lower()] = {"price": 0, "ma_50": 0, "ma_200": 0, "signal": 0, "m_score": 0.5}
                 continue
 
             price = float(history.iloc[-1]["close"])
@@ -504,18 +507,25 @@ class HistoricalDataProvider:
             # 21-day EMA for market state machine
             ema_21 = float(history["close"].ewm(span=21, adjust=False).mean().iloc[-1]) if len(history) >= 21 else ma_50
 
-            # Calculate signal: -1 (bearish), 0 (neutral), 1 (bullish), 2 (strong bullish)
+            # Discrete signal for regime decisions
             signal = self._calculate_index_signal(price, ma_50, ma_200)
+            # Continuous M score for CANSLIM scoring
+            m_score = self._calculate_index_m_score(price, ma_50, ma_200)
+
+            weight = MARKET_INDEX_WEIGHTS.get(index, 0)
+            weighted_m_sum += m_score * weight
+            total_weight += weight
 
             result[index.lower()] = {
                 "price": price,
                 "ma_50": ma_50,
                 "ma_200": ma_200,
                 "ema_21": ema_21,
-                "signal": signal
+                "signal": signal,
+                "m_score": m_score
             }
 
-        # Calculate weighted signal
+        # Calculate weighted signal (discrete, for regime/gate decisions)
         weighted = sum(
             result.get(idx.lower(), {}).get("signal", 0) * weight
             for idx, weight in MARKET_INDEX_WEIGHTS.items()
@@ -523,12 +533,15 @@ class HistoricalDataProvider:
         result["weighted_signal"] = weighted
         result["is_bullish"] = weighted > 0.5
 
+        # Continuous composite M score (for CANSLIM M scoring)
+        result["composite_m"] = weighted_m_sum / total_weight if total_weight > 0 else 0.5
+
         return result
 
     def _calculate_index_signal(self, price: float, ma_50: float, ma_200: float) -> int:
         """
-        Calculate signal for a single index.
-        Returns: -1 (bearish), 0 (neutral), 1 (bullish), 2 (strong bullish)
+        Calculate discrete signal for a single index (used for regime decisions).
+        Returns: -1 (bearish), 0 (neutral), 1 (cautious), 2 (bullish)
         """
         if price <= 0 or ma_200 <= 0:
             return 0
@@ -537,13 +550,47 @@ class HistoricalDataProvider:
         above_50 = price > ma_50 if ma_50 > 0 else True
 
         if above_200 and above_50:
-            return 2  # Strong bullish
+            return 2  # Bullish
         elif above_200:
-            return 1  # Bullish
+            return 1  # Cautious
         elif above_50:
             return 0  # Neutral
         else:
             return -1  # Bearish
+
+    @staticmethod
+    def _calculate_index_m_score(price: float, ma_50: float, ma_200: float) -> float:
+        """
+        Calculate continuous M score contribution for a single index (0.0 to 1.0).
+        Mirrors data_fetcher.calculate_index_m_score() for backtester consistency.
+
+        O'Neil/IBD-inspired:
+        - 50MA relationship (60%) — primary trend signal
+        - 200MA relationship (30%) — long-term context
+        - MA structure (10%) — golden/death cross health
+        """
+        if price <= 0 or ma_200 <= 0:
+            return 0.5
+
+        # Component 1: Price vs 50MA (60%)
+        if ma_50 > 0:
+            pct_from_50 = (price - ma_50) / ma_50
+            ma50_score = max(0.0, min(1.0, 0.5 + (pct_from_50 / 0.10)))
+        else:
+            ma50_score = 0.5
+
+        # Component 2: Price vs 200MA (30%)
+        pct_from_200 = (price - ma_200) / ma_200
+        ma200_score = max(0.0, min(1.0, 0.5 + (pct_from_200 / 0.20)))
+
+        # Component 3: MA structure (10%)
+        if ma_50 > 0:
+            ma_spread = (ma_50 - ma_200) / ma_200
+            structure_score = max(0.0, min(1.0, 0.5 + (ma_spread / 0.10)))
+        else:
+            structure_score = 0.5
+
+        return (ma50_score * 0.60) + (ma200_score * 0.30) + (structure_score * 0.10)
 
     def get_relative_strength(self, ticker: str, as_of_date: date,
                                period_months: int = 12) -> float:

@@ -1826,17 +1826,10 @@ class BacktestEngine:
                 i_score = 5
 
             # ===== M SCORE (15 pts): Market Direction =====
-            weighted_signal = market.get("weighted_signal", 0) if market else 0
-            if weighted_signal >= 1.5:
-                m_score = 15
-            elif weighted_signal >= 1.0:
-                m_score = 12
-            elif weighted_signal >= 0.5:
-                m_score = 8
-            elif weighted_signal >= 0:
-                m_score = 5
-            else:
-                m_score = 0
+            # Granular scoring from continuous per-index analysis
+            # Mirrors data_fetcher.calculate_index_m_score() used in live trading
+            composite_m = market.get("composite_m", 0.5) if market else 0.5
+            m_score = round(composite_m * 15.0, 1)
 
             # ===== PROJECTED GROWTH (independent of CANSLIM score) =====
             # Combine EPS growth rate, annual CAGR, and price momentum
