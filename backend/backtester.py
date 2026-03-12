@@ -2857,14 +2857,23 @@ class BacktestEngine:
             # G: Skip conviction sizing on seed days — equal weight for initial entries
             skip_conv_on_seeds = conv_config.get('skip_initial_seeds', True)
             use_conviction = conv_config.get('enabled', False) and not (self.is_seed_day and skip_conv_on_seeds)
+            # Profile-level overrides for conviction sizing
+            profile_conv = self.profile.get('conviction_sizing', {})
             if use_conviction:
                 # Linear interpolation: score_floor → min_pct, score_ceiling → max_pct
-                conv_min = conv_config.get('min_pct', 8.0)
-                conv_max = conv_config.get('max_pct', 20.0)
-                score_floor = conv_config.get('score_floor', 72)
-                score_ceiling = conv_config.get('score_ceiling', 95)
+                # Profile overrides take precedence over global config
+                conv_min = profile_conv.get('min_pct', conv_config.get('min_pct', 8.0))
+                conv_max = profile_conv.get('max_pct', conv_config.get('max_pct', 20.0))
+                score_floor = profile_conv.get('score_floor', conv_config.get('score_floor', 30))
+                score_ceiling = profile_conv.get('score_ceiling', conv_config.get('score_ceiling', 75))
                 score_ratio = max(0, min(1, (composite_score - score_floor) / max(1, score_ceiling - score_floor)))
-                position_pct = conv_min + score_ratio * (conv_max - conv_min)
+                # Apply regime scaling proportionally to preserve spread across regimes
+                # Instead of hard-capping at regime_max_pct (which kills differentiation),
+                # scale the conviction range so bearish=smaller, bullish=full range
+                regime_scale = min(regime_max_pct / 15.0, 1.0)
+                effective_min = conv_min * regime_scale
+                effective_max = conv_max * regime_scale
+                position_pct = effective_min + score_ratio * (effective_max - effective_min)
             else:
                 # Fallback: equal-weight floor with conviction scaling
                 min_position_pct = 90.0 / max_positions
@@ -2926,9 +2935,13 @@ class BacktestEngine:
             if soft_zone_mult < 1.0:
                 position_pct *= soft_zone_mult
 
-            # Cap at profile max or market regime max AFTER all multipliers (matches live trader)
+            # Cap at profile max (and regime max if conviction didn't already scale for it)
             profile_max_pct = self.profile.get('max_single_position_pct', 25)
-            position_pct = min(position_pct, regime_max_pct, profile_max_pct)
+            if use_conviction:
+                # Regime scaling already applied proportionally inside conviction calc
+                position_pct = min(position_pct, profile_max_pct)
+            else:
+                position_pct = min(position_pct, regime_max_pct, profile_max_pct)
 
             position_value = portfolio_value * (position_pct / 100)
 
