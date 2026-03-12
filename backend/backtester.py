@@ -2447,10 +2447,12 @@ class BacktestEngine:
 
         # SOFT THRESHOLD: Allow stocks slightly below min_score with reduced position sizes
         soft_config = config.get('ai_trader.allocation.soft_threshold', {})
-        soft_enabled = soft_config.get('enabled', False)
-        soft_zone_width = soft_config.get('zone_width', 4)
-        soft_mult_edge = soft_config.get('multiplier_at_edge', 0.25)
-        soft_mult_top = soft_config.get('multiplier_at_top', 0.75)
+        # Profile-level soft zone overrides
+        profile_soft = self.profile.get('soft_threshold', {})
+        soft_enabled = profile_soft.get('enabled', soft_config.get('enabled', False))
+        soft_zone_width = profile_soft.get('zone_width', soft_config.get('zone_width', 4))
+        soft_mult_edge = profile_soft.get('multiplier_at_edge', soft_config.get('multiplier_at_edge', 0.25))
+        soft_mult_top = profile_soft.get('multiplier_at_top', soft_config.get('multiplier_at_top', 0.75))
 
         # SCORE STABILITY: Override for strong deterministic scores
         stability_config = config.get('ai_trader.score_stability', {})

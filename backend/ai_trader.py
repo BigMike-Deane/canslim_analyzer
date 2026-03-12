@@ -1958,10 +1958,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
     # SOFT THRESHOLD: Widen query to include stocks in the soft zone (below threshold)
     soft_config = yaml_config.get('ai_trader.allocation.soft_threshold', {})
-    soft_enabled = soft_config.get('enabled', False)
-    soft_zone_width = soft_config.get('zone_width', 4)
-    soft_mult_edge = soft_config.get('multiplier_at_edge', 0.25)
-    soft_mult_top = soft_config.get('multiplier_at_top', 0.75)
+    # Profile-level soft zone overrides
+    profile_soft = profile.get('soft_threshold', {})
+    soft_enabled = profile_soft.get('enabled', soft_config.get('enabled', False))
+    soft_zone_width = profile_soft.get('zone_width', soft_config.get('zone_width', 4))
+    soft_mult_edge = profile_soft.get('multiplier_at_edge', soft_config.get('multiplier_at_edge', 0.25))
+    soft_mult_top = profile_soft.get('multiplier_at_top', soft_config.get('multiplier_at_top', 0.75))
     canslim_query_floor = effective_canslim_min - soft_zone_width if soft_enabled else effective_canslim_min
     growth_query_floor = effective_growth_min - soft_zone_width if soft_enabled else effective_growth_min
 
