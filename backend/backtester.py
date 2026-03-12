@@ -2065,7 +2065,7 @@ class BacktestEngine:
             # Trailing stop check
             if position.peak_price > 0:
                 drop_from_peak = ((position.peak_price - price) / position.peak_price) * 100
-                peak_gain_pct = ((position.peak_price - position.cost_basis) / position.cost_basis) * 100
+                peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
                 # Dynamic trailing stop thresholds — strategy profile overrides
                 profile_trailing = self.profile.get('trailing_stops', {})
@@ -2138,7 +2138,7 @@ class BacktestEngine:
                     # Tighten trailing stop for non-CS positions near earnings
                     if position.peak_price > 0 and gain_pct > 0:
                         drop_from_peak = ((position.peak_price - price) / position.peak_price) * 100
-                        peak_gain_pct = ((position.peak_price - position.cost_basis) / position.cost_basis) * 100
+                        peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
                         # Use tighter trailing stop (50% of normal)
                         tightened_trailing = None
@@ -2809,7 +2809,11 @@ class BacktestEngine:
                 # Add the weighted bonus on top of total score
                 effective_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
-            growth_projection = min(score_data.get("projected_growth", effective_score * 0.3), 50)
+            # Guard against NaN: float('nan') passes `or` check and poisons composite_score
+            _pg = score_data.get("projected_growth", effective_score * 0.3)
+            if _pg is None or (_pg != _pg):  # NaN != NaN is True
+                _pg = effective_score * 0.3
+            growth_projection = min(_pg, 50)
             composite_score = (
                 (growth_projection * w_growth) +
                 (effective_score * w_score) +

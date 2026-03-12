@@ -580,8 +580,8 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
         # Use effective score based on stock type
         score = get_effective_score(position, use_current=True)
 
-        if not position.current_price or score == 0:
-            continue
+        if not position.current_price or position.current_price != position.current_price or score == 0:
+            continue  # Skip None/NaN prices
 
         gain_pct = position.gain_loss_pct or 0
         current_allocation = (position.current_value or 0) / portfolio_value if portfolio_value > 0 else 0
@@ -1135,8 +1135,8 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     partial_sell_pct_config = partial_trailing_config.get('partial_sell_pct', 50)
 
     for position in positions:
-        if not position.current_price:
-            continue
+        if not position.current_price or position.current_price != position.current_price:
+            continue  # Skip None/NaN prices
 
         gain_pct = position.gain_loss_pct or 0
 
@@ -1447,8 +1447,8 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         score = get_effective_score(position, use_current=True)
         purchase_score = get_effective_score(position, use_current=False)
 
-        if not position.current_price:
-            continue
+        if not position.current_price or position.current_price != position.current_price:
+            continue  # Skip None and NaN prices (NaN != NaN is True)
 
         # Get stock data for this position (used by earnings tighten + score crash sections)
         stock = ticker_to_stock.get(position.ticker)
@@ -1545,7 +1545,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
                 # Tighten trailing stop for non-CS positions near earnings
                 if position.peak_price and position.peak_price > 0 and gain_pct > 0:
                     drop_from_peak = ((position.peak_price - position.current_price) / position.peak_price) * 100
-                    peak_gain_pct = ((position.peak_price - position.cost_basis) / position.cost_basis) * 100
+                    peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
                     tightened_trailing = None
                     profile_trailing = profile.get('trailing_stops', {})
@@ -2346,7 +2346,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         estimate_revision_bonus = 0
         revision_pct = getattr(stock, 'eps_estimate_revision_pct', None)
         revision_config = config.get('ai_trader.analyst_revisions', {})
-        if revision_pct is not None:
+        if revision_pct is not None and revision_pct == revision_pct:  # Guard NaN
             strong_up_threshold = revision_config.get('strong_up_threshold', 10)
             strong_up_bonus = revision_config.get('strong_up_bonus', 5)
             mod_up_bonus = revision_config.get('mod_up_bonus', 3)
@@ -2416,7 +2416,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Growth projection: use stored projected_growth directly (matches backtester)
         # Backtester computes: eps_growth*0.30 + annual_cagr*0.25 + momentum*0.45
         # Live trader uses the pre-computed projected_growth from the scanner
-        growth_projection = min(stock.projected_growth or (effective_score * 0.3), 50)
+        # Guard against NaN: float('nan') passes `or` check and poisons composite_score
+        _pg = stock.projected_growth
+        if _pg is None or (_pg != _pg):  # NaN != NaN is True
+            _pg = effective_score * 0.3
+        growth_projection = min(_pg, 50)
 
         # Composite score — aligned with backtester (no insider/short/sector/audit bonuses)
         composite_score = (
@@ -2562,8 +2566,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if position_value < 100:  # Minimum $100 position
             continue
 
-        if not stock.current_price or stock.current_price <= 0:
-            continue
+        if not stock.current_price or stock.current_price != stock.current_price or stock.current_price <= 0:
+            continue  # Skip None, NaN, or non-positive prices
 
         shares = position_value / stock.current_price
 
