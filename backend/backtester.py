@@ -2548,8 +2548,10 @@ class BacktestEngine:
 
             # Re-entry cooldown: don't re-buy recently stopped-out stocks
             cooldown_config = config.get('ai_trader.re_entry_cooldown', {})
-            stop_loss_cooldown = cooldown_config.get('stop_loss_days', 5)
-            trailing_stop_cooldown = cooldown_config.get('trailing_stop_days', 3)
+            # Profile-level cooldown overrides
+            profile_cooldown = self.profile.get('re_entry_cooldown', {})
+            stop_loss_cooldown = profile_cooldown.get('stop_loss_days', cooldown_config.get('stop_loss_days', 5))
+            trailing_stop_cooldown = profile_cooldown.get('trailing_stop_days', cooldown_config.get('trailing_stop_days', 3))
 
             if ticker in self.recently_sold:
                 sold_date, sold_reason = self.recently_sold[ticker]

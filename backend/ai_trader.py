@@ -1779,8 +1779,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # Check recent sells and build cooldown set
     from config_loader import config as yaml_config
     cooldown_config = yaml_config.get('ai_trader.re_entry_cooldown', {})
-    stop_loss_cooldown_days = cooldown_config.get('stop_loss_days', 5)
-    trailing_stop_cooldown_days = cooldown_config.get('trailing_stop_days', 3)
+    # Profile-level cooldown overrides
+    profile_cooldown = profile.get('re_entry_cooldown', {})
+    stop_loss_cooldown_days = profile_cooldown.get('stop_loss_days', cooldown_config.get('stop_loss_days', 5))
+    trailing_stop_cooldown_days = profile_cooldown.get('trailing_stop_days', cooldown_config.get('trailing_stop_days', 3))
 
     cooldown_tickers = set()
     # Query recent SELL trades to check for cooldowns
