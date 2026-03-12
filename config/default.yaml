@@ -893,10 +893,10 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
 
-  # Conviction sizing test: wider spread so high-conviction picks get meaningfully larger positions
-  nostate_conviction:
-    label: "NoState Conviction"
-    description: "NoState Optimized + wider conviction sizing spread (5-22%) with proportional regime scaling"
+  # Test: higher regime caps to give conviction sizing more room
+  nostate_wider_caps:
+    label: "NoState Wider Caps"
+    description: "NoState Optimized + higher regime caps (neutral=14%, bullish=18%) for more conviction spread"
     min_score: 72
     max_positions: 8
     max_single_position_pct: 25
@@ -913,11 +913,10 @@ strategy_profiles:
     score_crash_drop_required: 25
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
-    conviction_sizing:
-      min_pct: 5.0
-      max_pct: 22.0
-      score_floor: 25
-      score_ceiling: 70
+    regime_position_caps:
+      bullish: 18.0
+      neutral: 14.0
+      bearish: 8.0
 
   nostate_throttled:
     label: "NoState Throttled"

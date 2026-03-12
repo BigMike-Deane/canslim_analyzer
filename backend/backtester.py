@@ -2375,9 +2375,11 @@ class BacktestEngine:
         bear_exception_position_mult = regime_config.get('bear_exception_position_mult', 0.50)
 
         # Regime-based position sizing (matches live trader get_market_regime())
-        bullish_max_pct = regime_config.get('bullish_max_position_pct', 15.0)
-        bearish_max_pct = regime_config.get('bearish_max_position_pct', 8.0)
-        neutral_max_pct = regime_config.get('neutral_max_position_pct', 12.0)
+        # Profile-level overrides take precedence over global config
+        profile_regime = self.profile.get('regime_position_caps', {})
+        bullish_max_pct = profile_regime.get('bullish', regime_config.get('bullish_max_position_pct', 15.0))
+        bearish_max_pct = profile_regime.get('bearish', regime_config.get('bearish_max_position_pct', 8.0))
+        neutral_max_pct = profile_regime.get('neutral', regime_config.get('neutral_max_position_pct', 12.0))
 
         # Use strategy profile min_score (falls back to backtest record value)
         profile_min_score = self.profile.get('min_score', self.backtest.min_score_to_buy)

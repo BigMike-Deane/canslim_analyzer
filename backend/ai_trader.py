@@ -2468,6 +2468,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Get market regime for position size limits
         market_regime = get_market_regime(db)
         regime_max_pct = market_regime["max_position_pct"]
+        # Profile-level regime cap overrides
+        profile_regime = profile.get('regime_position_caps', {})
+        if profile_regime:
+            regime_name = market_regime["regime"]  # "bullish", "neutral", or "bearish"
+            if regime_name in profile_regime:
+                regime_max_pct = profile_regime[regime_name]
 
         # Position sizing: conviction-based (higher scores get larger positions)
         conv_config = yaml_config.get('ai_trader.conviction_sizing', {})
