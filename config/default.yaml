@@ -896,7 +896,7 @@ strategy_profiles:
       enabled: true        # ON — log predictions to signal_factors
       weight: 20           # Max composite_score bonus/penalty
       min_roc_auc: 0.55    # Model must exceed to activate
-      log_only: true       # Log predictions, don't affect ranking
+      log_only: false      # ML confidence modifies composite_score ranking
 
   nostate_throttled:
     label: "NoState Throttled"
