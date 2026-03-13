@@ -28,6 +28,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code
 COPY backend/ ./backend/
 
+# Copy ML pipeline
+COPY ml/ ./ml/
+
 # Copy analysis modules
 COPY canslim_scorer.py ./
 COPY data_fetcher.py ./

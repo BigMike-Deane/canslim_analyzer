@@ -1097,6 +1097,63 @@ class FidelityTrade(Base):
     )
 
 
+class MLModel(Base):
+    """ML model training run metadata and metrics."""
+    __tablename__ = "ml_models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version = Column(Integer, nullable=False)
+    strategy = Column(String, nullable=False, default="nostate_optimized")
+    status = Column(String, default="training")  # training, completed, failed, active
+
+    training_samples = Column(Integer)
+    feature_count = Column(Integer)
+    backtest_ids = Column(JSON)  # List of backtest run IDs used
+    hyperparameters = Column(JSON)
+
+    # Metrics
+    roc_auc = Column(Float)
+    accuracy = Column(Float)
+    precision_score = Column(Float)
+    recall_score = Column(Float)
+    f1 = Column(Float)
+    brier_score = Column(Float)
+    cv_results = Column(JSON)  # Per-fold details
+    feature_importance = Column(JSON)
+
+    model_path = Column(String)
+    error_message = Column(String)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    activated_at = Column(DateTime)
+
+    predictions = relationship("MLPrediction", back_populates="model")
+
+
+class MLPrediction(Base):
+    """Audit log of ML predictions for tracking accuracy."""
+    __tablename__ = "ml_predictions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(Integer, ForeignKey("ml_models.id"), nullable=False, index=True)
+
+    ticker = Column(String, nullable=False, index=True)
+    prediction_date = Column(Date, nullable=False, index=True)
+    ml_confidence = Column(Float, nullable=False)
+    features = Column(JSON)
+
+    actual_outcome = Column(Integer)  # 1=win, 0=loss, NULL=pending
+    actual_gain_pct = Column(Float)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    model = relationship("MLModel", back_populates="predictions")
+
+    __table_args__ = (
+        Index('ix_ml_predictions_model_date', 'model_id', 'prediction_date'),
+    )
+
+
 class DelistedTicker(Base):
     """
     Tracks tickers that are delisted, invalid, or consistently fail to fetch.

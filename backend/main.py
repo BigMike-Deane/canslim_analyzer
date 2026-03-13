@@ -28,7 +28,7 @@ from backend.database import (
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
     BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert,
     EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade,
-    User
+    User, MLModel, MLPrediction
 )
 from backend.auth import get_current_active_user, get_admin_user
 from backend.config import settings
@@ -4739,9 +4739,11 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
 from backend.routes.fidelity import router as fidelity_router
 from backend.routes.auth import router as auth_router
 from backend.routes.admin import router as admin_router
+from backend.routes.ml import router as ml_router
 app.include_router(fidelity_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(ml_router)
 
 # ============== Serve Frontend ==============
 

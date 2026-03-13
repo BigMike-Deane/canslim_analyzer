@@ -41,6 +41,11 @@ def _nan_safe(val, default=0):
     return val
 
 
+# ML Signal Layer ordinal maps (must match ml/feature_extractor.py)
+ENTRY_TYPE_MAP_ML = {"breakout": 0, "pre-breakout": 1, "standard": 2}
+REGIME_MAP_ML = {"bearish": 0, "neutral": 1, "bullish": 2}
+
+
 def get_strategy_profile(strategy_name: str = "balanced") -> dict:
     """Load strategy profile from YAML config, falling back to balanced defaults."""
     profiles = config.get('strategy_profiles', {})
@@ -2640,6 +2645,36 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult
         if deterministic_boost_val > 0:
             buy_signal_factors["deterministic_boost"] = deterministic_boost_val
+        # ML Signal Layer: advisory ranking modifier
+        ml_bonus = 0
+        ml_confidence = None
+        ml_config = profile.get('ml_signal', {})
+        if ml_config.get('enabled', False):
+            try:
+                from ml.model import get_ml_prediction
+                ml_confidence = get_ml_prediction(
+                    total_score=effective_score,
+                    composite_score=composite_score,
+                    entry_type=ENTRY_TYPE_MAP_ML.get(buy_signal_factors.get("entry_type", "standard"), 2),
+                    market_regime=REGIME_MAP_ML.get(buy_signal_factors.get("market_regime", "neutral"), 1),
+                    rs_line_bonus=rs_line_bonus,
+                    earnings_drift_bonus=earnings_drift_bonus,
+                    estimate_revision_bonus=estimate_revision_bonus,
+                    coiled_spring=1 if coiled_spring_bonus > 0 else 0,
+                    soft_zone=1 if in_soft_zone else 0,
+                    soft_zone_multiplier=soft_zone_mult,
+                    deterministic_boost=deterministic_boost_val,
+                    is_growth_stock=1 if is_growth else 0,
+                )
+                if ml_confidence is not None and not ml_config.get('log_only', True):
+                    ml_weight = ml_config.get('weight', 20)
+                    ml_bonus = (ml_confidence - 0.5) * ml_weight
+                    composite_score += ml_bonus
+            except ImportError:
+                pass
+        if ml_confidence is not None:
+            buy_signal_factors["ml_confidence"] = round(ml_confidence, 3)
+            buy_signal_factors["ml_bonus"] = round(ml_bonus, 1)
         buys.append({
             "stock": stock,
             "shares": shares,
