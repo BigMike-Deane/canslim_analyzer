@@ -2206,9 +2206,10 @@ class TestScaleInPullbacks:
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)
         engine.data_provider = MagicMock()
-        engine.cash = 10000
+        engine.cash = 40000
 
         # Position: up 15% from cost but pulled back 4% from peak on low volume
+        # Cash is high enough that position is under max_single_position_pct (25%)
         engine.positions = {
             "WINNER": SimulatedPosition(
                 ticker="WINNER", shares=100, cost_basis=100.0,
@@ -2220,6 +2221,7 @@ class TestScaleInPullbacks:
         }
 
         # Price = 115 (up 15% from cost, down 4.2% from peak of 120)
+        # Position value = 11,500; portfolio = 51,500; allocation = 22.3% (< 25% max)
         engine.data_provider.get_price_on_date.return_value = 115.0
         engine.data_provider.get_volume_ratio.return_value = 0.6  # Low volume
 

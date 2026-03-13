@@ -28,6 +28,18 @@ from backend.historical_data import HistoricalDataProvider
 from backend.market_state import MarketStateManager, MarketState
 from canslim_scorer import calculate_coiled_spring_score
 
+
+def _nan_safe(val, default=0):
+    """Convert None/NaN to a safe default. float('nan') is truthy and passes `or 0`."""
+    if val is None:
+        return default
+    try:
+        if val != val:  # NaN != NaN per IEEE 754
+            return default
+    except (TypeError, ValueError):
+        pass
+    return val
+
 logger = logging.getLogger(__name__)
 
 # Bump this version when scoring logic changes to invalidate cached scores
@@ -1613,7 +1625,7 @@ class BacktestEngine:
                     else:
                         c_score = round(max(0, (1 + eps_growth / 50) * 10 * 0.3), 1)
 
-                    # YoY acceleration bonus (up to 3 pts) — synced with canslim_scorer
+                    # YoY acceleration bonus (up to 5 pts) — synced with canslim_scorer accel_max=5
                     # Compare current quarter's YoY growth vs prior quarter's YoY growth
                     if len(quarterly_earnings) >= 6:
                         current_q = quarterly_earnings[0]
@@ -1625,9 +1637,9 @@ class BacktestEngine:
                             current_q_growth = ((current_q - year_ago_q) / abs(year_ago_q)) * 100
                             prev_q_growth = ((prev_q - prev_year_ago_q) / abs(prev_year_ago_q)) * 100
                             if current_q_growth > prev_q_growth and current_q_growth > 0:
-                                c_score = min(15, c_score + 3)  # Full acceleration bonus
+                                c_score = min(15, c_score + 5)  # Full acceleration bonus (synced with canslim_scorer)
                             elif current_q_growth > 0 and current_q_growth >= prev_q_growth * 0.9:
-                                c_score = min(15, c_score + 1)  # Maintaining growth
+                                c_score = min(15, c_score + 2)  # Maintaining growth
 
                 c_score = min(15, max(0, c_score))
 
@@ -2013,7 +2025,7 @@ class BacktestEngine:
 
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
-            if not price or price <= 0:
+            if not price or price <= 0 or price != price:  # Guard NaN (IEEE 754 self-inequality)
                 continue
 
             # Guard against division by zero on cost_basis
@@ -2022,7 +2034,7 @@ class BacktestEngine:
 
             gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100
             score_data = scores.get(ticker, {})
-            current_score = score_data.get("total_score", 0)
+            current_score = _nan_safe(score_data.get("total_score", 0))
 
             # ATR-based stop loss: volatile stocks get wider stops
             effective_stop_loss_pct = base_stop_loss_pct
@@ -2487,9 +2499,9 @@ class BacktestEngine:
             elif soft_enabled and total_score >= soft_zone_floor:
                 # H: If require_strong_deterministic, only allow soft zone for stocks
                 # with strong N+S+L+I+M scores (these are Yahoo-based, deterministic)
-                det_score = (data.get("n_score", 0) + data.get("s_score", 0) +
-                             data.get("l_score", 0) + data.get("i_score", 0) +
-                             data.get("m_score", 0))
+                det_score = (_nan_safe(data.get("n_score", 0)) + _nan_safe(data.get("s_score", 0)) +
+                             _nan_safe(data.get("l_score", 0)) + _nan_safe(data.get("i_score", 0)) +
+                             _nan_safe(data.get("m_score", 0)))
                 if require_strong_det and det_score < det_min_for_soft:
                     continue  # Skip weak deterministic stocks in soft zone
 
@@ -2535,7 +2547,7 @@ class BacktestEngine:
 
         for ticker, score_data in candidates:
             price = self.data_provider.get_price_on_date(ticker, current_date)
-            if not price or price <= 0:
+            if not price or price <= 0 or price != price:  # Guard NaN
                 _funnel["no_price"] += 1
                 continue
 
@@ -2582,9 +2594,9 @@ class BacktestEngine:
             skip_growth = quality_config.get('skip_in_growth_mode', True)
 
             # Get individual scores from score_data
-            c_score = score_data.get('c', 0) or score_data.get('c_score', 0)
-            l_score = score_data.get('l', 0) or score_data.get('l_score', 0)
-            volume_ratio = score_data.get('volume_ratio', 1.0) or 1.0
+            c_score = _nan_safe(score_data.get('c', 0) or score_data.get('c_score', 0))
+            l_score = _nan_safe(score_data.get('l', 0) or score_data.get('l_score', 0))
+            volume_ratio = _nan_safe(score_data.get('volume_ratio', 1.0) or 1.0, default=1.0)
             is_growth_stock = score_data.get('is_growth_stock', False)
 
             # Skip if not meeting quality thresholds (unless growth stock or limited earnings)
@@ -2764,7 +2776,7 @@ class BacktestEngine:
             estimate_revision_bonus = 0
             revision_pct = self.static_data.get(ticker, {}).get('eps_estimate_revision_pct')
             revision_config = config.get('ai_trader.analyst_revisions', {})
-            if revision_pct is not None:
+            if revision_pct is not None and revision_pct == revision_pct:  # Guard NaN
                 strong_up_threshold = revision_config.get('strong_up_threshold', 10)
                 strong_up_bonus = revision_config.get('strong_up_bonus', 5)
                 mod_up_bonus = revision_config.get('mod_up_bonus', 3)
@@ -2803,9 +2815,9 @@ class BacktestEngine:
                 c_weight = self.profile.get('c_score_weight', 1.0)
                 l_weight = self.profile.get('l_score_weight', 1.0)
                 n_weight = self.profile.get('n_score_weight', 1.0)
-                c_sc = score_data.get('c_score', 0)
-                l_sc = score_data.get('l_score', 0)
-                n_sc = score_data.get('n_score', 0)
+                c_sc = _nan_safe(score_data.get('c_score', 0))
+                l_sc = _nan_safe(score_data.get('l_score', 0))
+                n_sc = _nan_safe(score_data.get('n_score', 0))
                 # Add the weighted bonus on top of total score
                 effective_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
@@ -2848,9 +2860,9 @@ class BacktestEngine:
             det_config = config.get('ai_trader.deterministic_boost', {})
             deterministic_boost_val = 0
             if det_config.get('enabled', False):
-                stable_score = (score_data.get("n_score", 0) + score_data.get("s_score", 0) +
-                                score_data.get("l_score", 0) + score_data.get("i_score", 0) +
-                                score_data.get("m_score", 0))
+                stable_score = (_nan_safe(score_data.get("n_score", 0)) + _nan_safe(score_data.get("s_score", 0)) +
+                                _nan_safe(score_data.get("l_score", 0)) + _nan_safe(score_data.get("i_score", 0)) +
+                                _nan_safe(score_data.get("m_score", 0)))
                 strong_thresh = det_config.get('strong_threshold', 60)
                 stable_thresh = det_config.get('stable_bonus_threshold', 55)
                 if stable_score >= strong_thresh:
@@ -3115,11 +3127,11 @@ class BacktestEngine:
 
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
-            if not price or price <= 0:
+            if not price or price <= 0 or price != price:  # Guard NaN
                 continue
 
             score_data = scores.get(ticker, {})
-            current_score = score_data.get("total_score", 0)
+            current_score = _nan_safe(score_data.get("total_score", 0))
 
             if position.cost_basis <= 0:
                 continue
@@ -3145,6 +3157,10 @@ class BacktestEngine:
                             add_pct = scale_in_config.get('add_pct', 30.0) / 100
                             original_cost = position.shares * position.cost_basis
                             scale_amount = min(original_cost * add_pct, self.cash * 0.3)
+                            # Cap at remaining room under max position allocation (sync with ai_trader)
+                            max_pos_pct = self.profile.get('max_single_position_pct', 25) / 100
+                            remaining_room = (max_pos_pct - current_allocation) * portfolio_value
+                            scale_amount = min(scale_amount, remaining_room)
                             if scale_amount >= 100:
                                 shares = scale_amount / price
                                 pyramids.append(SimulatedTrade(

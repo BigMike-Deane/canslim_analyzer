@@ -29,6 +29,18 @@ except ImportError:
         def send_coiled_spring_alert_webhook(*args, **kwargs):
             return False
 
+def _nan_safe(val, default=0):
+    """Convert None/NaN to a safe default. float('nan') is truthy and passes `or 0`."""
+    if val is None:
+        return default
+    try:
+        if val != val:  # NaN != NaN per IEEE 754
+            return default
+    except (TypeError, ValueError):
+        pass
+    return val
+
+
 def get_strategy_profile(strategy_name: str = "balanced") -> dict:
     """Load strategy profile from YAML config, falling back to balanced defaults."""
     profiles = config.get('strategy_profiles', {})
@@ -182,17 +194,17 @@ def get_effective_score(stock_or_position, use_current: bool = True) -> float:
 
     if use_current:
         if is_growth:
-            return getattr(stock_or_position, 'current_growth_score', None) or \
-                   getattr(stock_or_position, 'growth_mode_score', None) or 0
+            return _nan_safe(getattr(stock_or_position, 'current_growth_score', None) or
+                             getattr(stock_or_position, 'growth_mode_score', None))
         else:
-            return getattr(stock_or_position, 'current_score', None) or \
-                   getattr(stock_or_position, 'canslim_score', None) or 0
+            return _nan_safe(getattr(stock_or_position, 'current_score', None) or
+                             getattr(stock_or_position, 'canslim_score', None))
     else:
         # For positions, get purchase score
         if is_growth:
-            return getattr(stock_or_position, 'purchase_growth_score', None) or 0
+            return _nan_safe(getattr(stock_or_position, 'purchase_growth_score', None))
         else:
-            return getattr(stock_or_position, 'purchase_score', None) or 0
+            return _nan_safe(getattr(stock_or_position, 'purchase_score', None))
 
 
 def get_or_create_config(db: Session, user_id: int = 1) -> AIPortfolioConfig:
@@ -2093,7 +2105,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     for stock in candidates:
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
-        effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
+        effective_score = _nan_safe(stock.growth_mode_score if is_growth else stock.canslim_score)
 
         # Multi-scan averaging: smooth score wobble (live-only, not in backtester)
         if effective_score and not is_growth:
@@ -2114,9 +2126,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if not effective_score or effective_score < soft_zone_floor:
             # Below even the soft zone — check bear exception
             if market_regime["regime"] == "bearish" and effective_score and effective_score >= min_score_to_buy:
-                c_val = getattr(stock, 'c_score', 0) or 0
-                a_val = getattr(stock, 'a_score', 0) or 0
-                l_val = getattr(stock, 'l_score', 0) or 0
+                c_val = _nan_safe(getattr(stock, 'c_score', 0))
+                a_val = _nan_safe(getattr(stock, 'a_score', 0))
+                l_val = _nan_safe(getattr(stock, 'l_score', 0))
                 cal_sum = c_val + a_val + l_val
                 if cal_sum >= bear_exception_min_cal:
                     bear_exception_candidates.append(stock)
@@ -2125,11 +2137,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             continue
         elif effective_score < effective_min_score and soft_enabled:
             # H: Calculate deterministic score and gate on it
-            n_val = getattr(stock, 'n_score', 0) or 0
-            s_val = getattr(stock, 's_score', 0) or 0
-            l_val = getattr(stock, 'l_score', 0) or 0
-            i_val = getattr(stock, 'i_score', 0) or 0
-            m_val = getattr(stock, 'm_score', 0) or 0
+            n_val = _nan_safe(getattr(stock, 'n_score', 0))
+            s_val = _nan_safe(getattr(stock, 's_score', 0))
+            l_val = _nan_safe(getattr(stock, 'l_score', 0))
+            i_val = _nan_safe(getattr(stock, 'i_score', 0))
+            m_val = _nan_safe(getattr(stock, 'm_score', 0))
             stable_score_val = n_val + s_val + l_val + i_val + m_val
 
             # H: Require strong deterministic scores for wider soft zone
@@ -2161,9 +2173,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         skip_growth = quality_config.get('skip_in_growth_mode', True)
 
         # Get individual scores from Stock model columns
-        c_score = getattr(stock, 'c_score', 0) or 0
-        l_score = getattr(stock, 'l_score', 0) or 0
-        volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+        c_score = _nan_safe(getattr(stock, 'c_score', 0))
+        l_score = _nan_safe(getattr(stock, 'l_score', 0))
+        volume_ratio = _nan_safe(getattr(stock, 'volume_ratio', 1.0), default=1.0)
         is_breaking_out = getattr(stock, 'is_breaking_out', False)
         breakout_volume_ratio = getattr(stock, 'breakout_volume_ratio', 1.0) or 1.0
 
@@ -2408,9 +2420,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             c_weight = profile.get('c_score_weight', 1.0)
             l_weight = profile.get('l_score_weight', 1.0)
             n_weight = profile.get('n_score_weight', 1.0)
-            c_sc = getattr(stock, 'c_score', 0) or 0
-            l_sc = getattr(stock, 'l_score', 0) or 0
-            n_sc = getattr(stock, 'n_score', 0) or 0
+            c_sc = _nan_safe(getattr(stock, 'c_score', 0))
+            l_sc = _nan_safe(getattr(stock, 'l_score', 0))
+            n_sc = _nan_safe(getattr(stock, 'n_score', 0))
             weighted_score += c_sc * (c_weight - 1.0) + l_sc * (l_weight - 1.0) + n_sc * (n_weight - 1.0)
 
         # Growth projection: use stored projected_growth directly (matches backtester)
