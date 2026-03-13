@@ -3,6 +3,10 @@ Thread-safe ML model wrapper for production use.
 
 Lazy-loads model from disk on first call. Returns None on any error
 for graceful fallback — never crashes the trading pipeline.
+
+Supports two model types:
+  - classifier: returns P(win) via predict_proba
+  - regression: returns predicted gain_pct mapped to [0, 1] confidence via sigmoid
 """
 
 import logging
@@ -19,10 +23,17 @@ _cached_model = None
 _cached_metadata = None
 _load_attempted = False
 
+# Sigmoid scale for mapping predicted gain_pct to [0, 1] confidence.
+# At scale=10: predicted +10% → 0.73, 0% → 0.50, -10% → 0.27
+_GAIN_SIGMOID_SCALE = 10.0
+
 
 def get_ml_prediction(**features) -> Optional[float]:
     """
-    Returns P(win) in [0.0, 1.0] or None if model unavailable.
+    Returns confidence in [0.0, 1.0] or None if model unavailable.
+
+    For classifier models: returns P(win) via predict_proba.
+    For regression models: returns sigmoid(predicted_gain / scale).
 
     Thread-safe, lazy-loaded. Never raises — returns None on any error.
     """
@@ -46,9 +57,18 @@ def get_ml_prediction(**features) -> Optional[float]:
         X = pd.DataFrame([row], columns=feature_columns)
         X = X.fillna(0)
 
-        proba = model.predict_proba(X)[:, 1]
-        confidence = float(np.clip(proba[0], 0.0, 1.0))
-        return round(confidence, 4)
+        model_type = metadata.get("metadata", {}).get("model_type", "classifier")
+
+        if model_type == "regression":
+            # Regression: predicted gain_pct → sigmoid → [0, 1]
+            predicted_gain = float(model.predict(X)[0])
+            confidence = 1.0 / (1.0 + np.exp(-predicted_gain / _GAIN_SIGMOID_SCALE))
+        else:
+            # Classifier: P(win) directly
+            proba = model.predict_proba(X)[:, 1]
+            confidence = float(proba[0])
+
+        return round(float(np.clip(confidence, 0.0, 1.0)), 4)
 
     except Exception as e:
         logger.error(f"ML prediction error: {e}")

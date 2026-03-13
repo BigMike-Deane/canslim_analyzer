@@ -2,7 +2,8 @@
 Tests for ML Signal Layer — feature extraction, training, and prediction.
 
 Covers: empty DB, missing signal_factors, NaN handling, buy/sell pairing,
-partial sell aggregation, training, walk-forward no-leakage, predictions.
+partial sell aggregation, training (classifier + regression), walk-forward
+no-leakage, predictions.
 """
 
 import json
@@ -28,13 +29,18 @@ from ml.feature_extractor import (
 from ml.model import get_ml_prediction, reload_model
 from ml.trainer import (
     MIN_ROC_AUC,
+    MIN_SPEARMAN,
     MIN_TRAINING_SAMPLES,
     _aggregate_cv_metrics,
+    _aggregate_cv_metrics_regression,
     _compute_metrics,
+    _compute_regression_metrics,
     _create_xgb_model,
+    _create_xgb_regressor,
     load_model,
     save_model,
     train_model,
+    train_model_regression,
 )
 
 
@@ -65,8 +71,6 @@ def _make_trade(
         "entry_type": "standard",
         "market_regime": "bullish",
         "composite_score": 45.2,
-        "rs_line_bonus": 3.0,
-        "earnings_drift_bonus": 2.0,
         "estimate_revision_bonus": 1.5,
     }
     t.realized_gain_pct = realized_gain_pct
@@ -92,14 +96,11 @@ def _make_labeled_df(n=200, win_rate=0.65):
             "composite_score": composite,
             "entry_type": rng.choice([0, 1, 2]),
             "market_regime": rng.choice([0, 1, 2]),
-            "rs_line_bonus": rng.uniform(0, 5) if is_win else rng.uniform(0, 2),
-            "earnings_drift_bonus": rng.uniform(0, 3),
             "estimate_revision_bonus": rng.uniform(-5, 10),
             "coiled_spring": rng.choice([0, 1]),
             "soft_zone": rng.choice([0, 1]),
             "soft_zone_multiplier": rng.uniform(0.5, 1.0),
             "deterministic_boost": rng.choice([0, 5, 8]),
-            "is_growth_stock": rng.choice([0, 1]),
             "win": 1 if is_win else 0,
             "gain_pct": rng.uniform(5, 50) if is_win else rng.uniform(-20, 0),
             "ticker": f"T{i}",
@@ -138,8 +139,6 @@ class TestExtractFeatures:
             "entry_type": "breakout",
             "market_regime": "bullish",
             "composite_score": 55.3,
-            "rs_line_bonus": 3.0,
-            "earnings_drift_bonus": 2.0,
             "estimate_revision_bonus": 1.5,
             "coiled_spring": True,
             "soft_zone": True,
@@ -172,8 +171,6 @@ class TestExtractFeatures:
             "entry_type": "standard",
             "market_regime": "neutral",
             "composite_score": 40.0,
-            "rs_line_bonus": 0,
-            "earnings_drift_bonus": 0,
             "estimate_revision_bonus": 0,
             # No coiled_spring, soft_zone, deterministic_boost
         })
@@ -193,21 +190,17 @@ class TestExtractFeatures:
             "entry_type": "unknown_type",
             "market_regime": "neutral",
             "composite_score": 40.0,
-            "rs_line_bonus": 0,
-            "earnings_drift_bonus": 0,
             "estimate_revision_bonus": 0,
         })
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_growth_stock_flag(self):
-        trade = _make_trade(is_growth_stock=True)
-        f = _extract_features(trade)
-        assert f["is_growth_stock"] == 1
-
-        trade2 = _make_trade(is_growth_stock=False)
-        f2 = _extract_features(trade2)
-        assert f2["is_growth_stock"] == 0
+    def test_feature_count_is_nine(self):
+        """Verify we have exactly 9 features after removing zero-signal columns."""
+        assert len(FEATURE_COLUMNS) == 9
+        assert "rs_line_bonus" not in FEATURE_COLUMNS
+        assert "earnings_drift_bonus" not in FEATURE_COLUMNS
+        assert "is_growth_stock" not in FEATURE_COLUMNS
 
 
 class TestBuySellPairing:
@@ -279,8 +272,6 @@ class TestBuySellPairing:
             _make_trade(action="SELL", ticker="AAPL", realized_gain_pct=20.0, holding_days=30),
         ]
         rows = _pair_buy_sell_trades(trades)
-        # PARTIAL_SELL creates a row but doesn't pop the buy
-        # Final SELL also creates a row and pops the buy
         assert len(rows) == 2
         assert rows[0]["gain_pct"] == 10.0
         assert rows[1]["gain_pct"] == 20.0
@@ -291,7 +282,6 @@ class TestBuySellPairing:
             _make_trade(action="SELL", ticker="AAPL", backtest_id=2, realized_gain_pct=10.0, holding_days=20),
         ]
         rows = _pair_buy_sell_trades(trades)
-        # Buy in backtest 1, sell in backtest 2 — should NOT pair
         assert len(rows) == 0
 
     def test_buy_with_no_signal_factors_skipped(self):
@@ -338,7 +328,7 @@ class TestGetFeatureMatrix:
         assert list(X.columns) == FEATURE_COLUMNS
 
 
-# ============== Trainer Tests ==============
+# ============== Classifier Trainer Tests ==============
 
 
 class TestCreateXgbModel:
@@ -375,14 +365,12 @@ class TestTrainModel:
         assert "Insufficient" in result["error"]
 
     def test_training_with_synthetic_data(self):
-        # Create strongly separable data so signal is obvious
         df = _make_labeled_df(n=300, win_rate=0.65)
         result = train_model(df, min_roc_auc=0.0)  # Set gate to 0 for test
         assert "model" in result or result.get("cv_results")
         assert "cv_results" in result
 
     def test_gate_failure(self):
-        # Random noise data — model should fail gate
         rng = np.random.RandomState(99)
         n = 200
         rows = []
@@ -407,9 +395,113 @@ class TestTrainModel:
         if result.get("passed_gate"):
             assert "feature_importance" in result
             assert len(result["feature_importance"]) == len(FEATURE_COLUMNS)
-            # Importances should sum to ~1.0
             total = sum(result["feature_importance"].values())
             assert 0.9 < total < 1.1
+
+
+# ============== Regression Trainer Tests ==============
+
+
+class TestCreateXgbRegressor:
+    def test_regressor_params(self):
+        model = _create_xgb_regressor()
+        assert model.max_depth == 3
+        assert model.n_estimators == 100
+        assert model.learning_rate == 0.05
+
+
+class TestComputeRegressionMetrics:
+    def test_perfect_predictions(self):
+        y_true = np.array([5.0, -3.0, 10.0, -7.0])
+        y_pred = np.array([5.0, -3.0, 10.0, -7.0])
+        m = _compute_regression_metrics(y_true, y_pred)
+        assert m["r2"] == 1.0
+        assert m["mae"] == 0.0
+        assert m["spearman"] == 1.0
+        assert m["direction_accuracy"] == 1.0
+
+    def test_inverse_predictions(self):
+        y_true = np.array([5.0, -3.0, 10.0, -7.0])
+        y_pred = np.array([-5.0, 3.0, -10.0, 7.0])
+        m = _compute_regression_metrics(y_true, y_pred)
+        assert m["spearman"] == -1.0
+        assert m["direction_accuracy"] == 0.0
+
+    def test_constant_predictions(self):
+        y_true = np.array([5.0, -3.0, 10.0])
+        y_pred = np.array([0.0, 0.0, 0.0])
+        m = _compute_regression_metrics(y_true, y_pred)
+        # Constant predictions → Spearman = 0 (no variance in pred)
+        assert m["spearman"] == 0.0
+
+
+class TestTrainModelRegression:
+    def test_insufficient_data(self):
+        df = _make_labeled_df(n=20)
+        result = train_model_regression(df)
+        assert result["passed_gate"] is False
+        assert result["model_type"] == "regression"
+        assert "Insufficient" in result["error"]
+
+    def test_training_with_synthetic_data(self):
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model_regression(df, min_spearman=0.0)
+        assert "cv_results" in result
+        assert result["model_type"] == "regression"
+
+    def test_gate_failure_regression(self):
+        rng = np.random.RandomState(99)
+        n = 200
+        rows = []
+        for i in range(n):
+            rows.append({
+                **{col: rng.uniform(0, 1) for col in FEATURE_COLUMNS},
+                "win": rng.choice([0, 1]),
+                "gain_pct": rng.uniform(-10, 10),
+                "ticker": f"T{i}",
+                "date": "2024-01-01",
+                "backtest_id": 1,
+                "holding_days": 10,
+                "sell_reason": "test",
+            })
+        df = pd.DataFrame(rows)
+        result = train_model_regression(df, min_spearman=0.90)
+        assert result["passed_gate"] is False
+
+    def test_feature_importance_regression(self):
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model_regression(df, min_spearman=0.0)
+        if result.get("passed_gate"):
+            assert "feature_importance" in result
+            assert len(result["feature_importance"]) == len(FEATURE_COLUMNS)
+
+    def test_gain_stats_populated(self):
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model_regression(df, min_spearman=0.0)
+        if result.get("passed_gate"):
+            assert "gain_stats" in result
+            gs = result["gain_stats"]
+            assert "mean" in gs
+            assert "median" in gs
+            assert "clip_range" in gs
+
+
+class TestAggregateRegressionMetrics:
+    def test_aggregation(self):
+        results = [
+            {"r2": 0.3, "mae": 5.0, "rmse": 7.0, "spearman": 0.25, "direction_accuracy": 0.65},
+            {"r2": 0.4, "mae": 4.0, "rmse": 6.0, "spearman": 0.35, "direction_accuracy": 0.70},
+        ]
+        m = _aggregate_cv_metrics_regression(results)
+        assert m["r2"] == 0.35
+        assert m["spearman"] == 0.3
+        assert m["direction_accuracy"] == 0.675
+
+    def test_empty_results(self):
+        assert _aggregate_cv_metrics_regression([]) == {}
+
+
+# ============== Save/Load Tests ==============
 
 
 class TestSaveLoadModel:
@@ -431,6 +523,19 @@ class TestSaveLoadModel:
     def test_load_nonexistent(self, tmp_path):
         path = tmp_path / "nonexistent.joblib"
         assert load_model(path=path) is None
+
+    def test_save_load_regressor(self, tmp_path):
+        model = _create_xgb_regressor()
+        df = _make_labeled_df(n=100)
+        X, _, y_gain, _ = get_feature_matrix(df)
+        model.fit(X, y_gain)
+
+        path = tmp_path / "test_reg_model.joblib"
+        save_model(model, {"model_type": "regression"}, path=path)
+
+        loaded = load_model(path=path)
+        assert loaded is not None
+        assert loaded["metadata"]["model_type"] == "regression"
 
 
 class TestAggregateMetrics:
@@ -460,38 +565,53 @@ class TestGetMlPrediction:
             result = get_ml_prediction(total_score=85, composite_score=50)
             assert result is None
 
-    def test_prediction_in_range(self, tmp_path):
-        """Train a real model and verify prediction output range."""
+    def test_classifier_prediction_in_range(self, tmp_path):
+        """Train a real classifier and verify prediction output range."""
         df = _make_labeled_df(n=200)
         X, y, _, _ = get_feature_matrix(df)
         model = _create_xgb_model()
         model.fit(X, y)
 
         path = tmp_path / "test_model.joblib"
-        save_model(model, {}, path=path)
+        save_model(model, {"model_type": "classifier"}, path=path)
+        loaded = load_model(path=path)
 
         reload_model()
-        with patch("ml.trainer.ACTIVE_MODEL_PATH", path):
-            loaded = load_model(path=path)
-            assert loaded is not None
+        with patch("ml.model._get_model", return_value=(loaded["model"], loaded)):
+            result = get_ml_prediction(
+                total_score=85, composite_score=50,
+                entry_type=0, market_regime=2,
+                estimate_revision_bonus=1.5,
+                coiled_spring=1, soft_zone=0,
+                soft_zone_multiplier=1.0,
+                deterministic_boost=0,
+            )
+            assert result is not None
+            assert 0.0 <= result <= 1.0
 
-            with patch("ml.model._get_model", return_value=(loaded["model"], loaded)):
-                result = get_ml_prediction(
-                    total_score=85,
-                    composite_score=50,
-                    entry_type=0,
-                    market_regime=2,
-                    rs_line_bonus=3.0,
-                    earnings_drift_bonus=2.0,
-                    estimate_revision_bonus=1.5,
-                    coiled_spring=1,
-                    soft_zone=0,
-                    soft_zone_multiplier=1.0,
-                    deterministic_boost=0,
-                    is_growth_stock=0,
-                )
-                assert result is not None
-                assert 0.0 <= result <= 1.0
+    def test_regressor_prediction_in_range(self, tmp_path):
+        """Train a real regressor and verify sigmoid-mapped output range."""
+        df = _make_labeled_df(n=200)
+        X, _, y_gain, _ = get_feature_matrix(df)
+        model = _create_xgb_regressor()
+        model.fit(X, y_gain)
+
+        path = tmp_path / "test_model.joblib"
+        save_model(model, {"model_type": "regression"}, path=path)
+        loaded = load_model(path=path)
+
+        reload_model()
+        with patch("ml.model._get_model", return_value=(loaded["model"], loaded)):
+            result = get_ml_prediction(
+                total_score=85, composite_score=50,
+                entry_type=0, market_regime=2,
+                estimate_revision_bonus=1.5,
+                coiled_spring=1, soft_zone=0,
+                soft_zone_multiplier=1.0,
+                deterministic_boost=0,
+            )
+            assert result is not None
+            assert 0.0 <= result <= 1.0
 
     def test_boolean_conversion(self, tmp_path):
         """Verify booleans are converted to int."""
@@ -509,12 +629,11 @@ class TestGetMlPrediction:
             result = get_ml_prediction(
                 total_score=85, composite_score=50,
                 entry_type=0, market_regime=2,
-                rs_line_bonus=0, earnings_drift_bonus=0,
                 estimate_revision_bonus=0,
                 coiled_spring=True,  # Boolean, not int
                 soft_zone=False,     # Boolean, not int
                 soft_zone_multiplier=1.0,
-                deterministic_boost=0, is_growth_stock=False,
+                deterministic_boost=0,
             )
             assert result is not None
             assert 0.0 <= result <= 1.0
@@ -532,7 +651,6 @@ class TestWalkForwardNoLeakage:
         for train_start, train_end, test_end in folds:
             assert train_end <= test_end
             assert train_start < train_end
-            # Training data is always before test data
             train_indices = set(range(train_start, train_end))
             test_indices = set(range(train_end, test_end))
             assert train_indices.isdisjoint(test_indices)

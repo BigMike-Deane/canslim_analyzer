@@ -2657,14 +2657,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     composite_score=composite_score,
                     entry_type=ENTRY_TYPE_MAP_ML.get(buy_signal_factors.get("entry_type", "standard"), 2),
                     market_regime=REGIME_MAP_ML.get(buy_signal_factors.get("market_regime", "neutral"), 1),
-                    rs_line_bonus=rs_line_bonus,
-                    earnings_drift_bonus=earnings_drift_bonus,
                     estimate_revision_bonus=estimate_revision_bonus,
                     coiled_spring=1 if coiled_spring_bonus > 0 else 0,
                     soft_zone=1 if in_soft_zone else 0,
                     soft_zone_multiplier=soft_zone_mult,
                     deterministic_boost=deterministic_boost_val,
-                    is_growth_stock=1 if is_growth else 0,
                 )
                 if ml_confidence is not None and not ml_config.get('log_only', True):
                     ml_weight = ml_config.get('weight', 20)

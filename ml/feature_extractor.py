@@ -14,20 +14,18 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# Feature columns (12 features — small dataset demands low dimensionality)
+# Feature columns — 9 active features (removed 3 zero-signal: rs_line_bonus,
+# earnings_drift_bonus, is_growth_stock — all constant zero in training data)
 FEATURE_COLUMNS = [
     "total_score",
     "composite_score",
     "entry_type",           # ordinal: breakout=0, pre-breakout=1, standard=2
     "market_regime",        # ordinal: bearish=0, neutral=1, bullish=2
-    "rs_line_bonus",
-    "earnings_drift_bonus",
     "estimate_revision_bonus",
     "coiled_spring",        # binary 0/1
     "soft_zone",            # binary 0/1
     "soft_zone_multiplier",
     "deterministic_boost",
-    "is_growth_stock",      # binary 0/1
 ]
 
 ENTRY_TYPE_MAP = {"breakout": 0, "pre-breakout": 1, "standard": 2}
@@ -168,14 +166,11 @@ def _extract_features(buy_trade) -> dict:
         "composite_score": _nan_safe(sf.get("composite_score"), 0.0),
         "entry_type": ENTRY_TYPE_MAP.get(sf.get("entry_type", "standard"), 2),
         "market_regime": REGIME_MAP.get(sf.get("market_regime", "neutral"), 1),
-        "rs_line_bonus": _nan_safe(sf.get("rs_line_bonus"), 0.0),
-        "earnings_drift_bonus": _nan_safe(sf.get("earnings_drift_bonus"), 0.0),
         "estimate_revision_bonus": _nan_safe(sf.get("estimate_revision_bonus"), 0.0),
         "coiled_spring": 1 if sf.get("coiled_spring", False) else 0,
         "soft_zone": 1 if sf.get("soft_zone", False) else 0,
         "soft_zone_multiplier": _nan_safe(sf.get("soft_zone_multiplier", 1.0), 1.0),
         "deterministic_boost": _nan_safe(sf.get("deterministic_boost", 0), 0.0),
-        "is_growth_stock": 1 if buy_trade.is_growth_stock else 0,
     }
 
 
