@@ -89,6 +89,25 @@ export function TagBadge({ children, color = 'default', className = '' }) {
   )
 }
 
+export function MLConfidenceBadge({ confidence, size = 'xs', className = '' }) {
+  if (confidence == null) return null
+  const pct = (confidence * 100).toFixed(0)
+  const cls = confidence >= 0.65
+    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+    : confidence >= 0.50
+      ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+      : 'bg-red-500/20 text-red-300 border-red-500/30'
+  const sizes = {
+    xs: 'text-[10px] px-1.5 py-0.5',
+    sm: 'text-xs px-2 py-0.5',
+  }
+  return (
+    <span className={`font-data font-medium rounded border ${cls} ${sizes[size] || sizes.xs} ${className}`} title={`ML Confidence: ${pct}%`}>
+      ML {pct}%
+    </span>
+  )
+}
+
 export function PnlText({ value, className = '', prefix = '' }) {
   if (value == null) return <span className={`text-dark-500 ${className}`}>-</span>
   const isPositive = value >= 0

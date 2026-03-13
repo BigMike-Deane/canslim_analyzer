@@ -3143,6 +3143,7 @@ async def get_ai_portfolio_trades(
         "is_growth_stock": t.is_growth_stock or False,
         "cost_basis": t.cost_basis,
         "realized_gain": t.realized_gain,
+        "signal_factors": t.signal_factors,
         "executed_at": t.executed_at.isoformat() + 'Z' if t.executed_at else None
     } for t in trades]
 

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatDateTime, formatTime } from '../api'
 import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
-import { ScoreBadge, ActionBadge, TagBadge } from '../components/Badge'
+import { ScoreBadge, ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../components/Toast'
@@ -341,6 +341,22 @@ function TradeDetailModal({ trade, onClose }) {
           </>
         )}
 
+        {trade.signal_factors?.ml_confidence != null && (
+          <>
+            <div className="border-b border-dark-700/30" />
+            <StatRow label="ML Confidence" value={
+              <MLConfidenceBadge confidence={trade.signal_factors.ml_confidence} size="sm" />
+            } />
+            {trade.signal_factors?.ml_bonus != null && trade.signal_factors.ml_bonus !== 0 && (
+              <StatRow label="ML Bonus" value={
+                <span className={`font-data ${trade.signal_factors.ml_bonus >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {trade.signal_factors.ml_bonus >= 0 ? '+' : ''}{trade.signal_factors.ml_bonus.toFixed(1)}
+                </span>
+              } />
+            )}
+          </>
+        )}
+
         {/* Reason Section */}
         <div className="pt-3">
           <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Reason</span>
@@ -375,6 +391,9 @@ function TradeHistory({ trades }) {
               <ActionBadge action={trade.action} />
               <span className="font-medium text-dark-100">{trade.ticker}</span>
               {trade.is_growth_stock && <TagBadge color="purple">G</TagBadge>}
+              {trade.signal_factors?.ml_confidence != null && (
+                <MLConfidenceBadge confidence={trade.signal_factors.ml_confidence} />
+              )}
             </div>
             <div className="text-right">
               <div className="font-data text-dark-200">

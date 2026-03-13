@@ -14,9 +14,48 @@ export default function Admin() {
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
 
+  // ML state
+  const [mlStatus, setMlStatus] = useState(null)
+  const [mlTraining, setMlTraining] = useState(false)
+  const [mlValidation, setMlValidation] = useState(null)
+
   useEffect(() => {
     loadUsers()
+    loadMLStatus()
   }, [])
+
+  async function loadMLStatus() {
+    try {
+      const [status, validation] = await Promise.all([
+        api.getMLStatus(),
+        api.getMLValidation().catch(() => null),
+      ])
+      setMlStatus(status)
+      setMlValidation(validation)
+    } catch {}
+  }
+
+  async function handleRetrain() {
+    setMlTraining(true)
+    setError('')
+    try {
+      const result = await api.triggerMLTraining()
+      setError('')
+      // Poll for completion
+      const poll = setInterval(async () => {
+        const s = await api.getMLStatus()
+        setMlStatus(s)
+        if (s.latest_training?.status !== 'training') {
+          clearInterval(poll)
+          setMlTraining(false)
+          loadMLStatus()
+        }
+      }, 3000)
+    } catch (err) {
+      setError(err.message)
+      setMlTraining(false)
+    }
+  }
 
   async function loadUsers() {
     try {
@@ -188,6 +227,131 @@ export default function Admin() {
           </table>
         </div>
       )}
+
+      {/* ML Signal Layer */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-dark-100">ML Signal Layer</h2>
+          <button
+            onClick={handleRetrain}
+            disabled={mlTraining}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white text-xs font-medium rounded-lg transition-colors"
+          >
+            {mlTraining ? 'Training...' : 'Retrain Model'}
+          </button>
+        </div>
+
+        <div className="card space-y-4">
+          {/* Current Model */}
+          <div>
+            <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Active Model</h3>
+            {mlStatus?.active_model ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <div className="text-[10px] text-dark-500">Version</div>
+                  <div className="text-sm font-data text-dark-100">v{mlStatus.active_model.version}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-dark-500">ROC AUC</div>
+                  <div className={`text-sm font-data ${mlStatus.active_model.roc_auc >= 0.6 ? 'text-emerald-400' : mlStatus.active_model.roc_auc >= 0.55 ? 'text-amber-400' : 'text-red-400'}`}>
+                    {mlStatus.active_model.roc_auc?.toFixed(4)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-dark-500">Accuracy</div>
+                  <div className="text-sm font-data text-dark-200">{((mlStatus.active_model.accuracy || 0) * 100).toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-dark-500">F1 Score</div>
+                  <div className="text-sm font-data text-dark-200">{((mlStatus.active_model.f1 || 0) * 100).toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-dark-500">Training Samples</div>
+                  <div className="text-sm font-data text-dark-200">{mlStatus.active_model.training_samples}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-dark-500">Features</div>
+                  <div className="text-sm font-data text-dark-200">{mlStatus.active_model.feature_count}</div>
+                </div>
+                <div className="md:col-span-2">
+                  <div className="text-[10px] text-dark-500">Activated</div>
+                  <div className="text-sm font-data text-dark-300">
+                    {mlStatus.active_model.activated_at ? new Date(mlStatus.active_model.activated_at).toLocaleString() : '-'}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-dark-500">No active model. Click "Retrain Model" to train.</p>
+            )}
+          </div>
+
+          {/* Walk-Forward CV Results */}
+          {mlValidation?.cv_results?.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Walk-Forward CV</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-dark-500 border-b border-dark-700/50">
+                      <th className="text-left py-1.5 px-2">Fold</th>
+                      <th className="text-right py-1.5 px-2">AUC</th>
+                      <th className="text-right py-1.5 px-2">Acc</th>
+                      <th className="text-right py-1.5 px-2">Prec</th>
+                      <th className="text-right py-1.5 px-2">Recall</th>
+                      <th className="text-right py-1.5 px-2">F1</th>
+                      <th className="text-right py-1.5 px-2">Train</th>
+                      <th className="text-right py-1.5 px-2">Test</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mlValidation.cv_results.map((fold, i) => (
+                      <tr key={i} className="border-b border-dark-700/30 hover:bg-dark-800/50">
+                        <td className="py-1.5 px-2 font-data text-dark-300">Fold {fold.fold}</td>
+                        <td className={`py-1.5 px-2 font-data text-right ${fold.roc_auc >= 0.6 ? 'text-emerald-400' : fold.roc_auc >= 0.55 ? 'text-amber-400' : 'text-red-400'}`}>
+                          {fold.roc_auc?.toFixed(4)}
+                        </td>
+                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.accuracy * 100).toFixed(1)}%</td>
+                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.precision * 100).toFixed(1)}%</td>
+                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.recall * 100).toFixed(1)}%</td>
+                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.f1 * 100).toFixed(1)}%</td>
+                        <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.train_size}</td>
+                        <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.test_size}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Latest Training Status */}
+          {mlStatus?.latest_training && mlStatus.latest_training.status !== 'active' && (
+            <div>
+              <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-1">Latest Training</h3>
+              <div className="flex items-center gap-2 text-xs">
+                <span className={`px-2 py-0.5 rounded border text-[10px] ${
+                  mlStatus.latest_training.status === 'completed' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20' :
+                  mlStatus.latest_training.status === 'training' ? 'bg-primary-500/15 text-primary-400 border-primary-500/20' :
+                  mlStatus.latest_training.status === 'failed' ? 'bg-red-500/15 text-red-400 border-red-500/20' :
+                  'bg-dark-600/50 text-dark-400 border-dark-500/30'
+                }`}>
+                  {mlStatus.latest_training.status?.toUpperCase()}
+                </span>
+                {mlStatus.latest_training.error_message && (
+                  <span className="text-red-400 truncate max-w-[300px]">{mlStatus.latest_training.error_message}</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Config */}
+          <div className="text-[10px] text-dark-600">
+            ML signal: {mlStatus?.config?.enabled ? 'ENABLED' : 'disabled'}
+            {mlStatus?.config?.log_only && ' (log-only)'}
+            {mlStatus?.config?.weight && ` | weight: ${mlStatus.config.weight}`}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

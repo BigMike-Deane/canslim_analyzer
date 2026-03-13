@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { api, formatCurrency, APIError } from '../api'
 import { Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, Area, AreaChart, ReferenceLine, ComposedChart } from 'recharts'
 import Card, { CardHeader } from '../components/Card'
-import { StatusBadge, ActionBadge, TagBadge, PnlText } from '../components/Badge'
+import { StatusBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import DataTable from '../components/DataTable'
 import PageHeader from '../components/PageHeader'
@@ -558,6 +558,11 @@ function BacktestResults({ backtest, onClose }) {
       render: (v, row) => row.action === 'SELL'
         ? <PnlText value={v} className="text-sm" />
         : <span className="text-dark-500">-</span>,
+    },
+    {
+      key: 'signal_factors',
+      label: 'ML',
+      render: (v) => v?.ml_confidence != null ? <MLConfidenceBadge confidence={v.ml_confidence} /> : null,
     },
     {
       key: 'reason',

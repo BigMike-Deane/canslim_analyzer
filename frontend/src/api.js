@@ -24,6 +24,7 @@ const CACHE_TTL = {
   '/api/fidelity/snapshots': 300,  // 5 min
   '/api/fidelity/trades': 300,     // 5 min
   '/api/fidelity/reconciliation': 120, // 2 min
+  '/api/ml/status': 30,              // 30 sec (may be training)
 }
 
 function getCacheTTL(endpoint) {
@@ -456,6 +457,16 @@ export const api = {
     const result = await request('/api/fidelity/sync-to-portfolio', { method: 'POST' })
     cache.invalidate('/api/portfolio')
     cache.invalidate('/api/fidelity/reconciliation')
+    return result
+  },
+
+  // ML Signal Layer
+  getMLStatus: (strategy = 'nostate_optimized') => request(`/api/ml/status?strategy=${strategy}`),
+  getMLFeatures: (strategy = 'nostate_optimized') => request(`/api/ml/features?strategy=${strategy}`),
+  getMLValidation: (strategy = 'nostate_optimized') => request(`/api/ml/validation?strategy=${strategy}`),
+  triggerMLTraining: async (strategy = 'nostate_optimized', backtestIds = '') => {
+    const result = await request(`/api/ml/train?strategy=${strategy}&backtest_ids=${backtestIds}`, { method: 'POST' })
+    cache.invalidate('/api/ml/status')
     return result
   },
 
