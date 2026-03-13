@@ -893,10 +893,10 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
     ml_signal:
-      enabled: true        # ON — log predictions to signal_factors
+      enabled: false       # OFF for clean baseline comparison
       weight: 20           # Max composite_score bonus/penalty
       min_roc_auc: 0.55    # Model must exceed to activate
-      log_only: false      # ML confidence modifies composite_score ranking
+      log_only: true       # Log predictions, don't affect ranking
 
   nostate_throttled:
     label: "NoState Throttled"
