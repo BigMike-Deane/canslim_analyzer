@@ -671,16 +671,28 @@ export default function CommandCenter() {
                   <span className="text-[10px] text-dark-500">NOT TRAINED</span>
                 )}
               </div>
-              {mlStatus?.active_model?.roc_auc && (
+              {mlStatus?.active_model && (
                 <span className="text-[10px] font-data text-dark-400">
-                  AUC {mlStatus.active_model.roc_auc.toFixed(3)}
+                  {mlStatus.active_model.model_type === 'regression'
+                    ? `Sp ${(mlStatus.active_model.spearman || 0).toFixed(3)}`
+                    : `AUC ${(mlStatus.active_model.roc_auc || 0).toFixed(3)}`
+                  }
                 </span>
               )}
             </div>
             {mlStatus?.active_model && (
               <div className="mt-1.5 flex items-center gap-3 text-[10px] font-data text-dark-500">
-                <span>Acc {((mlStatus.active_model.accuracy || 0) * 100).toFixed(0)}%</span>
-                <span>F1 {((mlStatus.active_model.f1 || 0) * 100).toFixed(0)}%</span>
+                {mlStatus.active_model.model_type === 'regression' ? (
+                  <>
+                    <span className="text-purple-400/80">{mlStatus.active_model.model_type}</span>
+                    <span>DirAcc {mlStatus.active_model.direction_accuracy ? ((mlStatus.active_model.direction_accuracy) * 100).toFixed(0) + '%' : '-'}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Acc {((mlStatus.active_model.accuracy || 0) * 100).toFixed(0)}%</span>
+                    <span>F1 {((mlStatus.active_model.f1 || 0) * 100).toFixed(0)}%</span>
+                  </>
+                )}
                 <span>{mlStatus.active_model.training_samples} trades</span>
               </div>
             )}

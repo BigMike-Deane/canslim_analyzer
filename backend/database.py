@@ -172,6 +172,12 @@ def run_migrations():
         ("backtest_runs", "user_id", "INTEGER"),
         ("fidelity_snapshots", "user_id", "INTEGER"),
         ("fidelity_trades", "user_id", "INTEGER"),
+        # ML v2 regression support (Mar 2026)
+        ("ml_models", "model_type", "TEXT DEFAULT 'classifier'"),
+        ("ml_models", "spearman", "FLOAT"),
+        ("ml_models", "r2_score", "FLOAT"),
+        ("ml_models", "mae", "FLOAT"),
+        ("ml_models", "direction_accuracy", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1111,13 +1117,22 @@ class MLModel(Base):
     backtest_ids = Column(JSON)  # List of backtest run IDs used
     hyperparameters = Column(JSON)
 
-    # Metrics
+    model_type = Column(String, default="classifier")  # classifier or regression
+
+    # Classifier metrics
     roc_auc = Column(Float)
     accuracy = Column(Float)
     precision_score = Column(Float)
     recall_score = Column(Float)
     f1 = Column(Float)
     brier_score = Column(Float)
+
+    # Regression metrics
+    spearman = Column(Float)
+    r2_score = Column(Float)
+    mae = Column(Float)
+    direction_accuracy = Column(Float)
+
     cv_results = Column(JSON)  # Per-fold details
     feature_importance = Column(JSON)
 

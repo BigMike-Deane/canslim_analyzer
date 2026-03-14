@@ -17,8 +17,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ml", tags=["ml"])
 
 
-def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: int):
-    """Background task: extract features, train model, update DB record."""
+def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: int, mode: str = "regression"):
+    """Background task: extract features, train model, update DB record.
+
+    mode: 'classifier', 'regression', or 'both' (both trains both, saves regression if it passes).
+    """
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -33,7 +36,7 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
 
     try:
         from ml.feature_extractor import extract_training_data
-        from ml.trainer import train_model, save_model
+        from ml.trainer import train_model, train_model_regression, save_model
 
         ml_record = db.query(MLModel).get(ml_model_id)
         if not ml_record:
@@ -50,13 +53,38 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         ml_record.training_samples = len(df)
         db.commit()
 
-        # Train model
-        result = train_model(df)
+        # Train based on mode
+        result = None
+        if mode == "classifier":
+            result = train_model(df)
+        elif mode == "regression":
+            result = train_model_regression(df)
+        elif mode == "both":
+            # Train both, prefer regression if it passes
+            cls_result = train_model(df)
+            reg_result = train_model_regression(df)
+            if reg_result.get("passed_gate"):
+                result = reg_result
+                logger.info("Both models trained — using regression (passed gate)")
+            elif cls_result.get("passed_gate"):
+                result = cls_result
+                logger.info("Both models trained — using classifier (regression failed gate)")
+            else:
+                # Neither passed — report regression failure (more informative)
+                result = reg_result
+        else:
+            result = train_model_regression(df)
+
+        model_type = result.get("model_type", "classifier")
 
         if not result.get("passed_gate"):
             ml_record.status = "failed"
-            ml_record.error_message = result.get("error", "Model failed ROC AUC gate")
-            ml_record.roc_auc = result.get("mean_roc_auc")
+            ml_record.model_type = model_type
+            ml_record.error_message = result.get("error", f"Model failed {'Spearman' if model_type == 'regression' else 'ROC AUC'} gate")
+            if model_type == "regression":
+                ml_record.spearman = result.get("mean_spearman")
+            else:
+                ml_record.roc_auc = result.get("mean_roc_auc")
             ml_record.cv_results = result.get("cv_results")
             db.commit()
             return
@@ -69,16 +97,26 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
             "version": ml_record.version,
             "training_samples": result["training_samples"],
             "feature_importance": result["feature_importance"],
+            "model_type": model_type,
         })
 
         # Update DB record
         ml_record.status = "completed"
-        ml_record.roc_auc = metrics.get("roc_auc")
-        ml_record.accuracy = metrics.get("accuracy")
-        ml_record.precision_score = metrics.get("precision")
-        ml_record.recall_score = metrics.get("recall")
-        ml_record.f1 = metrics.get("f1")
-        ml_record.brier_score = metrics.get("brier_score")
+        ml_record.model_type = model_type
+
+        if model_type == "regression":
+            ml_record.spearman = metrics.get("spearman")
+            ml_record.r2_score = metrics.get("r2")
+            ml_record.mae = metrics.get("mae")
+            ml_record.direction_accuracy = metrics.get("direction_accuracy")
+        else:
+            ml_record.roc_auc = metrics.get("roc_auc")
+            ml_record.accuracy = metrics.get("accuracy")
+            ml_record.precision_score = metrics.get("precision")
+            ml_record.recall_score = metrics.get("recall")
+            ml_record.f1 = metrics.get("f1")
+            ml_record.brier_score = metrics.get("brier_score")
+
         ml_record.cv_results = result.get("cv_results")
         ml_record.feature_importance = result.get("feature_importance")
         ml_record.feature_count = result.get("feature_count")
@@ -102,7 +140,8 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         except Exception:
             pass
 
-        logger.info(f"ML model v{ml_record.version} trained and activated: ROC AUC={ml_record.roc_auc}")
+        primary_metric = f"Spearman={ml_record.spearman}" if model_type == "regression" else f"ROC AUC={ml_record.roc_auc}"
+        logger.info(f"ML model v{ml_record.version} ({model_type}) trained and activated: {primary_metric}")
 
     except Exception as e:
         logger.error(f"Training failed: {e}", exc_info=True)
@@ -123,10 +162,14 @@ async def trigger_training(
     background_tasks: BackgroundTasks,
     strategy: str = Query(default="nostate_optimized"),
     backtest_ids: str = Query(default="", description="Comma-separated backtest IDs (empty=all)"),
+    mode: str = Query(default="regression", description="Training mode: classifier, regression, or both"),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
     """Trigger ML model training (admin only). Runs in background."""
+    if mode not in ("classifier", "regression", "both"):
+        raise HTTPException(400, "mode must be 'classifier', 'regression', or 'both'")
+
     # Parse backtest_ids
     ids = []
     if backtest_ids.strip():
@@ -144,11 +187,13 @@ async def trigger_training(
         version=next_version,
         strategy=strategy,
         status="training",
+        model_type=mode if mode != "both" else "regression",
         backtest_ids=ids or None,
         hyperparameters={
             "n_estimators": 100, "max_depth": 3, "learning_rate": 0.05,
             "min_child_weight": 5, "subsample": 0.8, "colsample_bytree": 0.8,
             "reg_alpha": 1.0, "reg_lambda": 5.0,
+            "mode": mode,
         },
     )
     db.add(ml_record)
@@ -157,13 +202,14 @@ async def trigger_training(
 
     # Get DB URL for background task (needs its own session)
     from backend.database import DATABASE_URL
-    background_tasks.add_task(_run_training, DATABASE_URL, strategy, ids, ml_record.id)
+    background_tasks.add_task(_run_training, DATABASE_URL, strategy, ids, ml_record.id, mode)
 
     return {
-        "message": f"Training started for v{next_version}",
+        "message": f"Training started for v{next_version} ({mode})",
         "model_id": ml_record.id,
         "version": next_version,
         "strategy": strategy,
+        "mode": mode,
     }
 
 
@@ -207,16 +253,28 @@ async def get_ml_status(
     }
 
     if active:
-        result["active_model"] = {
+        model_info = {
             "id": active.id,
             "version": active.version,
-            "roc_auc": active.roc_auc,
-            "accuracy": active.accuracy,
-            "f1": active.f1,
+            "model_type": active.model_type or "classifier",
             "training_samples": active.training_samples,
             "feature_count": active.feature_count,
             "activated_at": active.activated_at.isoformat() if active.activated_at else None,
         }
+        if (active.model_type or "classifier") == "regression":
+            model_info.update({
+                "spearman": active.spearman,
+                "r2_score": active.r2_score,
+                "mae": active.mae,
+                "direction_accuracy": active.direction_accuracy,
+            })
+        else:
+            model_info.update({
+                "roc_auc": active.roc_auc,
+                "accuracy": active.accuracy,
+                "f1": active.f1,
+            })
+        result["active_model"] = model_info
 
     if latest:
         result["latest_training"] = {
@@ -253,14 +311,11 @@ async def predict_ticker(
             composite_score=stock.total_score or 0,  # Use total_score as proxy
             entry_type=2,  # standard (we don't know without full evaluation)
             market_regime=1,  # neutral default
-            rs_line_bonus=0,
-            earnings_drift_bonus=0,
             estimate_revision_bonus=0,
             coiled_spring=0,
             soft_zone=0,
             soft_zone_multiplier=1.0,
             deterministic_boost=0,
-            is_growth_stock=getattr(stock, 'is_growth_stock', False),
         )
     except ImportError:
         prediction = None
@@ -311,16 +366,28 @@ async def get_validation_results(
     if not active:
         raise HTTPException(404, "No active model found")
 
-    return {
+    resp = {
         "version": active.version,
+        "model_type": active.model_type or "classifier",
         "cv_results": active.cv_results or [],
-        "roc_auc": active.roc_auc,
-        "accuracy": active.accuracy,
-        "precision": active.precision_score,
-        "recall": active.recall_score,
-        "f1": active.f1,
-        "brier_score": active.brier_score,
     }
+    if (active.model_type or "classifier") == "regression":
+        resp.update({
+            "spearman": active.spearman,
+            "r2_score": active.r2_score,
+            "mae": active.mae,
+            "direction_accuracy": active.direction_accuracy,
+        })
+    else:
+        resp.update({
+            "roc_auc": active.roc_auc,
+            "accuracy": active.accuracy,
+            "precision": active.precision_score,
+            "recall": active.recall_score,
+            "f1": active.f1,
+            "brier_score": active.brier_score,
+        })
+    return resp
 
 
 @router.get("/training-data")

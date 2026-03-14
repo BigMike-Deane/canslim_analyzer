@@ -464,8 +464,8 @@ export const api = {
   getMLStatus: (strategy = 'nostate_optimized') => request(`/api/ml/status?strategy=${strategy}`),
   getMLFeatures: (strategy = 'nostate_optimized') => request(`/api/ml/features?strategy=${strategy}`),
   getMLValidation: (strategy = 'nostate_optimized') => request(`/api/ml/validation?strategy=${strategy}`),
-  triggerMLTraining: async (strategy = 'nostate_optimized', backtestIds = '') => {
-    const result = await request(`/api/ml/train?strategy=${strategy}&backtest_ids=${backtestIds}`, { method: 'POST' })
+  triggerMLTraining: async (strategy = 'nostate_optimized', backtestIds = '', mode = 'regression') => {
+    const result = await request(`/api/ml/train?strategy=${strategy}&backtest_ids=${backtestIds}&mode=${mode}`, { method: 'POST' })
     cache.invalidate('/api/ml/status')
     return result
   },

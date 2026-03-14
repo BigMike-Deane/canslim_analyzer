@@ -18,6 +18,7 @@ export default function Admin() {
   const [mlStatus, setMlStatus] = useState(null)
   const [mlTraining, setMlTraining] = useState(false)
   const [mlValidation, setMlValidation] = useState(null)
+  const [mlMode, setMlMode] = useState('regression')
 
   useEffect(() => {
     loadUsers()
@@ -39,7 +40,7 @@ export default function Admin() {
     setMlTraining(true)
     setError('')
     try {
-      const result = await api.triggerMLTraining()
+      const result = await api.triggerMLTraining('nostate_optimized', '', mlMode)
       setError('')
       // Poll for completion
       const poll = setInterval(async () => {
@@ -232,55 +233,102 @@ export default function Admin() {
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-dark-100">ML Signal Layer</h2>
-          <button
-            onClick={handleRetrain}
-            disabled={mlTraining}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white text-xs font-medium rounded-lg transition-colors"
-          >
-            {mlTraining ? 'Training...' : 'Retrain Model'}
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={mlMode}
+              onChange={e => setMlMode(e.target.value)}
+              disabled={mlTraining}
+              className="px-2 py-1.5 bg-dark-800 border border-dark-600 rounded-lg text-xs text-dark-200 focus:outline-none focus:border-primary-500/50"
+            >
+              <option value="regression">Regression (v2)</option>
+              <option value="classifier">Classifier (v1)</option>
+              <option value="both">Both (best wins)</option>
+            </select>
+            <button
+              onClick={handleRetrain}
+              disabled={mlTraining}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              {mlTraining ? 'Training...' : 'Retrain Model'}
+            </button>
+          </div>
         </div>
 
         <div className="card space-y-4">
           {/* Current Model */}
           <div>
             <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Active Model</h3>
-            {mlStatus?.active_model ? (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div>
-                  <div className="text-[10px] text-dark-500">Version</div>
-                  <div className="text-sm font-data text-dark-100">v{mlStatus.active_model.version}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-dark-500">ROC AUC</div>
-                  <div className={`text-sm font-data ${mlStatus.active_model.roc_auc >= 0.6 ? 'text-emerald-400' : mlStatus.active_model.roc_auc >= 0.55 ? 'text-amber-400' : 'text-red-400'}`}>
-                    {mlStatus.active_model.roc_auc?.toFixed(4)}
+            {mlStatus?.active_model ? (() => {
+              const m = mlStatus.active_model
+              const isRegression = m.model_type === 'regression'
+              return (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div>
+                    <div className="text-[10px] text-dark-500">Version</div>
+                    <div className="text-sm font-data text-dark-100">v{m.version}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-dark-500">Type</div>
+                    <div className={`text-sm font-data ${isRegression ? 'text-purple-400' : 'text-blue-400'}`}>
+                      {isRegression ? 'Regression' : 'Classifier'}
+                    </div>
+                  </div>
+                  {isRegression ? (
+                    <>
+                      <div>
+                        <div className="text-[10px] text-dark-500">Spearman</div>
+                        <div className={`text-sm font-data ${(m.spearman || 0) >= 0.3 ? 'text-emerald-400' : (m.spearman || 0) >= 0.15 ? 'text-amber-400' : 'text-red-400'}`}>
+                          {m.spearman?.toFixed(4) || '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-dark-500">R²</div>
+                        <div className="text-sm font-data text-dark-200">{m.r2_score?.toFixed(4) || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-dark-500">MAE</div>
+                        <div className="text-sm font-data text-dark-200">{m.mae?.toFixed(2) || '-'}%</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-dark-500">Direction Acc</div>
+                        <div className="text-sm font-data text-dark-200">{m.direction_accuracy ? (m.direction_accuracy * 100).toFixed(1) + '%' : '-'}</div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <div className="text-[10px] text-dark-500">ROC AUC</div>
+                        <div className={`text-sm font-data ${(m.roc_auc || 0) >= 0.6 ? 'text-emerald-400' : (m.roc_auc || 0) >= 0.55 ? 'text-amber-400' : 'text-red-400'}`}>
+                          {m.roc_auc?.toFixed(4) || '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-dark-500">Accuracy</div>
+                        <div className="text-sm font-data text-dark-200">{((m.accuracy || 0) * 100).toFixed(1)}%</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-dark-500">F1 Score</div>
+                        <div className="text-sm font-data text-dark-200">{((m.f1 || 0) * 100).toFixed(1)}%</div>
+                      </div>
+                    </>
+                  )}
+                  <div>
+                    <div className="text-[10px] text-dark-500">Training Samples</div>
+                    <div className="text-sm font-data text-dark-200">{m.training_samples}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-dark-500">Features</div>
+                    <div className="text-sm font-data text-dark-200">{m.feature_count}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-[10px] text-dark-500">Activated</div>
+                    <div className="text-sm font-data text-dark-300">
+                      {m.activated_at ? new Date(m.activated_at).toLocaleString() : '-'}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div className="text-[10px] text-dark-500">Accuracy</div>
-                  <div className="text-sm font-data text-dark-200">{((mlStatus.active_model.accuracy || 0) * 100).toFixed(1)}%</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-dark-500">F1 Score</div>
-                  <div className="text-sm font-data text-dark-200">{((mlStatus.active_model.f1 || 0) * 100).toFixed(1)}%</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-dark-500">Training Samples</div>
-                  <div className="text-sm font-data text-dark-200">{mlStatus.active_model.training_samples}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] text-dark-500">Features</div>
-                  <div className="text-sm font-data text-dark-200">{mlStatus.active_model.feature_count}</div>
-                </div>
-                <div className="md:col-span-2">
-                  <div className="text-[10px] text-dark-500">Activated</div>
-                  <div className="text-sm font-data text-dark-300">
-                    {mlStatus.active_model.activated_at ? new Date(mlStatus.active_model.activated_at).toLocaleString() : '-'}
-                  </div>
-                </div>
-              </div>
-            ) : (
+              )
+            })() : (
               <p className="text-xs text-dark-500">No active model. Click "Retrain Model" to train.</p>
             )}
           </div>
@@ -290,36 +338,67 @@ export default function Admin() {
             <div>
               <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Walk-Forward CV</h3>
               <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-dark-500 border-b border-dark-700/50">
-                      <th className="text-left py-1.5 px-2">Fold</th>
-                      <th className="text-right py-1.5 px-2">AUC</th>
-                      <th className="text-right py-1.5 px-2">Acc</th>
-                      <th className="text-right py-1.5 px-2">Prec</th>
-                      <th className="text-right py-1.5 px-2">Recall</th>
-                      <th className="text-right py-1.5 px-2">F1</th>
-                      <th className="text-right py-1.5 px-2">Train</th>
-                      <th className="text-right py-1.5 px-2">Test</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mlValidation.cv_results.map((fold, i) => (
-                      <tr key={i} className="border-b border-dark-700/30 hover:bg-dark-800/50">
-                        <td className="py-1.5 px-2 font-data text-dark-300">Fold {fold.fold}</td>
-                        <td className={`py-1.5 px-2 font-data text-right ${fold.roc_auc >= 0.6 ? 'text-emerald-400' : fold.roc_auc >= 0.55 ? 'text-amber-400' : 'text-red-400'}`}>
-                          {fold.roc_auc?.toFixed(4)}
-                        </td>
-                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.accuracy * 100).toFixed(1)}%</td>
-                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.precision * 100).toFixed(1)}%</td>
-                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.recall * 100).toFixed(1)}%</td>
-                        <td className="py-1.5 px-2 font-data text-right text-dark-300">{(fold.f1 * 100).toFixed(1)}%</td>
-                        <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.train_size}</td>
-                        <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.test_size}</td>
+                {(mlValidation.model_type || 'classifier') === 'regression' ? (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-dark-500 border-b border-dark-700/50">
+                        <th className="text-left py-1.5 px-2">Fold</th>
+                        <th className="text-right py-1.5 px-2">Spearman</th>
+                        <th className="text-right py-1.5 px-2">R²</th>
+                        <th className="text-right py-1.5 px-2">MAE</th>
+                        <th className="text-right py-1.5 px-2">Dir Acc</th>
+                        <th className="text-right py-1.5 px-2">Train</th>
+                        <th className="text-right py-1.5 px-2">Test</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {mlValidation.cv_results.map((fold, i) => (
+                        <tr key={i} className="border-b border-dark-700/30 hover:bg-dark-800/50">
+                          <td className="py-1.5 px-2 font-data text-dark-300">Fold {fold.fold}</td>
+                          <td className={`py-1.5 px-2 font-data text-right ${(fold.spearman || 0) >= 0.3 ? 'text-emerald-400' : (fold.spearman || 0) >= 0.15 ? 'text-amber-400' : 'text-red-400'}`}>
+                            {fold.spearman?.toFixed(4) || '-'}
+                          </td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{fold.r2?.toFixed(4) || '-'}</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{fold.mae?.toFixed(2) || '-'}</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{fold.direction_accuracy ? (fold.direction_accuracy * 100).toFixed(1) + '%' : '-'}</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.train_size}</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.test_size}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-dark-500 border-b border-dark-700/50">
+                        <th className="text-left py-1.5 px-2">Fold</th>
+                        <th className="text-right py-1.5 px-2">AUC</th>
+                        <th className="text-right py-1.5 px-2">Acc</th>
+                        <th className="text-right py-1.5 px-2">Prec</th>
+                        <th className="text-right py-1.5 px-2">Recall</th>
+                        <th className="text-right py-1.5 px-2">F1</th>
+                        <th className="text-right py-1.5 px-2">Train</th>
+                        <th className="text-right py-1.5 px-2">Test</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mlValidation.cv_results.map((fold, i) => (
+                        <tr key={i} className="border-b border-dark-700/30 hover:bg-dark-800/50">
+                          <td className="py-1.5 px-2 font-data text-dark-300">Fold {fold.fold}</td>
+                          <td className={`py-1.5 px-2 font-data text-right ${(fold.roc_auc || 0) >= 0.6 ? 'text-emerald-400' : (fold.roc_auc || 0) >= 0.55 ? 'text-amber-400' : 'text-red-400'}`}>
+                            {fold.roc_auc?.toFixed(4) || '-'}
+                          </td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{((fold.accuracy || 0) * 100).toFixed(1)}%</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{((fold.precision || 0) * 100).toFixed(1)}%</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{((fold.recall || 0) * 100).toFixed(1)}%</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-300">{((fold.f1 || 0) * 100).toFixed(1)}%</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.train_size}</td>
+                          <td className="py-1.5 px-2 font-data text-right text-dark-400">{fold.test_size}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           )}
