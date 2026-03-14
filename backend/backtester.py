@@ -3073,13 +3073,13 @@ class BacktestEngine:
                         soft_zone_multiplier=soft_zone_mult,
                         deterministic_boost=deterministic_boost_val,
                     )
-                    if ml_confidence is not None and not ml_config.get('log_only', True):
+                    if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                         ml_weight = ml_config.get('weight', 20)
                         ml_bonus = (ml_confidence - 0.5) * ml_weight
                         composite_score += ml_bonus
                 except Exception as e:
                     logger.debug(f"ML prediction skipped for {ticker}: {e}")
-            if ml_confidence is not None:
+            if ml_confidence is not None and ml_confidence == ml_confidence:
                 signal_factors["ml_confidence"] = round(ml_confidence, 3)
                 signal_factors["ml_bonus"] = round(ml_bonus, 1)
 

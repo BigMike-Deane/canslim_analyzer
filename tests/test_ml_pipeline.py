@@ -654,3 +654,18 @@ class TestWalkForwardNoLeakage:
             train_indices = set(range(train_start, train_end))
             test_indices = set(range(train_end, test_end))
             assert train_indices.isdisjoint(test_indices)
+
+
+class TestNaNSafety:
+    def test_nan_prediction_returns_none(self):
+        """If model.predict() returns NaN, get_ml_prediction() should return None."""
+        mock_model = MagicMock()
+        mock_model.predict.return_value = np.array([float("nan")])
+        mock_metadata = {
+            "feature_columns": ["total_score", "composite_score"],
+            "metadata": {"model_type": "regression"},
+        }
+        reload_model()
+        with patch("ml.model._get_model", return_value=(mock_model, mock_metadata)):
+            result = get_ml_prediction(total_score=80, composite_score=90)
+        assert result is None

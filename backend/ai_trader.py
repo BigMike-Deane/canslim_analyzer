@@ -2663,13 +2663,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     soft_zone_multiplier=soft_zone_mult,
                     deterministic_boost=deterministic_boost_val,
                 )
-                if ml_confidence is not None and not ml_config.get('log_only', True):
+                if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                     ml_weight = ml_config.get('weight', 20)
                     ml_bonus = (ml_confidence - 0.5) * ml_weight
                     composite_score += ml_bonus
-            except ImportError:
-                pass
-        if ml_confidence is not None:
+            except Exception as e:
+                logger.debug(f"ML prediction skipped for {stock}: {e}")
+        if ml_confidence is not None and ml_confidence == ml_confidence:
             buy_signal_factors["ml_confidence"] = round(ml_confidence, 3)
             buy_signal_factors["ml_bonus"] = round(ml_bonus, 1)
         buys.append({

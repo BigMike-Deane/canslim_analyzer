@@ -68,7 +68,11 @@ def get_ml_prediction(**features) -> Optional[float]:
             proba = model.predict_proba(X)[:, 1]
             confidence = float(proba[0])
 
-        return round(float(np.clip(confidence, 0.0, 1.0)), 4)
+        confidence = round(float(np.clip(confidence, 0.0, 1.0)), 4)
+        if confidence != confidence:  # NaN != NaN per IEEE 754
+            logger.warning("ML model produced NaN confidence — returning None")
+            return None
+        return confidence
 
     except Exception as e:
         logger.error(f"ML prediction error: {e}")
