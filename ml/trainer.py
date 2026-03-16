@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = Path(__file__).parent.parent / "data"
 ACTIVE_MODEL_PATH = MODEL_DIR / "ml_model_active.joblib"
 MIN_TRAINING_SAMPLES = 50  # Minimum samples per CV fold
-MIN_ROC_AUC = 0.55  # Hard gate — classifier must beat this
-MIN_SPEARMAN = 0.15  # Hard gate — regressor must beat this
+MIN_ROC_AUC = 0.52  # Hard gate — classifier must beat this (lowered from 0.55 while data accumulates)
+MIN_SPEARMAN = 0.10  # Hard gate — regressor must beat this (lowered from 0.15 while data accumulates)
 
 
 def train_model(

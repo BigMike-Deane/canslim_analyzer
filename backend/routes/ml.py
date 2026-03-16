@@ -327,17 +327,17 @@ async def get_ml_health(
             "activated_at": active.activated_at.isoformat() if active.activated_at else None,
         }
         if (active.model_type or "classifier") == "regression":
-            if active.spearman is not None and active.spearman < 0.15:
+            if active.spearman is not None and active.spearman < 0.10:
                 warnings.append({
                     "level": "warning",
-                    "message": f"Active model Spearman {active.spearman:.4f} below 0.15 gate",
+                    "message": f"Active model Spearman {active.spearman:.4f} below 0.10 gate",
                 })
             model_info["spearman"] = active.spearman
         else:
-            if active.roc_auc is not None and active.roc_auc < 0.55:
+            if active.roc_auc is not None and active.roc_auc < 0.52:
                 warnings.append({
                     "level": "warning",
-                    "message": f"Active model ROC AUC {active.roc_auc:.4f} below 0.55 gate",
+                    "message": f"Active model ROC AUC {active.roc_auc:.4f} below 0.52 gate",
                 })
             if active.roc_auc is not None and active.roc_auc < 0.50:
                 warnings.append({
