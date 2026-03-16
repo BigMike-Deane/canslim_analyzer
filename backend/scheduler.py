@@ -874,6 +874,12 @@ def run_continuous_scan():
         stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
         stock.volume_dry_up = analysis.get("volume_dry_up", False)
         stock.institutional_accumulation = analysis.get("institutional_accumulation", False)
+        if analysis.get("ma_21") is not None:
+            stock.ma_21 = analysis.get("ma_21")
+        if analysis.get("ma_50") is not None:
+            stock.ma_50 = analysis.get("ma_50")
+        if analysis.get("atr_pct") is not None:
+            stock.atr_pct = analysis.get("atr_pct")
 
         # Insider trading signals (only update if we have data)
         if analysis.get("insider_sentiment"):

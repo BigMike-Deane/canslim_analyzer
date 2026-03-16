@@ -34,6 +34,12 @@ CS_FEATURE_COLUMNS = [
     "cs_weeks_in_base", "cs_beat_streak", "cs_days_to_earnings",
     "cs_bonus", "cs_c_score", "cs_institutional_pct", "cs_quality_rank",
 ]
+
+# Price action feature columns
+PRICE_ACTION_COLUMNS = [
+    "relative_volume", "pct_from_21ma", "pct_from_50ma",
+    "atr_pct", "sector_rs_rank", "days_since_spy_pullback",
+]
 from ml.model import get_ml_prediction, reload_model
 from ml.trainer import (
     MIN_ROC_AUC,
@@ -131,6 +137,13 @@ def _make_labeled_df(n=200, win_rate=0.65):
             "cs_c_score": rng.uniform(12, 15) if is_cs else 0,
             "cs_institutional_pct": rng.uniform(0, 75) if is_cs else 0,
             "cs_quality_rank": rng.uniform(30, 80) if is_cs else 0,
+            # Price action features
+            "relative_volume": rng.uniform(0.5, 3.0),
+            "pct_from_21ma": rng.uniform(-10, 10),
+            "pct_from_50ma": rng.uniform(-15, 15),
+            "atr_pct": rng.uniform(1, 5),
+            "sector_rs_rank": rng.uniform(0, 100),
+            "days_since_spy_pullback": rng.randint(1, 60),
             "win": 1 if is_win else 0,
             "gain_pct": rng.uniform(5, 50) if is_win else rng.uniform(-20, 0),
             "ticker": f"T{i}",
@@ -225,14 +238,15 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_sixteen(self):
-        """Verify we have 9 base + 7 CS-specific = 16 features."""
-        assert len(FEATURE_COLUMNS) == 16
+    def test_feature_count_is_twentytwo(self):
+        """Verify we have 9 base + 7 CS + 6 price action = 22 features."""
+        assert len(FEATURE_COLUMNS) == 22
         assert "rs_line_bonus" not in FEATURE_COLUMNS
         assert "earnings_drift_bonus" not in FEATURE_COLUMNS
         assert "is_growth_stock" not in FEATURE_COLUMNS
-        # Verify all CS features are present
         for col in CS_FEATURE_COLUMNS:
+            assert col in FEATURE_COLUMNS
+        for col in PRICE_ACTION_COLUMNS:
             assert col in FEATURE_COLUMNS
 
 
@@ -292,6 +306,46 @@ class TestCSFeatureExtraction:
         assert f["cs_weeks_in_base"] == 0.0
         assert f["cs_beat_streak"] == 0.0
         assert f["cs_days_to_earnings"] == 5
+
+
+class TestPriceActionFeatures:
+    def test_price_action_features_extracted(self):
+        """Price action features should be extracted from signal_factors."""
+        trade = _make_trade(signal_factors={
+            "entry_type": "pre-breakout",
+            "market_regime": "bullish",
+            "composite_score": 65.0,
+            "estimate_revision_bonus": 5,
+            "relative_volume": 1.85,
+            "pct_from_21ma": -2.5,
+            "pct_from_50ma": 3.1,
+            "atr_pct": 2.8,
+            "sector_rs_rank": 75.0,
+            "days_since_spy_pullback": 12,
+        })
+        f = _extract_features(trade)
+        assert f["relative_volume"] == 1.85
+        assert f["pct_from_21ma"] == -2.5
+        assert f["pct_from_50ma"] == 3.1
+        assert f["atr_pct"] == 2.8
+        assert f["sector_rs_rank"] == 75.0
+        assert f["days_since_spy_pullback"] == 12
+
+    def test_missing_price_action_defaults(self):
+        """Missing price action features should default safely."""
+        trade = _make_trade(signal_factors={
+            "entry_type": "standard",
+            "market_regime": "neutral",
+            "composite_score": 40.0,
+            "estimate_revision_bonus": 0,
+        })
+        f = _extract_features(trade)
+        assert f["relative_volume"] == 1.0  # neutral default
+        assert f["pct_from_21ma"] == 0.0
+        assert f["pct_from_50ma"] == 0.0
+        assert f["atr_pct"] == 0.0
+        assert f["sector_rs_rank"] == 50.0  # median default
+        assert f["days_since_spy_pullback"] == 30.0  # moderate default
 
 
 class TestBuySellPairing:

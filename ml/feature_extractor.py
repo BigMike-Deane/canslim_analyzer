@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# Feature columns — 16 active features
-# Base 9 features + 7 CS-specific features (0 for non-CS trades)
+# Feature columns — 22 active features
+# Base 9 + 7 CS-specific + 6 price action features
 FEATURE_COLUMNS = [
     # Base features (all trades)
     "total_score",
@@ -38,6 +38,13 @@ FEATURE_COLUMNS = [
     "cs_c_score",           # continuous: C component score (0 or 10-15)
     "cs_institutional_pct", # continuous: institutional ownership % (0-100)
     "cs_quality_rank",      # continuous: CS quality ranking score
+    # Price action features (entry timing quality)
+    "relative_volume",       # volume / 50-day avg at entry (>1 = above avg)
+    "pct_from_21ma",         # % distance from 21-day MA (neg = below support)
+    "pct_from_50ma",         # % distance from 50-day MA (neg = below trend)
+    "atr_pct",               # 14-day ATR as % of price (volatility context)
+    "sector_rs_rank",        # sector relative strength percentile (0-100)
+    "days_since_spy_pullback", # days since SPY >2% single-day drop
 ]
 
 ENTRY_TYPE_MAP = {"breakout": 0, "pre-breakout": 1, "standard": 2}
@@ -301,6 +308,13 @@ def _extract_features(buy_trade) -> dict:
         "cs_c_score": _nan_safe(sf.get("cs_c_score"), 0.0),
         "cs_institutional_pct": _nan_safe(sf.get("cs_institutional_pct"), 0.0),
         "cs_quality_rank": _nan_safe(sf.get("cs_quality_rank"), 0.0),
+        # Price action features (entry timing quality)
+        "relative_volume": _nan_safe(sf.get("relative_volume"), 1.0),
+        "pct_from_21ma": _nan_safe(sf.get("pct_from_21ma"), 0.0),
+        "pct_from_50ma": _nan_safe(sf.get("pct_from_50ma"), 0.0),
+        "atr_pct": _nan_safe(sf.get("atr_pct"), 0.0),
+        "sector_rs_rank": _nan_safe(sf.get("sector_rs_rank"), 50.0),
+        "days_since_spy_pullback": _nan_safe(sf.get("days_since_spy_pullback"), 30.0),
     }
 
 

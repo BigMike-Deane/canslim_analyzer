@@ -1935,6 +1935,30 @@ class BacktestEngine:
 
         return scores
 
+    def _compute_sector_rs_rank(self, ticker: str, scores: dict) -> float:
+        """Compute the percentile rank of this stock's sector based on median RS."""
+        sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
+        # Group all scored stocks by sector, collect rs_12m
+        sector_rs = {}
+        for t, data in scores.items():
+            s = self.static_data.get(t, {}).get("sector", "Unknown")
+            rs = data.get("rs_12m")
+            if rs is not None and rs == rs:  # NaN guard
+                sector_rs.setdefault(s, []).append(rs)
+        if not sector_rs or sector not in sector_rs:
+            return 50.0
+        # Compute median per sector
+        sector_medians = {}
+        for s, vals in sector_rs.items():
+            sorted_vals = sorted(vals)
+            sector_medians[s] = sorted_vals[len(sorted_vals) // 2]
+        # Rank this sector among all sectors (percentile)
+        sorted_medians = sorted(sector_medians.values())
+        my_median = sector_medians[sector]
+        rank = sorted_medians.index(my_median)
+        n = max(1, len(sorted_medians) - 1)
+        return round((rank / n) * 100, 1)
+
     def _update_score_history(self, ticker: str, score: float):
         """Track score history for stability checks"""
         if ticker not in self.score_history:
@@ -3077,6 +3101,22 @@ class BacktestEngine:
             if deterministic_boost_val > 0:
                 reason_parts.append(f"Det+{deterministic_boost_val}")
 
+            # Compute price action features for ML signal factors
+            try:
+                _ma21 = self.data_provider.get_moving_average(ticker, current_date, 21) or 0
+                _ma50 = self.data_provider.get_moving_average(ticker, current_date, 50) or 0
+                _pct_from_21ma = round(((price / _ma21) - 1) * 100, 2) if isinstance(_ma21, (int, float)) and _ma21 > 0 else 0.0
+                _pct_from_50ma = round(((price / _ma50) - 1) * 100, 2) if isinstance(_ma50, (int, float)) and _ma50 > 0 else 0.0
+                _atr_pct = self.data_provider.get_atr(ticker, current_date, 14) or 0
+                _days_since_pullback = self.data_provider.get_days_since_spy_pullback(current_date)
+                _sector_rs = self._compute_sector_rs_rank(ticker, scores)
+            except Exception:
+                _pct_from_21ma = 0.0
+                _pct_from_50ma = 0.0
+                _atr_pct = 0
+                _days_since_pullback = 30
+                _sector_rs = 50.0
+
             # Build trade journal signal factors
             signal_factors = {
                 "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
@@ -3086,6 +3126,13 @@ class BacktestEngine:
                 "earnings_drift_bonus": earnings_drift_bonus,
                 "estimate_revision_bonus": estimate_revision_bonus,
                 "composite_score": round(composite_score, 1),
+                # Price action features
+                "relative_volume": round(volume_ratio, 2),
+                "pct_from_21ma": _pct_from_21ma,
+                "pct_from_50ma": _pct_from_50ma,
+                "atr_pct": round(_atr_pct, 2) if _atr_pct else 0.0,
+                "sector_rs_rank": _sector_rs,
+                "days_since_spy_pullback": _days_since_pullback,
             }
             if volume_dry_up_bonus > 0:
                 signal_factors["volume_dry_up"] = True
@@ -3133,6 +3180,12 @@ class BacktestEngine:
                         cs_c_score=signal_factors.get("cs_c_score", 0),
                         cs_institutional_pct=signal_factors.get("cs_institutional_pct", 0),
                         cs_quality_rank=signal_factors.get("cs_quality_rank", 0),
+                        relative_volume=signal_factors.get("relative_volume", 1.0),
+                        pct_from_21ma=signal_factors.get("pct_from_21ma", 0),
+                        pct_from_50ma=signal_factors.get("pct_from_50ma", 0),
+                        atr_pct=signal_factors.get("atr_pct", 0),
+                        sector_rs_rank=signal_factors.get("sector_rs_rank", 50),
+                        days_since_spy_pullback=signal_factors.get("days_since_spy_pullback", 30),
                     )
                     if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                         ml_weight = ml_config.get('weight', 20)

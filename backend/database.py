@@ -182,6 +182,10 @@ def run_migrations():
         ("backtest_runs", "profile_overrides", "TEXT"),
         # CS confidence scoring (Mar 2026)
         ("coiled_spring_alerts", "confidence", "INTEGER"),
+        # Price action features for ML (Mar 2026)
+        ("stocks", "ma_21", "FLOAT"),
+        ("stocks", "ma_50", "FLOAT"),
+        ("stocks", "atr_pct", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -442,6 +446,9 @@ class Stock(Base):
     # Volume Profile Analysis (Feb 2026)
     volume_dry_up = Column(Boolean, default=False)  # Recent volume < 70% of baseline (bullish in base)
     institutional_accumulation = Column(Boolean, default=False)  # High up/down ratio with above-avg volume
+    ma_21 = Column(Float)   # 21-day simple moving average
+    ma_50 = Column(Float)   # 50-day simple moving average
+    atr_pct = Column(Float) # 14-day ATR as % of price
 
     # Insider Trading Signals
     insider_buy_count = Column(Integer)  # Insider buys in last 3 months

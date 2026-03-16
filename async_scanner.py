@@ -301,6 +301,18 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             # Accumulation/Distribution analysis (uses price_history before it's discarded)
             ad_result = TechnicalAnalyzer.calculate_accumulation_distribution(stock_data, days=20)
 
+            # Price action features for ML (computed while price_history is available)
+            _ph = stock_data.price_history
+            _ma_21 = float(_ph['Close'].tail(21).mean()) if len(_ph) >= 21 else 0.0
+            _ma_50 = float(_ph['Close'].tail(50).mean()) if len(_ph) >= 50 else 0.0
+            # ATR approximation from close-to-close changes (no High/Low in price_history)
+            _atr_pct = 0.0
+            if len(_ph) >= 15 and stock_data.current_price and stock_data.current_price > 0:
+                closes = _ph['Close'].tail(15).values
+                true_ranges = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes)) if closes[i-1] > 0]
+                if true_ranges:
+                    _atr_pct = round((sum(true_ranges) / len(true_ranges)) / stock_data.current_price * 100, 2)
+
             # Get pre-fetched insider/short data for this ticker
             ticker_supplemental = insider_short_data.get(stock_data.ticker, {})
             insider_data = ticker_supplemental.get("insider", {})
@@ -432,6 +444,10 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "institutional_accumulation": ad_result.get("institutional_accumulation", False),
                 "ad_rating": ad_result.get("rating", "C"),
                 "ad_up_down_ratio": ad_result.get("up_down_ratio", 1.0),
+                # Price action features for ML
+                "ma_21": round(_ma_21, 2) if _ma_21 else None,
+                "ma_50": round(_ma_50, 2) if _ma_50 else None,
+                "atr_pct": _atr_pct if _atr_pct else None,
             }
 
             results.append(result)

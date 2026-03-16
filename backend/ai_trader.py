@@ -2115,6 +2115,41 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # Pre-compute portfolio value once (avoids 100+ DB queries inside the loop)
     portfolio_value = get_portfolio_value(db, user_id=user_id)["total_value"]
 
+    # Pre-compute cross-sectional features (once per evaluation, not per candidate)
+    # Sector RS rank: median rs_12m per sector, ranked as percentile
+    _sector_medians = {}
+    try:
+        from sqlalchemy import func as sqla_func
+        sector_rows = db.query(
+            Stock.sector, sqla_func.avg(Stock.rs_12m).label('avg_rs')
+        ).filter(Stock.rs_12m != None, Stock.sector != None).group_by(Stock.sector).all()
+        if sector_rows:
+            sorted_avgs = sorted([r.avg_rs for r in sector_rows])
+            for r in sector_rows:
+                rank = sorted_avgs.index(r.avg_rs)
+                _sector_medians[r.sector] = round((rank / max(1, len(sorted_avgs) - 1)) * 100, 1)
+    except Exception as e:
+        logger.debug(f"Sector RS rank computation failed: {e}")
+
+    # Days since SPY pullback: check if SPY data is available from market direction
+    _days_since_spy_pullback = 30  # default
+    try:
+        import yfinance as yf
+        spy = yf.Ticker("SPY")
+        spy_hist = spy.history(period="3mo")
+        if len(spy_hist) >= 2:
+            for i in range(len(spy_hist) - 1, 0, -1):
+                daily_ret = (spy_hist['Close'].iloc[i] / spy_hist['Close'].iloc[i-1] - 1) * 100
+                if daily_ret <= -2.0:
+                    from datetime import date as date_cls
+                    pullback_date = spy_hist.index[i].date()
+                    _days_since_spy_pullback = min(60, (date_cls.today() - pullback_date).days)
+                    break
+            else:
+                _days_since_spy_pullback = 60
+    except Exception as e:
+        logger.debug(f"SPY pullback calculation failed: {e}")
+
     for stock in candidates:
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
@@ -2656,6 +2691,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append(f"Drift +{earnings_drift_bonus}")
         if deterministic_boost_val > 0:
             reason_parts.append(f"Det+{deterministic_boost_val}")
+        # Compute price action features for ML signal factors
+        _ma21 = getattr(stock, 'ma_21', 0) or 0
+        _ma50 = getattr(stock, 'ma_50', 0) or 0
+        _price = stock.current_price or 0
+        _pct_from_21ma = round(((_price / _ma21) - 1) * 100, 2) if _ma21 > 0 and _price > 0 else 0.0
+        _pct_from_50ma = round(((_price / _ma50) - 1) * 100, 2) if _ma50 > 0 and _price > 0 else 0.0
+        _atr_pct = round(getattr(stock, 'atr_pct', 0) or 0, 2)
+        _volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+        _sector_rs_rank = _sector_medians.get(stock.sector, 50.0)
+
         # Build trade journal signal_factors (matches backtester)
         buy_signal_factors = {
             "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
@@ -2664,6 +2709,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             "earnings_drift_bonus": earnings_drift_bonus,
             "estimate_revision_bonus": estimate_revision_bonus,
             "composite_score": round(composite_score, 1),
+            # Price action features
+            "relative_volume": round(_volume_ratio, 2),
+            "pct_from_21ma": _pct_from_21ma,
+            "pct_from_50ma": _pct_from_50ma,
+            "atr_pct": _atr_pct,
+            "sector_rs_rank": _sector_rs_rank,
+            "days_since_spy_pullback": _days_since_spy_pullback,
         }
         if volume_dry_up_bonus > 0:
             buy_signal_factors["volume_dry_up"] = True
@@ -2710,6 +2762,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     cs_c_score=buy_signal_factors.get("cs_c_score", 0),
                     cs_institutional_pct=buy_signal_factors.get("cs_institutional_pct", 0),
                     cs_quality_rank=buy_signal_factors.get("cs_quality_rank", 0),
+                    relative_volume=buy_signal_factors.get("relative_volume", 1.0),
+                    pct_from_21ma=buy_signal_factors.get("pct_from_21ma", 0),
+                    pct_from_50ma=buy_signal_factors.get("pct_from_50ma", 0),
+                    atr_pct=buy_signal_factors.get("atr_pct", 0),
+                    sector_rs_rank=buy_signal_factors.get("sector_rs_rank", 50),
+                    days_since_spy_pullback=buy_signal_factors.get("days_since_spy_pullback", 30),
                 )
                 if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                     ml_weight = ml_config.get('weight', 20)

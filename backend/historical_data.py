@@ -476,6 +476,31 @@ class HistoricalDataProvider:
         result = float(history["close"].tail(period).mean())
         return result if result == result else 0.0  # NaN guard (NaN != NaN)
 
+    def get_days_since_spy_pullback(self, as_of_date: date, threshold_pct: float = -2.0) -> int:
+        """Count trading days since SPY last dropped more than threshold_pct in a single day.
+        Returns number of calendar days, capped at 60."""
+        spy_df = self._index_cache.get("SPY")
+        if spy_df is None or spy_df.empty:
+            return 30  # default when no data
+        try:
+            history = spy_df[spy_df["date"] <= as_of_date].tail(60)
+            if len(history) < 2:
+                return 30
+            for i in range(len(history) - 1, 0, -1):
+                prev_close = float(history.iloc[i - 1]["close"])
+                curr_close = float(history.iloc[i]["close"])
+                if prev_close <= 0:
+                    continue
+                daily_return = ((curr_close / prev_close) - 1) * 100
+                if daily_return <= threshold_pct:
+                    pullback_date = history.iloc[i]["date"]
+                    if hasattr(pullback_date, 'date'):
+                        pullback_date = pullback_date.date()
+                    return min(60, (as_of_date - pullback_date).days)
+            return 60  # no pullback found in window
+        except (KeyError, IndexError, TypeError, ValueError):
+            return 30
+
     def precompute_market_direction(self):
         """Pre-compute market direction for all trading days (call after preload_data)."""
         for d in self._trading_days:
