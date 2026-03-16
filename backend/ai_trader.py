@@ -2647,6 +2647,17 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         }
         if coiled_spring_bonus > 0:
             buy_signal_factors["coiled_spring"] = True
+            # Enrich with CS detail for ML training
+            cs_result = getattr(stock, '_cs_result', None)
+            if cs_result and cs_result.get("factors"):
+                cs_factors = cs_result["factors"]
+                buy_signal_factors["cs_weeks_in_base"] = cs_factors.get("weeks_in_base", 0)
+                buy_signal_factors["cs_beat_streak"] = cs_factors.get("earnings_beat_streak", 0)
+                buy_signal_factors["cs_days_to_earnings"] = cs_factors.get("days_to_earnings", 0)
+                buy_signal_factors["cs_bonus"] = cs_result.get("cs_score", 0)
+                buy_signal_factors["cs_c_score"] = cs_factors.get("c_score", 0)
+                buy_signal_factors["cs_institutional_pct"] = cs_factors.get("institutional_pct", 0)
+                buy_signal_factors["cs_quality_rank"] = cs_result.get("quality_rank", 0)
         if in_soft_zone:
             buy_signal_factors["soft_zone"] = True
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult
@@ -2669,6 +2680,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     soft_zone=1 if in_soft_zone else 0,
                     soft_zone_multiplier=soft_zone_mult,
                     deterministic_boost=deterministic_boost_val,
+                    cs_weeks_in_base=buy_signal_factors.get("cs_weeks_in_base", 0),
+                    cs_beat_streak=buy_signal_factors.get("cs_beat_streak", 0),
+                    cs_days_to_earnings=buy_signal_factors.get("cs_days_to_earnings", 0),
+                    cs_bonus=buy_signal_factors.get("cs_bonus", 0),
+                    cs_c_score=buy_signal_factors.get("cs_c_score", 0),
+                    cs_institutional_pct=buy_signal_factors.get("cs_institutional_pct", 0),
+                    cs_quality_rank=buy_signal_factors.get("cs_quality_rank", 0),
                 )
                 if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                     ml_weight = ml_config.get('weight', 20)

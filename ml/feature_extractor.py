@@ -17,9 +17,10 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# Feature columns — 9 active features (removed 3 zero-signal: rs_line_bonus,
-# earnings_drift_bonus, is_growth_stock — all constant zero in training data)
+# Feature columns — 16 active features
+# Base 9 features + 7 CS-specific features (0 for non-CS trades)
 FEATURE_COLUMNS = [
+    # Base features (all trades)
     "total_score",
     "composite_score",
     "entry_type",           # ordinal: breakout=0, pre-breakout=1, standard=2
@@ -29,6 +30,14 @@ FEATURE_COLUMNS = [
     "soft_zone",            # binary 0/1
     "soft_zone_multiplier",
     "deterministic_boost",
+    # CS-specific features (0 for non-CS trades, actual values for CS trades)
+    "cs_weeks_in_base",     # continuous: weeks of consolidation (0 or 15+)
+    "cs_beat_streak",       # continuous: consecutive earnings beats (0 or 3+)
+    "cs_days_to_earnings",  # continuous: days until earnings (0 or 1-14)
+    "cs_bonus",             # continuous: CS score bonus (0 or 20-35)
+    "cs_c_score",           # continuous: C component score (0 or 10-15)
+    "cs_institutional_pct", # continuous: institutional ownership % (0-100)
+    "cs_quality_rank",      # continuous: CS quality ranking score
 ]
 
 ENTRY_TYPE_MAP = {"breakout": 0, "pre-breakout": 1, "standard": 2}
@@ -266,7 +275,7 @@ def _pair_buy_sell_trades(trades) -> list:
 
 
 def _extract_features(buy_trade) -> dict:
-    """Extract the 9 features from a BUY trade's signal_factors."""
+    """Extract the 16 features from a BUY trade's signal_factors."""
     sf = buy_trade.signal_factors or {}
 
     # Skip trades with no signal_factors (very old backtests)
@@ -274,6 +283,7 @@ def _extract_features(buy_trade) -> dict:
         return None
 
     return {
+        # Base features (all trades)
         "total_score": _nan_safe(buy_trade.canslim_score, 0.0),
         "composite_score": _nan_safe(sf.get("composite_score"), 0.0),
         "entry_type": ENTRY_TYPE_MAP.get(sf.get("entry_type", "standard"), 2),
@@ -283,6 +293,14 @@ def _extract_features(buy_trade) -> dict:
         "soft_zone": 1 if sf.get("soft_zone", False) else 0,
         "soft_zone_multiplier": _nan_safe(sf.get("soft_zone_multiplier", 1.0), 1.0),
         "deterministic_boost": _nan_safe(sf.get("deterministic_boost", 0), 0.0),
+        # CS-specific features (0 for non-CS trades, populated for CS trades)
+        "cs_weeks_in_base": _nan_safe(sf.get("cs_weeks_in_base"), 0.0),
+        "cs_beat_streak": _nan_safe(sf.get("cs_beat_streak"), 0.0),
+        "cs_days_to_earnings": _nan_safe(sf.get("cs_days_to_earnings"), 0.0),
+        "cs_bonus": _nan_safe(sf.get("cs_bonus"), 0.0),
+        "cs_c_score": _nan_safe(sf.get("cs_c_score"), 0.0),
+        "cs_institutional_pct": _nan_safe(sf.get("cs_institutional_pct"), 0.0),
+        "cs_quality_rank": _nan_safe(sf.get("cs_quality_rank"), 0.0),
     }
 
 

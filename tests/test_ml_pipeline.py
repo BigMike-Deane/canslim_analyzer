@@ -28,6 +28,12 @@ from ml.feature_extractor import (
     extract_training_data,
     get_feature_matrix,
 )
+
+# CS-specific feature columns for test validation
+CS_FEATURE_COLUMNS = [
+    "cs_weeks_in_base", "cs_beat_streak", "cs_days_to_earnings",
+    "cs_bonus", "cs_c_score", "cs_institutional_pct", "cs_quality_rank",
+]
 from ml.model import get_ml_prediction, reload_model
 from ml.trainer import (
     MIN_ROC_AUC,
@@ -102,6 +108,7 @@ def _make_labeled_df(n=200, win_rate=0.65):
         is_win = rng.random() < win_rate
         score = rng.uniform(72, 98)
         composite = rng.uniform(30, 80)
+        is_cs = rng.random() < 0.15  # ~15% are CS trades
         # Make features correlated with outcome for testable signal
         if is_win:
             composite += 10
@@ -112,10 +119,18 @@ def _make_labeled_df(n=200, win_rate=0.65):
             "entry_type": rng.choice([0, 1, 2]),
             "market_regime": rng.choice([0, 1, 2]),
             "estimate_revision_bonus": rng.uniform(-5, 10),
-            "coiled_spring": rng.choice([0, 1]),
+            "coiled_spring": 1 if is_cs else 0,
             "soft_zone": rng.choice([0, 1]),
             "soft_zone_multiplier": rng.uniform(0.5, 1.0),
             "deterministic_boost": rng.choice([0, 5, 8]),
+            # CS-specific features (0 for non-CS, actual values for CS)
+            "cs_weeks_in_base": rng.choice([15, 20, 26]) if is_cs else 0,
+            "cs_beat_streak": rng.randint(3, 10) if is_cs else 0,
+            "cs_days_to_earnings": rng.randint(2, 14) if is_cs else 0,
+            "cs_bonus": rng.choice([20, 25, 30, 35]) if is_cs else 0,
+            "cs_c_score": rng.uniform(12, 15) if is_cs else 0,
+            "cs_institutional_pct": rng.uniform(0, 75) if is_cs else 0,
+            "cs_quality_rank": rng.uniform(30, 80) if is_cs else 0,
             "win": 1 if is_win else 0,
             "gain_pct": rng.uniform(5, 50) if is_win else rng.uniform(-20, 0),
             "ticker": f"T{i}",
@@ -210,12 +225,73 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_nine(self):
-        """Verify we have exactly 9 features after removing zero-signal columns."""
-        assert len(FEATURE_COLUMNS) == 9
+    def test_feature_count_is_sixteen(self):
+        """Verify we have 9 base + 7 CS-specific = 16 features."""
+        assert len(FEATURE_COLUMNS) == 16
         assert "rs_line_bonus" not in FEATURE_COLUMNS
         assert "earnings_drift_bonus" not in FEATURE_COLUMNS
         assert "is_growth_stock" not in FEATURE_COLUMNS
+        # Verify all CS features are present
+        for col in CS_FEATURE_COLUMNS:
+            assert col in FEATURE_COLUMNS
+
+
+class TestCSFeatureExtraction:
+    def test_cs_trade_has_all_cs_features(self):
+        """CS trades should populate all 7 CS-specific features."""
+        trade = _make_trade(signal_factors={
+            "entry_type": "standard",
+            "market_regime": "bullish",
+            "composite_score": 55.0,
+            "estimate_revision_bonus": 5,
+            "coiled_spring": True,
+            "cs_weeks_in_base": 20,
+            "cs_beat_streak": 5,
+            "cs_days_to_earnings": 7,
+            "cs_bonus": 25,
+            "cs_c_score": 14.5,
+            "cs_institutional_pct": 35.2,
+            "cs_quality_rank": 62.5,
+        })
+        f = _extract_features(trade)
+        assert f["coiled_spring"] == 1
+        assert f["cs_weeks_in_base"] == 20
+        assert f["cs_beat_streak"] == 5
+        assert f["cs_days_to_earnings"] == 7
+        assert f["cs_bonus"] == 25
+        assert f["cs_c_score"] == 14.5
+        assert f["cs_institutional_pct"] == 35.2
+        assert f["cs_quality_rank"] == 62.5
+
+    def test_non_cs_trade_has_zero_cs_features(self):
+        """Non-CS trades should have 0 for all CS features."""
+        trade = _make_trade(signal_factors={
+            "entry_type": "standard",
+            "market_regime": "neutral",
+            "composite_score": 40.0,
+            "estimate_revision_bonus": 0,
+        })
+        f = _extract_features(trade)
+        assert f["coiled_spring"] == 0
+        for col in CS_FEATURE_COLUMNS:
+            assert f[col] == 0.0, f"{col} should be 0 for non-CS trade"
+
+    def test_cs_trade_with_nan_values(self):
+        """CS features with NaN values should be safely converted to 0."""
+        trade = _make_trade(signal_factors={
+            "entry_type": "standard",
+            "market_regime": "bullish",
+            "composite_score": 50.0,
+            "estimate_revision_bonus": 0,
+            "coiled_spring": True,
+            "cs_weeks_in_base": float("nan"),
+            "cs_beat_streak": None,
+            "cs_days_to_earnings": 5,
+        })
+        f = _extract_features(trade)
+        assert f["cs_weeks_in_base"] == 0.0
+        assert f["cs_beat_streak"] == 0.0
+        assert f["cs_days_to_earnings"] == 5
 
 
 class TestBuySellPairing:

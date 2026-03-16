@@ -3064,6 +3064,16 @@ class BacktestEngine:
             }
             if coiled_spring_bonus > 0:
                 signal_factors["coiled_spring"] = True
+                # Enrich with CS detail for ML training
+                if cs_result and cs_result.get("factors"):
+                    cs_factors = cs_result["factors"]
+                    signal_factors["cs_weeks_in_base"] = cs_factors.get("weeks_in_base", 0)
+                    signal_factors["cs_beat_streak"] = cs_factors.get("earnings_beat_streak", 0)
+                    signal_factors["cs_days_to_earnings"] = cs_factors.get("days_to_earnings", 0)
+                    signal_factors["cs_bonus"] = cs_result.get("cs_score", 0)
+                    signal_factors["cs_c_score"] = cs_factors.get("c_score", 0)
+                    signal_factors["cs_institutional_pct"] = cs_factors.get("institutional_pct", 0)
+                    signal_factors["cs_quality_rank"] = cs_result.get("quality_rank", 0)
             if score_data.get("_bear_market_entry"):
                 signal_factors["bear_exception"] = True
             if score_data.get("_in_soft_zone"):
@@ -3088,6 +3098,13 @@ class BacktestEngine:
                         soft_zone=1 if score_data.get("_in_soft_zone") else 0,
                         soft_zone_multiplier=soft_zone_mult,
                         deterministic_boost=deterministic_boost_val,
+                        cs_weeks_in_base=signal_factors.get("cs_weeks_in_base", 0),
+                        cs_beat_streak=signal_factors.get("cs_beat_streak", 0),
+                        cs_days_to_earnings=signal_factors.get("cs_days_to_earnings", 0),
+                        cs_bonus=signal_factors.get("cs_bonus", 0),
+                        cs_c_score=signal_factors.get("cs_c_score", 0),
+                        cs_institutional_pct=signal_factors.get("cs_institutional_pct", 0),
+                        cs_quality_rank=signal_factors.get("cs_quality_rank", 0),
                     )
                     if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                         ml_weight = ml_config.get('weight', 20)
