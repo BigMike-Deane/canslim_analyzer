@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import Card, { SectionLabel } from '../components/Card'
-import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge } from '../components/Badge'
+import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import Sparkline from '../components/Sparkline'
 import { useToast } from '../components/Toast'
@@ -129,6 +129,7 @@ function CoiledSpringSection({ cs }) {
                 {c.base_type && <TagBadge>{c.base_type}</TagBadge>}
               </div>
               <div className="flex items-center gap-2">
+                <CSConfidenceBadge confidence={c.confidence} />
                 <span className={`text-[10px] font-data ${c.days_to_earnings <= 7 ? 'text-red-400' : 'text-amber-400'}`}>
                   {c.days_to_earnings}d
                 </span>
@@ -147,6 +148,7 @@ function CoiledSpringSection({ cs }) {
             {recent_results.map((r, i) => (
               <div key={i} className="flex items-center gap-1.5">
                 <span className="text-xs font-medium text-dark-200">{r.ticker}</span>
+                <CSConfidenceBadge confidence={r.confidence} />
                 <OutcomeBadge outcome={r.outcome} />
                 <PnlText value={r.price_change_pct} className="text-[10px]" />
               </div>

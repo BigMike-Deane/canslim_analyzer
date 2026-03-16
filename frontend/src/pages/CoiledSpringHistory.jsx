@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatShortDate, formatCurrency } from '../api'
 import Card from '../components/Card'
-import { OutcomeBadge, TagBadge, PnlText } from '../components/Badge'
+import { OutcomeBadge, TagBadge, PnlText, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import DataTable, { Pagination } from '../components/DataTable'
@@ -66,6 +66,13 @@ export default function CoiledSpringHistory() {
       mobileHide: true,
       render: (val) =>
         val ? <TagBadge>{val}</TagBadge> : null,
+    },
+    {
+      key: 'confidence',
+      label: 'Confidence',
+      align: 'center',
+      sortable: true,
+      render: (val) => <CSConfidenceBadge confidence={val} />,
     },
     {
       key: 'price_at_alert',

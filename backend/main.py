@@ -2791,6 +2791,7 @@ async def get_coiled_spring_history(
             "institutional_pct": a.institutional_pct,
             "cs_bonus": a.cs_bonus,
             "total_score": a.total_score,
+            "confidence": a.confidence,
         } for a in alerts],
         "pagination": {
             "page": page,
@@ -4673,6 +4674,7 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
             Stock.canslim_score >= 48
         ).order_by(desc(Stock.canslim_score)).limit(5).all()
 
+        from canslim_scorer import calculate_cs_confidence
         cs_candidates_data = [{
             "ticker": s.ticker,
             "score": s.canslim_score,
@@ -4680,6 +4682,13 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
             "weeks_in_base": s.weeks_in_base,
             "beat_streak": s.earnings_beat_streak,
             "base_type": s.base_type,
+            "confidence": calculate_cs_confidence(
+                days_to_earnings=s.days_to_earnings or 7,
+                institutional_pct=(s.score_details or {}).get('i', {}).get('institutional_pct', 50) if isinstance(s.score_details, dict) else 50,
+                weeks_in_base=s.weeks_in_base or 15,
+                c_score=(s.score_details or {}).get('c', {}).get('score', 12) if isinstance(s.score_details, dict) else 12,
+                beat_streak=s.earnings_beat_streak or 3,
+            ),
         } for s in cs_candidates]
 
         # Aggregate stats from deduped alerts via SQL (avoids loading all into memory)
@@ -4712,6 +4721,7 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
             "outcome": a.outcome,
             "price_change_pct": a.price_change_pct,
             "alert_date": a.alert_date.isoformat() if a.alert_date else None,
+            "confidence": a.confidence,
         } for a in deduped_resolved]
 
         cs_data = {

@@ -108,6 +108,29 @@ export function MLConfidenceBadge({ confidence, size = 'xs', className = '' }) {
   )
 }
 
+const csConfCfg = {
+  high: { label: 'HIGH', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' },
+  vhigh: { label: 'V.HIGH', cls: 'bg-emerald-500/25 text-emerald-200 border-emerald-400/40 font-semibold' },
+  mod: { label: 'MOD', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/30' },
+  low: { label: 'LOW', cls: 'bg-red-500/20 text-red-300 border-red-500/30' },
+}
+
+export function CSConfidenceBadge({ confidence, className = '' }) {
+  if (confidence == null) return <span className="text-dark-500 text-[10px]">-</span>
+  const cfg = confidence >= 80 ? csConfCfg.vhigh
+    : confidence >= 60 ? csConfCfg.high
+    : confidence >= 30 ? csConfCfg.mod
+    : csConfCfg.low
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded border font-data ${cfg.cls} ${className}`}
+      title={`CS Confidence: ${confidence}/100`}
+    >
+      {cfg.label}
+    </span>
+  )
+}
+
 export function PnlText({ value, className = '', prefix = '' }) {
   if (value == null) return <span className={`text-dark-500 ${className}`}>-</span>
   const isPositive = value >= 0
