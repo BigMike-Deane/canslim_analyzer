@@ -400,6 +400,7 @@ def record_coiled_spring_alert(db: Session, ticker: str, cs_result: dict, stock:
         base_type=getattr(stock, 'base_type', None),
         institutional_pct=(stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0,
         l_score=getattr(stock, 'l_score', 0) or 0,
+        confidence=cs_result.get('confidence', 0),
         email_sent=False
     )
 
@@ -2658,6 +2659,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 buy_signal_factors["cs_c_score"] = cs_factors.get("c_score", 0)
                 buy_signal_factors["cs_institutional_pct"] = cs_factors.get("institutional_pct", 0)
                 buy_signal_factors["cs_quality_rank"] = cs_result.get("quality_rank", 0)
+                buy_signal_factors["cs_confidence"] = cs_result.get("confidence", 0)
         if in_soft_zone:
             buy_signal_factors["soft_zone"] = True
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult

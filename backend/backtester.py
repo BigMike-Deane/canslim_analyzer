@@ -3074,6 +3074,7 @@ class BacktestEngine:
                     signal_factors["cs_c_score"] = cs_factors.get("c_score", 0)
                     signal_factors["cs_institutional_pct"] = cs_factors.get("institutional_pct", 0)
                     signal_factors["cs_quality_rank"] = cs_result.get("quality_rank", 0)
+                    signal_factors["cs_confidence"] = cs_result.get("confidence", 0)
             if score_data.get("_bear_market_entry"):
                 signal_factors["bear_exception"] = True
             if score_data.get("_in_soft_zone"):

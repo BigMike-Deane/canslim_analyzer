@@ -978,13 +978,90 @@ def calculate_coiled_spring_score(data, score, config: dict = None) -> dict:
 
         result["quality_rank"] = round(quality_rank, 1)
 
+        # Calculate confidence score based on historical outcome patterns
+        result["confidence"] = calculate_cs_confidence(
+            days_to_earnings=days_to_earnings,
+            institutional_pct=institutional_pct,
+            weeks_in_base=weeks_in_base,
+            c_score=c_score,
+            beat_streak=earnings_beat_streak,
+        )
+
     else:
         # Not a coiled spring - store what failed for debugging
         factors["criteria_failed"] = criteria_failed
         result["cs_details"] = f"Not CS: {criteria_failed[0]}"
         result["quality_rank"] = 0
+        result["confidence"] = 0
 
     return result
+
+
+def calculate_cs_confidence(
+    days_to_earnings: int,
+    institutional_pct: float,
+    weeks_in_base: int,
+    c_score: float,
+    beat_streak: int,
+) -> int:
+    """
+    Calculate CS confidence score (0-100) based on historical outcome patterns.
+
+    Derived from analysis of 28 live CS alerts (10 wins, 14 flat, 4 losses).
+
+    Key findings:
+    - days_to_earnings <= 2: 0 wins, 3 losses, avg -11.73% (AVOID)
+    - days_to_earnings 3-5: 2 wins, 0 losses, avg +7.66% (BEST)
+    - Low institutional (<20%): 67% win rate, avg +3.85%
+    - High institutional (>60%): 22% win rate, avg +1.57%
+    - Longer bases (26+ weeks) favor winners
+
+    Returns int 0-100:
+        0-29:  LOW — high risk, consider skipping
+        30-59: MODERATE — proceed with caution
+        60-79: HIGH — solid setup
+        80+:   VERY HIGH — best setups
+    """
+    score = 50  # Start neutral
+
+    # 1. Timing factor (biggest differentiator, -40 to +20)
+    if days_to_earnings is not None:
+        if days_to_earnings <= 2:
+            score -= 40  # Death zone: 0 wins, 3 losses in data
+        elif days_to_earnings <= 5:
+            score += 20  # Sweet spot: 100% win rate in data
+        elif days_to_earnings <= 9:
+            score += 10  # Good: 83% win rate in data
+        else:
+            score += 15  # Early alert 10-14d: 75% win rate
+
+    # 2. Institutional ownership factor (-10 to +15)
+    if institutional_pct < 20:
+        score += 15  # Low inst = room for institutional buying catalyst
+    elif institutional_pct < 40:
+        score += 5   # Moderate = some room
+    elif institutional_pct > 60:
+        score -= 10  # Already crowded = limited upside catalyst
+
+    # 3. Base length factor (0 to +10)
+    if weeks_in_base >= 26:
+        score += 10  # Very long consolidation = more stored energy
+    elif weeks_in_base >= 20:
+        score += 5   # Extended base
+
+    # 4. C score factor (0 to +5)
+    if c_score >= 14.5:
+        score += 5   # Near-perfect current earnings
+    elif c_score >= 12:
+        score += 2   # Solid current earnings
+
+    # 5. Beat streak factor (0 to +5)
+    if beat_streak >= 6:
+        score += 5   # Strong consistency
+    elif beat_streak >= 4:
+        score += 2   # Good consistency
+
+    return max(0, min(100, score))
 
 
 @dataclass

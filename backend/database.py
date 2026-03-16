@@ -180,6 +180,8 @@ def run_migrations():
         ("ml_models", "direction_accuracy", "FLOAT"),
         # ML A/B comparison support (Mar 2026)
         ("backtest_runs", "profile_overrides", "TEXT"),
+        # CS confidence scoring (Mar 2026)
+        ("coiled_spring_alerts", "confidence", "INTEGER"),
     ]
 
     # Build a cache of existing columns per table
@@ -607,6 +609,9 @@ class CoiledSpringAlert(Base):
     price_change_pct = Column(Float)
     outcome = Column(String)  # 'big_win', 'win', 'flat', 'loss'
     outcome_updated_at = Column(DateTime)
+
+    # Confidence scoring (0-100, rule-based from historical patterns)
+    confidence = Column(Integer)
 
     # Alert status
     email_sent = Column(Boolean, default=False)

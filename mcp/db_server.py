@@ -370,7 +370,7 @@ def get_coiled_spring_alerts(limit: int = 20) -> str:
         rows = _query("""
             SELECT ticker, alert_date, days_to_earnings, weeks_in_base,
                    beat_streak, total_score, cs_bonus, price_at_alert,
-                   base_type, outcome, price_change_pct
+                   base_type, confidence, outcome, price_change_pct
             FROM coiled_spring_alerts
             ORDER BY alert_date DESC
         """, limit=limit)

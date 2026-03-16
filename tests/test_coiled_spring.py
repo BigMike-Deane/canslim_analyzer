@@ -331,5 +331,88 @@ class TestDatabaseModel:
             pytest.skip("Database not available for this test")
 
 
+class TestCSConfidence:
+    """Test rule-based CS confidence scoring derived from historical outcomes."""
+
+    def test_death_zone_very_low(self):
+        """days_to_earnings <= 2 should produce very low confidence."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=2, institutional_pct=30, weeks_in_base=20,
+            c_score=15, beat_streak=5,
+        )
+        assert score < 30, f"Death zone (2 days) should be LOW, got {score}"
+
+    def test_sweet_spot_high(self):
+        """3-5 days + low inst + long base should produce high confidence."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=4, institutional_pct=10, weeks_in_base=26,
+            c_score=15, beat_streak=6,
+        )
+        assert score >= 80, f"Best setup should be VERY HIGH, got {score}"
+
+    def test_moderate_setup(self):
+        """6-9 days + high inst should produce moderate confidence."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=7, institutional_pct=70, weeks_in_base=15,
+            c_score=12, beat_streak=3,
+        )
+        assert 30 <= score <= 59, f"Moderate setup should be 30-59, got {score}"
+
+    def test_flgt_pattern_low(self):
+        """Replicate FLGT pattern (2 days, high inst) = should flag as dangerous."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=2, institutional_pct=59, weeks_in_base=16,
+            c_score=15, beat_streak=8,
+        )
+        assert score < 30, f"FLGT pattern should be LOW, got {score}"
+
+    def test_winner_pattern_high(self):
+        """Replicate STNG winner pattern (9 days, cup, long base)."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=9, institutional_pct=73, weeks_in_base=26,
+            c_score=15, beat_streak=9,
+        )
+        assert score >= 60, f"STNG pattern should be HIGH, got {score}"
+
+    def test_score_clamped_0_100(self):
+        """Score should never exceed 0-100 range."""
+        from canslim_scorer import calculate_cs_confidence
+        # Best possible
+        best = calculate_cs_confidence(
+            days_to_earnings=4, institutional_pct=5, weeks_in_base=30,
+            c_score=15, beat_streak=10,
+        )
+        assert 0 <= best <= 100
+        # Worst possible
+        worst = calculate_cs_confidence(
+            days_to_earnings=1, institutional_pct=80, weeks_in_base=15,
+            c_score=10, beat_streak=3,
+        )
+        assert 0 <= worst <= 100
+
+    def test_confidence_in_cs_result(self, qualifying_data, qualifying_score):
+        """calculate_coiled_spring_score should include confidence in result."""
+        result = calculate_coiled_spring_score(qualifying_data, qualifying_score)
+        assert "confidence" in result
+        if result["is_coiled_spring"]:
+            assert 0 <= result["confidence"] <= 100
+        else:
+            assert result["confidence"] == 0
+
+    def test_confidence_model_column(self):
+        """CoiledSpringAlert model should have confidence column."""
+        try:
+            sys.path.insert(0, str(parent_dir / 'backend'))
+            from database import CoiledSpringAlert
+            assert hasattr(CoiledSpringAlert, 'confidence')
+        except ImportError:
+            pytest.skip("Database not available")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
