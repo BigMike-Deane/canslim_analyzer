@@ -2679,9 +2679,22 @@ class BacktestEngine:
                 cs_result = self._calculate_coiled_spring_for_backtest(ticker, score_data, static_data, cs_config)
 
                 if cs_result["is_coiled_spring"] and days_to_earnings > block_days and cs_override_enabled:
-                    # ALLOW - high conviction earnings catalyst
-                    coiled_spring_bonus = cs_result.get('cs_score', 0)
-                    logger.debug(f"Backtest CS: {ticker} ({cs_result['cs_details']})")
+                    # Check confidence gating — skip LOW confidence CS setups
+                    cs_confidence = cs_result.get('confidence', 50)
+                    min_cs_confidence = cs_config.get('min_confidence', 30)
+                    if cs_confidence < min_cs_confidence:
+                        logger.debug(
+                            f"Backtest CS SKIPPED (low confidence): {ticker} "
+                            f"confidence={cs_confidence} < {min_cs_confidence}"
+                        )
+                        # Treat as non-CS — apply normal avoidance window
+                        if days_to_earnings <= avoidance_days:
+                            _funnel["earnings_prox"] += 1
+                            continue
+                    else:
+                        # ALLOW - high conviction earnings catalyst
+                        coiled_spring_bonus = cs_result.get('cs_score', 0)
+                        logger.debug(f"Backtest CS: {ticker} confidence={cs_confidence} ({cs_result['cs_details']})")
                 else:
                     # NON-CS: Block stocks within avoidance window only
                     if days_to_earnings <= avoidance_days:

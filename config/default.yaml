@@ -490,6 +490,10 @@ coiled_spring:
     include_in_email: true
     min_price_change_pct: 3     # Require 3% price move from previous alert to re-alert same ticker
 
+  # Confidence gating (rule-based scoring 0-100 from historical outcomes)
+  # LOW (0-29): death zone, skip. MODERATE (30-59): caution. HIGH (60+): act.
+  min_confidence: 30            # Skip CS override for LOW confidence setups
+
   # Position sizing
   position_multiplier: 1.25     # 25% larger position for CS plays
 

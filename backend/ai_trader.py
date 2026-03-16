@@ -2255,12 +2255,25 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             cs_result = calculate_coiled_spring_score_for_stock(stock)
 
             if cs_result["is_coiled_spring"] and days_to_earnings > block_days and cs_override_enabled:
-                # ALLOW - high conviction earnings catalyst (CS stocks embrace earnings)
-                logger.info(f"COILED SPRING: {stock.ticker} ({cs_result['cs_details']})")
-                # Attach CS result for scoring bonus and alert recording
-                stock._cs_result = cs_result
-                # Record alert (respects daily limits)
-                record_coiled_spring_alert(db, stock.ticker, cs_result, stock)
+                # Check confidence gating — skip LOW confidence CS setups
+                cs_confidence = cs_result.get('confidence', 50)
+                min_cs_confidence = cs_config.get('min_confidence', 30)
+                if cs_confidence < min_cs_confidence:
+                    logger.info(
+                        f"CS SKIPPED (low confidence): {stock.ticker} "
+                        f"confidence={cs_confidence} < {min_cs_confidence} "
+                        f"({cs_result['cs_details']})"
+                    )
+                    # Treat as non-CS — apply normal avoidance window
+                    if days_to_earnings <= avoidance_days:
+                        continue
+                else:
+                    # ALLOW - high conviction earnings catalyst (CS stocks embrace earnings)
+                    logger.info(f"COILED SPRING: {stock.ticker} confidence={cs_confidence} ({cs_result['cs_details']})")
+                    # Attach CS result for scoring bonus and alert recording
+                    stock._cs_result = cs_result
+                    # Record alert (respects daily limits)
+                    record_coiled_spring_alert(db, stock.ticker, cs_result, stock)
             else:
                 # NON-CS: Block stocks within avoidance window only
                 # (allow_buy_days is CS evaluation window, not a buy block)
