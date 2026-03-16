@@ -3,7 +3,7 @@ Tests for ML Signal Layer — feature extraction, training, and prediction.
 
 Covers: empty DB, missing signal_factors, NaN handling, buy/sell pairing,
 partial sell aggregation, training (classifier + regression), walk-forward
-no-leakage, predictions.
+no-leakage, predictions, deduplication, improvement gate, health checks.
 """
 
 import json
@@ -20,7 +20,9 @@ from ml.feature_extractor import (
     ENTRY_TYPE_MAP,
     FEATURE_COLUMNS,
     REGIME_MAP,
+    _deduplicate_trades,
     _extract_features,
+    _is_ml_contaminated,
     _nan_safe,
     _pair_buy_sell_trades,
     extract_training_data,
@@ -77,6 +79,19 @@ def _make_trade(
     t.holding_days = holding_days
     t.reason = reason
     return t
+
+
+def _make_backtest_run(id, strategy="nostate_optimized", start_date="2022-01-01",
+                       end_date="2026-03-01", status="completed", profile_overrides=None):
+    """Create a mock BacktestRun-like object."""
+    run = MagicMock()
+    run.id = id
+    run.strategy = strategy
+    run.start_date = start_date
+    run.end_date = end_date
+    run.status = status
+    run.profile_overrides = profile_overrides
+    return run
 
 
 def _make_labeled_df(n=200, win_rate=0.65):
@@ -298,14 +313,14 @@ class TestExtractTrainingData:
     def test_empty_db(self):
         db = MagicMock()
         db.query.return_value.filter.return_value.all.return_value = []
-        df = extract_training_data(db, strategy="nostate_optimized")
+        df, stats = extract_training_data(db, strategy="nostate_optimized")
         assert df.empty
 
     def test_with_backtest_ids_filter(self):
         db = MagicMock()
         query = db.query.return_value.filter.return_value
         query.filter.return_value.all.return_value = []
-        df = extract_training_data(db, backtest_ids=[1, 2, 3])
+        df, stats = extract_training_data(db, backtest_ids=[1, 2, 3])
         assert df.empty
 
 
@@ -326,6 +341,134 @@ class TestGetFeatureMatrix:
         df = _make_labeled_df(n=10)
         X, _, _, _ = get_feature_matrix(df)
         assert list(X.columns) == FEATURE_COLUMNS
+
+
+# ============== Deduplication Tests ==============
+
+
+class TestIsMlContaminated:
+    def test_no_overrides(self):
+        run = _make_backtest_run(1, profile_overrides=None)
+        assert _is_ml_contaminated(run) is False
+
+    def test_empty_overrides(self):
+        run = _make_backtest_run(1, profile_overrides={})
+        assert _is_ml_contaminated(run) is False
+
+    def test_log_only_not_contaminated(self):
+        run = _make_backtest_run(1, profile_overrides={
+            "ml_signal": {"enabled": True, "log_only": True}
+        })
+        assert _is_ml_contaminated(run) is False
+
+    def test_ml_active_is_contaminated(self):
+        run = _make_backtest_run(1, profile_overrides={
+            "ml_signal": {"enabled": True, "log_only": False}
+        })
+        assert _is_ml_contaminated(run) is True
+
+    def test_ml_disabled_not_contaminated(self):
+        run = _make_backtest_run(1, profile_overrides={
+            "ml_signal": {"enabled": False, "log_only": False}
+        })
+        assert _is_ml_contaminated(run) is False
+
+    def test_non_ml_overrides_not_contaminated(self):
+        run = _make_backtest_run(1, profile_overrides={
+            "stop_loss_pct": 5.0
+        })
+        assert _is_ml_contaminated(run) is False
+
+
+class TestDeduplicateTrades:
+    def test_no_duplicates(self):
+        rows = [
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 1, "sell_reason": "stop_loss", "gain_pct": -5.0},
+            {"ticker": "GOOGL", "date": "2024-02-10", "backtest_id": 1, "sell_reason": "take_profit", "gain_pct": 15.0},
+        ]
+        result = _deduplicate_trades(rows)
+        assert len(result) == 2
+
+    def test_same_ticker_date_keeps_newest_backtest(self):
+        rows = [
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 100, "sell_reason": "stop_loss", "gain_pct": -5.0},
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 200, "sell_reason": "stop_loss", "gain_pct": -3.0},
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 150, "sell_reason": "stop_loss", "gain_pct": -4.0},
+        ]
+        result = _deduplicate_trades(rows)
+        assert len(result) == 1
+        assert result[0]["backtest_id"] == 200
+        assert result[0]["gain_pct"] == -3.0
+
+    def test_different_dates_not_deduped(self):
+        rows = [
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 1, "sell_reason": "stop_loss", "gain_pct": -5.0},
+            {"ticker": "AAPL", "date": "2024-03-20", "backtest_id": 1, "sell_reason": "take_profit", "gain_pct": 10.0},
+        ]
+        result = _deduplicate_trades(rows)
+        assert len(result) == 2
+
+    def test_partial_and_full_sell_preserved(self):
+        """PARTIAL_SELL and SELL for same ticker/date kept as separate entries."""
+        rows = [
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 1, "sell_reason": "PARTIAL PROFIT", "gain_pct": 10.0},
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": 1, "sell_reason": "TRAILING STOP", "gain_pct": 20.0},
+        ]
+        result = _deduplicate_trades(rows)
+        assert len(result) == 2
+
+    def test_large_dedup_set(self):
+        """10 overlapping backtests produce 10 copies of same trade — dedup to 1."""
+        rows = [
+            {"ticker": "AAPL", "date": "2024-01-15", "backtest_id": i, "sell_reason": "stop_loss", "gain_pct": -5.0}
+            for i in range(10)
+        ]
+        result = _deduplicate_trades(rows)
+        assert len(result) == 1
+        assert result[0]["backtest_id"] == 9  # Newest
+
+
+class TestBacktestDeduplication:
+    def test_latest_per_date_range_selected(self):
+        """When multiple backtests cover the same date range, only the latest is used."""
+        from ml.feature_extractor import _select_deduplicated_backtests
+
+        runs = [
+            _make_backtest_run(100, start_date="2022-01-01", end_date="2026-03-01"),
+            _make_backtest_run(200, start_date="2022-01-01", end_date="2026-03-01"),
+            _make_backtest_run(150, start_date="2022-01-01", end_date="2026-03-01"),
+            _make_backtest_run(50, start_date="2023-01-01", end_date="2024-01-01"),
+            _make_backtest_run(75, start_date="2023-01-01", end_date="2024-01-01"),
+        ]
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = runs
+
+        stats = {"backtests_before": 0, "excluded_ml_contaminated": 0}
+        result = _select_deduplicated_backtests(db, "nostate_optimized", stats)
+
+        ids = {r.id for r in result}
+        assert ids == {200, 75}  # Latest per date range
+        assert stats["backtests_before"] == 5
+
+    def test_ml_contaminated_excluded(self):
+        from ml.feature_extractor import _select_deduplicated_backtests
+
+        runs = [
+            _make_backtest_run(100, start_date="2022-01-01", end_date="2026-03-01"),
+            _make_backtest_run(200, start_date="2022-01-01", end_date="2026-03-01",
+                              profile_overrides={"ml_signal": {"enabled": True, "log_only": False}}),
+        ]
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = runs
+
+        stats = {"backtests_before": 0, "excluded_ml_contaminated": 0}
+        result = _select_deduplicated_backtests(db, "nostate_optimized", stats)
+
+        ids = {r.id for r in result}
+        assert ids == {100}  # 200 is ML-contaminated
+        assert stats["excluded_ml_contaminated"] == 1
 
 
 # ============== Classifier Trainer Tests ==============
@@ -669,3 +812,40 @@ class TestNaNSafety:
         with patch("ml.model._get_model", return_value=(mock_model, mock_metadata)):
             result = get_ml_prediction(total_score=80, composite_score=90)
         assert result is None
+
+
+# ============== Improvement Gate Tests ==============
+
+
+class TestImprovementGate:
+    """Test that _get_active_model_metric works correctly for gating."""
+
+    def test_no_active_model_returns_none(self):
+        from backend.routes.ml import _get_active_model_metric
+        db = MagicMock()
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        metric, version = _get_active_model_metric(db, "nostate_optimized", "classifier")
+        assert metric is None
+        assert version is None
+
+    def test_classifier_returns_roc_auc(self):
+        from backend.routes.ml import _get_active_model_metric
+        db = MagicMock()
+        active = MagicMock()
+        active.roc_auc = 0.65
+        active.version = 1
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = active
+        metric, version = _get_active_model_metric(db, "nostate_optimized", "classifier")
+        assert metric == 0.65
+        assert version == 1
+
+    def test_regression_returns_spearman(self):
+        from backend.routes.ml import _get_active_model_metric
+        db = MagicMock()
+        active = MagicMock()
+        active.spearman = 0.22
+        active.version = 2
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = active
+        metric, version = _get_active_model_metric(db, "nostate_optimized", "regression")
+        assert metric == 0.22
+        assert version == 2

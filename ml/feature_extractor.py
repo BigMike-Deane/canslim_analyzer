@@ -3,10 +3,13 @@ Extract training features from backtest trades.
 
 Pairs BUY trades with their subsequent SELL(s) to build labeled training data.
 Features come from signal_factors JSON stored on each BacktestTrade.
+
+Includes deduplication to prevent overlapping backtests from inflating
+training data, and excludes ML-contaminated backtests (where ML actively
+influenced trade decisions, creating circular training data).
 """
 
 import logging
-from datetime import date
 from typing import Optional
 
 import pandas as pd
@@ -48,31 +51,52 @@ def extract_training_data(
     db: Session,
     strategy: str = "nostate_optimized",
     backtest_ids: Optional[list] = None,
-) -> pd.DataFrame:
+) -> tuple:
     """
     Extract labeled training data from completed backtest trades.
 
-    Returns DataFrame with FEATURE_COLUMNS + label columns:
+    Returns (DataFrame, dedup_stats dict).
+    DataFrame has FEATURE_COLUMNS + label columns:
         win (binary), gain_pct (float),
         ticker, date, backtest_id, holding_days, sell_reason (metadata)
+
+    dedup_stats contains:
+        backtests_before, backtests_after, excluded_ml_contaminated,
+        trades_before_dedup, trades_after_dedup
     """
     from backend.database import BacktestRun, BacktestTrade
 
-    # Find completed backtests for the strategy
-    query = db.query(BacktestRun).filter(
-        BacktestRun.status == "completed",
-        BacktestRun.strategy == strategy,
-    )
-    if backtest_ids:
-        query = query.filter(BacktestRun.id.in_(backtest_ids))
+    dedup_stats = {
+        "backtests_before": 0,
+        "backtests_after": 0,
+        "excluded_ml_contaminated": 0,
+        "trades_before_dedup": 0,
+        "trades_after_dedup": 0,
+    }
 
-    runs = query.all()
+    if backtest_ids:
+        # Explicit backtest IDs — use as-is, no dedup needed
+        runs = db.query(BacktestRun).filter(
+            BacktestRun.status == "completed",
+            BacktestRun.strategy == strategy,
+            BacktestRun.id.in_(backtest_ids),
+        ).all()
+    else:
+        # Auto-select: latest backtest per unique (start_date, end_date),
+        # excluding ML-contaminated runs
+        runs = _select_deduplicated_backtests(db, strategy, dedup_stats)
+
     if not runs:
         logger.warning(f"No completed backtests found for strategy '{strategy}'")
-        return pd.DataFrame()
+        return pd.DataFrame(), dedup_stats
 
     run_ids = [r.id for r in runs]
-    logger.info(f"Extracting from {len(run_ids)} backtest runs: {run_ids}")
+    dedup_stats["backtests_after"] = len(run_ids)
+    logger.info(
+        f"Extracting from {len(run_ids)} deduplicated backtest runs: {run_ids} "
+        f"(from {dedup_stats['backtests_before']} total, "
+        f"{dedup_stats['excluded_ml_contaminated']} ML-contaminated excluded)"
+    )
 
     # Pull all trades for these runs
     trades = (
@@ -84,20 +108,108 @@ def extract_training_data(
 
     if not trades:
         logger.warning("No trades found in selected backtests")
-        return pd.DataFrame()
+        return pd.DataFrame(), dedup_stats
 
     # Pair BUYs with their subsequent SELLs
     rows = _pair_buy_sell_trades(trades)
 
     if not rows:
         logger.warning("No buy-sell pairs found")
-        return pd.DataFrame()
+        return pd.DataFrame(), dedup_stats
+
+    dedup_stats["trades_before_dedup"] = len(rows)
+
+    # Trade-level dedup: if overlapping date ranges produced duplicate
+    # (ticker, buy_date) pairs, keep only the one from the newest backtest
+    rows = _deduplicate_trades(rows)
+    dedup_stats["trades_after_dedup"] = len(rows)
 
     df = pd.DataFrame(rows)
-    logger.info(f"Extracted {len(df)} labeled trades from {len(run_ids)} backtests")
+
+    # Sort by date for correct walk-forward CV chronological ordering
+    df = df.sort_values("date").reset_index(drop=True)
+
+    logger.info(
+        f"Extracted {len(df)} labeled trades "
+        f"(dedup removed {dedup_stats['trades_before_dedup'] - len(df)} duplicates)"
+    )
     logger.info(f"Win rate: {df['win'].mean():.1%}, Mean gain: {df['gain_pct'].mean():.1f}%")
 
-    return df
+    return df, dedup_stats
+
+
+def _select_deduplicated_backtests(db: Session, strategy: str, stats: dict) -> list:
+    """
+    Select the latest completed backtest per unique (start_date, end_date),
+    excluding ML-contaminated runs (where ML actively influenced trades).
+    """
+    from backend.database import BacktestRun
+
+    # Get all completed backtests for the strategy
+    all_runs = db.query(BacktestRun).filter(
+        BacktestRun.status == "completed",
+        BacktestRun.strategy == strategy,
+    ).all()
+
+    stats["backtests_before"] = len(all_runs)
+
+    # Exclude ML-contaminated backtests (ML ACTIVE profile_overrides)
+    clean_runs = []
+    for run in all_runs:
+        if _is_ml_contaminated(run):
+            stats["excluded_ml_contaminated"] += 1
+            continue
+        clean_runs.append(run)
+
+    if not clean_runs:
+        return []
+
+    # Keep only the latest backtest per (start_date, end_date)
+    best_per_range = {}
+    for run in clean_runs:
+        key = (str(run.start_date), str(run.end_date))
+        if key not in best_per_range or run.id > best_per_range[key].id:
+            best_per_range[key] = run
+
+    return list(best_per_range.values())
+
+
+def _is_ml_contaminated(run) -> bool:
+    """Check if a backtest had ML actively influencing trade decisions."""
+    overrides = run.profile_overrides
+    if not overrides:
+        return False
+
+    ml_override = overrides.get("ml_signal", {})
+    if not ml_override:
+        return False
+
+    # ML-contaminated if ML was enabled AND not in log-only mode
+    enabled = ml_override.get("enabled", False)
+    log_only = ml_override.get("log_only", True)
+
+    return enabled and not log_only
+
+
+def _deduplicate_trades(rows: list) -> list:
+    """
+    Deduplicate paired trades by (ticker, buy_date), keeping the record
+    from the newest backtest (highest backtest_id).
+
+    Only deduplicates SELL-based rows (full position exit).
+    PARTIAL_SELL rows from the same buy are kept alongside the SELL row
+    since they represent different exit events.
+    """
+    # Group by (ticker, date, sell_reason_type) to handle partial vs full sells
+    best = {}
+    for row in rows:
+        # Use ticker + buy_date + whether it's a partial as the dedup key
+        is_partial = "PARTIAL" in row.get("sell_reason", "")
+        key = (row["ticker"], row["date"], is_partial)
+        if key not in best or row["backtest_id"] > best[key]["backtest_id"]:
+            best[key] = row
+
+    return list(best.values())
 
 
 def _pair_buy_sell_trades(trades) -> list:
@@ -154,7 +266,7 @@ def _pair_buy_sell_trades(trades) -> list:
 
 
 def _extract_features(buy_trade) -> dict:
-    """Extract the 12 features from a BUY trade's signal_factors."""
+    """Extract the 9 features from a BUY trade's signal_factors."""
     sf = buy_trade.signal_factors or {}
 
     # Skip trades with no signal_factors (very old backtests)
