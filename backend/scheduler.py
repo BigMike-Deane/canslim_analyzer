@@ -872,6 +872,8 @@ def run_continuous_scan():
         stock.pivot_price = analysis.get("pivot_price")
         stock.is_breaking_out = analysis.get("is_breaking_out", False)
         stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
+        stock.volume_dry_up = analysis.get("volume_dry_up", False)
+        stock.institutional_accumulation = analysis.get("institutional_accumulation", False)
 
         # Insider trading signals (only update if we have data)
         if analysis.get("insider_sentiment"):

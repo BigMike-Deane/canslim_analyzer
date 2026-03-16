@@ -2511,6 +2511,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 deterministic_boost_val = det_config.get('stable_bonus', 5)
             composite_score += deterministic_boost_val
 
+        # Volume dry-up bonus: volume contracting in a base = stored energy before breakout
+        volume_dry_up_bonus = 0
+        if getattr(stock, 'volume_dry_up', False) and has_base and not is_breaking_out:
+            volume_dry_up_bonus = 5
+            composite_score += volume_dry_up_bonus
+
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
         # Calculate position size - aligned with backtester
@@ -2659,6 +2665,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             "estimate_revision_bonus": estimate_revision_bonus,
             "composite_score": round(composite_score, 1),
         }
+        if volume_dry_up_bonus > 0:
+            buy_signal_factors["volume_dry_up"] = True
         if coiled_spring_bonus > 0:
             buy_signal_factors["coiled_spring"] = True
             # Enrich with CS detail for ML training

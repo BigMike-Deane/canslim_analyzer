@@ -298,6 +298,9 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
             is_breaking_out, breakout_vol = TechnicalAnalyzer.is_breaking_out(stock_data, base_pattern)
 
+            # Accumulation/Distribution analysis (uses price_history before it's discarded)
+            ad_result = TechnicalAnalyzer.calculate_accumulation_distribution(stock_data, days=20)
+
             # Get pre-fetched insider/short data for this ticker
             ticker_supplemental = insider_short_data.get(stock_data.ticker, {})
             insider_data = ticker_supplemental.get("insider", {})
@@ -424,6 +427,11 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "eps_estimate_prior": analyst_estimates_data.get("eps_estimate_prior"),
                 "eps_estimate_revision_pct": analyst_estimates_data.get("eps_estimate_revision_pct"),
                 "estimate_revision_trend": analyst_estimates_data.get("estimate_revision_trend"),
+                # Accumulation/Distribution
+                "volume_dry_up": ad_result.get("volume_dry_up", False),
+                "institutional_accumulation": ad_result.get("institutional_accumulation", False),
+                "ad_rating": ad_result.get("rating", "C"),
+                "ad_up_down_ratio": ad_result.get("up_down_ratio", 1.0),
             }
 
             results.append(result)

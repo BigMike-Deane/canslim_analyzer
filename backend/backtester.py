@@ -1898,6 +1898,10 @@ class BacktestEngine:
                         if rev_growth >= 30:
                             is_growth_stock = True
 
+            # Volume dry-up detection (uses price history)
+            ad_data = self.data_provider.get_accumulation_distribution(ticker, current_date, 20)
+            _volume_dry_up = ad_data.get("volume_dry_up", False) if ad_data else False
+
             score_result = {
                 "total_score": total_score,
                 "c_score": c_score,
@@ -1919,6 +1923,7 @@ class BacktestEngine:
                 "is_growth_stock": is_growth_stock,
                 "is_breaking_out": is_breaking_out,
                 "volume_ratio": volume_ratio_breakout if volume_ratio_breakout else (current_volume / avg_volume if avg_volume > 0 else 1.0),
+                "_volume_dry_up": _volume_dry_up,
             }
             scores[ticker] = score_result
             self._score_cache[ticker] = score_result  # Cache for reuse within same day
@@ -2911,6 +2916,13 @@ class BacktestEngine:
                     deterministic_boost_val = det_config.get('stable_bonus', 5)
                 composite_score += deterministic_boost_val
 
+            # Volume dry-up bonus: volume contracting in a base = stored energy before breakout
+            volume_dry_up_bonus = 0
+            volume_dry_up = score_data.get("_volume_dry_up", False)
+            if volume_dry_up and has_base and not is_breaking_out:
+                volume_dry_up_bonus = 5
+                composite_score += volume_dry_up_bonus
+
             # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
             # Position sizing: conviction-based (higher scores get larger positions)
@@ -3075,6 +3087,8 @@ class BacktestEngine:
                 "estimate_revision_bonus": estimate_revision_bonus,
                 "composite_score": round(composite_score, 1),
             }
+            if volume_dry_up_bonus > 0:
+                signal_factors["volume_dry_up"] = True
             if coiled_spring_bonus > 0:
                 signal_factors["coiled_spring"] = True
                 # Enrich with CS detail for ML training

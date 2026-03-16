@@ -422,15 +422,16 @@ class HistoricalDataProvider:
 
     def get_accumulation_distribution(self, ticker: str, as_of_date: date,
                                        lookback_days: int = 20) -> dict:
-        """Calculate up-volume vs down-volume ratio for a stock.
+        """Calculate up-volume vs down-volume ratio and volume dry-up for a stock.
         Measures whether institutional investors are accumulating (buying) or distributing (selling).
-        Returns dict with ad_ratio, or None if insufficient data."""
+        Returns dict with ad_ratio, volume_dry_up, institutional_accumulation, or None if insufficient data."""
         history = self.get_price_history_up_to(ticker, as_of_date, lookback_days + 1)
         if history.empty or len(history) < 10:
             return None
         try:
             up_vol = 0.0
             down_vol = 0.0
+            volumes = history["volume"].values
             for i in range(1, len(history)):
                 curr_close = float(history.iloc[i]["close"])
                 prev_close = float(history.iloc[i - 1]["close"])
@@ -441,11 +442,28 @@ class HistoricalDataProvider:
                     up_vol += curr_vol
                 elif curr_close < prev_close:
                     down_vol += curr_vol
+
             if down_vol > 0:
-                return {"ad_ratio": up_vol / down_vol}
+                ad_ratio = up_vol / down_vol
             elif up_vol > 0:
-                return {"ad_ratio": 2.0}  # All up, no down = strong accumulation
-            return {"ad_ratio": 1.0}
+                ad_ratio = 2.0
+            else:
+                ad_ratio = 1.0
+
+            # Volume dry-up: recent 10-day avg < 70% of baseline (bullish in base)
+            recent_vol = volumes[-10:].mean() if len(volumes) >= 10 else volumes.mean()
+            baseline_vol = volumes.mean()
+            volume_dry_up = bool(recent_vol < baseline_vol * 0.7) if baseline_vol > 0 else False
+
+            # Institutional accumulation: high up/down ratio + above-avg volume
+            volume_above_avg = recent_vol > baseline_vol * 1.2 if baseline_vol > 0 else False
+            institutional_accumulation = bool(ad_ratio > 1.5 and volume_above_avg)
+
+            return {
+                "ad_ratio": ad_ratio,
+                "volume_dry_up": volume_dry_up,
+                "institutional_accumulation": institutional_accumulation,
+            }
         except (KeyError, IndexError, TypeError, ValueError):
             return None
 
