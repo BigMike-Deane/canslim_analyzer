@@ -534,9 +534,44 @@ def _track_request(status_code: int):
 
 
 def _fmp_get(url: str, **kwargs) -> requests.Response:
-    """Wrapper for FMP API requests with rate limit tracking"""
-    resp = requests.get(url, **kwargs)
-    _track_request(resp.status_code)
+    """Wrapper for FMP API requests with rate limiting, circuit breaker, and backoff."""
+    import fmp_rate_limiter
+
+    max_retries = fmp_rate_limiter._config.get("max_retries", 3)
+    for attempt in range(max_retries):
+        try:
+            wait_time = fmp_rate_limiter.acquire_sync()
+        except fmp_rate_limiter.CircuitBreakerOpen:
+            logger.debug(f"Circuit breaker open, skipping FMP request")
+            # Return a fake 429 response so callers handle gracefully
+            resp = requests.Response()
+            resp.status_code = 429
+            return resp
+
+        resp = requests.get(url, **kwargs)
+        _track_request(resp.status_code)
+
+        if resp.status_code == 200:
+            fmp_rate_limiter.record_success(wait_time)
+            return resp
+        elif resp.status_code == 429:
+            fmp_rate_limiter.record_429()
+            if attempt < max_retries - 1:
+                backoff = fmp_rate_limiter.calculate_backoff(
+                    attempt,
+                    fmp_rate_limiter._config["backoff_base"],
+                    fmp_rate_limiter._config["backoff_max"],
+                )
+                logger.warning(f"FMP 429, backoff {backoff:.1f}s (attempt {attempt + 1}/{max_retries})")
+                import time as _time
+                _time.sleep(backoff)
+                continue
+            return resp
+        else:
+            if resp.status_code >= 500:
+                fmp_rate_limiter.record_error()
+            return resp
+
     return resp
 
 

@@ -27,6 +27,11 @@ _load_attempted = False
 # At scale=10: predicted +10% → 0.73, 0% → 0.50, -10% → 0.27
 _GAIN_SIGMOID_SCALE = 10.0
 
+# Prediction cache — keyed by feature values, reset each scan cycle
+_prediction_cache: dict = {}
+_cache_hits: int = 0
+_cache_misses: int = 0
+
 
 def get_ml_prediction(**features) -> Optional[float]:
     """
@@ -36,7 +41,10 @@ def get_ml_prediction(**features) -> Optional[float]:
     For regression models: returns sigmoid(predicted_gain / scale).
 
     Thread-safe, lazy-loaded. Never raises — returns None on any error.
+    Caches predictions per feature set within a scan cycle.
     """
+    global _cache_hits, _cache_misses
+
     try:
         model, metadata = _get_model()
         if model is None:
@@ -53,6 +61,13 @@ def get_ml_prediction(**features) -> Optional[float]:
         for k, v in row.items():
             if isinstance(v, bool):
                 row[k] = int(v)
+
+        # Check prediction cache
+        cache_key = tuple(sorted((k, round(v, 6) if isinstance(v, float) else v) for k, v in row.items()))
+        if cache_key in _prediction_cache:
+            _cache_hits += 1
+            return _prediction_cache[cache_key]
+        _cache_misses += 1
 
         X = pd.DataFrame([row], columns=feature_columns)
         X = X.fillna(0)
@@ -72,11 +87,31 @@ def get_ml_prediction(**features) -> Optional[float]:
         if confidence != confidence:  # NaN != NaN per IEEE 754
             logger.warning("ML model produced NaN confidence — returning None")
             return None
+
+        # Store in cache
+        _prediction_cache[cache_key] = confidence
         return confidence
 
     except Exception as e:
         logger.error(f"ML prediction error: {e}")
         return None
+
+
+def clear_prediction_cache():
+    """Reset prediction cache. Call at the start of each scan/evaluation cycle."""
+    global _prediction_cache, _cache_hits, _cache_misses
+    _prediction_cache = {}
+    _cache_hits = 0
+    _cache_misses = 0
+
+
+def get_prediction_cache_stats() -> dict:
+    """Get prediction cache statistics."""
+    return {
+        "size": len(_prediction_cache),
+        "hits": _cache_hits,
+        "misses": _cache_misses,
+    }
 
 
 def reload_model():

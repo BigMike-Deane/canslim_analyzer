@@ -178,6 +178,8 @@ def run_migrations():
         ("ml_models", "r2_score", "FLOAT"),
         ("ml_models", "mae", "FLOAT"),
         ("ml_models", "direction_accuracy", "FLOAT"),
+        # ML A/B comparison support (Mar 2026)
+        ("backtest_runs", "profile_overrides", "TEXT"),
     ]
 
     # Build a cache of existing columns per table
@@ -322,6 +324,15 @@ def run_migrations():
         ('ix_backtest_runs_user', 'backtest_runs', 'user_id'),
         ('ix_fidelity_snapshots_user', 'fidelity_snapshots', 'user_id'),
         ('ix_fidelity_trades_user', 'fidelity_trades', 'user_id'),
+        # Composite performance indexes — optimize hot query paths
+        ('ix_ai_portfolio_trades_user_action_date', 'ai_portfolio_trades', 'user_id, action, executed_at'),
+        ('ix_ai_portfolio_trades_user_ticker_date', 'ai_portfolio_trades', 'user_id, ticker, executed_at'),
+        ('ix_ai_portfolio_snapshots_user_timestamp', 'ai_portfolio_snapshots', 'user_id, timestamp'),
+        ('ix_fidelity_trades_user_date_symbol_action', 'fidelity_trades', 'user_id, run_date, symbol, action'),
+        ('ix_fidelity_trades_user_rundate', 'fidelity_trades', 'user_id, run_date'),
+        ('ix_backtest_runs_user_created', 'backtest_runs', 'user_id, created_at'),
+        ('ix_coiled_spring_alerts_outcome_date', 'coiled_spring_alerts', 'outcome, alert_date'),
+        ('ix_earnings_audits_date_confidence', 'earnings_audits', 'audited_at, fundamental_confidence'),
     ]
 
     with engine.begin() as conn:
@@ -865,6 +876,7 @@ class BacktestRun(Base):
     progress_pct = Column(Float, default=0.0)  # 0-100 progress during run
     cancel_requested = Column(Boolean, default=False)  # Flag to request cancellation
     force_refresh = Column(Boolean, default=False)  # Force fresh FMP earnings fetch (ignore cache)
+    profile_overrides = Column(JSON, nullable=True)  # Optional strategy profile overrides for A/B testing
 
     # Relationships (cascade delete when backtest is deleted)
     daily_snapshots = relationship("BacktestSnapshot", back_populates="backtest_run", cascade="all, delete-orphan")

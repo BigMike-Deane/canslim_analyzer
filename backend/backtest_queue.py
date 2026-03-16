@@ -127,7 +127,9 @@ class BacktestQueueManager:
             logger.info(f"Backtest {backtest_id} starting (queue remaining: {self._queue.qsize()})")
             db = SessionLocal()
             try:
-                run_backtest(db, backtest_id)
+                bt_run = db.get(BacktestRun, backtest_id)
+                overrides = bt_run.profile_overrides if bt_run and bt_run.profile_overrides else None
+                run_backtest(db, backtest_id, profile_overrides=overrides)
                 logger.info(f"Backtest {backtest_id} completed successfully")
             except Exception as e:
                 logger.error(f"Backtest {backtest_id} failed: {e}")

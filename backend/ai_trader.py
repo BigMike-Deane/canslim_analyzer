@@ -1779,6 +1779,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     Evaluate stocks for potential buys - considers both CANSLIM and Growth Mode stocks.
     Uses appropriate score based on stock type for a balanced portfolio.
     """
+    # Reset ML prediction cache for this evaluation cycle
+    try:
+        from ml.model import clear_prediction_cache
+        clear_prediction_cache()
+    except ImportError:
+        pass
+
     portfolio_config = get_or_create_config(db, user_id=user_id)
     portfolio = get_portfolio_value(db, user_id=user_id)
     logger.info(f"evaluate_buys: cash=${portfolio_config.current_cash:.2f}, portfolio_value=${portfolio['total_value']:.2f}")
@@ -2672,6 +2679,20 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if ml_confidence is not None and ml_confidence == ml_confidence:
             buy_signal_factors["ml_confidence"] = round(ml_confidence, 3)
             buy_signal_factors["ml_bonus"] = round(ml_bonus, 1)
+        # ML confidence gating: veto or reduce low-confidence candidates
+        ml_min_confidence = ml_config.get('min_confidence', 0.0)
+        if ml_confidence is not None and ml_confidence == ml_confidence and ml_min_confidence > 0:
+            if ml_confidence < ml_min_confidence:
+                veto_action = ml_config.get('veto_action', 'skip')
+                if veto_action == 'skip':
+                    buy_signal_factors["ml_vetoed"] = True
+                    logger.info(f"ML VETO: {stock} confidence {ml_confidence:.3f} < {ml_min_confidence}")
+                    continue
+                elif veto_action == 'reduce':
+                    position_value *= 0.5
+                    shares = position_value / stock.current_price
+                    buy_signal_factors["ml_reduced"] = True
+                    logger.info(f"ML REDUCE: {stock} confidence {ml_confidence:.3f} < {ml_min_confidence}, halved position")
         buys.append({
             "stock": stock,
             "shares": shares,

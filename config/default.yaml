@@ -547,8 +547,16 @@ universe:
 # API Rate Limits
 api:
   fmp:
-    rate_limit: 300  # calls per minute
-    timeout: 10      # seconds
+    rate_limit: 300          # FMP plan limit (calls per minute)
+    target_rate: 250         # Our target (leave headroom)
+    burst_size: 10           # Max burst before throttling
+    timeout: 10              # seconds per request
+    failure_threshold: 5     # consecutive 429s to trip circuit breaker
+    base_cooldown: 30        # seconds initial cooldown when tripped
+    max_cooldown: 300        # seconds max cooldown (5 min)
+    backoff_base: 2.0        # seconds base for exponential backoff
+    backoff_max: 60.0        # seconds max backoff
+    max_retries: 3           # retries per request on 429
   yahoo:
     delay: 0.3       # seconds between calls
     timeout: 15      # seconds
@@ -893,10 +901,12 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
     ml_signal:
-      enabled: true        # ON — log predictions to signal_factors
-      weight: 20           # Max composite_score bonus/penalty
-      min_roc_auc: 0.55    # Model must exceed to activate
-      log_only: false      # ML confidence modifies composite_score ranking
+      enabled: true          # ON — log predictions to signal_factors
+      weight: 20             # Max composite_score bonus/penalty
+      min_roc_auc: 0.55      # Model must exceed to activate
+      log_only: true         # SAFE default — set false to let ML modify composite_score
+      min_confidence: 0.0    # Gating threshold: skip buys below this confidence (0.0 = no gating)
+      veto_action: "skip"    # What to do when below min_confidence: "skip" or "reduce" (half position)
 
   nostate_throttled:
     label: "NoState Throttled"

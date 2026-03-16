@@ -27,6 +27,7 @@ from data_fetcher import (
     REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
     load_cache_from_db, mark_ticker_as_delisted, clear_delisted_ticker
 )
+import fmp_rate_limiter
 
 if REDIS_AVAILABLE:
     from redis_cache import redis_cache
@@ -240,13 +241,20 @@ async def _init_async_primitives():
     api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     _rate_lock = asyncio.Lock()
     _yahoo_semaphore = asyncio.Semaphore(3)
-    # Reset rate limiter state for fresh scan
+    # Reset legacy rate limiter state for fresh scan
     _rate_limiter["calls_this_minute"] = 0
     _rate_limiter["minute_start"] = None
     _rate_limiter["consecutive_429s"] = 0
     _rate_limiter["backoff_until"] = None
     _rate_limiter["total_calls"] = 0
     _rate_limiter["total_429s"] = 0
+    # Initialize centralized rate limiter (loads config if not already done)
+    try:
+        from config_loader import config
+        fmp_config = config.get("api.fmp", {})
+        fmp_rate_limiter.init(fmp_config)
+    except Exception:
+        fmp_rate_limiter.init()  # use defaults
 
 # Checkpoint file for progress persistence
 CHECKPOINT_FILE = Path(__file__).parent / "data" / "scan_checkpoint.json"
@@ -342,56 +350,50 @@ async def _check_rate_limit():
 
 
 def get_rate_limit_stats() -> dict:
-    """Get current rate limit statistics"""
-    return {
-        "calls_this_minute": _rate_limiter["calls_this_minute"],
-        "max_per_minute": _rate_limiter["max_calls_per_minute"],
-        "total_calls": _rate_limiter["total_calls"],
-        "total_429s": _rate_limiter["total_429s"],
-        "consecutive_429s": _rate_limiter["consecutive_429s"]
-    }
+    """Get current rate limit statistics (includes centralized metrics)."""
+    return fmp_rate_limiter.get_rate_limit_stats()
 
 
 async def fetch_json_async(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> Optional[dict]:
-    """Async HTTP GET with rate limiting and exponential backoff"""
-    global _rate_limiter
-
-    # Check rate limit before making request
-    await _check_rate_limit()
+    """Async HTTP GET with centralized rate limiting, circuit breaker, and exponential backoff."""
+    max_retries = fmp_rate_limiter._config.get("max_retries", 3)
 
     async with api_semaphore:
-        for attempt in range(3):
+        for attempt in range(max_retries):
+            # Acquire rate governor token (blocks until allowed)
+            try:
+                wait_time = await fmp_rate_limiter.acquire_async()
+            except fmp_rate_limiter.CircuitBreakerOpen:
+                logger.debug(f"Circuit breaker open, skipping {url[:60]}...")
+                return None
+
             try:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
                     if response.status == 200:
-                        _rate_limiter["consecutive_429s"] = 0
+                        fmp_rate_limiter.record_success(wait_time)
                         return await response.json()
                     elif response.status == 429:
-                        # Rate limited - exponential backoff with longer waits
-                        _rate_limiter["consecutive_429s"] += 1
-                        _rate_limiter["total_429s"] += 1
-                        # Longer backoff: 5s, 15s, 30s based on attempts and consecutive 429s
-                        base_wait = 5 * (2 ** attempt)
-                        extra_wait = min(_rate_limiter["consecutive_429s"] * 5, 30)
-                        wait_time = min(base_wait + extra_wait, 60)
-                        logger.warning(f"Rate limited (429 #{_rate_limiter['total_429s']}), waiting {wait_time:.1f}s (attempt {attempt + 1}/3)")
-                        _rate_limiter["backoff_until"] = datetime.now() + timedelta(seconds=wait_time)
-                        # Also reduce the per-minute limit temporarily
-                        _rate_limiter["max_calls_per_minute"] = max(200, _rate_limiter["max_calls_per_minute"] - 25)
-                        await asyncio.sleep(wait_time)
+                        fmp_rate_limiter.record_429()
+                        backoff = fmp_rate_limiter.calculate_backoff(
+                            attempt,
+                            fmp_rate_limiter._config["backoff_base"],
+                            fmp_rate_limiter._config["backoff_max"],
+                        )
+                        logger.warning(f"429 rate limited, backoff {backoff:.1f}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(backoff)
                         continue
                     elif response.status in {500, 502, 503, 504}:
-                        # Server error - retry with exponential backoff
-                        wait_time = min(2 ** attempt, 10)  # 1s, 2s, 4s (max 10s)
-                        logger.warning(f"HTTP {response.status} for {url[:60]}... retrying in {wait_time}s (attempt {attempt + 1}/3)")
-                        await asyncio.sleep(wait_time)
+                        fmp_rate_limiter.record_error()
+                        wait = min(2 ** attempt, 10)
+                        logger.warning(f"HTTP {response.status} for {url[:60]}... retrying in {wait}s")
+                        await asyncio.sleep(wait)
                         continue
                     else:
                         logger.debug(f"HTTP {response.status} for {url[:100]}...")
                         return None
             except asyncio.TimeoutError:
                 logger.debug(f"Timeout fetching {url[:100]}... (attempt {attempt + 1})")
-                if attempt < 2:
+                if attempt < max_retries - 1:
                     await asyncio.sleep(1)
             except Exception as e:
                 logger.debug(f"Error fetching {url[:100]}...: {e}")

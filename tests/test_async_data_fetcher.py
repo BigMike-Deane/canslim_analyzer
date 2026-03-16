@@ -59,17 +59,16 @@ class TestRateLimiting:
     """Tests for rate limiting functionality"""
 
     def test_get_rate_limit_stats_returns_dict(self):
-        """Test that get_rate_limit_stats returns expected structure"""
+        """Test that get_rate_limit_stats returns expected structure (centralized)"""
         from async_data_fetcher import get_rate_limit_stats
 
         stats = get_rate_limit_stats()
 
         assert isinstance(stats, dict)
-        assert "calls_this_minute" in stats
-        assert "max_per_minute" in stats
-        assert "total_calls" in stats
-        assert "total_429s" in stats
-        assert "consecutive_429s" in stats
+        assert "total_requests" in stats
+        assert "errors_429" in stats
+        assert "circuit_breaker" in stats
+        assert "rate_429_pct" in stats
 
     def test_rate_limiter_has_expected_keys(self):
         """Test that _rate_limiter has all expected keys"""

@@ -53,9 +53,10 @@ REGIME_MAP_ML = {"bearish": 0, "neutral": 1, "bullish": 2}
 
 # Lazy import for graceful fallback when ML dependencies not installed
 try:
-    from ml.model import get_ml_prediction
+    from ml.model import get_ml_prediction, clear_prediction_cache
 except ImportError:
     get_ml_prediction = lambda **kwargs: None
+    clear_prediction_cache = lambda: None
 
 
 def get_strategy_profile(strategy_name: str = "balanced") -> dict:
@@ -110,7 +111,7 @@ class BacktestEngine:
     Runs a historical simulation of the CANSLIM AI trading strategy.
     """
 
-    def __init__(self, db: Session, backtest_id: int):
+    def __init__(self, db: Session, backtest_id: int, profile_overrides: dict = None):
         self.db = db
         self.backtest = db.get(BacktestRun, backtest_id)
 
@@ -149,6 +150,10 @@ class BacktestEngine:
         # so profile-level market_state overrides (e.g. FTD thresholds) apply
         self.strategy = self.backtest.strategy or "balanced"
         self.profile = get_strategy_profile(self.strategy)
+
+        # Apply profile overrides for A/B testing (e.g., ML signal on/off)
+        if profile_overrides:
+            self._deep_merge(self.profile, profile_overrides)
 
         # Market state machine (replaces binary regime gate + advisory FTD)
         # Deep-merge profile-level market_state overrides with global config
@@ -274,6 +279,15 @@ class BacktestEngine:
             except Exception as e:
                 logger.debug(f"Backtest cache cleanup error: {e}")
             self._persistent_cache_conn = None
+
+    @staticmethod
+    def _deep_merge(base: dict, override: dict):
+        """Recursively merge override into base dict (in-place)."""
+        for key, value in override.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                BacktestEngine._deep_merge(base[key], value)
+            else:
+                base[key] = value
 
     def run(self) -> BacktestRun:
         """
@@ -2383,6 +2397,8 @@ class BacktestEngine:
         - Volume confirmation: Larger positions for breakouts with strong volume
         - Base pattern bonus: Extra points for stocks with proper consolidation
         """
+        # Reset ML prediction cache for this trading day
+        clear_prediction_cache()
         buys = []
         current_tickers = set(self.positions.keys())
 
@@ -3082,6 +3098,19 @@ class BacktestEngine:
             if ml_confidence is not None and ml_confidence == ml_confidence:
                 signal_factors["ml_confidence"] = round(ml_confidence, 3)
                 signal_factors["ml_bonus"] = round(ml_bonus, 1)
+            # ML confidence gating: veto or reduce low-confidence candidates
+            ml_min_confidence = ml_config.get('min_confidence', 0.0)
+            if ml_confidence is not None and ml_confidence == ml_confidence and ml_min_confidence > 0:
+                if ml_confidence < ml_min_confidence:
+                    veto_action = ml_config.get('veto_action', 'skip')
+                    if veto_action == 'skip':
+                        signal_factors["ml_vetoed"] = True
+                        logger.debug(f"ML VETO: {ticker} confidence {ml_confidence:.3f} < {ml_min_confidence}")
+                        continue
+                    elif veto_action == 'reduce':
+                        position_value = shares * price * 0.5
+                        shares = position_value / price
+                        signal_factors["ml_reduced"] = True
 
             _funnel["passed"] += 1
             buys.append(SimulatedTrade(
@@ -3540,7 +3569,7 @@ class BacktestEngine:
                 self.backtest.spy_return_pct = ((spy_end_price / self.spy_start_price) - 1) * 100
 
 
-def run_backtest(db: Session, backtest_id: int) -> BacktestRun:
-    """Run a backtest by ID"""
-    engine = BacktestEngine(db, backtest_id)
+def run_backtest(db: Session, backtest_id: int, profile_overrides: dict = None) -> BacktestRun:
+    """Run a backtest by ID, with optional profile overrides for A/B testing."""
+    engine = BacktestEngine(db, backtest_id, profile_overrides=profile_overrides)
     return engine.run()

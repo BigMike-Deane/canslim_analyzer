@@ -1,7 +1,7 @@
 """ML Signal Layer API routes."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -413,3 +413,85 @@ async def preview_training_data(
         "mean_gain": round(float(df["gain_pct"].mean()), 2),
         "samples": df.head(limit).to_dict(orient="records"),
     }
+
+
+@router.post("/compare")
+async def compare_ml_backtest(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    starting_cash: float = Query(25000.0),
+    strategy: str = Query("nostate_optimized"),
+    stock_universe: str = Query("all"),
+    min_confidence: float = Query(0.5, description="ML min_confidence threshold for active run"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Launch paired A/B backtests: ML OFF (baseline) vs ML ACTIVE (with gating).
+
+    Both backtests run on the same data/cache for a fair comparison.
+    Results are viewable in the existing backtest comparison UI.
+    """
+    from backend.backtest_queue import backtest_queue
+
+    # Baseline: ML log_only (no influence on trading)
+    baseline = BacktestRun(
+        user_id=current_user.id,
+        name=f"[ML OFF] {strategy} {start_date}→{end_date}",
+        start_date=start_date,
+        end_date=end_date,
+        starting_cash=starting_cash,
+        stock_universe=stock_universe,
+        strategy=strategy,
+        status="pending",
+        profile_overrides={"ml_signal": {"enabled": True, "log_only": True, "min_confidence": 0.0}},
+    )
+    db.add(baseline)
+    db.flush()
+
+    # Active: ML modifies composite_score + confidence gating
+    active = BacktestRun(
+        user_id=current_user.id,
+        name=f"[ML ACTIVE min={min_confidence}] {strategy} {start_date}→{end_date}",
+        start_date=start_date,
+        end_date=end_date,
+        starting_cash=starting_cash,
+        stock_universe=stock_universe,
+        strategy=strategy,
+        status="pending",
+        profile_overrides={
+            "ml_signal": {
+                "enabled": True,
+                "log_only": False,
+                "min_confidence": min_confidence,
+                "veto_action": "skip",
+            }
+        },
+    )
+    db.add(active)
+    db.commit()
+    db.refresh(baseline)
+    db.refresh(active)
+
+    # Enqueue both — baseline first to warm cache
+    backtest_queue.enqueue(baseline.id)
+    backtest_queue.enqueue(active.id)
+
+    return {
+        "message": f"ML A/B comparison started: baseline #{baseline.id} vs active #{active.id}",
+        "baseline_id": baseline.id,
+        "active_id": active.id,
+        "min_confidence": min_confidence,
+        "strategy": strategy,
+    }
+
+
+@router.get("/cache-stats")
+async def get_ml_cache_stats(
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get ML prediction cache statistics."""
+    try:
+        from ml.model import get_prediction_cache_stats
+        return get_prediction_cache_stats()
+    except ImportError:
+        return {"size": 0, "hits": 0, "misses": 0}
