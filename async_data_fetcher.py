@@ -1595,12 +1595,14 @@ async def fetch_stocks_batch_async(
             rate_stats = get_rate_limit_stats()
             current_progress = len(completed_tickers)
             logger.info(f"Progress: {current_progress}/{original_total} stocks ({current_progress/original_total*100:.1f}%) | "
-                       f"API calls: {rate_stats['total_calls']} | 429s: {rate_stats['total_429s']}")
+                       f"API calls: {rate_stats['total_requests']} | 429s: {rate_stats['errors_429']}")
 
             # Smart delay between batches based on rate limit status
             if i + effective_batch_size < len(tickers):
-                # Base delay of 2 seconds, increase if we've hit 429s
-                delay = 2.0 + (rate_stats['consecutive_429s'] * 3.0)
+                # Base delay of 2 seconds, increase if circuit breaker is stressed
+                cb_state = rate_stats.get('circuit_breaker', {})
+                consecutive = cb_state.get('consecutive_failures', 0)
+                delay = 2.0 + (consecutive * 3.0)
                 delay = min(delay, 15.0)  # Cap at 15 seconds
                 await asyncio.sleep(delay)
 
