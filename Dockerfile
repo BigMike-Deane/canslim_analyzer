@@ -41,6 +41,7 @@ COPY config_loader.py ./
 COPY config/ ./config/
 COPY async_data_fetcher.py ./
 COPY async_scanner.py ./
+COPY fmp_rate_limiter.py ./
 
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
