@@ -912,6 +912,135 @@ strategy_profiles:
       min_confidence: 0.0    # Gating threshold: skip buys below this confidence (0.0 = no gating)
       veto_action: "skip"    # What to do when below min_confidence: "skip" or "reduce" (half position)
 
+  # === CORRECTION ZONE STRATEGIES (A/B test vs binary gate) ===
+
+  nostate_correction_zone:
+    label: "NoState + Correction Zone"
+    description: "Binary gate + graduated buying when SPY between 200MA and 50MA (C+A+L >= 38, half size)"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      min_cal_score: 38
+      position_mult: 0.50
+      require_relative_strength: false
+      require_base: false
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true
+      min_confidence: 0.0
+      veto_action: "skip"
+
+  nostate_high_conviction:
+    label: "NoState + High Conviction"
+    description: "Correction zone with strict filters: C+A+L >= 40, must be in base with RS, half size"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      min_cal_score: 40
+      position_mult: 0.50
+      require_relative_strength: true
+      require_base: true
+      min_base_weeks: 6
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true
+      min_confidence: 0.0
+      veto_action: "skip"
+
+  nostate_cs_bear:
+    label: "NoState + CS Bear"
+    description: "Correction zone allows ONLY coiled spring entries with confidence >= 60"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true
+      min_confidence: 0.0
+      veto_action: "skip"
+
+  nostate_no_gate:
+    label: "NoState No Gate (Control)"
+    description: "CONTROL: No SPY gate at all — buys allowed in any market condition"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    regime_gate: { enabled: false }
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true
+      min_confidence: 0.0
+      veto_action: "skip"
+
   nostate_throttled:
     label: "NoState Throttled"
     description: "NoState Optimized + buy throttle to reduce churn in choppy markets"

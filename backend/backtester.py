@@ -184,6 +184,9 @@ class BacktestEngine:
         # Nibble mode flag (set during CORRECTION when nibble config is enabled)
         self.nibble_mode_active: bool = False
 
+        # Correction zone flag: SPY below 50MA but above 200MA (profile-configurable)
+        self.correction_zone_active: bool = False
+
         # Experimental position isolation: track realized losses from nibble/V-bottom
         # positions separately so they don't inflate circuit breaker drawdown
         self.experimental_realized_losses: float = 0.0  # Cumulative $ lost on experimental positions
@@ -1304,17 +1307,37 @@ class BacktestEngine:
         else:
             # Legacy fallback: binary regime gate (for backward compat if market_state disabled)
             regime_gate_config = config.get('ai_trader.market_regime_gate', {})
-            if regime_gate_config.get('enabled', True) and can_buy:
+            # Profile-level override: allow disabling the regime gate entirely
+            profile_gate = self.profile.get('regime_gate', {})
+            gate_enabled = profile_gate.get('enabled', regime_gate_config.get('enabled', True))
+            self.correction_zone_active = False  # Reset each day
+            if gate_enabled and can_buy:
                 spy_data = market_for_cash.get('spy', {}) if market_for_cash else {}
                 spy_price = spy_data.get('price', 0)
                 spy_ma50 = spy_data.get('ma_50', 0)
+                spy_ma200 = spy_data.get('ma_200', 0)
                 if not spy_price or not spy_ma50:
                     # Missing SPY data — assume bearish (conservative)
                     logger.debug(f"REGIME GATE: SPY data missing (price={spy_price}, ma50={spy_ma50}), skipping buys")
                     can_buy = False
                 elif spy_price < spy_ma50:
-                    logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys")
-                    can_buy = False
+                    # SPY below 50MA — check for correction zone override
+                    cz_config = self.profile.get('correction_zone', {})
+                    if (cz_config.get('enabled', False)
+                            and spy_ma200 > 0
+                            and spy_price >= spy_ma200):
+                        # CORRECTION ZONE: SPY between 200MA and 50MA
+                        # Allow buying with tighter filters + reduced position size
+                        self.correction_zone_active = True
+                        can_buy = True
+                        logger.debug(
+                            f"CORRECTION ZONE: SPY ${spy_price:.2f} between "
+                            f"200MA ${spy_ma200:.2f} and 50MA ${spy_ma50:.2f}, "
+                            f"allowing filtered buys")
+                    else:
+                        # Full bear: SPY below both 50MA and 200MA, or correction zone disabled
+                        logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys")
+                        can_buy = False
 
             # Score floor decay: track under-invested days in bull market
             decay_config = self.profile.get('score_floor_decay', {})
@@ -2594,6 +2617,58 @@ class BacktestEngine:
                     bear_candidates.append((ticker, data))
             candidates = bear_candidates
 
+        # CORRECTION ZONE FILTER: When SPY between 200MA and 50MA,
+        # apply tighter quality filters to candidates
+        cz_config = self.profile.get('correction_zone', {})
+        if self.correction_zone_active and cz_config.get('enabled', False):
+            cz_min_cal = cz_config.get('min_cal_score', 38)
+            cz_require_rs = cz_config.get('require_relative_strength', False)
+            cz_require_base = cz_config.get('require_base', False)
+            cz_min_base_weeks = cz_config.get('min_base_weeks', 0)
+            cz_cs_only = cz_config.get('cs_only', False)
+            cz_min_cs_confidence = cz_config.get('min_cs_confidence', 60)
+            cz_position_mult = cz_config.get('position_mult', 0.50)
+
+            filtered = []
+            for ticker, data in candidates:
+                # CS-only mode: defer filtering to per-candidate loop where CS is computed.
+                # Mark all candidates as needing CS validation later.
+                if cz_cs_only:
+                    data["_correction_zone_entry"] = True
+                    data["_correction_zone_mult"] = cz_position_mult
+                    data["_cz_cs_only_required"] = True
+                    data["_cz_min_cs_confidence"] = cz_min_cs_confidence
+                    filtered.append((ticker, data))
+                    continue
+
+                # C+A+L quality filter
+                cal = (_nan_safe(data.get("c_score", 0)) +
+                       _nan_safe(data.get("a_score", 0)) +
+                       _nan_safe(data.get("l_score", 0)))
+                if cal < cz_min_cal:
+                    continue
+
+                # Base requirement
+                if cz_require_base:
+                    base = data.get("base_type", "none")
+                    weeks = data.get("weeks_in_base", 0)
+                    if base in ("none", None) or weeks < cz_min_base_weeks:
+                        continue
+
+                # Relative strength: stock price above its own 21MA
+                if cz_require_rs:
+                    stock_ma21 = self.data_provider.get_moving_average(ticker, current_date, 21)
+                    stock_price = self.data_provider.get_price_on_date(ticker, current_date)
+                    if stock_ma21 > 0 and stock_price and stock_price < stock_ma21:
+                        continue
+
+                data["_correction_zone_entry"] = True
+                data["_correction_zone_mult"] = cz_position_mult
+                filtered.append((ticker, data))
+                logger.debug(f"CZ pass: {ticker} score={data['total_score']:.0f} C+A+L={cal:.0f}")
+
+            candidates = filtered
+
         portfolio_value = self._get_portfolio_value(current_date)
 
         # Funnel diagnostic counters (only active during decay idle periods)
@@ -2729,6 +2804,13 @@ class BacktestEngine:
                     if days_to_earnings <= avoidance_days:
                         _funnel["earnings_prox"] += 1
                         continue
+
+            # Correction zone CS-only gate: reject non-CS candidates
+            if score_data.get("_cz_cs_only_required"):
+                if coiled_spring_bonus <= 0:
+                    continue  # Not a CS candidate — skip in cs_only mode
+                if cs_result and cs_result.get("confidence", 0) < score_data.get("_cz_min_cs_confidence", 60):
+                    continue  # CS confidence too low
 
             # Get breakout status and volume ratio from cached scores
             is_breaking_out = score_data.get("is_breaking_out", False)
@@ -2999,6 +3081,10 @@ class BacktestEngine:
             # Reduce position size for bear market exception entries
             if score_data.get("_bear_market_entry"):
                 position_pct *= bear_exception_position_mult
+
+            # Reduce position size for correction zone entries
+            if score_data.get("_correction_zone_entry"):
+                position_pct *= score_data.get("_correction_zone_mult", 0.50)
 
             # CORRELATION-AWARE SIZING: Reduce position if highly correlated with existing holdings
             corr_config = config.get('correlation_sizing', {})
