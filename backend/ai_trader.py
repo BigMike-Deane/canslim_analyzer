@@ -1841,6 +1841,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         stop_loss_cooldown_days = profile_cooldown.get('stop_loss_days', stop_loss_cooldown_days)
         trailing_stop_cooldown_days = profile_cooldown.get('trailing_stop_days', trailing_stop_cooldown_days)
 
+    # Correction zone flag (set when SPY between 200MA and 50MA with CZ profile enabled)
+    correction_zone_active = False
+
     # MARKET STATE MACHINE: Graduated exposure system (replaces binary regime gate)
     # In bull markets (SPY > 50MA), this is always TRENDING at 100% — identical to before.
     # Read from profile first (nostate_optimized has market_state.enabled: false), fallback to global config
@@ -1870,12 +1873,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     else:
         # Legacy fallback: binary regime gate
         regime_gate_config = yaml_config.get('ai_trader.market_regime_gate', {})
-        if regime_gate_config.get('enabled', True):
+        # Profile-level override: allow disabling the regime gate entirely
+        profile_gate = profile.get('regime_gate', {})
+        gate_enabled = profile_gate.get('enabled', regime_gate_config.get('enabled', True))
+        if gate_enabled:
             from data_fetcher import get_cached_market_direction
             mkt = get_cached_market_direction()
             spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
             spy_px = spy_info.get('price', 0)
             spy_50 = spy_info.get('ma_50', 0)
+            spy_ma200 = spy_info.get('ma_200', 0)
             if not spy_px or not spy_50:
                 logger.warning(f"REGIME GATE: SPY data missing (price={spy_px}, ma50={spy_50}), skipping all buys")
                 return []
@@ -1894,8 +1901,20 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             _spy_gate_state = current_gate
 
             if spy_px < spy_50:
-                logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
-                return []
+                # SPY below 50MA — check for correction zone override
+                cz_config = profile.get('correction_zone', {})
+                if (cz_config.get('enabled', False)
+                        and spy_ma200 > 0
+                        and spy_px >= spy_ma200):
+                    # CORRECTION ZONE: SPY between 200MA and 50MA
+                    correction_zone_active = True
+                    logger.info(
+                        f"CORRECTION ZONE: SPY ${spy_px:.2f} between "
+                        f"200MA ${spy_ma200:.2f} and 50MA ${spy_50:.2f}, "
+                        f"allowing filtered buys")
+                else:
+                    logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
+                    return []
 
     # Build set of tickers to exclude (already own or own a duplicate)
     excluded_tickers = set(current_tickers) | cooldown_tickers
@@ -2150,7 +2169,46 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     except Exception as e:
         logger.debug(f"SPY pullback calculation failed: {e}")
 
+    # Pre-load correction zone config once (outside per-stock loop)
+    cz_config = profile.get('correction_zone', {}) if correction_zone_active else {}
+    cz_cs_only = cz_config.get('cs_only', False)
+    cz_position_mult = cz_config.get('position_mult', 0.50)
+    cz_min_cs_confidence = cz_config.get('min_cs_confidence', 60)
+    cz_min_cal = cz_config.get('min_cal_score', 38)
+
     for stock in candidates:
+        # Per-stock correction zone flags
+        cz_entry = False
+        cz_cs_only_required = False
+
+        # Correction zone candidate filtering
+        if correction_zone_active and cz_config.get('enabled', False):
+            if cz_cs_only:
+                # CS-only mode: defer filtering to after CS is computed
+                cz_entry = True
+                cz_cs_only_required = True
+            else:
+                # Non-CS modes: apply C+A+L filter, optional base + RS
+                cal = (_nan_safe(getattr(stock, 'c_score', 0)) +
+                       _nan_safe(getattr(stock, 'a_score', 0)) +
+                       _nan_safe(getattr(stock, 'l_score', 0)))
+                if cal < cz_min_cal:
+                    continue
+
+                if cz_config.get('require_base', False):
+                    base = getattr(stock, 'base_type', 'none') or 'none'
+                    weeks = getattr(stock, 'weeks_in_base', 0) or 0
+                    if base in ('none', '', None) or weeks < cz_config.get('min_base_weeks', 0):
+                        continue
+
+                if cz_config.get('require_relative_strength', False):
+                    stock_ma21 = _nan_safe(getattr(stock, 'ma_21', 0))
+                    stock_price = _nan_safe(stock.current_price or 0)
+                    if stock_ma21 > 0 and stock_price < stock_ma21:
+                        continue
+
+                cz_entry = True
+
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
         effective_score = _nan_safe(stock.growth_mode_score if is_growth else stock.canslim_score)
@@ -2315,6 +2373,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 if days_to_earnings <= avoidance_days:
                     logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified, avoidance={avoidance_days}d)")
                     continue
+
+        # Correction zone CS-only gate: reject non-CS candidates
+        if cz_cs_only_required:
+            has_cs = hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring')
+            if not has_cs:
+                continue  # Not a CS candidate — skip in cs_only mode
+            cs_conf = stock._cs_result.get('confidence', 0) if has_cs else 0
+            if cs_conf < cz_min_cs_confidence:
+                continue  # CS confidence too low
+            logger.info(f"CZ CS-ONLY pass: {stock.ticker} CS confidence={cs_conf}")
 
         # Calculate momentum, breakout, pre-breakout, and extended scores
         momentum_score = 0
@@ -2618,6 +2686,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if in_soft_zone and soft_zone_mult < 1.0:
             position_pct *= soft_zone_mult
 
+        # CORRECTION ZONE: Reduced position size for CZ entries
+        if cz_entry:
+            position_pct *= cz_position_mult
+
         # Cap at profile max or market regime max (varies by market conditions)
         profile_max_pct = profile.get('max_single_position_pct', 25)
         position_pct = min(position_pct, regime_max_pct, profile_max_pct)
@@ -2691,6 +2763,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append(f"Drift +{earnings_drift_bonus}")
         if deterministic_boost_val > 0:
             reason_parts.append(f"Det+{deterministic_boost_val}")
+        if cz_entry:
+            reason_parts.append(f"CZ entry ({cz_position_mult*100:.0f}% size)")
         # Compute price action features for ML signal factors
         _ma21 = getattr(stock, 'ma_21', 0) or 0
         _ma50 = getattr(stock, 'ma_50', 0) or 0
@@ -2733,6 +2807,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 buy_signal_factors["cs_institutional_pct"] = cs_factors.get("institutional_pct", 0)
                 buy_signal_factors["cs_quality_rank"] = cs_result.get("quality_rank", 0)
                 buy_signal_factors["cs_confidence"] = cs_result.get("confidence", 0)
+        if cz_entry:
+            buy_signal_factors["correction_zone_entry"] = True
+            buy_signal_factors["correction_zone_mult"] = cz_position_mult
         if in_soft_zone:
             buy_signal_factors["soft_zone"] = True
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult

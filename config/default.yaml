@@ -727,6 +727,7 @@ trade_journal:
 # Backtester Settings
 backtester:
   workers: 12                         # Number of parallel workers for fetching price history
+  use_frozen_scores: true             # Use StockScore table snapshots for reproducible backtests
   disk_cache:
     enabled: true                     # Enable disk caching for price history
     database: null                    # Path to cache database (null = default: data/price_cache.db)

@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import config
 
 from backend.database import (
-    BacktestRun, BacktestSnapshot, BacktestTrade, Stock
+    BacktestRun, BacktestSnapshot, BacktestTrade, Stock, StockScore
 )
+from sqlalchemy import func
 from backend.historical_data import HistoricalDataProvider
 from backend.market_state import MarketStateManager, MarketState
 from canslim_scorer import calculate_coiled_spring_score
@@ -270,6 +271,105 @@ class BacktestEngine:
                 self._persistent_cache_writes = 0
         except Exception as e:
             logger.debug(f"Persistent cache write error: {e}")
+
+    def _get_frozen_scores(self, date_str: str, tickers: List[str]) -> Dict[str, dict]:
+        """Fetch frozen scanner snapshots from StockScore table for a given date.
+
+        Returns only the CANSLIM fundamental scores (not price-derived fields).
+        Uses the latest scan per stock per date (scanner may run multiple times).
+        """
+        if not tickers:
+            return {}
+        try:
+            # Subquery: latest StockScore.id per stock_id for this date
+            latest_ids = (
+                self.db.query(func.max(StockScore.id).label('max_id'))
+                .filter(StockScore.date == date_str)
+                .group_by(StockScore.stock_id)
+                .subquery()
+            )
+            rows = (
+                self.db.query(Stock.ticker, StockScore)
+                .join(Stock, StockScore.stock_id == Stock.id)
+                .filter(StockScore.id.in_(
+                    self.db.query(latest_ids.c.max_id)
+                ))
+                .filter(Stock.ticker.in_(tickers))
+                .all()
+            )
+            result = {}
+            for ticker, ss in rows:
+                result[ticker] = {
+                    "total_score": _nan_safe(ss.total_score, 0),
+                    "c_score": _nan_safe(ss.c_score, 0),
+                    "a_score": _nan_safe(ss.a_score, 0),
+                    "n_score": _nan_safe(ss.n_score, 0),
+                    "s_score": _nan_safe(ss.s_score, 0),
+                    "l_score": _nan_safe(ss.l_score, 0),
+                    "i_score": _nan_safe(ss.i_score, 0),
+                    "m_score": _nan_safe(ss.m_score, 0),
+                    "projected_growth": _nan_safe(ss.projected_growth, 0),
+                    "_frozen_price": _nan_safe(ss.current_price, 0),
+                    "_frozen_52w_high": _nan_safe(ss.week_52_high, 0),
+                }
+            return result
+        except Exception as e:
+            logger.debug(f"Frozen score query error: {e}")
+            return {}
+
+    def _build_score_from_frozen(self, ticker: str, current_date: date,
+                                  frozen: dict) -> dict:
+        """Build a complete score dict from frozen fundamentals + fresh price-derived fields."""
+        price = self.data_provider.get_price_on_date(ticker, current_date)
+        if not price or price <= 0 or price != price:
+            return None
+
+        high_52w, low_52w = self.data_provider.get_52_week_high_low(ticker, current_date)
+        pct_from_high = ((price - high_52w) / high_52w * 100) if high_52w > 0 else 0
+
+        rs_12m = self.data_provider.get_relative_strength(ticker, current_date, 12)
+        rs_3m = self.data_provider.get_relative_strength(ticker, current_date, 3)
+
+        is_breaking_out, volume_ratio_breakout, _ = self.data_provider.is_breaking_out(
+            ticker, current_date
+        )
+
+        base_result = self.data_provider.detect_base_pattern(ticker, current_date)
+        base_pattern = base_result if base_result else {"type": "none"}
+        has_base = base_pattern.get("type", "none") not in ("none", None)
+        weeks_in_base = base_pattern.get("weeks", 0) if has_base else 0
+        pivot_price = base_pattern.get("pivot_price", high_52w)
+        pct_from_pivot = ((price - pivot_price) / pivot_price * 100) if pivot_price > 0 else pct_from_high
+
+        ad_data = self.data_provider.get_accumulation_distribution(ticker, current_date, 20)
+        volume_dry_up = ad_data.get("volume_dry_up", False) if ad_data else False
+
+        static_data = self.static_data.get(ticker, {})
+        is_growth_stock = False  # Conservative default for frozen scores
+
+        return {
+            "total_score": frozen["total_score"],
+            "c_score": frozen["c_score"],
+            "a_score": frozen["a_score"],
+            "n_score": frozen["n_score"],
+            "s_score": frozen["s_score"],
+            "l_score": frozen["l_score"],
+            "i_score": frozen["i_score"],
+            "m_score": frozen["m_score"],
+            "rs_12m": rs_12m,
+            "rs_3m": rs_3m,
+            "projected_growth": frozen["projected_growth"],
+            "pct_from_high": pct_from_high,
+            "pct_from_pivot": pct_from_pivot,
+            "pivot_price": pivot_price,
+            "has_base_pattern": has_base,
+            "base_pattern": base_pattern,
+            "weeks_in_base": weeks_in_base,
+            "is_growth_stock": is_growth_stock,
+            "is_breaking_out": is_breaking_out,
+            "volume_ratio": volume_ratio_breakout if volume_ratio_breakout else 1.0,
+            "_volume_dry_up": volume_dry_up,
+        }
 
     def _close_persistent_score_cache(self):
         """Flush and close the persistent score cache."""
@@ -1579,7 +1679,23 @@ class BacktestEngine:
             else:
                 uncached_tickers.append(ticker)
 
-        # Layer 2: Check persistent disk cache (cross-run reuse)
+        # Layer 2: Frozen StockScore snapshots (scanner-generated, deterministic)
+        use_frozen = config.get('backtester.use_frozen_scores', True)
+        if use_frozen and uncached_tickers:
+            frozen_fundamentals = self._get_frozen_scores(date_str, uncached_tickers)
+            if frozen_fundamentals:
+                frozen_built = {}
+                for ticker, frozen in frozen_fundamentals.items():
+                    score_dict = self._build_score_from_frozen(ticker, current_date, frozen)
+                    if score_dict:
+                        frozen_built[ticker] = score_dict
+                        scores[ticker] = score_dict
+                        self._score_cache[ticker] = score_dict
+                if frozen_built:
+                    self._save_persistent_scores(date_str, frozen_built)
+                    uncached_tickers = [t for t in uncached_tickers if t not in frozen_built]
+
+        # Layer 3: Check persistent disk cache (cross-run reuse)
         if uncached_tickers:
             persistent_hits = self._get_persistent_scores(date_str, uncached_tickers)
             if persistent_hits:
