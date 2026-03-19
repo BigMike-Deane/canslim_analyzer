@@ -1323,6 +1323,20 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     }
 
 
+def _sanitize_signal_factors(sf: dict) -> dict:
+    """Sanitize signal_factors dict so it's valid JSON (NaN/Inf are not valid JSON)."""
+    if not sf:
+        return sf
+    import math
+    clean = {}
+    for k, v in sf.items():
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            clean[k] = 0
+        else:
+            clean[k] = v
+    return clean
+
+
 def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,
@@ -1330,6 +1344,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   signal_factors: dict = None, is_paper: bool = False,
                   user_id: int = 1):
     """Record a trade in the database with detailed logging"""
+    signal_factors = _sanitize_signal_factors(signal_factors)
     trade = AIPortfolioTrade(
         ticker=ticker,
         action=action,
@@ -1886,6 +1901,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             if not spy_px or not spy_50:
                 logger.warning(f"REGIME GATE: SPY data missing (price={spy_px}, ma50={spy_50}), skipping all buys")
                 return []
+            if not spy_ma200:
+                logger.warning(f"REGIME GATE: SPY 200MA missing (ma200={spy_ma200}), correction zone disabled")
 
             # Detect SPY gate state change and send notification
             global _spy_gate_state
@@ -2766,13 +2783,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if cz_entry:
             reason_parts.append(f"CZ entry ({cz_position_mult*100:.0f}% size)")
         # Compute price action features for ML signal factors
-        _ma21 = getattr(stock, 'ma_21', 0) or 0
-        _ma50 = getattr(stock, 'ma_50', 0) or 0
-        _price = stock.current_price or 0
+        _ma21 = _nan_safe(getattr(stock, 'ma_21', 0))
+        _ma50 = _nan_safe(getattr(stock, 'ma_50', 0))
+        _price = _nan_safe(stock.current_price)
         _pct_from_21ma = round(((_price / _ma21) - 1) * 100, 2) if _ma21 > 0 and _price > 0 else 0.0
         _pct_from_50ma = round(((_price / _ma50) - 1) * 100, 2) if _ma50 > 0 and _price > 0 else 0.0
-        _atr_pct = round(getattr(stock, 'atr_pct', 0) or 0, 2)
-        _volume_ratio = getattr(stock, 'volume_ratio', 1.0) or 1.0
+        _atr_pct = round(_nan_safe(getattr(stock, 'atr_pct', 0)), 2)
+        _volume_ratio = _nan_safe(getattr(stock, 'volume_ratio', 1.0), default=1.0)
         _sector_rs_rank = _sector_medians.get(stock.sector, 50.0)
 
         # Build trade journal signal_factors (matches backtester)
@@ -3506,7 +3523,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 stock = ticker_stock_map.get(pos.ticker)
                 sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
                 sector_counts[sector] = sector_counts.get(sector, 0) + 1
-            max_per_sector = config.get('ai_trader.allocation.max_stocks_per_sector', 4)
+            from config_loader import config as yaml_config
+            max_per_sector = yaml_config.get('ai_trader.allocation.max_stocks_per_sector', 4)
             for sector, count in sector_counts.items():
                 if count > max_per_sector:
                     send_risk_alert_webhook("sector_concentration",

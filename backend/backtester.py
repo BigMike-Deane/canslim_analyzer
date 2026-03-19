@@ -3305,11 +3305,11 @@ class BacktestEngine:
 
             # Compute price action features for ML signal factors
             try:
-                _ma21 = self.data_provider.get_moving_average(ticker, current_date, 21) or 0
-                _ma50 = self.data_provider.get_moving_average(ticker, current_date, 50) or 0
+                _ma21 = _nan_safe(self.data_provider.get_moving_average(ticker, current_date, 21))
+                _ma50 = _nan_safe(self.data_provider.get_moving_average(ticker, current_date, 50))
                 _pct_from_21ma = round(((price / _ma21) - 1) * 100, 2) if isinstance(_ma21, (int, float)) and _ma21 > 0 else 0.0
                 _pct_from_50ma = round(((price / _ma50) - 1) * 100, 2) if isinstance(_ma50, (int, float)) and _ma50 > 0 else 0.0
-                _atr_pct = self.data_provider.get_atr(ticker, current_date, 14) or 0
+                _atr_pct = _nan_safe(self.data_provider.get_atr(ticker, current_date, 14))
                 _days_since_pullback = self.data_provider.get_days_since_spy_pullback(current_date)
                 _sector_rs = self._compute_sector_rs_rank(ticker, scores)
             except Exception:
@@ -3332,7 +3332,7 @@ class BacktestEngine:
                 "relative_volume": round(volume_ratio, 2),
                 "pct_from_21ma": _pct_from_21ma,
                 "pct_from_50ma": _pct_from_50ma,
-                "atr_pct": round(_atr_pct, 2) if _atr_pct else 0.0,
+                "atr_pct": round(_atr_pct, 2),
                 "sector_rs_rank": _sector_rs,
                 "days_since_spy_pullback": _days_since_pullback,
             }
