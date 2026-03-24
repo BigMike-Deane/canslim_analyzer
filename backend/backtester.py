@@ -21,6 +21,35 @@ from sqlalchemy.orm import Session
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config_loader import config
 
+# Shared utilities (also used by ai_trader.py)
+from backend.trading_utils import (
+    _nan_safe,
+    get_strategy_profile,
+    ENTRY_TYPE_MAP_ML,
+    REGIME_MAP_ML,
+    MIN_CASH_RESERVE_PCT,
+    MAX_SECTOR_ALLOCATION,
+    MAX_STOCKS_PER_SECTOR,
+    MAX_POSITION_ALLOCATION,
+)
+
+# Shared trading engine logic (also used by ai_trader.py)
+from backend.trading_engine import (
+    get_trailing_stop_pct,
+    apply_pyramid_widening,
+    check_score_stability_from_history,
+    get_partial_profit_action,
+    calculate_base_quality_bonus,
+    calculate_entry_signals,
+    calculate_composite_score,
+    calculate_position_size_pct,
+    apply_position_size_multipliers,
+    categorize_sell_reason,
+    get_tightened_trailing_stop,
+    evaluate_score_crash,
+    sanitize_signal_factors,
+)
+
 from backend.database import (
     BacktestRun, BacktestSnapshot, BacktestTrade, Stock, StockScore
 )
@@ -29,28 +58,11 @@ from backend.historical_data import HistoricalDataProvider
 from backend.market_state import MarketStateManager, MarketState
 from canslim_scorer import calculate_coiled_spring_score
 
-
-def _nan_safe(val, default=0):
-    """Convert None/NaN to a safe default. float('nan') is truthy and passes `or 0`."""
-    if val is None:
-        return default
-    try:
-        if val != val:  # NaN != NaN per IEEE 754
-            return default
-    except (TypeError, ValueError):
-        pass
-    return val
-
 logger = logging.getLogger(__name__)
 
 # Bump this version when scoring logic changes to invalidate cached scores
 SCORE_CACHE_VERSION = 1
 SCORE_CACHE_DIR = "/tmp/backtest_cache"
-
-
-# ML Signal Layer ordinal maps (must match ml/feature_extractor.py)
-ENTRY_TYPE_MAP_ML = {"breakout": 0, "pre-breakout": 1, "standard": 2}
-REGIME_MAP_ML = {"bearish": 0, "neutral": 1, "bullish": 2}
 
 # Lazy import for graceful fallback when ML dependencies not installed
 try:
@@ -58,20 +70,6 @@ try:
 except ImportError:
     get_ml_prediction = lambda **kwargs: None
     clear_prediction_cache = lambda: None
-
-
-def get_strategy_profile(strategy_name: str = "balanced") -> dict:
-    """Load strategy profile from YAML config, falling back to balanced defaults."""
-    profiles = config.get('strategy_profiles', {})
-    profile = profiles.get(strategy_name, profiles.get('balanced', {}))
-    return profile
-
-
-# Trading thresholds - loaded from config to match ai_trader.py
-MIN_CASH_RESERVE_PCT = config.get('ai_trader.allocation.min_cash_reserve_pct', default=0.10)
-MAX_SECTOR_ALLOCATION = config.get('ai_trader.allocation.max_sector_allocation', default=0.30)
-MAX_STOCKS_PER_SECTOR = config.get('ai_trader.allocation.max_stocks_per_sector', default=4)
-MAX_POSITION_ALLOCATION = config.get('ai_trader.allocation.max_single_position', default=0.15)
 
 
 @dataclass
@@ -2110,52 +2108,10 @@ class BacktestEngine:
     def _check_score_stability(self, ticker: str, current_score: float, threshold: float = 50) -> dict:
         """
         Check if a low score is consistent across recent scans (not a one-time blip).
-        Matches ai_trader.py behavior to prevent whipsaw sells.
-
-        Returns:
-            dict with:
-            - is_stable: True if score has been consistently low (not a blip)
-            - recent_scores: list of recent scores
-            - avg_score: average of recent scores
-            - consecutive_low: count of consecutive low scores
+        Delegates to check_score_stability_from_history() in trading_engine.py.
         """
         history = self.score_history.get(ticker, [])
-
-        if len(history) < 2:
-            # Not enough history, trust current score
-            return {
-                "is_stable": True,
-                "recent_scores": [current_score],
-                "avg_score": current_score,
-                "consecutive_low": 1 if current_score < threshold else 0
-            }
-
-        # Calculate average of recent scores
-        avg_score = sum(history) / len(history)
-
-        # Count consecutive low scores from most recent
-        consecutive_low = 0
-        for score in reversed(history):
-            if score < threshold:
-                consecutive_low += 1
-            else:
-                break
-
-        # Check if current score is significantly lower than average (potential blip)
-        score_variance = abs(current_score - avg_score)
-
-        # If current score is much lower than recent average, it might be a blip
-        is_blip = (current_score < threshold and
-                   avg_score > threshold + 10 and
-                   score_variance > 15 and
-                   consecutive_low < 2)  # Require 2+ consecutive low scans
-
-        return {
-            "is_stable": not is_blip,
-            "recent_scores": history,
-            "avg_score": avg_score,
-            "consecutive_low": consecutive_low
-        }
+        return check_score_stability_from_history(history, current_score, threshold)
 
     def _evaluate_sells(self, current_date: date, scores: Dict[str, dict]) -> List[SimulatedTrade]:
         """Evaluate positions for sells using ai_trader logic"""
@@ -2181,17 +2137,7 @@ class BacktestEngine:
         atr_period = stop_loss_config.get('atr_period', 14)
         max_stop_pct = stop_loss_config.get('max_stop_pct', 20.0)
 
-        # Partial profit config from YAML
-        partial_profit_config = config.get('ai_trader.partial_profits', {})
-        pp_25_gain = partial_profit_config.get('threshold_25pct', {}).get('gain_pct', 25)
-        pp_25_sell = partial_profit_config.get('threshold_25pct', {}).get('sell_pct', 25)
-        pp_25_min_score = partial_profit_config.get('threshold_25pct', {}).get('min_score', 60)
-        pp_40_gain = partial_profit_config.get('threshold_40pct', {}).get('gain_pct', 40)
-        pp_40_sell = partial_profit_config.get('threshold_40pct', {}).get('sell_pct', 50)
-        pp_40_min_score = partial_profit_config.get('threshold_40pct', {}).get('min_score', 60)
-        pp_50_gain = partial_profit_config.get('threshold_50pct', {}).get('gain_pct', 50)
-        pp_50_sell = partial_profit_config.get('threshold_50pct', {}).get('sell_pct', 75)
-        pp_50_min_score = partial_profit_config.get('threshold_50pct', {}).get('min_score', 55)
+        # Partial profit config is now handled by get_partial_profit_action() in trading_engine
 
         # Partial trailing stop config
         partial_trailing_config = config.get('ai_trader.trailing_stops', {})
@@ -2273,21 +2219,12 @@ class BacktestEngine:
                 peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
                 # Dynamic trailing stop thresholds — strategy profile overrides
-                profile_trailing = self.profile.get('trailing_stops', {})
-                trailing_stop_pct = None
-                if peak_gain_pct >= 50:
-                    trailing_stop_pct = profile_trailing.get('gain_50_plus', 25)
-                elif peak_gain_pct >= 30:
-                    trailing_stop_pct = profile_trailing.get('gain_30_to_50', 18)
-                elif peak_gain_pct >= 20:
-                    trailing_stop_pct = profile_trailing.get('gain_20_to_30', 12)
-                elif peak_gain_pct >= 10:
-                    trailing_stop_pct = profile_trailing.get('gain_10_to_20', 8)
+                trailing_stop_pct = get_trailing_stop_pct(peak_gain_pct, self.profile)
 
                 if trailing_stop_pct:
                     # Widen trailing stop for pyramided positions (high conviction)
-                    pyramid_widening = min(position.pyramid_count * 2.0, 6.0)  # +2% per pyramid, max +6%
-                    effective_trailing_stop = trailing_stop_pct + pyramid_widening
+                    effective_trailing_stop = apply_pyramid_widening(trailing_stop_pct, position.pyramid_count)
+                    pyramid_widening = effective_trailing_stop - trailing_stop_pct
 
                     if drop_from_peak >= effective_trailing_stop:
                         # High conviction: partial sell + widen stop on remainder
@@ -2346,16 +2283,7 @@ class BacktestEngine:
                         peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
 
                         # Use tighter trailing stop (50% of normal)
-                        tightened_trailing = None
-                        profile_trailing = self.profile.get('trailing_stops', {})
-                        if peak_gain_pct >= 50:
-                            tightened_trailing = profile_trailing.get('gain_50_plus', 25) * earnings_tighten_factor
-                        elif peak_gain_pct >= 30:
-                            tightened_trailing = profile_trailing.get('gain_30_to_50', 18) * earnings_tighten_factor
-                        elif peak_gain_pct >= 20:
-                            tightened_trailing = profile_trailing.get('gain_20_to_30', 12) * earnings_tighten_factor
-                        elif peak_gain_pct >= 10:
-                            tightened_trailing = profile_trailing.get('gain_10_to_20', 8) * earnings_tighten_factor
+                        tightened_trailing = get_tightened_trailing_stop(peak_gain_pct, self.profile, tighten_factor=earnings_tighten_factor)
 
                         if tightened_trailing and drop_from_peak >= tightened_trailing:
                             trade = SimulatedTrade(
@@ -2398,42 +2326,30 @@ class BacktestEngine:
                 continue
 
             # Score crash check with stability verification and profitability exception
-            # Get score crash config
+            # Check score stability first
             score_crash_config = config.get('ai_trader.score_crash', {})
-            consecutive_required = score_crash_config.get('consecutive_required', 3)
             score_threshold = score_crash_config.get('threshold', 50)
-            drop_required = self.profile.get('score_crash_drop_required', score_crash_config.get('drop_required', 20))
-            ignore_if_profitable_pct = self.profile.get('score_crash_ignore_if_profitable', score_crash_config.get('ignore_if_profitable_pct', 10))
+            consecutive_required = score_crash_config.get('consecutive_required', 3)
+            stability = self._check_score_stability(ticker, current_score, threshold=score_threshold)
 
-            score_drop = position.purchase_score - current_score
-            if score_drop > drop_required and current_score < score_threshold:
-                # Skip score crash sell if position is profitable enough
-                if gain_pct >= ignore_if_profitable_pct:
-                    logger.debug(f"{ticker}: SKIP score crash - profitable (+{gain_pct:.1f}%)")
-                    continue
+            # Evaluate score crash using engine function
+            crash_result = evaluate_score_crash(
+                current_score=current_score,
+                purchase_score=position.purchase_score,
+                gain_pct=gain_pct,
+                stability=stability,
+                profile=self.profile,
+                yaml_config=config,
+            )
 
-                stability = self._check_score_stability(ticker, current_score, threshold=score_threshold)
-
-                if not stability["is_stable"]:
-                    # This looks like a data blip - skip this sell, wait for confirmation
-                    logger.debug(f"{ticker}: SKIPPING SELL - possible blip. "
-                                f"Current: {current_score:.0f}, Avg: {stability['avg_score']:.0f}, "
-                                f"Consecutive low: {stability['consecutive_low']}")
-                    continue
-
-                # Require N consecutive low scores before selling (configurable, default 3)
-                if stability["consecutive_low"] < consecutive_required:
-                    logger.debug(f"{ticker}: SKIPPING SELL - only {stability['consecutive_low']} "
-                                f"consecutive low score(s), need {consecutive_required}+")
-                    continue
-
+            if crash_result and crash_result.get("should_sell"):
+                score_drop = position.purchase_score - current_score
                 trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
                     price=price,
-                    reason=f"SCORE CRASH: {position.purchase_score:.0f} -> {current_score:.0f} "
-                           f"(avg: {stability['avg_score']:.0f}, {stability['consecutive_low']} low scans)",
+                    reason=crash_result["reason"],
                     score=current_score,
                     priority=3
                 )
@@ -2442,68 +2358,25 @@ class BacktestEngine:
                 continue
 
             # PARTIAL PROFIT TAKING - let winners run while locking in gains
-            # Thresholds from YAML config (check highest tier first)
             partial_taken = position.partial_profit_taken
-
-            # Check for highest tier partial at +50% gain (lock in 75%)
-            if gain_pct >= pp_50_gain and current_score >= pp_50_min_score and partial_taken < pp_50_sell:
-                take_pct = pp_50_sell - partial_taken
-                if take_pct > 0:
-                    shares_to_sell = position.shares * (take_pct / 100)
-                    trade = SimulatedTrade(
-                        ticker=ticker,
-                        action="SELL",
-                        shares=shares_to_sell,
-                        price=price,
-                        reason=f"PARTIAL PROFIT {pp_50_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} - protecting big winner",
-                        score=current_score,
-                        priority=3,
-                        is_partial=True,
-                        sell_pct=take_pct
-                    )
-                    trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
-                    sells.append(trade)
-                    continue
-
-            # Check for middle tier partial at +40% gain
-            elif gain_pct >= pp_40_gain and current_score >= pp_40_min_score and partial_taken < pp_40_sell:
-                take_pct = pp_40_sell - partial_taken  # Take what's left to get to target
-                if take_pct > 0:
-                    shares_to_sell = position.shares * (take_pct / 100)
-                    trade = SimulatedTrade(
-                        ticker=ticker,
-                        action="SELL",
-                        shares=shares_to_sell,
-                        price=price,
-                        reason=f"PARTIAL PROFIT {pp_40_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
-                        score=current_score,
-                        priority=4,
-                        is_partial=True,
-                        sell_pct=take_pct
-                    )
-                    trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
-                    sells.append(trade)
-                    continue  # Don't add more sell signals for this position
-
-            # Check for lower tier partial at +25% gain
-            elif gain_pct >= pp_25_gain and current_score >= pp_25_min_score and partial_taken < pp_25_sell:
-                take_pct = pp_25_sell - partial_taken  # Take what's left to reach target
-                if take_pct > 0:
-                    shares_to_sell = position.shares * (take_pct / 100)
-                    trade = SimulatedTrade(
-                        ticker=ticker,
-                        action="SELL",
-                        shares=shares_to_sell,
-                        price=price,
-                        reason=f"PARTIAL PROFIT {pp_25_sell}%: Up {gain_pct:.1f}%, score {current_score:.0f} still strong",
-                        score=current_score,
-                        priority=5,
-                        is_partial=True,
-                        sell_pct=take_pct
-                    )
-                    trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
-                    sells.append(trade)
-                    continue  # Don't add more sell signals for this position
+            partial_action = get_partial_profit_action(gain_pct, current_score, partial_taken)
+            if partial_action:
+                take_pct = partial_action["take_pct"]
+                shares_to_sell = position.shares * (take_pct / 100)
+                trade = SimulatedTrade(
+                    ticker=ticker,
+                    action="SELL",
+                    shares=shares_to_sell,
+                    price=price,
+                    reason=partial_action["reason"],
+                    score=current_score,
+                    priority=partial_action["priority"],
+                    is_partial=True,
+                    sell_pct=take_pct
+                )
+                trade._signal_factors = {"sell_reason": "PARTIAL PROFIT", "gain_pct": round(gain_pct, 1), "sell_pct": take_pct}
+                sells.append(trade)
+                continue
 
             # Winners (gain >= 20%): protect gains or take profit (matches ai_trader structure)
             profile_take_profit = self.profile.get('take_profit_pct', 75.0)
@@ -2933,84 +2806,34 @@ class BacktestEngine:
             volume_ratio = score_data.get("volume_ratio", 1.0)
             base_pattern = score_data.get("base_pattern", {"type": "none"})
 
-            # Calculate momentum, breakout, pre-breakout, and extended scores
-            momentum_score = 0
-            breakout_bonus = 0
-            pre_breakout_bonus = 0
-            extended_penalty = 0
-            base_quality_bonus = 0
+            # Base pattern quality bonus (up to 15 points)
+            base_type = base_pattern.get("type", "none")
+            base_quality_bonus = calculate_base_quality_bonus(base_type, weeks_in_base)
 
-            # Base pattern quality bonus (up to 10 points)
-            if has_base:
-                base_type = base_pattern.get("type", "none")
-                if base_type == "cup_with_handle":
-                    base_quality_bonus = 10  # Best pattern
-                elif base_type == "cup":
-                    base_quality_bonus = 8
-                elif base_type == "double_bottom":
-                    base_quality_bonus = 7
-                elif base_type == "flat":
-                    base_quality_bonus = 6
-                # Extra bonus for longer consolidation (max +5)
-                if weeks_in_base >= 8:
-                    base_quality_bonus += 5
-                elif weeks_in_base >= 6:
-                    base_quality_bonus += 3
-                elif weeks_in_base >= 5:
-                    base_quality_bonus += 1
+            # Reconstruct week_52_high from pct_from_high for engine function
+            # pct_from_high = ((high_52w - price) / high_52w) * 100
+            # So: high_52w = price / (1 - pct_from_high/100)
+            if pct_from_high >= 100:
+                week_52_high = price  # Edge case: pct_from_high >= 100 means price ~ 0
+            else:
+                week_52_high = price / (1 - pct_from_high / 100) if pct_from_high < 100 else price
 
-            # PRE-BREAKOUT: 5-15% below pivot with valid base pattern
-            # This is the BEST entry - optimal risk/reward BEFORE the crowd notices
-            # PREDICTIVE: We want to catch stocks before they move
-            if has_base and pivot_price > 0 and 5 <= pct_from_pivot <= 15:
-                pre_breakout_bonus = 40  # Highest bonus - ideal entry point
-                momentum_score = 35
-                if volume_ratio >= 1.3:
-                    pre_breakout_bonus += 5  # Accumulation volume bonus
-                if weeks_in_base >= 10:
-                    pre_breakout_bonus += 5  # Longer base = more stored energy
-
-            # AT PIVOT ZONE: 0-5% below pivot with base pattern (ready to break out)
-            elif has_base and pivot_price > 0 and 0 <= pct_from_pivot < 5:
-                pre_breakout_bonus = 35  # Strong bonus near pivot
-                momentum_score = 30
-                if volume_ratio >= 1.5:
-                    momentum_score += 5
-
-            # BREAKOUT STOCKS - buying AFTER the pivot point (already moved - less ideal)
-            # Once a stock has broken out, the easy money is made - we're late to the party
-            elif is_breaking_out:
-                breakout_bonus = 10  # Reduced bonus - we prefer pre-breakout entries
-                if volume_ratio >= 2.0:
-                    breakout_bonus += 5  # Small bonus for strong volume
-                momentum_score = 15  # Lower score - already extended
-
-            # EXTENDED: More than 5% above pivot - the easy money is gone
-            elif has_base and pivot_price > 0 and pct_from_pivot < -5:
-                if pct_from_pivot < -10:
-                    extended_penalty = -20  # Heavily penalize extended stocks
-                    momentum_score = 5
-                else:
-                    extended_penalty = -10  # Moderate penalty
-                    momentum_score = 10
-
-            # NO BASE PATTERN: Use 52-week high with penalties
-            elif not has_base:
-                if pct_from_high <= 2:
-                    # At 52-week high without base = chasing
-                    if score < 85:
-                        extended_penalty = -15
-                        momentum_score = 5
-                    else:
-                        momentum_score = 12
-                elif pct_from_high <= 10:
-                    momentum_score = 15
-                    if volume_ratio >= 1.5:
-                        momentum_score += 3
-                elif pct_from_high <= 25:
-                    momentum_score = 8
-                else:
-                    momentum_score = -5
+            # Calculate entry signals (momentum, breakout, pre-breakout, extended penalties)
+            entry_signals = calculate_entry_signals(
+                current_price=price,
+                week_52_high=week_52_high,
+                pivot_price=pivot_price,
+                base_type=base_type,
+                weeks_in_base=weeks_in_base,
+                is_breaking_out=is_breaking_out,
+                breakout_volume_ratio=volume_ratio,  # backtester uses volume_ratio for both
+                volume_ratio=volume_ratio,
+                effective_score=score,  # total_score serves as effective_score
+            )
+            momentum_score = entry_signals["momentum_score"]
+            breakout_bonus = entry_signals["breakout_bonus"]
+            pre_breakout_bonus = entry_signals["pre_breakout_bonus"]
+            extended_penalty = entry_signals["extended_penalty"]
 
             # RS LINE NEW HIGH: Leading indicator when RS makes new high before price
             rs_line_bonus = 0
@@ -3068,15 +2891,8 @@ class BacktestEngine:
                 # Recent momentum fading - apply 15% penalty to composite
                 momentum_penalty = -0.15
 
-            # Composite score with strategy-specific weights
-            scoring_weights = self.profile.get('scoring_weights', {})
-            w_growth = scoring_weights.get('growth_projection', 0.25)
-            w_score = scoring_weights.get('canslim_score', 0.25)
-            w_momentum = scoring_weights.get('momentum', 0.20)
-            w_breakout = scoring_weights.get('breakout', 0.20)
-            w_base = scoring_weights.get('base_quality', 0.10)
-
-            # Growth mode: weight C/L/N scores higher in the CANSLIM component
+            # Growth mode: adjust CANSLIM score for growth strategy
+            # Add extra weight to C/L/N scores within the score component
             effective_score = score
             if self.strategy == "growth":
                 c_weight = self.profile.get('c_score_weight', 1.0)
@@ -3093,17 +2909,21 @@ class BacktestEngine:
             if _pg is None or (_pg != _pg):  # NaN != NaN is True
                 _pg = effective_score * 0.3
             growth_projection = min(_pg, 50)
-            composite_score = (
-                (growth_projection * w_growth) +
-                (effective_score * w_score) +
-                (momentum_score * w_momentum) +
-                ((breakout_bonus + pre_breakout_bonus) * w_breakout) +
-                (base_quality_bonus * w_base) +
-                extended_penalty +
-                coiled_spring_bonus +   # Earnings catalyst bonus
-                rs_line_bonus +         # RS line new high bonus
-                earnings_drift_bonus +  # Post-earnings drift bonus
-                estimate_revision_bonus # Analyst estimate revisions
+
+            # Composite score using trading engine function
+            composite_score = calculate_composite_score(
+                growth_projection=growth_projection,
+                effective_score=effective_score,
+                momentum_score=momentum_score,
+                breakout_bonus=breakout_bonus,
+                pre_breakout_bonus=pre_breakout_bonus,
+                base_quality_bonus=base_quality_bonus,
+                extended_penalty=extended_penalty,
+                coiled_spring_bonus=coiled_spring_bonus,
+                rs_line_bonus=rs_line_bonus,
+                earnings_drift_bonus=earnings_drift_bonus,
+                estimate_revision_bonus=estimate_revision_bonus,
+                profile=self.profile,
             )
 
             # Apply momentum penalty after base composite calculation
@@ -3153,23 +2973,29 @@ class BacktestEngine:
             # G: Skip conviction sizing on seed days — equal weight for initial entries
             skip_conv_on_seeds = conv_config.get('skip_initial_seeds', True)
             use_conviction = conv_config.get('enabled', False) and not (self.is_seed_day and skip_conv_on_seeds)
-            # Profile-level overrides for conviction sizing
-            profile_conv = self.profile.get('conviction_sizing', {})
-            if use_conviction:
-                # Linear interpolation: score_floor → min_pct, score_ceiling → max_pct
-                # Profile overrides take precedence over global config
-                conv_min = profile_conv.get('min_pct', conv_config.get('min_pct', 8.0))
-                conv_max = profile_conv.get('max_pct', conv_config.get('max_pct', 20.0))
-                score_floor = profile_conv.get('score_floor', conv_config.get('score_floor', 30))
-                score_ceiling = profile_conv.get('score_ceiling', conv_config.get('score_ceiling', 75))
-                score_ratio = max(0, min(1, (composite_score - score_floor) / max(1, score_ceiling - score_floor)))
-                position_pct = conv_min + score_ratio * (conv_max - conv_min)
+
+            # Calculate base position size using engine function
+            # Note: Seed day skip for conviction sizing is handled by compute a modified profile
+            if not use_conviction and self.is_seed_day and skip_conv_on_seeds:
+                # For seed days with skip enabled, force fallback positioning by using modified profile
+                sizing_profile = dict(self.profile)
+                sizing_profile['conviction_sizing'] = {'enabled': False}
             else:
-                # Fallback: equal-weight floor with conviction scaling
-                min_position_pct = 90.0 / max_positions
-                conviction_multiplier = min(composite_score / 50, 1.5)
-                conviction_pct = min_position_pct + (conviction_multiplier * (regime_max_pct - min_position_pct) / 1.5)
-                position_pct = max(min_position_pct, conviction_pct)
+                sizing_profile = self.profile
+
+            position_pct = calculate_position_size_pct(
+                composite_score=composite_score,
+                max_positions=max_positions,
+                profile=sizing_profile,
+                regime_max_pct=regime_max_pct,
+                yaml_config=config,
+            )
+
+            # POSITION SIZE MULTIPLIERS
+            # Note: Backtester has bear market exception positioning and correlation-aware sizing
+            # that are not in the trading_engine.apply_position_size_multipliers() function.
+            # Therefore, these multipliers are applied inline rather than using the engine function.
+            # This keeps backtester logic intact while ai_trader.py uses the engine function.
 
             # Half-size positions when portfolio heat is elevated
             if self.heat_penalty_active:

@@ -1881,8 +1881,9 @@ class TestDivisionByZeroCostBasis:
 class TestPartialProfitReadsConfig:
     """Test that partial profit thresholds are read from config (P2 fix 3.1)"""
 
+    @patch('backend.trading_engine.config')
     @patch('backend.backtester.config')
-    def test_custom_thresholds_from_config(self, mock_config):
+    def test_custom_thresholds_from_config(self, mock_config, mock_engine_config):
         """Custom partial profit thresholds from config -> used correctly"""
         from backend.backtester import BacktestEngine, SimulatedPosition
 
@@ -1903,6 +1904,7 @@ class TestPartialProfitReadsConfig:
             return config_data.get(key, default if default is not None else {})
 
         mock_config.get = config_get
+        mock_engine_config.get = config_get  # Engine functions also need the custom config
 
         mock_session, mock_backtest = make_mock_db()
         engine = BacktestEngine(mock_session, 1)

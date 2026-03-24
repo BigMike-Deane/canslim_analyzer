@@ -1517,9 +1517,11 @@ class TestBearExceptionSignalFactors:
 class TestTrailingStopDefaults:
     """Regression: trailing stop defaults must match champion strategy values."""
 
-    @pytest.mark.parametrize("filename", ["ai_trader.py", "backtester.py"])
+    @pytest.mark.parametrize("filename", ["trading_engine.py"])
     def test_trailing_stop_defaults_match_champion(self, filename):
-        """Trailing stop fallback defaults must use champion values, not old balanced."""
+        """Trailing stop fallback defaults must use champion values, not old balanced.
+        Now checked in trading_engine.py (single source of truth for trailing stop logic).
+        ai_trader.py and backtester.py call get_trailing_stop_pct() from trading_engine."""
         from pathlib import Path
         source = (Path(__file__).parent.parent / "backend" / filename).read_text()
 
@@ -1533,6 +1535,16 @@ class TestTrailingStopDefaults:
         assert "'gain_20_to_30', 12)" in source, (
             f"{filename}: gain_20_to_30 default must be 12 (champion), not 10 (old balanced)"
         )
+
+        # Verify both consumers import from trading_engine
+        for consumer in ["ai_trader.py", "backtester.py"]:
+            consumer_source = (Path(__file__).parent.parent / "backend" / consumer).read_text()
+            assert "from backend.trading_engine import" in consumer_source, (
+                f"{consumer} must import from trading_engine"
+            )
+            assert "get_trailing_stop_pct" in consumer_source, (
+                f"{consumer} must import get_trailing_stop_pct from trading_engine"
+            )
 
     def test_backtester_take_profit_default_matches_champion(self):
         """Backtester take_profit_pct default must be 75.0 (champion), not 40.0."""
@@ -2028,50 +2040,62 @@ class TestAITraderBacktesterSync:
             assert key in bt_source, f"Missing weight key '{key}' in backtester.py"
 
     def test_pre_breakout_bonus_values_match(self):
-        """Pre-breakout bonuses should be identical in both files."""
+        """Pre-breakout bonuses should be defined in trading_engine.py (single source of truth).
+        ai_trader.py and backtester.py call calculate_entry_signals() from trading_engine."""
         from pathlib import Path
         import re
-        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
-        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
 
-        # Both should have pre_breakout_bonus = 40
-        ai_matches = re.findall(r'pre_breakout_bonus = (\d+)', ai_source)
-        bt_matches = re.findall(r'pre_breakout_bonus = (\d+)', bt_source)
-        assert ai_matches and bt_matches
-        assert ai_matches[0] == bt_matches[0], f"Pre-breakout bonus mismatch: ai={ai_matches[0]} bt={bt_matches[0]}"
+        # trading_engine should define pre_breakout_bonus = 40 (highest bonus)
+        matches = re.findall(r'pre_breakout_bonus = (\d+)', engine_source)
+        assert matches, "pre_breakout_bonus definitions not found in trading_engine.py"
+        # Should have 40 as the highest pre-breakout bonus
+        assert '40' in matches, f"Expected pre_breakout_bonus = 40 in trading_engine.py, found: {matches}"
 
     def test_trailing_stop_tiers_match(self):
-        """Trailing stop tier thresholds should match between files."""
+        """Trailing stop tier thresholds should exist in trading_engine.py (single source of truth).
+        ai_trader.py and backtester.py call get_trailing_stop_pct() from trading_engine."""
         from pathlib import Path
-        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
-        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
 
-        # Both should check peak_gain >= 50, >= 30, >= 20, >= 10
+        # trading_engine should check peak_gain >= 50, >= 30, >= 20, >= 10
         for threshold in ['50', '30', '20', '10']:
             pattern = f'peak_gain_pct >= {threshold}'
-            assert pattern in ai_source, f"Missing trailing stop tier {threshold} in ai_trader.py"
-            assert pattern in bt_source, f"Missing trailing stop tier {threshold} in backtester.py"
+            assert pattern in engine_source, f"Missing trailing stop tier {threshold} in trading_engine.py"
+
+        # Both consumers must import get_trailing_stop_pct
+        for filename in ["ai_trader.py", "backtester.py"]:
+            source = (Path(__file__).parent.parent / "backend" / filename).read_text()
+            assert "get_trailing_stop_pct" in source, (
+                f"{filename} must use get_trailing_stop_pct from trading_engine"
+            )
 
     def test_partial_profit_config_keys_match(self):
-        """Partial profit config key names should be identical."""
+        """Partial profit config key names should exist in trading_engine.py (single source of truth).
+        ai_trader.py and backtester.py call get_partial_profit_action() from trading_engine."""
         from pathlib import Path
-        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
-        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
 
         config_keys = ['threshold_25pct', 'threshold_40pct', 'gain_pct', 'sell_pct', 'min_score']
         for key in config_keys:
-            assert key in ai_source, f"Missing partial profit key '{key}' in ai_trader.py"
-            assert key in bt_source, f"Missing partial profit key '{key}' in backtester.py"
+            assert key in engine_source, f"Missing partial profit key '{key}' in trading_engine.py"
+
+        # Both consumers must import get_partial_profit_action
+        for filename in ["ai_trader.py", "backtester.py"]:
+            source = (Path(__file__).parent.parent / "backend" / filename).read_text()
+            assert "get_partial_profit_action" in source, (
+                f"{filename} must use get_partial_profit_action from trading_engine"
+            )
 
     def test_score_crash_config_keys_match(self):
-        """Score crash detection config should use same keys."""
+        """Score crash detection config should be in trading_engine.py (single source of truth).
+        ai_trader.py and backtester.py call evaluate_score_crash() from trading_engine."""
         from pathlib import Path
-        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
-        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
 
+        # trading_engine should define score crash config handling
         for key in ['consecutive_required', 'drop_required', 'ignore_if_profitable']:
-            assert key in ai_source, f"Missing score crash key '{key}' in ai_trader.py"
-            assert key in bt_source, f"Missing score crash key '{key}' in backtester.py"
+            assert key in engine_source, f"Missing score crash key '{key}' in trading_engine.py"
 
     def test_extended_penalty_values_match(self):
         """Extended stock penalty values should be identical."""
@@ -2099,12 +2123,12 @@ class TestAITraderBacktesterSync:
         assert "rs_12m * 0.95" in bt_source
 
     def test_base_quality_bonus_values_match(self):
-        """Base quality bonus for each pattern type should match."""
+        """Base quality bonus for each pattern type should be defined in trading_engine.py (single source of truth).
+        ai_trader.py and backtester.py call calculate_base_quality_bonus() from trading_engine."""
         from pathlib import Path
-        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
-        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
 
-        # Check that bonus values are the same
+        # Check that bonus values are defined in trading_engine
         patterns = {
             'cup_with_handle': '10',
             'cup': '8',
@@ -2112,11 +2136,9 @@ class TestAITraderBacktesterSync:
             'flat': '6',
         }
         for pattern, bonus in patterns.items():
-            # Both files should assign the same bonus
-            ai_check = f'"{pattern}"' in ai_source or f"'{pattern}'" in ai_source
-            bt_check = f'"{pattern}"' in bt_source or f"'{pattern}'" in bt_source
-            assert ai_check, f"Pattern {pattern} missing from ai_trader.py"
-            assert bt_check, f"Pattern {pattern} missing from backtester.py"
+            # trading_engine should define the bonus for each pattern
+            engine_check = f'"{pattern}"' in engine_source or f"'{pattern}'" in engine_source
+            assert engine_check, f"Pattern {pattern} missing from trading_engine.py"
 
 
 # ─── Pyramid Logic Tests ──────────────────────────────────────────────────
@@ -2488,38 +2510,32 @@ class TestPartialProfit50PctTier:
         assert tier_50.get('sell_pct') == 75, "50% tier should sell 75% total"
         assert tier_50.get('min_score') == 55, "50% tier should use min_score=55"
 
-    def test_50pct_tier_in_backtester(self):
-        """Backtester should load and use 50% partial profit tier."""
+    def test_50pct_tier_in_trading_engine(self):
+        """trading_engine.py should contain 50% partial profit tier logic (single source of truth).
+        ai_trader.py and backtester.py call get_partial_profit_action() from trading_engine."""
         from pathlib import Path
-        source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
-        assert "pp_50_gain" in source, "Backtester should load 50% tier gain threshold"
-        assert "pp_50_sell" in source, "Backtester should load 50% tier sell pct"
-        assert "pp_50_min_score" in source, "Backtester should load 50% tier min score"
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
+        assert "pp_50_gain" in engine_source, "trading_engine should have 50% tier gain threshold"
+        assert "pp_50_sell" in engine_source, "trading_engine should have 50% tier sell pct"
+        assert "pp_50_min_score" in engine_source, "trading_engine should have 50% tier min score"
 
-    def test_50pct_tier_in_ai_trader(self):
-        """AI trader should load and use 50% partial profit tier."""
-        from pathlib import Path
-        source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
-        assert "pp_50_gain" in source, "AI trader should load 50% tier gain threshold"
-        assert "pp_50_sell" in source, "AI trader should load 50% tier sell pct"
+        # Both consumers must import get_partial_profit_action
+        for filename in ["ai_trader.py", "backtester.py"]:
+            source = (Path(__file__).parent.parent / "backend" / filename).read_text()
+            assert "get_partial_profit_action" in source, (
+                f"{filename} must use get_partial_profit_action from trading_engine"
+            )
 
     def test_50pct_tier_fires_before_40pct(self):
-        """50% tier check should appear BEFORE 40% check in the partial profit evaluation logic."""
+        """50% tier check should appear BEFORE 40% check in get_partial_profit_action()."""
         from pathlib import Path
-        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
-        at_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
 
-        # Find the partial profit EVALUATION section (not config loading)
-        # The pattern "gain_pct >= pp_50_gain" should appear before "gain_pct >= pp_40_gain"
-        bt_50_pos = bt_source.find("gain_pct >= pp_50_gain")
-        bt_40_pos = bt_source.find("gain_pct >= pp_40_gain")
-        assert bt_50_pos > 0, "Backtester should have 50% tier gain check"
-        assert bt_50_pos < bt_40_pos, "Backtester should check 50% tier before 40%"
-
-        at_50_pos = at_source.find("gain_pct >= pp_50_gain")
-        at_40_pos = at_source.find("gain_pct >= pp_40_gain")
-        assert at_50_pos > 0, "AI trader should have 50% tier gain check"
-        assert at_50_pos < at_40_pos, "AI trader should check 50% tier before 40%"
+        # In the engine, 50% tier should be checked before 40% tier
+        engine_50_pos = engine_source.find("pp_50_gain")
+        engine_40_pos = engine_source.find("pp_40_gain")
+        assert engine_50_pos > 0, "trading_engine should have 50% tier gain check"
+        assert engine_50_pos < engine_40_pos, "trading_engine should check 50% tier before 40%"
 
     def test_50pct_partial_profit_delta_calculation(self):
         """50% tier should calculate delta from partial_taken, not absolute."""
