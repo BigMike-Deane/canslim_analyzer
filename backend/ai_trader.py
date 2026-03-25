@@ -1294,10 +1294,6 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     }
 
 
-# _sanitize_signal_factors: use sanitize_signal_factors from trading_engine
-_sanitize_signal_factors = sanitize_signal_factors
-
-
 def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   price: float, reason: str, score: float = None,
                   growth_score: float = None, is_growth_stock: bool = False,
@@ -1305,7 +1301,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   signal_factors: dict = None, is_paper: bool = False,
                   user_id: int = 1):
     """Record a trade in the database with detailed logging"""
-    signal_factors = _sanitize_signal_factors(signal_factors)
+    signal_factors = sanitize_signal_factors(signal_factors)
     trade = AIPortfolioTrade(
         ticker=ticker,
         action=action,
@@ -2762,8 +2758,6 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     return final_buys
 
 
-# _categorize_sell_reason: use categorize_sell_reason from trading_engine
-_categorize_sell_reason = categorize_sell_reason
 
 
 def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
@@ -2863,7 +2857,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
                     realized_gain=realized_gain,
-                    signal_factors={"sell_reason": _categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1), "sell_pct": sell_pct},
+                    signal_factors={"sell_reason": categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1), "sell_pct": sell_pct},
                     is_paper=paper_mode,
                     user_id=user_id
                 )
@@ -2914,7 +2908,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
                     realized_gain=position.gain_loss,
-                    signal_factors={"sell_reason": _categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1)},
+                    signal_factors={"sell_reason": categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1)},
                     is_paper=paper_mode,
                     user_id=user_id
                 )
