@@ -2932,6 +2932,7 @@ class TestNewPositionGuard:
 
         mock_session, _ = make_mock_db(stop_loss_pct=10.0)
         engine = BacktestEngine(mock_session, 1)
+        engine.profile['stop_loss_pct'] = 10.0  # Override profile default so backtest stop_loss applies
         engine.data_provider = MagicMock()
         engine.data_provider.get_vix_proxy.return_value = 18.0
         engine.data_provider.get_atr.return_value = 2.0
@@ -2967,6 +2968,7 @@ class TestNewPositionGuard:
 
         mock_session, _ = make_mock_db(stop_loss_pct=10.0)
         engine = BacktestEngine(mock_session, 1)
+        engine.profile['stop_loss_pct'] = 10.0  # Override profile default so backtest stop_loss applies
         engine.data_provider = MagicMock()
         engine.data_provider.get_vix_proxy.return_value = 18.0
         engine.data_provider.get_atr.return_value = 2.0
