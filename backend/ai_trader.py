@@ -997,7 +997,10 @@ def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) 
             data = resp.json()
             result = data.get("chart", {}).get("result", [])
             if result:
-                indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
+                quote_list = result[0].get("indicators", {}).get("quote", [])
+                if not quote_list:
+                    return base_stop_pct
+                indicators = quote_list[0]
                 highs = indicators.get("high", [])
                 lows = indicators.get("low", [])
                 closes = indicators.get("close", [])

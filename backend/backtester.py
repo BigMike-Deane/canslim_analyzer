@@ -3248,8 +3248,8 @@ class BacktestEngine:
                 score=score,
                 priority=-composite_score  # Higher score = lower priority number
             ))
-            # Stash signal_factors on trade for recording
-            buys[-1]._signal_factors = signal_factors
+            # Stash signal_factors on trade for recording (sanitize NaN/Inf)
+            buys[-1]._signal_factors = sanitize_signal_factors(signal_factors)
 
         # Log funnel diagnostics when decay is active
         if _funnel_diag and _funnel["candidates"] > 0:
@@ -3457,7 +3457,7 @@ class BacktestEngine:
             peak_date=current_date,
             is_growth_stock=trade.is_growth_stock,
             sector=sector,
-            signal_factors=getattr(trade, '_signal_factors', {}),
+            signal_factors=sanitize_signal_factors(getattr(trade, '_signal_factors', {})),
             is_experimental=is_experimental,
         )
 
@@ -3559,6 +3559,9 @@ class BacktestEngine:
         # For sells, get from position if available
         if trade.action == "SELL" and not signal_factors and position:
             signal_factors = position.signal_factors
+        # Sanitize NaN/Inf before JSON serialization
+        if signal_factors:
+            signal_factors = sanitize_signal_factors(signal_factors)
 
         db_trade = BacktestTrade(
             backtest_id=self.backtest.id,
