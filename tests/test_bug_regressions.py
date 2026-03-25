@@ -2140,6 +2140,59 @@ class TestAITraderBacktesterSync:
             engine_check = f'"{pattern}"' in engine_source or f"'{pattern}'" in engine_source
             assert engine_check, f"Pattern {pattern} missing from trading_engine.py"
 
+    def test_trading_engine_imports_complete(self):
+        """Both ai_trader and backtester must import ALL shared trading_engine functions.
+        Prevents drift where one file uses a local implementation instead of the shared one."""
+        from pathlib import Path
+        import re
+
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+        engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
+
+        # Extract all public function names from trading_engine.py
+        engine_functions = re.findall(r'^def (\w+)\(', engine_source, re.MULTILINE)
+        # Exclude private helpers
+        public_functions = [f for f in engine_functions if not f.startswith('_')]
+
+        for func in public_functions:
+            # At least one of ai_trader or backtester should import each function
+            ai_imports = func in ai_source
+            bt_imports = func in bt_source
+            assert ai_imports or bt_imports, (
+                f"trading_engine.{func}() is not used by either ai_trader or backtester — "
+                f"dead code in trading_engine.py?"
+            )
+
+    def test_signal_factors_sanitized_in_both(self):
+        """Both ai_trader and backtester must sanitize signal_factors before DB writes.
+        NaN/Inf values cause invalid JSON in the database."""
+        from pathlib import Path
+        ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
+        bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
+
+        assert "sanitize_signal_factors" in ai_source, (
+            "ai_trader must call sanitize_signal_factors before DB writes"
+        )
+        assert "sanitize_signal_factors" in bt_source, (
+            "backtester must call sanitize_signal_factors before DB writes"
+        )
+
+    def test_no_wrapper_aliases_for_engine_functions(self):
+        """ai_trader and backtester should call trading_engine functions directly,
+        not through local aliases (e.g. _func = func). Aliases hide the dependency."""
+        from pathlib import Path
+        import re
+
+        for filename in ["ai_trader.py", "backtester.py"]:
+            source = (Path(__file__).parent.parent / "backend" / filename).read_text()
+            # Look for patterns like "_categorize_sell_reason = categorize_sell_reason"
+            aliases = re.findall(r'^_(\w+)\s*=\s*\1\s*$', source, re.MULTILINE)
+            assert not aliases, (
+                f"{filename} has wrapper aliases for trading_engine functions: {aliases}. "
+                f"Call the functions directly instead."
+            )
+
 
 # ─── Pyramid Logic Tests ──────────────────────────────────────────────────
 # Tests for pyramid (position addition) logic that was previously untested
