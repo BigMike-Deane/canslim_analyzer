@@ -1225,10 +1225,10 @@ async def get_breaking_out_stocks(
 
 @app.get("/api/insider-sentiment")
 async def get_insider_sentiment(
-    sentiment: str = Query("bullish", regex="^(bullish|bearish|all)$"),
+    sentiment: str = Query("bullish", pattern="^(bullish|bearish|all)$"),
     min_score: float = Query(40),
-    sort_by: str = Query("insider_net_value", regex="^(insider_net_value|insider_buy_count|canslim_score|insider_buy_value)$"),
-    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    sort_by: str = Query("insider_net_value", pattern="^(insider_net_value|insider_buy_count|canslim_score|insider_buy_value)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     sector: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
