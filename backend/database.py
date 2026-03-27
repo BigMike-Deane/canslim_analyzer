@@ -186,6 +186,8 @@ def run_migrations():
         ("stocks", "ma_21", "FLOAT"),
         ("stocks", "ma_50", "FLOAT"),
         ("stocks", "atr_pct", "FLOAT"),
+        # Industry group strength rankings (Mar 2026)
+        ("stocks", "industry_group_rank", "INTEGER"),
     ]
 
     # Build a cache of existing columns per table
@@ -449,6 +451,9 @@ class Stock(Base):
     ma_21 = Column(Float)   # 21-day simple moving average
     ma_50 = Column(Float)   # 50-day simple moving average
     atr_pct = Column(Float) # 14-day ATR as % of price
+
+    # Industry Group Strength (Mar 2026)
+    industry_group_rank = Column(Integer)  # Percentile rank 1-100 (100 = strongest group)
 
     # Insider Trading Signals
     insider_buy_count = Column(Integer)  # Insider buys in last 3 months
@@ -1210,3 +1215,54 @@ class DelistedTicker(Base):
 
     # Allow re-checking after some time (ticker might be re-listed or data fixed)
     recheck_after = Column(DateTime)  # If set, can be rechecked after this date
+
+
+class BearBaseCandidate(Base):
+    """
+    Stocks building quality bases during bear markets.
+    Updated after each scan when SPY is below 50MA.
+    Ranked by readiness score — ready-to-buy list when market turns.
+    """
+    __tablename__ = "bear_base_candidates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, index=True, nullable=False)
+    name = Column(String)
+    sector = Column(String)
+    industry = Column(String)
+
+    # Quality metrics (snapshot at scan time)
+    canslim_score = Column(Float)
+    c_score = Column(Float)
+    a_score = Column(Float)
+    l_score = Column(Float)
+    rs_12m = Column(Float)
+    rs_3m = Column(Float)
+    industry_group_rank = Column(Integer)
+
+    # Base characteristics
+    base_type = Column(String)  # flat_base, cup, cup_with_handle, double_bottom
+    weeks_in_base = Column(Integer)
+    atr_pct = Column(Float)  # Tightness of the base
+    pivot_price = Column(Float)
+    current_price = Column(Float)
+    pct_from_pivot = Column(Float)  # How close to breakout
+
+    # Accumulation signals
+    volume_dry_up = Column(Boolean, default=False)
+    institutional_accumulation = Column(Boolean, default=False)
+    insider_sentiment = Column(String)
+
+    # Composite readiness score (0-100, higher = more ready)
+    readiness_score = Column(Float)
+    readiness_factors = Column(JSON)  # Breakdown of score components
+
+    # Tracking
+    first_seen = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    days_on_list = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index('ix_bear_base_readiness', 'readiness_score'),
+        Index('ix_bear_base_ticker_updated', 'ticker', 'last_updated'),
+    )

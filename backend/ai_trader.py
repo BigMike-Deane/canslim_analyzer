@@ -297,6 +297,88 @@ def get_market_regime(db: Session = None) -> dict:
         }
 
 
+def check_position_correlation(
+    candidate_ticker: str,
+    held_tickers: list,
+    threshold: float = 0.70,
+    reduction: float = 0.50,
+    lookback_days: int = 30,
+) -> dict:
+    """
+    Check 30-day rolling price correlation between a candidate and held positions.
+
+    Two stocks in different sectors can be highly correlated if exposed to the same
+    economic driver. This guard reduces position size when correlation is high.
+
+    Args:
+        candidate_ticker: Ticker being considered for purchase
+        held_tickers: List of currently held tickers
+        threshold: Correlation level that triggers reduction (default 0.70)
+        reduction: Multiply position by this factor when above threshold (default 0.50)
+        lookback_days: Number of trading days for correlation window
+
+    Returns:
+        dict with max_corr, most_correlated, multiplier
+    """
+    result = {'max_corr': 0.0, 'most_correlated': None, 'multiplier': 1.0}
+    if not held_tickers:
+        return result
+
+    try:
+        import yfinance as yf
+        import pandas as pd
+
+        # Fetch price history for candidate + all held tickers in one batch
+        all_tickers = [candidate_ticker] + held_tickers
+        period = f"{lookback_days + 15}d"  # Extra buffer for weekends/holidays
+
+        # Use yfinance download for batch efficiency
+        data = yf.download(all_tickers, period=period, progress=False, threads=True)
+        if data.empty:
+            return result
+
+        # Extract close prices
+        if isinstance(data.columns, pd.MultiIndex):
+            closes = data['Close']
+        else:
+            closes = data[['Close']]
+            closes.columns = [candidate_ticker]
+
+        # Calculate daily returns
+        returns = closes.pct_change().dropna()
+
+        if len(returns) < 15 or candidate_ticker not in returns.columns:
+            return result
+
+        # Compute correlation between candidate and each held position
+        max_corr = 0.0
+        most_correlated = None
+        for ticker in held_tickers:
+            if ticker not in returns.columns:
+                continue
+            corr = returns[candidate_ticker].corr(returns[ticker])
+            if corr != corr:  # NaN check
+                continue
+            if abs(corr) > max_corr:
+                max_corr = abs(corr)
+                most_correlated = ticker
+
+        result['max_corr'] = round(max_corr, 3)
+        result['most_correlated'] = most_correlated
+
+        # Apply graduated reduction: higher correlation = more reduction
+        if max_corr >= threshold:
+            # Linear interpolation: at threshold → reduction, at 1.0 → reduction/2
+            excess = (max_corr - threshold) / (1.0 - threshold)
+            multiplier = reduction * (1.0 - excess * 0.5)
+            result['multiplier'] = max(0.25, multiplier)  # Floor at 25% of original
+
+    except Exception as e:
+        logger.debug(f"Correlation check failed for {candidate_ticker}: {e}")
+
+    return result
+
+
 def calculate_coiled_spring_score_for_stock(stock: Stock) -> dict:
     """
     Calculate Coiled Spring score for a database Stock object.
@@ -1803,6 +1885,18 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     send_spy_gate_change_push(current_gate, spy_px, spy_50)
                 except Exception as e:
                     logger.warning(f"SPY gate change notification failed: {e}")
+
+                # On bullish flip: send bear base ready-to-buy list
+                if current_gate == "bullish" and _spy_gate_state == "bearish":
+                    try:
+                        from backend.bear_base import get_bear_base_list
+                        from email_utils import send_market_turn_ready_push
+                        ready_list = get_bear_base_list(db, limit=10)
+                        if ready_list:
+                            send_market_turn_ready_push(ready_list, spy_px, spy_50)
+                            logger.info(f"Market turn alert sent with {len(ready_list)} ready candidates")
+                    except Exception as e:
+                        logger.warning(f"Market turn ready-list notification failed: {e}")
             _spy_gate_state = current_gate
 
             if spy_px < spy_50:
@@ -2523,6 +2617,21 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if adjusted_value < 100:
             continue  # Skip if sector limit would be exceeded
         position_value = adjusted_value
+
+        # CORRELATION GUARD: Reduce position if highly correlated with existing holdings
+        corr_config = yaml_config.get('ai_trader.correlation_guard', {})
+        if corr_config.get('enabled', True) and current_tickers:
+            corr_result = check_position_correlation(
+                stock.ticker, list(current_tickers),
+                threshold=corr_config.get('threshold', 0.70),
+                reduction=corr_config.get('reduction', 0.50),
+            )
+            if corr_result['max_corr'] >= corr_config.get('threshold', 0.70):
+                old_val = position_value
+                position_value *= corr_result['multiplier']
+                logger.info(f"CORRELATION GUARD: {stock.ticker} has {corr_result['max_corr']:.2f} "
+                            f"corr with {corr_result['most_correlated']}, "
+                            f"position ${old_val:.0f} -> ${position_value:.0f}")
 
         if position_value < 100:  # Minimum $100 position
             continue

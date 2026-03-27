@@ -420,6 +420,9 @@ class HistoricalDataProvider:
         except (KeyError, IndexError):
             return None
 
+    # Alias for correlation guard compatibility
+    get_price_series = get_price_history
+
     def get_accumulation_distribution(self, ticker: str, as_of_date: date,
                                        lookback_days: int = 20) -> dict:
         """Calculate up-volume vs down-volume ratio and volume dry-up for a stock.

@@ -83,8 +83,14 @@ class CANSLIMScorer:
             self.SECTOR_GROWTH_THRESHOLDS['default']
         )
 
-    def score_stock(self, stock_data: StockData) -> CANSLIMScore:
-        """Calculate complete CANSLIM score for a stock"""
+    def score_stock(self, stock_data: StockData, industry_group_rank: int = None) -> CANSLIMScore:
+        """Calculate complete CANSLIM score for a stock
+
+        Args:
+            stock_data: StockData instance with all fetched data
+            industry_group_rank: Optional percentile rank (1-100) of the stock's
+                industry group. When provided, applies a bonus/penalty to the L score.
+        """
         score = CANSLIMScore(ticker=stock_data.ticker)
 
         if not stock_data.is_valid:
@@ -98,6 +104,17 @@ class CANSLIMScorer:
         score.l_score, score.l_detail = self._score_leader(stock_data)
         score.i_score, score.i_detail = self._score_institutional(stock_data)
         score.m_score, score.m_detail = self._score_market()
+
+        # Industry group strength bonus/penalty on L score
+        if industry_group_rank is not None:
+            from backend.industry_group import get_industry_group_bonus
+            group_bonus = get_industry_group_bonus(industry_group_rank)
+            if group_bonus != 0:
+                old_l = score.l_score
+                score.l_score = max(0, min(self.MAX_SCORES['L'], score.l_score + group_bonus))
+                if abs(group_bonus) >= 0.5:
+                    direction = "+" if group_bonus > 0 else ""
+                    score.l_detail += f" grp:{direction}{group_bonus:.1f}(#{industry_group_rank})"
 
         score.total_score = (
             score.c_score + score.a_score + score.n_score +

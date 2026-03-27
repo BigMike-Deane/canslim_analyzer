@@ -22,6 +22,9 @@ import InsiderSentiment from './pages/InsiderSentiment'
 import FidelitySync from './pages/FidelitySync'
 import Breadth from './pages/Breadth'
 import Admin from './pages/Admin'
+import BacktestCompare from './pages/BacktestCompare'
+import TradeJournal from './pages/TradeJournal'
+import BearBase from './pages/BearBase'
 
 function AppContent() {
   const { user, loading } = useAuth()
@@ -60,12 +63,15 @@ function AppContent() {
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/breakouts" element={<Breakouts />} />
             <Route path="/docs" element={<Documentation />} />
+            <Route path="/backtest/compare" element={<BacktestCompare />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />
             <Route path="/insider-sentiment" element={<InsiderSentiment />} />
             <Route path="/fidelity" element={<FidelitySync />} />
             <Route path="/breadth" element={<Breadth />} />
+            <Route path="/trade-journal" element={<TradeJournal />} />
+            <Route path="/bear-base" element={<BearBase />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </div>

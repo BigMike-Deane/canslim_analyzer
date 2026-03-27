@@ -3912,6 +3912,134 @@ async def get_market_breadth(current_user: User = Depends(get_current_active_use
     }
 
 
+# ============== Industry Group Strength ==============
+
+@app.get("/api/industry-groups")
+async def get_industry_groups(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get industry group strength rankings with rotation analysis."""
+    from backend.industry_group import compute_industry_group_rankings, get_group_rotation_summary
+
+    rankings = compute_industry_group_rankings(db)
+    rotation = get_group_rotation_summary(db)
+
+    # Format as sorted list for frontend
+    groups = sorted(
+        [{'industry': name, **data} for name, data in rankings.items()],
+        key=lambda g: g['rank'], reverse=True
+    )
+
+    return {
+        "groups": groups,
+        "total": len(groups),
+        "rotation": rotation,
+    }
+
+
+# ============== Bear Market Base Watchlist ==============
+
+@app.get("/api/bear-base")
+async def get_bear_base_candidates(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get stocks building quality bases during bear markets, ranked by readiness."""
+    from backend.bear_base import get_bear_base_list
+    candidates = get_bear_base_list(db, limit=limit)
+
+    # Include market regime context
+    from data_fetcher import get_cached_market_direction
+    mkt = get_cached_market_direction()
+    spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
+    is_bear = spy_info.get('price', 0) < spy_info.get('ma_50', 0) if spy_info.get('price') and spy_info.get('ma_50') else False
+
+    return {
+        "candidates": candidates,
+        "total": len(candidates),
+        "is_bear_market": is_bear,
+        "spy_price": spy_info.get('price'),
+        "spy_ma50": spy_info.get('ma_50'),
+    }
+
+
+# ============== Trade Decision Journal ==============
+
+@app.get("/api/trade-journal")
+async def get_trade_journal(
+    days: int = Query(90, ge=7, le=365),
+    ticker: str = Query(None),
+    action: str = Query(None, pattern="^(BUY|SELL|PYRAMID)$"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Chronological decision log with full signal factors, scores, and reasoning.
+    Each entry shows what the system saw and decided for each trade.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    query = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id,
+        AIPortfolioTrade.executed_at >= cutoff
+    )
+    if ticker:
+        query = query.filter(AIPortfolioTrade.ticker == ticker)
+    if action:
+        query = query.filter(AIPortfolioTrade.action == action)
+
+    trades = query.order_by(AIPortfolioTrade.executed_at.desc()).limit(200).all()
+
+    entries = []
+    for t in trades:
+        factors = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+
+        entry = {
+            "id": t.id,
+            "date": t.executed_at.isoformat() if t.executed_at else None,
+            "ticker": t.ticker,
+            "action": t.action,
+            "shares": t.shares,
+            "price": t.price,
+            "total_value": t.total_value,
+            "reason": t.reason,
+
+            # Scores at trade time
+            "canslim_score": t.canslim_score,
+            "growth_mode_score": t.growth_mode_score,
+            "is_growth_stock": t.is_growth_stock,
+
+            # Signal factors breakdown
+            "entry_type": factors.get("entry_type"),
+            "market_regime": factors.get("market_regime"),
+            "composite_score": factors.get("composite_score"),
+            "base_quality_bonus": factors.get("base_quality_bonus"),
+            "breakout_bonus": factors.get("breakout_bonus"),
+            "pre_breakout_bonus": factors.get("pre_breakout_bonus"),
+            "momentum_score": factors.get("momentum_score"),
+            "coiled_spring_bonus": factors.get("coiled_spring_bonus"),
+            "rs_line_bonus": factors.get("rs_line_bonus"),
+            "volume_multiplier": factors.get("volume_multiplier"),
+            "ml_prediction": factors.get("ml_prediction"),
+            "position_pct": factors.get("position_pct"),
+
+            # Sell-specific fields
+            "sell_reason": factors.get("sell_reason") or (t.reason if t.action == "SELL" else None),
+            "cost_basis": t.cost_basis,
+            "realized_gain": t.realized_gain,
+            "realized_gain_pct": t.realized_gain_pct,
+            "holding_days": t.holding_days,
+        }
+        entries.append(entry)
+
+    return {
+        "entries": entries,
+        "total": len(entries),
+        "period_days": days,
+    }
+
+
 # ============== Trade Analytics ==============
 
 @app.get("/api/analytics/trades")

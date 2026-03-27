@@ -460,6 +460,77 @@ def send_score_crash_warning_push(ticker: str, purchase_score: float, current_sc
                                      tags=["warning", "chart_with_downwards_trend"])
 
 
+def send_bear_base_update_push(total: int, top_candidates: list) -> bool:
+    """Send push notification with bear market watchlist update.
+
+    Args:
+        total: Total candidates on the watchlist
+        top_candidates: List of top candidate dicts with ticker, readiness_score
+
+    Returns:
+        True if sent successfully
+    """
+    title = f"Bear Base Watchlist: {total} candidates"
+    top_str = ", ".join(
+        f"{c['ticker']}({c.get('readiness_score', 0):.0f})"
+        for c in top_candidates[:5]
+    )
+    message = f"Top: {top_str}\nStocks building quality bases during bear market"
+
+    return send_webhook_notification(title, message, priority="default",
+                                     tags=["bear", "mag"])
+
+
+def send_market_turn_ready_push(candidates: list, spy_price: float, spy_ma50: float) -> bool:
+    """Send push notification when SPY crosses back above 50MA with ready-to-buy list.
+
+    Args:
+        candidates: Top bear base candidates ready to buy
+        spy_price: Current SPY price
+        spy_ma50: SPY 50-day MA
+
+    Returns:
+        True if sent successfully
+    """
+    title = f"MARKET TURN: {len(candidates)} stocks ready"
+    lines = [f"SPY ${spy_price:.2f} crossed ABOVE 50MA ${spy_ma50:.2f}"]
+    for c in candidates[:5]:
+        lines.append(f"{c['ticker']}: score {c.get('readiness_score', 0):.0f}, "
+                     f"{c.get('base_type', 'base')} {c.get('weeks_in_base', 0)}w")
+    message = "\n".join(lines)
+
+    return send_webhook_notification(title, message, priority="urgent",
+                                     tags=["green_circle", "rocket", "moneybag"],
+                                     markdown=True)
+
+
+def send_bear_market_report_push(report_data: dict) -> bool:
+    """Send weekly bear market report as push notification.
+
+    Args:
+        report_data: Dict with bases_forming, rotation summary, buy_list
+
+    Returns:
+        True if sent successfully
+    """
+    bases = report_data.get("bases_forming", 0)
+    improving = report_data.get("improving_groups", [])
+    top_ready = report_data.get("top_ready", [])
+
+    title = f"Weekly Bear Report: {bases} bases forming"
+    lines = []
+    if top_ready:
+        top_str = ", ".join(f"{c['ticker']}({c.get('readiness_score', 0):.0f})" for c in top_ready[:3])
+        lines.append(f"Ready: {top_str}")
+    if improving:
+        imp_str = ", ".join(g.get("industry", "?")[:20] for g in improving[:3])
+        lines.append(f"Improving: {imp_str}")
+    message = "\n".join(lines) if lines else "No notable changes this week"
+
+    return send_webhook_notification(title, message, priority="default",
+                                     tags=["bear", "clipboard"])
+
+
 def send_morning_briefing_email(briefing_data: dict) -> bool:
     """Send morning briefing email with portfolio status, market regime, and top candidates.
 

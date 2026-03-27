@@ -9,6 +9,7 @@ const navGroups = [
       { to: '/', icon: 'terminal', label: 'Command Center', end: true },
       { to: '/ai-portfolio', icon: 'brain', label: 'AI Portfolio' },
       { to: '/analytics', icon: 'chart', label: 'Analytics' },
+      { to: '/trade-journal', icon: 'book', label: 'Trade Journal' },
     ],
   },
   {
@@ -20,12 +21,14 @@ const navGroups = [
       { to: '/coiled-spring/history', icon: 'zap', label: 'Coiled Spring' },
       { to: '/insider-sentiment', icon: 'users', label: 'Insider Sent.' },
       { to: '/breadth', icon: 'activity', label: 'Breadth' },
+      { to: '/bear-base', icon: 'shield', label: 'Bear Bases' },
     ],
   },
   {
     label: 'TOOLS',
     items: [
       { to: '/backtest', icon: 'rewind', label: 'Backtest' },
+      { to: '/backtest/compare', icon: 'chart', label: 'Compare' },
       { to: '/watchlist', icon: 'eye', label: 'Watchlist' },
       { to: '/portfolio', icon: 'briefcase', label: 'Portfolio' },
       { to: '/fidelity', icon: 'sync', label: 'My Portfolio' },
@@ -85,6 +88,8 @@ function NavIcon({ name, size = 16 }) {
       return <svg {...props}><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
     case 'activity':
       return <svg {...props}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>
+    case 'shield':
+      return <svg {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
     case 'settings':
       return <svg {...props}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" /></svg>
     default:

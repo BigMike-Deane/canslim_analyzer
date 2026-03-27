@@ -563,6 +563,20 @@ def run_continuous_scan():
     growth_mode_scorer = GrowthModeScorer(data_fetcher, canslim_scorer)
     growth_projector = GrowthProjector(data_fetcher)
 
+    # Pre-load industry group ranks from DB (from previous scan cycle)
+    _industry_group_ranks = {}
+    try:
+        ig_preload_db = SessionLocal()
+        ig_rows = ig_preload_db.query(Stock.ticker, Stock.industry_group_rank).filter(
+            Stock.industry_group_rank != None
+        ).all()
+        _industry_group_ranks = {t: r for t, r in ig_rows}
+        ig_preload_db.close()
+        if _industry_group_ranks:
+            logger.info(f"Loaded industry group ranks for {len(_industry_group_ranks)} stocks")
+    except Exception as e:
+        logger.debug(f"Industry group rank preload failed: {e}")
+
     def analyze_stock(ticker: str) -> dict:
         """Analyze a single stock"""
         try:
@@ -570,7 +584,9 @@ def run_continuous_scan():
             if not stock_data or not stock_data.is_valid:
                 return None
 
-            canslim_result = canslim_scorer.score_stock(stock_data)
+            # Pass industry group rank from previous cycle (bootstrap: first scan has no ranks)
+            ig_rank = _industry_group_ranks.get(ticker)
+            canslim_result = canslim_scorer.score_stock(stock_data, industry_group_rank=ig_rank)
             projection = growth_projector.project_growth(
                 stock_data=stock_data,
                 canslim_score=canslim_result
@@ -1096,6 +1112,43 @@ def run_continuous_scan():
         except Exception as e:
             logger.error(f"Earnings audit error: {e}")
 
+        # Phase 2.8: Update industry group strength rankings
+        _scan_config["phase"] = "industry_groups"
+        _scan_config["phase_detail"] = "Computing industry group rankings..."
+
+        try:
+            from backend.industry_group import compute_industry_group_rankings, update_stock_group_ranks
+            ig_db = SessionLocal()
+            try:
+                rankings = compute_industry_group_rankings(ig_db)
+                if rankings:
+                    updated = update_stock_group_ranks(ig_db, rankings)
+                    logger.info(f"Industry group rankings: {len(rankings)} groups, {updated} stocks updated")
+            finally:
+                ig_db.close()
+        except Exception as e:
+            logger.error(f"Industry group ranking error: {e}")
+
+        # Phase 2.9: Update bear market base-building watchlist (only when SPY < 50MA)
+        try:
+            from data_fetcher import get_cached_market_direction
+            mkt = get_cached_market_direction()
+            spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
+            spy_px = spy_info.get('price', 0)
+            spy_50 = spy_info.get('ma_50', 0)
+            if spy_px and spy_50 and spy_px < spy_50:
+                _scan_config["phase"] = "bear_base"
+                _scan_config["phase_detail"] = "Scanning bear market base candidates..."
+                from backend.bear_base import update_bear_base_candidates
+                bb_db = SessionLocal()
+                try:
+                    result = update_bear_base_candidates(bb_db)
+                    logger.info(f"Bear base watchlist: {result.get('total', 0)} candidates")
+                finally:
+                    bb_db.close()
+        except Exception as e:
+            logger.error(f"Bear base watchlist error: {e}")
+
         # Phase 3: AI Trading
         _scan_config["phase"] = "ai_trading"
         _scan_config["phase_detail"] = "Running AI trading cycle..."
@@ -1467,8 +1520,133 @@ Trades: {len(buy_trades)} buys, {len(sell_trades)} sells
         db.close()
 
 
+def send_weekly_bear_market_report():
+    """
+    Send weekly bear market report (only when SPY < 50MA).
+    Includes: top bases forming, sector rotation shifts, ready-to-buy list.
+    """
+    from backend.database import SessionLocal
+    from data_fetcher import get_cached_market_direction
+
+    # Check if we're in a bear market
+    try:
+        mkt = get_cached_market_direction()
+        spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
+        spy_px = spy_info.get('price', 0)
+        spy_50 = spy_info.get('ma_50', 0)
+        if not spy_px or not spy_50 or spy_px >= spy_50:
+            logger.info("Bear market report: SPY above 50MA, skipping")
+            return
+    except Exception as e:
+        logger.error(f"Bear market report: market data check failed: {e}")
+        return
+
+    db = SessionLocal()
+    try:
+        from backend.bear_base import get_bear_base_list
+        from backend.industry_group import get_group_rotation_summary
+        from email_utils import send_bear_market_report_push
+
+        # Gather data
+        candidates = get_bear_base_list(db, limit=20)
+        rotation = get_group_rotation_summary(db)
+
+        report_data = {
+            "bases_forming": len(candidates),
+            "improving_groups": rotation.get('improving', [])[:5],
+            "deteriorating_groups": rotation.get('deteriorating', [])[:5],
+            "top_ready": candidates[:5],
+            "spy_price": spy_px,
+            "spy_ma50": spy_50,
+        }
+
+        # Send push notification
+        send_bear_market_report_push(report_data)
+
+        # Send email with more detail
+        _send_bear_report_email(report_data, candidates)
+
+        logger.info(f"Bear market report sent: {len(candidates)} bases, "
+                    f"{len(rotation.get('improving', []))} improving groups")
+
+    except Exception as e:
+        logger.error(f"Bear market report failed: {e}")
+    finally:
+        db.close()
+
+
+def _send_bear_report_email(report_data: dict, candidates: list):
+    """Send detailed bear market report via email."""
+    from email_utils import send_email
+
+    spy_px = report_data.get('spy_price', 0)
+    spy_50 = report_data.get('spy_ma50', 0)
+    improving = report_data.get('improving_groups', [])
+    deteriorating = report_data.get('deteriorating_groups', [])
+
+    # Build candidate rows
+    candidate_rows = ""
+    for c in candidates[:15]:
+        color = "#16a34a" if (c.get('readiness_score', 0)) >= 60 else "#ca8a04" if (c.get('readiness_score', 0)) >= 40 else "#94a3b8"
+        candidate_rows += f"""
+        <tr>
+            <td style="padding:6px 10px;">{c.get('ticker','')}</td>
+            <td style="padding:6px 10px;color:{color};font-weight:bold;">{c.get('readiness_score',0):.0f}</td>
+            <td style="padding:6px 10px;">{c.get('canslim_score',0):.0f}</td>
+            <td style="padding:6px 10px;">{c.get('base_type','')}</td>
+            <td style="padding:6px 10px;">{c.get('weeks_in_base',0)}w</td>
+            <td style="padding:6px 10px;">{c.get('sector','')[:15]}</td>
+        </tr>"""
+
+    # Build rotation rows
+    improving_rows = "".join(
+        f"<li style='color:#16a34a;'>{g.get('industry','')} (rank {g.get('rank',0)})</li>"
+        for g in improving[:5]
+    )
+    deteriorating_rows = "".join(
+        f"<li style='color:#dc2626;'>{g.get('industry','')} (rank {g.get('rank',0)})</li>"
+        for g in deteriorating[:5]
+    )
+
+    subject = f"Bear Market Report: {len(candidates)} bases forming | SPY ${spy_px:.2f}"
+
+    html_content = f"""
+    <!DOCTYPE html><html><head><style>
+        body {{ font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: linear-gradient(135deg, #dc2626, #7c3aed); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+        .card {{ background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; }}
+        table {{ width: 100%; border-collapse: collapse; }}
+        th {{ background: #e2e8f0; padding: 8px 10px; text-align: left; font-size: 0.9em; }}
+    </style></head><body>
+        <div class="header">
+            <h2 style="margin:0;">Weekly Bear Market Report</h2>
+            <p style="margin:5px 0 0;opacity:0.9;">SPY ${spy_px:.2f} (50MA ${spy_50:.2f}) | {len(candidates)} bases forming</p>
+        </div>
+        <div class="card">
+            <h3 style="margin-top:0;">Top Base-Building Candidates</h3>
+            <table><tr><th>Ticker</th><th>Ready</th><th>Score</th><th>Base</th><th>Weeks</th><th>Sector</th></tr>
+            {candidate_rows}</table>
+        </div>
+        {"<div class='card'><h3 style='margin-top:0;'>Improving Groups</h3><ul>" + improving_rows + "</ul></div>" if improving_rows else ""}
+        {"<div class='card'><h3 style='margin-top:0;'>Deteriorating Groups</h3><ul>" + deteriorating_rows + "</ul></div>" if deteriorating_rows else ""}
+        <p style="color:#666;font-size:0.85em;">Generated by CANSLIM Analyzer</p>
+    </body></html>"""
+
+    text_content = f"""Bear Market Report — SPY ${spy_px:.2f} (50MA ${spy_50:.2f})
+{len(candidates)} base-building candidates
+
+Top Candidates:
+""" + "\n".join(
+        f"  {c.get('ticker','')} ready={c.get('readiness_score',0):.0f} "
+        f"score={c.get('canslim_score',0):.0f} {c.get('base_type','')} {c.get('weeks_in_base',0)}w"
+        for c in candidates[:10]
+    )
+
+    send_email(subject, html_content, text_content)
+
+
 def start_weekly_email_job():
-    """Start the weekly performance email job (Saturday 9 AM)"""
+    """Start the weekly performance email job (Saturday 9 AM) and bear market report (Sunday 6 PM)"""
     from apscheduler.triggers.cron import CronTrigger
 
     job_id = "weekly_performance_email"
@@ -1486,7 +1664,20 @@ def start_weekly_email_job():
         replace_existing=True
     )
 
+    # Bear market report - Sunday at 6 PM (to prepare for Monday)
+    bear_job_id = "weekly_bear_market_report"
+    if scheduler.get_job(bear_job_id):
+        scheduler.remove_job(bear_job_id)
+
+    scheduler.add_job(
+        send_weekly_bear_market_report,
+        CronTrigger(day_of_week='sun', hour=18, minute=0),
+        id=bear_job_id,
+        name="Weekly Bear Market Report",
+        replace_existing=True
+    )
+
     if not scheduler.running:
         scheduler.start()
 
-    logger.info("Weekly performance email job scheduled for Saturday 9 AM")
+    logger.info("Weekly jobs scheduled: performance email (Sat 9 AM), bear report (Sun 6 PM)")

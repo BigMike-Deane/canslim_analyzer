@@ -25,6 +25,8 @@ const CACHE_TTL = {
   '/api/fidelity/trades': 300,     // 5 min
   '/api/fidelity/reconciliation': 120, // 2 min
   '/api/ml/status': 30,              // 30 sec (may be training)
+  '/api/trade-journal': 120,          // 2 min
+  '/api/bear-base': 300,               // 5 min
 }
 
 function getCacheTTL(endpoint) {
@@ -468,6 +470,18 @@ export const api = {
     const result = await request(`/api/ml/train?strategy=${strategy}&backtest_ids=${backtestIds}&mode=${mode}`, { method: 'POST' })
     cache.invalidate('/api/ml/status')
     return result
+  },
+
+  // Bear Base Watchlist
+  getBearBaseCandidates: (limit = 50) => request(`/api/bear-base?limit=${limit}`),
+
+  // Trade Journal
+  getTradeJournal: (days = 90, ticker = '', action = '') => {
+    const params = new URLSearchParams()
+    params.set('days', days)
+    if (ticker) params.set('ticker', ticker)
+    if (action) params.set('action', action)
+    return request(`/api/trade-journal?${params}`)
   },
 
   // Admin (user management)

@@ -246,6 +246,14 @@ ai_trader:
     industry_threshold: 2         # >= 2 stocks in same industry = reduce more
     industry_multiplier: 0.70     # 30% smaller if same industry
 
+  # Price correlation guard (30-day rolling price correlation with held positions)
+  # Catches hidden concentration: stocks in different sectors can be 0.9 correlated
+  correlation_guard:
+    enabled: true
+    threshold: 0.70               # Correlation level that triggers reduction
+    reduction: 0.50               # Multiply position by 50% when above threshold
+    lookback_days: 30             # Trading days for correlation window
+
   # Entry bonuses - pre-breakout is optimal entry (before the crowd)
   entry_bonuses:
     pre_breakout: 30     # 5-15% below pivot with base (best entry)

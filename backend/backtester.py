@@ -3090,6 +3090,25 @@ class BacktestEngine:
                         continue
                     position_value = remaining_room * portfolio_value
 
+            # CORRELATION GUARD: Check price correlation with held positions
+            corr_config = config.get('ai_trader.correlation_guard', {})
+            if corr_config.get('enabled', True) and self.positions:
+                corr_threshold = corr_config.get('threshold', 0.70)
+                corr_reduction = corr_config.get('reduction', 0.50)
+                corr_lookback = corr_config.get('lookback_days', 30)
+                max_corr, most_corr_ticker = self._check_correlation(
+                    ticker, current_date, corr_lookback
+                )
+                if max_corr >= corr_threshold:
+                    excess = (max_corr - corr_threshold) / (1.0 - corr_threshold)
+                    multiplier = max(0.25, corr_reduction * (1.0 - excess * 0.5))
+                    old_val = position_value
+                    position_value *= multiplier
+                    if position_value < 100:
+                        continue
+                    logger.debug(f"CORR GUARD: {ticker} corr={max_corr:.2f} with "
+                                 f"{most_corr_ticker}, ${old_val:.0f} -> ${position_value:.0f}")
+
             shares = position_value / price
 
             # Build reason string
@@ -3652,6 +3671,51 @@ class BacktestEngine:
             )
             sweep_value = 0.0
         return self.cash + positions_value + sweep_value
+
+    def _check_correlation(self, candidate_ticker: str, current_date, lookback_days: int = 30):
+        """Check price correlation between candidate and held positions using cached data."""
+        import numpy as np
+        max_corr = 0.0
+        most_correlated = None
+
+        # Get candidate's recent returns
+        candidate_prices = self.data_provider.get_price_series(
+            candidate_ticker, current_date, lookback_days
+        )
+        if candidate_prices is None or len(candidate_prices) < 15:
+            return 0.0, None
+
+        candidate_returns = np.diff(candidate_prices) / candidate_prices[:-1]
+
+        for held_ticker in self.positions:
+            held_prices = self.data_provider.get_price_series(
+                held_ticker, current_date, lookback_days
+            )
+            if held_prices is None or len(held_prices) < 15:
+                continue
+
+            held_returns = np.diff(held_prices) / held_prices[:-1]
+
+            # Align lengths
+            min_len = min(len(candidate_returns), len(held_returns))
+            if min_len < 10:
+                continue
+
+            cr = candidate_returns[-min_len:]
+            hr = held_returns[-min_len:]
+
+            # Compute Pearson correlation
+            if np.std(cr) == 0 or np.std(hr) == 0:
+                continue
+            corr = np.corrcoef(cr, hr)[0, 1]
+            if corr != corr:  # NaN
+                continue
+
+            if abs(corr) > max_corr:
+                max_corr = abs(corr)
+                most_correlated = held_ticker
+
+        return round(max_corr, 3), most_correlated
 
     def _check_sector_limit(self, sector: str) -> bool:
         """Check if we can add another position in this sector"""
