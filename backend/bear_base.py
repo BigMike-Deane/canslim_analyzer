@@ -289,6 +289,20 @@ def update_bear_base_candidates(db: Session) -> dict:
     }
 
 
+def _safe(val):
+    """Sanitize NaN/Inf values for JSON serialization."""
+    if val is None:
+        return None
+    try:
+        if val != val:  # NaN check
+            return None
+        if val == float('inf') or val == float('-inf'):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return val
+
+
 def get_bear_base_list(db: Session, limit: int = 50) -> List[dict]:
     """Get the current bear base watchlist, sorted by readiness score."""
     from backend.database import BearBaseCandidate
@@ -303,23 +317,23 @@ def get_bear_base_list(db: Session, limit: int = 50) -> List[dict]:
             "name": c.name,
             "sector": c.sector,
             "industry": c.industry,
-            "canslim_score": c.canslim_score,
-            "c_score": c.c_score,
-            "a_score": c.a_score,
-            "l_score": c.l_score,
-            "rs_12m": c.rs_12m,
-            "rs_3m": c.rs_3m,
+            "canslim_score": _safe(c.canslim_score),
+            "c_score": _safe(c.c_score),
+            "a_score": _safe(c.a_score),
+            "l_score": _safe(c.l_score),
+            "rs_12m": _safe(c.rs_12m),
+            "rs_3m": _safe(c.rs_3m),
             "industry_group_rank": c.industry_group_rank,
             "base_type": c.base_type,
             "weeks_in_base": c.weeks_in_base,
-            "atr_pct": round(c.atr_pct, 2) if c.atr_pct else None,
-            "pivot_price": c.pivot_price,
-            "current_price": c.current_price,
-            "pct_from_pivot": c.pct_from_pivot,
+            "atr_pct": round(c.atr_pct, 2) if c.atr_pct and c.atr_pct == c.atr_pct else None,
+            "pivot_price": _safe(c.pivot_price),
+            "current_price": _safe(c.current_price),
+            "pct_from_pivot": _safe(c.pct_from_pivot),
             "volume_dry_up": c.volume_dry_up,
             "institutional_accumulation": c.institutional_accumulation,
             "insider_sentiment": c.insider_sentiment,
-            "readiness_score": c.readiness_score,
+            "readiness_score": _safe(c.readiness_score),
             "readiness_factors": c.readiness_factors,
             "days_on_list": c.days_on_list,
             "first_seen": c.first_seen.isoformat() if c.first_seen else None,
