@@ -2068,6 +2068,9 @@ class BacktestEngine:
         if newly_computed:
             self._save_persistent_scores(date_str, newly_computed)
 
+        # Post-process: compute industry group rankings and adjust L scores
+        self._apply_industry_group_bonus(scores)
+
         return scores
 
     def _compute_sector_rs_rank(self, ticker: str, scores: dict) -> float:
@@ -3671,6 +3674,66 @@ class BacktestEngine:
             )
             sweep_value = 0.0
         return self.cash + positions_value + sweep_value
+
+    def _apply_industry_group_bonus(self, scores: dict):
+        """
+        Post-process scores: compute industry group rankings from RS data,
+        then adjust L scores with group bonus/penalty (matching live scorer).
+        """
+        from backend.industry_group import get_industry_group_bonus
+
+        # Group tickers by industry, compute average RS
+        industry_rs = {}  # industry -> [rs values]
+        ticker_industry = {}  # ticker -> industry
+
+        for ticker, data in scores.items():
+            industry = self.static_data.get(ticker, {}).get("industry", "")
+            if not industry:
+                continue
+            ticker_industry[ticker] = industry
+            rs_12m = data.get("rs_12m")
+            rs_3m = data.get("rs_3m")
+            if rs_12m is not None and rs_3m is not None and rs_12m == rs_12m and rs_3m == rs_3m:
+                industry_rs.setdefault(industry, []).append((rs_12m, rs_3m))
+
+        if not industry_rs:
+            return
+
+        # Compute composite RS per group (same weights as live: 40% 12m + 60% 3m)
+        group_composites = {}
+        for industry, rs_pairs in industry_rs.items():
+            if len(rs_pairs) < 2:
+                continue  # Need 2+ stocks for meaningful group RS
+            avg_12m = sum(r[0] for r in rs_pairs) / len(rs_pairs)
+            avg_3m = sum(r[1] for r in rs_pairs) / len(rs_pairs)
+            group_composites[industry] = avg_12m * 0.40 + avg_3m * 0.60
+
+        if not group_composites:
+            return
+
+        # Rank groups by composite RS
+        sorted_groups = sorted(group_composites.items(), key=lambda x: x[1])
+        total = len(sorted_groups)
+        group_ranks = {}
+        for i, (industry, _) in enumerate(sorted_groups):
+            group_ranks[industry] = max(1, min(100, round(((i + 1) / total) * 100)))
+
+        # Apply bonus/penalty to L scores
+        for ticker, data in scores.items():
+            industry = ticker_industry.get(ticker)
+            if not industry or industry not in group_ranks:
+                continue
+            rank = group_ranks[industry]
+            bonus = get_industry_group_bonus(rank)
+            if bonus != 0:
+                old_l = data["l_score"]
+                new_l = max(0, min(15, old_l + bonus))
+                data["l_score"] = round(new_l, 1)
+                # Recompute total
+                data["total_score"] = (
+                    data["c_score"] + data["a_score"] + data["n_score"] +
+                    data["s_score"] + data["l_score"] + data["i_score"] + data["m_score"]
+                )
 
     def _check_correlation(self, candidate_ticker: str, current_date, lookback_days: int = 30):
         """Check price correlation between candidate and held positions using cached data."""

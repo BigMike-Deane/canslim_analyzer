@@ -472,6 +472,12 @@ export const api = {
     return result
   },
 
+  // Correlation Matrix
+  getCorrelationMatrix: () => request('/api/ai-portfolio/correlation'),
+
+  // Industry Groups / Sector Rotation
+  getIndustryGroups: () => request('/api/industry-groups'),
+
   // Bear Base Watchlist
   getBearBaseCandidates: (limit = 50) => request(`/api/bear-base?limit=${limit}`),
 

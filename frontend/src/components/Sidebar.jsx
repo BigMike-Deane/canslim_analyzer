@@ -10,6 +10,7 @@ const navGroups = [
       { to: '/ai-portfolio', icon: 'brain', label: 'AI Portfolio' },
       { to: '/analytics', icon: 'chart', label: 'Analytics' },
       { to: '/trade-journal', icon: 'book', label: 'Trade Journal' },
+      { to: '/correlation', icon: 'activity', label: 'Correlation' },
     ],
   },
   {
@@ -22,6 +23,7 @@ const navGroups = [
       { to: '/insider-sentiment', icon: 'users', label: 'Insider Sent.' },
       { to: '/breadth', icon: 'activity', label: 'Breadth' },
       { to: '/bear-base', icon: 'shield', label: 'Bear Bases' },
+      { to: '/sector-rotation', icon: 'trending', label: 'Rotation' },
     ],
   },
   {

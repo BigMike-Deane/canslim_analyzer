@@ -1202,6 +1202,22 @@ def run_continuous_scan():
             if cleanup_db:
                 cleanup_db.close()
 
+        # Phase 4.5: Post-earnings gap-up detection
+        _scan_config["phase_detail"] = "Checking post-earnings gap-ups..."
+
+        try:
+            from backend.earnings_gapup import find_earnings_gapups, send_gapup_alert
+            gu_db = SessionLocal()
+            try:
+                gapups = find_earnings_gapups(gu_db, days_lookback=3, min_gap_pct=5.0)
+                if gapups:
+                    send_gapup_alert(gapups)
+                    logger.info(f"Post-earnings gap-ups: {len(gapups)} found")
+            finally:
+                gu_db.close()
+        except Exception as e:
+            logger.error(f"Gap-up detection error: {e}")
+
         # Phase 5: Check watchlist alerts
         _scan_config["phase_detail"] = "Checking watchlist alerts..."
 

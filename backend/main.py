@@ -3938,6 +3938,92 @@ async def get_industry_groups(
     }
 
 
+# ============== Portfolio Correlation Matrix ==============
+
+@app.get("/api/ai-portfolio/correlation")
+async def get_portfolio_correlation(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Compute pairwise price correlation matrix between all held positions."""
+    positions = db.query(AIPortfolioPosition).filter(
+        AIPortfolioPosition.user_id == current_user.id
+    ).all()
+
+    if len(positions) < 2:
+        return {"matrix": [], "tickers": [], "message": "Need 2+ positions for correlation"}
+
+    tickers = [p.ticker for p in positions]
+
+    try:
+        import yfinance as yf
+        import numpy as np
+
+        data = yf.download(tickers, period="35d", progress=False, threads=True)
+        if data.empty:
+            return {"matrix": [], "tickers": tickers, "message": "No price data available"}
+
+        if isinstance(data.columns, pd.MultiIndex):
+            closes = data['Close']
+        else:
+            closes = data[['Close']]
+            closes.columns = tickers[:1]
+
+        returns = closes.pct_change().dropna()
+        if len(returns) < 10:
+            return {"matrix": [], "tickers": tickers, "message": "Insufficient price history"}
+
+        # Compute correlation matrix
+        corr_matrix = returns.corr()
+        available_tickers = list(corr_matrix.columns)
+
+        # Build matrix as list of lists for frontend
+        matrix = []
+        for t1 in available_tickers:
+            row = []
+            for t2 in available_tickers:
+                val = corr_matrix.loc[t1, t2]
+                row.append(round(float(val), 3) if val == val else 0)
+            matrix.append(row)
+
+        # Find highest off-diagonal correlation
+        max_corr = 0
+        max_pair = None
+        for i, t1 in enumerate(available_tickers):
+            for j, t2 in enumerate(available_tickers):
+                if i < j and abs(matrix[i][j]) > max_corr:
+                    max_corr = abs(matrix[i][j])
+                    max_pair = (t1, t2)
+
+        return {
+            "matrix": matrix,
+            "tickers": available_tickers,
+            "max_correlation": max_corr,
+            "max_pair": max_pair,
+            "positions_count": len(available_tickers),
+        }
+    except Exception as e:
+        return {"matrix": [], "tickers": tickers, "error": str(e)}
+
+
+# ============== Post-Earnings Gap-Up Detector ==============
+
+@app.get("/api/earnings-gapups")
+async def get_earnings_gapups(
+    days: int = Query(7, ge=1, le=30),
+    min_gap_pct: float = Query(5.0, ge=2.0, le=20.0),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Detect stocks that gapped up significantly after earnings.
+    These are high-probability CANSLIM entries when accompanied by strong fundamentals.
+    """
+    from backend.earnings_gapup import find_earnings_gapups
+    gapups = find_earnings_gapups(db, days_lookback=days, min_gap_pct=min_gap_pct)
+    return {"gapups": gapups, "total": len(gapups), "days_lookback": days}
+
+
 # ============== Bear Market Base Watchlist ==============
 
 @app.get("/api/bear-base")

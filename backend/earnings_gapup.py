@@ -1,0 +1,228 @@
+"""
+Post-Earnings Gap-Up Detector
+
+Identifies stocks that gapped up significantly after reporting strong earnings.
+These are among the highest-probability CANSLIM entries because they combine:
+1. Fundamental catalyst (earnings beat)
+2. Institutional validation (gap-up on volume = big money buying)
+3. Breakout confirmation (price breaking to new levels on news)
+
+O'Neil research: Many of the biggest winners in market history made their
+initial breakout move on an earnings gap-up.
+"""
+
+import logging
+from datetime import datetime, date, timedelta, timezone
+from typing import List
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+def find_earnings_gapups(
+    db: Session,
+    days_lookback: int = 7,
+    min_gap_pct: float = 5.0,
+) -> List[dict]:
+    """
+    Find stocks that gapped up after earnings within the lookback window.
+
+    Criteria:
+    - Reported earnings within last N days
+    - Price gapped up >= min_gap_pct% on the earnings day (or next trading day)
+    - Volume on gap day was above average
+    - Has a positive earnings beat streak
+
+    Args:
+        db: Database session
+        days_lookback: How many days back to search
+        min_gap_pct: Minimum gap-up percentage to qualify
+
+    Returns:
+        List of gap-up candidate dicts, sorted by gap size
+    """
+    from backend.database import Stock
+
+    cutoff_date = date.today() - timedelta(days=days_lookback)
+
+    # Find stocks that recently had earnings (days_to_earnings is small or negative)
+    # Stocks with next_earnings_date in the recent past had earnings recently
+    stocks = db.query(Stock).filter(
+        Stock.current_price > 0,
+        Stock.canslim_score != None,
+        Stock.next_earnings_date != None,
+        Stock.next_earnings_date >= cutoff_date,
+        Stock.next_earnings_date <= date.today(),
+        Stock.earnings_beat_streak >= 1,  # Must have beaten estimates
+    ).all()
+
+    if not stocks:
+        return []
+
+    gapups = []
+
+    for stock in stocks:
+        try:
+            # Get price data around the earnings date
+            gap_data = _check_gap_up(stock, min_gap_pct)
+            if gap_data and gap_data['gap_pct'] >= min_gap_pct:
+                gapups.append({
+                    'ticker': stock.ticker,
+                    'name': stock.name,
+                    'sector': stock.sector,
+                    'industry': stock.industry,
+                    'earnings_date': stock.next_earnings_date.isoformat() if stock.next_earnings_date else None,
+                    'gap_pct': gap_data['gap_pct'],
+                    'volume_ratio': gap_data['volume_ratio'],
+                    'current_price': stock.current_price,
+                    'canslim_score': stock.canslim_score,
+                    'c_score': stock.c_score,
+                    'a_score': stock.a_score,
+                    'l_score': stock.l_score,
+                    'beat_streak': stock.earnings_beat_streak,
+                    'earnings_surprise_pct': stock.earnings_surprise_pct,
+                    'base_type': stock.base_type,
+                    'weeks_in_base': stock.weeks_in_base,
+                    'industry_group_rank': stock.industry_group_rank,
+                    'rs_3m': stock.rs_3m,
+                    'is_actionable': _is_actionable(stock, gap_data),
+                })
+        except Exception as e:
+            logger.debug(f"Gap-up check failed for {stock.ticker}: {e}")
+
+    # Sort by gap size (biggest gaps first)
+    gapups.sort(key=lambda g: g['gap_pct'], reverse=True)
+
+    if gapups:
+        logger.info(f"Found {len(gapups)} post-earnings gap-ups "
+                    f"(>={min_gap_pct}%, last {days_lookback}d)")
+
+    return gapups
+
+
+def _check_gap_up(stock, min_gap_pct: float) -> dict:
+    """
+    Check if a stock gapped up on/after its earnings date.
+    Uses Yahoo Finance for intraday gap detection.
+
+    Returns dict with gap_pct and volume_ratio, or None.
+    """
+    import requests
+
+    ticker = stock.ticker
+    earnings_date = stock.next_earnings_date
+
+    try:
+        # Fetch 10 days of data around earnings date
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        params = {"interval": "1d", "range": "15d"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
+            return None
+
+        timestamps = result[0].get("timestamp", [])
+        quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+        opens = quote.get("open", [])
+        closes = quote.get("close", [])
+        volumes = quote.get("volume", [])
+
+        if not timestamps or not opens or not closes:
+            return None
+
+        # Convert timestamps to dates
+        from datetime import datetime as dt
+        dates = [dt.fromtimestamp(ts).date() for ts in timestamps]
+
+        # Find the trading day on or right after earnings
+        earnings_idx = None
+        for i, d in enumerate(dates):
+            if d >= earnings_date:
+                earnings_idx = i
+                break
+
+        if earnings_idx is None or earnings_idx == 0:
+            return None
+
+        # Gap = open on earnings day vs close of prior day
+        prior_close = closes[earnings_idx - 1]
+        earnings_open = opens[earnings_idx]
+        earnings_volume = volumes[earnings_idx] if earnings_idx < len(volumes) else 0
+
+        if not prior_close or not earnings_open or prior_close <= 0:
+            return None
+
+        gap_pct = ((earnings_open - prior_close) / prior_close) * 100
+
+        # Calculate volume ratio (earnings day volume vs average of prior 5 days)
+        prior_volumes = [v for v in volumes[max(0, earnings_idx-5):earnings_idx] if v and v > 0]
+        avg_volume = sum(prior_volumes) / len(prior_volumes) if prior_volumes else 1
+        volume_ratio = earnings_volume / avg_volume if avg_volume > 0 and earnings_volume else 1.0
+
+        if gap_pct >= min_gap_pct:
+            return {
+                'gap_pct': round(gap_pct, 1),
+                'volume_ratio': round(volume_ratio, 1),
+                'earnings_open': round(earnings_open, 2),
+                'prior_close': round(prior_close, 2),
+            }
+
+    except Exception as e:
+        logger.debug(f"Gap-up detection for {ticker}: {e}")
+
+    return None
+
+
+def _is_actionable(stock, gap_data: dict) -> bool:
+    """
+    Determine if a gap-up is actionable (worth buying into).
+
+    Actionable = strong fundamentals + not too extended after gap.
+    """
+    # Must have decent CANSLIM score
+    if (stock.canslim_score or 0) < 55:
+        return False
+    # Volume confirmation (gap on above-average volume)
+    if gap_data.get('volume_ratio', 0) < 1.3:
+        return False
+    # Multiple beats = pattern, not fluke
+    if (stock.earnings_beat_streak or 0) < 2:
+        return False
+    return True
+
+
+def send_gapup_alert(gapups: list) -> bool:
+    """Send ntfy notification for notable post-earnings gap-ups."""
+    if not gapups:
+        return False
+
+    try:
+        from backend.email_utils import send_webhook_notification
+
+        actionable = [g for g in gapups if g.get('is_actionable')]
+        if not actionable:
+            return False
+
+        title = f"Earnings Gap-Up: {len(actionable)} actionable"
+        lines = []
+        for g in actionable[:5]:
+            lines.append(
+                f"{g['ticker']} +{g['gap_pct']:.1f}% gap, "
+                f"{g['volume_ratio']:.1f}x vol, "
+                f"score {g['canslim_score']:.0f}"
+            )
+        message = "\n".join(lines)
+
+        return send_webhook_notification(
+            title, message, priority="high",
+            tags=["rocket", "chart_with_upwards_trend"]
+        )
+    except Exception as e:
+        logger.warning(f"Gap-up alert failed: {e}")
+        return False
