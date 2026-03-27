@@ -157,6 +157,22 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         ml_record.model_path = str(model_path)
         ml_record.training_samples = result.get("training_samples")
 
+        # Minimum sample count gate: don't activate until enough data
+        from ml.trainer import MIN_TOTAL_SAMPLES
+        training_samples = result.get("training_samples", 0)
+        if training_samples < MIN_TOTAL_SAMPLES:
+            ml_record.status = "completed"
+            ml_record.error_message = (
+                f"Data accumulation: {training_samples}/{MIN_TOTAL_SAMPLES} samples. "
+                f"Model saved but not activated."
+            )
+            db.commit()
+            logger.info(
+                f"ML model v{ml_record.version} in accumulation mode: "
+                f"{training_samples}/{MIN_TOTAL_SAMPLES} samples needed"
+            )
+            return
+
         # Improvement gate: only activate if better than current active model
         current_metric, current_version = _get_active_model_metric(db, strategy, model_type)
 

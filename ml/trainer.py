@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path(__file__).parent.parent / "data"
 ACTIVE_MODEL_PATH = MODEL_DIR / "ml_model_active.joblib"
-MIN_TRAINING_SAMPLES = 50  # Minimum samples per CV fold
-MIN_ROC_AUC = 0.52  # Hard gate — classifier must beat this (lowered from 0.55 while data accumulates)
-MIN_SPEARMAN = 0.10  # Hard gate — regressor must beat this (lowered from 0.15 while data accumulates)
+MIN_TRAINING_SAMPLES = 80  # Minimum samples per CV fold (raised from 50)
+MIN_TOTAL_SAMPLES = 200  # Minimum total labeled trades before allowing activation
+MIN_ROC_AUC = 0.55  # Hard gate — classifier must beat this (raised back from 0.52)
+MIN_SPEARMAN = 0.15  # Hard gate — regressor must beat this (raised back from 0.10)
 
 
 def train_model(
@@ -60,7 +61,13 @@ def train_model(
             "error": f"Insufficient data: {0 if X is None else len(X)} samples (need {MIN_TRAINING_SAMPLES})",
         }
 
-    logger.info(f"Training on {len(X)} samples, {y_win.sum()} wins ({y_win.mean():.1%})")
+    # Hard gate: require minimum total labeled trades before activation
+    if len(X) < MIN_TOTAL_SAMPLES:
+        logger.info(f"Data accumulation mode: {len(X)}/{MIN_TOTAL_SAMPLES} samples. "
+                    f"Training for metrics only — model will not activate until {MIN_TOTAL_SAMPLES} trades.")
+
+    logger.info(f"Training on {len(X)} samples ({len(FEATURE_COLUMNS)} features), "
+                f"{y_win.sum()} wins ({y_win.mean():.1%})")
 
     # Walk-forward expanding-window CV
     cv_results = _walk_forward_cv(X, y_win)

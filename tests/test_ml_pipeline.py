@@ -32,13 +32,12 @@ from ml.feature_extractor import (
 # CS-specific feature columns for test validation
 CS_FEATURE_COLUMNS = [
     "cs_weeks_in_base", "cs_beat_streak", "cs_days_to_earnings",
-    "cs_bonus", "cs_c_score", "cs_institutional_pct", "cs_quality_rank",
 ]
 
-# Price action feature columns
+# Price action feature columns (v10: removed days_since_spy_pullback)
 PRICE_ACTION_COLUMNS = [
     "relative_volume", "pct_from_21ma", "pct_from_50ma",
-    "atr_pct", "sector_rs_rank", "days_since_spy_pullback",
+    "atr_pct", "sector_rs_rank",
 ]
 from ml.model import get_ml_prediction, reload_model
 from ml.trainer import (
@@ -196,8 +195,9 @@ class TestExtractFeatures:
         assert f["market_regime"] == 2  # bullish
         assert f["coiled_spring"] == 1
         assert f["soft_zone"] == 1
-        assert f["soft_zone_multiplier"] == 0.8
-        assert f["deterministic_boost"] == 5
+        # Removed features should not be in output
+        assert "soft_zone_multiplier" not in f
+        assert "deterministic_boost" not in f
 
     def test_empty_signal_factors_returns_none(self):
         trade = _make_trade()
@@ -215,13 +215,10 @@ class TestExtractFeatures:
             "market_regime": "neutral",
             "composite_score": 40.0,
             "estimate_revision_bonus": 0,
-            # No coiled_spring, soft_zone, deterministic_boost
         })
         f = _extract_features(trade)
         assert f["coiled_spring"] == 0
         assert f["soft_zone"] == 0
-        assert f["soft_zone_multiplier"] == 1.0
-        assert f["deterministic_boost"] == 0.0
 
     def test_nan_canslim_score(self):
         trade = _make_trade(canslim_score=float("nan"))
@@ -238,12 +235,16 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_twentytwo(self):
-        """Verify we have 9 base + 7 CS + 6 price action = 22 features."""
-        assert len(FEATURE_COLUMNS) == 22
-        assert "rs_line_bonus" not in FEATURE_COLUMNS
-        assert "earnings_drift_bonus" not in FEATURE_COLUMNS
-        assert "is_growth_stock" not in FEATURE_COLUMNS
+    def test_feature_count_is_fifteen(self):
+        """Verify v10: 15 high-signal features (simplified from v9's 22)."""
+        assert len(FEATURE_COLUMNS) == 15
+        # Removed low-signal features
+        assert "soft_zone_multiplier" not in FEATURE_COLUMNS
+        assert "deterministic_boost" not in FEATURE_COLUMNS
+        assert "cs_c_score" not in FEATURE_COLUMNS
+        assert "cs_institutional_pct" not in FEATURE_COLUMNS
+        assert "cs_quality_rank" not in FEATURE_COLUMNS
+        # Kept high-signal features
         for col in CS_FEATURE_COLUMNS:
             assert col in FEATURE_COLUMNS
         for col in PRICE_ACTION_COLUMNS:
@@ -252,7 +253,7 @@ class TestExtractFeatures:
 
 class TestCSFeatureExtraction:
     def test_cs_trade_has_all_cs_features(self):
-        """CS trades should populate all 7 CS-specific features."""
+        """CS trades should populate the 3 kept CS-specific features."""
         trade = _make_trade(signal_factors={
             "entry_type": "standard",
             "market_regime": "bullish",
@@ -262,20 +263,12 @@ class TestCSFeatureExtraction:
             "cs_weeks_in_base": 20,
             "cs_beat_streak": 5,
             "cs_days_to_earnings": 7,
-            "cs_bonus": 25,
-            "cs_c_score": 14.5,
-            "cs_institutional_pct": 35.2,
-            "cs_quality_rank": 62.5,
         })
         f = _extract_features(trade)
         assert f["coiled_spring"] == 1
         assert f["cs_weeks_in_base"] == 20
         assert f["cs_beat_streak"] == 5
         assert f["cs_days_to_earnings"] == 7
-        assert f["cs_bonus"] == 25
-        assert f["cs_c_score"] == 14.5
-        assert f["cs_institutional_pct"] == 35.2
-        assert f["cs_quality_rank"] == 62.5
 
     def test_non_cs_trade_has_zero_cs_features(self):
         """Non-CS trades should have 0 for all CS features."""
@@ -329,7 +322,8 @@ class TestPriceActionFeatures:
         assert f["pct_from_50ma"] == 3.1
         assert f["atr_pct"] == 2.8
         assert f["sector_rs_rank"] == 75.0
-        assert f["days_since_spy_pullback"] == 12
+        # days_since_spy_pullback removed in v10
+        assert "days_since_spy_pullback" not in f
 
     def test_missing_price_action_defaults(self):
         """Missing price action features should default safely."""
@@ -345,7 +339,6 @@ class TestPriceActionFeatures:
         assert f["pct_from_50ma"] == 0.0
         assert f["atr_pct"] == 0.0
         assert f["sector_rs_rank"] == 50.0  # median default
-        assert f["days_since_spy_pullback"] == 30.0  # moderate default
 
 
 class TestBuySellPairing:

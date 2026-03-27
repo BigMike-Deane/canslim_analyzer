@@ -17,34 +17,39 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# Feature columns — 22 active features
-# Base 9 + 7 CS-specific + 6 price action features
+# Feature columns — v10: 15 high-signal features (simplified from v9's 22)
+#
+# Removed 7 low-signal/redundant features:
+#   - soft_zone_multiplier: derivative of soft_zone binary
+#   - deterministic_boost: correlated with total_score
+#   - cs_c_score: correlated with total_score (C component already baked in)
+#   - cs_institutional_pct: weak predictor, correlated with I score
+#   - cs_quality_rank: derivative of other CS features
+#   - cs_bonus: highly correlated with cs_weeks_in_base + cs_beat_streak
+#   - days_since_spy_pullback: noisy signal, hard to capture in 200 samples
+#
+# Keeping 15 features that have structural/theoretical edge:
 FEATURE_COLUMNS = [
-    # Base features (all trades)
+    # Core quality (3) — the "what" of the stock
     "total_score",
     "composite_score",
+    "estimate_revision_bonus",
+    # Entry context (3) — the "when" and "how" of the entry
     "entry_type",           # ordinal: breakout=0, pre-breakout=1, standard=2
     "market_regime",        # ordinal: bearish=0, neutral=1, bullish=2
-    "estimate_revision_bonus",
-    "coiled_spring",        # binary 0/1
-    "soft_zone",            # binary 0/1
-    "soft_zone_multiplier",
-    "deterministic_boost",
-    # CS-specific features (0 for non-CS trades, actual values for CS trades)
-    "cs_weeks_in_base",     # continuous: weeks of consolidation (0 or 15+)
-    "cs_beat_streak",       # continuous: consecutive earnings beats (0 or 3+)
-    "cs_days_to_earnings",  # continuous: days until earnings (0 or 1-14)
-    "cs_bonus",             # continuous: CS score bonus (0 or 20-35)
-    "cs_c_score",           # continuous: C component score (0 or 10-15)
-    "cs_institutional_pct", # continuous: institutional ownership % (0-100)
-    "cs_quality_rank",      # continuous: CS quality ranking score
-    # Price action features (entry timing quality)
-    "relative_volume",       # volume / 50-day avg at entry (>1 = above avg)
-    "pct_from_21ma",         # % distance from 21-day MA (neg = below support)
-    "pct_from_50ma",         # % distance from 50-day MA (neg = below trend)
-    "atr_pct",               # 14-day ATR as % of price (volatility context)
-    "sector_rs_rank",        # sector relative strength percentile (0-100)
-    "days_since_spy_pullback", # days since SPY >2% single-day drop
+    "coiled_spring",        # binary 0/1 (earnings catalyst)
+    # Entry quality flags (1)
+    "soft_zone",            # binary 0/1 (below threshold = lower conviction)
+    # Coiled Spring detail (3) — the 3 most predictive CS features
+    "cs_weeks_in_base",     # consolidation length (structural)
+    "cs_beat_streak",       # earnings consistency (fundamental)
+    "cs_days_to_earnings",  # timing (catalyst proximity)
+    # Price action (5) — entry timing quality
+    "relative_volume",       # volume / 50-day avg at entry (accumulation)
+    "pct_from_21ma",         # % distance from 21-day MA (support proximity)
+    "pct_from_50ma",         # % distance from 50-day MA (trend health)
+    "atr_pct",               # volatility context (tighter = more coiled)
+    "sector_rs_rank",        # sector momentum (group leadership)
 ]
 
 ENTRY_TYPE_MAP = {"breakout": 0, "pre-breakout": 1, "standard": 2}
@@ -282,40 +287,45 @@ def _pair_buy_sell_trades(trades) -> list:
 
 
 def _extract_features(buy_trade) -> dict:
-    """Extract the 16 features from a BUY trade's signal_factors."""
+    """Extract the 15 high-signal features from a BUY trade's signal_factors."""
     sf = buy_trade.signal_factors or {}
 
     # Skip trades with no signal_factors (very old backtests)
     if not sf:
         return None
 
-    return {
-        # Base features (all trades)
+    # Feature defaults — used when signal_factors doesn't have the key
+    _DEFAULTS = {
+        "relative_volume": 1.0,
+        "sector_rs_rank": 50.0,
+    }
+
+    # Build all possible features, then filter to FEATURE_COLUMNS
+    all_features = {
+        # Core quality
         "total_score": _nan_safe(buy_trade.canslim_score, 0.0),
         "composite_score": _nan_safe(sf.get("composite_score"), 0.0),
+        "estimate_revision_bonus": _nan_safe(sf.get("estimate_revision_bonus"), 0.0),
+        # Entry context
         "entry_type": ENTRY_TYPE_MAP.get(sf.get("entry_type", "standard"), 2),
         "market_regime": REGIME_MAP.get(sf.get("market_regime", "neutral"), 1),
-        "estimate_revision_bonus": _nan_safe(sf.get("estimate_revision_bonus"), 0.0),
         "coiled_spring": 1 if sf.get("coiled_spring", False) else 0,
+        # Entry quality
         "soft_zone": 1 if sf.get("soft_zone", False) else 0,
-        "soft_zone_multiplier": _nan_safe(sf.get("soft_zone_multiplier", 1.0), 1.0),
-        "deterministic_boost": _nan_safe(sf.get("deterministic_boost", 0), 0.0),
-        # CS-specific features (0 for non-CS trades, populated for CS trades)
+        # CS detail (3 kept)
         "cs_weeks_in_base": _nan_safe(sf.get("cs_weeks_in_base"), 0.0),
         "cs_beat_streak": _nan_safe(sf.get("cs_beat_streak"), 0.0),
         "cs_days_to_earnings": _nan_safe(sf.get("cs_days_to_earnings"), 0.0),
-        "cs_bonus": _nan_safe(sf.get("cs_bonus"), 0.0),
-        "cs_c_score": _nan_safe(sf.get("cs_c_score"), 0.0),
-        "cs_institutional_pct": _nan_safe(sf.get("cs_institutional_pct"), 0.0),
-        "cs_quality_rank": _nan_safe(sf.get("cs_quality_rank"), 0.0),
-        # Price action features (entry timing quality)
+        # Price action (5 kept)
         "relative_volume": _nan_safe(sf.get("relative_volume"), 1.0),
         "pct_from_21ma": _nan_safe(sf.get("pct_from_21ma"), 0.0),
         "pct_from_50ma": _nan_safe(sf.get("pct_from_50ma"), 0.0),
         "atr_pct": _nan_safe(sf.get("atr_pct"), 0.0),
         "sector_rs_rank": _nan_safe(sf.get("sector_rs_rank"), 50.0),
-        "days_since_spy_pullback": _nan_safe(sf.get("days_since_spy_pullback"), 30.0),
     }
+
+    # Only return features in FEATURE_COLUMNS (v10: 15 features)
+    return {k: v for k, v in all_features.items() if k in FEATURE_COLUMNS}
 
 
 def get_feature_matrix(df: pd.DataFrame):

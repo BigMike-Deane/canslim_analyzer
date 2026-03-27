@@ -26,6 +26,8 @@ const moreItems = [
   { to: '/breakouts', label: 'Breakouts', icon: 'trending' },
   { to: '/coiled-spring/history', label: 'Coiled Spring', icon: 'zap' },
   { to: '/insider-sentiment', label: 'Insiders', icon: 'users' },
+  { to: '/trade-journal', label: 'Journal', icon: 'book' },
+  { to: '/bear-base', label: 'Bear Bases', icon: 'shield' },
   { to: '/analytics', label: 'Analytics', icon: 'chart' },
   { to: '/watchlist', label: 'Watchlist', icon: 'eye' },
   { to: '/portfolio', label: 'Portfolio', icon: 'briefcase' },
@@ -57,6 +59,8 @@ function MoreIcon({ name }) {
       return <svg {...props}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>
     case 'sync':
       return <svg {...props}><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
+    case 'shield':
+      return <svg {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
     default:
       return null
   }
