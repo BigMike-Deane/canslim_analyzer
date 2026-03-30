@@ -779,12 +779,12 @@ async def get_system_health(current_user: User = Depends(get_current_active_user
     # FMP rate limit stats
     fmp_stats = {}
     try:
-        from fmp_rate_limiter import get_rate_limiter
-        limiter = get_rate_limiter()
+        from data_fetcher import get_rate_limit_stats
+        stats = get_rate_limit_stats()
         fmp_stats = {
-            "calls_this_minute": getattr(limiter, '_call_count', 0),
-            "limit_per_minute": getattr(limiter, '_max_calls', 300),
-            "circuit_open": getattr(limiter, '_circuit_open', False),
+            "errors_429": stats.get("errors_429", 0),
+            "total_requests": stats.get("total_requests", 0),
+            "error_rate": stats.get("error_rate", "0%"),
         }
     except Exception:
         pass
@@ -4654,7 +4654,8 @@ async def get_portfolio_summary(
     bearish_stop = profile.get('bearish_stop_loss_pct', 6.0)
 
     # Portfolio totals
-    total_value = config.cash + sum(p.current_value or 0 for p in positions)
+    cash = config.current_cash or 0
+    total_value = cash + sum(p.current_value or 0 for p in positions)
     total_cost = sum((p.cost_basis or 0) * (p.shares or 0) for p in positions)
     total_unrealized = sum(p.gain_loss or 0 for p in positions)
 
@@ -4715,8 +4716,8 @@ async def get_portfolio_summary(
     return {
         "portfolio": {
             "total_value": round(total_value, 2),
-            "cash": round(config.cash, 2),
-            "cash_pct": round(config.cash / total_value * 100, 1) if total_value > 0 else 100,
+            "cash": round(cash, 2),
+            "cash_pct": round(cash / total_value * 100, 1) if total_value > 0 else 100,
             "invested": round(total_cost, 2),
             "unrealized_pnl": round(total_unrealized, 2),
             "positions_count": len(positions),
