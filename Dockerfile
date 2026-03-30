@@ -15,10 +15,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (postgresql-client for pg_dump backups)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
@@ -46,8 +47,8 @@ COPY fmp_rate_limiter.py ./
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Create data directory
-RUN mkdir -p /app/data
+# Create data + backup directories
+RUN mkdir -p /app/data /app/data/backups
 
 # Environment variables
 ENV PYTHONPATH=/app

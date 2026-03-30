@@ -738,6 +738,100 @@ async def health_check(db: Session = Depends(get_db)):
     }
 
 
+# ============== System Health & Backups ==============
+
+@app.get("/api/system-health")
+async def get_system_health(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Comprehensive system health dashboard data."""
+    from backend.scheduler import get_system_health, get_scan_status
+    from backend.backup import get_backup_status
+
+    # Database health
+    try:
+        db.execute(text("SELECT 1"))
+        db_status = "healthy"
+        db_size = db.execute(text(
+            "SELECT pg_size_pretty(pg_database_size(current_database()))"
+        )).scalar()
+    except Exception as e:
+        db_status = f"unhealthy: {str(e)}"
+        db_size = "unknown"
+
+    # Redis health
+    redis_status = "unknown"
+    redis_info = {}
+    try:
+        from redis_cache import get_redis_client
+        r = get_redis_client()
+        if r:
+            r.ping()
+            redis_status = "healthy"
+            info = r.info(section="memory")
+            redis_info = {
+                "used_memory_human": info.get("used_memory_human", "?"),
+                "connected_clients": r.info(section="clients").get("connected_clients", 0),
+            }
+        else:
+            redis_status = "not configured"
+    except Exception as e:
+        redis_status = f"unhealthy: {str(e)[:100]}"
+
+    # FMP rate limit stats
+    fmp_stats = {}
+    try:
+        from fmp_rate_limiter import get_rate_limiter
+        limiter = get_rate_limiter()
+        fmp_stats = {
+            "calls_this_minute": getattr(limiter, '_call_count', 0),
+            "limit_per_minute": getattr(limiter, '_max_calls', 300),
+            "circuit_open": getattr(limiter, '_circuit_open', False),
+        }
+    except Exception:
+        pass
+
+    # Stock counts
+    stock_count = db.query(func.count(Stock.id)).scalar() or 0
+    scored_count = db.query(func.count(Stock.id)).filter(Stock.canslim_score != None).scalar() or 0
+
+    # AI Portfolio summary
+    ai_config = db.query(AIPortfolioConfig).filter(
+        AIPortfolioConfig.user_id == current_user.id
+    ).first()
+    ai_positions = db.query(func.count(AIPortfolioPosition.id)).filter(
+        AIPortfolioPosition.user_id == current_user.id
+    ).scalar() or 0
+
+    return {
+        "database": {"status": db_status, "size": db_size, "stock_count": stock_count, "scored_count": scored_count},
+        "redis": {"status": redis_status, **redis_info},
+        "scanner": get_scan_status(),
+        "scheduler": get_system_health(),
+        "fmp_api": fmp_stats,
+        "backups": get_backup_status(),
+        "ai_portfolio": {
+            "active": ai_config.is_active if ai_config else False,
+            "strategy": ai_config.strategy if ai_config else None,
+            "positions": ai_positions,
+        },
+        "version": settings.VERSION,
+    }
+
+
+@app.post("/api/system/backup")
+async def trigger_backup(current_user: User = Depends(get_current_active_user)):
+    """Manually trigger a database backup."""
+    from backend.backup import perform_backup
+    result = perform_backup()
+    return result
+
+
+@app.get("/api/system/backups")
+async def list_backups(current_user: User = Depends(get_current_active_user)):
+    """List available database backups."""
+    from backend.backup import list_backups
+    return {"backups": list_backups()}
+
+
 # ============== Dashboard ==============
 
 @app.get("/api/dashboard")
@@ -4353,6 +4447,284 @@ async def get_trade_analytics(
         "best_trades": best_trades,
         "worst_trades": worst_trades,
         "realized_vs_unrealized": realized_vs_unrealized,
+    }
+
+
+# ============== Exit Quality Analysis ==============
+
+@app.get("/api/analytics/exit-quality")
+async def get_exit_quality_analysis(
+    days: int = Query(365, ge=30, le=1825),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Analyze exit quality: what-if with different trailing stop configs.
+    Shows money left on table vs money saved by current stops."""
+    from backend.trading_engine import get_trailing_stop_pct
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Get all sell trades with signal_factors
+    sells = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id,
+        AIPortfolioTrade.action == "SELL",
+        AIPortfolioTrade.executed_at >= cutoff,
+        AIPortfolioTrade.cost_basis != None,
+        AIPortfolioTrade.realized_gain != None,
+    ).order_by(AIPortfolioTrade.executed_at.desc()).all()
+
+    if not sells:
+        return {"trades": [], "summary": {}, "alt_configs": []}
+
+    # Alternative trailing stop configs to compare
+    alt_configs = [
+        {"label": "Tighter (80%)", "multiplier": 0.80},
+        {"label": "Current", "multiplier": 1.0},
+        {"label": "Wider (120%)", "multiplier": 1.20},
+        {"label": "Much Wider (150%)", "multiplier": 1.50},
+    ]
+
+    trade_analyses = []
+    for t in sells:
+        factors = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+        gain_pct = factors.get("gain_pct", 0) or 0
+        sell_reason = factors.get("sell_reason", "unknown")
+
+        # Estimate peak gain from signal_factors or gain_pct
+        # For trailing stops, the peak was higher than exit
+        drop_from_peak = factors.get("drop_from_peak", 0) or 0
+        peak_gain_pct = gain_pct + drop_from_peak if drop_from_peak > 0 else gain_pct * 1.1
+
+        cost_per_share = t.cost_basis or t.price
+        actual_pnl = t.realized_gain or 0
+
+        trade_analyses.append({
+            "ticker": t.ticker,
+            "date": t.executed_at.strftime("%Y-%m-%d") if t.executed_at else "",
+            "sell_reason": sell_reason,
+            "gain_pct": round(gain_pct, 1),
+            "peak_gain_pct": round(peak_gain_pct, 1),
+            "actual_pnl": round(actual_pnl, 2),
+            "shares": t.shares,
+            "cost_basis": round(cost_per_share, 2),
+        })
+
+    # Aggregate stats
+    total_actual = sum(t["actual_pnl"] for t in trade_analyses)
+    stop_sells = [t for t in trade_analyses if "STOP" in (t["sell_reason"] or "").upper()]
+    trailing_sells = [t for t in trade_analyses if "TRAILING" in (t["sell_reason"] or "").upper()]
+    profit_takes = [t for t in trade_analyses if "PARTIAL" in (t["sell_reason"] or "").upper() or "TAKE PROFIT" in (t["sell_reason"] or "").upper()]
+
+    # Calculate what-if for each sell reason category
+    summary = {
+        "total_sells": len(trade_analyses),
+        "total_realized": round(total_actual, 2),
+        "stop_loss_count": len(stop_sells),
+        "stop_loss_total": round(sum(t["actual_pnl"] for t in stop_sells), 2),
+        "trailing_stop_count": len(trailing_sells),
+        "trailing_stop_total": round(sum(t["actual_pnl"] for t in trailing_sells), 2),
+        "partial_profit_count": len(profit_takes),
+        "partial_profit_total": round(sum(t["actual_pnl"] for t in profit_takes), 2),
+        "avg_peak_gain": round(sum(t["peak_gain_pct"] for t in trade_analyses) / max(1, len(trade_analyses)), 1),
+        "avg_exit_gain": round(sum(t["gain_pct"] for t in trade_analyses) / max(1, len(trade_analyses)), 1),
+    }
+
+    return {
+        "trades": trade_analyses[:50],  # Last 50
+        "summary": summary,
+    }
+
+
+@app.get("/api/analytics/signal-attribution")
+async def get_signal_attribution(
+    days: int = Query(365, ge=30, le=1825),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Detailed signal attribution: win rate, avg return, avg hold time by entry type."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Get all trades
+    trades = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id,
+        AIPortfolioTrade.executed_at >= cutoff,
+    ).order_by(AIPortfolioTrade.executed_at).all()
+
+    # Match buys to sells by ticker (FIFO)
+    buy_queue = {}  # ticker -> [buy_trades]
+    paired = []  # [{buy, sell, entry_type, return_pct, pnl, days_held}]
+
+    for t in trades:
+        if t.action == "BUY":
+            buy_queue.setdefault(t.ticker, []).append(t)
+        elif t.action == "SELL" and t.ticker in buy_queue and buy_queue[t.ticker]:
+            buy = buy_queue[t.ticker].pop(0)
+            buy_factors = buy.signal_factors if isinstance(buy.signal_factors, dict) else {}
+            sell_factors = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+            return_pct = ((t.price / buy.price) - 1) * 100 if buy.price and buy.price > 0 else 0
+            days_held = (t.executed_at - buy.executed_at).days if t.executed_at and buy.executed_at else 0
+            paired.append({
+                "ticker": t.ticker,
+                "entry_type": buy_factors.get("entry_type", "unknown"),
+                "sell_reason": sell_factors.get("sell_reason", "unknown"),
+                "return_pct": return_pct,
+                "pnl": t.realized_gain or 0,
+                "days_held": days_held,
+                "buy_score": buy.canslim_score or 0,
+                "coiled_spring": bool(buy_factors.get("coiled_spring")),
+                "volume_dry_up": bool(buy_factors.get("volume_dry_up")),
+                "market_regime": buy_factors.get("market_regime", "unknown"),
+            })
+
+    # Aggregate by entry type
+    by_entry = {}
+    for p in paired:
+        et = p["entry_type"]
+        if et not in by_entry:
+            by_entry[et] = {"trades": 0, "wins": 0, "total_return": 0, "total_pnl": 0, "total_days": 0}
+        by_entry[et]["trades"] += 1
+        by_entry[et]["total_return"] += p["return_pct"]
+        by_entry[et]["total_pnl"] += p["pnl"]
+        by_entry[et]["total_days"] += p["days_held"]
+        if p["pnl"] > 0:
+            by_entry[et]["wins"] += 1
+
+    attribution = [
+        {
+            "entry_type": et,
+            "trades": d["trades"],
+            "win_rate": round((d["wins"] / d["trades"]) * 100, 1) if d["trades"] > 0 else 0,
+            "avg_return_pct": round(d["total_return"] / d["trades"], 1) if d["trades"] > 0 else 0,
+            "total_pnl": round(d["total_pnl"], 2),
+            "avg_days_held": round(d["total_days"] / d["trades"]) if d["trades"] > 0 else 0,
+        }
+        for et, d in sorted(by_entry.items(), key=lambda x: x[1]["total_pnl"], reverse=True)
+    ]
+
+    # Aggregate by signal presence
+    cs_trades = [p for p in paired if p["coiled_spring"]]
+    vdu_trades = [p for p in paired if p["volume_dry_up"]]
+
+    def _signal_stats(trades_list, label):
+        if not trades_list:
+            return {"signal": label, "trades": 0, "win_rate": 0, "avg_return": 0, "total_pnl": 0}
+        wins = sum(1 for t in trades_list if t["pnl"] > 0)
+        return {
+            "signal": label,
+            "trades": len(trades_list),
+            "win_rate": round((wins / len(trades_list)) * 100, 1),
+            "avg_return": round(sum(t["return_pct"] for t in trades_list) / len(trades_list), 1),
+            "total_pnl": round(sum(t["pnl"] for t in trades_list), 2),
+        }
+
+    by_signal = [
+        _signal_stats(cs_trades, "Coiled Spring"),
+        _signal_stats(vdu_trades, "Volume Dry-Up"),
+        _signal_stats([p for p in paired if not p["coiled_spring"] and not p["volume_dry_up"]], "Standard"),
+    ]
+
+    return {
+        "by_entry_type": attribution,
+        "by_signal": by_signal,
+        "total_paired_trades": len(paired),
+    }
+
+
+@app.get("/api/portfolio-summary")
+async def get_portfolio_summary(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Single-page portfolio overview: positions with stop distances, today's recommendations."""
+    from backend.ai_trader import get_or_create_config
+    from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
+
+    config = get_or_create_config(db, user_id=current_user.id)
+    positions = db.query(AIPortfolioPosition).filter(
+        AIPortfolioPosition.user_id == current_user.id
+    ).order_by(AIPortfolioPosition.gain_loss_pct.desc()).all()
+
+    # Strategy profile config
+    strategy = config.strategy or "nostate_optimized"
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config_loader import config as app_config
+    profile = app_config.get(f'strategy_profiles.{strategy}', {})
+    base_stop = profile.get('stop_loss_pct', 7.0)
+    bearish_stop = profile.get('bearish_stop_loss_pct', 6.0)
+
+    # Portfolio totals
+    total_value = config.cash + sum(p.current_value or 0 for p in positions)
+    total_cost = sum((p.cost_basis or 0) * (p.shares or 0) for p in positions)
+    total_unrealized = sum(p.gain_loss or 0 for p in positions)
+
+    # Build position detail
+    pos_details = []
+    for p in positions:
+        gain_pct = p.gain_loss_pct or 0
+        trail_pct = get_trailing_stop_pct(gain_pct, profile)
+        trail_pct = apply_pyramid_widening(trail_pct, p.pyramid_count or 0)
+
+        # Calculate stop price
+        if gain_pct > 10 and p.peak_price:
+            stop_price = p.peak_price * (1 - trail_pct / 100)
+        else:
+            stop_price = p.cost_basis * (1 - base_stop / 100)
+
+        # Distance to stop
+        pct_to_stop = ((p.current_price - stop_price) / p.current_price * 100) if p.current_price and stop_price else 0
+        days_held = (datetime.now(timezone.utc) - p.purchase_date).days if p.purchase_date else 0
+
+        pos_details.append({
+            "ticker": p.ticker,
+            "shares": p.shares,
+            "cost_basis": round(p.cost_basis or 0, 2),
+            "current_price": round(p.current_price or 0, 2),
+            "current_value": round(p.current_value or 0, 2),
+            "gain_loss": round(p.gain_loss or 0, 2),
+            "gain_loss_pct": round(gain_pct, 1),
+            "peak_price": round(p.peak_price or 0, 2),
+            "stop_price": round(stop_price, 2),
+            "pct_to_stop": round(pct_to_stop, 1),
+            "trailing_pct": round(trail_pct, 1),
+            "days_held": days_held,
+            "pyramid_count": p.pyramid_count or 0,
+            "current_score": round(p.current_score or 0, 1),
+            "purchase_score": round(p.purchase_score or 0, 1),
+            "is_growth_stock": p.is_growth_stock or False,
+            "pct_of_portfolio": round((p.current_value or 0) / total_value * 100, 1) if total_value > 0 else 0,
+        })
+
+    # Recent trades (last 7 days)
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    recent_trades = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id,
+        AIPortfolioTrade.executed_at >= week_ago,
+    ).order_by(AIPortfolioTrade.executed_at.desc()).limit(10).all()
+
+    recent = [{
+        "ticker": t.ticker,
+        "action": t.action,
+        "shares": t.shares,
+        "price": round(t.price, 2),
+        "pnl": round(t.realized_gain or 0, 2) if t.action == "SELL" else None,
+        "reason": t.reason,
+        "date": t.executed_at.strftime("%Y-%m-%d %H:%M") if t.executed_at else "",
+    } for t in recent_trades]
+
+    return {
+        "portfolio": {
+            "total_value": round(total_value, 2),
+            "cash": round(config.cash, 2),
+            "cash_pct": round(config.cash / total_value * 100, 1) if total_value > 0 else 100,
+            "invested": round(total_cost, 2),
+            "unrealized_pnl": round(total_unrealized, 2),
+            "positions_count": len(positions),
+            "strategy": strategy,
+            "is_active": config.is_active,
+        },
+        "positions": pos_details,
+        "recent_trades": recent,
     }
 
 

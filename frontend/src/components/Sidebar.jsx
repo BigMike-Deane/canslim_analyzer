@@ -9,6 +9,7 @@ const navGroups = [
       { to: '/', icon: 'terminal', label: 'Command Center', end: true },
       { to: '/ai-portfolio', icon: 'brain', label: 'AI Portfolio' },
       { to: '/analytics', icon: 'chart', label: 'Analytics' },
+      { to: '/portfolio-summary', icon: 'briefcase', label: 'Summary' },
       { to: '/trade-journal', icon: 'book', label: 'Trade Journal' },
       { to: '/correlation', icon: 'activity', label: 'Correlation' },
     ],
@@ -52,6 +53,7 @@ function getNavGroups(isAdmin) {
       label: 'ADMIN',
       items: [
         { to: '/admin', icon: 'settings', label: 'Users' },
+        { to: '/system-health', icon: 'activity', label: 'System Health' },
       ],
     },
   ]

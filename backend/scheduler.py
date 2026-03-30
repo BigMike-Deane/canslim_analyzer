@@ -33,6 +33,72 @@ _scan_config = {
     "phase_detail": None  # Additional detail like "Fetching earnings calendar..."
 }
 
+# System health tracking for error alerting
+_system_health = {
+    "last_successful_scan": None,
+    "last_scan_error": None,
+    "consecutive_scan_failures": 0,
+    "last_successful_trade_cycle": None,
+    "last_trade_cycle_error": None,
+    "consecutive_trade_failures": 0,
+    "last_backup": None,
+    "last_backup_error": None,
+    "errors_today": [],  # Rolling list of recent errors
+}
+
+
+def get_system_health():
+    """Return system health state for dashboard."""
+    return dict(_system_health)
+
+
+def _record_success(task_name: str):
+    """Record a successful task execution."""
+    now = datetime.now(timezone.utc).isoformat()
+    if task_name == "scan":
+        _system_health["last_successful_scan"] = now
+        _system_health["consecutive_scan_failures"] = 0
+        _system_health["last_scan_error"] = None
+    elif task_name == "trade_cycle":
+        _system_health["last_successful_trade_cycle"] = now
+        _system_health["consecutive_trade_failures"] = 0
+        _system_health["last_trade_cycle_error"] = None
+    elif task_name == "backup":
+        _system_health["last_backup"] = now
+        _system_health["last_backup_error"] = None
+
+
+def _record_failure(task_name: str, error: str):
+    """Record a task failure and alert if consecutive failures exceed threshold."""
+    from email_utils import send_webhook_notification
+
+    now = datetime.now(timezone.utc).isoformat()
+    error_entry = {"task": task_name, "error": error[:200], "timestamp": now}
+
+    # Keep last 50 errors
+    _system_health["errors_today"].append(error_entry)
+    _system_health["errors_today"] = _system_health["errors_today"][-50:]
+
+    if task_name == "scan":
+        _system_health["last_scan_error"] = error_entry
+        _system_health["consecutive_scan_failures"] += 1
+        failures = _system_health["consecutive_scan_failures"]
+    elif task_name == "trade_cycle":
+        _system_health["last_trade_cycle_error"] = error_entry
+        _system_health["consecutive_trade_failures"] += 1
+        failures = _system_health["consecutive_trade_failures"]
+    else:
+        failures = 1
+
+    # Alert on first failure and every 3rd consecutive failure
+    if failures == 1 or failures % 3 == 0:
+        send_webhook_notification(
+            title=f"CANSLIM {task_name.replace('_', ' ').title()} Failed",
+            message=f"Error ({failures}x consecutive): {error[:150]}",
+            priority="high" if failures >= 3 else "default",
+            tags=["warning", "chart_with_downwards_trend"],
+        )
+
 
 def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
     """Delete StockScore records older than N days to prevent database bloat."""
@@ -402,14 +468,63 @@ def send_morning_briefing_if_due():
         portfolio = get_portfolio_value(db)
         market_regime = get_market_regime(db)
 
-        # Current positions
+        # Current positions with stop distances and earnings warnings
+        from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
         positions = db.query(AIPortfolioPosition).all()
-        pos_data = [{
-            "ticker": p.ticker,
-            "price": p.current_price or 0,
-            "gain_pct": p.gain_loss_pct or 0,
-            "score": get_effective_score(p, use_current=True)
-        } for p in positions]
+
+        # Load strategy profile for stop calculation
+        profile = yaml_config.get(f'strategy_profiles.{config.strategy}', {}) if hasattr(config, 'strategy') else {}
+        base_stop = profile.get('stop_loss_pct', 7.0)
+
+        # Pre-load earnings dates for positions
+        pos_tickers = [p.ticker for p in positions]
+        pos_stocks = db.query(Stock).filter(Stock.ticker.in_(pos_tickers)).all() if pos_tickers else []
+        stocks_map = {s.ticker: s for s in pos_stocks}
+
+        pos_data = []
+        near_stop_positions = []
+        earnings_warnings = []
+        for p in positions:
+            gain_pct = p.gain_loss_pct or 0
+            trail_pct = get_trailing_stop_pct(gain_pct, profile)
+            trail_pct = apply_pyramid_widening(trail_pct, p.pyramid_count or 0)
+
+            if gain_pct > 10 and p.peak_price:
+                stop_price = p.peak_price * (1 - trail_pct / 100)
+            else:
+                stop_price = p.cost_basis * (1 - base_stop / 100)
+
+            pct_to_stop = ((p.current_price - stop_price) / p.current_price * 100) if p.current_price and stop_price else 0
+            days_held = (datetime.now(timezone.utc) - p.purchase_date).days if p.purchase_date else 0
+
+            pos_data.append({
+                "ticker": p.ticker,
+                "price": p.current_price or 0,
+                "gain_pct": gain_pct,
+                "score": get_effective_score(p, use_current=True),
+                "pct_to_stop": round(pct_to_stop, 1),
+                "stop_price": round(stop_price, 2),
+                "days_held": days_held,
+            })
+
+            # Flag positions within 3% of stop
+            if pct_to_stop < 3:
+                near_stop_positions.append({"ticker": p.ticker, "pct_to_stop": round(pct_to_stop, 1)})
+
+            # Flag positions with earnings this week
+            stock = stocks_map.get(p.ticker)
+            if stock and hasattr(stock, 'next_earnings_date') and stock.next_earnings_date:
+                from datetime import date
+                try:
+                    if isinstance(stock.next_earnings_date, str):
+                        earnings_date = date.fromisoformat(stock.next_earnings_date)
+                    else:
+                        earnings_date = stock.next_earnings_date if isinstance(stock.next_earnings_date, date) else stock.next_earnings_date.date()
+                    days_to_earnings = (earnings_date - date.today()).days
+                    if 0 <= days_to_earnings <= 5:
+                        earnings_warnings.append({"ticker": p.ticker, "days": days_to_earnings, "date": str(earnings_date)})
+                except (ValueError, TypeError):
+                    pass
 
         # Top candidates (evaluate without executing)
         try:
@@ -453,7 +568,9 @@ def send_morning_briefing_if_due():
             "positions": pos_data,
             "top_candidates": candidates,
             "market_timing": timing_info,
-            "portfolio_heat": heat
+            "portfolio_heat": heat,
+            "near_stop_positions": near_stop_positions,
+            "earnings_warnings": earnings_warnings,
         }
 
         success = send_morning_briefing_email(briefing_data)
@@ -1171,10 +1288,12 @@ def run_continuous_scan():
                         result = run_ai_trading_cycle(ai_db, user_id=uid)
                         logger.info(f"AI trading (user {uid}): {len(result.get('buys_executed', []))} buys, {len(result.get('sells_executed', []))} sells")
                         ai_trading_result = result  # Keep last for backward compat
+                        _record_success("trade_cycle")
                     else:
                         logger.info("Market closed - skipping AI trading and snapshot")
                 except Exception as ue:
                     logger.error(f"AI trading error for user {uid}: {ue}")
+                    _record_failure("trade_cycle", f"User {uid}: {ue}")
             # For inactive configs, still take snapshot during market hours
             inactive_configs = ai_db.query(AIPortfolioConfig).filter(AIPortfolioConfig.is_active == False).all()
             for cfg in inactive_configs:
@@ -1234,9 +1353,11 @@ def run_continuous_scan():
 
         # Phase 7: Scan completion logging (push notification removed — user only wants trade/gate alerts)
         logger.info(f"Scan complete: {successful}/{len(tickers)} stocks in {total_time:.0f}s")
+        _record_success("scan")
 
     except Exception as e:
         logger.error(f"Scan error: {e}")
+        _record_failure("scan", str(e))
     finally:
         _scan_config["is_scanning"] = False
         _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -1313,6 +1434,18 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
             start_weekly_email_job()
     except Exception as e:
         logger.warning(f"Failed to start weekly email job: {e}")
+
+    # Start daily database backup job
+    try:
+        start_backup_job()
+    except Exception as e:
+        logger.warning(f"Failed to start backup job: {e}")
+
+    # Start intraday breakout monitor (every 5 min during market hours)
+    try:
+        start_breakout_monitor_job()
+    except Exception as e:
+        logger.warning(f"Failed to start breakout monitor: {e}")
 
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
@@ -1421,6 +1554,18 @@ def send_weekly_performance_email():
         winning_sells = len([t for t in sell_trades if (t.realized_gain_loss or 0) > 0])
         win_rate = (winning_sells / len(sell_trades) * 100) if sell_trades else 0
 
+        # Signal attribution for the week
+        entry_type_stats = {}
+        for t in sell_trades:
+            factors = t.signal_factors if hasattr(t, 'signal_factors') and isinstance(t.signal_factors, dict) else {}
+            et = factors.get("entry_type", "unknown")
+            if et not in entry_type_stats:
+                entry_type_stats[et] = {"trades": 0, "wins": 0, "pnl": 0}
+            entry_type_stats[et]["trades"] += 1
+            entry_type_stats[et]["pnl"] += t.realized_gain_loss or 0
+            if (t.realized_gain_loss or 0) > 0:
+                entry_type_stats[et]["wins"] += 1
+
         # Build email content
         vs_spy = ""
         if spy_return is not None:
@@ -1464,6 +1609,32 @@ def send_weekly_performance_email():
                 """
             trades_html += "</table>"
 
+        # Build attribution rows for email
+        attribution_html = ""
+        if entry_type_stats:
+            attr_rows = ""
+            for et, stats in sorted(entry_type_stats.items(), key=lambda x: x[1]["pnl"], reverse=True):
+                wr = (stats["wins"] / stats["trades"] * 100) if stats["trades"] > 0 else 0
+                pnl_color = "green" if stats["pnl"] > 0 else "red"
+                attr_rows += f"""
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 6px 8px; text-transform: capitalize;">{et}</td>
+                    <td style="padding: 6px 8px; text-align: center;">{stats['trades']}</td>
+                    <td style="padding: 6px 8px; text-align: center;">{wr:.0f}%</td>
+                    <td style="padding: 6px 8px; text-align: right; color: {pnl_color};">${stats['pnl']:+,.0f}</td>
+                </tr>"""
+            attribution_html = f"""
+            <h3>Signal Attribution</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <tr style="background: #f5f5f5;">
+                    <th style="padding: 6px 8px; text-align: left;">Entry Type</th>
+                    <th style="padding: 6px 8px; text-align: center;">Trades</th>
+                    <th style="padding: 6px 8px; text-align: center;">Win Rate</th>
+                    <th style="padding: 6px 8px; text-align: right;">P/L</th>
+                </tr>
+                {attr_rows}
+            </table>"""
+
         portfolio_color = "green" if portfolio_return > 0 else "red"
 
         html_content = f"""
@@ -1504,6 +1675,8 @@ def send_weekly_performance_email():
             </div>
 
             {trades_html}
+
+            {attribution_html}
 
             <p style="color: #666; font-size: 0.9em; margin-top: 20px;">
                 Generated by CANSLIM Analyzer
@@ -1697,3 +1870,68 @@ def start_weekly_email_job():
         scheduler.start()
 
     logger.info("Weekly jobs scheduled: performance email (Sat 9 AM), bear report (Sun 6 PM)")
+
+
+def _run_scheduled_backup():
+    """Wrapper for scheduled backup with health tracking."""
+    try:
+        from backend.backup import perform_backup
+        result = perform_backup()
+        if result["status"] == "success":
+            _record_success("backup")
+        else:
+            _record_failure("backup", result.get("error", "unknown"))
+    except Exception as e:
+        logger.error(f"Scheduled backup failed: {e}")
+        _record_failure("backup", str(e))
+
+
+def start_backup_job():
+    """Schedule daily database backup at 2 AM UTC."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "daily_database_backup"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_scheduled_backup,
+        CronTrigger(hour=2, minute=0),
+        id=job_id,
+        name="Daily Database Backup",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Daily backup job scheduled (2 AM UTC)")
+
+
+def start_breakout_monitor_job():
+    """Schedule intraday breakout checks every 5 minutes during market hours."""
+    job_id = "intraday_breakout_monitor"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_breakout_monitor,
+        IntervalTrigger(minutes=5),
+        id=job_id,
+        name="Intraday Breakout Monitor",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Intraday breakout monitor scheduled (every 5 min)")
+
+
+def _run_breakout_monitor():
+    """Wrapper for breakout monitor with error tracking."""
+    try:
+        from backend.breakout_monitor import check_intraday_breakouts
+        check_intraday_breakouts()
+    except Exception as e:
+        logger.error(f"Breakout monitor error: {e}")

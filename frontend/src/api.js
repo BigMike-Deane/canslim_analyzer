@@ -27,6 +27,7 @@ const CACHE_TTL = {
   '/api/ml/status': 30,              // 30 sec (may be training)
   '/api/trade-journal': 120,          // 2 min
   '/api/bear-base': 300,               // 5 min
+  '/api/system-health': 30,            // 30 sec (monitoring)
 }
 
 function getCacheTTL(endpoint) {
@@ -508,6 +509,16 @@ export const api = {
     })
     return result
   },
+
+  // Portfolio Summary & Analytics
+  getPortfolioSummary: () => request('/api/portfolio-summary'),
+  getSignalAttribution: (days = 365) => request(`/api/analytics/signal-attribution?days=${days}`),
+  getExitQuality: (days = 365) => request(`/api/analytics/exit-quality?days=${days}`),
+
+  // System Health & Backups
+  getSystemHealth: () => request('/api/system-health'),
+  triggerBackup: () => request('/api/system/backup', { method: 'POST' }),
+  getBackups: () => request('/api/system/backups'),
 }
 
 // Formatting utilities

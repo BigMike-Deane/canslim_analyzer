@@ -27,6 +27,8 @@ import TradeJournal from './pages/TradeJournal'
 import BearBase from './pages/BearBase'
 import CorrelationMatrix from './pages/CorrelationMatrix'
 import SectorRotation from './pages/SectorRotation'
+import SystemHealth from './pages/SystemHealth'
+import PortfolioSummary from './pages/PortfolioSummary'
 
 function AppContent() {
   const { user, loading } = useAuth()
@@ -76,6 +78,8 @@ function AppContent() {
             <Route path="/bear-base" element={<BearBase />} />
             <Route path="/correlation" element={<CorrelationMatrix />} />
             <Route path="/sector-rotation" element={<SectorRotation />} />
+            <Route path="/portfolio-summary" element={<PortfolioSummary />} />
+            <Route path="/system-health" element={<SystemHealth />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </div>

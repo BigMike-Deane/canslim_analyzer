@@ -350,6 +350,18 @@ def send_morning_briefing_push(briefing_data: dict) -> bool:
 
     lines = [f"Cash: ${cash:,.0f} | {regime_name} | Heat: {heat:.0f}%"]
 
+    # Positions near stop (URGENT)
+    near_stop = briefing_data.get("near_stop_positions", [])
+    if near_stop:
+        stop_str = ", ".join(f"{s['ticker']} ({s['pct_to_stop']}%)" for s in near_stop)
+        lines.append(f"NEAR STOP: {stop_str}")
+
+    # Earnings warnings
+    earnings_warnings = briefing_data.get("earnings_warnings", [])
+    if earnings_warnings:
+        earn_str = ", ".join(f"{e['ticker']} {e['days']}d" for e in earnings_warnings)
+        lines.append(f"EARNINGS: {earn_str}")
+
     # Top 3 positions
     if positions:
         top = sorted(positions, key=lambda p: abs(p.get("gain_pct", 0)), reverse=True)[:3]
@@ -554,23 +566,36 @@ def send_morning_briefing_email(briefing_data: dict) -> bool:
     heat = briefing_data.get("portfolio_heat", 0)
     earnings_this_week = briefing_data.get("earnings_this_week", [])
 
+    near_stop = briefing_data.get("near_stop_positions", [])
+    earnings_warnings = briefing_data.get("earnings_warnings", [])
+
     total_value = portfolio.get("total_value") or 0
     total_return_pct = portfolio.get("total_return_pct") or 0
     cash = portfolio.get("cash") or 0
     regime_name = (regime.get("regime") or "unknown").upper()
 
-    subject = f"CANSLIM Morning Briefing - ${total_value:,.0f} ({total_return_pct:+.1f}%)"
+    # Subject includes urgent warnings
+    alerts = []
+    if near_stop:
+        alerts.append(f"{len(near_stop)} near stop")
+    if earnings_warnings:
+        alerts.append(f"{len(earnings_warnings)} earnings")
+    alert_suffix = f" [{', '.join(alerts)}]" if alerts else ""
+    subject = f"CANSLIM Morning Briefing - ${total_value:,.0f} ({total_return_pct:+.1f}%){alert_suffix}"
 
-    # Build positions table rows
+    # Build positions table rows (now includes stop distance)
     pos_rows = ""
     for p in positions[:10]:
         color = "#16a34a" if p.get("gain_pct", 0) >= 0 else "#dc2626"
+        stop_color = "#dc2626" if p.get("pct_to_stop", 99) < 3 else "#ca8a04" if p.get("pct_to_stop", 99) < 5 else "#666"
         pos_rows += f"""
         <tr>
             <td style="padding:6px 10px;">{p.get('ticker','')}</td>
             <td style="padding:6px 10px;">${p.get('price',0):.2f}</td>
             <td style="padding:6px 10px;color:{color};">{p.get('gain_pct',0):+.1f}%</td>
+            <td style="padding:6px 10px;color:{stop_color};">{p.get('pct_to_stop','?')}%</td>
             <td style="padding:6px 10px;">{p.get('score',0):.0f}</td>
+            <td style="padding:6px 10px;color:#666;">{p.get('days_held',0)}d</td>
         </tr>"""
 
     # Build candidates rows
@@ -629,7 +654,11 @@ def send_morning_briefing_email(briefing_data: dict) -> bool:
                &nbsp; Heat: {heat:.1f}%</p>
         </div>
 
-        {'<div class="card"><h3 style="margin-top:0;">Current Positions (' + str(len(positions)) + ')</h3><table><tr><th>Ticker</th><th>Price</th><th>Gain</th><th>Score</th></tr>' + pos_rows + '</table></div>' if positions else ''}
+        {"".join(f'<div class="card" style="background:#fef2f2;border:1px solid #fca5a5;"><strong style="color:#dc2626;">NEAR STOP:</strong> {s["ticker"]} — only {s["pct_to_stop"]}% to stop loss</div>' for s in near_stop) if near_stop else ""}
+
+        {"".join(f'<div class="card" style="background:#fefce8;border:1px solid #fde68a;"><strong style="color:#ca8a04;">EARNINGS:</strong> {e["ticker"]} reports in {e["days"]}d ({e["date"]})</div>' for e in earnings_warnings) if earnings_warnings else ""}
+
+        {'<div class="card"><h3 style="margin-top:0;">Current Positions (' + str(len(positions)) + ')</h3><table><tr><th>Ticker</th><th>Price</th><th>Gain</th><th>To Stop</th><th>Score</th><th>Days</th></tr>' + pos_rows + '</table></div>' if positions else ''}
 
         {'<div class="card"><h3 style="margin-top:0;">Top Buy Candidates</h3><table><tr><th>Ticker</th><th>Price</th><th>Score</th><th>Reason</th></tr>' + cand_rows + '</table></div>' if candidates else '<div class="card"><p>No buy candidates today.</p></div>'}
 

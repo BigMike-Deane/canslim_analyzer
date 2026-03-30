@@ -328,6 +328,127 @@ def _extract_features(buy_trade) -> dict:
     return {k: v for k, v in all_features.items() if k in FEATURE_COLUMNS}
 
 
+def extract_live_trade_data(db: Session) -> pd.DataFrame:
+    """
+    Extract labeled training data from live AI portfolio trades.
+    Pairs BUY trades with subsequent SELLs, same as backtester extraction.
+    This supplements backtester data to bootstrap past cold-start.
+    """
+    from backend.database import AIPortfolioTrade
+
+    trades = (
+        db.query(AIPortfolioTrade)
+        .order_by(AIPortfolioTrade.executed_at)
+        .all()
+    )
+
+    if not trades:
+        return pd.DataFrame()
+
+    # Pair BUYs with SELLs by ticker (FIFO)
+    buy_queue = {}  # ticker -> [buy_trade]
+    rows = []
+
+    for trade in trades:
+        if trade.action == "BUY":
+            buy_queue.setdefault(trade.ticker, []).append(trade)
+        elif trade.action == "SELL" and trade.ticker in buy_queue and buy_queue[trade.ticker]:
+            buy = buy_queue[trade.ticker].pop(0)
+            sf = buy.signal_factors if isinstance(buy.signal_factors, dict) else {}
+            if not sf:
+                continue
+
+            # Extract features from the buy trade's signal_factors
+            features = {
+                "total_score": _nan_safe(buy.canslim_score, 0.0),
+                "composite_score": _nan_safe(sf.get("composite_score"), 0.0),
+                "estimate_revision_bonus": _nan_safe(sf.get("estimate_revision_bonus"), 0.0),
+                "entry_type": ENTRY_TYPE_MAP.get(sf.get("entry_type", "standard"), 2),
+                "market_regime": REGIME_MAP.get(sf.get("market_regime", "neutral"), 1),
+                "coiled_spring": 1 if sf.get("coiled_spring", False) else 0,
+                "soft_zone": 1 if sf.get("soft_zone", False) else 0,
+                "cs_weeks_in_base": _nan_safe(sf.get("cs_weeks_in_base"), 0.0),
+                "cs_beat_streak": _nan_safe(sf.get("cs_beat_streak"), 0.0),
+                "cs_days_to_earnings": _nan_safe(sf.get("cs_days_to_earnings"), 0.0),
+                "relative_volume": _nan_safe(sf.get("relative_volume"), 1.0),
+                "pct_from_21ma": _nan_safe(sf.get("pct_from_21ma"), 0.0),
+                "pct_from_50ma": _nan_safe(sf.get("pct_from_50ma"), 0.0),
+                "atr_pct": _nan_safe(sf.get("atr_pct"), 0.0),
+                "sector_rs_rank": _nan_safe(sf.get("sector_rs_rank"), 50.0),
+            }
+
+            # Only keep features in FEATURE_COLUMNS
+            features = {k: v for k, v in features.items() if k in FEATURE_COLUMNS}
+            if len(features) < len(FEATURE_COLUMNS) * 0.5:
+                continue  # Skip trades with too few features
+
+            # Compute outcome
+            gain_pct = ((trade.price / buy.price) - 1) * 100 if buy.price and buy.price > 0 else 0
+            days_held = (trade.executed_at - buy.executed_at).days if trade.executed_at and buy.executed_at else 0
+            sell_factors = trade.signal_factors if isinstance(trade.signal_factors, dict) else {}
+
+            rows.append({
+                **features,
+                "win": 1 if gain_pct > 0 else 0,
+                "gain_pct": round(gain_pct, 2),
+                "ticker": trade.ticker,
+                "date": str(buy.executed_at.date()) if buy.executed_at else "",
+                "backtest_id": -1,  # Sentinel for live trades
+                "holding_days": days_held,
+                "sell_reason": sell_factors.get("sell_reason", ""),
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+    logger.info(f"Extracted {len(df)} live trades for ML training "
+                f"(win rate: {df['win'].mean():.1%})")
+    return df
+
+
+def extract_combined_training_data(
+    db: Session,
+    strategy: str = "nostate_optimized",
+    include_live: bool = True,
+) -> tuple:
+    """
+    Extract combined training data from backtests + live trades.
+    Returns (DataFrame, stats dict).
+    """
+    # Get backtest data
+    bt_df, bt_stats = extract_training_data(db, strategy)
+
+    if not include_live:
+        return bt_df, bt_stats
+
+    # Get live data
+    live_df = extract_live_trade_data(db)
+
+    stats = {
+        **bt_stats,
+        "live_trades": len(live_df),
+    }
+
+    if bt_df.empty and live_df.empty:
+        return pd.DataFrame(), stats
+    elif bt_df.empty:
+        return live_df, stats
+    elif live_df.empty:
+        return bt_df, stats
+    else:
+        # Combine, then deduplicate by (ticker, date) keeping live trades preference
+        combined = pd.concat([bt_df, live_df], ignore_index=True)
+        # Live trades (backtest_id=-1) take priority over backtester trades
+        combined = combined.sort_values("backtest_id", ascending=False)
+        combined = combined.drop_duplicates(subset=["ticker", "date"], keep="first")
+        combined = combined.sort_values("date").reset_index(drop=True)
+        stats["combined_total"] = len(combined)
+        logger.info(f"Combined training data: {len(bt_df)} backtest + {len(live_df)} live "
+                    f"= {len(combined)} total (after dedup)")
+        return combined, stats
+
+
 def get_feature_matrix(df: pd.DataFrame):
     """
     Split DataFrame into feature matrix X and labels y.

@@ -58,15 +58,20 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
     db = SessionLocal()
 
     try:
-        from ml.feature_extractor import extract_training_data
+        from ml.feature_extractor import extract_training_data, extract_combined_training_data
         from ml.trainer import train_model, train_model_regression, save_model
 
         ml_record = db.get(MLModel, ml_model_id)
         if not ml_record:
             return
 
-        # Extract training data (with deduplication)
-        result_tuple = extract_training_data(db, strategy=strategy, backtest_ids=backtest_ids or None)
+        # Extract training data: backtest trades + live trades (combined)
+        if backtest_ids:
+            # Explicit backtest IDs — use original extraction only
+            result_tuple = extract_training_data(db, strategy=strategy, backtest_ids=backtest_ids)
+        else:
+            # Auto-select: combine backtest + live trades for maximum data
+            result_tuple = extract_combined_training_data(db, strategy=strategy, include_live=True)
         df, dedup_stats = result_tuple
 
         if df.empty:
@@ -629,18 +634,25 @@ async def preview_training_data(
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    """Preview extracted training dataset with dedup stats (admin only)."""
+    """Preview extracted training dataset with dedup stats (admin only).
+    Now includes live trades combined with backtest trades."""
     try:
-        from ml.feature_extractor import extract_training_data
-        df, dedup_stats = extract_training_data(db, strategy=strategy)
+        from ml.feature_extractor import extract_combined_training_data
+        df, dedup_stats = extract_combined_training_data(db, strategy=strategy, include_live=True)
     except Exception as e:
         raise HTTPException(500, f"Feature extraction failed: {e}")
 
     if df.empty:
         return {"total": 0, "win_rate": None, "dedup_stats": dedup_stats, "samples": []}
 
+    # Count live vs backtest trades
+    live_count = len(df[df["backtest_id"] == -1]) if "backtest_id" in df.columns else 0
+    bt_count = len(df) - live_count
+
     return {
         "total": len(df),
+        "backtest_trades": bt_count,
+        "live_trades": live_count,
         "win_rate": round(float(df["win"].mean()), 4),
         "mean_gain": round(float(df["gain_pct"].mean()), 2),
         "dedup_stats": dedup_stats,
