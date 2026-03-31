@@ -70,7 +70,7 @@ def _record_success(task_name: str):
 
 def _record_failure(task_name: str, error: str):
     """Record a task failure and alert if consecutive failures exceed threshold."""
-    from email_utils import send_webhook_notification
+    from email_utils import send_webhook_notification as _send_alert
 
     now = datetime.now(timezone.utc).isoformat()
     error_entry = {"task": task_name, "error": error[:200], "timestamp": now}
@@ -92,7 +92,7 @@ def _record_failure(task_name: str, error: str):
 
     # Alert on first failure and every 3rd consecutive failure
     if failures == 1 or failures % 3 == 0:
-        send_webhook_notification(
+        _send_alert(
             title=f"CANSLIM {task_name.replace('_', ' ').title()} Failed",
             message=f"Error ({failures}x consecutive): {error[:150]}",
             priority="high" if failures >= 3 else "default",
@@ -1548,10 +1548,10 @@ def send_weekly_performance_email():
         ).order_by(AIPortfolioTrade.executed_at.desc()).all()
 
         # Calculate stats
-        buy_trades = [t for t in trades if t.trade_type == "buy"]
-        sell_trades = [t for t in trades if t.trade_type == "sell"]
-        total_realized = sum(t.realized_gain_loss or 0 for t in sell_trades)
-        winning_sells = len([t for t in sell_trades if (t.realized_gain_loss or 0) > 0])
+        buy_trades = [t for t in trades if t.action == "BUY"]
+        sell_trades = [t for t in trades if t.action == "SELL"]
+        total_realized = sum(t.realized_gain or 0 for t in sell_trades)
+        winning_sells = len([t for t in sell_trades if (t.realized_gain or 0) > 0])
         win_rate = (winning_sells / len(sell_trades) * 100) if sell_trades else 0
 
         # Signal attribution for the week
@@ -1562,8 +1562,8 @@ def send_weekly_performance_email():
             if et not in entry_type_stats:
                 entry_type_stats[et] = {"trades": 0, "wins": 0, "pnl": 0}
             entry_type_stats[et]["trades"] += 1
-            entry_type_stats[et]["pnl"] += t.realized_gain_loss or 0
-            if (t.realized_gain_loss or 0) > 0:
+            entry_type_stats[et]["pnl"] += t.realized_gain or 0
+            if (t.realized_gain or 0) > 0:
                 entry_type_stats[et]["wins"] += 1
 
         # Build email content
@@ -1596,13 +1596,13 @@ def send_weekly_performance_email():
             """
             for trade in trades[:10]:  # Limit to 10 most recent
                 pl_str = ""
-                if trade.realized_gain_loss:
-                    color = "green" if trade.realized_gain_loss > 0 else "red"
-                    pl_str = f'<span style="color: {color};">${trade.realized_gain_loss:+,.0f}</span>'
+                if trade.realized_gain:
+                    color = "green" if trade.realized_gain > 0 else "red"
+                    pl_str = f'<span style="color: {color};">${trade.realized_gain:+,.0f}</span>'
                 trades_html += f"""
                 <tr style="border-bottom: 1px solid #eee;">
                     <td style="padding: 8px;">{trade.ticker}</td>
-                    <td style="padding: 8px;">{trade.trade_type.upper()}</td>
+                    <td style="padding: 8px;">{trade.action}</td>
                     <td style="padding: 8px; text-align: right;">{trade.shares:.0f}</td>
                     <td style="padding: 8px; text-align: right;">{pl_str}</td>
                 </tr>
