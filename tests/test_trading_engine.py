@@ -87,6 +87,31 @@ class TestCheckScoreStabilityFromHistory:
         # avg=73.3, current=55, avg > threshold+10 (73.3>70), var=18.3>15, consecutive_low=1 — blip
         assert result["is_stable"] is False
 
+    def test_recent_low_count_with_bounce(self):
+        """2 of last 3 low even though not consecutive (bounce in the middle)."""
+        result = check_score_stability_from_history([30, 65, 35], 35)
+        # consecutive_low = 1 (only last), but recent_low_count = 2 (30 and 35 in last 3)
+        assert result["consecutive_low"] == 1
+        assert result["recent_low_count"] == 2
+
+    def test_recent_low_count_all_low(self):
+        """All recent scores low → both consecutive and recent_low_count high."""
+        result = check_score_stability_from_history([30, 35, 32], 33)
+        assert result["consecutive_low"] == 3
+        assert result["recent_low_count"] == 3
+
+    def test_recent_low_count_early_return(self):
+        """Early return path includes recent_low_count."""
+        result = check_score_stability_from_history([40], 40)
+        assert "recent_low_count" in result
+        assert result["recent_low_count"] == 1  # below default threshold 50
+
+    def test_recent_low_count_empty_history(self):
+        """Empty history early return includes recent_low_count."""
+        result = check_score_stability_from_history([], 60)
+        assert "recent_low_count" in result
+        assert result["recent_low_count"] == 0  # above threshold
+
 
 # ── Composite Score ───────────────────────────────────────────────────────────
 
@@ -275,8 +300,12 @@ class TestGetTightenedTrailingStop:
         assert abs(result - 12.5) < 0.01  # 25 * 0.50
 
     def test_returns_none_below_threshold(self):
-        result = get_tightened_trailing_stop(5.0, {})
+        result = get_tightened_trailing_stop(3.0, {})
         assert result is None
+
+    def test_tightens_5_to_10_tier(self):
+        result = get_tightened_trailing_stop(7.0, {'trailing_stops': {'gain_5_to_10': 4}})
+        assert abs(result - 2.0) < 0.01  # 4 * 0.50
 
     def test_custom_tighten_factor(self):
         profile = {'trailing_stops': {'gain_20_to_30': 12}}
@@ -367,18 +396,31 @@ class TestEvaluateScoreCrashEdgeCases:
         assert result["should_sell"] is False
         assert "blip" in result["reason"].lower()
 
-    def test_insufficient_consecutive_skips_sell(self):
+    def test_insufficient_consecutive_and_recent_skips_sell(self):
+        """Neither 3 consecutive nor 2-of-3 recent low — no sell"""
         cfg = self._mock_config()
-        stability = {"is_stable": True, "consecutive_low": 2, "avg_score": 35}
+        stability = {"is_stable": True, "consecutive_low": 1, "recent_low_count": 1, "avg_score": 35}
         result = evaluate_score_crash(25, 80, gain_pct=-5.0, stability=stability,
                                        profile={}, yaml_config=cfg)
         assert result["should_sell"] is False
-        assert "consecutive" in result["reason"].lower()
 
-    def test_real_crash_triggers_sell(self):
+    def test_real_crash_triggers_sell_consecutive(self):
+        """3+ consecutive low scans triggers sell"""
         cfg = self._mock_config()
-        stability = {"is_stable": True, "consecutive_low": 4, "avg_score": 30}
+        stability = {"is_stable": True, "consecutive_low": 4, "recent_low_count": 3, "avg_score": 30}
         result = evaluate_score_crash(25, 80, gain_pct=-5.0, stability=stability,
                                        profile={}, yaml_config=cfg)
         assert result["should_sell"] is True
         assert "SCORE CRASH" in result["reason"]
+        assert "consecutive" in result["reason"]
+
+    def test_2_of_3_recent_low_triggers_sell(self):
+        """2 of last 3 scans below threshold triggers sell even without 3 consecutive"""
+        cfg = self._mock_config()
+        # Only 1 consecutive (last scan was a bounce), but 2 of last 3 were low
+        stability = {"is_stable": True, "consecutive_low": 1, "recent_low_count": 2, "avg_score": 35}
+        result = evaluate_score_crash(25, 80, gain_pct=-5.0, stability=stability,
+                                       profile={}, yaml_config=cfg)
+        assert result["should_sell"] is True
+        assert "SCORE CRASH" in result["reason"]
+        assert "2-of-3" in result["reason"]

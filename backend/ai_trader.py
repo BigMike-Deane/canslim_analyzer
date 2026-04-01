@@ -514,8 +514,9 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
     # Get the stock
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
     if not stock:
+        low = 1 if current_score < threshold else 0
         return {"is_stable": True, "recent_scores": [], "avg_score": current_score,
-                "consecutive_low": 1 if current_score < threshold else 0, "warning": "Stock not found"}
+                "consecutive_low": low, "recent_low_count": low, "warning": "Stock not found"}
 
     # Get scores from last N scans (roughly last 4-5 hours if scanning every 90 min)
     recent_scores = db.query(StockScore).filter(
@@ -524,13 +525,14 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
 
     if len(recent_scores) < 2:
         # Not enough history, trust current score
+        low = 1 if current_score < threshold else 0
         return {"is_stable": True, "recent_scores": [current_score], "avg_score": current_score,
-                "consecutive_low": 1 if current_score < threshold else 0, "warning": "Limited history"}
+                "consecutive_low": low, "recent_low_count": low, "warning": "Limited history"}
 
     scores = [s.total_score for s in recent_scores if s.total_score is not None]
     if not scores:
         return {"is_stable": True, "recent_scores": [], "avg_score": current_score,
-                "consecutive_low": 0, "warning": "No score history"}
+                "consecutive_low": 0, "recent_low_count": 0, "warning": "No score history"}
 
     # DB returns desc order (most recent first); engine expects chronological (oldest first)
     scores_chronological = list(reversed(scores))
@@ -2168,6 +2170,27 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     except Exception as e:
         logger.debug(f"SPY pullback calculation failed: {e}")
 
+    # BEAR BASE READINESS: Pre-load readiness scores for buy ranking boost
+    # Stocks that built quality bases during bear markets get composite score bonus
+    _bear_base_readiness = {}  # ticker -> {readiness_score, days_on_list}
+    try:
+        from backend.database import BearBaseCandidate
+        bb_candidates = db.query(
+            BearBaseCandidate.ticker,
+            BearBaseCandidate.readiness_score,
+            BearBaseCandidate.days_on_list,
+        ).filter(BearBaseCandidate.readiness_score >= 20).all()
+        for bb_ticker, bb_readiness, bb_days in bb_candidates:
+            _bear_base_readiness[bb_ticker] = {
+                'readiness_score': bb_readiness or 0,
+                'days_on_list': bb_days or 0,
+            }
+        if _bear_base_readiness:
+            logger.info(f"Bear base readiness loaded for {len(_bear_base_readiness)} candidates "
+                        f"(top: {sorted(_bear_base_readiness.items(), key=lambda x: -x[1]['readiness_score'])[:3]})")
+    except Exception as e:
+        logger.debug(f"Bear base readiness lookup failed (non-fatal): {e}")
+
     # Pre-load correction zone config once (outside per-stock loop)
     cz_config = profile.get('correction_zone', {}) if correction_zone_active else {}
     cz_cs_only = cz_config.get('cs_only', False)
@@ -2549,6 +2572,27 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             volume_dry_up_bonus = 5
             composite_score += volume_dry_up_bonus
 
+        # BEAR BASE READINESS BONUS: Prioritize stocks that built quality bases during bear
+        # Stocks with high readiness scores (tight bases, strong RS, accumulation) get a
+        # composite boost so they're bought first when the SPY gate flips bullish.
+        bear_base_bonus = 0
+        if stock.ticker in _bear_base_readiness:
+            bb = _bear_base_readiness[stock.ticker]
+            readiness = bb['readiness_score']
+            days_on_list = bb['days_on_list']
+            if readiness >= 70:
+                bear_base_bonus = 15  # Top-tier: tight base, strong RS, accumulation
+            elif readiness >= 50:
+                bear_base_bonus = 10
+            elif readiness >= 30:
+                bear_base_bonus = 5
+            # Extra bonus for proven consolidation (on list 7+ days)
+            if days_on_list >= 14:
+                bear_base_bonus += 3
+            elif days_on_list >= 7:
+                bear_base_bonus += 1
+            composite_score += bear_base_bonus
+
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
         # Calculate position size - aligned with backtester
@@ -2682,6 +2726,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             reason_parts.append(f"Drift +{earnings_drift_bonus}")
         if deterministic_boost_val > 0:
             reason_parts.append(f"Det+{deterministic_boost_val}")
+        if bear_base_bonus > 0:
+            bb_data = _bear_base_readiness.get(stock.ticker, {})
+            reason_parts.append(f"BearBase+{bear_base_bonus} (ready={bb_data.get('readiness_score', 0):.0f})")
         if cz_entry:
             reason_parts.append(f"CZ entry ({cz_position_mult*100:.0f}% size)")
         # Compute price action features for ML signal factors
@@ -2726,6 +2773,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 buy_signal_factors["cs_institutional_pct"] = cs_factors.get("institutional_pct", 0)
                 buy_signal_factors["cs_quality_rank"] = cs_result.get("quality_rank", 0)
                 buy_signal_factors["cs_confidence"] = cs_result.get("confidence", 0)
+        if bear_base_bonus > 0:
+            buy_signal_factors["bear_base_bonus"] = bear_base_bonus
+            bb_data = _bear_base_readiness.get(stock.ticker, {})
+            buy_signal_factors["bear_base_readiness"] = bb_data.get('readiness_score', 0)
+            buy_signal_factors["bear_base_days_on_list"] = bb_data.get('days_on_list', 0)
         if cz_entry:
             buy_signal_factors["correction_zone_entry"] = True
             buy_signal_factors["correction_zone_mult"] = cz_position_mult

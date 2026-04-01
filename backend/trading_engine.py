@@ -47,6 +47,8 @@ def get_trailing_stop_pct(peak_gain_pct: float, profile: dict) -> float | None:
         return profile_trailing.get('gain_20_to_30', 12)
     elif peak_gain_pct >= 10:
         return profile_trailing.get('gain_10_to_20', 8)
+    elif peak_gain_pct >= 5:
+        return profile_trailing.get('gain_5_to_10', 4)
     return None
 
 
@@ -75,7 +77,8 @@ def apply_pyramid_widening(trailing_stop_pct: float, pyramid_count: int) -> floa
 def check_score_stability_from_history(
     recent_scores: list,
     current_score: float,
-    threshold: float = 50
+    threshold: float = 50,
+    recent_low_window: int = 3,
 ) -> dict:
     """
     Check if a low score is consistent across recent scans (not a one-time blip).
@@ -98,11 +101,13 @@ def check_score_stability_from_history(
         - consecutive_low: count of consecutive low scores from most recent
     """
     if len(recent_scores) < 2:
+        low = 1 if current_score < threshold else 0
         return {
             "is_stable": True,
             "recent_scores": [current_score] if not recent_scores else recent_scores,
             "avg_score": current_score,
-            "consecutive_low": 1 if current_score < threshold else 0
+            "consecutive_low": low,
+            "recent_low_count": low,
         }
 
     avg_score = sum(recent_scores) / len(recent_scores)
@@ -114,6 +119,10 @@ def check_score_stability_from_history(
             consecutive_low += 1
         else:
             break
+
+    # Count total low scores in last N scans (for "2 of last 3" gate)
+    last_n = recent_scores[-recent_low_window:] if len(recent_scores) >= recent_low_window else recent_scores
+    recent_low_count = sum(1 for s in last_n if s < threshold)
 
     # Check if current score is significantly lower than average (potential blip)
     score_variance = abs(current_score - avg_score)
@@ -129,7 +138,8 @@ def check_score_stability_from_history(
         "is_stable": not is_blip,
         "recent_scores": recent_scores,
         "avg_score": avg_score,
-        "consecutive_low": consecutive_low
+        "consecutive_low": consecutive_low,
+        "recent_low_count": recent_low_count
     }
 
 
@@ -601,17 +611,29 @@ def evaluate_score_crash(
         return {"should_sell": False, "reason": f"Possible blip: current {current_score:.0f} vs avg {stability['avg_score']:.0f}"}
 
     consecutive_low = stability.get("consecutive_low", 0)
-    if consecutive_low < consecutive_required:
+    recent_low_count = stability.get("recent_low_count", 0)
+
+    # "2 of last 3" gate: trigger if 2+ of the last 3 scans were below threshold,
+    # even if they weren't consecutive (one bounce no longer resets the clock).
+    # Falls back to the legacy consecutive gate for backwards compatibility.
+    recent_low_required = score_crash_config.get('recent_low_required', 2)
+    recent_low_window = score_crash_config.get('recent_low_window', 3)
+
+    meets_consecutive = consecutive_low >= consecutive_required
+    meets_recent_low = recent_low_count >= recent_low_required
+
+    if not meets_consecutive and not meets_recent_low:
         return {
             "should_sell": False,
-            "reason": f"Only {consecutive_low} consecutive low score(s), need {consecutive_required}+",
+            "reason": f"Only {consecutive_low} consecutive / {recent_low_count} of last {recent_low_window} low score(s)",
             "consecutive_low": consecutive_low,
         }
 
+    trigger_method = "consecutive" if meets_consecutive else f"{recent_low_count}-of-{recent_low_window}"
     return {
         "should_sell": True,
         "reason": f"SCORE CRASH: {purchase_score:.0f} → {current_score:.0f} "
-                  f"(avg: {stability['avg_score']:.0f}, {consecutive_low} low scans)",
+                  f"(avg: {stability['avg_score']:.0f}, {trigger_method} low scans)",
         "consecutive_low": consecutive_low,
         "score_drop": score_drop,
     }

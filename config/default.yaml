@@ -268,7 +268,9 @@ ai_trader:
 
   # Score crash sell requirements
   score_crash:
-    consecutive_required: 3           # Require 3+ consecutive low scans before selling (was 2)
+    consecutive_required: 3           # Legacy: 3+ consecutive low scans (still triggers sell)
+    recent_low_required: 2            # NEW: 2 of last 3 scans low also triggers sell
+    recent_low_window: 3              # Window size for recent_low check
     threshold: 50                     # Score must be below this threshold
     drop_required: 20                 # Score must have dropped by this much
     ignore_if_profitable_pct: 10      # Skip score crash sell if position is up this much %
@@ -367,6 +369,9 @@ ai_trader:
     gain_10_to_20:
       threshold: 0.10
       stop_pct: 0.08     # 8% trailing stop
+    gain_5_to_10:
+      threshold: 0.05
+      stop_pct: 0.04     # 4% trailing stop — protect micro-winners
     # Partial sell on trailing stop for high-conviction positions
     partial_on_trailing: true           # Enable partial sell on trailing stop hit
     partial_min_pyramid_count: 2        # Min pyramids to qualify for partial
@@ -759,6 +764,7 @@ strategy_profiles:
       gain_30_to_50: 15                   # Wider (was 12) — give room for consolidation
       gain_20_to_30: 10
       gain_10_to_20: 8
+      gain_5_to_10: 4                     # Protect micro-winners from bleeding to stop loss
     seed_count: 3                            # Ralph Loop optimized: 3 is optimal (tested 2-5)
     seed_pct: 10
     max_seed_investment_pct: 50            # Ralph Loop optimized: 50% is optimal (was 60)
@@ -790,6 +796,7 @@ strategy_profiles:
       gain_30_to_50: 15                 # Wider — give room for consolidation (balanced: 12)
       gain_20_to_30: 10                 # Match balanced
       gain_10_to_20: 8                  # Match balanced
+      gain_5_to_10: 4                   # Protect micro-winners
     seed_count: 4                       # Fewer seeds — more selective on day 1
     seed_pct: 10                        # Match balanced per-seed size
     max_seed_investment_pct: 50          # E: Max 50% of capital in initial seeds (growth is more selective)
@@ -830,6 +837,7 @@ strategy_profiles:
       gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
+      gain_5_to_10: 4
     seed_count: 3
     seed_pct: 10
 
@@ -874,6 +882,7 @@ strategy_profiles:
       gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
+      gain_5_to_10: 4
     seed_count: 3
     seed_pct: 10
 
@@ -903,7 +912,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
 
@@ -933,7 +942,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
     max_seed_investment_pct: 50
@@ -966,7 +975,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
     max_seed_investment_pct: 50
@@ -1000,7 +1009,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
     max_seed_investment_pct: 50
@@ -1032,7 +1041,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
     max_seed_investment_pct: 50
@@ -1060,7 +1069,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
 
@@ -1086,7 +1095,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
 
@@ -1114,7 +1123,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
 
@@ -1141,7 +1150,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 2
     seed_pct: 10
 
@@ -1162,7 +1171,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 4
     seed_pct: 10
 
@@ -1184,7 +1193,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1205,7 +1214,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1226,7 +1235,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1248,7 +1257,7 @@ strategy_profiles:
     stop_loss_pct: 5.0
     bearish_stop_loss_pct: 4.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1269,7 +1278,7 @@ strategy_profiles:
     stop_loss_pct: 6.0
     bearish_stop_loss_pct: 5.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1290,7 +1299,7 @@ strategy_profiles:
     stop_loss_pct: 8.0
     bearish_stop_loss_pct: 7.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 20, gain_30_to_50: 15, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1312,7 +1321,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 15, gain_30_to_50: 12, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 15, gain_30_to_50: 12, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1333,7 +1342,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 18, gain_30_to_50: 14, gain_20_to_30: 10, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 18, gain_30_to_50: 14, gain_20_to_30: 10, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1354,7 +1363,7 @@ strategy_profiles:
     stop_loss_pct: 7.0
     bearish_stop_loss_pct: 6.0
     take_profit_pct: 75.0
-    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8 }
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 8, gain_5_to_10: 4 }
     seed_count: 3
     seed_pct: 10
 
@@ -1384,6 +1393,7 @@ strategy_profiles:
       gain_30_to_50: 15
       gain_20_to_30: 10
       gain_10_to_20: 8
+      gain_5_to_10: 4
     seed_count: 3
     seed_pct: 10
 

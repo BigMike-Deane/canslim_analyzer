@@ -4664,10 +4664,11 @@ async def get_portfolio_summary(
     for p in positions:
         gain_pct = p.gain_loss_pct or 0
         trail_pct = get_trailing_stop_pct(gain_pct, profile)
-        trail_pct = apply_pyramid_widening(trail_pct, p.pyramid_count or 0)
+        if trail_pct is not None:
+            trail_pct = apply_pyramid_widening(trail_pct, p.pyramid_count or 0)
 
         # Calculate stop price
-        if gain_pct > 10 and p.peak_price:
+        if trail_pct is not None and p.peak_price:
             stop_price = p.peak_price * (1 - trail_pct / 100)
         else:
             stop_price = p.cost_basis * (1 - base_stop / 100)
