@@ -20,7 +20,7 @@ def check_intraday_breakouts():
     Designed to run every 5 min during market hours."""
     from backend.ai_trader import is_market_open
     from backend.database import SessionLocal, Stock
-    from email_utils import send_webhook_notification
+    from backend.email_utils import send_webhook_notification
 
     if not is_market_open():
         return

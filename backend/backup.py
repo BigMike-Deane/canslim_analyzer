@@ -37,7 +37,7 @@ def _parse_database_url():
 
 def perform_backup() -> dict:
     """Run pg_dump and save compressed backup. Returns status dict."""
-    from email_utils import send_webhook_notification
+    from backend.email_utils import send_webhook_notification
 
     os.makedirs(BACKUP_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

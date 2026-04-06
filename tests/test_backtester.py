@@ -2298,7 +2298,7 @@ class TestMorningBriefingEmail:
 
     def test_send_morning_briefing_generates_html(self):
         """send_morning_briefing_email should handle valid briefing data"""
-        from email_utils import send_morning_briefing_email
+        from backend.email_utils import send_morning_briefing_email
 
         briefing_data = {
             "portfolio": {"total_value": 26500, "total_return_pct": 6.0, "cash": 5000},
@@ -2316,7 +2316,7 @@ class TestMorningBriefingEmail:
 
         # Won't actually send (no SMTP configured in test), but should not crash
         # Mock the send_email function to avoid actual SMTP
-        with patch('email_utils.send_email', return_value=True) as mock_send:
+        with patch('backend.email_utils.send_email', return_value=True) as mock_send:
             result = send_morning_briefing_email(briefing_data)
             assert result is True
             # Verify send_email was called with expected args
@@ -2328,7 +2328,7 @@ class TestMorningBriefingEmail:
 
     def test_briefing_empty_positions(self):
         """Morning briefing handles empty portfolio gracefully"""
-        from email_utils import send_morning_briefing_email
+        from backend.email_utils import send_morning_briefing_email
 
         briefing_data = {
             "portfolio": {"total_value": 25000, "total_return_pct": 0, "cash": 25000},
@@ -2339,7 +2339,7 @@ class TestMorningBriefingEmail:
             "portfolio_heat": 0,
         }
 
-        with patch('email_utils.send_email', return_value=True):
+        with patch('backend.email_utils.send_email', return_value=True):
             result = send_morning_briefing_email(briefing_data)
             assert result is True
 

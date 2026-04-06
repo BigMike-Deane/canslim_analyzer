@@ -167,6 +167,7 @@ class BacktestEngine:
         self.market_state = MarketStateManager(market_state_config)
         self.market_state_enabled = market_state_config.get('enabled', True)
         self.heat_penalty_active: bool = False
+        self.ftd_penalty_active: bool = False
 
         # Track consecutive days with no positions (for re-seeding)
         self.idle_days: int = 0
@@ -510,7 +511,7 @@ class BacktestEngine:
                 self._simulate_day(current_date)
 
                 # Update progress (30% loading + 70% simulation)
-                progress = 30 + (i / total_days * 70)
+                progress = 30 + ((i + 1) / total_days * 70)
                 self.backtest.progress_pct = progress
                 if i % 10 == 0:  # Commit every 10 days
                     self.db.commit()
@@ -1157,6 +1158,21 @@ class BacktestEngine:
             if portfolio_heat > max_heat:
                 self.heat_penalty_active = True
                 logger.debug(f"Portfolio heat {portfolio_heat:.1f}% > {max_heat}% - applying score penalty + half-size buys")
+
+        # Follow-Through Day check — advisory penalty, matches ai_trader fallback
+        # Only applies when market state is disabled (nostate strategies)
+        self.ftd_penalty_active = False
+        if not self.market_state_enabled:
+            market_timing_config = config.get('market_timing', {})
+            ftd_config = market_timing_config.get('follow_through_day', {})
+            if ftd_config.get('enabled', True) and self.data_provider:
+                try:
+                    ftd_status = self.data_provider.get_follow_through_day_status(current_date)
+                    if not ftd_status.get("can_buy", True):
+                        self.ftd_penalty_active = True
+                        logger.debug(f"FTD penalty: {ftd_status['state']} on {current_date}")
+                except Exception:
+                    pass  # FTD is advisory — don't block on failure
 
         profile_max_positions = self.profile.get('max_positions', self.backtest.max_positions)
         can_buy = (not self.drawdown_halt and
@@ -2938,6 +2954,8 @@ class BacktestEngine:
                 composite_score -= 5  # Mild penalty, not blocking
             elif self.market_state_enabled and self.market_state.state == MarketState.PRESSURE:
                 composite_score -= 8  # Moderate penalty
+            elif self.ftd_penalty_active:
+                composite_score -= 8  # FTD fallback when market state disabled
 
             # Heat penalty: too much risk exposure → mild score reduction
             if self.heat_penalty_active:

@@ -49,7 +49,7 @@ from backend.trading_engine import (
 
 # Import email utils with fallback for testing
 try:
-    from email_utils import send_coiled_spring_alert_webhook
+    from backend.email_utils import send_coiled_spring_alert_webhook
 except ImportError:
     try:
         from backend.email_utils import send_coiled_spring_alert_webhook
@@ -1705,7 +1705,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
             if consecutive_low >= 1 and consecutive_low < consecutive_required:
                 # Send early warning push if at least 1 consecutive low scan but not yet confirmed
                 try:
-                    from email_utils import send_score_crash_warning_push
+                    from backend.email_utils import send_score_crash_warning_push
                     send_score_crash_warning_push(
                         ticker=position.ticker,
                         purchase_score=purchase_score,
@@ -1883,7 +1883,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 logger.info(f"SPY GATE CHANGE: {_spy_gate_state} -> {current_gate} "
                            f"(SPY ${spy_px:.2f}, 50MA ${spy_50:.2f})")
                 try:
-                    from email_utils import send_spy_gate_change_push
+                    from backend.email_utils import send_spy_gate_change_push
                     send_spy_gate_change_push(current_gate, spy_px, spy_50)
                 except Exception as e:
                     logger.warning(f"SPY gate change notification failed: {e}")
@@ -1892,7 +1892,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 if current_gate == "bullish" and _spy_gate_state == "bearish":
                     try:
                         from backend.bear_base import get_bear_base_list
-                        from email_utils import send_market_turn_ready_push
+                        from backend.email_utils import send_market_turn_ready_push
                         ready_list = get_bear_base_list(db, limit=10)
                         if ready_list:
                             send_market_turn_ready_push(ready_list, spy_px, spy_50)
@@ -2890,7 +2890,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         logger.info(f"No regular candidates in bear market, adding {len(bear_exception_candidates)} exception candidates at {bear_exception_position_mult*100:.0f}% position size")
         for stock in bear_exception_candidates[:3]:  # Max 3 exceptions
             is_growth = stock.is_growth_stock or False
-            effective_score = stock.growth_mode_score if is_growth else stock.canslim_score
+            effective_score = _nan_safe(stock.growth_mode_score if is_growth else stock.canslim_score)
             # portfolio_value is pre-computed before the loop (line ~1940)
             # Half position size for bear exceptions
             position_value = portfolio_value * 0.05 * bear_exception_position_mult  # ~2.5% positions
@@ -3201,7 +3201,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     # Update position (add shares, recalculate cost basis, increment pyramid count)
                     total_cost = (position.shares * position.cost_basis) + actual_value
                     position.shares += actual_shares
-                    position.cost_basis = total_cost / position.shares
+                    position.cost_basis = total_cost / position.shares if position.shares > 0 else live_price
                     position.current_value = position.shares * live_price
                     position.gain_loss = position.current_value - total_cost
                     position.gain_loss_pct = ((live_price / position.cost_basis) - 1) * 100
@@ -3481,8 +3481,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 priority="urgent",
                 tags=["rotating_light", "chart_with_downwards_trend"]
             )
-        except Exception:
-            pass  # Don't let webhook failure mask the real error
+        except Exception as webhook_err:
+            logger.warning(f"Failed to send trading error webhook: {webhook_err}")
         return {"status": "error", "message": str(e), "sells_executed": [], "buys_executed": []}
 
     finally:

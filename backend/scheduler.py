@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 import logging
 import os
 import random
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,49 +47,55 @@ _system_health = {
     "errors_today": [],  # Rolling list of recent errors
 }
 
+# Lock for thread-safe access to global state dicts
+_state_lock = threading.Lock()
+
 
 def get_system_health():
     """Return system health state for dashboard."""
-    return dict(_system_health)
+    with _state_lock:
+        return dict(_system_health)
 
 
 def _record_success(task_name: str):
     """Record a successful task execution."""
     now = datetime.now(timezone.utc).isoformat()
-    if task_name == "scan":
-        _system_health["last_successful_scan"] = now
-        _system_health["consecutive_scan_failures"] = 0
-        _system_health["last_scan_error"] = None
-    elif task_name == "trade_cycle":
-        _system_health["last_successful_trade_cycle"] = now
-        _system_health["consecutive_trade_failures"] = 0
-        _system_health["last_trade_cycle_error"] = None
-    elif task_name == "backup":
-        _system_health["last_backup"] = now
-        _system_health["last_backup_error"] = None
+    with _state_lock:
+        if task_name == "scan":
+            _system_health["last_successful_scan"] = now
+            _system_health["consecutive_scan_failures"] = 0
+            _system_health["last_scan_error"] = None
+        elif task_name == "trade_cycle":
+            _system_health["last_successful_trade_cycle"] = now
+            _system_health["consecutive_trade_failures"] = 0
+            _system_health["last_trade_cycle_error"] = None
+        elif task_name == "backup":
+            _system_health["last_backup"] = now
+            _system_health["last_backup_error"] = None
 
 
 def _record_failure(task_name: str, error: str):
     """Record a task failure and alert if consecutive failures exceed threshold."""
-    from email_utils import send_webhook_notification as _send_alert
+    from backend.email_utils import send_webhook_notification as _send_alert
 
     now = datetime.now(timezone.utc).isoformat()
     error_entry = {"task": task_name, "error": error[:200], "timestamp": now}
 
-    # Keep last 50 errors
-    _system_health["errors_today"].append(error_entry)
-    _system_health["errors_today"] = _system_health["errors_today"][-50:]
+    with _state_lock:
+        # Keep last 50 errors
+        _system_health["errors_today"].append(error_entry)
+        _system_health["errors_today"] = _system_health["errors_today"][-50:]
 
-    if task_name == "scan":
-        _system_health["last_scan_error"] = error_entry
-        _system_health["consecutive_scan_failures"] += 1
-        failures = _system_health["consecutive_scan_failures"]
-    elif task_name == "trade_cycle":
-        _system_health["last_trade_cycle_error"] = error_entry
-        _system_health["consecutive_trade_failures"] += 1
-        failures = _system_health["consecutive_trade_failures"]
-    else:
-        failures = 1
+        if task_name == "scan":
+            _system_health["last_scan_error"] = error_entry
+            _system_health["consecutive_scan_failures"] += 1
+            failures = _system_health["consecutive_scan_failures"]
+        elif task_name == "trade_cycle":
+            _system_health["last_trade_cycle_error"] = error_entry
+            _system_health["consecutive_trade_failures"] += 1
+            failures = _system_health["consecutive_trade_failures"]
+        else:
+            failures = 1
 
     # Alert on first failure and every 3rd consecutive failure
     if failures == 1 or failures % 3 == 0:
@@ -220,7 +227,7 @@ def check_watchlist_alerts():
 
                 # Send the alert
                 try:
-                    from email_utils import send_watchlist_alert_email
+                    from backend.email_utils import send_watchlist_alert_email
 
                     # Record trigger time before sending to prevent retry storms
                     item.alert_triggered_at = datetime.now(timezone.utc)
@@ -256,8 +263,10 @@ def get_scan_status():
         # APScheduler returns timezone-aware datetime, isoformat() includes offset
         next_run = job.next_run_time.isoformat()
 
+    with _state_lock:
+        config_snapshot = dict(_scan_config)
     return {
-        **_scan_config,
+        **config_snapshot,
         "scheduler_running": scheduler.running,
         "next_run": next_run
     }
@@ -443,8 +452,9 @@ def send_morning_briefing_if_due():
     today = now.date() if hasattr(now, 'date') else now
 
     # Only send once per day
-    if _last_briefing_date == today:
-        return
+    with _state_lock:
+        if _last_briefing_date == today:
+            return
 
     # Check if it's after the configured send time (default 8:00 AM CT)
     from zoneinfo import ZoneInfo
@@ -462,7 +472,7 @@ def send_morning_briefing_if_due():
     db = SessionLocal()
     try:
         from backend.ai_trader import get_portfolio_value, get_market_regime, evaluate_buys, get_effective_score
-        from email_utils import send_morning_briefing_email
+        from backend.email_utils import send_morning_briefing_email
 
         # Portfolio summary
         portfolio = get_portfolio_value(db)
@@ -575,14 +585,15 @@ def send_morning_briefing_if_due():
 
         success = send_morning_briefing_email(briefing_data)
         if success:
-            _last_briefing_date = today
+            with _state_lock:
+                _last_briefing_date = today
             logger.info("Morning briefing sent successfully")
         else:
             logger.warning("Morning briefing email failed to send")
 
         # Also send compact push notification
         try:
-            from email_utils import send_morning_briefing_push
+            from backend.email_utils import send_morning_briefing_push
             send_morning_briefing_push(briefing_data)
         except Exception as e:
             logger.error(f"Morning briefing push failed: {e}")
@@ -599,16 +610,16 @@ def run_continuous_scan():
     from sp500_tickers import get_sp500_tickers, get_russell2000_tickers, get_all_tickers
     import time
 
-    if _scan_config["is_scanning"]:
-        logger.info("Scan already in progress, skipping...")
-        return
-
-    _scan_config["is_scanning"] = True
-    _scan_config["last_scan_start"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    _scan_config["stocks_scanned"] = 0
-    _scan_config["total_stocks"] = 0
-    _scan_config["phase"] = "scanning"
-    _scan_config["phase_detail"] = "Initializing scan..."
+    with _state_lock:
+        if _scan_config["is_scanning"]:
+            logger.info("Scan already in progress, skipping...")
+            return
+        _scan_config["is_scanning"] = True
+        _scan_config["last_scan_start"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        _scan_config["stocks_scanned"] = 0
+        _scan_config["total_stocks"] = 0
+        _scan_config["phase"] = "scanning"
+        _scan_config["phase_detail"] = "Initializing scan..."
 
     logger.info(f"Starting continuous scan ({_scan_config['source']})...")
 
@@ -1273,6 +1284,7 @@ def run_continuous_scan():
         # Run AI trading cycle after scan completes (only during market hours)
         # Iterates over ALL active users' portfolios
         ai_trading_result = {}
+        ai_db = None
         try:
             from backend.ai_trader import run_ai_trading_cycle, take_portfolio_snapshot, is_market_open
             from backend.database import AIPortfolioConfig
@@ -1303,9 +1315,11 @@ def run_continuous_scan():
                         take_portfolio_snapshot(ai_db, user_id=uid)
                 except Exception as ue:
                     logger.error(f"Snapshot error for user {uid}: {ue}")
-            ai_db.close()
         except Exception as e:
             logger.error(f"AI trading error: {e}")
+        finally:
+            if ai_db:
+                ai_db.close()
 
         # Phase 4: Cleanup old StockScore records
         _scan_config["phase"] = "cleanup"
@@ -1359,10 +1373,11 @@ def run_continuous_scan():
         logger.error(f"Scan error: {e}")
         _record_failure("scan", str(e))
     finally:
-        _scan_config["is_scanning"] = False
-        _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        _scan_config["phase"] = None
-        _scan_config["phase_detail"] = None
+        with _state_lock:
+            _scan_config["is_scanning"] = False
+            _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+            _scan_config["phase"] = None
+            _scan_config["phase_detail"] = None
 
 
 def _refresh_portfolio_prices():
@@ -1393,9 +1408,10 @@ def _refresh_portfolio_prices():
 
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):
     """Start continuous scanning with specified interval"""
-    _scan_config["enabled"] = True
-    _scan_config["source"] = source
-    _scan_config["interval_minutes"] = interval_minutes
+    with _state_lock:
+        _scan_config["enabled"] = True
+        _scan_config["source"] = source
+        _scan_config["interval_minutes"] = interval_minutes
 
     # Remove existing jobs if any
     if scheduler.get_job("continuous_scan"):
@@ -1458,7 +1474,8 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
 
 def stop_continuous_scanning():
     """Stop continuous scanning"""
-    _scan_config["enabled"] = False
+    with _state_lock:
+        _scan_config["enabled"] = False
 
     if scheduler.get_job("continuous_scan"):
         scheduler.remove_job("continuous_scan")
@@ -1471,17 +1488,18 @@ def stop_continuous_scanning():
 
 def update_scan_config(source: str = None, interval_minutes: int = None):
     """Update scan configuration"""
-    if source:
-        _scan_config["source"] = source
-    if interval_minutes:
-        _scan_config["interval_minutes"] = interval_minutes
+    with _state_lock:
+        if source:
+            _scan_config["source"] = source
+        if interval_minutes:
+            _scan_config["interval_minutes"] = interval_minutes
+        enabled = _scan_config["enabled"]
+        current_source = _scan_config["source"]
+        current_interval = _scan_config["interval_minutes"]
 
     # If enabled, restart with new config
-    if _scan_config["enabled"]:
-        return start_continuous_scanning(
-            _scan_config["source"],
-            _scan_config["interval_minutes"]
-        )
+    if enabled:
+        return start_continuous_scanning(current_source, current_interval)
 
     return get_scan_status()
 
@@ -1492,7 +1510,7 @@ def send_weekly_performance_email():
     Scheduled to run every Saturday at 9 AM.
     """
     from backend.database import SessionLocal, AIPortfolioSnapshot, AIPortfolioTrade
-    from email_utils import send_email
+    from backend.email_utils import send_email
     from datetime import timedelta
 
     # Check if weekly email is enabled
@@ -1539,7 +1557,8 @@ def send_weekly_performance_email():
                 hist = spy.history(period="7d")
                 if len(hist) >= 2:
                     spy_return = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to fetch SPY return for weekly report: {e}")
                 spy_return = None
 
         # Get trades from the week
@@ -1734,7 +1753,7 @@ def send_weekly_bear_market_report():
     try:
         from backend.bear_base import get_bear_base_list
         from backend.industry_group import get_group_rotation_summary
-        from email_utils import send_bear_market_report_push
+        from backend.email_utils import send_bear_market_report_push
 
         # Gather data
         candidates = get_bear_base_list(db, limit=20)
@@ -1766,7 +1785,7 @@ def send_weekly_bear_market_report():
 
 def _send_bear_report_email(report_data: dict, candidates: list):
     """Send detailed bear market report via email."""
-    from email_utils import send_email
+    from backend.email_utils import send_email
 
     spy_px = report_data.get('spy_price', 0)
     spy_50 = report_data.get('spy_ma50', 0)

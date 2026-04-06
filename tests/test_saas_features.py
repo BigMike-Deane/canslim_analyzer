@@ -43,7 +43,7 @@ _mock_webhook = MagicMock()
 def _patch_webhook():
     """Context manager to mock webhook notifications across all import paths."""
     return patch.dict("sys.modules", {
-        "email_utils": MagicMock(send_webhook_notification=_mock_webhook),
+        "backend.email_utils": MagicMock(send_webhook_notification=_mock_webhook),
     })
 
 
@@ -320,7 +320,7 @@ class TestSchedulerHealthTracking:
 
         # Mock the late import inside _record_failure
         mock_module = MagicMock()
-        with patch.dict("sys.modules", {"email_utils": mock_module}):
+        with patch.dict("sys.modules", {"backend.email_utils": mock_module}):
             _record_failure("scan", "test error")
 
         assert _system_health["consecutive_scan_failures"] == 1
@@ -334,7 +334,7 @@ class TestSchedulerHealthTracking:
         _system_health["consecutive_scan_failures"] = 1  # will become 2
 
         mock_module = MagicMock()
-        with patch.dict("sys.modules", {"email_utils": mock_module}):
+        with patch.dict("sys.modules", {"backend.email_utils": mock_module}):
             _record_failure("scan", "test error 2")
 
         assert _system_health["consecutive_scan_failures"] == 2
@@ -346,7 +346,7 @@ class TestSchedulerHealthTracking:
         _system_health["consecutive_scan_failures"] = 2  # will become 3
 
         mock_module = MagicMock()
-        with patch.dict("sys.modules", {"email_utils": mock_module}):
+        with patch.dict("sys.modules", {"backend.email_utils": mock_module}):
             _record_failure("scan", "test error 3")
 
         assert _system_health["consecutive_scan_failures"] == 3
@@ -358,7 +358,7 @@ class TestSchedulerHealthTracking:
         from backend.scheduler import _record_failure, _system_health
         _system_health["errors_today"] = []
         mock_module = MagicMock()
-        with patch.dict("sys.modules", {"email_utils": mock_module}):
+        with patch.dict("sys.modules", {"backend.email_utils": mock_module}):
             for i in range(60):
                 _system_health["consecutive_scan_failures"] = 1  # 2nd = no alert
                 _record_failure("scan", f"error {i}")

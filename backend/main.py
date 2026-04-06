@@ -786,8 +786,8 @@ async def get_system_health(current_user: User = Depends(get_current_active_user
             "total_requests": stats.get("total_requests", 0),
             "error_rate": stats.get("error_rate", "0%"),
         }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to get FMP rate limit stats: {e}")
 
     # Stock counts
     stock_count = db.query(func.count(Stock.id)).scalar() or 0
