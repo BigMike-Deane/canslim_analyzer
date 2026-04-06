@@ -151,11 +151,14 @@ export default function Screener() {
   const [error, setError] = useState(null)
   const [stocks, setStocks] = useState([])
   const [sectors, setSectors] = useState([])
+  const [page, setPage] = useState(1)
+  const pageSize = 50
   const [filters, setFilters] = useState({
     sector: null,
     min_score: 0,
     sort_by: 'canslim_score',
-    limit: 50
+    limit: pageSize,
+    offset: 0
   })
   const [total, setTotal] = useState(0)
 
@@ -188,8 +191,16 @@ export default function Screener() {
   }, [fetchStocks])
 
   const handleFilterChange = (newFilters) => {
-    setFilters(newFilters)
+    setPage(1)
+    setFilters({ ...newFilters, offset: 0, limit: pageSize })
   }
+
+  const handlePageChange = (newPage) => {
+    setPage(newPage)
+    setFilters(prev => ({ ...prev, offset: (newPage - 1) * pageSize }))
+  }
+
+  const totalPages = Math.ceil(total / pageSize)
 
   return (
     <div className="p-4 md:p-6">
@@ -229,6 +240,28 @@ export default function Screener() {
             <StockRow key={stock.ticker} stock={stock} />
           ))}
         </Card>
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4 px-1">
+            <button
+              onClick={() => handlePageChange(page - 1)}
+              disabled={page <= 1}
+              className="px-3 py-1.5 text-sm rounded-lg bg-dark-800 text-dark-200 hover:bg-dark-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              ← Prev
+            </button>
+            <span className="text-sm text-dark-400">
+              Page {page} of {totalPages} ({total} stocks)
+            </span>
+            <button
+              onClick={() => handlePageChange(page + 1)}
+              disabled={page >= totalPages}
+              className="px-3 py-1.5 text-sm rounded-lg bg-dark-800 text-dark-200 hover:bg-dark-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              Next →
+            </button>
+          </div>
+        )}
       )}
 
       <div className="h-4" />

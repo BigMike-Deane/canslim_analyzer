@@ -255,16 +255,16 @@ export default function CommandCenter() {
     return (
       <div className="p-4 md:p-6">
         <div className="skeleton h-8 w-48 mb-5 rounded-lg" />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-4">
+          <div className="md:col-span-3 space-y-3">
             <div className="skeleton h-40 rounded-xl" />
             <div className="skeleton h-28 rounded-xl" />
           </div>
-          <div className="space-y-3">
+          <div className="md:col-span-5 space-y-3">
             <div className="skeleton h-64 rounded-xl" />
             <div className="skeleton h-64 rounded-xl" />
           </div>
-          <div className="space-y-3">
+          <div className="md:col-span-4 space-y-3">
             <div className="skeleton h-48 rounded-xl" />
             <div className="skeleton h-36 rounded-xl" />
             <div className="skeleton h-36 rounded-xl" />

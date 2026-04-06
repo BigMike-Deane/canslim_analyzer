@@ -100,11 +100,16 @@ async function request(endpoint, options = {}) {
     }
   }
 
-  // If still 401, redirect to login
+  // If still 401, show brief message then redirect to login
   if (response.status === 401) {
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
-    window.location.href = '/'
+    // Show a visible message before redirecting
+    const banner = document.createElement('div')
+    banner.textContent = 'Session expired — signing out...'
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:12px;background:#dc2626;color:white;text-align:center;z-index:9999;font-size:14px'
+    document.body.appendChild(banner)
+    setTimeout(() => { window.location.href = '/' }, 1500)
     throw new APIError('Session expired', 401)
   }
 
@@ -145,7 +150,7 @@ export const api = {
     if (params.min_score != null) searchParams.set('min_score', params.min_score)
     if (params.sort_by) searchParams.set('sort_by', params.sort_by)
     if (params.limit) searchParams.set('limit', params.limit)
-    if (params.offset) searchParams.set('offset', params.offset)
+    if (params.offset != null && params.offset > 0) searchParams.set('offset', params.offset)
     const query = searchParams.toString()
     return request(`/api/stocks${query ? `?${query}` : ''}`)
   },
@@ -400,7 +405,7 @@ export const api = {
     if (params.sort_dir) searchParams.set('sort_dir', params.sort_dir)
     if (params.sector) searchParams.set('sector', params.sector)
     if (params.limit) searchParams.set('limit', params.limit)
-    if (params.offset) searchParams.set('offset', params.offset)
+    if (params.offset != null && params.offset > 0) searchParams.set('offset', params.offset)
     const query = searchParams.toString()
     return request(`/api/insider-sentiment${query ? `?${query}` : ''}`)
   },
