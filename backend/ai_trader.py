@@ -2542,7 +2542,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             composite_score -= 8
         elif ftd_penalty_active:
             # Legacy fallback if market state not enabled
-            composite_score -= 8
+            ftd_penalty_val = yaml_config.get('market_timing.follow_through_day.penalty', 8)
+            composite_score -= ftd_penalty_val
 
         # Heat penalty: too much risk exposure → mild score reduction
         if heat_penalty_active:

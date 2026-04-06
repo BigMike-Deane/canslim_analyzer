@@ -2955,7 +2955,8 @@ class BacktestEngine:
             elif self.market_state_enabled and self.market_state.state == MarketState.PRESSURE:
                 composite_score -= 8  # Moderate penalty
             elif self.ftd_penalty_active:
-                composite_score -= 8  # FTD fallback when market state disabled
+                ftd_penalty_val = config.get('market_timing.follow_through_day.penalty', 8)
+                composite_score -= ftd_penalty_val
 
             # Heat penalty: too much risk exposure → mild score reduction
             if self.heat_penalty_active:

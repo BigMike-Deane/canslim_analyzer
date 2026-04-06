@@ -654,6 +654,7 @@ market_timing:
   # Follow-Through Day Confirmation (O'Neil market timing)
   follow_through_day:
     enabled: false
+    penalty: 8                         # Score penalty when FTD not confirmed (default 8)
     min_rally_day: 4                   # FTD must occur on day 4+ of rally attempt
     min_gain_pct: 1.5                  # Index must gain 1.5%+ on FTD
     require_higher_volume: true        # Volume must be higher than prior day
