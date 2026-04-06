@@ -581,6 +581,7 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
     """
     Mark a ticker as delisted/invalid so it's excluded from future scans.
     Uses database to persist across restarts.
+    Requires 3+ failures across different scan cycles before excluding.
     """
     db = _get_db_session()
     if not db:
@@ -593,12 +594,25 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
 
         existing = db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).first()
         if existing:
+            # Only increment once per day to prevent a single scan cycle
+            # from pushing a ticker over the threshold via multiple code paths
+            if existing.last_failed_at and (datetime.now() - existing.last_failed_at).total_seconds() < 3600:
+                logger.debug(f"{ticker} already marked this hour, skipping duplicate")
+                return
             existing.failure_count += 1
             existing.last_failed_at = datetime.now()
             existing.reason = reason
-            # After 3 failures, don't recheck for 30 days
+            # Before committing to 30-day exclusion, verify with FMP
             if existing.failure_count >= 3:
-                existing.recheck_after = datetime.now() + timedelta(days=30)
+                if _fmp_confirms_delisted(ticker):
+                    existing.recheck_after = datetime.now() + timedelta(days=30)
+                else:
+                    # FMP still has this ticker — likely a transient Yahoo issue
+                    logger.info(f"{ticker} failed Yahoo 3x but FMP has data — resetting failure count")
+                    existing.failure_count = 0
+                    existing.recheck_after = datetime.now() + timedelta(days=1)
+                    db.commit()
+                    return
         else:
             delisted = DelistedTicker(
                 ticker=ticker,
@@ -610,12 +624,31 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
             db.add(delisted)
 
         db.commit()
-        logger.info(f"Marked {ticker} as delisted/invalid: {reason}")
+        logger.info(f"Marked {ticker} as delisted/invalid: {reason} (count: {existing.failure_count if existing else 1})")
     except Exception as e:
         logger.debug(f"Failed to mark {ticker} as delisted: {e}")
         db.rollback()
     finally:
         db.close()
+
+
+def _fmp_confirms_delisted(ticker: str) -> bool:
+    """Quick FMP quote check to verify if a ticker is truly delisted.
+    Returns True if FMP also can't find it (confirming delisting)."""
+    api_key = os.environ.get('FMP_API_KEY', '')
+    if not api_key:
+        return True  # Can't verify, assume delisted
+    try:
+        url = f"https://financialmodelingprep.com/stable/profile?symbol={ticker}&apikey={api_key}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                # FMP has this ticker — it's NOT delisted
+                return False
+        return True
+    except Exception:
+        return True  # Can't reach FMP, err on side of caution
 
 
 def get_delisted_tickers() -> set:

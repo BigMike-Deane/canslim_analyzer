@@ -16,9 +16,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# FMP API configuration
+# FMP API key (used elsewhere; constituent list endpoints require higher tier so we use Wikipedia)
 FMP_API_KEY = os.environ.get('FMP_API_KEY', '')
-FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
 # Cache for ticker lists (avoid re-fetching on every scan)
 _ticker_cache = {
@@ -177,32 +176,15 @@ def get_portfolio_tickers() -> list[str]:
 
 def get_sp500_tickers() -> list[str]:
     """
-    Fetch S&P 500 tickers from FMP API (primary) or Wikipedia (fallback).
-    Uses cache to avoid redundant API calls.
+    Fetch S&P 500 tickers from Wikipedia.
+    Uses cache to avoid redundant calls.
     """
     # Check cache first
     if _is_cache_valid('sp500'):
         logger.debug("Using cached S&P 500 tickers")
         return _ticker_cache['sp500']
 
-    # Try FMP API first (most reliable and up-to-date)
-    if FMP_API_KEY:
-        try:
-            url = f"{FMP_BASE_URL}/sp500_constituent?apikey={FMP_API_KEY}"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if data and isinstance(data, list):
-                tickers = [item.get('symbol') for item in data if item.get('symbol')]
-                if tickers:
-                    logger.info(f"Fetched {len(tickers)} S&P 500 tickers from FMP")
-                    _update_cache('sp500', tickers)
-                    return tickers
-        except Exception as e:
-            logger.warning(f"FMP S&P 500 fetch failed: {e}")
-
-    # Fallback to Wikipedia
+    # Fetch from Wikipedia (FMP /api/v3/ constituent endpoints require higher tier)
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -246,24 +228,7 @@ def get_nasdaq100_tickers() -> list[str]:
         logger.debug("Using cached Nasdaq 100 tickers")
         return _ticker_cache['nasdaq100']
 
-    # Try FMP API first
-    if FMP_API_KEY:
-        try:
-            url = f"{FMP_BASE_URL}/nasdaq_constituent?apikey={FMP_API_KEY}"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if data and isinstance(data, list):
-                tickers = [item.get('symbol') for item in data if item.get('symbol')]
-                if tickers:
-                    logger.info(f"Fetched {len(tickers)} Nasdaq 100 tickers from FMP")
-                    _update_cache('nasdaq100', tickers)
-                    return tickers
-        except Exception as e:
-            logger.warning(f"FMP Nasdaq 100 fetch failed: {e}")
-
-    # Try Wikipedia scraping
+    # Fetch from Wikipedia (FMP /api/v3/ constituent endpoints require higher tier)
     try:
         url = "https://en.wikipedia.org/wiki/Nasdaq-100"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -331,24 +296,7 @@ def get_dowjones_tickers() -> list[str]:
         logger.debug("Using cached Dow Jones tickers")
         return _ticker_cache['dowjones']
 
-    # Try FMP API first
-    if FMP_API_KEY:
-        try:
-            url = f"{FMP_BASE_URL}/dowjones_constituent?apikey={FMP_API_KEY}"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if data and isinstance(data, list):
-                tickers = [item.get('symbol') for item in data if item.get('symbol')]
-                if tickers:
-                    logger.info(f"Fetched {len(tickers)} Dow Jones tickers from FMP")
-                    _update_cache('dowjones', tickers)
-                    return tickers
-        except Exception as e:
-            logger.warning(f"FMP Dow Jones fetch failed: {e}")
-
-    # Try Wikipedia scraping
+    # Fetch from Wikipedia (FMP /api/v3/ constituent endpoints require higher tier)
     try:
         url = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -611,25 +559,7 @@ def get_russell2000_tickers() -> list[str]:
     if _is_cache_valid('russell2000'):
         return _ticker_cache['russell2000']
 
-    # Try FMP ETF Holdings API (IWM = iShares Russell 2000 ETF)
-    if FMP_API_KEY:
-        try:
-            url = f"{FMP_BASE_URL}/etf-holder/IWM?apikey={FMP_API_KEY}"
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            if data and isinstance(data, list):
-                # Extract ticker symbols from holdings
-                tickers = [item.get('asset') for item in data if item.get('asset')]
-                if len(tickers) > 1000:  # Should be ~2000 holdings
-                    logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from IWM ETF (FMP)")
-                    _update_cache('russell2000', tickers)
-                    return tickers
-                else:
-                    logger.warning(f"FMP IWM holdings returned only {len(tickers)} tickers")
-        except Exception as e:
-            logger.warning(f"FMP IWM ETF holdings fetch failed: {e}")
+    # FMP /api/v3/etf-holder requires higher tier — skip to Yahoo/sector ETFs
 
     # Try Yahoo Finance for IWM holdings
     try:

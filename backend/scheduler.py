@@ -50,6 +50,36 @@ _system_health = {
 # Lock for thread-safe access to global state dicts
 _state_lock = threading.Lock()
 
+_HEALTH_REDIS_KEY = "canslim:system_health"
+
+
+def _persist_health_to_redis():
+    """Save system health to Redis for persistence across restarts."""
+    try:
+        from redis_cache import get_redis_client
+        import json
+        client = get_redis_client()
+        if client:
+            client.set(_HEALTH_REDIS_KEY, json.dumps(_system_health))
+    except Exception:
+        pass  # Redis persistence is best-effort
+
+
+def _restore_health_from_redis():
+    """Restore system health from Redis on startup."""
+    try:
+        from redis_cache import get_redis_client
+        import json
+        client = get_redis_client()
+        if client:
+            data = client.get(_HEALTH_REDIS_KEY)
+            if data:
+                saved = json.loads(data)
+                _system_health.update(saved)
+                logger.info(f"Restored system health from Redis (last scan: {saved.get('last_successful_scan', 'N/A')})")
+    except Exception as e:
+        logger.debug(f"Could not restore health from Redis: {e}")
+
 
 def get_system_health():
     """Return system health state for dashboard."""
@@ -72,6 +102,7 @@ def _record_success(task_name: str):
         elif task_name == "backup":
             _system_health["last_backup"] = now
             _system_health["last_backup_error"] = None
+    _persist_health_to_redis()
 
 
 def _record_failure(task_name: str, error: str):
@@ -96,6 +127,8 @@ def _record_failure(task_name: str, error: str):
             failures = _system_health["consecutive_trade_failures"]
         else:
             failures = 1
+
+    _persist_health_to_redis()
 
     # Alert on first failure and every 3rd consecutive failure
     if failures == 1 or failures % 3 == 0:
@@ -1408,6 +1441,7 @@ def _refresh_portfolio_prices():
 
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):
     """Start continuous scanning with specified interval"""
+    _restore_health_from_redis()
     with _state_lock:
         _scan_config["enabled"] = True
         _scan_config["source"] = source
