@@ -1204,10 +1204,11 @@ def run_continuous_scan():
         finally:
             db.close()
 
+        save_time = time.time() - start_time - fetch_time
         total_time = time.time() - start_time
         _scan_config["stocks_scanned"] = successful
         logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks in {total_time:.1f}s total")
-        logger.info(f"Performance: {total_time/successful:.2f}s per stock (10x faster than old method!)")
+        logger.info(f"  Fetch: {fetch_time:.0f}s | Save: {save_time:.0f}s | Per stock: {total_time/successful:.2f}s")
 
         # Log rate limit stats and cache stats
         try:
@@ -1241,6 +1242,7 @@ def run_continuous_scan():
                 market_db.close()
 
         # Phase 2.5: Auto-record Coiled Spring alerts
+        phase_start = time.time()
         _scan_config["phase"] = "coiled_spring"
         _scan_config["phase_detail"] = "Checking for Coiled Spring candidates..."
 
@@ -1398,8 +1400,11 @@ def run_continuous_scan():
         except Exception as e:
             logger.error(f"Morning briefing error: {e}")
 
-        # Phase 7: Scan completion logging (push notification removed — user only wants trade/gate alerts)
-        logger.info(f"Scan complete: {successful}/{len(tickers)} stocks in {total_time:.0f}s")
+        # Phase 7: Scan completion logging
+        post_scan_time = time.time() - phase_start
+        full_time = time.time() - start_time
+        logger.info(f"Scan complete: {successful}/{len(tickers)} stocks in {full_time:.0f}s "
+                    f"(fetch={fetch_time:.0f}s save={save_time:.0f}s post={post_scan_time:.0f}s)")
         _record_success("scan")
 
     except Exception as e:

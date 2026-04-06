@@ -1553,6 +1553,7 @@ async def fetch_stocks_batch_async(
         effective_batch_size = min(batch_size, 50)
         logger.info(f"Fetching detailed financials in batches of {effective_batch_size}...")
 
+        prev_api_calls = 0
         for i in range(0, len(tickers), effective_batch_size):
             batch = tickers[i:i + effective_batch_size]
 
@@ -1599,11 +1600,21 @@ async def fetch_stocks_batch_async(
 
             # Smart delay between batches based on rate limit status
             if i + effective_batch_size < len(tickers):
-                # Base delay of 2 seconds, increase if circuit breaker is stressed
                 cb_state = rate_stats.get('circuit_breaker', {})
                 consecutive = cb_state.get('consecutive_failures', 0)
-                delay = 2.0 + (consecutive * 3.0)
-                delay = min(delay, 15.0)  # Cap at 15 seconds
+                current_api_calls = rate_stats.get('total_requests', 0)
+                batch_api_calls = current_api_calls - prev_api_calls
+                prev_api_calls = current_api_calls
+                if consecutive > 0:
+                    # Circuit breaker stressed — back off
+                    delay = 2.0 + (consecutive * 3.0)
+                    delay = min(delay, 15.0)
+                elif batch_api_calls <= 5:
+                    # Mostly cache hits — minimal delay
+                    delay = 0.1
+                else:
+                    # Active API calls — moderate delay to respect rate limits
+                    delay = 1.5
                 await asyncio.sleep(delay)
 
     # Clear checkpoint on successful completion
