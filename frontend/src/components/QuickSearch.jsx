@@ -76,7 +76,7 @@ export default function QuickSearch() {
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
-    }, 150)
+    }, 75)
 
     return () => clearTimeout(timer)
   }, [query])

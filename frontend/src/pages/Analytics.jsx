@@ -23,7 +23,8 @@ const TOOLTIP_STYLE = {
   border: '1px solid rgba(255,255,255,0.06)',
   borderRadius: '10px',
   fontFamily: 'JetBrains Mono',
-  fontSize: 12,
+  fontSize: 13,
+  maxWidth: '280px',
 }
 
 function BreakdownRow({ label, trades, pnl, winRate, indicator }) {

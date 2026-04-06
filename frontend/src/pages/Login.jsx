@@ -73,10 +73,17 @@ export default function Login() {
             {googleClientId ? (
               <div ref={googleBtnRef} />
             ) : (
-              <p className="text-xs text-dark-500 text-center py-4">
-                Google Sign-In not configured.<br />
-                Set GOOGLE_CLIENT_ID in your environment.
-              </p>
+              <div className="w-full bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 flex items-start gap-2.5">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 shrink-0 mt-0.5">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                <div>
+                  <p className="text-xs font-semibold text-amber-300">Google Sign-In not configured</p>
+                  <p className="text-[11px] text-amber-400/70 mt-0.5">Set <code className="bg-amber-500/10 px-1 rounded text-amber-300">GOOGLE_CLIENT_ID</code> in your environment.</p>
+                </div>
+              </div>
             )}
           </div>
 

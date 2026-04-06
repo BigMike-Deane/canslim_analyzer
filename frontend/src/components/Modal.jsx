@@ -48,7 +48,7 @@ export default function Modal({ open, onClose, title, children, size = 'md' }) {
         {/* Header */}
         <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-dark-700/50">
           {/* Mobile drag handle */}
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 w-8 h-1 bg-dark-600 rounded-full md:hidden" />
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 w-8 h-1 bg-dark-400 rounded-full md:hidden" />
 
           <h2 className="text-sm font-semibold text-dark-100">{title}</h2>
           <button

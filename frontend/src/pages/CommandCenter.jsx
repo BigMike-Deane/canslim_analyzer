@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, memo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import Card, { SectionLabel } from '../components/Card'
@@ -160,7 +160,7 @@ function CoiledSpringSection({ cs }) {
   )
 }
 
-function PositionRow({ p }) {
+const PositionRow = memo(function PositionRow({ p }) {
   return (
     <Link
       to={`/stock/${p.ticker}`}
@@ -178,7 +178,7 @@ function PositionRow({ p }) {
       </div>
     </Link>
   )
-}
+})
 
 function CandidateRow({ c }) {
   return (

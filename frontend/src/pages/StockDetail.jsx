@@ -855,6 +855,7 @@ export default function StockDetail() {
   const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [stock, setStock] = useState(null)
+  const [error, setError] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
 
   const fetchStock = async () => {
@@ -862,8 +863,10 @@ export default function StockDetail() {
       setLoading(true)
       const data = await api.getStock(ticker)
       setStock(data)
+      setError(null)
     } catch (err) {
       console.error('Failed to fetch stock:', err)
+      setError(err.message || 'Failed to load stock data')
     } finally {
       setLoading(false)
     }
@@ -922,6 +925,22 @@ export default function StockDetail() {
     )
   }
 
+  if (error && !stock) {
+    return (
+      <div className="p-4 md:p-6">
+        <Card variant="glass" className="text-center py-8">
+          <div className="text-4xl mb-3">!</div>
+          <div className="font-semibold text-dark-50 mb-2">Failed to Load</div>
+          <p className="text-dark-400 text-sm mb-4">{error}</p>
+          <div className="flex gap-3 justify-center">
+            <button onClick={fetchStock} className="btn-primary">Retry</button>
+            <button onClick={() => navigate(-1)} className="btn-secondary">Go Back</button>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
   if (!stock) {
     return (
       <div className="p-4 md:p-6">
@@ -954,7 +973,16 @@ export default function StockDetail() {
             Back
           </button>
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold text-dark-50">{stock.ticker}</h1>
+            <h1 className="text-xl font-bold text-dark-50 flex items-center gap-2">
+              {stock.ticker}
+              <button
+                onClick={() => { navigator.clipboard.writeText(stock.ticker); toast.success('Copied!') }}
+                className="text-dark-500 hover:text-dark-300 transition-colors"
+                title="Copy ticker"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              </button>
+            </h1>
             <ScoreBadge score={stock.canslim_score} size="md" />
           </div>
           <div className="text-dark-300 text-sm truncate">{stock.name}</div>

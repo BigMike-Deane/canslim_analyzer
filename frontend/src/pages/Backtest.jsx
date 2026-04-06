@@ -398,14 +398,16 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
                 </div>
               ) : (
                 <>
+                  <div className="text-[11px] text-primary-400 font-data font-medium mb-1 animate-pulse">
+                    Running... {(row.progress_pct || 0).toFixed(0)}%
+                  </div>
                   <div className="h-1 bg-dark-700/50 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-primary-500 rounded-full transition-all duration-300"
                       style={{ width: `${row.progress_pct || 0}%` }}
                     />
                   </div>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="text-[10px] text-dark-500 font-data">{(row.progress_pct || 0).toFixed(0)}%</span>
+                  <div className="flex items-center justify-end mt-1">
                     <button
                       onClick={(e) => {
                         e.stopPropagation()

@@ -517,7 +517,8 @@ export default function FidelitySync() {
       addToast(`Uploaded ${result.positions_count} positions (${formatCurrency(result.total_value)})`, 'success')
       loadData()
     } catch (err) {
-      addToast(err.message || 'Upload failed', 'error')
+      const detail = err.detail || err.message || 'Upload failed'
+      addToast(`Positions upload failed: ${detail}`, 'error')
     } finally {
       setUploading(null)
     }
@@ -530,7 +531,8 @@ export default function FidelitySync() {
       addToast(`Imported ${result.new_trades} new trades (${result.skipped_duplicates} duplicates skipped)`, 'success')
       loadData()
     } catch (err) {
-      addToast(err.message || 'Upload failed', 'error')
+      const detail = err.detail || err.message || 'Upload failed'
+      addToast(`Activity upload failed: ${detail}`, 'error')
     } finally {
       setUploading(null)
     }

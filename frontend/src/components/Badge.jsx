@@ -3,14 +3,14 @@ import { getScoreClass } from '../api'
 export function ScoreBadge({ score, size = 'sm', className = '' }) {
   const cls = getScoreClass(score)
   const sizes = {
-    xs: 'text-[10px] px-1.5 py-0.5',
+    xs: 'text-[11px] px-1.5 py-0.5',
     sm: 'text-xs px-2 py-0.5',
     md: 'text-sm px-2.5 py-1',
     lg: 'text-base px-3 py-1',
   }
 
   return (
-    <span className={`font-data font-medium rounded-md ${cls} ${sizes[size] || sizes.sm} ${className}`}>
+    <span className={`font-data font-bold rounded-md ${cls} ${sizes[size] || sizes.sm} ${className}`}>
       {score != null ? Math.round(score) : '-'}
     </span>
   )

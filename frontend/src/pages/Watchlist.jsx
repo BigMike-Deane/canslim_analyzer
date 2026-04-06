@@ -18,6 +18,7 @@ function WatchlistItem({ item, onRemove }) {
         setStock(data)
       } catch (err) {
         console.error(`Failed to fetch ${item.ticker}:`, err)
+        setStock({ ticker: item.ticker, error: true })
       } finally {
         setLoading(false)
       }
@@ -56,7 +57,9 @@ function WatchlistItem({ item, onRemove }) {
         </Link>
 
         <div className="text-right flex flex-col items-end gap-1">
-          {stock ? (
+          {stock?.error ? (
+            <div className="text-red-400 text-xs">Failed to load</div>
+          ) : stock ? (
             <>
               <span className="font-semibold font-data text-dark-50">{formatCurrency(stock.current_price)}</span>
               <ScoreBadge score={stock.canslim_score} size="xs" />

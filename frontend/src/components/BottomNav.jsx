@@ -13,6 +13,8 @@ function TabIcon({ name, size = 20 }) {
       return <svg {...props}><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></svg>
     case 'rewind':
       return <svg {...props}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+    case 'search':
+      return <svg {...props}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
     case 'more':
       return <svg {...props}><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="5" r="1.5" fill="currentColor" /><circle cx="12" cy="19" r="1.5" fill="currentColor" /></svg>
     default:
@@ -73,6 +75,7 @@ export default function BottomNav() {
   const mainTabs = [
     { to: '/', icon: 'terminal', label: 'CMD', end: true },
     { to: '/ai-portfolio', icon: 'brain', label: 'AI' },
+    { type: 'search', icon: 'search', label: 'Search' },
     { to: '/dashboard', icon: 'grid', label: 'Research' },
     { to: '/backtest', icon: 'rewind', label: 'Test' },
   ]
@@ -121,7 +124,16 @@ export default function BottomNav() {
       {/* Bottom Nav Bar */}
       <nav className="fixed bottom-0 left-0 right-0 bg-dark-900/95 backdrop-blur-md border-t border-dark-700/40 pb-safe md:hidden z-30">
         <div className="flex justify-around py-1.5">
-          {mainTabs.map(item => (
+          {mainTabs.map(item => item.type === 'search' ? (
+            <button
+              key="search"
+              onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
+              className="flex-1 flex flex-col items-center gap-0.5 py-1.5 transition-colors text-dark-500 active:text-primary-400"
+            >
+              <TabIcon name={item.icon} />
+              <span className="text-[10px] font-medium">{item.label}</span>
+            </button>
+          ) : (
             <NavLink
               key={item.to}
               to={item.to}
