@@ -235,33 +235,35 @@ export default function Screener() {
           </div>
         </Card>
       ) : (
-        <Card variant="glass">
-          {stocks.map(stock => (
-            <StockRow key={stock.ticker} stock={stock} />
-          ))}
-        </Card>
+        <>
+          <Card variant="glass">
+            {stocks.map(stock => (
+              <StockRow key={stock.ticker} stock={stock} />
+            ))}
+          </Card>
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between mt-4 px-1">
-            <button
-              onClick={() => handlePageChange(page - 1)}
-              disabled={page <= 1}
-              className="px-3 py-1.5 text-sm rounded-lg bg-dark-800 text-dark-200 hover:bg-dark-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              ← Prev
-            </button>
-            <span className="text-sm text-dark-400">
-              Page {page} of {totalPages} ({total} stocks)
-            </span>
-            <button
-              onClick={() => handlePageChange(page + 1)}
-              disabled={page >= totalPages}
-              className="px-3 py-1.5 text-sm rounded-lg bg-dark-800 text-dark-200 hover:bg-dark-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              Next →
-            </button>
-          </div>
-        )}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4 px-1">
+              <button
+                onClick={() => handlePageChange(page - 1)}
+                disabled={page <= 1}
+                className="px-3 py-1.5 text-sm rounded-lg bg-dark-800 text-dark-200 hover:bg-dark-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                ← Prev
+              </button>
+              <span className="text-sm text-dark-400">
+                Page {page} of {totalPages} ({total} stocks)
+              </span>
+              <button
+                onClick={() => handlePageChange(page + 1)}
+                disabled={page >= totalPages}
+                className="px-3 py-1.5 text-sm rounded-lg bg-dark-800 text-dark-200 hover:bg-dark-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                Next →
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       <div className="h-4" />
