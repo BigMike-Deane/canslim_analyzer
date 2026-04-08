@@ -2425,6 +2425,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         breakout_bonus = entry_signals["breakout_bonus"]
         pre_breakout_bonus = entry_signals["pre_breakout_bonus"]
         extended_penalty = entry_signals["extended_penalty"]
+        pct_from_pivot = entry_signals["pct_from_pivot"]
 
         # NOTE: Insider signals, accumulation/distribution, and short squeeze detection
         # were removed to align live trader with backtester (proven +51.2% returns).
