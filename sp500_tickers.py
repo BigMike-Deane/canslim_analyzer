@@ -144,14 +144,18 @@ def get_portfolio_tickers() -> list[str]:
         import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent / "backend"))
-        from database import SessionLocal, PortfolioPosition
+        from database import SessionLocal, PortfolioPosition, AIPortfolioPosition
 
         db = SessionLocal()
         try:
-            positions = db.query(PortfolioPosition.ticker).distinct().all()
-            tickers = [p.ticker for p in positions]
+            # Include BOTH manual/paper positions AND AI trader positions
+            paper = db.query(PortfolioPosition.ticker).distinct().all()
+            ai = db.query(AIPortfolioPosition.ticker).distinct().all()
+            all_tickers = set(p.ticker for p in paper) | set(p.ticker for p in ai)
+            tickers = sorted(all_tickers)
             if tickers:
-                logger.info(f"Loaded {len(tickers)} portfolio tickers from database")
+                logger.info(f"Loaded {len(tickers)} portfolio tickers from database "
+                           f"({len(paper)} paper + {len(ai)} AI)")
                 return tickers
         finally:
             db.close()
