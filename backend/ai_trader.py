@@ -65,8 +65,8 @@ CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 
 def get_cst_now():
-    """Get current time in Central Time (handles CST/CDT automatically)"""
-    return datetime.now(CENTRAL_TZ).replace(tzinfo=None)  # Store without tz for SQLite compatibility
+    """Get current UTC time (naive, for DB storage). Name kept for backward compat."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _get_us_market_holidays() -> set:
