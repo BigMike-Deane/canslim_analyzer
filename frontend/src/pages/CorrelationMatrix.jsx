@@ -66,12 +66,12 @@ export default function CorrelationMatrix() {
     )
   }
 
-  if (error || !data) {
+  if (error || !data || data.error) {
     return (
       <div className="p-4 md:p-6 max-w-5xl mx-auto">
         <PageHeader title="Correlation Matrix" subtitle="Portfolio position correlations" />
         <Card variant="glass" className="text-center py-8">
-          <div className="text-red-400 text-sm">{error || 'No data available'}</div>
+          <div className="text-red-400 text-sm">{error || data?.error || 'No data available'}</div>
         </Card>
       </div>
     )

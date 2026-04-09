@@ -4052,6 +4052,7 @@ async def get_portfolio_correlation(
     try:
         import yfinance as yf
         import numpy as np
+        import pandas as pd
 
         data = yf.download(tickers, period="35d", progress=False, threads=True)
         if data.empty:
@@ -4204,12 +4205,12 @@ async def get_trade_journal(
             "ml_prediction": factors.get("ml_prediction"),
             "position_pct": factors.get("position_pct"),
 
-            # Sell-specific fields
+            # Sell-specific fields (computed — AIPortfolioTrade doesn't store these directly)
             "sell_reason": factors.get("sell_reason") or (t.reason if t.action == "SELL" else None),
             "cost_basis": t.cost_basis,
             "realized_gain": t.realized_gain,
-            "realized_gain_pct": t.realized_gain_pct,
-            "holding_days": t.holding_days,
+            "realized_gain_pct": round(((t.price / t.cost_basis - 1) * 100), 2) if t.action == "SELL" and t.cost_basis and t.cost_basis > 0 else None,
+            "holding_days": factors.get("holding_days"),
         }
         entries.append(entry)
 
@@ -4423,7 +4424,7 @@ async def get_trade_analytics(
             "pnl": round(p.gain_loss or 0, 2),
             "return_pct": round(p.gain_loss_pct or 0, 1),
             "sector": getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown',
-            "days_held": (datetime.now(timezone.utc) - p.purchase_date).days if p.purchase_date else 0,
+            "days_held": (datetime.now(timezone.utc) - (p.purchase_date.replace(tzinfo=timezone.utc) if p.purchase_date.tzinfo is None else p.purchase_date)).days if p.purchase_date else 0,
         })
 
     realized_vs_unrealized = {
@@ -4675,7 +4676,8 @@ async def get_portfolio_summary(
 
         # Distance to stop
         pct_to_stop = ((p.current_price - stop_price) / p.current_price * 100) if p.current_price and stop_price else 0
-        days_held = (datetime.now(timezone.utc) - p.purchase_date).days if p.purchase_date else 0
+        purchase_dt = p.purchase_date.replace(tzinfo=timezone.utc) if p.purchase_date and p.purchase_date.tzinfo is None else p.purchase_date
+        days_held = (datetime.now(timezone.utc) - purchase_dt).days if purchase_dt else 0
 
         pos_details.append({
             "ticker": p.ticker,
@@ -4688,7 +4690,7 @@ async def get_portfolio_summary(
             "peak_price": round(p.peak_price or 0, 2),
             "stop_price": round(stop_price, 2),
             "pct_to_stop": round(pct_to_stop, 1),
-            "trailing_pct": round(trail_pct, 1),
+            "trailing_pct": round(trail_pct, 1) if trail_pct is not None else None,
             "days_held": days_held,
             "pyramid_count": p.pyramid_count or 0,
             "current_score": round(p.current_score or 0, 1),
