@@ -113,7 +113,7 @@ export default function CorrelationMatrix() {
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
           <span className="text-red-300 text-sm">
-            High correlation detected: {max_pair[0]}-{max_pair[1]} at {max_correlation.toFixed(2)} — consider diversifying
+            High correlation detected: {max_pair?.[0]}-{max_pair?.[1]} at {max_correlation?.toFixed(2)} — consider diversifying
           </span>
         </div>
       )}
@@ -124,8 +124,8 @@ export default function CorrelationMatrix() {
         <div className="flex items-center gap-3">
           <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border ${getCorrelationBg(max_correlation)}`}>
             <span className="text-xs text-dark-300">Highest correlation:</span>
-            <span className={`text-sm font-data font-semibold ${getCorrelationColor(max_correlation)}`}>
-              {max_pair[0]}-{max_pair[1]} at {max_correlation.toFixed(2)}
+            <span className={`text-sm font-data font-semibold ${getCorrelationColor(max_correlation || 0)}`}>
+              {max_pair ? `${max_pair[0]}-${max_pair[1]} at ${max_correlation?.toFixed(2)}` : 'N/A'}
             </span>
           </div>
         </div>

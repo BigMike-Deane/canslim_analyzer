@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text, case
 from datetime import datetime, date, timedelta, timezone
-from zoneinfo import ZoneInfo
+
 from typing import Optional, List
 import logging
 
@@ -3165,7 +3165,7 @@ async def get_ai_portfolio_history(
     snapshots = sorted(snapshots, key=sort_key)
 
     return [{
-        "timestamp": s.timestamp.replace(tzinfo=ZoneInfo("America/Chicago")).isoformat() if s.timestamp else None,
+        "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else None,
         "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
         "total_value": s.total_value,
         "cash": s.cash,
@@ -4064,9 +4064,14 @@ async def get_portfolio_correlation(
             closes = data[['Close']]
             closes.columns = tickers[:1]
 
+        # Drop tickers with no price data (e.g. delisted/failed yfinance downloads)
+        closes = closes.dropna(axis=1, how='all')
+        if closes.shape[1] < 2:
+            return {"matrix": [], "tickers": list(closes.columns), "message": "Need price data for 2+ tickers"}
+
         returns = closes.pct_change().dropna()
         if len(returns) < 10:
-            return {"matrix": [], "tickers": tickers, "message": "Insufficient price history"}
+            return {"matrix": [], "tickers": list(closes.columns), "message": "Insufficient price history"}
 
         # Compute correlation matrix
         corr_matrix = returns.corr()
@@ -4178,7 +4183,7 @@ async def get_trade_journal(
 
         entry = {
             "id": t.id,
-            "date": t.executed_at.isoformat() if t.executed_at else None,
+            "date": t.executed_at.isoformat() + "Z" if t.executed_at else None,
             "ticker": t.ticker,
             "action": t.action,
             "shares": t.shares,
@@ -4713,7 +4718,7 @@ async def get_portfolio_summary(
         "price": round(t.price, 2),
         "pnl": round(t.realized_gain or 0, 2) if t.action == "SELL" else None,
         "reason": t.reason,
-        "date": t.executed_at.strftime("%Y-%m-%d %H:%M") if t.executed_at else "",
+        "date": t.executed_at.isoformat() + "Z" if t.executed_at else "",
     } for t in recent_trades]
 
     return {

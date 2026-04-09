@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api } from '../api'
+import { api, formatDateTime } from '../api'
 
 function Card({ title, children, className = '' }) {
   return (
@@ -145,7 +145,7 @@ export default function PortfolioSummary() {
                     </div>
                     <div className="flex items-center gap-3">
                       {t.pnl != null && <PnlText value={t.pnl} />}
-                      <span className="text-dark-500 text-xs">{t.date}</span>
+                      <span className="text-dark-500 text-xs">{formatDateTime(t.date)}</span>
                     </div>
                   </div>
                 ))}
@@ -264,7 +264,7 @@ export default function PortfolioSummary() {
                     </td>
                     <td className="py-1.5 text-right text-dark-300">{t.peak_gain_pct}%</td>
                     <td className="py-1.5 text-right"><PnlText value={t.actual_pnl} /></td>
-                    <td className="py-1.5 text-right text-dark-500 text-xs">{t.date}</td>
+                    <td className="py-1.5 text-right text-dark-500 text-xs">{formatDateTime(t.date)}</td>
                   </tr>
                 ))}
               </tbody>
