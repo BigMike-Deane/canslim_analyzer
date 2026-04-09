@@ -652,7 +652,7 @@ def analyze_stock(ticker: str) -> dict:
                 "analyst_upside": getattr(growth_obj, 'analyst_upside', 0),
             } if growth_obj else {},
 
-            "analyzed_at": datetime.now(timezone.utc).isoformat()
+            "analyzed_at": datetime.now(timezone.utc).isoformat() + "Z"
         }
     except Exception as e:
         logger.error(f"Error analyzing {ticker}: {e}")
@@ -1560,12 +1560,12 @@ async def get_stock(ticker: str, current_user: User = Depends(get_current_active
         "insider_sell_count": stock.insider_sell_count,
         "insider_net_shares": stock.insider_net_shares,
         "insider_sentiment": stock.insider_sentiment,
-        "insider_updated_at": stock.insider_updated_at.isoformat() if stock.insider_updated_at else None,
+        "insider_updated_at": (stock.insider_updated_at.isoformat() + "Z") if stock.insider_updated_at else None,
 
         # Short interest
         "short_interest_pct": stock.short_interest_pct,
         "short_ratio": stock.short_ratio,
-        "short_updated_at": stock.short_updated_at.isoformat() if stock.short_updated_at else None,
+        "short_updated_at": (stock.short_updated_at.isoformat() + "Z") if stock.short_updated_at else None,
 
         "score_history": [{
             "date": h.date.isoformat(),

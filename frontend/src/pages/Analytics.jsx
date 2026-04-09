@@ -115,7 +115,7 @@ function MonthlyPnLChart({ data }) {
               tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(m) => {
                 const parts = m.split('-')
-                return `${parts[1]}/${parts[0].slice(2)}`
+                return parts.length >= 2 ? `${parts[1]}/${parts[0].slice(2)}` : m
               }}
             />
             <YAxis

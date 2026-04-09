@@ -171,7 +171,7 @@ export default function Breadth() {
       <SectionLabel>Sector Rotation</SectionLabel>
       <Card variant="glass" className="mb-4">
         <div className="space-y-0">
-          {data.sectors && data.sectors.filter(s => s.sector !== 'Unknown').map((s) => (
+          {data.sectors?.length > 0 && data.sectors.filter(s => s.sector !== 'Unknown').map((s) => (
             <SectorRow key={s.sector} sector={s} />
           ))}
         </div>

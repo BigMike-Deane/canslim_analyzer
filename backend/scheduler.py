@@ -7,6 +7,7 @@ Stays within FMP API rate limits (300 calls/min).
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from collections import deque
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import logging
@@ -44,7 +45,7 @@ _system_health = {
     "consecutive_trade_failures": 0,
     "last_backup": None,
     "last_backup_error": None,
-    "errors_today": [],  # Rolling list of recent errors
+    "errors_today": deque(maxlen=50),  # Rolling list of recent errors (bounded)
 }
 
 # Lock for thread-safe access to global state dicts
@@ -113,9 +114,7 @@ def _record_failure(task_name: str, error: str):
     error_entry = {"task": task_name, "error": error[:200], "timestamp": now}
 
     with _state_lock:
-        # Keep last 50 errors
         _system_health["errors_today"].append(error_entry)
-        _system_health["errors_today"] = _system_health["errors_today"][-50:]
 
         if task_name == "scan":
             _system_health["last_scan_error"] = error_entry

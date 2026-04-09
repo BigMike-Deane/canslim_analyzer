@@ -933,18 +933,31 @@ def fetch_live_price(ticker: str) -> float | None:
         logger.warning(f"FMP_API_KEY not set, will use Yahoo for {ticker}")
 
     if fmp_api_key:
-        try:
-            url = f"https://financialmodelingprep.com/stable/quote?symbol={ticker}&apikey={fmp_api_key}"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data and len(data) > 0:
-                    price = data[0].get("price")
-                    if price:
-                        logger.info(f"FMP live price for {ticker}: ${price}")
-                        return float(price)
-        except Exception as e:
-            logger.warning(f"FMP price error for {ticker}: {e}")
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={ticker}&apikey={fmp_api_key}"
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data and len(data) > 0:
+                        price = data[0].get("price")
+                        if price:
+                            logger.info(f"FMP live price for {ticker}: ${price}")
+                            return float(price)
+                    break  # Got 200 but no price data — don't retry
+                elif resp.status_code == 429:
+                    import time
+                    time.sleep(1 + attempt)  # Backoff: 1s, 2s, 3s
+                    continue
+                else:
+                    break  # Other error codes — don't retry
+            except requests.exceptions.Timeout:
+                if attempt < 2:
+                    continue  # Retry on timeout
+                logger.warning(f"FMP price timeout for {ticker} after 3 attempts")
+            except Exception as e:
+                logger.warning(f"FMP price error for {ticker}: {e}")
+                break
 
     # Fallback to Yahoo chart API
     try:

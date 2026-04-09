@@ -355,8 +355,9 @@ class TestSchedulerHealthTracking:
         assert call_kwargs["priority"] == "high"
 
     def test_errors_today_capped_at_50(self):
+        from collections import deque
         from backend.scheduler import _record_failure, _system_health
-        _system_health["errors_today"] = []
+        _system_health["errors_today"] = deque(maxlen=50)
         mock_module = MagicMock()
         with patch.dict("sys.modules", {"backend.email_utils": mock_module}):
             for i in range(60):

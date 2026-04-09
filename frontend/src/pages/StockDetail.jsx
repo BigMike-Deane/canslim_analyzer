@@ -552,7 +552,7 @@ function ScoreHistory({ history }) {
             <XAxis
               dataKey="date"
               tick={{ fontSize: 10, fill: '#4b5563' }}
-              tickFormatter={d => { const p = d.split('-'); return `${p[1]}/${p[2]}` }}
+              tickFormatter={d => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }}
               interval="preserveStartEnd"
               axisLine={false}
               tickLine={false}

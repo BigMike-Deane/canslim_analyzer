@@ -944,9 +944,10 @@ export default function AIPortfolio() {
     const refreshPrices = async () => {
       // Check if market is likely open (rough check - M-F 8:30am-4pm CST)
       const now = new Date()
-      const cstHour = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' })).getHours()
-      const dayOfWeek = now.getDay()
-      const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', weekday: 'short', hour12: false }).formatToParts(now)
+      const cstHour = parseInt(parts.find(p => p.type === 'hour')?.value || '0')
+      const weekday = parts.find(p => p.type === 'weekday')?.value || 'Sun'
+      const isWeekday = !['Sat', 'Sun'].includes(weekday)
       const isMarketHours = cstHour >= 8 && cstHour < 16
 
       if (!isWeekday || !isMarketHours) {

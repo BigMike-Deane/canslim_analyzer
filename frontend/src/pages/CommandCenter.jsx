@@ -12,10 +12,13 @@ function useMarketRefresh(callback, intervalMs = 60000) {
   useEffect(() => {
     const check = () => {
       const now = new Date()
-      const cst = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }))
-      const day = cst.getDay()
-      const totalMins = cst.getHours() * 60 + cst.getMinutes()
-      return day >= 1 && day <= 5 && totalMins >= 510 && totalMins <= 960
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: 'numeric', weekday: 'short', hour12: false }).formatToParts(now)
+      const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0')
+      const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0')
+      const weekday = parts.find(p => p.type === 'weekday')?.value || 'Sun'
+      const isWeekday = !['Sat', 'Sun'].includes(weekday)
+      const totalMins = hour * 60 + minute
+      return isWeekday && totalMins >= 510 && totalMins <= 960
     }
 
     if (check()) {

@@ -797,6 +797,10 @@ class AIPortfolioPosition(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+    __table_args__ = (
+        Index('ix_positions_user_ticker', 'user_id', 'ticker'),
+    )
+
 
 class AIPortfolioTrade(Base):
     """AI Portfolio trade history"""
@@ -822,6 +826,10 @@ class AIPortfolioTrade(Base):
     signal_factors = Column(JSON)  # {"entry_type": "pre-breakout", "market_regime": "bullish", ...}
 
     executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (
+        Index('ix_trades_user_executed', 'user_id', 'executed_at'),
+    )
 
 
 class AIPortfolioSnapshot(Base):

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api } from '../api'
+import { api, formatDate, formatDateTime } from '../api'
 import { useAuth } from '../auth'
 
 export default function Admin() {
@@ -220,7 +220,7 @@ export default function Admin() {
                     </button>
                   </td>
                   <td className="py-2.5 px-3 text-dark-500 text-xs">
-                    {u.created_at ? new Date(u.created_at).toLocaleDateString() : '-'}
+                    {u.created_at ? formatDate(u.created_at) : '-'}
                   </td>
                 </tr>
               ))}
@@ -323,7 +323,7 @@ export default function Admin() {
                   <div className="md:col-span-2">
                     <div className="text-[10px] text-dark-500">Activated</div>
                     <div className="text-sm font-data text-dark-300">
-                      {m.activated_at ? new Date(m.activated_at).toLocaleString() : '-'}
+                      {m.activated_at ? formatDateTime(m.activated_at) : '-'}
                     </div>
                   </div>
                 </div>

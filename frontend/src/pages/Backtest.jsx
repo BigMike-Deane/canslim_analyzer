@@ -274,7 +274,7 @@ function ComparisonView({ comparison, onClose }) {
                 />
               ))}
               <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(d) => { const p = d.split('-'); return `${p[1]}/${p[2]}` }} interval="preserveStartEnd" axisLine={{ stroke: '#1f2937' }} tickLine={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(d) => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }} interval="preserveStartEnd" axisLine={{ stroke: '#1f2937' }} tickLine={false} />
               <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={{ background: '#14141f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}
