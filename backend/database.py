@@ -821,6 +821,7 @@ class AIPortfolioTrade(Base):
     # For sells, track the gain/loss
     cost_basis = Column(Float)  # Original cost basis for sells
     realized_gain = Column(Float)  # Profit/loss on the trade
+    holding_days = Column(Integer)  # Days held (sell trades only)
 
     # Trade Journal / Performance Attribution
     signal_factors = Column(JSON)  # {"entry_type": "pre-breakout", "market_regime": "bullish", ...}

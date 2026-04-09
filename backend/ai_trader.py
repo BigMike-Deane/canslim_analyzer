@@ -1263,6 +1263,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
             score = stock.canslim_score if stock else 0
             growth_score = stock.growth_mode_score if stock else None
 
+            _hold_days = (datetime.now(timezone.utc).date() - position.purchase_date.date()).days if position.purchase_date else None
             execute_trade(
                 db=db,
                 ticker=position.ticker,
@@ -1276,7 +1277,8 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                 cost_basis=position.cost_basis,
                 realized_gain=position.gain_loss,
                 signal_factors={"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(position_stop_pct, 1)},
-                user_id=user_id
+                user_id=user_id,
+                holding_days=_hold_days
             )
 
             # Update cash and remove position
@@ -1317,6 +1319,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                     partial_value = shares_to_sell * position.current_price
                     logger.warning(f"{position.ticker}: PARTIAL TRAILING STOP - selling {partial_sell_pct_config}% ({shares_to_sell:.2f} shares)")
 
+                    _hold_days = (datetime.now(timezone.utc).date() - position.purchase_date.date()).days if position.purchase_date else None
                     execute_trade(
                         db=db,
                         ticker=position.ticker,
@@ -1330,7 +1333,8 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                         cost_basis=position.cost_basis,
                         realized_gain=(position.current_price - position.cost_basis) * shares_to_sell,
                         signal_factors={"sell_reason": "PARTIAL TRAILING", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1), "sell_pct": partial_sell_pct_config},
-                        user_id=user_id
+                        user_id=user_id,
+                        holding_days=_hold_days
                     )
 
                     # Update position: reduce shares, reset peak
@@ -1351,6 +1355,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                     # Standard: full sell
                     logger.warning(f"{position.ticker}: TRAILING STOP TRIGGERED - Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
 
+                    _hold_days = (datetime.now(timezone.utc).date() - position.purchase_date.date()).days if position.purchase_date else None
                     execute_trade(
                         db=db,
                         ticker=position.ticker,
@@ -1364,7 +1369,8 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                         cost_basis=position.cost_basis,
                         realized_gain=position.gain_loss,
                         signal_factors={"sell_reason": "TRAILING STOP", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1)},
-                        user_id=user_id
+                        user_id=user_id,
+                        holding_days=_hold_days
                     )
 
                     config.current_cash += position.current_value
@@ -1396,7 +1402,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   growth_score: float = None, is_growth_stock: bool = False,
                   cost_basis: float = None, realized_gain: float = None,
                   signal_factors: dict = None, is_paper: bool = False,
-                  user_id: int = 1):
+                  user_id: int = 1, holding_days: int = None):
     """Record a trade in the database with detailed logging"""
     signal_factors = sanitize_signal_factors(signal_factors)
     trade = AIPortfolioTrade(
@@ -1411,6 +1417,7 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         is_growth_stock=is_growth_stock,
         cost_basis=cost_basis,
         realized_gain=realized_gain,
+        holding_days=holding_days,
         executed_at=get_cst_now(),  # Use CST timezone
         signal_factors=signal_factors,  # Trade journal: what drove this decision
         user_id=user_id
@@ -3021,6 +3028,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
                 # Execute partial sell
                 gain_pct_val = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis and position.cost_basis > 0 else 0
+                _hold_days = (datetime.now(timezone.utc).date() - position.purchase_date.date()).days if position.purchase_date else None
                 execute_trade(
                     db=db,
                     ticker=position.ticker,
@@ -3035,7 +3043,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     realized_gain=realized_gain,
                     signal_factors={"sell_reason": categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1), "sell_pct": sell_pct},
                     is_paper=paper_mode,
-                    user_id=user_id
+                    user_id=user_id,
+                    holding_days=_hold_days
                 )
 
                 if not paper_mode:
@@ -3072,6 +3081,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             else:
                 # FULL SELL - sell entire position
                 gain_pct_val = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis and position.cost_basis > 0 else 0
+                _hold_days = (datetime.now(timezone.utc).date() - position.purchase_date.date()).days if position.purchase_date else None
                 execute_trade(
                     db=db,
                     ticker=position.ticker,
@@ -3086,7 +3096,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     realized_gain=position.gain_loss,
                     signal_factors={"sell_reason": categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1)},
                     is_paper=paper_mode,
-                    user_id=user_id
+                    user_id=user_id,
+                    holding_days=_hold_days
                 )
 
                 if not paper_mode:
@@ -3136,6 +3147,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             for position in positions:
                 if position.current_price and position.current_price > 0:
                     cb_gain_pct = ((position.current_price / position.cost_basis) - 1) * 100 if position.cost_basis and position.cost_basis > 0 else 0
+                    _hold_days = (datetime.now(timezone.utc).date() - position.purchase_date.date()).days if position.purchase_date else None
                     execute_trade(
                         db=db, ticker=position.ticker, action="SELL",
                         shares=position.shares, price=position.current_price,
@@ -3144,7 +3156,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                         realized_gain=position.gain_loss,
                         is_growth_stock=position.is_growth_stock or False,
                         signal_factors={"sell_reason": "CIRCUIT BREAKER", "gain_pct": round(cb_gain_pct, 1), "drawdown_pct": round(current_drawdown, 1)},
-                        user_id=user_id
+                        user_id=user_id,
+                        holding_days=_hold_days
                     )
                     config.current_cash += position.current_value
                     results["sells_executed"].append({
