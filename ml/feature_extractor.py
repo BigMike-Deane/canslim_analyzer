@@ -17,18 +17,13 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# Feature columns — v10: 15 high-signal features (simplified from v9's 22)
+# Feature columns — v11: 28 features (expanded from v10's 15)
 #
-# Removed 7 low-signal/redundant features:
-#   - soft_zone_multiplier: derivative of soft_zone binary
-#   - deterministic_boost: correlated with total_score
-#   - cs_c_score: correlated with total_score (C component already baked in)
-#   - cs_institutional_pct: weak predictor, correlated with I score
-#   - cs_quality_rank: derivative of other CS features
-#   - cs_bonus: highly correlated with cs_weeks_in_base + cs_beat_streak
-#   - days_since_spy_pullback: noisy signal, hard to capture in 200 samples
+# v10→v11 changes:
+#   - Restored 5 features dropped in v9→v10 (let XGBoost regularization handle noise)
+#   - Added 6 individual CANSLIM component scores (decompose total_score signal)
+#   - Added 2 market/sector context features (continuous SPY gradient, industry rank)
 #
-# Keeping 15 features that have structural/theoretical edge:
 FEATURE_COLUMNS = [
     # Core quality (3) — the "what" of the stock
     "total_score",
@@ -50,6 +45,22 @@ FEATURE_COLUMNS = [
     "pct_from_50ma",         # % distance from 50-day MA (trend health)
     "atr_pct",               # volatility context (tighter = more coiled)
     "sector_rs_rank",        # sector momentum (group leadership)
+    # Restored from v9 (5) — let regularization handle noise instead of manual removal
+    "rs_line_bonus",         # RS trend confirmation (+8 rising, -5 diverging)
+    "earnings_drift_bonus",  # post-earnings momentum for big beats
+    "days_since_spy_pullback",  # market pullback recency (0-60 days)
+    "volume_dry_up",         # binary: tight volume in base (bullish consolidation)
+    "deterministic_boost",   # boost for strong deterministic (N+S+L+I+M) scores
+    # Individual CANSLIM components (6) — decompose total_score for finer signal
+    "c_score",               # current quarterly earnings (0-15)
+    "a_score",               # annual earnings growth (0-15)
+    "n_score",               # new highs proximity (0-15)
+    "s_score",               # supply/demand (0-15)
+    "l_score",               # relative strength leader (0-15)
+    "i_score",               # institutional ownership (0-10)
+    # Market + sector context (2) — continuous gradient instead of binary
+    "spy_pct_above_50ma",    # SPY % distance from 50MA (continuous market strength)
+    "industry_group_rank",   # sector rank percentile (1-100)
 ]
 
 ENTRY_TYPE_MAP = {"breakout": 0, "pre-breakout": 1, "standard": 2}
@@ -287,18 +298,12 @@ def _pair_buy_sell_trades(trades) -> list:
 
 
 def _extract_features(buy_trade) -> dict:
-    """Extract the 15 high-signal features from a BUY trade's signal_factors."""
+    """Extract the 28 v11 features from a BUY trade's signal_factors."""
     sf = buy_trade.signal_factors or {}
 
     # Skip trades with no signal_factors (very old backtests)
     if not sf:
         return None
-
-    # Feature defaults — used when signal_factors doesn't have the key
-    _DEFAULTS = {
-        "relative_volume": 1.0,
-        "sector_rs_rank": 50.0,
-    }
 
     # Build all possible features, then filter to FEATURE_COLUMNS
     all_features = {
@@ -312,19 +317,35 @@ def _extract_features(buy_trade) -> dict:
         "coiled_spring": 1 if sf.get("coiled_spring", False) else 0,
         # Entry quality
         "soft_zone": 1 if sf.get("soft_zone", False) else 0,
-        # CS detail (3 kept)
+        # CS detail
         "cs_weeks_in_base": _nan_safe(sf.get("cs_weeks_in_base"), 0.0),
         "cs_beat_streak": _nan_safe(sf.get("cs_beat_streak"), 0.0),
         "cs_days_to_earnings": _nan_safe(sf.get("cs_days_to_earnings"), 0.0),
-        # Price action (5 kept)
+        # Price action
         "relative_volume": _nan_safe(sf.get("relative_volume"), 1.0),
         "pct_from_21ma": _nan_safe(sf.get("pct_from_21ma"), 0.0),
         "pct_from_50ma": _nan_safe(sf.get("pct_from_50ma"), 0.0),
         "atr_pct": _nan_safe(sf.get("atr_pct"), 0.0),
         "sector_rs_rank": _nan_safe(sf.get("sector_rs_rank"), 50.0),
+        # Restored from v9
+        "rs_line_bonus": _nan_safe(sf.get("rs_line_bonus"), 0.0),
+        "earnings_drift_bonus": _nan_safe(sf.get("earnings_drift_bonus"), 0.0),
+        "days_since_spy_pullback": _nan_safe(sf.get("days_since_spy_pullback"), 30.0),
+        "volume_dry_up": 1 if sf.get("volume_dry_up", False) else 0,
+        "deterministic_boost": _nan_safe(sf.get("deterministic_boost"), 0.0),
+        # Individual CANSLIM components
+        "c_score": _nan_safe(sf.get("c_score"), 0.0),
+        "a_score": _nan_safe(sf.get("a_score"), 0.0),
+        "n_score": _nan_safe(sf.get("n_score"), 0.0),
+        "s_score": _nan_safe(sf.get("s_score"), 0.0),
+        "l_score": _nan_safe(sf.get("l_score"), 0.0),
+        "i_score": _nan_safe(sf.get("i_score"), 0.0),
+        # Market + sector context
+        "spy_pct_above_50ma": _nan_safe(sf.get("spy_pct_above_50ma"), 0.0),
+        "industry_group_rank": _nan_safe(sf.get("industry_group_rank"), 50.0),
     }
 
-    # Only return features in FEATURE_COLUMNS (v10: 15 features)
+    # Only return features in FEATURE_COLUMNS (v11: 28 features)
     return {k: v for k, v in all_features.items() if k in FEATURE_COLUMNS}
 
 

@@ -34,10 +34,10 @@ CS_FEATURE_COLUMNS = [
     "cs_weeks_in_base", "cs_beat_streak", "cs_days_to_earnings",
 ]
 
-# Price action feature columns (v10: removed days_since_spy_pullback)
+# Price action feature columns
 PRICE_ACTION_COLUMNS = [
     "relative_volume", "pct_from_21ma", "pct_from_50ma",
-    "atr_pct", "sector_rs_rank",
+    "atr_pct", "sector_rs_rank", "days_since_spy_pullback",
 ]
 from ml.model import get_ml_prediction, reload_model
 from ml.trainer import (
@@ -143,6 +143,18 @@ def _make_labeled_df(n=200, win_rate=0.65):
             "atr_pct": rng.uniform(1, 5),
             "sector_rs_rank": rng.uniform(0, 100),
             "days_since_spy_pullback": rng.randint(1, 60),
+            # v11: restored + new features
+            "rs_line_bonus": rng.choice([0, 8, -5]),
+            "earnings_drift_bonus": rng.choice([0, 0, 5, 10]),
+            "volume_dry_up": rng.choice([0, 0, 1]),
+            "c_score": rng.uniform(0, 15),
+            "a_score": rng.uniform(0, 15),
+            "n_score": rng.uniform(0, 15),
+            "s_score": rng.uniform(0, 15),
+            "l_score": rng.uniform(0, 15),
+            "i_score": rng.uniform(0, 10),
+            "spy_pct_above_50ma": rng.uniform(-5, 8),
+            "industry_group_rank": rng.uniform(1, 100),
             "win": 1 if is_win else 0,
             "gain_pct": rng.uniform(5, 50) if is_win else rng.uniform(-20, 0),
             "ticker": f"T{i}",
@@ -197,7 +209,8 @@ class TestExtractFeatures:
         assert f["soft_zone"] == 1
         # Removed features should not be in output
         assert "soft_zone_multiplier" not in f
-        assert "deterministic_boost" not in f
+        # v11: deterministic_boost is restored
+        assert "deterministic_boost" in f
 
     def test_empty_signal_factors_returns_none(self):
         trade = _make_trade()
@@ -235,16 +248,23 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_fifteen(self):
-        """Verify v10: 15 high-signal features (simplified from v9's 22)."""
-        assert len(FEATURE_COLUMNS) == 15
-        # Removed low-signal features
+    def test_feature_count_is_28(self):
+        """Verify v11: 28 features (expanded from v10's 15)."""
+        assert len(FEATURE_COLUMNS) == 28
+        # Still removed features
         assert "soft_zone_multiplier" not in FEATURE_COLUMNS
-        assert "deterministic_boost" not in FEATURE_COLUMNS
         assert "cs_c_score" not in FEATURE_COLUMNS
         assert "cs_institutional_pct" not in FEATURE_COLUMNS
         assert "cs_quality_rank" not in FEATURE_COLUMNS
-        # Kept high-signal features
+        # v11: restored features
+        assert "deterministic_boost" in FEATURE_COLUMNS
+        assert "rs_line_bonus" in FEATURE_COLUMNS
+        assert "days_since_spy_pullback" in FEATURE_COLUMNS
+        assert "volume_dry_up" in FEATURE_COLUMNS
+        # v11: new CANSLIM components
+        assert "c_score" in FEATURE_COLUMNS
+        assert "a_score" in FEATURE_COLUMNS
+        # Kept CS features
         for col in CS_FEATURE_COLUMNS:
             assert col in FEATURE_COLUMNS
         for col in PRICE_ACTION_COLUMNS:
@@ -322,8 +342,8 @@ class TestPriceActionFeatures:
         assert f["pct_from_50ma"] == 3.1
         assert f["atr_pct"] == 2.8
         assert f["sector_rs_rank"] == 75.0
-        # days_since_spy_pullback removed in v10
-        assert "days_since_spy_pullback" not in f
+        # v11: days_since_spy_pullback restored
+        assert f["days_since_spy_pullback"] == 12
 
     def test_missing_price_action_defaults(self):
         """Missing price action features should default safely."""

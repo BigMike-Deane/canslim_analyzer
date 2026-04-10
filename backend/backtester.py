@@ -633,6 +633,8 @@ class BacktestEngine:
                 "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', 0) or 0,
                 "days_to_earnings": getattr(stock, 'days_to_earnings', None),
                 "eps_estimate_revision_pct": getattr(stock, 'eps_estimate_revision_pct', None),
+                # ML v11: sector rank
+                "industry_group_rank": getattr(stock, 'industry_group_rank', 50) or 50,
             }
 
     def _compute_fingerprint(self):
@@ -3198,6 +3200,15 @@ class BacktestEngine:
                 _days_since_pullback = 30
                 _sector_rs = 50.0
 
+            # Compute SPY % above 50MA for ML (continuous market gradient)
+            try:
+                _spy_daily = self.data_provider.get_spy_daily_data(current_date)
+                _spy_close = _spy_daily.get("close", 0) if _spy_daily else 0
+                _spy_ma50 = _spy_daily.get("ma50", 0) if _spy_daily else 0
+                _spy_pct_above_50ma = round(((_spy_close / _spy_ma50) - 1) * 100, 2) if _spy_ma50 and _spy_ma50 > 0 and _spy_close else 0.0
+            except Exception:
+                _spy_pct_above_50ma = 0.0
+
             # Build trade journal signal factors
             signal_factors = {
                 "entry_type": "breakout" if is_breaking_out else ("pre-breakout" if pre_breakout_bonus >= 15 else "standard"),
@@ -3214,6 +3225,16 @@ class BacktestEngine:
                 "atr_pct": round(_atr_pct, 2),
                 "sector_rs_rank": _sector_rs,
                 "days_since_spy_pullback": _days_since_pullback,
+                # v11 ML features: individual CANSLIM components
+                "c_score": _nan_safe(score_data.get('c', 0) or score_data.get('c_score', 0)),
+                "a_score": _nan_safe(score_data.get('a', 0) or score_data.get('a_score', 0)),
+                "n_score": _nan_safe(score_data.get('n', 0) or score_data.get('n_score', 0)),
+                "s_score": _nan_safe(score_data.get('s', 0) or score_data.get('s_score', 0)),
+                "l_score": _nan_safe(score_data.get('l', 0) or score_data.get('l_score', 0)),
+                "i_score": _nan_safe(score_data.get('i', 0) or score_data.get('i_score', 0)),
+                # v11 ML features: market + sector context
+                "spy_pct_above_50ma": _spy_pct_above_50ma,
+                "industry_group_rank": self.static_data.get(ticker, {}).get('industry_group_rank', 50),
             }
             if volume_dry_up_bonus > 0:
                 signal_factors["volume_dry_up"] = True
@@ -3244,30 +3265,15 @@ class BacktestEngine:
             ml_config = self.profile.get('ml_signal', {})
             if ml_config.get('enabled', False):
                 try:
-                    ml_confidence = get_ml_prediction(
-                        total_score=effective_score,
-                        composite_score=composite_score,
-                        entry_type=ENTRY_TYPE_MAP_ML.get(signal_factors.get("entry_type", "standard"), 2),
-                        market_regime=REGIME_MAP_ML.get(signal_factors.get("market_regime", "neutral"), 1),
-                        estimate_revision_bonus=estimate_revision_bonus,
-                        coiled_spring=1 if coiled_spring_bonus > 0 else 0,
-                        soft_zone=1 if score_data.get("_in_soft_zone") else 0,
-                        soft_zone_multiplier=soft_zone_mult,
-                        deterministic_boost=deterministic_boost_val,
-                        cs_weeks_in_base=signal_factors.get("cs_weeks_in_base", 0),
-                        cs_beat_streak=signal_factors.get("cs_beat_streak", 0),
-                        cs_days_to_earnings=signal_factors.get("cs_days_to_earnings", 0),
-                        cs_bonus=signal_factors.get("cs_bonus", 0),
-                        cs_c_score=signal_factors.get("cs_c_score", 0),
-                        cs_institutional_pct=signal_factors.get("cs_institutional_pct", 0),
-                        cs_quality_rank=signal_factors.get("cs_quality_rank", 0),
-                        relative_volume=signal_factors.get("relative_volume", 1.0),
-                        pct_from_21ma=signal_factors.get("pct_from_21ma", 0),
-                        pct_from_50ma=signal_factors.get("pct_from_50ma", 0),
-                        atr_pct=signal_factors.get("atr_pct", 0),
-                        sector_rs_rank=signal_factors.get("sector_rs_rank", 50),
-                        days_since_spy_pullback=signal_factors.get("days_since_spy_pullback", 30),
-                    )
+                    # Pass all signal_factors through — model extracts FEATURE_COLUMNS
+                    _ml_features = dict(signal_factors)
+                    _ml_features["entry_type"] = ENTRY_TYPE_MAP_ML.get(signal_factors.get("entry_type", "standard"), 2)
+                    _ml_features["market_regime"] = REGIME_MAP_ML.get(signal_factors.get("market_regime", "neutral"), 1)
+                    _ml_features["total_score"] = effective_score
+                    _ml_features["coiled_spring"] = 1 if coiled_spring_bonus > 0 else 0
+                    _ml_features["soft_zone"] = 1 if score_data.get("_in_soft_zone") else 0
+                    _ml_features["volume_dry_up"] = 1 if signal_factors.get("volume_dry_up") else 0
+                    ml_confidence = get_ml_prediction(**_ml_features)
                     if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                         ml_weight = ml_config.get('weight', 20)
                         ml_bonus = (ml_confidence - 0.5) * ml_weight

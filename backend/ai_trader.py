@@ -2793,6 +2793,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             "atr_pct": _atr_pct,
             "sector_rs_rank": _sector_rs_rank,
             "days_since_spy_pullback": _days_since_spy_pullback,
+            # v11 ML features: individual CANSLIM components
+            "c_score": _nan_safe(getattr(stock, 'c_score', 0)),
+            "a_score": _nan_safe(getattr(stock, 'a_score', 0)),
+            "n_score": _nan_safe(getattr(stock, 'n_score', 0)),
+            "s_score": _nan_safe(getattr(stock, 's_score', 0)),
+            "l_score": _nan_safe(getattr(stock, 'l_score', 0)),
+            "i_score": _nan_safe(getattr(stock, 'i_score', 0)),
+            # v11 ML features: market + sector context
+            "spy_pct_above_50ma": round(((spy_px / spy_50) - 1) * 100, 2) if spy_50 and spy_50 > 0 and spy_px else 0.0,
+            "industry_group_rank": _nan_safe(getattr(stock, 'industry_group_rank', 50)),
         }
         if volume_dry_up_bonus > 0:
             buy_signal_factors["volume_dry_up"] = True
@@ -2830,30 +2840,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if ml_config.get('enabled', False):
             try:
                 from ml.model import get_ml_prediction
-                ml_confidence = get_ml_prediction(
-                    total_score=effective_score,
-                    composite_score=composite_score,
-                    entry_type=ENTRY_TYPE_MAP_ML.get(buy_signal_factors.get("entry_type", "standard"), 2),
-                    market_regime=REGIME_MAP_ML.get(buy_signal_factors.get("market_regime", "neutral"), 1),
-                    estimate_revision_bonus=estimate_revision_bonus,
-                    coiled_spring=1 if coiled_spring_bonus > 0 else 0,
-                    soft_zone=1 if in_soft_zone else 0,
-                    soft_zone_multiplier=soft_zone_mult,
-                    deterministic_boost=deterministic_boost_val,
-                    cs_weeks_in_base=buy_signal_factors.get("cs_weeks_in_base", 0),
-                    cs_beat_streak=buy_signal_factors.get("cs_beat_streak", 0),
-                    cs_days_to_earnings=buy_signal_factors.get("cs_days_to_earnings", 0),
-                    cs_bonus=buy_signal_factors.get("cs_bonus", 0),
-                    cs_c_score=buy_signal_factors.get("cs_c_score", 0),
-                    cs_institutional_pct=buy_signal_factors.get("cs_institutional_pct", 0),
-                    cs_quality_rank=buy_signal_factors.get("cs_quality_rank", 0),
-                    relative_volume=buy_signal_factors.get("relative_volume", 1.0),
-                    pct_from_21ma=buy_signal_factors.get("pct_from_21ma", 0),
-                    pct_from_50ma=buy_signal_factors.get("pct_from_50ma", 0),
-                    atr_pct=buy_signal_factors.get("atr_pct", 0),
-                    sector_rs_rank=buy_signal_factors.get("sector_rs_rank", 50),
-                    days_since_spy_pullback=buy_signal_factors.get("days_since_spy_pullback", 30),
-                )
+                # Pass all signal_factors through — model extracts FEATURE_COLUMNS
+                _ml_features = dict(buy_signal_factors)
+                # Override ordinal-encoded fields for ML
+                _ml_features["entry_type"] = ENTRY_TYPE_MAP_ML.get(buy_signal_factors.get("entry_type", "standard"), 2)
+                _ml_features["market_regime"] = REGIME_MAP_ML.get(buy_signal_factors.get("market_regime", "neutral"), 1)
+                _ml_features["total_score"] = effective_score
+                _ml_features["coiled_spring"] = 1 if coiled_spring_bonus > 0 else 0
+                _ml_features["soft_zone"] = 1 if in_soft_zone else 0
+                _ml_features["volume_dry_up"] = 1 if buy_signal_factors.get("volume_dry_up") else 0
+                ml_confidence = get_ml_prediction(**_ml_features)
                 if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                     ml_weight = ml_config.get('weight', 20)
                     ml_bonus = (ml_confidence - 0.5) * ml_weight
