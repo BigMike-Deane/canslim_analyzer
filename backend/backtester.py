@@ -2695,6 +2695,12 @@ class BacktestEngine:
             pivot_price = score_data.get("pivot_price", 0)
             weeks_in_base = score_data.get("weeks_in_base", 0)
 
+            # DEAD STOCK GUARD: Skip stocks with no relative strength data
+            # Catches acquisition targets (pinned price), halted stocks, tickers with stale data
+            if score_data.get("rs_12m") is None and score_data.get("rs_3m") is None:
+                _funnel["dead_stock"] = _funnel.get("dead_stock", 0) + 1
+                continue
+
             # Re-entry cooldown: don't re-buy recently stopped-out stocks
             cooldown_config = config.get('ai_trader.re_entry_cooldown', {})
             # Profile-level cooldown overrides
@@ -2745,6 +2751,14 @@ class BacktestEngine:
                 if l_score < min_l_score:
                     logger.debug(f"Skipping {ticker}: L score {l_score} < {min_l_score}")
                     _funnel["l_filter"] += 1
+                    continue
+            elif is_growth_stock and skip_growth:
+                # Growth stocks bypass normal thresholds but must have SOME fundamental data
+                # C=0 AND A=0 means no earnings data at all (e.g., acquired/dead stock)
+                a_score = _nan_safe(score_data.get('a', 0) or score_data.get('a_score', 0))
+                if c_score == 0 and a_score == 0:
+                    logger.debug(f"Skipping growth {ticker}: C=0 and A=0 (no earnings data)")
+                    _funnel["c_filter"] += 1
                     continue
             elif earnings_data_limited:
                 if l_score < min_l_score:

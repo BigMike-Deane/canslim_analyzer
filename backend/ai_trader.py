@@ -2219,6 +2219,14 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     cz_min_cal = cz_config.get('min_cal_score', 38)
 
     for stock in candidates:
+        # DEAD STOCK GUARD: Skip stocks with no meaningful trading data
+        # Catches acquisition targets (pinned price), halted stocks, tickers with stale data
+        stock_rs_12m = getattr(stock, 'rs_12m', None)
+        stock_atr_pct = _nan_safe(getattr(stock, 'atr_pct', None))
+        if stock_rs_12m is None and not stock_atr_pct:
+            logger.debug(f"Skipping {stock.ticker}: No RS or ATR data (dead/acquired stock)")
+            continue
+
         # Per-stock correction zone flags
         cz_entry = False
         cz_cs_only_required = False
@@ -2340,6 +2348,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 continue
             if l_score < min_l_score:
                 logger.debug(f"Skipping {stock.ticker}: L score {l_score} < {min_l_score}")
+                continue
+        elif is_growth:
+            # Growth stocks bypass normal thresholds but must have SOME fundamental data
+            # C=0 AND A=0 means no earnings data at all (e.g., acquired/dead stock)
+            a_score = _nan_safe(getattr(stock, 'a_score', 0))
+            if c_score == 0 and a_score == 0:
+                logger.debug(f"Skipping growth {stock.ticker}: C=0 and A=0 (no earnings data)")
                 continue
 
         # VOLUME GATE: Context-aware volume thresholds
