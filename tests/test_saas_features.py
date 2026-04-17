@@ -171,6 +171,19 @@ class TestBreakoutMonitor:
         assert "active_cooldowns" in status
         assert "cooldown_tickers" in status
         assert "cooldown_hours" in status
+        assert "min_score" in status
+        assert "min_c_score" in status
+        assert "min_l_score" in status
+
+    def test_quality_thresholds_match_trader(self):
+        from backend.breakout_monitor import MIN_SCORE, MIN_C_SCORE, MIN_L_SCORE
+        assert MIN_SCORE == 72
+        assert MIN_C_SCORE == 10
+        assert MIN_L_SCORE == 8
+
+    def test_cooldown_is_24h(self):
+        from backend.breakout_monitor import ALERT_COOLDOWN_HOURS
+        assert ALERT_COOLDOWN_HOURS == 24
 
     def test_skips_when_market_closed(self):
         from backend import breakout_monitor

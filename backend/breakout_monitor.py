@@ -1,8 +1,13 @@
 """
 Intraday Breakout Monitor
 
-Lightweight 5-min check for stocks approaching or crossing breakout pivots.
-Only runs during market hours. Pushes ntfy alerts on breakouts.
+Lightweight 5-min check for stocks crossing breakout pivots.
+Only runs during market hours. Pushes ntfy alerts on confirmed breakouts.
+
+Filters match AI trader criteria so every alert is actionable:
+- Score >= 72, C >= 10, L >= 8 (same as nostate_optimized)
+- Only BREAKOUT and BREAKOUT+VOLUME alerts (no "near pivot" noise)
+- 24h per-ticker cooldown (one alert per stock per day max)
 """
 
 import logging
@@ -12,7 +17,12 @@ logger = logging.getLogger(__name__)
 
 # Track recent alerts to avoid spam (ticker -> last alert timestamp)
 _recent_alerts = {}
-ALERT_COOLDOWN_HOURS = 4
+ALERT_COOLDOWN_HOURS = 24
+
+# Match AI trader quality filters
+MIN_SCORE = 72
+MIN_C_SCORE = 10
+MIN_L_SCORE = 8
 
 
 def check_intraday_breakouts():
@@ -27,19 +37,28 @@ def check_intraday_breakouts():
 
     db = SessionLocal()
     try:
-        # Find stocks with pivot prices, good scores, not already breaking out
+        # Find stocks with pivot prices that meet trading quality thresholds
         candidates = db.query(Stock).filter(
             Stock.pivot_price != None,
             Stock.pivot_price > 0,
             Stock.canslim_score != None,
-            Stock.canslim_score >= 65,
+            Stock.canslim_score >= MIN_SCORE,
             Stock.current_price != None,
             Stock.current_price > 0,
         ).all()
 
+        # Apply quality filters (C and L scores) to match AI trader criteria
+        qualified = []
+        for s in candidates:
+            c_score = getattr(s, 'c_score', None)
+            l_score = getattr(s, 'l_score', None)
+            if (c_score is not None and c_score >= MIN_C_SCORE and
+                    l_score is not None and l_score >= MIN_L_SCORE):
+                qualified.append(s)
+
         # Filter to stocks within 5% of pivot (pre-breakout zone)
         near_pivot = []
-        for s in candidates:
+        for s in qualified:
             pct = ((s.pivot_price - s.current_price) / s.pivot_price) * 100
             if -3 <= pct <= 5:  # Between 3% above pivot and 5% below
                 near_pivot.append((s, pct))
@@ -64,21 +83,22 @@ def check_intraday_breakouts():
 
             pct_from_pivot = ((stock.pivot_price - price) / stock.pivot_price) * 100
 
-            # Check cooldown
+            # Check cooldown (24h — one alert per stock per day)
             last_alert = _recent_alerts.get(stock.ticker)
             if last_alert and (now - last_alert) < timedelta(hours=ALERT_COOLDOWN_HOURS):
                 continue
 
-            # Alert conditions
+            # Alert only on confirmed breakouts (no "near pivot" noise)
             alert = None
             if pct_from_pivot <= 0 and old_pct > 0:
                 # Just crossed above pivot — BREAKOUT
-                alert = ("BREAKOUT", "high", ["rotating_light", "chart_with_upwards_trend"])
-            elif 0 < pct_from_pivot <= 1.5:
-                # Within 1.5% of pivot — approaching
-                alert = ("NEAR PIVOT", "default", ["eyes", "chart_with_upwards_trend"])
+                vol_ratio = getattr(stock, 'volume_ratio', None)
+                if vol_ratio and vol_ratio > 1.5:
+                    alert = ("BREAKOUT + VOLUME", "high", ["fire", "chart_with_upwards_trend"])
+                else:
+                    alert = ("BREAKOUT", "high", ["rotating_light", "chart_with_upwards_trend"])
             elif pct_from_pivot <= 0 and pct_from_pivot > -3:
-                # Check volume confirmation on breakout
+                # Already above pivot — only alert if volume confirms
                 vol_ratio = getattr(stock, 'volume_ratio', None)
                 if vol_ratio and vol_ratio > 1.5:
                     alert = ("BREAKOUT + VOLUME", "high", ["fire", "chart_with_upwards_trend"])
@@ -147,4 +167,7 @@ def get_breakout_monitor_status() -> dict:
         "active_cooldowns": len(_recent_alerts),
         "cooldown_tickers": list(_recent_alerts.keys()),
         "cooldown_hours": ALERT_COOLDOWN_HOURS,
+        "min_score": MIN_SCORE,
+        "min_c_score": MIN_C_SCORE,
+        "min_l_score": MIN_L_SCORE,
     }
