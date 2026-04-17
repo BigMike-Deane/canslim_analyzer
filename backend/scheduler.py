@@ -163,7 +163,7 @@ def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
         # Use subquery to get IDs first, then delete by ID (more compatible)
         subquery = db.query(StockScore.id).filter(
             StockScore.timestamp < cutoff_date
-        ).limit(batch_size).subquery()
+        ).limit(batch_size).subquery().select()
 
         deleted = db.query(StockScore).filter(
             StockScore.id.in_(subquery)
