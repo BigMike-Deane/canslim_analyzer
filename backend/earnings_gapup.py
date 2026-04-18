@@ -18,6 +18,11 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+# Per-ticker cooldown to prevent re-alerting the same gap-up every scan cycle.
+# In-memory (resets on container restart) — mirrors backend/breakout_monitor.py.
+_recent_gapup_alerts: dict = {}
+GAPUP_COOLDOWN_HOURS = 24
+
 
 def find_earnings_gapups(
     db: Session,
@@ -198,20 +203,40 @@ def _is_actionable(stock, gap_data: dict) -> bool:
 
 
 def send_gapup_alert(gapups: list) -> bool:
-    """Send ntfy notification for notable post-earnings gap-ups."""
+    """Send ntfy notification for notable post-earnings gap-ups.
+
+    Only fires during market hours (gap-ups aren't actionable overnight / on
+    weekends). Applies a 24h per-ticker cooldown so each gap-up alerts once.
+    """
     if not gapups:
         return False
 
     try:
+        from backend.ai_trader import is_market_open
         from backend.email_utils import send_webhook_notification
+
+        if not is_market_open():
+            return False
 
         actionable = [g for g in gapups if g.get('is_actionable')]
         if not actionable:
             return False
 
-        title = f"Earnings Gap-Up: {len(actionable)} actionable"
+        now = datetime.now(timezone.utc)
+        cooldown = timedelta(hours=GAPUP_COOLDOWN_HOURS)
+
+        fresh = []
+        for g in actionable:
+            last = _recent_gapup_alerts.get(g['ticker'])
+            if last is None or (now - last) >= cooldown:
+                fresh.append(g)
+
+        if not fresh:
+            return False
+
+        title = f"Earnings Gap-Up: {len(fresh)} actionable"
         lines = []
-        for g in actionable[:5]:
+        for g in fresh[:5]:
             lines.append(
                 f"{g['ticker']} +{g['gap_pct']:.1f}% gap, "
                 f"{g['volume_ratio']:.1f}x vol, "
@@ -219,10 +244,20 @@ def send_gapup_alert(gapups: list) -> bool:
             )
         message = "\n".join(lines)
 
-        return send_webhook_notification(
+        sent = send_webhook_notification(
             title, message, priority="high",
             tags=["rocket", "chart_with_upwards_trend"]
         )
+
+        if sent:
+            for g in fresh:
+                _recent_gapup_alerts[g['ticker']] = now
+            # Cleanup stale cooldowns so the dict doesn't grow unbounded
+            cutoff = now - (cooldown * 2)
+            for t in [t for t, ts in _recent_gapup_alerts.items() if ts < cutoff]:
+                del _recent_gapup_alerts[t]
+
+        return sent
     except Exception as e:
         logger.warning(f"Gap-up alert failed: {e}")
         return False

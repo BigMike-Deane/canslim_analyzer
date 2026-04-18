@@ -216,6 +216,55 @@ class TestBreakoutMonitor:
         _recent_alerts.clear()
 
 
+# ============== Earnings Gap-Up Alert ==============
+
+class TestGapupAlert:
+    def _sample(self, ticker="ALV", score=72):
+        return {
+            "ticker": ticker, "gap_pct": 12.4, "volume_ratio": 3.2,
+            "canslim_score": score, "is_actionable": True,
+        }
+
+    def test_skips_when_market_closed(self):
+        from backend import earnings_gapup
+        earnings_gapup._recent_gapup_alerts.clear()
+        with patch("backend.ai_trader.is_market_open", return_value=False), \
+             patch("backend.email_utils.send_webhook_notification") as mock_send:
+            sent = earnings_gapup.send_gapup_alert([self._sample()])
+            assert sent is False
+            mock_send.assert_not_called()
+            # Cooldown dict must NOT be mutated when market is closed
+            assert len(earnings_gapup._recent_gapup_alerts) == 0
+
+    def test_cooldown_prevents_duplicate_alert(self):
+        from backend import earnings_gapup
+        earnings_gapup._recent_gapup_alerts.clear()
+        with patch("backend.ai_trader.is_market_open", return_value=True), \
+             patch("backend.email_utils.send_webhook_notification", return_value=True) as mock_send:
+            assert earnings_gapup.send_gapup_alert([self._sample("ALV")]) is True
+            assert mock_send.call_count == 1
+            # Second call with same ticker should be suppressed
+            assert earnings_gapup.send_gapup_alert([self._sample("ALV")]) is False
+            assert mock_send.call_count == 1
+        earnings_gapup._recent_gapup_alerts.clear()
+
+    def test_fresh_ticker_still_alerts_when_others_cooled(self):
+        from backend import earnings_gapup
+        earnings_gapup._recent_gapup_alerts.clear()
+        earnings_gapup._recent_gapup_alerts["ALV"] = datetime.now(timezone.utc)
+        with patch("backend.ai_trader.is_market_open", return_value=True), \
+             patch("backend.email_utils.send_webhook_notification", return_value=True) as mock_send:
+            sent = earnings_gapup.send_gapup_alert(
+                [self._sample("ALV"), self._sample("NVDA")]
+            )
+            assert sent is True
+            # Title should reflect 1 fresh, not 2
+            args, kwargs = mock_send.call_args
+            title = args[0] if args else kwargs.get("title", "")
+            assert "1 actionable" in title
+        earnings_gapup._recent_gapup_alerts.clear()
+
+
 # ============== Signal Attribution ==============
 
 class TestSignalAttributionEndpoint:
