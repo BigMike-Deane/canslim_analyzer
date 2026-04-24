@@ -396,7 +396,10 @@ function PositionDetailModal({ position, onClose }) {
   const peakDistPct = position.peak_price && position.current_price
     ? ((position.current_price - position.peak_price) / position.peak_price) * 100
     : null
-  const buys = (position.pyramid_count ?? 0) + 1
+  // Prefer counting actual BUY trades; fall back to pyramid_count + 1 before trades load
+  const buyTrades = trades ? trades.filter(t => t.action === 'BUY').length : null
+  const buys = buyTrades != null ? buyTrades : (position.pyramid_count ?? 0) + 1
+  const pyramidsShown = buyTrades != null ? Math.max(0, buyTrades - 1) : (position.pyramid_count ?? 0)
   const purchaseScore = position.is_growth_stock ? position.purchase_growth_score : position.purchase_score
   const currentScore = position.is_growth_stock ? position.current_growth_score : position.current_score
   const scoreDelta = (purchaseScore != null && currentScore != null) ? (currentScore - purchaseScore) : null
@@ -443,7 +446,7 @@ function PositionDetailModal({ position, onClose }) {
           <StatRow label="Current Price" value={<span className="font-data">{formatCurrency(position.current_price)}</span>} />
           <StatRow label="Shares" value={<span className="font-data">{position.shares?.toFixed(4)}</span>} />
           <StatRow label="Total Cost" value={<span className="font-data">{formatCurrency(totalCost)}</span>} />
-          <StatRow label="# of Buys" value={<span className="font-data">{buys}{position.pyramid_count ? ` (${position.pyramid_count} pyramid${position.pyramid_count > 1 ? 's' : ''})` : ''}</span>} />
+          <StatRow label="# of Buys" value={<span className="font-data">{buys}{pyramidsShown > 0 ? ` (${pyramidsShown} pyramid${pyramidsShown > 1 ? 's' : ''})` : ''}</span>} />
           <StatRow label="Days Held" value={<span className="font-data">{daysHeld != null ? daysHeld : '—'}</span>} />
           <StatRow label="Peak Price" value={<span className="font-data">{formatCurrency(position.peak_price)}</span>} />
           <StatRow

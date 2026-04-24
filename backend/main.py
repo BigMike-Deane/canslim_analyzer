@@ -3102,6 +3102,12 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
             "purchase_growth_score": p.purchase_growth_score,
             "current_growth_score": p.current_growth_score,
             "purchase_date": p.purchase_date.isoformat() if p.purchase_date else None,
+            # Position lifecycle (used by position detail modal)
+            "peak_price": p.peak_price,
+            "peak_date": p.peak_date.isoformat() if p.peak_date else None,
+            "pyramid_count": p.pyramid_count or 0,
+            "partial_profit_taken": p.partial_profit_taken or 0.0,
+            "sector": stock.sector if stock else None,
             # Trailing stop tracking
             "trailing_stop": trailing_stop_info,
             # Insider/Short signals from Stock table
