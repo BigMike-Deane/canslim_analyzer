@@ -281,7 +281,11 @@ export const api = {
 
   getAIPortfolioHistory: (days = 30) => request(`/api/ai-portfolio/history?days=${days}`),
 
-  getAIPortfolioTrades: (limit = 50) => request(`/api/ai-portfolio/trades?limit=${limit}`),
+  getAIPortfolioTrades: (limit = 50, ticker = null) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (ticker) params.set('ticker', ticker)
+    return request(`/api/ai-portfolio/trades?${params}`)
+  },
 
   initializeAIPortfolio: async (startingCash = 25000) => {
     const result = await request(`/api/ai-portfolio/initialize?starting_cash=${startingCash}`, { method: 'POST' })

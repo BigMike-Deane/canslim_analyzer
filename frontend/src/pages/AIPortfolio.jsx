@@ -208,6 +208,8 @@ function SummaryCard({ summary, config }) {
 
 // ── Positions List ──────────────────────────────────────────────────
 function PositionsList({ positions }) {
+  const [selectedPosition, setSelectedPosition] = useState(null)
+
   if (!positions || positions.length === 0) {
     return (
       <Card variant="glass" className="mb-4 text-center py-8 text-dark-400">
@@ -221,10 +223,11 @@ function PositionsList({ positions }) {
       <CardHeader title={`Positions (${positions.length})`} />
       <div className="space-y-1">
         {positions.map(position => (
-          <Link
+          <button
             key={position.id}
-            to={`/stock/${position.ticker}`}
-            className="flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
+            type="button"
+            onClick={() => setSelectedPosition(position)}
+            className="w-full text-left flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
           >
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -262,9 +265,10 @@ function PositionsList({ positions }) {
                 </div>
               )}
             </div>
-          </Link>
+          </button>
         ))}
       </div>
+      <PositionDetailModal position={selectedPosition} onClose={() => setSelectedPosition(null)} />
     </Card>
   )
 }
@@ -363,6 +367,162 @@ function TradeDetailModal({ trade, onClose }) {
           <div className="bg-dark-850 rounded-lg p-3 text-sm text-dark-200 mt-1.5">
             {trade.reason || 'No reason recorded'}
           </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ── Position Detail Modal ───────────────────────────────────────────
+function PositionDetailModal({ position, onClose }) {
+  const [trades, setTrades] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!position) { setTrades(null); return }
+    setLoading(true)
+    api.getAIPortfolioTrades(200, position.ticker)
+      .then(t => setTrades(Array.isArray(t) ? t : []))
+      .catch(() => setTrades([]))
+      .finally(() => setLoading(false))
+  }, [position?.id, position?.ticker])
+
+  if (!position) return null
+
+  const totalCost = position.shares * position.cost_basis
+  const daysHeld = position.purchase_date
+    ? Math.max(0, Math.floor((Date.now() - new Date(position.purchase_date).getTime()) / 86400000))
+    : null
+  const peakDistPct = position.peak_price && position.current_price
+    ? ((position.current_price - position.peak_price) / position.peak_price) * 100
+    : null
+  const buys = (position.pyramid_count ?? 0) + 1
+  const purchaseScore = position.is_growth_stock ? position.purchase_growth_score : position.purchase_score
+  const currentScore = position.is_growth_stock ? position.current_growth_score : position.current_score
+  const scoreDelta = (purchaseScore != null && currentScore != null) ? (currentScore - purchaseScore) : null
+  const gainPositive = (position.gain_loss ?? 0) >= 0
+
+  // Sort trades oldest → newest for chronological reading
+  const orderedTrades = trades ? [...trades].sort((a, b) =>
+    new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
+  ) : []
+
+  return (
+    <Modal
+      open={!!position}
+      onClose={onClose}
+      size="lg"
+      title={
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-base font-bold text-dark-100">{position.ticker}</span>
+          {position.sector && <TagBadge color="blue">{position.sector}</TagBadge>}
+          {position.is_growth_stock && <TagBadge color="purple">Growth</TagBadge>}
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        {/* Top-line P&L banner */}
+        <div className="bg-dark-850 rounded-lg p-3 flex items-baseline justify-between">
+          <div>
+            <div className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Current Value</div>
+            <div className="text-xl font-bold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
+          </div>
+          <div className="text-right">
+            <div className={`text-base font-data font-medium ${gainPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+              {gainPositive ? '+' : ''}{formatCurrency(position.gain_loss)}
+            </div>
+            <div className={`text-xs font-data ${gainPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+              {gainPositive ? '+' : ''}{position.gain_loss_pct?.toFixed(2)}%
+            </div>
+          </div>
+        </div>
+
+        {/* Stats grid (2 cols) */}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-0">
+          <StatRow label="Avg Cost" value={<span className="font-data">{formatCurrency(position.cost_basis)}</span>} />
+          <StatRow label="Current Price" value={<span className="font-data">{formatCurrency(position.current_price)}</span>} />
+          <StatRow label="Shares" value={<span className="font-data">{position.shares?.toFixed(4)}</span>} />
+          <StatRow label="Total Cost" value={<span className="font-data">{formatCurrency(totalCost)}</span>} />
+          <StatRow label="# of Buys" value={<span className="font-data">{buys}{position.pyramid_count ? ` (${position.pyramid_count} pyramid${position.pyramid_count > 1 ? 's' : ''})` : ''}</span>} />
+          <StatRow label="Days Held" value={<span className="font-data">{daysHeld != null ? daysHeld : '—'}</span>} />
+          <StatRow label="Peak Price" value={<span className="font-data">{formatCurrency(position.peak_price)}</span>} />
+          <StatRow
+            label="From Peak"
+            value={
+              peakDistPct != null
+                ? <span className={`font-data ${peakDistPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {peakDistPct >= 0 ? '+' : ''}{peakDistPct.toFixed(2)}%
+                  </span>
+                : <span className="font-data text-dark-400">—</span>
+            }
+          />
+          <StatRow label="Score at Buy" value={<span className="font-data">{purchaseScore?.toFixed(1) ?? '—'}</span>} />
+          <StatRow
+            label="Current Score"
+            value={
+              <span className="font-data">
+                {currentScore?.toFixed(1) ?? '—'}
+                {scoreDelta != null && (
+                  <span className={`ml-1 text-[10px] ${scoreDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    ({scoreDelta >= 0 ? '+' : ''}{scoreDelta.toFixed(1)})
+                  </span>
+                )}
+              </span>
+            }
+          />
+          {position.partial_profit_taken > 0 && (
+            <StatRow label="Partial Profit" value={<span className="font-data">{position.partial_profit_taken.toFixed(0)}% sold</span>} />
+          )}
+        </div>
+
+        {/* Trade history */}
+        <div>
+          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Trade History</span>
+          {loading && <div className="text-dark-400 text-xs mt-2 py-3 text-center">Loading…</div>}
+          {!loading && orderedTrades.length === 0 && (
+            <div className="text-dark-400 text-xs mt-2 py-3 text-center">No trades found for this ticker.</div>
+          )}
+          {!loading && orderedTrades.length > 0 && (
+            <div className="bg-dark-850 rounded-lg mt-1.5 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-dark-400 text-[10px] uppercase tracking-wider">
+                      <th className="text-left px-3 py-2">Date</th>
+                      <th className="text-left px-3 py-2">Action</th>
+                      <th className="text-right px-3 py-2">Shares</th>
+                      <th className="text-right px-3 py-2">Price</th>
+                      <th className="text-right px-3 py-2">Total</th>
+                      <th className="text-left px-3 py-2 hidden md:table-cell">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderedTrades.map(t => (
+                      <tr key={t.id} className="border-t border-dark-700/30">
+                        <td className="px-3 py-2 text-dark-300 whitespace-nowrap">{formatDateTime(t.executed_at)}</td>
+                        <td className="px-3 py-2"><ActionBadge action={t.action} /></td>
+                        <td className="px-3 py-2 text-right font-data text-dark-200">{t.shares?.toFixed(4)}</td>
+                        <td className="px-3 py-2 text-right font-data text-dark-200">{formatCurrency(t.price)}</td>
+                        <td className="px-3 py-2 text-right font-data text-dark-200">{formatCurrency(t.total_value)}</td>
+                        <td className="px-3 py-2 text-dark-400 hidden md:table-cell">{t.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer link */}
+        <div className="flex justify-end pt-1">
+          <Link
+            to={`/stock/${position.ticker}`}
+            className="text-xs text-primary-400 hover:underline"
+            onClick={onClose}
+          >
+            View Stock Page →
+          </Link>
         </div>
       </div>
     </Modal>

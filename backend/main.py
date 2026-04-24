@@ -3215,15 +3215,17 @@ async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, curre
 @app.get("/api/ai-portfolio/trades")
 async def get_ai_portfolio_trades(
     limit: int = Query(50, le=200),
+    ticker: str | None = Query(None),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Get AI Portfolio trade history"""
-    trades = db.query(AIPortfolioTrade).filter(
+    """Get AI Portfolio trade history. Optionally filter by ticker."""
+    q = db.query(AIPortfolioTrade).filter(
         AIPortfolioTrade.user_id == current_user.id
-    ).order_by(
-        desc(AIPortfolioTrade.executed_at)
-    ).limit(limit).all()
+    )
+    if ticker:
+        q = q.filter(AIPortfolioTrade.ticker == ticker.upper())
+    trades = q.order_by(desc(AIPortfolioTrade.executed_at)).limit(limit).all()
 
     return [{
         "id": t.id,
