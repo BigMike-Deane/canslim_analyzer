@@ -187,6 +187,37 @@ def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
     return total_deleted
 
 
+_last_price_cache_vacuum: datetime | None = None
+
+
+def cleanup_price_cache(vacuum_interval_days: int = 7):
+    """Delete expired entries from the SQLite price_cache; VACUUM at most once per N days.
+
+    The price cache grew to 11GB in production because cleanup_expired() was never called.
+    Running this every scan keeps the entry count bounded; VACUUM is throttled because it
+    rewrites the whole DB and holds an exclusive lock.
+    """
+    global _last_price_cache_vacuum
+    try:
+        from backend.price_cache import get_price_cache
+        from datetime import timedelta
+        import sqlite3
+
+        cache = get_price_cache()
+        deleted = cache.cleanup_expired()
+        if deleted:
+            logger.info(f"price_cache cleanup: deleted {deleted} expired entries")
+
+        now = datetime.now(timezone.utc)
+        if _last_price_cache_vacuum is None or (now - _last_price_cache_vacuum) > timedelta(days=vacuum_interval_days):
+            with sqlite3.connect(cache.db_path) as conn:
+                conn.execute("VACUUM")
+            _last_price_cache_vacuum = now
+            logger.info("price_cache VACUUM complete")
+    except Exception as e:
+        logger.error(f"price_cache cleanup failed: {e}")
+
+
 def check_watchlist_alerts():
     """Check watchlist items against target_price and alert_score thresholds"""
     from backend.database import SessionLocal, Watchlist, Stock
@@ -1368,6 +1399,8 @@ def run_continuous_scan():
         finally:
             if cleanup_db:
                 cleanup_db.close()
+
+        cleanup_price_cache()
 
         # Phase 4.5: Post-earnings gap-up detection
         _scan_config["phase_detail"] = "Checking post-earnings gap-ups..."
