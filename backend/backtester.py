@@ -1843,12 +1843,13 @@ class BacktestEngine:
             roe = static_data.get("roe", 0)
 
             if len(annual_earnings) >= 3:
-                # Calculate 3-year CAGR
+                # 3 annual data points span 2 years (recent → 1yr ago → 2yr ago).
+                # Synced with canslim_scorer._score_annual_earnings.
                 current_annual = annual_earnings[0]
-                three_years_ago = annual_earnings[2]
+                two_years_ago = annual_earnings[2]
 
-                if three_years_ago > 0 and current_annual > 0:
-                    cagr = ((current_annual / three_years_ago) ** (1/3) - 1) * 100
+                if two_years_ago > 0 and current_annual > 0:
+                    cagr = ((current_annual / two_years_ago) ** (1/2) - 1) * 100
                     annual_cagr = cagr  # Save for projected_growth
                     # Sector-adjusted thresholds (reuse from C score)
                     if cagr >= c_excellent:
@@ -1860,7 +1861,7 @@ class BacktestEngine:
                         a_score = round((cagr / c_good) * 12 * 0.6, 1)
                     else:
                         a_score = 0
-                elif current_annual > 0 and three_years_ago <= 0:
+                elif current_annual > 0 and two_years_ago <= 0:
                     # Turnaround: negative->positive annual earnings
                     a_score = 10  # 70% of max, synced with canslim_scorer
                     annual_cagr = 50  # Proxy for projected_growth

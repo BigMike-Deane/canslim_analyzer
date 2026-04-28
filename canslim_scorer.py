@@ -353,16 +353,18 @@ class CANSLIMScorer:
         if len(annual) < 3:
             return 0, "Insufficient data"
 
-        # Calculate 3-year CAGR
+        # 3 annual data points span 2 years (recent → 1yr ago → 2yr ago).
+        # CAGR exponent must be 1/span, not 1/n_points; prior 1/3 systematically
+        # under-stated growth across all stocks.
         recent = annual[0]
-        older = annual[2]  # 3 years ago
+        older = annual[2]  # 2 years ago
 
         if older <= 0 or recent <= 0:
             if recent > 0 and older <= 0:
                 return max_score * 0.7, "Turnaround"
             return 0, "Negative earnings"
 
-        cagr = ((recent / older) ** (1 / 3) - 1) * 100
+        cagr = ((recent / older) ** (1 / 2) - 1) * 100
 
         # Get sector-adjusted thresholds
         sector = getattr(data, 'sector', None) or 'default'
