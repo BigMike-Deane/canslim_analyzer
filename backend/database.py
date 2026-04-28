@@ -188,6 +188,8 @@ def run_migrations():
         ("stocks", "atr_pct", "FLOAT"),
         # Industry group strength rankings (Mar 2026)
         ("stocks", "industry_group_rank", "INTEGER"),
+        # Continuous volume dry-up score 0-100 (Apr 2026, ML feature)
+        ("stocks", "volume_dry_up_score", "INTEGER DEFAULT 0"),
     ]
 
     # Build a cache of existing columns per table
@@ -447,6 +449,7 @@ class Stock(Base):
 
     # Volume Profile Analysis (Feb 2026)
     volume_dry_up = Column(Boolean, default=False)  # Recent volume < 70% of baseline (bullish in base)
+    volume_dry_up_score = Column(Integer, default=0)  # Continuous 0-100 (Apr 2026, ML feature)
     institutional_accumulation = Column(Boolean, default=False)  # High up/down ratio with above-avg volume
     ma_21 = Column(Float)   # 21-day simple moving average
     ma_50 = Column(Float)   # 50-day simple moving average

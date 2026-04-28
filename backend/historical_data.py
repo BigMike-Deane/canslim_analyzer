@@ -458,6 +458,13 @@ class HistoricalDataProvider:
             baseline_vol = volumes.mean()
             volume_dry_up = bool(recent_vol < baseline_vol * 0.7) if baseline_vol > 0 else False
 
+            # Continuous dry-up score 0-100 (mirrors canslim_scorer.calculate_accumulation_distribution)
+            if baseline_vol and baseline_vol > 0:
+                vol_ratio_recent = recent_vol / baseline_vol
+                volume_dry_up_score = int(max(0, min(100, round((1 - vol_ratio_recent) * 100))))
+            else:
+                volume_dry_up_score = 0
+
             # Institutional accumulation: high up/down ratio + above-avg volume
             volume_above_avg = recent_vol > baseline_vol * 1.2 if baseline_vol > 0 else False
             institutional_accumulation = bool(ad_ratio > 1.5 and volume_above_avg)
@@ -465,6 +472,7 @@ class HistoricalDataProvider:
             return {
                 "ad_ratio": ad_ratio,
                 "volume_dry_up": volume_dry_up,
+                "volume_dry_up_score": volume_dry_up_score,
                 "institutional_accumulation": institutional_accumulation,
             }
         except (KeyError, IndexError, TypeError, ValueError):

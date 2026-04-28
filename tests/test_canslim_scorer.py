@@ -279,3 +279,54 @@ class TestEdgeCases:
         canslim_score = scorer.score_stock(stock)
 
         assert canslim_score.total_score == 0, "Invalid stock should score 0"
+
+
+class TestVolumeDryUpScore:
+    """Continuous volume_dry_up_score (Apr 2026, ML feature)."""
+
+    def _make_stock(self, volumes_20d):
+        """Build a StockData with 20 days of constant prices and given volumes."""
+        import pandas as pd
+        stock = StockData("TEST")
+        stock.is_valid = True
+        stock.price_history = pd.DataFrame({
+            "Close": [100.0] * 20,
+            "Volume": volumes_20d,
+        })
+        return stock
+
+    def test_no_dryup_constant_volume(self):
+        """Constant volume → ratio=1.0 → score=0, boolean=False."""
+        from canslim_scorer import TechnicalAnalyzer
+        stock = self._make_stock([1_000_000] * 20)
+        result = TechnicalAnalyzer.calculate_accumulation_distribution(stock)
+        assert result["volume_dry_up_score"] == 0
+        assert result["volume_dry_up"] is False
+
+    def test_at_boolean_threshold_maps_to_score_30(self):
+        """Recent 10d / 20d baseline = 0.7 → score = 30."""
+        from canslim_scorer import TechnicalAnalyzer
+        # Solve: recent / ((older+recent)/2) = 0.7 → older = 13/7 * recent
+        recent = 700_000
+        older = int(13 * recent / 7)  # 1_300_000
+        stock = self._make_stock([older] * 10 + [recent] * 10)
+        result = TechnicalAnalyzer.calculate_accumulation_distribution(stock)
+        assert result["volume_dry_up_score"] == 30
+
+    def test_strong_dryup_high_score(self):
+        """Recent at 30% of baseline → score=70, boolean=True."""
+        from canslim_scorer import TechnicalAnalyzer
+        recent = 300_000
+        older = int(17 * recent / 3)
+        stock = self._make_stock([older] * 10 + [recent] * 10)
+        result = TechnicalAnalyzer.calculate_accumulation_distribution(stock)
+        assert result["volume_dry_up_score"] == 70
+        assert result["volume_dry_up"] is True
+
+    def test_score_is_clamped_when_volume_surges(self):
+        """Volume above baseline (surge) → score clamped to 0, never negative."""
+        from canslim_scorer import TechnicalAnalyzer
+        stock = self._make_stock([500_000] * 10 + [2_000_000] * 10)
+        result = TechnicalAnalyzer.calculate_accumulation_distribution(stock)
+        assert result["volume_dry_up_score"] == 0
+        assert 0 <= result["volume_dry_up_score"] <= 100

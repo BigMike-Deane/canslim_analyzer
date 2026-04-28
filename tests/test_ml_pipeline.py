@@ -147,6 +147,7 @@ def _make_labeled_df(n=200, win_rate=0.65):
             "rs_line_bonus": rng.choice([0, 8, -5]),
             "earnings_drift_bonus": rng.choice([0, 0, 5, 10]),
             "volume_dry_up": rng.choice([0, 0, 1]),
+            "volume_dry_up_score": rng.uniform(0, 100),
             "c_score": rng.uniform(0, 15),
             "a_score": rng.uniform(0, 15),
             "n_score": rng.uniform(0, 15),
@@ -248,9 +249,9 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_28(self):
-        """Verify v11: 28 features (expanded from v10's 15)."""
-        assert len(FEATURE_COLUMNS) == 28
+    def test_feature_count_is_29(self):
+        """Verify v12: 29 features (v11 + continuous volume_dry_up_score)."""
+        assert len(FEATURE_COLUMNS) == 29
         # Still removed features
         assert "soft_zone_multiplier" not in FEATURE_COLUMNS
         assert "cs_c_score" not in FEATURE_COLUMNS
@@ -260,7 +261,9 @@ class TestExtractFeatures:
         assert "deterministic_boost" in FEATURE_COLUMNS
         assert "rs_line_bonus" in FEATURE_COLUMNS
         assert "days_since_spy_pullback" in FEATURE_COLUMNS
-        assert "volume_dry_up" in FEATURE_COLUMNS
+        # v12: continuous dry-up
+        assert "volume_dry_up_score" in FEATURE_COLUMNS
+        assert "volume_dry_up" in FEATURE_COLUMNS  # boolean retained
         # v11: new CANSLIM components
         assert "c_score" in FEATURE_COLUMNS
         assert "a_score" in FEATURE_COLUMNS

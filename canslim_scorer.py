@@ -1866,10 +1866,18 @@ class TechnicalAnalyzer:
                 detail = f"Strong distribution ({up_down_ratio:.2f}x)"
 
             # Volume dry-up detection (bullish in consolidating base)
-            # Recent 10-day avg volume < 70% of 50-day avg = volume drying up
+            # Recent 10-day avg volume < 70% of baseline = volume drying up
             recent_vol_avg = volumes[-10:].mean() if len(volumes) >= 10 else volumes.mean()
             baseline_vol_avg = volumes.mean()
-            volume_dry_up = recent_vol_avg < baseline_vol_avg * 0.7
+            volume_dry_up = bool(recent_vol_avg < baseline_vol_avg * 0.7)
+
+            # Continuous dry-up score 0-100: same windows as boolean for sync.
+            # ratio=1.0 → 0 (no compression); ratio=0.7 (boolean threshold) → 30; ratio=0.0 → 100.
+            if baseline_vol_avg and baseline_vol_avg > 0:
+                vol_ratio_recent = recent_vol_avg / baseline_vol_avg
+                volume_dry_up_score = int(max(0, min(100, round((1 - vol_ratio_recent) * 100))))
+            else:
+                volume_dry_up_score = 0
 
             # Institutional accumulation signal
             # High up/down ratio + above average volume = institutions buying
@@ -1884,6 +1892,7 @@ class TechnicalAnalyzer:
                 "up_down_ratio": round(up_down_ratio, 2),
                 "detail": detail,
                 "volume_dry_up": volume_dry_up,
+                "volume_dry_up_score": volume_dry_up_score,
                 "institutional_accumulation": institutional_accumulation,
                 "volume_trend": volume_trend
             }
@@ -1895,6 +1904,7 @@ class TechnicalAnalyzer:
                 "up_down_ratio": 1.0,
                 "detail": f"Error: {str(e)}",
                 "volume_dry_up": False,
+                "volume_dry_up_score": 0,
                 "institutional_accumulation": False,
                 "volume_trend": "unknown"
             }

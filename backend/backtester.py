@@ -340,6 +340,7 @@ class BacktestEngine:
 
         ad_data = self.data_provider.get_accumulation_distribution(ticker, current_date, 20)
         volume_dry_up = ad_data.get("volume_dry_up", False) if ad_data else False
+        volume_dry_up_score = ad_data.get("volume_dry_up_score", 0) if ad_data else 0
 
         static_data = self.static_data.get(ticker, {})
         is_growth_stock = False  # Conservative default for frozen scores
@@ -366,6 +367,7 @@ class BacktestEngine:
             "is_breaking_out": is_breaking_out,
             "volume_ratio": volume_ratio_breakout if volume_ratio_breakout else 1.0,
             "_volume_dry_up": volume_dry_up,
+            "_volume_dry_up_score": volume_dry_up_score,
         }
 
     def _close_persistent_score_cache(self):
@@ -2054,6 +2056,7 @@ class BacktestEngine:
             # Volume dry-up detection (uses price history)
             ad_data = self.data_provider.get_accumulation_distribution(ticker, current_date, 20)
             _volume_dry_up = ad_data.get("volume_dry_up", False) if ad_data else False
+            _volume_dry_up_score = ad_data.get("volume_dry_up_score", 0) if ad_data else 0
 
             score_result = {
                 "total_score": total_score,
@@ -2077,6 +2080,7 @@ class BacktestEngine:
                 "is_breaking_out": is_breaking_out,
                 "volume_ratio": volume_ratio_breakout if volume_ratio_breakout else (current_volume / avg_volume if avg_volume > 0 else 1.0),
                 "_volume_dry_up": _volume_dry_up,
+                "_volume_dry_up_score": _volume_dry_up_score,
             }
             scores[ticker] = score_result
             self._score_cache[ticker] = score_result  # Cache for reuse within same day
@@ -3235,6 +3239,8 @@ class BacktestEngine:
                 # v11 ML features: market + sector context
                 "spy_pct_above_50ma": _spy_pct_above_50ma,
                 "industry_group_rank": self.static_data.get(ticker, {}).get('industry_group_rank', 50),
+                # Continuous dry-up: captured ALWAYS so ML sees full distribution, not just bonus-firing cases
+                "volume_dry_up_score": _nan_safe(score_data.get("_volume_dry_up_score", 0)),
             }
             if volume_dry_up_bonus > 0:
                 signal_factors["volume_dry_up"] = True

@@ -2803,6 +2803,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             # v11 ML features: market + sector context
             "spy_pct_above_50ma": round(((spy_px / spy_50) - 1) * 100, 2) if spy_50 and spy_50 > 0 and spy_px else 0.0,
             "industry_group_rank": _nan_safe(getattr(stock, 'industry_group_rank', 50)),
+            # Continuous dry-up: captured ALWAYS so ML sees full distribution, not just bonus-firing cases
+            "volume_dry_up_score": _nan_safe(getattr(stock, 'volume_dry_up_score', 0)),
         }
         if volume_dry_up_bonus > 0:
             buy_signal_factors["volume_dry_up"] = True

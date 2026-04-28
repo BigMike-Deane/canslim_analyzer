@@ -1080,6 +1080,7 @@ def run_continuous_scan():
         stock.is_breaking_out = analysis.get("is_breaking_out", False)
         stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
         stock.volume_dry_up = analysis.get("volume_dry_up", False)
+        stock.volume_dry_up_score = analysis.get("volume_dry_up_score", 0)
         stock.institutional_accumulation = analysis.get("institutional_accumulation", False)
         if analysis.get("ma_21") is not None:
             stock.ma_21 = analysis.get("ma_21")

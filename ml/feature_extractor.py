@@ -50,6 +50,7 @@ FEATURE_COLUMNS = [
     "earnings_drift_bonus",  # post-earnings momentum for big beats
     "days_since_spy_pullback",  # market pullback recency (0-60 days)
     "volume_dry_up",         # binary: tight volume in base (bullish consolidation)
+    "volume_dry_up_score",   # continuous 0-100 (Apr 2026): how compressed recent vol vs baseline
     "deterministic_boost",   # boost for strong deterministic (N+S+L+I+M) scores
     # Individual CANSLIM components (6) — decompose total_score for finer signal
     "c_score",               # current quarterly earnings (0-15)
@@ -332,6 +333,7 @@ def _extract_features(buy_trade) -> dict:
         "earnings_drift_bonus": _nan_safe(sf.get("earnings_drift_bonus"), 0.0),
         "days_since_spy_pullback": _nan_safe(sf.get("days_since_spy_pullback"), 30.0),
         "volume_dry_up": 1 if sf.get("volume_dry_up", False) else 0,
+        "volume_dry_up_score": _nan_safe(sf.get("volume_dry_up_score"), 0.0),
         "deterministic_boost": _nan_safe(sf.get("deterministic_boost"), 0.0),
         # Individual CANSLIM components
         "c_score": _nan_safe(sf.get("c_score"), 0.0),
@@ -396,6 +398,7 @@ def extract_live_trade_data(db: Session) -> pd.DataFrame:
                 "pct_from_50ma": _nan_safe(sf.get("pct_from_50ma"), 0.0),
                 "atr_pct": _nan_safe(sf.get("atr_pct"), 0.0),
                 "sector_rs_rank": _nan_safe(sf.get("sector_rs_rank"), 50.0),
+                "volume_dry_up_score": _nan_safe(sf.get("volume_dry_up_score"), 0.0),
             }
 
             # Only keep features in FEATURE_COLUMNS

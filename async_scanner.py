@@ -441,6 +441,7 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "estimate_revision_trend": analyst_estimates_data.get("estimate_revision_trend"),
                 # Accumulation/Distribution
                 "volume_dry_up": ad_result.get("volume_dry_up", False),
+                "volume_dry_up_score": ad_result.get("volume_dry_up_score", 0),
                 "institutional_accumulation": ad_result.get("institutional_accumulation", False),
                 "ad_rating": ad_result.get("rating", "C"),
                 "ad_up_down_ratio": ad_result.get("up_down_ratio", 1.0),
