@@ -308,21 +308,22 @@ def run_migrations():
     # One-time backfill: copy CANSLIM_WEBHOOK_URL into user 1 so the admin keeps
     # receiving notifications without manually re-entering the URL. Other users
     # remain null (silent) until they configure their own.
-    # Re-introspect the users table because columns_cache was built before
-    # the ALTER TABLE migrations above ran.
+    # Try the UPDATE unconditionally — if the column doesn't exist yet (first
+    # deploy edge case where ALTER TABLE hasn't happened), the UPDATE fails
+    # harmlessly and the next startup picks it up.
     if "users" in existing_tables:
-        users_cols_now = {c['name'] for c in inspector.get_columns("users")}
-        if "webhook_url" in users_cols_now:
-            env_url = os.environ.get("CANSLIM_WEBHOOK_URL", "").strip()
-            if env_url:
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(text(
-                            "UPDATE users SET webhook_url = :url "
-                            "WHERE id = 1 AND (webhook_url IS NULL OR webhook_url = '')"
-                        ), {"url": env_url})
-                except Exception as e:
-                    logger.warning(f"Failed to backfill admin webhook_url: {e}")
+        env_url = os.environ.get("CANSLIM_WEBHOOK_URL", "").strip()
+        if env_url:
+            try:
+                with engine.begin() as conn:
+                    result = conn.execute(text(
+                        "UPDATE users SET webhook_url = :url "
+                        "WHERE id = 1 AND (webhook_url IS NULL OR webhook_url = '')"
+                    ), {"url": env_url})
+                    if result.rowcount:
+                        logger.info(f"Migration: Backfilled webhook_url for admin user (id=1)")
+            except Exception as e:
+                logger.debug(f"webhook_url backfill skipped: {e}")
 
     # Create indexes (database-agnostic)
     index_migrations = [
