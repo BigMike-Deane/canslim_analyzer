@@ -144,8 +144,9 @@ WEBHOOK_URL = os.environ.get('CANSLIM_WEBHOOK_URL', '')
 
 def send_webhook_notification(title: str, message: str, priority: str = "default",
                               data: dict = None, tags: list = None,
-                              click: str = None, markdown: bool = False) -> bool:
-    """Send push notification via webhook (e.g., ntfy.sh, Pushover, or custom)
+                              click: str = None, markdown: bool = False,
+                              url: str = None) -> bool:
+    """Send push notification via webhook (e.g., ntfy.sh, Pushover, or custom).
 
     Args:
         title: Notification title
@@ -155,11 +156,14 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
         tags: Optional list of ntfy emoji tags (e.g. ["moneybag", "chart_with_upwards_trend"])
         click: Optional URL to open when notification is tapped
         markdown: If True, enable markdown formatting in ntfy
+        url: Override webhook URL. Falls back to global CANSLIM_WEBHOOK_URL env var.
+             Pass an empty string explicitly to silence (per-user routing uses this).
 
     Returns:
         True if notification sent successfully, False otherwise
     """
-    if not WEBHOOK_URL:
+    target_url = url if url is not None else WEBHOOK_URL
+    if not target_url:
         logger.debug("Webhook URL not configured, skipping notification")
         return False
 
@@ -179,7 +183,7 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
     # Handle different webhook formats
     try:
         # Check for ntfy.sh style (topic-based URL)
-        if "ntfy" in WEBHOOK_URL:
+        if "ntfy" in target_url:
             headers = {
                 "Title": title,
                 "Priority": _ntfy_priority.get(priority, "3"),
@@ -190,10 +194,10 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
                 headers["Click"] = click
             if markdown:
                 headers["Markdown"] = "yes"
-            response = requests.post(WEBHOOK_URL, data=message.encode('utf-8'), headers=headers, timeout=10)
+            response = requests.post(target_url, data=message.encode('utf-8'), headers=headers, timeout=10)
         else:
             # Standard JSON webhook (Pushover, Discord, custom)
-            response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+            response = requests.post(target_url, json=payload, timeout=10)
 
         if response.status_code in (200, 201, 204):
             logger.info(f"Webhook notification sent: {title}")
@@ -208,6 +212,24 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
     except requests.exceptions.RequestException as e:
         logger.error(f"Webhook request failed: {e}")
         return False
+
+
+def get_user_webhook_url(user_id: int) -> str:
+    """Look up a user's per-user webhook URL. Returns empty string if not set
+    or on lookup error — caller treats empty string as 'skip notification'."""
+    if not user_id:
+        return ""
+    try:
+        from backend.database import SessionLocal, User
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            return (user.webhook_url or "").strip() if user else ""
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to load webhook_url for user {user_id}: {e}")
+        return ""
 
 
 def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
@@ -249,7 +271,8 @@ def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
 
 
 def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
-                       reason: str, gain_pct: float = None) -> bool:
+                       reason: str, gain_pct: float = None,
+                       user_id: int = None) -> bool:
     """Send webhook notification when AI trader executes a trade.
 
     Args:
@@ -259,6 +282,9 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
         price: Execution price
         reason: Trade reason
         gain_pct: Realized gain % (for sells)
+        user_id: Owner of this trade. Notification routes to that user's
+            webhook_url only. If user has no URL set, no notification fires.
+            None = legacy behavior (use global CANSLIM_WEBHOOK_URL).
 
     Returns:
         True if sent successfully
@@ -275,11 +301,13 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
     else:
         tags = ["money_with_wings", "chart_with_downwards_trend"]
 
-    return send_webhook_notification(title, message, priority="high", tags=tags)
+    url = get_user_webhook_url(user_id) if user_id is not None else None
+    return send_webhook_notification(title, message, priority="high", tags=tags, url=url)
 
 
 def send_stop_loss_webhook(ticker: str, shares: float, price: float,
-                           stop_type: str, loss_pct: float) -> bool:
+                           stop_type: str, loss_pct: float,
+                           user_id: int = None) -> bool:
     """Send urgent webhook when stop loss triggers.
 
     Args:
@@ -288,6 +316,7 @@ def send_stop_loss_webhook(ticker: str, shares: float, price: float,
         price: Sell price
         stop_type: STOP LOSS or TRAILING STOP
         loss_pct: Loss percentage
+        user_id: Owner of this position. See send_trade_webhook for routing.
 
     Returns:
         True if sent successfully
@@ -295,8 +324,10 @@ def send_stop_loss_webhook(ticker: str, shares: float, price: float,
     title = f"{stop_type}: {ticker}"
     message = f"{ticker}: {shares:.2f} shares @ ${price:.2f} ({loss_pct:+.1f}%)\nAutomatic stop triggered"
 
+    url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="urgent",
-                                     tags=["rotating_light", "chart_with_downwards_trend"])
+                                     tags=["rotating_light", "chart_with_downwards_trend"],
+                                     url=url)
 
 
 def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
@@ -446,7 +477,8 @@ def send_spy_gate_change_push(new_state: str, spy_price: float, spy_ma50: float)
 
 def send_score_crash_warning_push(ticker: str, purchase_score: float, current_score: float,
                                   gain_pct: float, consecutive_low: int,
-                                  consecutive_required: int) -> bool:
+                                  consecutive_required: int,
+                                  user_id: int = None) -> bool:
     """Send early warning when a held position's score is dropping toward auto-sell.
 
     Args:
@@ -456,6 +488,7 @@ def send_score_crash_warning_push(ticker: str, purchase_score: float, current_sc
         gain_pct: Current gain/loss percentage
         consecutive_low: How many consecutive low scans so far
         consecutive_required: How many are needed to trigger auto-sell
+        user_id: Owner of the position. See send_trade_webhook for routing.
 
     Returns:
         True if sent successfully
@@ -468,8 +501,10 @@ def send_score_crash_warning_push(ticker: str, purchase_score: float, current_sc
         f"{remaining} more before auto-sell"
     )
 
+    url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="high",
-                                     tags=["warning", "chart_with_downwards_trend"])
+                                     tags=["warning", "chart_with_downwards_trend"],
+                                     url=url)
 
 
 def send_bear_base_update_push(total: int, top_candidates: list) -> bool:

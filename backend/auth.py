@@ -90,6 +90,7 @@ class UserResponse(BaseModel):
     display_name: Optional[str]
     is_admin: bool
     is_active: bool
+    webhook_url: Optional[str] = None
 
 
 # --- FastAPI Dependencies ---

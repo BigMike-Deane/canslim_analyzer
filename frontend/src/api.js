@@ -137,6 +137,13 @@ export const api = {
   // Auth
   getMe: () => request('/api/auth/me'),
 
+  updateMyWebhook: (webhook_url) => request('/api/auth/me/webhook', {
+    method: 'PATCH',
+    body: JSON.stringify({ webhook_url }),
+  }),
+
+  testMyWebhook: () => request('/api/auth/me/webhook/test', { method: 'POST' }),
+
   // Health
   getHealth: () => request('/health'),
 

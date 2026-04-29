@@ -85,7 +85,58 @@ async def get_me(current_user=Depends(get_current_active_user)):
         display_name=current_user.display_name,
         is_admin=current_user.is_admin,
         is_active=current_user.is_active,
+        webhook_url=current_user.webhook_url,
     )
+
+
+class WebhookUpdateRequest(BaseModel):
+    webhook_url: str  # Empty string to disable; otherwise must be http(s) URL
+
+
+@router.patch("/me/webhook", response_model=UserResponse)
+async def update_my_webhook(
+    req: WebhookUpdateRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Update the authenticated user's notification webhook URL.
+
+    Pass an empty string to silence notifications for this user.
+    """
+    url = (req.webhook_url or "").strip()
+    if url and not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="webhook_url must start with http:// or https://")
+
+    current_user.webhook_url = url or None
+    db.commit()
+    db.refresh(current_user)
+
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        display_name=current_user.display_name,
+        is_admin=current_user.is_admin,
+        is_active=current_user.is_active,
+        webhook_url=current_user.webhook_url,
+    )
+
+
+@router.post("/me/webhook/test")
+async def test_my_webhook(current_user=Depends(get_current_active_user)):
+    """Send a test notification to the authenticated user's webhook URL.
+    Returns 400 if no URL configured, 200 with sent=true/false otherwise."""
+    from backend.email_utils import send_webhook_notification
+    url = (current_user.webhook_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No webhook URL configured")
+    sent = send_webhook_notification(
+        title="CANSLIM Test",
+        message=f"Test notification for {current_user.email}\nIf you see this, routing works.",
+        priority="default",
+        tags=["white_check_mark"],
+        url=url,
+    )
+    return {"sent": sent, "url_configured": True}
 
 
 @router.get("/config")

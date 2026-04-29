@@ -1437,25 +1437,25 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                     f"(cost: ${(cost_basis or 0):.2f}, gain: {gain_pct:+.1f}%, P/L: ${(realized_gain or 0):.2f}) "
                     f"Score: {(effective or 0):.0f} - {reason}")
 
-        # Send webhook notification for sells
+        # Send webhook notification for sells (routes to this user's webhook only)
         try:
             from backend.email_utils import send_trade_webhook, send_stop_loss_webhook
             if "STOP LOSS" in reason or "TRAILING STOP" in reason:
                 send_stop_loss_webhook(ticker, shares, price,
                                        "STOP LOSS" if "STOP LOSS" in reason else "TRAILING STOP",
-                                       gain_pct)
+                                       gain_pct, user_id=user_id)
             else:
-                send_trade_webhook(ticker, "SELL", shares, price, reason, gain_pct)
+                send_trade_webhook(ticker, "SELL", shares, price, reason, gain_pct, user_id=user_id)
         except Exception as e:
             logger.warning(f"Trade webhook failed for SELL {ticker}: {e}")
     else:
         logger.info(f"AI {action}: {ticker} - {shares:.2f} shares @ ${price:.2f} "
                     f"({stock_type} {effective:.0f}) - {reason}")
 
-        # Send webhook notification for buys
+        # Send webhook notification for buys (routes to this user's webhook only)
         try:
             from backend.email_utils import send_trade_webhook
-            send_trade_webhook(ticker, "BUY", shares, price, reason)
+            send_trade_webhook(ticker, "BUY", shares, price, reason, user_id=user_id)
         except Exception as e:
             logger.warning(f"Trade webhook failed for BUY {ticker}: {e}")
 
@@ -1733,6 +1733,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
                         gain_pct=gain_pct,
                         consecutive_low=consecutive_low,
                         consecutive_required=consecutive_required,
+                        user_id=user_id,
                     )
                 except Exception as e:
                     logger.debug(f"Score crash warning push failed (non-critical): {e}")

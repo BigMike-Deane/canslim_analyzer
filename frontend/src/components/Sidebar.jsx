@@ -41,6 +41,7 @@ const navGroups = [
     label: 'REFERENCE',
     items: [
       { to: '/docs', icon: 'book', label: 'Documentation' },
+      { to: '/settings', icon: 'settings', label: 'Settings' },
     ],
   },
 ]
