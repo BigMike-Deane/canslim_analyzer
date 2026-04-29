@@ -875,3 +875,82 @@ async def get_ml_cache_stats(
         return get_prediction_cache_stats()
     except ImportError:
         return {"size": 0, "hits": 0, "misses": 0}
+
+
+_MATRIX_LABELS = ("A baseline", "B bonus-only", "C veto-only", "D both")
+_MATRIX_PREFIX_A = "[ML A baseline] "
+
+
+def _variant_payload(run: BacktestRun) -> dict:
+    overrides = run.profile_overrides or {}
+    if isinstance(overrides, str):
+        try:
+            import json as _json
+            overrides = _json.loads(overrides)
+        except Exception:
+            overrides = {}
+    return {
+        "id": run.id,
+        "name": run.name,
+        "status": run.status,
+        "return_pct": run.total_return_pct,
+        "sharpe": run.sharpe_ratio,
+        "max_drawdown_pct": run.max_drawdown_pct,
+        "total_trades": run.total_trades,
+        "win_rate": run.win_rate,
+        "ml_signal": (overrides or {}).get("ml_signal") if isinstance(overrides, dict) else None,
+    }
+
+
+@router.get("/matrices")
+async def list_ml_matrices(
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """List recent 4-way ML A/B/C/D matrix runs, grouped by their shared suffix.
+
+    Detection: rows are grouped by name prefix because /compare-matrix has no
+    foreign-key linking the four siblings — they only share the trailing
+    "<strategy> <start>→<end>" suffix. We require all four labels to be
+    present before returning a matrix; orphaned/incomplete sets are skipped.
+    """
+    anchors = (
+        db.query(BacktestRun)
+        .filter(BacktestRun.name.like(f"{_MATRIX_PREFIX_A}%"))
+        .order_by(desc(BacktestRun.created_at))
+        .limit(limit * 4)
+        .all()
+    )
+
+    matrices = []
+    for anchor in anchors:
+        suffix = anchor.name[len(_MATRIX_PREFIX_A):]
+        sibling_names = [f"[ML {label}] {suffix}" for label in _MATRIX_LABELS]
+        siblings = (
+            db.query(BacktestRun)
+            .filter(BacktestRun.name.in_(sibling_names))
+            .all()
+        )
+        by_name = {s.name: s for s in siblings}
+        if not all(name in by_name for name in sibling_names):
+            continue
+
+        variants = {}
+        for label in _MATRIX_LABELS:
+            full_name = f"[ML {label}] {suffix}"
+            variants[label] = _variant_payload(by_name[full_name])
+
+        matrices.append({
+            "strategy": anchor.strategy,
+            "start_date": anchor.start_date.isoformat() if anchor.start_date else None,
+            "end_date": anchor.end_date.isoformat() if anchor.end_date else None,
+            "created_at": anchor.created_at.isoformat() if anchor.created_at else None,
+            "suffix": suffix,
+            "variants": variants,
+        })
+
+        if len(matrices) >= limit:
+            break
+
+    return {"matrices": matrices, "count": len(matrices)}

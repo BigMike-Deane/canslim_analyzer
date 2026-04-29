@@ -24,7 +24,7 @@ from backend.main import app
 from backend.database import (
     init_db, get_db, SessionLocal, User, Stock, StockScore,
     PortfolioPosition, AIPortfolioConfig, AIPortfolioPosition,
-    AIPortfolioTrade, BacktestRun, MarketSnapshot, Watchlist,
+    AIPortfolioTrade, BacktestRun, MarketSnapshot, Watchlist, MLModel,
 )
 from backend.auth import get_current_active_user, get_admin_user
 
@@ -416,6 +416,99 @@ class TestMLCompareMatrix:
             db.close()
 
 
+class TestMLMatricesEndpoint:
+    """The /api/ml/matrices endpoint groups BacktestRun rows whose names
+    follow the [ML A baseline] / B bonus-only / C veto-only / D both pattern.
+    Incomplete sets (missing one or more siblings) must be filtered out."""
+
+    _SUFFIX_FULL = "nostate_optimized 2024-01-01→2024-06-01"
+    _SUFFIX_PARTIAL = "nostate_optimized 2025-01-01→2025-06-01"
+
+    @classmethod
+    def setup_class(cls):
+        _ensure_user()
+        db = _get_db()
+        try:
+            # Clean any prior test data so name lookups are deterministic
+            db.query(BacktestRun).filter(
+                BacktestRun.name.like("[ML %"),
+                BacktestRun.name.like(f"%{cls._SUFFIX_FULL}"),
+            ).delete(synchronize_session=False)
+            db.query(BacktestRun).filter(
+                BacktestRun.name.like("[ML %"),
+                BacktestRun.name.like(f"%{cls._SUFFIX_PARTIAL}"),
+            ).delete(synchronize_session=False)
+            db.commit()
+
+            # Full 4-variant matrix
+            for label, ret, sharpe in [
+                ("A baseline", 100.0, 1.5),
+                ("B bonus-only", 110.0, 1.6),
+                ("C veto-only", 105.0, 1.7),
+                ("D both", 120.0, 1.4),
+            ]:
+                db.add(BacktestRun(
+                    user_id=1,
+                    name=f"[ML {label}] {cls._SUFFIX_FULL}",
+                    status="completed",
+                    start_date=date(2024, 1, 1), end_date=date(2024, 6, 1),
+                    starting_cash=25000.0, total_return_pct=ret,
+                    sharpe_ratio=sharpe, max_drawdown_pct=12.0,
+                    total_trades=80, win_rate=60.0,
+                    strategy="nostate_optimized",
+                    profile_overrides={"ml_signal": {
+                        "enabled": True,
+                        "log_only": label in ("A baseline", "C veto-only"),
+                        "min_confidence": 0.30 if "veto" in label or label == "D both" else 0.0,
+                    }},
+                    created_at=datetime.now(timezone.utc),
+                ))
+            # Partial set — only A and B exist, must be excluded
+            for label in ("A baseline", "B bonus-only"):
+                db.add(BacktestRun(
+                    user_id=1,
+                    name=f"[ML {label}] {cls._SUFFIX_PARTIAL}",
+                    status="completed",
+                    start_date=date(2025, 1, 1), end_date=date(2025, 6, 1),
+                    starting_cash=25000.0, total_return_pct=50.0,
+                    strategy="nostate_optimized",
+                    profile_overrides={"ml_signal": {"enabled": True, "log_only": True}},
+                    created_at=datetime.now(timezone.utc),
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_matrices_returns_200(self):
+        r = client.get("/api/ml/matrices")
+        assert r.status_code == 200, r.text
+
+    def test_matrices_groups_complete_set(self):
+        body = client.get("/api/ml/matrices").json()
+        full = [m for m in body["matrices"] if m["suffix"] == self._SUFFIX_FULL]
+        assert len(full) == 1
+        m = full[0]
+        assert m["strategy"] == "nostate_optimized"
+        assert m["start_date"] == "2024-01-01"
+        assert m["end_date"] == "2024-06-01"
+        assert set(m["variants"].keys()) == {"A baseline", "B bonus-only", "C veto-only", "D both"}
+        # Variant payload includes id + metrics + ml_signal
+        a = m["variants"]["A baseline"]
+        for key in ("id", "return_pct", "sharpe", "max_drawdown_pct", "total_trades", "ml_signal"):
+            assert key in a
+        # D both should have full activation config
+        d = m["variants"]["D both"]
+        assert d["ml_signal"]["log_only"] is False
+        assert d["ml_signal"]["min_confidence"] == 0.30
+        assert d["return_pct"] == 120.0
+
+    def test_matrices_excludes_incomplete_sets(self):
+        body = client.get("/api/ml/matrices").json()
+        # The partial 2025 suffix has only A+B, so it must NOT be returned
+        partial = [m for m in body["matrices"] if m["suffix"] == self._SUFFIX_PARTIAL]
+        assert partial == []
+
+
 class TestStrategies:
     def test_strategies_returns_200(self):
         r = client.get("/api/strategies")
@@ -503,3 +596,65 @@ class TestRateLimitStats:
     def test_rate_limit_stats_returns_200(self):
         r = client.get("/api/rate-limit-stats")
         assert r.status_code == 200
+
+
+class TestMLValidation:
+    """Verifies /api/ml/validation surfaces per_regime_auc on each fold."""
+
+    def _seed_active_model(self, strategy="nostate_optimized"):
+        db = _get_db()
+        try:
+            db.query(MLModel).filter(MLModel.strategy == strategy).delete()
+            db.add(MLModel(
+                version=99, strategy=strategy, status="active",
+                model_type="classifier", training_samples=300, feature_count=22,
+                roc_auc=0.58, accuracy=0.62, precision_score=0.55,
+                recall_score=0.60, f1=0.57, brier_score=0.22,
+                cv_results=[
+                    {"fold": 0, "roc_auc": 0.57, "accuracy": 0.61, "precision": 0.54,
+                     "recall": 0.58, "f1": 0.56, "train_size": 120, "test_size": 60,
+                     "per_regime_auc": {"bullish": 0.62, "neutral": 0.51, "bearish": None}},
+                    {"fold": 1, "roc_auc": 0.59, "accuracy": 0.63, "precision": 0.56,
+                     "recall": 0.61, "f1": 0.58, "train_size": 180, "test_size": 60,
+                     "per_regime_auc": {"bullish": 0.60, "neutral": 0.53, "bearish": 0.48}},
+                    {"fold": 2, "roc_auc": 0.58, "accuracy": 0.62, "precision": 0.55,
+                     "recall": 0.60, "f1": 0.57, "train_size": 240, "test_size": 60,
+                     "per_regime_auc": {"bullish": 0.61, "neutral": None, "bearish": 0.50}},
+                ],
+                feature_importance={},
+                created_at=datetime.now(timezone.utc),
+                activated_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    def _cleanup(self, strategy="nostate_optimized"):
+        db = _get_db()
+        try:
+            db.query(MLModel).filter(MLModel.strategy == strategy, MLModel.version == 99).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_validation_returns_per_regime_auc_per_fold(self):
+        self._seed_active_model()
+        try:
+            r = client.get("/api/ml/validation?strategy=nostate_optimized")
+            assert r.status_code == 200
+            d = r.json()
+            assert "cv_results" in d
+            assert len(d["cv_results"]) == 3
+            for fold in d["cv_results"]:
+                assert "per_regime_auc" in fold
+                pra = fold["per_regime_auc"]
+                assert set(pra.keys()) == {"bullish", "neutral", "bearish"}
+                for v in pra.values():
+                    assert v is None or isinstance(v, (int, float))
+        finally:
+            self._cleanup()
+
+    def test_validation_404_when_no_active_model(self):
+        self._cleanup(strategy="nonexistent_strategy_xyz")
+        r = client.get("/api/ml/validation?strategy=nonexistent_strategy_xyz")
+        assert r.status_code == 404

@@ -403,6 +403,64 @@ export default function Admin() {
             </div>
           )}
 
+          {/* Per-regime AUC */}
+          {mlValidation?.cv_results?.length > 0 && mlValidation.cv_results.some(f => f.per_regime_auc) && (() => {
+            const regimes = ['bullish', 'neutral', 'bearish']
+            const folds = mlValidation.cv_results
+            const colorFor = (auc) => {
+              if (auc == null) return 'text-dark-500'
+              if (auc >= 0.55) return 'text-emerald-400'
+              if (auc >= 0.50) return 'text-amber-400'
+              return 'text-red-400'
+            }
+            const fmt = (auc) => (auc == null ? '—' : auc.toFixed(4))
+            const meanFor = (regime) => {
+              const vals = folds
+                .map(f => f.per_regime_auc?.[regime])
+                .filter(v => v != null && !Number.isNaN(v))
+              if (vals.length === 0) return null
+              return vals.reduce((a, b) => a + b, 0) / vals.length
+            }
+            return (
+              <div>
+                <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Per-regime AUC</h3>
+                <p className="text-[10px] text-dark-500 mb-2">Reveals whether the model adds signal beyond the upstream regime gate. "—" = too few samples in that fold/regime.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-dark-500 border-b border-dark-700/50">
+                        <th className="text-left py-1.5 px-2">Regime</th>
+                        {folds.map(f => (
+                          <th key={f.fold} className="text-right py-1.5 px-2">Fold {f.fold}</th>
+                        ))}
+                        <th className="text-right py-1.5 px-2">Mean</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {regimes.map(regime => {
+                        const mean = meanFor(regime)
+                        return (
+                          <tr key={regime} className="border-b border-dark-700/30 hover:bg-dark-800/50">
+                            <td className="py-1.5 px-2 font-data text-dark-300 capitalize">{regime}</td>
+                            {folds.map(f => {
+                              const auc = f.per_regime_auc?.[regime]
+                              return (
+                                <td key={f.fold} className={`py-1.5 px-2 font-data text-right ${colorFor(auc)}`}>
+                                  {fmt(auc)}
+                                </td>
+                              )
+                            })}
+                            <td className={`py-1.5 px-2 font-data text-right ${colorFor(mean)}`}>{fmt(mean)}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })()}
+
           {/* Latest Training Status */}
           {mlStatus?.latest_training && mlStatus.latest_training.status !== 'active' && (
             <div>
