@@ -129,6 +129,16 @@ class BacktestQueueManager:
             try:
                 bt_run = db.get(BacktestRun, backtest_id)
                 overrides = bt_run.profile_overrides if bt_run and bt_run.profile_overrides else None
+                # The column was added as TEXT on production Postgres before the
+                # ORM was changed to JSON, so existing rows come back as raw
+                # strings instead of dicts. Parse defensively.
+                if isinstance(overrides, str):
+                    import json
+                    try:
+                        overrides = json.loads(overrides)
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"Backtest {backtest_id}: invalid profile_overrides JSON: {e}")
+                        overrides = None
                 run_backtest(db, backtest_id, profile_overrides=overrides)
                 logger.info(f"Backtest {backtest_id} completed successfully")
             except Exception as e:
