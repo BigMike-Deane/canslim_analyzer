@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime } from '../api'
 
@@ -16,8 +17,11 @@ export default function NotificationBell({ collapsed }) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
+  const [anchor, setAnchor] = useState(null)  // {top, left} of dropdown when open
   const navigate = useNavigate()
   const ref = useRef(null)
+  const buttonRef = useRef(null)
+  const dropdownRef = useRef(null)
 
   // Poll unread count while mounted (mounts once, runs forever)
   useEffect(() => {
@@ -51,11 +55,42 @@ export default function NotificationBell({ collapsed }) {
     return () => { cancelled = true }
   }, [open])
 
-  // Close on outside click
+  // Position the portaled dropdown next to the bell button. Recompute on
+  // open and whenever the layout might shift (resize/scroll).
+  useEffect(() => {
+    if (!open) { setAnchor(null); return }
+    function compute() {
+      if (!buttonRef.current) return
+      const rect = buttonRef.current.getBoundingClientRect()
+      const DROPDOWN_WIDTH = 320
+      const GAP = 8
+      // Sidebar is on the left → anchor dropdown to the RIGHT of the bell
+      // when collapsed (floating button), or directly BELOW it when expanded.
+      if (collapsed) {
+        setAnchor({ top: rect.top, left: rect.right + GAP })
+      } else {
+        // Expanded sidebar: open below bell, aligned to bell's left edge,
+        // but clamp to viewport so we don't run off the right side.
+        const left = Math.min(rect.left, window.innerWidth - DROPDOWN_WIDTH - GAP)
+        setAnchor({ top: rect.bottom + 4, left: Math.max(GAP, left) })
+      }
+    }
+    compute()
+    window.addEventListener('resize', compute)
+    window.addEventListener('scroll', compute, true)
+    return () => {
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('scroll', compute, true)
+    }
+  }, [open, collapsed])
+
+  // Close on outside click — must check both the trigger and the portaled dropdown
   useEffect(() => {
     if (!open) return
     function handleClick(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+      const inTrigger = ref.current && ref.current.contains(e.target)
+      const inDropdown = dropdownRef.current && dropdownRef.current.contains(e.target)
+      if (!inTrigger && !inDropdown) setOpen(false)
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
@@ -86,6 +121,7 @@ export default function NotificationBell({ collapsed }) {
   return (
     <div ref={ref} className="relative">
       <button
+        ref={buttonRef}
         onClick={() => setOpen(o => !o)}
         title="Notifications"
         className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-all duration-150 w-full ${
@@ -109,8 +145,12 @@ export default function NotificationBell({ collapsed }) {
         {!collapsed && <span>Notifications</span>}
       </button>
 
-      {open && (
-        <div className={`absolute z-50 ${collapsed ? 'left-full ml-2 top-0' : 'left-0 right-0 mt-1'} w-80 bg-dark-900 border border-dark-700 rounded-lg shadow-2xl overflow-hidden`}>
+      {open && anchor && createPortal(
+        <div
+          ref={dropdownRef}
+          style={{ top: anchor.top, left: anchor.left }}
+          className="fixed z-[100] w-80 bg-dark-900 border border-dark-700 rounded-lg shadow-2xl overflow-hidden"
+        >
           <div className="flex items-center justify-between px-3 py-2 border-b border-dark-700/60">
             <span className="text-[11px] font-semibold tracking-wide text-dark-200">
               NOTIFICATIONS {unreadCount > 0 && <span className="text-primary-400">({unreadCount})</span>}
@@ -176,7 +216,8 @@ export default function NotificationBell({ collapsed }) {
               View all →
             </button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
