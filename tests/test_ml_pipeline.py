@@ -693,6 +693,76 @@ class TestTrainModel:
                 assert v is None or 0.0 <= v <= 1.0
 
 
+class TestExcludedFeatures:
+    """excluded_features lets us train ablation/leakage-audit models. The
+    saved feature list MUST shrink to match — predict-time will pass features
+    in that exact list, and an off-by-one would either crash or silently
+    feed the model garbage."""
+
+    def test_drop_columns_before_training(self):
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(
+            df, min_roc_auc=0.0,
+            excluded_features=["total_score", "composite_score"],
+        )
+        if result.get("passed_gate"):
+            assert result["feature_count"] == len(FEATURE_COLUMNS) - 2
+            importance = result["feature_importance"]
+            assert "total_score" not in importance
+            assert "composite_score" not in importance
+            # Excluded list is round-tripped on the result
+            assert set(result["excluded_features"]) == {"total_score", "composite_score"}
+
+    def test_unknown_excluded_names_silently_ignored(self):
+        """Forward-compat: caller may pass column names that don't exist yet."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(
+            df, min_roc_auc=0.0,
+            excluded_features=["does_not_exist", "total_score"],
+        )
+        if result.get("passed_gate"):
+            # Only total_score got dropped (the other was ignored)
+            assert result["feature_count"] == len(FEATURE_COLUMNS) - 1
+
+
+class TestCalibration:
+    """Calibration wraps the XGBoost classifier in CalibratedClassifierCV so
+    predict_proba returns calibrated probabilities. Without it, "0.30" is an
+    arbitrary threshold; with isotonic calibration, "0.30" means "the model
+    estimates ~30% empirical win rate."""
+
+    def test_calibrate_wraps_model(self):
+        from sklearn.calibration import CalibratedClassifierCV
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0, calibrate=True)
+        if result.get("passed_gate"):
+            assert isinstance(result["model"], CalibratedClassifierCV)
+            assert result["calibrated"] is True
+
+    def test_calibrated_model_predict_proba_works(self):
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0, calibrate=True)
+        if not result.get("passed_gate"):
+            pytest.skip("training skipped on this seed")
+        model = result["model"]
+        # Build a single-row feature matrix matching what got trained
+        from ml.feature_extractor import get_feature_matrix
+        X, _, _, _ = get_feature_matrix(df)
+        proba = model.predict_proba(X.iloc[[0]])
+        assert proba.shape == (1, 2)
+        # Probabilities sum to 1
+        assert abs(proba[0].sum() - 1.0) < 1e-6
+
+    def test_uncalibrated_default(self):
+        """Default behavior is uncalibrated XGBoost — preserves prior outputs."""
+        from xgboost import XGBClassifier
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0)
+        if result.get("passed_gate"):
+            assert isinstance(result["model"], XGBClassifier)
+            assert result.get("calibrated") in (False, None)
+
+
 # ============== Regression Trainer Tests ==============
 
 

@@ -2,6 +2,7 @@
 
 import logging
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -36,10 +37,23 @@ def _get_active_model_metric(db, strategy: str, model_type: str) -> tuple:
         return active.roc_auc, active.version
 
 
-def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: int, mode: str = "regression"):
+def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: int,
+                  mode: str = "regression",
+                  excluded_features: Optional[list] = None,
+                  calibrate: bool = False,
+                  auto_activate: bool = True):
     """Background task: extract features, train model, update DB record.
 
     mode: 'classifier', 'regression', or 'both' (both trains both, saves regression if it passes).
+
+    excluded_features: list of FEATURE_COLUMNS names to drop. When set, this is a
+    diagnostic/leakage-audit run — saved to an experimental file, never auto-activated.
+
+    calibrate: wrap the classifier in CalibratedClassifierCV(isotonic) before saving.
+    Activates iff it beats the current active model on the primary metric.
+
+    auto_activate: when False, the model is saved to disk + DB but never replaces
+    the production active model — used for experimental ablations.
 
     Includes improvement gate: new model must be >= current active model's
     primary metric to be activated. Models that pass the absolute gate but
@@ -89,15 +103,16 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
             f"{dedup_stats['trades_before_dedup'] - dedup_stats['trades_after_dedup']} duplicates removed)"
         )
 
-        # Train based on mode
+        # Train based on mode. Experimental kwargs only apply to classifier path
+        # — regression doesn't have isotonic calibration in this trainer.
         result = None
         if mode == "classifier":
-            result = train_model(df)
+            result = train_model(df, excluded_features=excluded_features, calibrate=calibrate)
         elif mode == "regression":
             result = train_model_regression(df)
         elif mode == "both":
             # Train both, prefer regression if it passes
-            cls_result = train_model(df)
+            cls_result = train_model(df, excluded_features=excluded_features, calibrate=calibrate)
             reg_result = train_model_regression(df)
             if reg_result.get("passed_gate"):
                 result = reg_result
@@ -125,16 +140,36 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
             db.commit()
             return
 
-        # Save model to disk
+        # Save model to disk. Experimental runs (excluded_features set, or
+        # auto_activate=False) save to a versioned experimental path so they
+        # cannot accidentally overwrite the active production model.
         model = result["model"]
         metrics = result["metrics"]
-        model_path = save_model(model, {
-            "strategy": strategy,
-            "version": ml_record.version,
-            "training_samples": result["training_samples"],
-            "feature_importance": result["feature_importance"],
-            "model_type": model_type,
-        })
+        is_experimental = bool(excluded_features) or not auto_activate
+        feat_cols = result.get("feature_count_columns") or None  # forward-compat
+        active_features = list(result.get("feature_importance", {}).keys()) or None
+        if is_experimental:
+            from ml.trainer import MODEL_DIR
+            exp_path = MODEL_DIR / f"ml_model_v{ml_record.version}_experimental.joblib"
+            model_path = save_model(model, {
+                "strategy": strategy,
+                "version": ml_record.version,
+                "training_samples": result["training_samples"],
+                "feature_importance": result["feature_importance"],
+                "model_type": model_type,
+                "excluded_features": list(excluded_features or []),
+                "calibrated": bool(calibrate),
+                "experimental": True,
+            }, path=exp_path, feature_columns=active_features)
+        else:
+            model_path = save_model(model, {
+                "strategy": strategy,
+                "version": ml_record.version,
+                "training_samples": result["training_samples"],
+                "feature_importance": result["feature_importance"],
+                "model_type": model_type,
+                "calibrated": bool(calibrate),
+            }, feature_columns=active_features)
 
         # Update DB record with metrics
         ml_record.model_type = model_type
@@ -161,6 +196,24 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         ml_record.feature_count = result.get("feature_count")
         ml_record.model_path = str(model_path)
         ml_record.training_samples = result.get("training_samples")
+
+        # Experimental runs (leakage audit, calibrated holdout) never replace
+        # the active model. They land as 'completed' so the metrics are
+        # comparable in the model list, but production keeps using the
+        # incumbent until we explicitly graduate one via /api/ml/promote.
+        if is_experimental:
+            ml_record.status = "completed"
+            tag = []
+            if excluded_features:
+                tag.append(f"excluded={','.join(excluded_features)}")
+            if calibrate:
+                tag.append("calibrated")
+            if not auto_activate:
+                tag.append("auto_activate=false")
+            ml_record.error_message = "Experimental run: " + "; ".join(tag)
+            db.commit()
+            logger.info(f"Experimental v{ml_record.version} saved (not activated): {tag}")
+            return
 
         # Minimum sample count gate: don't activate until enough data
         from ml.trainer import MIN_TOTAL_SAMPLES
@@ -237,12 +290,21 @@ async def trigger_training(
     strategy: str = Query(default="nostate_optimized"),
     backtest_ids: str = Query(default="", description="Comma-separated backtest IDs (empty=all)"),
     mode: str = Query(default="regression", description="Training mode: classifier, regression, or both"),
+    excluded_features: str = Query(default="", description="Comma-separated feature names to drop (leakage audit). Forces experimental save."),
+    calibrate: bool = Query(default=False, description="Wrap classifier in CalibratedClassifierCV(isotonic). Required for min_confidence to mean a real probability."),
+    auto_activate: bool = Query(default=True, description="If false, model is saved + recorded but never replaces the active model."),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    """Trigger ML model training (admin only). Runs in background."""
+    """Trigger ML model training (admin only). Runs in background.
+
+    Experimental flags (excluded_features, auto_activate=false) save the model
+    to ml_model_v{N}_experimental.joblib and mark its DB row 'completed' —
+    production keeps the current active model.
+    """
     if mode not in ("classifier", "regression", "both"):
         raise HTTPException(400, "mode must be 'classifier', 'regression', or 'both'")
+    excluded_list = [f.strip() for f in excluded_features.split(",") if f.strip()]
 
     # Concurrent training guard: prevent overlapping training runs
     in_progress = db.query(MLModel).filter(
@@ -300,7 +362,10 @@ async def trigger_training(
 
     # Get DB URL for background task (needs its own session)
     from backend.database import DATABASE_URL
-    background_tasks.add_task(_run_training, DATABASE_URL, strategy, ids, ml_record.id, mode)
+    background_tasks.add_task(
+        _run_training, DATABASE_URL, strategy, ids, ml_record.id, mode,
+        excluded_list or None, calibrate, auto_activate,
+    )
 
     return {
         "message": f"Training started for v{next_version} ({mode})",
@@ -308,6 +373,10 @@ async def trigger_training(
         "version": next_version,
         "strategy": strategy,
         "mode": mode,
+        "excluded_features": excluded_list,
+        "calibrate": calibrate,
+        "auto_activate": auto_activate,
+        "experimental": bool(excluded_list) or not auto_activate,
     }
 
 
@@ -727,6 +796,72 @@ async def compare_ml_backtest(
         "active_id": active.id,
         "min_confidence": min_confidence,
         "strategy": strategy,
+    }
+
+
+@router.post("/compare-matrix")
+async def compare_ml_matrix(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    starting_cash: float = Query(25000.0),
+    strategy: str = Query("nostate_optimized"),
+    stock_universe: str = Query("all"),
+    weight: float = Query(20.0, description="ML bonus weight when log_only=false"),
+    min_confidence: float = Query(0.30, description="ML min_confidence for veto variants"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Launch a 4-way ML A/B/C/D matrix to separate the bonus and veto effects.
+
+    Useful when deciding whether to graduate ML from log-only mode. The
+    paired /compare endpoint conflates the two effects; this endpoint runs
+    them in isolation so we can attribute any lift to the right mechanism.
+
+    Variants (all on the same strategy + window for a fair comparison):
+        A. Baseline:    log_only=true,  min_conf=0       — current production
+        B. Bonus only:  log_only=false, min_conf=0       — ML modulates score
+        C. Veto only:   log_only=true,  min_conf=>0      — ML can skip but not boost
+        D. Both:        log_only=false, min_conf=>0      — full activation
+    """
+    from backend.backtest_queue import backtest_queue
+
+    suffix = f"{strategy} {start_date}→{end_date}"
+
+    variants = [
+        ("A baseline",   {"enabled": True, "log_only": True,  "min_confidence": 0.0,             "weight": weight}),
+        ("B bonus-only", {"enabled": True, "log_only": False, "min_confidence": 0.0,             "weight": weight}),
+        ("C veto-only",  {"enabled": True, "log_only": True,  "min_confidence": min_confidence,  "weight": weight, "veto_action": "skip"}),
+        ("D both",       {"enabled": True, "log_only": False, "min_confidence": min_confidence,  "weight": weight, "veto_action": "skip"}),
+    ]
+
+    runs = []
+    for label, ml_cfg in variants:
+        bt = BacktestRun(
+            user_id=current_user.id,
+            name=f"[ML {label}] {suffix}",
+            start_date=start_date,
+            end_date=end_date,
+            starting_cash=starting_cash,
+            stock_universe=stock_universe,
+            strategy=strategy,
+            status="pending",
+            profile_overrides={"ml_signal": ml_cfg},
+        )
+        db.add(bt)
+        db.flush()
+        runs.append({"label": label, "id": bt.id, "ml_signal": ml_cfg})
+    db.commit()
+
+    # Enqueue baseline first so the price/score caches warm; the others reuse
+    # the same data so they finish faster than the leading run.
+    for r in runs:
+        backtest_queue.enqueue(r["id"])
+
+    return {
+        "message": f"ML matrix started: {len(runs)} backtests queued",
+        "runs": runs,
+        "strategy": strategy,
+        "window": f"{start_date} → {end_date}",
     }
 
 

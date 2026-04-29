@@ -47,6 +47,8 @@ def train_model(
     df: pd.DataFrame,
     min_roc_auc: float = MIN_ROC_AUC,
     min_gain_pct: float = 0.0,
+    excluded_features: Optional[list] = None,
+    calibrate: bool = False,
 ) -> dict:
     """
     Train XGBoost model with walk-forward CV.
@@ -55,6 +57,15 @@ def train_model(
     historical behavior (any positive return = win). Setting it higher (e.g. 5.0)
     sharpens the target by treating scratches as losses, which can improve AUC when
     the dataset has many near-zero outcomes.
+
+    excluded_features: optional list of FEATURE_COLUMNS names to drop before training.
+    Used for leakage audits — dropping `total_score` lets us measure how much of the
+    model's lift came from features that are derivative of the trade decision itself.
+
+    calibrate: wrap the final XGBoost model in CalibratedClassifierCV(method="isotonic")
+    so predict_proba returns calibrated probabilities. Required when using
+    min_confidence gating: without calibration, "0.30" is an arbitrary threshold;
+    with isotonic calibration, "0.30" means "30% empirical win rate."
 
     Returns dict with:
         model, metrics, feature_importance, cv_results,
@@ -66,6 +77,15 @@ def train_model(
             "passed_gate": False,
             "error": f"Insufficient data: {0 if X is None else len(X)} samples (need {MIN_TRAINING_SAMPLES})",
         }
+
+    # Drop excluded features (leakage audit support). Columns that aren't in X are
+    # silently skipped — caller may pass forward-compatible names.
+    excluded = list(excluded_features or [])
+    if excluded:
+        drop = [c for c in excluded if c in X.columns]
+        X = X.drop(columns=drop)
+        logger.info(f"Dropped {len(drop)} excluded features: {drop}")
+    active_features = list(X.columns)
 
     # Apply magnitude-aware label if requested. Default 0.0 leaves y_win unchanged.
     if min_gain_pct > 0:
@@ -110,12 +130,29 @@ def train_model(
             "error": f"ROC AUC {mean_auc:.4f} below threshold {min_roc_auc}",
         }
 
-    # Train final model on ALL data
-    model = _create_xgb_model()
-    model.fit(X, y_win)
+    # Train final model on ALL data. If calibration is requested, wrap in
+    # CalibratedClassifierCV so predict_proba returns calibrated probabilities
+    # — required when downstream uses min_confidence as a literal probability.
+    base_model = _create_xgb_model()
+    if calibrate:
+        from sklearn.calibration import CalibratedClassifierCV
+        # Use prefit=False with cv=3 so the wrapper handles fitting both the
+        # base model and the calibrator on the same data via CV.
+        model = CalibratedClassifierCV(base_model, method="isotonic", cv=3)
+        model.fit(X, y_win)
+        # Feature importance lives on the underlying estimator(s); average
+        # across the cv folds for a stable view.
+        importances = np.mean(
+            [cc.estimator.feature_importances_ for cc in model.calibrated_classifiers_],
+            axis=0,
+        ).tolist()
+    else:
+        model = base_model
+        model.fit(X, y_win)
+        importances = model.feature_importances_.tolist()
 
-    # Feature importance
-    importance = dict(zip(FEATURE_COLUMNS, model.feature_importances_.tolist()))
+    # Feature importance — keyed on the actual feature columns used (after exclusion).
+    importance = dict(zip(active_features, importances))
     importance = {k: round(v, 4) for k, v in sorted(importance.items(), key=lambda x: -x[1])}
 
     # Aggregate metrics from CV folds
@@ -130,7 +167,9 @@ def train_model(
         "mean_roc_auc": round(mean_auc, 4),
         "baseline_comparison": baseline_results,
         "training_samples": len(X),
-        "feature_count": len(FEATURE_COLUMNS),
+        "feature_count": len(active_features),
+        "calibrated": calibrate,
+        "excluded_features": excluded,
         "win_rate": round(float(y_win.mean()), 4),
         "min_gain_pct": min_gain_pct,
     }
@@ -230,15 +269,22 @@ def train_model_regression(
     }
 
 
-def save_model(model, metadata: dict, path: Optional[Path] = None) -> Path:
-    """Save model + metadata to disk."""
+def save_model(model, metadata: dict, path: Optional[Path] = None,
+               feature_columns: Optional[list] = None) -> Path:
+    """Save model + metadata to disk.
+
+    feature_columns: explicit feature list to save with the model. Defaults to
+    the full FEATURE_COLUMNS — but ablation/leakage trainings drop columns,
+    and the saved list MUST match the columns the model actually learned on,
+    otherwise predict-time will pass features the model has never seen.
+    """
     path = path or ACTIVE_MODEL_PATH
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "model": model,
         "metadata": metadata,
-        "feature_columns": FEATURE_COLUMNS,
+        "feature_columns": feature_columns or FEATURE_COLUMNS,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     joblib.dump(payload, path)

@@ -356,6 +356,66 @@ class TestBacktests:
         assert r.status_code == 200
 
 
+class TestMLCompareMatrix:
+    """The 4-way ML A/B/C/D matrix endpoint creates 4 BacktestRun records
+    with distinct profile_overrides so we can attribute any lift to the
+    bonus path vs the veto path independently."""
+
+    def test_matrix_creates_four_distinct_runs(self):
+        # Patch the queue so we don't actually run 4 backtests
+        with patch("backend.backtest_queue.backtest_queue.enqueue") as mock_enqueue:
+            r = client.post(
+                "/api/ml/compare-matrix?"
+                "start_date=2024-01-01&end_date=2024-06-01&"
+                "strategy=nostate_optimized&min_confidence=0.30"
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["runs"]) == 4
+        labels = [r["label"] for r in body["runs"]]
+        assert labels == ["A baseline", "B bonus-only", "C veto-only", "D both"]
+        # 4 enqueue calls (one per backtest)
+        assert mock_enqueue.call_count == 4
+
+    def test_matrix_profile_overrides_are_correct(self):
+        with patch("backend.backtest_queue.backtest_queue.enqueue"):
+            r = client.post(
+                "/api/ml/compare-matrix?"
+                "start_date=2024-01-01&end_date=2024-06-01&min_confidence=0.30"
+            )
+        runs = r.json()["runs"]
+        cfg = {row["label"]: row["ml_signal"] for row in runs}
+        # A: log-only, no veto — current production
+        assert cfg["A baseline"]["log_only"] is True
+        assert cfg["A baseline"]["min_confidence"] == 0.0
+        # B: bonus path active, no veto — pure score modulation
+        assert cfg["B bonus-only"]["log_only"] is False
+        assert cfg["B bonus-only"]["min_confidence"] == 0.0
+        # C: log-only but veto-on — gating without bonus
+        assert cfg["C veto-only"]["log_only"] is True
+        assert cfg["C veto-only"]["min_confidence"] == 0.30
+        # D: both — full activation
+        assert cfg["D both"]["log_only"] is False
+        assert cfg["D both"]["min_confidence"] == 0.30
+
+    def test_matrix_persists_records_with_overrides(self):
+        with patch("backend.backtest_queue.backtest_queue.enqueue"):
+            r = client.post(
+                "/api/ml/compare-matrix?"
+                "start_date=2024-01-01&end_date=2024-06-01"
+            )
+        run_ids = [row["id"] for row in r.json()["runs"]]
+        db = _get_db()
+        try:
+            for rid in run_ids:
+                rec = db.get(BacktestRun, rid)
+                assert rec is not None
+                assert rec.profile_overrides is not None
+                assert "ml_signal" in rec.profile_overrides
+        finally:
+            db.close()
+
+
 class TestStrategies:
     def test_strategies_returns_200(self):
         r = client.get("/api/strategies")
