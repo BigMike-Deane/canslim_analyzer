@@ -1033,11 +1033,17 @@ strategy_profiles:
       min_cs_confidence: 60
       position_mult: 0.50
     ml_signal:
+      # Graduated to VETO-ONLY mode Apr 29 2026. Backtest matrix #551-554 showed
+      # cs_bear has an INVERTED bonus interaction vs nostate_optimized: bonus alone
+      # = -12pp, full activation = -33pp vs veto-only. The bonus reranks toward
+      # candidates the cs_only correction-zone rule can't accept, so we keep
+      # log_only=true (no bonus) but turn on min_confidence to filter bad buys.
+      # C config: +136.6% / Sharpe 1.57 / DD 9.0% (vs A baseline +77.6% / 0.96 / 14.2%)
       enabled: true
       weight: 20
       min_roc_auc: 0.55
-      log_only: true
-      min_confidence: 0.0
+      log_only: true         # Bonus path OFF (harmful on cs_bear)
+      min_confidence: 0.30   # Veto path ON
       veto_action: "skip"
 
   nostate_no_gate:
