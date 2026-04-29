@@ -927,12 +927,17 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
     ml_signal:
-      enabled: true          # ON — log predictions to signal_factors
-      weight: 20             # Max composite_score bonus/penalty
-      min_roc_auc: 0.55      # Model must exceed to activate
-      log_only: true         # SAFE default — set false to let ML modify composite_score
-      min_confidence: 0.0    # Gating threshold: skip buys below this confidence (0.0 = no gating)
-      veto_action: "skip"    # What to do when below min_confidence: "skip" or "reduce" (half position)
+      # Graduated from log-only Apr 29 2026. Backtest matrix #547-550 (4yr endurance,
+      # 2022-01-01 → 2026-04-28) showed full activation = +66.5pp return, -4pp DD,
+      # +0.78 Sharpe vs log-only baseline. Veto path drives most of the lift; the
+      # bonus path adds ~12pp on top. AUC remains modest (~0.51-0.61 depending on
+      # data slice) but trading lift is reproducible.
+      enabled: true
+      weight: 20             # composite_score bonus = (confidence - 0.5) * weight
+      min_roc_auc: 0.55      # Model must exceed at training time to activate
+      log_only: false        # Bonus path on — model modulates composite_score
+      min_confidence: 0.30   # Veto path on — skip buys with predicted P(win) < 0.30
+      veto_action: "skip"    # "skip" or "reduce" (half position)
 
   # === CORRECTION ZONE STRATEGIES (A/B test vs binary gate) ===
 
