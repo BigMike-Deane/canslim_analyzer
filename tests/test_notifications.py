@@ -20,6 +20,7 @@ from backend.database import init_db, SessionLocal, User, Notification
 from backend.auth import get_current_active_user
 from backend.email_utils import (
     create_notification,
+    broadcast_notification,
     send_trade_webhook,
     send_stop_loss_webhook,
     send_score_crash_warning_push,
@@ -56,11 +57,12 @@ def _ensure_users():
 
 
 def _wipe_notifications():
+    """Wipe ALL notifications between tests, not just our two test users.
+    Broadcast tests fan out to every active user (including the admin user 1
+    seeded by init_db), so scoping the wipe by id leaks rows across tests."""
     db = SessionLocal()
     try:
-        db.query(Notification).filter(
-            Notification.user_id.in_([USER_A_ID, USER_B_ID])
-        ).delete(synchronize_session=False)
+        db.query(Notification).delete(synchronize_session=False)
         db.commit()
     finally:
         db.close()
@@ -167,6 +169,101 @@ class TestDualWrite:
     def test_create_notification_returns_false_for_missing_user(self):
         assert create_notification(0, "trade", "T", "B") is False
         assert create_notification(None, "trade", "T", "B") is False
+
+
+# ── Broadcast helper for system events ───────────────────────────────
+
+class TestBroadcastNotification:
+    """Broadcast fans out to all active users. The shared test DB may have
+    other active users (e.g. the admin seed at id=1) so we assert by user_id
+    rather than total row count, and compare the return value to the actual
+    active count at test time."""
+
+    def _active_count(self):
+        db = SessionLocal()
+        try:
+            return db.query(User).filter(User.is_active == True).count()
+        finally:
+            db.close()
+
+    def test_broadcast_writes_to_every_active_user(self):
+        active = self._active_count()
+        n = broadcast_notification(kind="breakout", title="X up", body="hi",
+                                   priority="high", tags=["fire"],
+                                   data={"ticker": "X"})
+        assert n == active
+        db = SessionLocal()
+        try:
+            for uid in (USER_A_ID, USER_B_ID):
+                row = (db.query(Notification)
+                       .filter_by(user_id=uid, kind="breakout").one())
+                assert row.title == "X up"
+                assert row.priority == "high"
+                assert row.data["ticker"] == "X"
+        finally:
+            db.close()
+
+    def test_broadcast_skips_inactive_users(self):
+        # Add a third user marked inactive — they must NOT receive a row.
+        db = SessionLocal()
+        try:
+            inactive_id = USER_B_ID + 1
+            if not db.query(User).filter_by(id=inactive_id).first():
+                db.add(User(id=inactive_id, email="off@test.com",
+                            display_name="Off", is_active=False, is_admin=False,
+                            hashed_password=""))
+                db.commit()
+        finally:
+            db.close()
+        active_before = self._active_count()
+        n = broadcast_notification(kind="spy_gate_change", title="flip", body="b")
+        assert n == active_before  # excludes the new inactive user
+        db = SessionLocal()
+        try:
+            assert db.query(Notification).filter_by(user_id=inactive_id).count() == 0
+            db.query(Notification).filter_by(user_id=inactive_id).delete()
+            db.query(User).filter_by(id=inactive_id).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_broadcast_returns_zero_when_no_active_users(self):
+        # Temporarily disable every user, then restore.
+        db = SessionLocal()
+        try:
+            db.query(User).update({User.is_active: False}, synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+        try:
+            assert broadcast_notification(kind="risk_alert", title="t", body="b") == 0
+        finally:
+            db = SessionLocal()
+            try:
+                db.query(User).update({User.is_active: True}, synchronize_session=False)
+                db.commit()
+            finally:
+                db.close()
+
+    @patch("backend.email_utils.requests.post")
+    def test_breakout_path_dual_writes(self, mock_post):
+        """Same call shape as breakout_monitor.py — broadcast + ntfy together."""
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+        active = self._active_count()
+        broadcast_notification(kind="breakout", title="AAPL ↑", body="x")
+        from backend.email_utils import send_webhook_notification
+        with patch("backend.email_utils.WEBHOOK_URL", "https://global.example/topic"):
+            send_webhook_notification("AAPL ↑", "x", priority="high")
+        assert mock_post.call_count == 1
+        db = SessionLocal()
+        try:
+            assert db.query(Notification).filter_by(kind="breakout").count() == active
+            # And specifically: both our test users got it
+            for uid in (USER_A_ID, USER_B_ID):
+                assert db.query(Notification).filter_by(
+                    user_id=uid, kind="breakout").count() == 1
+        finally:
+            db.close()
 
 
 # ── Cross-user isolation ─────────────────────────────────────────────

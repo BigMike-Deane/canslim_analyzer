@@ -8,6 +8,7 @@ import smtplib
 import os
 import logging
 import requests
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -266,6 +267,40 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
         return False
 
 
+def broadcast_notification(kind: str, title: str, body: str,
+                           priority: str = "default", tags: list = None,
+                           data: dict = None) -> int:
+    """Persist an in-app notification for every active user.
+
+    Used for system-wide events (breakouts, market regime changes, scan
+    completion, etc.) that aren't tied to any single user's portfolio.
+    Fail-soft: a single bad row never blocks the others or the parallel
+    ntfy POST. Returns the number of rows inserted.
+    """
+    try:
+        from backend.database import SessionLocal, Notification, User
+        db = SessionLocal()
+        try:
+            user_ids = [uid for (uid,) in
+                        db.query(User.id).filter(User.is_active == True).all()]
+            if not user_ids:
+                return 0
+            now = datetime.now(timezone.utc)
+            db.bulk_save_objects([
+                Notification(
+                    user_id=uid, kind=kind, title=title, body=body or "",
+                    priority=priority, tags=tags, data=data, created_at=now,
+                ) for uid in user_ids
+            ])
+            db.commit()
+            return len(user_ids)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to broadcast notification ({kind}): {e}")
+        return 0
+
+
 def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
     """Send webhook notification for Coiled Spring alerts
 
@@ -300,8 +335,10 @@ def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
         "beat_streak": beat_streak,
     }
 
-    return send_webhook_notification(title, message, priority="high", data=data,
-                                     tags=["cyclone", "chart_with_upwards_trend"])
+    tags = ["cyclone", "chart_with_upwards_trend"]
+    broadcast_notification(kind="coiled_spring", title=title, body=message,
+                           priority="high", tags=tags, data=data)
+    return send_webhook_notification(title, message, priority="high", data=data, tags=tags)
 
 
 def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
@@ -400,6 +437,9 @@ def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
     }
     title = titles.get(alert_type, f"Risk Alert: {alert_type}")
     tags = tag_map.get(alert_type, ["warning"])
+    broadcast_notification(kind="risk_alert", title=title, body=details,
+                           priority="high", tags=tags,
+                           data={"alert_type": alert_type})
     return send_webhook_notification(title, details, priority="high", tags=tags)
 
 
@@ -453,8 +493,12 @@ def send_morning_briefing_push(briefing_data: dict) -> bool:
     message = "\n".join(lines)
 
     regime_tags = {"BULLISH": "green_circle", "BEARISH": "red_circle"}.get(regime_name, "yellow_circle")
-    return send_webhook_notification(title, message, priority="default",
-                                     tags=["sunrise", regime_tags])
+    tags = ["sunrise", regime_tags]
+    broadcast_notification(kind="morning_briefing", title=title, body=message,
+                           priority="default", tags=tags,
+                           data={"regime": regime_name, "total_value": total_value,
+                                 "total_return_pct": total_return_pct})
+    return send_webhook_notification(title, message, priority="default", tags=tags)
 
 
 def send_scan_completion_push(stocks_scanned: int, total: int, scan_time: float,
@@ -516,9 +560,12 @@ def send_spy_gate_change_push(new_state: str, spy_price: float, spy_ma50: float)
         f"SPY ${spy_price:.2f} crossed {direction} 50MA ${spy_ma50:.2f} ({diff_pct:+.2f}%)\n"
         f"{action} — nostate_optimized binary gate flipped"
     )
-
-    return send_webhook_notification(title, message, priority="high",
-                                     tags=[emoji, "rotating_light"])
+    tags = [emoji, "rotating_light"]
+    broadcast_notification(kind="spy_gate_change", title=title, body=message,
+                           priority="high", tags=tags,
+                           data={"new_state": new_state, "spy_price": spy_price,
+                                 "spy_ma50": spy_ma50, "diff_pct": diff_pct})
+    return send_webhook_notification(title, message, priority="high", tags=tags)
 
 
 def send_score_crash_warning_push(ticker: str, purchase_score: float, current_score: float,
@@ -576,9 +623,11 @@ def send_bear_base_update_push(total: int, top_candidates: list) -> bool:
         for c in top_candidates[:5]
     )
     message = f"Top: {top_str}\nStocks building quality bases during bear market"
-
-    return send_webhook_notification(title, message, priority="default",
-                                     tags=["bear", "mag"])
+    tags = ["bear", "mag"]
+    broadcast_notification(kind="bear_base_update", title=title, body=message,
+                           priority="default", tags=tags,
+                           data={"total": total, "top": top_candidates[:5]})
+    return send_webhook_notification(title, message, priority="default", tags=tags)
 
 
 def send_market_turn_ready_push(candidates: list, spy_price: float, spy_ma50: float) -> bool:
@@ -598,10 +647,14 @@ def send_market_turn_ready_push(candidates: list, spy_price: float, spy_ma50: fl
         lines.append(f"{c['ticker']}: score {c.get('readiness_score', 0):.0f}, "
                      f"{c.get('base_type', 'base')} {c.get('weeks_in_base', 0)}w")
     message = "\n".join(lines)
-
+    tags = ["green_circle", "rocket", "moneybag"]
+    broadcast_notification(kind="market_turn", title=title, body=message,
+                           priority="urgent", tags=tags,
+                           data={"spy_price": spy_price, "spy_ma50": spy_ma50,
+                                 "candidate_count": len(candidates),
+                                 "top": candidates[:5]})
     return send_webhook_notification(title, message, priority="urgent",
-                                     tags=["green_circle", "rocket", "moneybag"],
-                                     markdown=True)
+                                     tags=tags, markdown=True)
 
 
 def send_bear_market_report_push(report_data: dict) -> bool:
@@ -626,9 +679,11 @@ def send_bear_market_report_push(report_data: dict) -> bool:
         imp_str = ", ".join(g.get("industry", "?")[:20] for g in improving[:3])
         lines.append(f"Improving: {imp_str}")
     message = "\n".join(lines) if lines else "No notable changes this week"
-
-    return send_webhook_notification(title, message, priority="default",
-                                     tags=["bear", "clipboard"])
+    tags = ["bear", "clipboard"]
+    broadcast_notification(kind="bear_market_report", title=title, body=message,
+                           priority="default", tags=tags,
+                           data={"bases_forming": bases})
+    return send_webhook_notification(title, message, priority="default", tags=tags)
 
 
 def send_morning_briefing_email(briefing_data: dict) -> bool:

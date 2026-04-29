@@ -30,7 +30,7 @@ def check_intraday_breakouts():
     Designed to run every 5 min during market hours."""
     from backend.ai_trader import is_market_open
     from backend.database import SessionLocal, Stock
-    from backend.email_utils import send_webhook_notification
+    from backend.email_utils import send_webhook_notification, broadcast_notification
 
     if not is_market_open():
         return
@@ -106,16 +106,28 @@ def check_intraday_breakouts():
             if alert:
                 label, priority, tags = alert
                 base_info = f"{stock.base_type or 'base'} {stock.weeks_in_base or '?'}w" if stock.base_type else ""
-                send_webhook_notification(
-                    title=f"{label}: {stock.ticker} ${price:.2f}",
-                    message=(
-                        f"Score: {stock.canslim_score:.0f} | Pivot: ${stock.pivot_price:.2f} "
-                        f"({pct_from_pivot:+.1f}%)\n"
-                        f"{base_info} | {stock.sector or ''}"
-                    ),
-                    priority=priority,
-                    tags=tags,
+                title = f"{label}: {stock.ticker} ${price:.2f}"
+                message = (
+                    f"Score: {stock.canslim_score:.0f} | Pivot: ${stock.pivot_price:.2f} "
+                    f"({pct_from_pivot:+.1f}%)\n"
+                    f"{base_info} | {stock.sector or ''}"
                 )
+                # In-app: broadcast to every active user (system event, not portfolio-scoped).
+                broadcast_notification(
+                    kind="breakout", title=title, body=message,
+                    priority=priority, tags=tags,
+                    data={"ticker": stock.ticker, "price": price,
+                          "pivot_price": stock.pivot_price,
+                          "pct_from_pivot": pct_from_pivot,
+                          "score": stock.canslim_score,
+                          "sector": stock.sector,
+                          "base_type": stock.base_type,
+                          "weeks_in_base": stock.weeks_in_base,
+                          "label": label},
+                )
+                # ntfy push (legacy global URL — phone alerts).
+                send_webhook_notification(title=title, message=message,
+                                          priority=priority, tags=tags)
                 _recent_alerts[stock.ticker] = now
                 alerts_sent += 1
 
