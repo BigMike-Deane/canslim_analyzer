@@ -46,9 +46,15 @@ MIN_SPEARMAN = 0.15  # Hard gate — regressor must beat this (raised back from 
 def train_model(
     df: pd.DataFrame,
     min_roc_auc: float = MIN_ROC_AUC,
+    min_gain_pct: float = 0.0,
 ) -> dict:
     """
     Train XGBoost model with walk-forward CV.
+
+    min_gain_pct: gain_pct threshold for the positive class. Default 0.0 reproduces
+    historical behavior (any positive return = win). Setting it higher (e.g. 5.0)
+    sharpens the target by treating scratches as losses, which can improve AUC when
+    the dataset has many near-zero outcomes.
 
     Returns dict with:
         model, metrics, feature_importance, cv_results,
@@ -61,16 +67,31 @@ def train_model(
             "error": f"Insufficient data: {0 if X is None else len(X)} samples (need {MIN_TRAINING_SAMPLES})",
         }
 
+    # Apply magnitude-aware label if requested. Default 0.0 leaves y_win unchanged.
+    if min_gain_pct > 0:
+        y_win = (y_gain > min_gain_pct).astype(int)
+
     # Hard gate: require minimum total labeled trades before activation
     if len(X) < MIN_TOTAL_SAMPLES:
         logger.info(f"Data accumulation mode: {len(X)}/{MIN_TOTAL_SAMPLES} samples. "
                     f"Training for metrics only — model will not activate until {MIN_TOTAL_SAMPLES} trades.")
 
     logger.info(f"Training on {len(X)} samples ({len(FEATURE_COLUMNS)} features), "
-                f"{y_win.sum()} wins ({y_win.mean():.1%})")
+                f"{y_win.sum()} wins ({y_win.mean():.1%}) "
+                f"[label threshold: gain > {min_gain_pct}%]")
+
+    # Need both classes present for binary CV
+    if len(np.unique(y_win)) < 2:
+        return {
+            "passed_gate": False,
+            "error": f"Label collapse at min_gain_pct={min_gain_pct}: only one class present",
+        }
+
+    # Pull regime ordinal for per-regime AUC diagnostic. -1 sentinel if absent.
+    regime_arr = X["market_regime"].values if "market_regime" in X.columns else np.full(len(X), -1)
 
     # Walk-forward expanding-window CV
-    cv_results = _walk_forward_cv(X, y_win)
+    cv_results = _walk_forward_cv(X, y_win, regime_arr)
 
     mean_auc = np.mean([f["roc_auc"] for f in cv_results])
     logger.info(f"Walk-forward mean ROC AUC: {mean_auc:.4f} (gate: {min_roc_auc})")
@@ -111,6 +132,7 @@ def train_model(
         "training_samples": len(X),
         "feature_count": len(FEATURE_COLUMNS),
         "win_rate": round(float(y_win.mean()), 4),
+        "min_gain_pct": min_gain_pct,
     }
 
     return result
@@ -255,10 +277,17 @@ def _create_xgb_model() -> XGBClassifier:
     )
 
 
-def _walk_forward_cv(X: pd.DataFrame, y: np.ndarray) -> list:
+def _walk_forward_cv(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    regime: Optional[np.ndarray] = None,
+) -> list:
     """
     Walk-forward expanding-window cross-validation.
     Train on past, test on next window. No future leakage.
+
+    If regime array is provided, also computes per-regime AUC on each fold's test set.
+    Tells us whether the model adds signal beyond the upstream binary SPY gate.
     """
     n = len(X)
     folds = [
@@ -287,15 +316,47 @@ def _walk_forward_cv(X: pd.DataFrame, y: np.ndarray) -> list:
         fold_metrics["fold"] = fold_idx
         fold_metrics["train_size"] = len(X_train)
         fold_metrics["test_size"] = len(X_test)
+
+        if regime is not None:
+            regime_test = regime[train_end:test_end]
+            fold_metrics["per_regime_auc"] = _per_regime_auc(y_test, y_prob, regime_test)
+
         results.append(fold_metrics)
 
+        per_regime_str = ""
+        if regime is not None and "per_regime_auc" in fold_metrics:
+            parts = [f"{k}={v}" for k, v in fold_metrics["per_regime_auc"].items()]
+            per_regime_str = f", per-regime: {{{', '.join(parts)}}}"
         logger.info(
             f"Fold {fold_idx}: AUC={fold_metrics['roc_auc']:.3f}, "
             f"Acc={fold_metrics['accuracy']:.3f}, "
-            f"train={len(X_train)}, test={len(X_test)}"
+            f"train={len(X_train)}, test={len(X_test)}{per_regime_str}"
         )
 
     return results
+
+
+def _per_regime_auc(y_true: np.ndarray, y_prob: np.ndarray, regime: np.ndarray) -> dict:
+    """
+    Compute AUC within each market regime separately.
+    Reveals whether the model adds signal beyond the upstream regime gate.
+    Returns {regime_name: auc_or_none} — None when a regime has too few samples
+    or only one class.
+    """
+    regime_names = {0: "bearish", 1: "neutral", 2: "bullish"}
+    out = {}
+    for code, name in regime_names.items():
+        mask = regime == code
+        n = int(mask.sum())
+        if n < 10:
+            out[name] = None
+            continue
+        yt = y_true[mask]
+        if len(np.unique(yt)) < 2:
+            out[name] = None
+            continue
+        out[name] = round(float(roc_auc_score(yt, y_prob[mask])), 4)
+    return out
 
 
 def _train_baseline(X: pd.DataFrame, y: np.ndarray) -> dict:

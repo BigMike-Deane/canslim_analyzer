@@ -29,15 +29,20 @@ from ml.feature_extractor import (
     get_feature_matrix,
 )
 
-# CS-specific feature columns for test validation
-CS_FEATURE_COLUMNS = [
-    "cs_weeks_in_base", "cs_beat_streak", "cs_days_to_earnings",
+# CS-specific signal_factors keys retained for capture but pruned from FEATURE_COLUMNS in v13.
+# Keep this list so we can verify the prune in test_feature_count_is_24.
+PRUNED_FEATURE_COLUMNS = [
+    "coiled_spring",
+    "cs_weeks_in_base",
+    "cs_beat_streak",
+    "cs_days_to_earnings",
+    "days_since_spy_pullback",
 ]
 
-# Price action feature columns
+# Price action feature columns (in FEATURE_COLUMNS)
 PRICE_ACTION_COLUMNS = [
     "relative_volume", "pct_from_21ma", "pct_from_50ma",
-    "atr_pct", "sector_rs_rank", "days_since_spy_pullback",
+    "atr_pct", "sector_rs_rank",
 ]
 from ml.model import get_ml_prediction, reload_model
 from ml.trainer import (
@@ -206,10 +211,10 @@ class TestExtractFeatures:
         assert f["composite_score"] == 55.3
         assert f["entry_type"] == 0  # breakout
         assert f["market_regime"] == 2  # bullish
-        assert f["coiled_spring"] == 1
         assert f["soft_zone"] == 1
         # Removed features should not be in output
         assert "soft_zone_multiplier" not in f
+        assert "coiled_spring" not in f  # pruned in v13
         # v11: deterministic_boost is restored
         assert "deterministic_boost" in f
 
@@ -231,8 +236,9 @@ class TestExtractFeatures:
             "estimate_revision_bonus": 0,
         })
         f = _extract_features(trade)
-        assert f["coiled_spring"] == 0
         assert f["soft_zone"] == 0
+        # Pruned in v13 — must not appear regardless of signal_factors
+        assert "coiled_spring" not in f
 
     def test_nan_canslim_score(self):
         trade = _make_trade(canslim_score=float("nan"))
@@ -249,34 +255,32 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_29(self):
-        """Verify v12: 29 features (v11 + continuous volume_dry_up_score)."""
-        assert len(FEATURE_COLUMNS) == 29
-        # Still removed features
+    def test_feature_count_is_24(self):
+        """Verify v13: 24 features (pruned 5 zero-importance features from v12)."""
+        assert len(FEATURE_COLUMNS) == 24
+        # Pruned in v13 (zero importance in active v9 model)
+        for col in PRUNED_FEATURE_COLUMNS:
+            assert col not in FEATURE_COLUMNS, f"{col} should have been pruned in v13"
+        # Earlier removals still excluded
         assert "soft_zone_multiplier" not in FEATURE_COLUMNS
         assert "cs_c_score" not in FEATURE_COLUMNS
-        assert "cs_institutional_pct" not in FEATURE_COLUMNS
-        assert "cs_quality_rank" not in FEATURE_COLUMNS
-        # v11: restored features
+        # v13: retained signal-carrying features
         assert "deterministic_boost" in FEATURE_COLUMNS
         assert "rs_line_bonus" in FEATURE_COLUMNS
-        assert "days_since_spy_pullback" in FEATURE_COLUMNS
-        # v12: continuous dry-up
+        assert "earnings_drift_bonus" in FEATURE_COLUMNS
+        # v12: continuous dry-up retained
         assert "volume_dry_up_score" in FEATURE_COLUMNS
-        assert "volume_dry_up" in FEATURE_COLUMNS  # boolean retained
-        # v11: new CANSLIM components
+        assert "volume_dry_up" in FEATURE_COLUMNS
+        # v11: CANSLIM components retained
         assert "c_score" in FEATURE_COLUMNS
         assert "a_score" in FEATURE_COLUMNS
-        # Kept CS features
-        for col in CS_FEATURE_COLUMNS:
-            assert col in FEATURE_COLUMNS
         for col in PRICE_ACTION_COLUMNS:
             assert col in FEATURE_COLUMNS
 
 
-class TestCSFeatureExtraction:
-    def test_cs_trade_has_all_cs_features(self):
-        """CS trades should populate the 3 kept CS-specific features."""
+class TestPrunedFeatures:
+    def test_pruned_features_excluded_from_matrix(self):
+        """v13: pruned features must not appear in the extracted feature matrix."""
         trade = _make_trade(signal_factors={
             "entry_type": "standard",
             "market_regime": "bullish",
@@ -286,42 +290,11 @@ class TestCSFeatureExtraction:
             "cs_weeks_in_base": 20,
             "cs_beat_streak": 5,
             "cs_days_to_earnings": 7,
+            "days_since_spy_pullback": 10,
         })
         f = _extract_features(trade)
-        assert f["coiled_spring"] == 1
-        assert f["cs_weeks_in_base"] == 20
-        assert f["cs_beat_streak"] == 5
-        assert f["cs_days_to_earnings"] == 7
-
-    def test_non_cs_trade_has_zero_cs_features(self):
-        """Non-CS trades should have 0 for all CS features."""
-        trade = _make_trade(signal_factors={
-            "entry_type": "standard",
-            "market_regime": "neutral",
-            "composite_score": 40.0,
-            "estimate_revision_bonus": 0,
-        })
-        f = _extract_features(trade)
-        assert f["coiled_spring"] == 0
-        for col in CS_FEATURE_COLUMNS:
-            assert f[col] == 0.0, f"{col} should be 0 for non-CS trade"
-
-    def test_cs_trade_with_nan_values(self):
-        """CS features with NaN values should be safely converted to 0."""
-        trade = _make_trade(signal_factors={
-            "entry_type": "standard",
-            "market_regime": "bullish",
-            "composite_score": 50.0,
-            "estimate_revision_bonus": 0,
-            "coiled_spring": True,
-            "cs_weeks_in_base": float("nan"),
-            "cs_beat_streak": None,
-            "cs_days_to_earnings": 5,
-        })
-        f = _extract_features(trade)
-        assert f["cs_weeks_in_base"] == 0.0
-        assert f["cs_beat_streak"] == 0.0
-        assert f["cs_days_to_earnings"] == 5
+        for col in PRUNED_FEATURE_COLUMNS:
+            assert col not in f, f"{col} was pruned in v13 but still appears in extracted features"
 
 
 class TestPriceActionFeatures:
@@ -345,8 +318,8 @@ class TestPriceActionFeatures:
         assert f["pct_from_50ma"] == 3.1
         assert f["atr_pct"] == 2.8
         assert f["sector_rs_rank"] == 75.0
-        # v11: days_since_spy_pullback restored
-        assert f["days_since_spy_pullback"] == 12
+        # days_since_spy_pullback pruned in v13
+        assert "days_since_spy_pullback" not in f
 
     def test_missing_price_action_defaults(self):
         """Missing price action features should default safely."""
@@ -686,6 +659,38 @@ class TestTrainModel:
             assert len(result["feature_importance"]) == len(FEATURE_COLUMNS)
             total = sum(result["feature_importance"].values())
             assert 0.9 < total < 1.1
+
+    def test_min_gain_pct_default_preserves_behavior(self):
+        """min_gain_pct=0.0 (default) reproduces historical win definition."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result_default = train_model(df, min_roc_auc=0.0)
+        result_zero = train_model(df, min_roc_auc=0.0, min_gain_pct=0.0)
+        # Same win_rate either way (label unchanged)
+        assert result_default.get("win_rate") == result_zero.get("win_rate")
+        assert result_zero.get("min_gain_pct") == 0.0
+
+    def test_min_gain_pct_tightens_label(self):
+        """Raising min_gain_pct shrinks the positive class."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result_loose = train_model(df, min_roc_auc=0.0, min_gain_pct=0.0)
+        result_strict = train_model(df, min_roc_auc=0.0, min_gain_pct=10.0)
+        # Strict label must produce no more wins than loose label
+        assert result_strict.get("win_rate", 1.0) <= result_loose.get("win_rate", 0.0) + 1e-9
+        assert result_strict.get("min_gain_pct") == 10.0
+
+    def test_per_regime_auc_computed_in_folds(self):
+        """Walk-forward CV folds should include per_regime_auc dict when regime feature is present."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0)
+        cv_results = result.get("cv_results", [])
+        assert len(cv_results) > 0
+        for fold in cv_results:
+            assert "per_regime_auc" in fold
+            pra = fold["per_regime_auc"]
+            # Keys are regime names; values are float AUC or None when too few samples
+            assert set(pra.keys()) <= {"bearish", "neutral", "bullish"}
+            for v in pra.values():
+                assert v is None or 0.0 <= v <= 1.0
 
 
 # ============== Regression Trainer Tests ==============
