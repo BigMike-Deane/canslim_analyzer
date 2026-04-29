@@ -365,6 +365,9 @@ def run_migrations():
         ('ix_backtest_runs_user_created', 'backtest_runs', 'user_id, created_at'),
         ('ix_coiled_spring_alerts_outcome_date', 'coiled_spring_alerts', 'outcome, alert_date'),
         ('ix_earnings_audits_date_confidence', 'earnings_audits', 'audited_at, fundamental_confidence'),
+        # In-app notifications (Apr 2026)
+        ('ix_notifications_user_read_created', 'notifications', 'user_id, read_at, created_at'),
+        ('ix_notifications_user_created', 'notifications', 'user_id, created_at'),
     ]
 
     with engine.begin() as conn:
@@ -1301,4 +1304,38 @@ class BearBaseCandidate(Base):
     __table_args__ = (
         Index('ix_bear_base_readiness', 'readiness_score'),
         Index('ix_bear_base_ticker_updated', 'ticker', 'last_updated'),
+    )
+
+
+class Notification(Base):
+    """Per-user in-app notification.
+
+    Dual-write target: the existing send_*_webhook helpers continue to fire ntfy
+    (when a user has webhook_url set); they also create a row here so the user
+    can read recent activity inside the app even if their phone push failed or
+    their URL is blank. Scoped strictly by user_id — never list across users.
+    """
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # 'trade', 'stop_loss', 'score_crash', etc. Free-form so future event types
+    # can be added without a migration.
+    kind = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=False, default="")
+
+    # Mirrors ntfy priority: 'low', 'default', 'high', 'urgent'
+    priority = Column(String, default="default")
+    tags = Column(JSON, nullable=True)   # list[str], optional ntfy emoji tags
+    data = Column(JSON, nullable=True)   # arbitrary structured payload (ticker, price, etc.)
+
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __table_args__ = (
+        # Hot path: list a user's notifications newest-first, unread on top.
+        Index('ix_notifications_user_read_created', 'user_id', 'read_at', 'created_at'),
+        Index('ix_notifications_user_created', 'user_id', 'created_at'),
     )

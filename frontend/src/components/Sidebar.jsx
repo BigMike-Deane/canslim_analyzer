@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../auth'
+import NotificationBell from './NotificationBell'
 
 const navGroups = [
   {
@@ -120,10 +121,15 @@ export default function Sidebar({ collapsed, onToggle }) {
         )}
       </div>
 
+      {/* Notifications bell */}
+      <div className="mx-2 mt-3">
+        <NotificationBell collapsed={collapsed} />
+      </div>
+
       {/* Search shortcut */}
       <button
         onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
-        className={`mx-2 mt-3 mb-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-dark-500 hover:text-dark-300 bg-dark-800/50 border border-dark-700/40 hover:border-dark-600 transition-colors ${collapsed ? 'justify-center' : ''}`}
+        className={`mx-2 mt-2 mb-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-dark-500 hover:text-dark-300 bg-dark-800/50 border border-dark-700/40 hover:border-dark-600 transition-colors ${collapsed ? 'justify-center' : ''}`}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
           <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />

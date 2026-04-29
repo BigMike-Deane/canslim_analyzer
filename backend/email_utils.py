@@ -232,6 +232,40 @@ def get_user_webhook_url(user_id: int) -> str:
         return ""
 
 
+def create_notification(user_id: int, kind: str, title: str, body: str,
+                        priority: str = "default", tags: list = None,
+                        data: dict = None) -> bool:
+    """Persist an in-app notification for a user. Fail-soft: any DB error is
+    logged and swallowed so notification creation never blocks the trade
+    pipeline or the parallel ntfy POST.
+
+    Returns True on insert, False on any error or if user_id is missing.
+    """
+    if not user_id:
+        return False
+    try:
+        from backend.database import SessionLocal, Notification
+        db = SessionLocal()
+        try:
+            note = Notification(
+                user_id=user_id,
+                kind=kind,
+                title=title,
+                body=body or "",
+                priority=priority,
+                tags=tags,
+                data=data,
+            )
+            db.add(note)
+            db.commit()
+            return True
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to create notification for user {user_id} ({kind}): {e}")
+        return False
+
+
 def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
     """Send webhook notification for Coiled Spring alerts
 
@@ -301,6 +335,12 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
     else:
         tags = ["money_with_wings", "chart_with_downwards_trend"]
 
+    create_notification(
+        user_id, kind="trade", title=title, body=message, priority="high", tags=tags,
+        data={"ticker": ticker, "action": action, "shares": shares, "price": price,
+              "gain_pct": gain_pct, "reason": reason},
+    )
+
     url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="high", tags=tags, url=url)
 
@@ -323,11 +363,17 @@ def send_stop_loss_webhook(ticker: str, shares: float, price: float,
     """
     title = f"{stop_type}: {ticker}"
     message = f"{ticker}: {shares:.2f} shares @ ${price:.2f} ({loss_pct:+.1f}%)\nAutomatic stop triggered"
+    tags = ["rotating_light", "chart_with_downwards_trend"]
+
+    create_notification(
+        user_id, kind="stop_loss", title=title, body=message, priority="urgent", tags=tags,
+        data={"ticker": ticker, "shares": shares, "price": price,
+              "stop_type": stop_type, "loss_pct": loss_pct},
+    )
 
     url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="urgent",
-                                     tags=["rotating_light", "chart_with_downwards_trend"],
-                                     url=url)
+                                     tags=tags, url=url)
 
 
 def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
@@ -500,11 +546,18 @@ def send_score_crash_warning_push(ticker: str, purchase_score: float, current_sc
         f"{consecutive_low}/{consecutive_required} low scans - "
         f"{remaining} more before auto-sell"
     )
+    tags = ["warning", "chart_with_downwards_trend"]
+
+    create_notification(
+        user_id, kind="score_crash", title=title, body=message, priority="high", tags=tags,
+        data={"ticker": ticker, "purchase_score": purchase_score, "current_score": current_score,
+              "gain_pct": gain_pct, "consecutive_low": consecutive_low,
+              "consecutive_required": consecutive_required},
+    )
 
     url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="high",
-                                     tags=["warning", "chart_with_downwards_trend"],
-                                     url=url)
+                                     tags=tags, url=url)
 
 
 def send_bear_base_update_push(total: int, top_candidates: list) -> bool:

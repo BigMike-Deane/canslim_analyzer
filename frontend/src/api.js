@@ -28,6 +28,8 @@ const CACHE_TTL = {
   '/api/trade-journal': 120,          // 2 min
   '/api/bear-base': 300,               // 5 min
   '/api/system-health': 30,            // 30 sec (monitoring)
+  '/api/notifications': 15,            // 15 sec — list + bell dropdown
+  '/api/notifications/unread-count': 15,
 }
 
 function getCacheTTL(endpoint) {
@@ -143,6 +145,39 @@ export const api = {
   }),
 
   testMyWebhook: () => request('/api/auth/me/webhook/test', { method: 'POST' }),
+
+  // Notifications (in-app, per-user)
+  getNotifications: (params = {}) => {
+    const sp = new URLSearchParams()
+    if (params.unread_only) sp.set('unread_only', 'true')
+    if (params.limit) sp.set('limit', params.limit)
+    if (params.offset != null) sp.set('offset', params.offset)
+    const q = sp.toString()
+    return request(`/api/notifications${q ? `?${q}` : ''}`)
+  },
+
+  getUnreadNotificationCount: () => request('/api/notifications/unread-count'),
+
+  markNotificationRead: async (id) => {
+    const result = await request(`/api/notifications/${id}/read`, { method: 'POST' })
+    cache.invalidate('/api/notifications')
+    cache.invalidate('/api/notifications/unread-count')
+    return result
+  },
+
+  markAllNotificationsRead: async () => {
+    const result = await request('/api/notifications/read-all', { method: 'POST' })
+    cache.invalidate('/api/notifications')
+    cache.invalidate('/api/notifications/unread-count')
+    return result
+  },
+
+  deleteNotification: async (id) => {
+    const result = await request(`/api/notifications/${id}`, { method: 'DELETE' })
+    cache.invalidate('/api/notifications')
+    cache.invalidate('/api/notifications/unread-count')
+    return result
+  },
 
   // Health
   getHealth: () => request('/health'),

@@ -5354,10 +5354,12 @@ from backend.routes.fidelity import router as fidelity_router
 from backend.routes.auth import router as auth_router
 from backend.routes.admin import router as admin_router
 from backend.routes.ml import router as ml_router
+from backend.routes.notifications import router as notifications_router
 app.include_router(fidelity_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(ml_router)
+app.include_router(notifications_router)
 
 # ============== Serve Frontend ==============
 

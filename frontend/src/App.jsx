@@ -30,6 +30,7 @@ import SectorRotation from './pages/SectorRotation'
 import SystemHealth from './pages/SystemHealth'
 import PortfolioSummary from './pages/PortfolioSummary'
 import Settings from './pages/Settings'
+import Notifications from './pages/Notifications'
 
 function AppContent() {
   const { user, loading } = useAuth()
@@ -82,6 +83,7 @@ function AppContent() {
             <Route path="/portfolio-summary" element={<PortfolioSummary />} />
             <Route path="/system-health" element={<SystemHealth />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/notifications" element={<Notifications />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </div>
