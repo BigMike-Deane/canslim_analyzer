@@ -146,6 +146,16 @@ export const api = {
 
   testMyWebhook: () => request('/api/auth/me/webhook/test', { method: 'POST' }),
 
+  // Web Push (per-device, native browser notifications)
+  getVapidPublicKey: () => request('/api/push/vapid-public-key'),
+  subscribePush: (subscription) => request('/api/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify(subscription),
+  }),
+  listPushSubscriptions: () => request('/api/push/subscriptions'),
+  deletePushSubscription: (id) => request(`/api/push/subscriptions/${id}`, { method: 'DELETE' }),
+  testPush: () => request('/api/push/test', { method: 'POST' }),
+
   // Notifications (in-app, per-user)
   getNotifications: (params = {}) => {
     const sp = new URLSearchParams()

@@ -22,6 +22,46 @@ self.addEventListener('activate', (event) => {
   self.clients.claim()
 })
 
+// Push: incoming Web Push from backend → show system notification.
+// Payload shape (set by backend/email_utils.py): {title, body, data}
+self.addEventListener('push', (event) => {
+  if (!event.data) return
+  let payload
+  try { payload = event.data.json() }
+  catch { payload = { title: 'CANSLIM', body: event.data.text() } }
+
+  const title = payload.title || 'CANSLIM'
+  const opts = {
+    body: payload.body || '',
+    icon: '/icons/icon-192.svg',
+    badge: '/icons/icon-192.svg',
+    data: payload.data || {},
+    tag: payload.data?.kind || 'canslim',
+    renotify: true,
+  }
+  event.waitUntil(self.registration.showNotification(title, opts))
+})
+
+// Notification click: focus an existing tab or open the right path.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const targetUrl = event.notification.data?.url || '/notifications'
+  event.waitUntil((async () => {
+    const clientsArr = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    for (const client of clientsArr) {
+      const url = new URL(client.url)
+      if (url.origin === self.location.origin) {
+        await client.focus()
+        if ('navigate' in client) {
+          try { await client.navigate(targetUrl) } catch {}
+        }
+        return
+      }
+    }
+    if (self.clients.openWindow) await self.clients.openWindow(targetUrl)
+  })())
+})
+
 // Fetch: network-first for API, cache-first for static
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)

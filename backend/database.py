@@ -368,6 +368,8 @@ def run_migrations():
         # In-app notifications (Apr 2026)
         ('ix_notifications_user_read_created', 'notifications', 'user_id, read_at, created_at'),
         ('ix_notifications_user_created', 'notifications', 'user_id, created_at'),
+        # Web Push subscriptions (Apr 2026)
+        ('ix_push_subscriptions_user', 'push_subscriptions', 'user_id'),
     ]
 
     with engine.begin() as conn:
@@ -1304,6 +1306,33 @@ class BearBaseCandidate(Base):
     __table_args__ = (
         Index('ix_bear_base_readiness', 'readiness_score'),
         Index('ix_bear_base_ticker_updated', 'ticker', 'last_updated'),
+    )
+
+
+class PushSubscription(Base):
+    """Web Push subscription for a user's device.
+
+    One row per (user, device). Created when the user enables push from the
+    Settings page; the browser hands us a unique endpoint URL that we POST
+    to when we want to deliver a push. Endpoint URLs are unguessable random
+    strings — the UNIQUE constraint prevents duplicate rows when a phone
+    re-subscribes (e.g. after clearing site data).
+    """
+    __tablename__ = "push_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False, unique=True)
+    # ECDH public key (Base64URL) the browser uses to encrypt push payloads.
+    p256dh_key = Column(String, nullable=False)
+    # 16-byte random shared-secret seed (Base64URL) for the same encryption.
+    auth_key = Column(String, nullable=False)
+    user_agent = Column(String, nullable=True)  # for the device list UI
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('ix_push_subscriptions_user', 'user_id'),
     )
 
 

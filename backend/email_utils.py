@@ -236,14 +236,14 @@ def get_user_webhook_url(user_id: int) -> str:
 def create_notification(user_id: int, kind: str, title: str, body: str,
                         priority: str = "default", tags: list = None,
                         data: dict = None) -> bool:
-    """Persist an in-app notification for a user. Fail-soft: any DB error is
-    logged and swallowed so notification creation never blocks the trade
-    pipeline or the parallel ntfy POST.
-
-    Returns True on insert, False on any error or if user_id is missing.
+    """Persist an in-app notification for a user AND fan out a Web Push to
+    every device they've registered. Fail-soft on every step — a DB error
+    or push failure never blocks the trade pipeline or the parallel ntfy
+    POST. Returns True on DB insert success.
     """
     if not user_id:
         return False
+    inserted = False
     try:
         from backend.database import SessionLocal, Notification
         db = SessionLocal()
@@ -259,46 +259,178 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
             )
             db.add(note)
             db.commit()
-            return True
+            inserted = True
         finally:
             db.close()
     except Exception as e:
         logger.warning(f"Failed to create notification for user {user_id} ({kind}): {e}")
-        return False
+
+    # Push delivery is independent — fire even if DB insert failed; that way
+    # users still get phone alerts during a degraded-DB window.
+    try:
+        urgency = "high" if priority in ("high", "urgent") else "normal"
+        push_data = {"kind": kind, **(data or {})}
+        if "url" not in push_data:
+            ticker = (data or {}).get("ticker")
+            push_data["url"] = f"/stock/{ticker}" if ticker else "/notifications"
+        send_web_push_to_user(user_id, title=title, body=body, data=push_data, urgency=urgency)
+    except Exception as e:
+        logger.warning(f"Web push for user {user_id} ({kind}) failed: {e}")
+    return inserted
+
+
+def _send_web_push_to_subscriptions(subscriptions, title: str, body: str,
+                                    data: dict = None, urgency: str = "normal") -> int:
+    """Internal: deliver a Web Push payload to a set of PushSubscription rows.
+
+    Returns count of successful deliveries. Subscriptions that the browser
+    vendor reports as gone (HTTP 410, 404) are auto-pruned — phones that
+    cleared site data, uninstalled the PWA, or revoked permission.
+
+    Failures other than 410/404 are logged and counted as "not sent" but
+    don't raise — the in-app DB row is the canonical record.
+    """
+    if not subscriptions:
+        return 0
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        logger.warning("pywebpush not installed — skipping web push delivery")
+        return 0
+
+    private_key = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+    subject = os.environ.get("VAPID_SUBJECT", "mailto:admin@canslim.local").strip()
+    if not private_key:
+        return 0
+
+    import json as _json
+    from backend.database import SessionLocal, PushSubscription
+
+    payload = _json.dumps({
+        "title": title, "body": body or "",
+        "data": data or {},
+    })
+    sent = 0
+    expired_ids = []
+    for sub in subscriptions:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub.endpoint,
+                    "keys": {"p256dh": sub.p256dh_key, "auth": sub.auth_key},
+                },
+                data=payload,
+                vapid_private_key=private_key,
+                vapid_claims={"sub": subject},
+                headers={"Urgency": urgency},
+            )
+            sent += 1
+        except WebPushException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (404, 410):
+                expired_ids.append(sub.id)
+            else:
+                logger.warning(f"WebPush failed for sub={sub.id}: {e}")
+        except Exception as e:
+            logger.warning(f"WebPush error for sub={sub.id}: {e}")
+
+    if expired_ids:
+        db = SessionLocal()
+        try:
+            db.query(PushSubscription).filter(
+                PushSubscription.id.in_(expired_ids)
+            ).delete(synchronize_session=False)
+            db.commit()
+            logger.info(f"Pruned {len(expired_ids)} expired push subscriptions")
+        except Exception as e:
+            logger.warning(f"Failed to prune expired subscriptions: {e}")
+        finally:
+            db.close()
+    return sent
+
+
+def send_web_push_to_user(user_id: int, title: str, body: str,
+                          data: dict = None, urgency: str = "normal") -> int:
+    """Deliver a Web Push to every device the user has registered."""
+    if not user_id:
+        return 0
+    try:
+        from backend.database import SessionLocal, PushSubscription
+        db = SessionLocal()
+        try:
+            subs = db.query(PushSubscription).filter(
+                PushSubscription.user_id == user_id
+            ).all()
+            return _send_web_push_to_subscriptions(subs, title, body, data, urgency)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to load push subscriptions for user {user_id}: {e}")
+        return 0
+
+
+def send_web_push_broadcast(title: str, body: str, data: dict = None,
+                            urgency: str = "normal") -> int:
+    """Deliver a Web Push to every device of every active user."""
+    try:
+        from backend.database import SessionLocal, PushSubscription, User
+        db = SessionLocal()
+        try:
+            subs = (db.query(PushSubscription)
+                    .join(User, User.id == PushSubscription.user_id)
+                    .filter(User.is_active == True)
+                    .all())
+            return _send_web_push_to_subscriptions(subs, title, body, data, urgency)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to broadcast web push: {e}")
+        return 0
 
 
 def broadcast_notification(kind: str, title: str, body: str,
                            priority: str = "default", tags: list = None,
                            data: dict = None) -> int:
-    """Persist an in-app notification for every active user.
+    """Persist an in-app notification for every active user AND fan out a
+    Web Push to every active user's devices.
 
-    Used for system-wide events (breakouts, market regime changes, scan
-    completion, etc.) that aren't tied to any single user's portfolio.
-    Fail-soft: a single bad row never blocks the others or the parallel
-    ntfy POST. Returns the number of rows inserted.
+    Used for system-wide events (breakouts, market regime changes, etc.)
+    that aren't tied to any single user's portfolio. Fail-soft at every
+    step. Returns the number of DB rows inserted.
     """
+    inserted = 0
     try:
         from backend.database import SessionLocal, Notification, User
         db = SessionLocal()
         try:
             user_ids = [uid for (uid,) in
                         db.query(User.id).filter(User.is_active == True).all()]
-            if not user_ids:
-                return 0
-            now = datetime.now(timezone.utc)
-            db.bulk_save_objects([
-                Notification(
-                    user_id=uid, kind=kind, title=title, body=body or "",
-                    priority=priority, tags=tags, data=data, created_at=now,
-                ) for uid in user_ids
-            ])
-            db.commit()
-            return len(user_ids)
+            if user_ids:
+                now = datetime.now(timezone.utc)
+                db.bulk_save_objects([
+                    Notification(
+                        user_id=uid, kind=kind, title=title, body=body or "",
+                        priority=priority, tags=tags, data=data, created_at=now,
+                    ) for uid in user_ids
+                ])
+                db.commit()
+                inserted = len(user_ids)
         finally:
             db.close()
     except Exception as e:
         logger.warning(f"Failed to broadcast notification ({kind}): {e}")
-        return 0
+
+    # Independent push fan-out — fire even if the DB insert failed.
+    try:
+        urgency = "high" if priority in ("high", "urgent") else "normal"
+        push_data = {"kind": kind, **(data or {})}
+        if "url" not in push_data:
+            ticker = (data or {}).get("ticker")
+            push_data["url"] = f"/stock/{ticker}" if ticker else "/notifications"
+        send_web_push_broadcast(title=title, body=body, data=push_data, urgency=urgency)
+    except Exception as e:
+        logger.warning(f"Web push broadcast ({kind}) failed: {e}")
+    return inserted
 
 
 def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
