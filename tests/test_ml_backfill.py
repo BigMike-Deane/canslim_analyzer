@@ -21,8 +21,10 @@ from backend.database import (
     AIPortfolioTrade,
     MLModel,
     MLPrediction,
+    Stock,
+    StockScore,
 )
-from backend.ml_backfill import backfill_actual_outcomes
+from backend.ml_backfill import backfill_actual_outcomes, counterfactual_backfill
 
 
 @pytest.fixture
@@ -32,6 +34,8 @@ def db_session():
     db.query(MLPrediction).delete()
     db.query(MLModel).delete()
     db.query(AIPortfolioTrade).delete()
+    db.query(StockScore).delete()
+    db.query(Stock).filter(Stock.ticker.like('CF_%')).delete()
     db.commit()
     try:
         yield db
@@ -39,6 +43,8 @@ def db_session():
         db.query(MLPrediction).delete()
         db.query(MLModel).delete()
         db.query(AIPortfolioTrade).delete()
+        db.query(StockScore).delete()
+        db.query(Stock).filter(Stock.ticker.like('CF_%')).delete()
         db.commit()
         db.close()
 
@@ -261,3 +267,132 @@ class TestBackfillCore:
 
         assert p.actual_outcome == 1
         assert p.actual_gain_pct == pytest.approx(10.0)
+
+
+# ── Counterfactual backfill tests ────────────────────────────────────
+
+
+def _make_stock(db, ticker="CF_FOO"):
+    s = Stock(ticker=ticker, name=f"{ticker} Inc.", sector="Tech", current_price=100.0)
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+def _make_score(db, stock_id, on_date, price):
+    db.add(StockScore(
+        stock_id=stock_id, date=on_date,
+        timestamp=datetime.combine(on_date, datetime.min.time()),
+        total_score=70.0, c_score=12, a_score=11, n_score=10,
+        s_score=12, l_score=11, i_score=8, m_score=11,
+        current_price=price,
+    ))
+    db.commit()
+
+
+class TestCounterfactualBackfill:
+    def test_synthesizes_winner_outcome(self, db_session):
+        m = _make_model(db_session)
+        s = _make_stock(db_session, "CF_WIN")
+        # Prediction 30 days ago — old enough that 21 days of post-data exists.
+        pred_date = date.today() - timedelta(days=30)
+        p = _make_prediction(db_session, m.id, "CF_WIN", pred_date, ml_confidence=0.18)
+
+        # Price doubled in 21 days — clear winner under min_gain_pct=10.0.
+        _make_score(db_session, s.id, pred_date, price=50.0)
+        _make_score(db_session, s.id, pred_date + timedelta(days=21), price=100.0)
+
+        result = counterfactual_backfill(db_session, lookback_days=60, hold_days=21, min_gain_pct=10.0)
+        db_session.commit()
+
+        assert result["updated"] == 1
+        assert p.actual_outcome == 1
+        assert p.actual_gain_pct == pytest.approx(100.0)
+
+    def test_synthesizes_loser_outcome(self, db_session):
+        m = _make_model(db_session)
+        s = _make_stock(db_session, "CF_LOSE")
+        pred_date = date.today() - timedelta(days=30)
+        p = _make_prediction(db_session, m.id, "CF_LOSE", pred_date, ml_confidence=0.10)
+
+        # Price drifted +3% in 21 days — under 10% threshold, labeled loser.
+        _make_score(db_session, s.id, pred_date, price=100.0)
+        _make_score(db_session, s.id, pred_date + timedelta(days=21), price=103.0)
+
+        counterfactual_backfill(db_session, lookback_days=60, hold_days=21, min_gain_pct=10.0)
+        db_session.commit()
+
+        assert p.actual_outcome == 0
+        assert p.actual_gain_pct == pytest.approx(3.0)
+
+    def test_skips_predictions_with_real_buy(self, db_session):
+        # Realized backfill owns these — counterfactual must not double-touch.
+        m = _make_model(db_session)
+        s = _make_stock(db_session, "CF_REAL")
+        pred_date = date.today() - timedelta(days=30)
+        p = _make_prediction(db_session, m.id, "CF_REAL", pred_date, ml_confidence=0.55)
+
+        buy_at = datetime.combine(pred_date, datetime.min.time()) + timedelta(hours=10)
+        _make_trade(db_session, "CF_REAL", "BUY", buy_at, price=100, shares=10)
+        _make_score(db_session, s.id, pred_date, price=100.0)
+        _make_score(db_session, s.id, pred_date + timedelta(days=21), price=130.0)
+
+        result = counterfactual_backfill(db_session, lookback_days=60)
+        db_session.commit()
+
+        assert result["skipped_has_buy"] == 1
+        assert p.actual_outcome is None  # Left for realized backfill.
+
+    def test_skips_predictions_too_recent_to_evaluate(self, db_session):
+        # We need hold_days of post-prediction price. A prediction from yesterday
+        # can't be backfilled yet — there's no future data to look at.
+        m = _make_model(db_session)
+        _make_stock(db_session, "CF_NEW")
+        pred_date = date.today() - timedelta(days=2)
+        p = _make_prediction(db_session, m.id, "CF_NEW", pred_date, ml_confidence=0.20)
+
+        result = counterfactual_backfill(db_session, lookback_days=60, hold_days=21)
+        db_session.commit()
+
+        assert result["checked"] == 0
+        assert p.actual_outcome is None
+
+    def test_no_price_data_skips_gracefully(self, db_session):
+        # Stock exists but has no StockScore rows — can't compute outcome.
+        m = _make_model(db_session)
+        _make_stock(db_session, "CF_NOPRICE")
+        pred_date = date.today() - timedelta(days=30)
+        p = _make_prediction(db_session, m.id, "CF_NOPRICE", pred_date, ml_confidence=0.20)
+
+        result = counterfactual_backfill(db_session, lookback_days=60)
+        db_session.commit()
+
+        assert result["no_price_data"] == 1
+        assert p.actual_outcome is None
+
+    def test_idempotent_rerun(self, db_session):
+        m = _make_model(db_session)
+        s = _make_stock(db_session, "CF_IDEM")
+        pred_date = date.today() - timedelta(days=30)
+        _make_prediction(db_session, m.id, "CF_IDEM", pred_date, ml_confidence=0.15)
+        _make_score(db_session, s.id, pred_date, price=50.0)
+        _make_score(db_session, s.id, pred_date + timedelta(days=21), price=80.0)
+
+        first = counterfactual_backfill(db_session, lookback_days=60)
+        db_session.commit()
+        second = counterfactual_backfill(db_session, lookback_days=60)
+        db_session.commit()
+
+        assert first["updated"] == 1
+        assert second["checked"] == 0
+        assert second["updated"] == 0
+
+    def test_lookback_window_excludes_old_predictions(self, db_session):
+        m = _make_model(db_session)
+        _make_stock(db_session, "CF_OLD")
+        pred_date = date.today() - timedelta(days=200)
+        _make_prediction(db_session, m.id, "CF_OLD", pred_date, ml_confidence=0.15)
+
+        result = counterfactual_backfill(db_session, lookback_days=90)
+        assert result["checked"] == 0

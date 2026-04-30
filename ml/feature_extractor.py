@@ -208,6 +208,18 @@ def _is_ml_contaminated(run) -> bool:
     if not overrides:
         return False
 
+    # profile_overrides is JSON in the ORM but stored as TEXT in production
+    # Postgres — older rows come back as strings. Match the defensive pattern
+    # used in backtest_queue.py (commit f17960c).
+    if isinstance(overrides, str):
+        try:
+            import json
+            overrides = json.loads(overrides)
+        except (ValueError, TypeError):
+            return False
+    if not isinstance(overrides, dict):
+        return False
+
     ml_override = overrides.get("ml_signal", {})
     if not ml_override:
         return False

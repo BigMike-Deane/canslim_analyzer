@@ -2006,11 +2006,17 @@ def start_backup_job():
 
 
 def _run_ml_backfill():
-    """Wrapper for APScheduler — owns its DB session and swallows errors."""
+    """Wrapper for APScheduler — owns its DB session and swallows errors.
+
+    Runs realized backfill first (matches predictions to real buy/sell pairs),
+    then counterfactual (synthesizes outcomes for vetoed/un-bought predictions).
+    """
     try:
-        from backend.ml_backfill import backfill_actual_outcomes
-        result = backfill_actual_outcomes()
-        logger.info(f"ML backfill result: {result}")
+        from backend.ml_backfill import backfill_actual_outcomes, counterfactual_backfill
+        realized = backfill_actual_outcomes()
+        logger.info(f"ML backfill (realized): {realized}")
+        cf = counterfactual_backfill()
+        logger.info(f"ML backfill (counterfactual): {cf}")
     except Exception as e:
         logger.error(f"ML backfill job failed: {e}", exc_info=True)
 
@@ -2020,6 +2026,8 @@ def start_ml_backfill_job():
 
     Runs after the 2 AM backup, before US market open. Idempotent — only
     updates rows where actual_outcome IS NULL, so re-runs are cheap.
+    Counterfactual fills the rest (vetoed predictions) so the next training
+    pool isn't biased toward what the current model already approves of.
     """
     from apscheduler.triggers.cron import CronTrigger
 

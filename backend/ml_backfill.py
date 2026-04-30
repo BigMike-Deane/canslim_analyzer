@@ -20,7 +20,10 @@ from typing import Optional
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
-from backend.database import AIPortfolioTrade, MLPrediction, SessionLocal
+from backend.database import (
+    AIPortfolioTrade, MLPrediction, SessionLocal,
+    Stock, StockScore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,5 +148,132 @@ def backfill_actual_outcomes(
         f"ml_predictions backfill: checked={counts['checked']} "
         f"updated={counts['updated']} still_open={counts['still_open']} "
         f"no_buy={counts['no_buy']}"
+    )
+    return counts
+
+
+def _price_at(db: Session, stock_id: int, target_date: date, *, after: bool) -> Optional[float]:
+    """Find the StockScore.current_price closest to target_date.
+
+    after=False: latest score on or before target_date (for the "buy day" price).
+    after=True:  earliest score on or after target_date (for the "exit day" price).
+    """
+    q = db.query(StockScore).filter(StockScore.stock_id == stock_id)
+    if after:
+        q = q.filter(StockScore.date >= target_date).order_by(StockScore.date.asc())
+    else:
+        q = q.filter(StockScore.date <= target_date).order_by(StockScore.date.desc())
+    score = q.first()
+    if score is None or not score.current_price or score.current_price <= 0:
+        return None
+    return score.current_price
+
+
+def counterfactual_backfill(
+    db: Optional[Session] = None,
+    lookback_days: int = 90,
+    hold_days: int = 21,
+    min_gain_pct: float = 10.0,
+) -> dict:
+    """Synthesize outcomes for ml_predictions that didn't lead to a real trade.
+
+    The realized backfill (`backfill_actual_outcomes`) only fills predictions
+    that resulted in actual buy/sell pairs — typically <20% of evaluated
+    candidates because the live ML gate vetoes most. The remaining ~80% sit
+    with NULL outcomes forever, which:
+      1) loses 5x potential training data, and
+      2) creates a feedback loop where future training reflects only the
+         current model's preferences (concept drift).
+
+    For each pending prediction old enough that we have hold_days of price
+    data after it, we look up the stock's price on prediction_date (start)
+    and prediction_date+hold_days (end), compute the gain percent, and label
+    it according to min_gain_pct. Default 10.0 matches v12's training task.
+
+    Skips predictions that have a matching real BUY — those are owned by
+    the realized backfill (open or closed). Idempotent: only touches NULL.
+    """
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    today = date.today()
+    earliest = today - timedelta(days=lookback_days)
+    # Need hold_days of post-prediction price data, so prediction_date can be
+    # at most today - hold_days.
+    latest = today - timedelta(days=hold_days)
+
+    pending = (
+        db.query(MLPrediction)
+        .filter(
+            MLPrediction.actual_outcome.is_(None),
+            MLPrediction.prediction_date >= earliest,
+            MLPrediction.prediction_date <= latest,
+        )
+        .all()
+    )
+
+    counts = {
+        "checked": len(pending),
+        "updated": 0,
+        "skipped_has_buy": 0,
+        "no_price_data": 0,
+        "no_stock": 0,
+    }
+
+    # Cache stock lookups: many predictions hit the same ticker.
+    stock_id_cache: dict = {}
+
+    for pred in pending:
+        # Skip if a real buy exists for this ticker on prediction_date —
+        # realized backfill owns those rows.
+        day_start = datetime.combine(pred.prediction_date, datetime.min.time())
+        day_end = day_start + timedelta(days=2)
+        has_buy = (
+            db.query(AIPortfolioTrade.id)
+            .filter(
+                AIPortfolioTrade.ticker == pred.ticker,
+                AIPortfolioTrade.action == "BUY",
+                AIPortfolioTrade.executed_at >= day_start,
+                AIPortfolioTrade.executed_at < day_end,
+            )
+            .first()
+        )
+        if has_buy is not None:
+            counts["skipped_has_buy"] += 1
+            continue
+
+        if pred.ticker not in stock_id_cache:
+            stock = db.query(Stock.id).filter(Stock.ticker == pred.ticker).first()
+            stock_id_cache[pred.ticker] = stock[0] if stock else None
+        stock_id = stock_id_cache[pred.ticker]
+        if stock_id is None:
+            counts["no_stock"] += 1
+            continue
+
+        start_price = _price_at(db, stock_id, pred.prediction_date, after=False)
+        end_price = _price_at(
+            db, stock_id, pred.prediction_date + timedelta(days=hold_days), after=True
+        )
+        if start_price is None or end_price is None:
+            counts["no_price_data"] += 1
+            continue
+
+        gain_pct = (end_price / start_price - 1) * 100.0
+        pred.actual_gain_pct = round(gain_pct, 2)
+        pred.actual_outcome = 1 if gain_pct > min_gain_pct else 0
+        counts["updated"] += 1
+
+    if own_session:
+        try:
+            db.commit()
+        finally:
+            db.close()
+
+    logger.info(
+        f"ml_predictions counterfactual backfill (hold={hold_days}d, "
+        f"min_gain={min_gain_pct}%): checked={counts['checked']} "
+        f"updated={counts['updated']} skipped_has_buy={counts['skipped_has_buy']} "
+        f"no_price_data={counts['no_price_data']} no_stock={counts['no_stock']}"
     )
     return counts
