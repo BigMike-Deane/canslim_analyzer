@@ -25,6 +25,7 @@ from backend.database import (
     init_db, get_db, SessionLocal, User, Stock, StockScore,
     PortfolioPosition, AIPortfolioConfig, AIPortfolioPosition,
     AIPortfolioTrade, BacktestRun, MarketSnapshot, Watchlist, MLModel,
+    MLPrediction,
 )
 from backend.auth import get_current_active_user, get_admin_user
 
@@ -701,3 +702,126 @@ class TestMLValidation:
         self._cleanup(strategy="nonexistent_strategy_xyz")
         r = client.get("/api/ml/validation?strategy=nonexistent_strategy_xyz")
         assert r.status_code == 404
+
+
+class TestTradeJournal:
+    """Journal endpoint surfaces ML confidence and (optionally) vetoed candidates."""
+
+    def _cleanup(self):
+        db = _get_db()
+        try:
+            db.query(AIPortfolioTrade).filter_by(user_id=1).delete()
+            db.query(MLPrediction).delete()
+            db.query(MLModel).filter(MLModel.version >= 900).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def _seed_buy_trade(self, ticker="AAPL", ml_confidence=0.45, ml_bonus=0.0):
+        _ensure_user()
+        db = _get_db()
+        try:
+            db.add(AIPortfolioTrade(
+                user_id=1, ticker=ticker, action="BUY",
+                shares=10.0, price=100.0, total_value=1000.0,
+                reason="PRE-BREAKOUT", canslim_score=78.0,
+                signal_factors={
+                    "entry_type": "pre-breakout",
+                    "market_regime": "bullish",
+                    "composite_score": 60.0,
+                    "ml_confidence": ml_confidence,
+                    "ml_bonus": ml_bonus,
+                },
+                executed_at=datetime.now(timezone.utc) - timedelta(days=1),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    def _seed_veto(self, ticker="ZZZ", ml_confidence=0.18, days_ago=1):
+        db = _get_db()
+        try:
+            # Need an active model so MLPrediction.model_id has a target.
+            m = db.query(MLModel).filter_by(version=999, strategy="nostate_optimized").first()
+            if not m:
+                m = MLModel(
+                    version=999, strategy="nostate_optimized", status="active",
+                    feature_count=24, roc_auc=0.6,
+                    activated_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
+                )
+                db.add(m)
+                db.commit()
+                db.refresh(m)
+            db.add(MLPrediction(
+                model_id=m.id, ticker=ticker,
+                prediction_date=date.today() - timedelta(days=days_ago),
+                ml_confidence=ml_confidence,
+                features={"total_score": 73.0, "composite_score": 38.0, "c_score": 12.0},
+                created_at=datetime.now(timezone.utc) - timedelta(days=days_ago),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_journal_surfaces_ml_confidence(self):
+        self._cleanup()
+        self._seed_buy_trade(ticker="AAPL", ml_confidence=0.42, ml_bonus=2.4)
+        d = client.get("/api/trade-journal?days=30").json()
+        aapl = next((e for e in d["entries"] if e["ticker"] == "AAPL"), None)
+        # Pre-fix this was always null because main.py read 'ml_prediction'.
+        assert aapl is not None
+        assert aapl["ml_confidence"] == pytest.approx(0.42)
+        assert aapl["ml_bonus"] == pytest.approx(2.4)
+
+    def test_vetoes_excluded_by_default(self):
+        self._cleanup()
+        self._seed_veto(ticker="ZZZ", ml_confidence=0.12)
+        d = client.get("/api/trade-journal?days=30").json()
+        assert all(e["action"] != "VETOED" for e in d["entries"])
+        assert d["vetoed_count"] == 0
+
+    def test_include_vetoed_surfaces_them(self):
+        self._cleanup()
+        self._seed_veto(ticker="ZZZ", ml_confidence=0.12)
+        d = client.get("/api/trade-journal?days=30&include_vetoed=true").json()
+        veto = next((e for e in d["entries"] if e["action"] == "VETOED"), None)
+        assert veto is not None
+        assert veto["ticker"] == "ZZZ"
+        assert veto["ml_confidence"] == pytest.approx(0.12)
+        assert d["vetoed_count"] >= 1
+
+    def test_buy_suppresses_matching_veto_entry(self):
+        # If a prediction ended in an actual buy on the same day, we should NOT
+        # also list it as VETOED — that would double-count the decision.
+        self._cleanup()
+        self._seed_buy_trade(ticker="AAPL", ml_confidence=0.42)
+        # Seed a veto-style ml_predictions row for the same ticker+day.
+        db = _get_db()
+        try:
+            m = MLModel(version=998, strategy="nostate_optimized", status="active",
+                        feature_count=24, roc_auc=0.6,
+                        activated_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc))
+            db.add(m); db.commit(); db.refresh(m)
+            buy_at = datetime.now(timezone.utc) - timedelta(days=1)
+            db.add(MLPrediction(
+                model_id=m.id, ticker="AAPL", prediction_date=buy_at.date(),
+                ml_confidence=0.42, features={"total_score": 78.0},
+                created_at=buy_at,
+            ))
+            db.commit()
+        finally:
+            db.close()
+        d = client.get("/api/trade-journal?days=30&include_vetoed=true").json()
+        aapl_vetoes = [e for e in d["entries"] if e["ticker"] == "AAPL" and e["action"] == "VETOED"]
+        assert aapl_vetoes == []  # Suppressed because a real BUY exists.
+
+    def test_filter_action_vetoed_implies_include_vetoed(self):
+        self._cleanup()
+        self._seed_buy_trade(ticker="AAPL", ml_confidence=0.42)
+        self._seed_veto(ticker="ZZZ", ml_confidence=0.12)
+        d = client.get("/api/trade-journal?days=30&action=VETOED").json()
+        # action=VETOED filters BUYs out, even without include_vetoed=true.
+        assert all(e["action"] == "VETOED" for e in d["entries"])
+        assert any(e["ticker"] == "ZZZ" for e in d["entries"])

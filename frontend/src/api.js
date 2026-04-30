@@ -548,11 +548,12 @@ export const api = {
   getBearBaseCandidates: (limit = 50) => request(`/api/bear-base?limit=${limit}`),
 
   // Trade Journal
-  getTradeJournal: (days = 90, ticker = '', action = '') => {
+  getTradeJournal: (days = 90, ticker = '', action = '', includeVetoed = false) => {
     const params = new URLSearchParams()
     params.set('days', days)
     if (ticker) params.set('ticker', ticker)
     if (action) params.set('action', action)
+    if (includeVetoed) params.set('include_vetoed', 'true')
     return request(`/api/trade-journal?${params}`)
   },
 

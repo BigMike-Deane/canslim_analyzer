@@ -10,6 +10,7 @@ const actionColors = {
   BUY:     { bg: 'bg-emerald-500/15', text: 'text-emerald-400', border: 'border-emerald-500/20', dot: 'bg-emerald-400' },
   SELL:    { bg: 'bg-red-500/15',     text: 'text-red-400',     border: 'border-red-500/20',     dot: 'bg-red-400' },
   PYRAMID: { bg: 'bg-blue-500/15',   text: 'text-blue-400',    border: 'border-blue-500/20',    dot: 'bg-blue-400' },
+  VETOED:  { bg: 'bg-amber-500/10',   text: 'text-amber-400',   border: 'border-amber-500/20',   dot: 'bg-amber-400' },
 }
 
 function ActionTag({ action }) {
@@ -50,6 +51,7 @@ function JournalEntry({ entry }) {
   const [expanded, setExpanded] = useState(false)
 
   const isSell = entry.action === 'SELL'
+  const isVetoed = entry.action === 'VETOED'
   const totalValue = entry.price && entry.shares ? entry.price * entry.shares : null
 
   return (
@@ -112,6 +114,44 @@ function JournalEntry({ entry }) {
           )}
         </div>
 
+        {/* Vetoed-specific summary: ML confidence is the headline */}
+        {isVetoed && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            <span className="text-xs text-dark-300">
+              <span className="text-dark-500">ML conf</span>{' '}
+              <span className={`font-data ${entry.ml_confidence < 0.30 ? 'text-amber-400' : 'text-dark-100'}`}>
+                {entry.ml_confidence != null ? entry.ml_confidence.toFixed(3) : '-'}
+              </span>
+            </span>
+            {entry.composite_score != null && (
+              <span className="text-xs text-dark-300">
+                <span className="text-dark-500">Composite</span>{' '}
+                <span className="font-data text-dark-100">{entry.composite_score.toFixed(1)}</span>
+              </span>
+            )}
+            {entry.entry_type != null && (
+              <span className="text-xs">
+                <TagBadge color="amber">no buy</TagBadge>
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* ML confidence chip on regular trades (when present) */}
+        {!isVetoed && entry.ml_confidence != null && (
+          <div className="flex items-center gap-1 mt-1">
+            <span className="text-[10px] text-dark-500">ML</span>
+            <span className={`text-[10px] font-data ${entry.ml_confidence >= 0.30 ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {entry.ml_confidence.toFixed(3)}
+            </span>
+            {entry.ml_bonus != null && entry.ml_bonus !== 0 && (
+              <span className="text-[10px] font-data text-dark-400">
+                ({entry.ml_bonus >= 0 ? '+' : ''}{entry.ml_bonus.toFixed(1)} bonus)
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Sell-specific summary */}
         {isSell && (
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
@@ -157,24 +197,45 @@ function JournalEntry({ entry }) {
         {expanded && (
           <div className="mt-3 pt-3 border-t border-dark-700/40">
             <p className="text-[10px] font-semibold tracking-widest uppercase text-dark-400 mb-2">
-              Signal Factors
+              {isVetoed ? 'ML Features' : 'Signal Factors'}
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-              <div>
-                <SignalDetail label="Entry Type" value={entry.entry_type} />
-                <SignalDetail label="Market Regime" value={entry.market_regime} />
-                <SignalDetail label="Composite Score" value={entry.composite_score} />
-                <SignalDetail label="CANSLIM Score" value={entry.canslim_score} />
-                <SignalDetail label="Position %" value={entry.position_pct != null ? `${entry.position_pct.toFixed(1)}%` : null} />
+            {isVetoed ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+                <div>
+                  <SignalDetail label="ML Confidence" value={entry.ml_confidence} color={entry.ml_confidence < 0.30 ? 'text-amber-400' : 'text-emerald-400'} />
+                  <SignalDetail label="Total Score" value={entry.features?.total_score} />
+                  <SignalDetail label="Composite Score" value={entry.features?.composite_score} />
+                  <SignalDetail label="C / A / N" value={`${entry.features?.c_score ?? '-'} / ${entry.features?.a_score ?? '-'} / ${entry.features?.n_score ?? '-'}`} />
+                  <SignalDetail label="S / L / I" value={`${entry.features?.s_score ?? '-'} / ${entry.features?.l_score ?? '-'} / ${entry.features?.i_score ?? '-'}`} />
+                </div>
+                <div>
+                  <SignalDetail label="% from 21MA" value={entry.features?.pct_from_21ma != null ? `${entry.features.pct_from_21ma.toFixed(1)}%` : null} />
+                  <SignalDetail label="% from 50MA" value={entry.features?.pct_from_50ma != null ? `${entry.features.pct_from_50ma.toFixed(1)}%` : null} />
+                  <SignalDetail label="Relative Volume" value={entry.features?.relative_volume} />
+                  <SignalDetail label="Sector RS Rank" value={entry.features?.sector_rs_rank} />
+                  <SignalDetail label="Industry Rank" value={entry.features?.industry_group_rank} />
+                </div>
               </div>
-              <div>
-                <SignalDetail label="Base Quality Bonus" value={entry.base_quality_bonus} color={entry.base_quality_bonus > 0 ? 'text-emerald-400' : undefined} />
-                <SignalDetail label="Breakout Bonus" value={entry.breakout_bonus} color={entry.breakout_bonus > 0 ? 'text-emerald-400' : undefined} />
-                <SignalDetail label="Pre-Breakout Bonus" value={entry.pre_breakout_bonus} color={entry.pre_breakout_bonus > 0 ? 'text-emerald-400' : undefined} />
-                <SignalDetail label="Momentum" value={entry.momentum} />
-                <SignalDetail label="Coiled Spring Bonus" value={entry.coiled_spring_bonus} color={entry.coiled_spring_bonus > 0 ? 'text-purple-400' : undefined} />
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+                <div>
+                  <SignalDetail label="Entry Type" value={entry.entry_type} />
+                  <SignalDetail label="Market Regime" value={entry.market_regime} />
+                  <SignalDetail label="Composite Score" value={entry.composite_score} />
+                  <SignalDetail label="CANSLIM Score" value={entry.canslim_score} />
+                  <SignalDetail label="ML Confidence" value={entry.ml_confidence} color={entry.ml_confidence != null && entry.ml_confidence < 0.30 ? 'text-amber-400' : 'text-emerald-400'} />
+                  <SignalDetail label="Position %" value={entry.position_pct != null ? `${entry.position_pct.toFixed(1)}%` : null} />
+                </div>
+                <div>
+                  <SignalDetail label="Base Quality Bonus" value={entry.base_quality_bonus} color={entry.base_quality_bonus > 0 ? 'text-emerald-400' : undefined} />
+                  <SignalDetail label="Breakout Bonus" value={entry.breakout_bonus} color={entry.breakout_bonus > 0 ? 'text-emerald-400' : undefined} />
+                  <SignalDetail label="Pre-Breakout Bonus" value={entry.pre_breakout_bonus} color={entry.pre_breakout_bonus > 0 ? 'text-emerald-400' : undefined} />
+                  <SignalDetail label="Momentum" value={entry.momentum} />
+                  <SignalDetail label="Coiled Spring Bonus" value={entry.coiled_spring_bonus} color={entry.coiled_spring_bonus > 0 ? 'text-purple-400' : undefined} />
+                  <SignalDetail label="ML Bonus" value={entry.ml_bonus} color={entry.ml_bonus > 0 ? 'text-emerald-400' : entry.ml_bonus < 0 ? 'text-red-400' : undefined} />
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Sell details in expanded view */}
             {isSell && (
@@ -215,9 +276,10 @@ const ACTION_OPTIONS = [
   { value: 'BUY', label: 'Buys' },
   { value: 'SELL', label: 'Sells' },
   { value: 'PYRAMID', label: 'Pyramids' },
+  { value: 'VETOED', label: 'Vetoed' },
 ]
 
-function FilterBar({ days, setDays, ticker, setTicker, action, setAction }) {
+function FilterBar({ days, setDays, ticker, setTicker, action, setAction, includeVetoed, setIncludeVetoed }) {
   return (
     <div className="flex flex-wrap gap-2 mb-4">
       {/* Days dropdown */}
@@ -256,6 +318,19 @@ function FilterBar({ days, setDays, ticker, setTicker, action, setAction }) {
           </button>
         ))}
       </div>
+
+      {/* Show vetoed toggle */}
+      <button
+        onClick={() => setIncludeVetoed(v => !v)}
+        title="Surface ML-evaluated candidates that the gate vetoed (no buy)"
+        className={`px-3 py-1.5 text-[10px] font-semibold rounded-lg border transition-colors ${
+          includeVetoed
+            ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+            : 'bg-dark-800 text-dark-400 border-dark-700 hover:text-dark-200'
+        }`}
+      >
+        {includeVetoed ? '✓ Vetoes' : '+ Vetoes'}
+      </button>
     </div>
   )
 }
@@ -267,6 +342,7 @@ function JournalStats({ entries }) {
   const buys = entries.filter(e => e.action === 'BUY').length
   const sells = entries.filter(e => e.action === 'SELL').length
   const pyramids = entries.filter(e => e.action === 'PYRAMID').length
+  const vetoes = entries.filter(e => e.action === 'VETOED').length
 
   const sellEntries = entries.filter(e => e.action === 'SELL' && e.gain_loss_pct != null)
   const wins = sellEntries.filter(e => e.gain_loss_pct >= 0).length
@@ -283,6 +359,11 @@ function JournalStats({ entries }) {
     { label: 'Win Rate', value: winRate !== '-' ? `${winRate}%` : '-', color: Number(winRate) >= 50 ? 'text-emerald-400' : 'text-red-400' },
     { label: 'Avg P&L', value: avgGain !== '-' ? `${avgGain}%` : '-', color: Number(avgGain) >= 0 ? 'text-emerald-400' : 'text-red-400' },
   ]
+  if (vetoes > 0) {
+    // Replace Avg P&L with Vetoes when vetoes are visible — keeps the row at 6 tiles.
+    stats.splice(5, 0, { label: 'Vetoes', value: vetoes, color: 'text-amber-400' })
+    stats.length = 6
+  }
 
   return (
     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-4">
@@ -301,6 +382,7 @@ function JournalStats({ entries }) {
 export default function TradeJournal() {
   const [entries, setEntries] = useState([])
   const [total, setTotal] = useState(0)
+  const [vetoedCount, setVetoedCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -308,6 +390,7 @@ export default function TradeJournal() {
   const [days, setDays] = useState(90)
   const [ticker, setTicker] = useState('')
   const [action, setAction] = useState('')
+  const [includeVetoed, setIncludeVetoed] = useState(false)
 
   // Debounced ticker search
   const [debouncedTicker, setDebouncedTicker] = useState('')
@@ -316,20 +399,24 @@ export default function TradeJournal() {
     return () => clearTimeout(timer)
   }, [ticker])
 
+  // Filtering by VETOED implies pulling vetoed entries even if the toggle is off.
+  const effectiveIncludeVetoed = includeVetoed || action === 'VETOED'
+
   // Fetch data
   useEffect(() => {
     setLoading(true)
     setError(null)
 
-    api.getTradeJournal(days, debouncedTicker, action)
+    api.getTradeJournal(days, debouncedTicker, action, effectiveIncludeVetoed)
       .then(data => {
         setEntries(data.entries || [])
         setTotal(data.total || 0)
+        setVetoedCount(data.vetoed_count || 0)
         setError(null)
       })
       .catch(e => setError(e.message || 'Failed to load trade journal'))
       .finally(() => setLoading(false))
-  }, [days, debouncedTicker, action])
+  }, [days, debouncedTicker, action, effectiveIncludeVetoed])
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
@@ -345,6 +432,7 @@ export default function TradeJournal() {
         days={days} setDays={setDays}
         ticker={ticker} setTicker={setTicker}
         action={action} setAction={setAction}
+        includeVetoed={includeVetoed} setIncludeVetoed={setIncludeVetoed}
       />
 
       {/* Summary stats */}

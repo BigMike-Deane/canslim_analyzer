@@ -4192,13 +4192,18 @@ async def get_bear_base_candidates(
 async def get_trade_journal(
     days: int = Query(90, ge=7, le=365),
     ticker: str = Query(None),
-    action: str = Query(None, pattern="^(BUY|SELL|PYRAMID)$"),
+    action: str = Query(None, pattern="^(BUY|SELL|PYRAMID|VETOED)$"),
+    include_vetoed: bool = Query(False, description="Also include ML-evaluated candidates that did not result in a buy (vetoes / filtered)."),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
     Chronological decision log with full signal factors, scores, and reasoning.
     Each entry shows what the system saw and decided for each trade.
+
+    When include_vetoed=true, rows from ml_predictions with no matching BUY for
+    the ticker on that day are surfaced as "VETOED" entries — the gate's silent
+    half made visible.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     query = db.query(AIPortfolioTrade).filter(
@@ -4207,14 +4212,20 @@ async def get_trade_journal(
     )
     if ticker:
         query = query.filter(AIPortfolioTrade.ticker == ticker)
-    if action:
+    # Apply action filter to trades query unless it's VETOED (handled separately below).
+    if action and action != "VETOED":
         query = query.filter(AIPortfolioTrade.action == action)
 
     trades = query.order_by(AIPortfolioTrade.executed_at.desc()).limit(200).all()
 
     entries = []
+    # Track (ticker, date) of any actual BUY so we can suppress duplicate
+    # ml_predictions rows when surfacing vetoes.
+    buy_keys = set()
     for t in trades:
         factors = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+        if t.action == "BUY" and t.executed_at:
+            buy_keys.add((t.ticker, t.executed_at.date()))
 
         entry = {
             "id": t.id,
@@ -4242,7 +4253,11 @@ async def get_trade_journal(
             "coiled_spring_bonus": factors.get("coiled_spring_bonus"),
             "rs_line_bonus": factors.get("rs_line_bonus"),
             "volume_multiplier": factors.get("volume_multiplier"),
-            "ml_prediction": factors.get("ml_prediction"),
+            # ML signal layer fields. Historical bug: this used to read 'ml_prediction'
+            # but the trader writes 'ml_confidence' — silently null until fixed.
+            "ml_confidence": factors.get("ml_confidence"),
+            "ml_bonus": factors.get("ml_bonus"),
+            "ml_vetoed": factors.get("ml_vetoed", False),
             "position_pct": factors.get("position_pct"),
 
             # Sell-specific fields (computed — AIPortfolioTrade doesn't store these directly)
@@ -4254,9 +4269,51 @@ async def get_trade_journal(
         }
         entries.append(entry)
 
+    # Synthesize VETOED entries from ml_predictions when requested. We classify
+    # any ml_predictions row with no matching BUY on that day as a non-execution.
+    # ml_predictions has no user_id, so all users see the same vetoes — that's
+    # correct: the gate fires per-strategy, not per-user. action=VETOED implies
+    # include_vetoed (otherwise the filter would always return empty).
+    veto_entries = []
+    if include_vetoed or action == "VETOED":
+        from backend.database import MLPrediction
+        veto_q = db.query(MLPrediction).filter(
+            MLPrediction.created_at >= cutoff
+        )
+        if ticker:
+            veto_q = veto_q.filter(MLPrediction.ticker == ticker)
+        for p in veto_q.order_by(MLPrediction.created_at.desc()).limit(500).all():
+            if (p.ticker, p.prediction_date) in buy_keys:
+                continue  # Pred ended in a real buy — already in entries.
+            veto_entries.append({
+                "id": f"v{p.id}",
+                "date": (p.created_at.isoformat() + "Z") if p.created_at else None,
+                "ticker": p.ticker,
+                "action": "VETOED",
+                "ml_confidence": p.ml_confidence,
+                "features": p.features or {},
+                # Surface a few key features at the top level so the UI can
+                # render them without expanding the row.
+                "canslim_score": (p.features or {}).get("total_score"),
+                "entry_type": (p.features or {}).get("entry_type"),
+                "composite_score": (p.features or {}).get("composite_score"),
+                "actual_outcome": p.actual_outcome,
+                "actual_gain_pct": p.actual_gain_pct,
+            })
+
+    # Optionally apply the action filter to the combined list.
+    if action == "VETOED":
+        entries = veto_entries
+    else:
+        entries = entries + veto_entries
+
+    # Sort merged list by date descending.
+    entries.sort(key=lambda e: e.get("date") or "", reverse=True)
+
     return {
         "entries": entries,
         "total": len(entries),
+        "vetoed_count": len(veto_entries),
         "period_days": days,
     }
 
