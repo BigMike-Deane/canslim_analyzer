@@ -1529,6 +1529,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start backup job: {e}")
 
+    # Start daily ml_predictions outcome backfill job
+    try:
+        start_ml_backfill_job()
+    except Exception as e:
+        logger.warning(f"Failed to start ML backfill job: {e}")
+
     # Start intraday breakout monitor (every 5 min during market hours)
     try:
         start_breakout_monitor_job()
@@ -1997,6 +2003,42 @@ def start_backup_job():
         scheduler.start()
 
     logger.info("Daily backup job scheduled (2 AM UTC)")
+
+
+def _run_ml_backfill():
+    """Wrapper for APScheduler — owns its DB session and swallows errors."""
+    try:
+        from backend.ml_backfill import backfill_actual_outcomes
+        result = backfill_actual_outcomes()
+        logger.info(f"ML backfill result: {result}")
+    except Exception as e:
+        logger.error(f"ML backfill job failed: {e}", exc_info=True)
+
+
+def start_ml_backfill_job():
+    """Schedule daily ml_predictions outcome backfill at 3 AM UTC.
+
+    Runs after the 2 AM backup, before US market open. Idempotent — only
+    updates rows where actual_outcome IS NULL, so re-runs are cheap.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "ml_predictions_backfill"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_ml_backfill,
+        CronTrigger(hour=3, minute=0),
+        id=job_id,
+        name="ML Predictions Outcome Backfill",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("ML backfill job scheduled (3 AM UTC)")
 
 
 def start_breakout_monitor_job():
