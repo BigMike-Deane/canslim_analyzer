@@ -41,7 +41,8 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                   mode: str = "regression",
                   excluded_features: Optional[list] = None,
                   calibrate: bool = False,
-                  auto_activate: bool = True):
+                  auto_activate: bool = True,
+                  min_gain_pct: float = 0.0):
     """Background task: extract features, train model, update DB record.
 
     mode: 'classifier', 'regression', or 'both' (both trains both, saves regression if it passes).
@@ -107,12 +108,12 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         # — regression doesn't have isotonic calibration in this trainer.
         result = None
         if mode == "classifier":
-            result = train_model(df, excluded_features=excluded_features, calibrate=calibrate)
+            result = train_model(df, excluded_features=excluded_features, calibrate=calibrate, min_gain_pct=min_gain_pct)
         elif mode == "regression":
             result = train_model_regression(df)
         elif mode == "both":
             # Train both, prefer regression if it passes
-            cls_result = train_model(df, excluded_features=excluded_features, calibrate=calibrate)
+            cls_result = train_model(df, excluded_features=excluded_features, calibrate=calibrate, min_gain_pct=min_gain_pct)
             reg_result = train_model_regression(df)
             if reg_result.get("passed_gate"):
                 result = reg_result
@@ -293,6 +294,7 @@ async def trigger_training(
     excluded_features: str = Query(default="", description="Comma-separated feature names to drop (leakage audit). Forces experimental save."),
     calibrate: bool = Query(default=False, description="Wrap classifier in CalibratedClassifierCV(isotonic). Required for min_confidence to mean a real probability."),
     auto_activate: bool = Query(default=True, description="If false, model is saved + recorded but never replaces the active model."),
+    min_gain_pct: float = Query(default=0.0, ge=0.0, description="Classifier label threshold: positive class = gain_pct > min_gain_pct. Default 0.0 = 'any winner'. v12 used 10.0 ('big winners only') — different task, different (higher) AUC. Classifier mode only."),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
@@ -354,6 +356,7 @@ async def trigger_training(
             "min_child_weight": 5, "subsample": 0.8, "colsample_bytree": 0.8,
             "reg_alpha": 1.0, "reg_lambda": 5.0,
             "mode": mode,
+            "min_gain_pct": min_gain_pct,
         },
     )
     db.add(ml_record)
@@ -364,7 +367,7 @@ async def trigger_training(
     from backend.database import DATABASE_URL
     background_tasks.add_task(
         _run_training, DATABASE_URL, strategy, ids, ml_record.id, mode,
-        excluded_list or None, calibrate, auto_activate,
+        excluded_list or None, calibrate, auto_activate, min_gain_pct,
     )
 
     return {
