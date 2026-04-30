@@ -547,6 +547,23 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
   const priceMin = prices.length ? Math.floor(Math.min(...prices) * 0.95) : 0
   const priceMax = prices.length ? Math.ceil(Math.max(...prices) * 1.05) : 100
 
+  // Per-component std dev over the visible window. Flat letters (sd < 0.5)
+  // are dropped from the chart and legend so the dynamic ones (usually N/S/M)
+  // aren't drowned out by 7 overlapping near-flat lines.
+  const COMPONENT_KEYS = ['c','a','n','s','l','i','m']
+  const activeComponents = (() => {
+    if (!data.length) return COMPONENT_KEYS
+    const stats = {}
+    for (const k of COMPONENT_KEYS) {
+      const vals = data.map(d => d[k]).filter(v => v != null)
+      if (vals.length < 2) { stats[k] = 0; continue }
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length
+      const variance = vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / vals.length
+      stats[k] = Math.sqrt(variance)
+    }
+    return COMPONENT_KEYS.filter(k => stats[k] >= 0.5)
+  })()
+
   const periods = [
     { value: '14', label: '2W' },
     { value: '30', label: '1M' },
@@ -648,6 +665,9 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               width={45}
               tickFormatter={v => `$${v}`}
             />
+            {/* Hidden axis for component lines so they get the full 0-15 vertical
+                range instead of being squashed at the bottom of the 0-100 score axis. */}
+            <YAxis yAxisId="component" domain={[0, 15]} hide={true} />
             <Tooltip content={<ScoreReplayTooltip showComponents={showComponents} isPerScan={isPerScan} />} />
             {/* Score area */}
             <Area
@@ -673,11 +693,12 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
                 name="Price"
               />
             )}
-            {/* CANSLIM component lines (toggled) */}
-            {showComponents && ['c','a','n','s','l','i','m'].map(k => (
+            {/* CANSLIM component lines (toggled). Only letters that actually
+                moved in the visible window are drawn — flat ones add noise. */}
+            {showComponents && activeComponents.map(k => (
               <Line
                 key={k}
-                yAxisId="score"
+                yAxisId="component"
                 type="monotone"
                 dataKey={k}
                 stroke={COMPONENT_COLORS[k]}
@@ -691,13 +712,18 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
         </ResponsiveContainer>
       </div>
       {showComponents && (
-        <div className="flex flex-wrap gap-3 mt-2 px-1">
-          {Object.entries(COMPONENT_COLORS).map(([k, color]) => (
+        <div className="flex flex-wrap gap-3 mt-2 px-1 items-center">
+          {activeComponents.map(k => (
             <span key={k} className="flex items-center gap-1 text-[10px]">
-              <span className="w-2.5 h-0.5 rounded" style={{ background: color }} />
-              <span style={{ color }}>{k.toUpperCase()}</span>
+              <span className="w-2.5 h-0.5 rounded" style={{ background: COMPONENT_COLORS[k] }} />
+              <span style={{ color: COMPONENT_COLORS[k] }}>{k.toUpperCase()}</span>
             </span>
           ))}
+          {activeComponents.length < COMPONENT_KEYS.length && (
+            <span className="text-[10px] text-dark-500">
+              · {COMPONENT_KEYS.filter(k => !activeComponents.includes(k)).map(k => k.toUpperCase()).join('/')} flat
+            </span>
+          )}
         </div>
       )}
     </Card>
