@@ -131,14 +131,19 @@ export function CSConfidenceBadge({ confidence, className = '' }) {
   )
 }
 
-export function PnlText({ value, className = '', prefix = '' }) {
+export function PnlText({ value, className = '', prefix = null }) {
   if (value == null) return <span className={`text-dark-500 ${className}`}>-</span>
   const isPositive = value >= 0
   const color = isPositive ? 'text-emerald-400' : 'text-red-400'
-  const sign = isPositive ? '+' : ''
+  // When the caller passes a prefix (incl. ''), they're taking control of the
+  // sign. Otherwise auto-prepend '+' for positives — negatives get their sign
+  // from toFixed itself. Always format numbers to 1 decimal so we don't leak
+  // the raw float (e.g. 0.10269232486492808% in the AI portfolio header).
+  const sign = prefix !== null ? prefix : (isPositive ? '+' : '')
+  const display = typeof value === 'number' ? value.toFixed(1) : value
   return (
     <span className={`font-data ${color} ${className}`}>
-      {prefix}{sign}{typeof value === 'number' && !prefix ? value.toFixed(1) : value}
+      {sign}{display}
     </span>
   )
 }
