@@ -263,6 +263,49 @@ class TestSingleStock:
             r = client.get("/api/stocks/ZZZZ")
             assert r.status_code == 404
 
+    def _seed_multi_scan_history(self, ticker="MULTI"):
+        """Seed a stock with 3 scans on the same day so we can tell daily-dedup
+        and per-scan resolution apart."""
+        _ensure_stock(ticker, score=70.0)
+        db = _get_db()
+        try:
+            stock = db.query(Stock).filter_by(ticker=ticker).first()
+            db.query(StockScore).filter_by(stock_id=stock.id).delete()
+            today = date.today()
+            base = datetime.combine(today, datetime.min.time())
+            for hour, total in [(9, 71.0), (12, 73.0), (15, 75.0)]:
+                db.add(StockScore(
+                    stock_id=stock.id, date=today,
+                    timestamp=base + timedelta(hours=hour),
+                    total_score=total, c_score=12, a_score=11, n_score=10,
+                    s_score=12, l_score=11, i_score=8, m_score=11,
+                    current_price=150.0,
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_resolution_daily_dedups_to_one_per_day(self):
+        self._seed_multi_scan_history("MULTI")
+        d = client.get("/api/stocks/MULTI?resolution=daily").json()
+        # 3 scans on the same day collapse to 1 entry.
+        same_day = [h for h in d["score_history"] if h["date"] == date.today().isoformat()]
+        assert len(same_day) == 1
+        assert d["score_history_resolution"] == "daily"
+
+    def test_resolution_all_returns_every_scan(self):
+        self._seed_multi_scan_history("MULTI")
+        d = client.get("/api/stocks/MULTI?resolution=all").json()
+        same_day = [h for h in d["score_history"] if h["date"] == date.today().isoformat()]
+        assert len(same_day) == 3
+        assert d["score_history_resolution"] == "all"
+        # Every entry must carry a timestamp so the chart can plot per-scan.
+        assert all(h.get("timestamp") for h in same_day)
+
+    def test_resolution_invalid_value_rejected(self):
+        r = client.get("/api/stocks/TSLA?resolution=hourly")
+        assert r.status_code == 422  # FastAPI regex validation
+
 
 class TestPortfolio:
     @classmethod

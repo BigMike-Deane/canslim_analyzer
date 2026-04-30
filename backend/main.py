@@ -1441,8 +1441,21 @@ async def get_insider_sentiment(
 # ============== Single Stock Analysis ==============
 
 @app.get("/api/stocks/{ticker}")
-async def get_stock(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
-    """Get detailed stock analysis with background refresh for stale data"""
+async def get_stock(
+    ticker: str,
+    resolution: str = Query("daily", regex="^(daily|all)$"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+):
+    """Get detailed stock analysis with background refresh for stale data.
+
+    `resolution=daily` (default) returns one score per calendar day (the
+    latest scan), preserving the historical chart shape. `resolution=all`
+    returns every scan so the chart can show intraday score movement —
+    useful when scores look static at daily resolution but actually swing
+    between scans.
+    """
     from backend.database import SessionLocal
 
     ticker = validate_ticker_param(ticker)
@@ -1486,17 +1499,29 @@ async def get_stock(ticker: str, current_user: User = Depends(get_current_active
                 raise HTTPException(status_code=404, detail=f"Could not analyze stock {ticker}")
             stock = save_stock_to_db(db, analysis)
 
-    # Get score history (deduplicated to latest per day)
-    history_raw = db.query(StockScore).filter(
-        StockScore.stock_id == stock.id
-    ).order_by(StockScore.date.desc(), StockScore.timestamp.desc()).limit(200).all()
-    # Keep only the latest entry per day
-    seen_dates = set()
-    history = []
-    for h in history_raw:
-        if h.date not in seen_dates:
-            seen_dates.add(h.date)
-            history.append(h)
+    # Score history: at `daily` resolution we dedup to the last scan per day
+    # (preserves the existing chart shape). At `all` resolution we return every
+    # scan so intraday swings become visible. The 200-row cap is per-day at
+    # daily resolution; at per-scan resolution we lift it to ~25 days × 24
+    # scans/day = 600 rows, which keeps wire size reasonable.
+    if resolution == "all":
+        history = (
+            db.query(StockScore)
+            .filter(StockScore.stock_id == stock.id)
+            .order_by(StockScore.timestamp.desc())
+            .limit(600)
+            .all()
+        )
+    else:
+        history_raw = db.query(StockScore).filter(
+            StockScore.stock_id == stock.id
+        ).order_by(StockScore.date.desc(), StockScore.timestamp.desc()).limit(200).all()
+        seen_dates = set()
+        history = []
+        for h in history_raw:
+            if h.date not in seen_dates:
+                seen_dates.add(h.date)
+                history.append(h)
 
     return {
         "ticker": stock.ticker,
@@ -1569,6 +1594,7 @@ async def get_stock(ticker: str, current_user: User = Depends(get_current_active
 
         "score_history": [{
             "date": h.date.isoformat(),
+            "timestamp": (h.timestamp.isoformat() + "Z") if h.timestamp and not h.timestamp.tzinfo else (h.timestamp.isoformat() if h.timestamp else None),
             "total_score": h.total_score,
             "price": h.current_price,
             "projected_growth": h.projected_growth,
@@ -1580,6 +1606,7 @@ async def get_stock(ticker: str, current_user: User = Depends(get_current_active
             "i": h.i_score,
             "m": h.m_score,
         } for h in reversed(history)],
+        "score_history_resolution": resolution,
 
         "last_updated": (stock.last_updated.isoformat() + "Z") if stock.last_updated else None,
 

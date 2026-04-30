@@ -454,13 +454,20 @@ const TOOLTIP_STYLE = {
   boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
 }
 
-function ScoreReplayTooltip({ active, payload, label, showComponents }) {
+function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload
   if (!d) return null
+  let displayLabel = label
+  if (isPerScan && label) {
+    const dt = new Date(label)
+    if (!isNaN(dt)) {
+      displayLabel = dt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    }
+  }
   return (
     <div style={TOOLTIP_STYLE} className="px-3 py-2 text-xs">
-      <div className="text-dark-500 mb-1">{label}</div>
+      <div className="text-dark-500 mb-1">{displayLabel}</div>
       <div className="flex items-center gap-3 mb-1">
         <span style={{ color: '#00e5ff' }}>Score: <b>{formatScore(d.total_score)}</b></span>
         {d.price != null && <span style={{ color: '#a78bfa' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
@@ -478,7 +485,7 @@ function ScoreReplayTooltip({ active, payload, label, showComponents }) {
   )
 }
 
-function ScoreHistory({ history }) {
+function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
   const [showComponents, setShowComponents] = useState(false)
   const [period, setPeriod] = useState('30')
 
@@ -490,10 +497,16 @@ function ScoreHistory({ history }) {
     )
   }
 
-  // Filter by period
+  // At per-scan resolution we plot against the full timestamp so multiple
+  // scans on the same day separate visually; daily mode keeps using `date`.
+  const isPerScan = resolution === 'all'
+  const xKey = isPerScan ? 'timestamp' : 'date'
+
+  // Filter by period (use timestamp at per-scan, date at daily)
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() - parseInt(period))
-  const filtered = period === 'all' ? history : history.filter(h => new Date(h.date) >= cutoff)
+  const refDate = (h) => new Date(isPerScan ? (h.timestamp || h.date) : h.date)
+  const filtered = period === 'all' ? history : history.filter(h => refDate(h) >= cutoff)
   const data = filtered.length >= 2 ? filtered : history
 
   // Compute price domain with 5% padding
@@ -513,6 +526,24 @@ function ScoreHistory({ history }) {
       <div className="flex items-center justify-between mb-2">
         <CardHeader title="Score Replay" />
         <div className="flex items-center gap-2">
+          {onResolutionChange && (
+            <div className="flex bg-dark-900/50 rounded overflow-hidden border border-white/5">
+              {[{ v: 'daily', l: 'Daily' }, { v: 'all', l: 'Per scan' }].map(r => (
+                <button
+                  key={r.v}
+                  onClick={() => onResolutionChange(r.v)}
+                  title={r.v === 'all' ? 'Show every scan — exposes intraday score swings' : 'One point per day (last scan)'}
+                  className={`text-[10px] px-2 py-0.5 transition-colors ${
+                    resolution === r.v
+                      ? 'bg-white/10 text-white'
+                      : 'text-dark-500 hover:text-dark-400'
+                  }`}
+                >
+                  {r.l}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             onClick={() => setShowComponents(!showComponents)}
             className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
@@ -550,9 +581,18 @@ function ScoreHistory({ history }) {
               </linearGradient>
             </defs>
             <XAxis
-              dataKey="date"
+              dataKey={xKey}
               tick={{ fontSize: 10, fill: '#4b5563' }}
-              tickFormatter={d => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }}
+              tickFormatter={d => {
+                if (!d) return ''
+                if (isPerScan) {
+                  const dt = new Date(d)
+                  if (isNaN(dt)) return ''
+                  return `${dt.getMonth() + 1}/${dt.getDate()} ${dt.getHours().toString().padStart(2, '0')}:${dt.getMinutes().toString().padStart(2, '0')}`
+                }
+                const p = String(d).split('-')
+                return p.length >= 3 ? `${p[1]}/${p[2]}` : d
+              }}
               interval="preserveStartEnd"
               axisLine={false}
               tickLine={false}
@@ -575,7 +615,7 @@ function ScoreHistory({ history }) {
               width={45}
               tickFormatter={v => `$${v}`}
             />
-            <Tooltip content={<ScoreReplayTooltip showComponents={showComponents} />} />
+            <Tooltip content={<ScoreReplayTooltip showComponents={showComponents} isPerScan={isPerScan} />} />
             {/* Score area */}
             <Area
               yAxisId="score"
@@ -857,11 +897,12 @@ export default function StockDetail() {
   const [stock, setStock] = useState(null)
   const [error, setError] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [scoreResolution, setScoreResolution] = useState('daily')
 
-  const fetchStock = async () => {
+  const fetchStock = async (resolution = scoreResolution) => {
     try {
       setLoading(true)
-      const data = await api.getStock(ticker)
+      const data = await api.getStock(ticker, { resolution })
       setStock(data)
       setError(null)
     } catch (err) {
@@ -873,14 +914,15 @@ export default function StockDetail() {
   }
 
   useEffect(() => {
-    fetchStock()
-  }, [ticker])
+    fetchStock(scoreResolution)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticker, scoreResolution])
 
   const handleRefresh = async () => {
     try {
       setRefreshing(true)
       await api.refreshStock(ticker)
-      await fetchStock()
+      await fetchStock(scoreResolution)
     } catch (err) {
       console.error('Failed to refresh:', err)
     } finally {
@@ -1003,7 +1045,11 @@ export default function StockDetail() {
 
       <CANSLIMDetail stock={stock} />
 
-      <ScoreHistory history={stock.score_history} />
+      <ScoreHistory
+        history={stock.score_history}
+        resolution={scoreResolution}
+        onResolutionChange={setScoreResolution}
+      />
 
       {/* Actions */}
       <SectionLabel>Actions</SectionLabel>

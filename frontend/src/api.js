@@ -209,7 +209,10 @@ export const api = {
 
   searchStocks: (q) => request(`/api/stocks/search?q=${encodeURIComponent(q)}&limit=8`),
 
-  getStock: (ticker) => request(`/api/stocks/${ticker}`),
+  getStock: (ticker, { resolution } = {}) => {
+    const qs = resolution ? `?resolution=${encodeURIComponent(resolution)}` : ''
+    return request(`/api/stocks/${ticker}${qs}`)
+  },
 
   refreshStock: async (ticker) => {
     const result = await request(`/api/stocks/${ticker}/refresh`, { method: 'POST' })
