@@ -3289,6 +3289,10 @@ class BacktestEngine:
             if ml_confidence is not None and ml_confidence == ml_confidence:
                 signal_factors["ml_confidence"] = round(ml_confidence, 3)
                 signal_factors["ml_bonus"] = round(ml_bonus, 1)
+                # NOTE: MLPrediction audit rows are written in ai_trader.py only.
+                # Mirroring here would dump hundreds of thousands of simulated
+                # predictions into the production audit table per backtest run.
+                # The gating logic below IS mirrored — only the persistence diverges.
             # ML confidence gating: veto or reduce low-confidence candidates
             ml_min_confidence = ml_config.get('min_confidence', 0.0)
             if ml_confidence is not None and ml_confidence == ml_confidence and ml_min_confidence > 0:

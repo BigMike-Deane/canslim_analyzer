@@ -142,7 +142,8 @@ def is_market_open() -> bool:
 
 from backend.database import (
     Stock, AIPortfolioConfig, AIPortfolioPosition,
-    AIPortfolioTrade, AIPortfolioSnapshot, StockScore, CoiledSpringAlert
+    AIPortfolioTrade, AIPortfolioSnapshot, StockScore, CoiledSpringAlert,
+    MLModel, MLPrediction,
 )
 from canslim_scorer import calculate_coiled_spring_score, CANSLIMScore
 
@@ -779,6 +780,50 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
     # Sort by priority (breakouts first)
     pyramids.sort(key=lambda x: x["priority"])
     return pyramids
+
+
+def _get_active_ml_model_id(db: Session):
+    """Return the id of the currently-active MLModel row, or None.
+
+    Looked up once per evaluate_buys call and reused across candidates so
+    we don't pay a query per stock. Failures are swallowed — audit logging
+    must never block trading.
+    """
+    try:
+        row = (
+            db.query(MLModel.id)
+            .filter(MLModel.status == 'active')
+            .order_by(MLModel.id.desc())
+            .first()
+        )
+        return row[0] if row else None
+    except Exception as e:
+        logger.warning(f"Failed to look up active ML model id: {e}")
+        return None
+
+
+def _record_ml_prediction(db: Session, model_id, ticker: str, ml_confidence: float, features: dict) -> None:
+    """Stage an MLPrediction audit row in the session for later commit.
+
+    Caller is responsible for the surrounding transaction. We deliberately do
+    NOT commit here — the row rides the trade transaction so audit and trade
+    succeed or fail together. Any failure is swallowed; the trading pipeline
+    must never be blocked by audit logging.
+    """
+    if model_id is None:
+        return
+    try:
+        clean_features = sanitize_signal_factors(features) if features else {}
+        pred = MLPrediction(
+            model_id=model_id,
+            ticker=ticker,
+            prediction_date=date.today(),
+            ml_confidence=float(ml_confidence),
+            features=clean_features,
+        )
+        db.add(pred)
+    except Exception as e:
+        logger.warning(f"Failed to stage ML prediction for {ticker}: {e}")
 
 
 def get_buy_throttle_limit(db: Session, profile: dict, user_id: int = 1) -> int:
@@ -1843,6 +1888,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
     profile = get_strategy_profile(strategy)
 
+    # Resolve active ML model once per cycle for prediction audit logging.
+    # None when ML is disabled or no model is active — recorder is a no-op then.
+    _active_ml_model_id = (
+        _get_active_ml_model_id(db) if profile.get('ml_signal', {}).get('enabled', False) else None
+    )
+
     # Apply profile-level cooldown overrides now that profile is loaded
     profile_cooldown = profile.get('re_entry_cooldown', {})
     if profile_cooldown:
@@ -2862,6 +2913,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if ml_confidence is not None and ml_confidence == ml_confidence:
             buy_signal_factors["ml_confidence"] = round(ml_confidence, 3)
             buy_signal_factors["ml_bonus"] = round(ml_bonus, 1)
+            _record_ml_prediction(db, _active_ml_model_id, stock.ticker, ml_confidence, _ml_features)
         # ML confidence gating: veto or reduce low-confidence candidates
         ml_min_confidence = ml_config.get('min_confidence', 0.0)
         if ml_confidence is not None and ml_confidence == ml_confidence and ml_min_confidence > 0:
