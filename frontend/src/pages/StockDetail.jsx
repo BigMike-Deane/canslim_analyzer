@@ -465,6 +465,18 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
       displayLabel = dt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     }
   }
+  // "Biggest mover" — which component changed most vs the prior point. Threshold
+  // of 0.5 filters rounding noise; non-trivial moves like N -7.4 surface clearly.
+  let topMover = null
+  if (d._deltas) {
+    for (const [k, v] of Object.entries(d._deltas)) {
+      if (Math.abs(v) < 0.5) continue
+      if (!topMover || Math.abs(v) > Math.abs(topMover.delta)) {
+        topMover = { letter: k, delta: v }
+      }
+    }
+  }
+
   return (
     <div style={TOOLTIP_STYLE} className="px-3 py-2 text-xs">
       <div className="text-dark-500 mb-1">{displayLabel}</div>
@@ -472,6 +484,14 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
         <span style={{ color: '#00e5ff' }}>Score: <b>{formatScore(d.total_score)}</b></span>
         {d.price != null && <span style={{ color: '#a78bfa' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
       </div>
+      {topMover && (
+        <div className="text-[11px] mb-1">
+          <span className="text-dark-500">Δ vs prior {isPerScan ? 'scan' : 'day'}: </span>
+          <span style={{ color: COMPONENT_COLORS[topMover.letter] }}>
+            <b>{topMover.letter.toUpperCase()}</b> {topMover.delta > 0 ? '+' : ''}{topMover.delta.toFixed(1)}
+          </span>
+        </div>
+      )}
       {showComponents && (
         <div className="grid grid-cols-4 gap-x-3 gap-y-0.5 mt-1 pt-1 border-t border-white/5">
           {['c','a','n','s','l','i','m'].map(k => (
@@ -507,7 +527,20 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
   cutoff.setDate(cutoff.getDate() - parseInt(period))
   const refDate = (h) => new Date(isPerScan ? (h.timestamp || h.date) : h.date)
   const filtered = period === 'all' ? history : history.filter(h => refDate(h) >= cutoff)
-  const data = filtered.length >= 2 ? filtered : history
+  const baseData = filtered.length >= 2 ? filtered : history
+
+  // Stamp each point with the per-component deltas vs the prior point so the
+  // tooltip can answer "what just moved?" without re-scanning the whole array.
+  // First point has no prior, so it gets no _deltas.
+  const data = baseData.map((d, i) => {
+    if (i === 0) return d
+    const prev = baseData[i - 1]
+    const _deltas = {}
+    for (const k of ['c','a','n','s','l','i','m']) {
+      _deltas[k] = (d[k] ?? 0) - (prev[k] ?? 0)
+    }
+    return { ...d, _deltas }
+  })
 
   // Compute price domain with 5% padding
   const prices = data.map(d => d.price).filter(Boolean)
