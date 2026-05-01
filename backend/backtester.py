@@ -54,6 +54,7 @@ from backend.database import (
 from sqlalchemy import func
 from backend.historical_data import HistoricalDataProvider
 from backend.market_state import MarketStateManager, MarketState
+from backend.bear_base import compute_readiness_score
 from canslim_scorer import calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,13 @@ class BacktestEngine:
 
         # Static data cache (sector, earnings, etc. from database)
         self.static_data: Dict[str, dict] = {}
+
+        # Bear-base watchlist: ticker -> {readiness, first_seen, last_seen}.
+        # Mirrors live BearBaseCandidate behavior — entries persist after a
+        # stock's last qualifying scan for a 30-day grace period so the bonus
+        # carries into the post-bear bull start (the period when the bonus
+        # matters most). See _bear_base_bonus_for_candidate.
+        self._bear_base_watchlist: Dict[str, dict] = {}
 
         # Track metrics
         self.peak_portfolio_value: float = self.backtest.starting_cash
@@ -3005,6 +3013,17 @@ class BacktestEngine:
                 volume_dry_up_bonus = 5
                 composite_score += volume_dry_up_bonus
 
+            # Bear-base readiness bonus (mirrors ai_trader.evaluate_buys, commit b972da3).
+            # Boosts buy ranking for stocks that built quality bases during a bear so they
+            # rank higher when the SPY gate flips bullish.
+            bear_base_bonus, bb_readiness, bb_days, bear_base_reason = (
+                self._bear_base_bonus_for_candidate(
+                    ticker, current_date, score_data, static_data, price
+                )
+            )
+            if bear_base_bonus > 0:
+                composite_score += bear_base_bonus
+
             # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
             # Position sizing: conviction-based (higher scores get larger positions)
@@ -3187,6 +3206,8 @@ class BacktestEngine:
                 reason_parts.append(f"📉 Est↓ {revision_pct:+.0f}%")
             if deterministic_boost_val > 0:
                 reason_parts.append(f"Det+{deterministic_boost_val}")
+            if bear_base_reason:
+                reason_parts.append(bear_base_reason)
 
             # Compute price action features for ML signal factors
             try:
@@ -3833,6 +3854,111 @@ class BacktestEngine:
         """Check if we can add another position in this sector"""
         sector_count = sum(1 for p in self.positions.values() if p.sector == sector)
         return sector_count < MAX_STOCKS_PER_SECTOR
+
+    def _bear_base_bonus_for_candidate(
+        self, ticker, current_date, score_data, static_data, price
+    ):
+        """Mirror ai_trader.evaluate_buys bear-base ranking added in commit b972da3.
+
+        Live source-of-truth is BearBaseCandidate (populated by
+        bear_base.update_bear_base_candidates when SPY < 50MA). Backtester
+        recomputes readiness on the fly from score_data and tracks a
+        per-engine watchlist so the bonus persists for 30 days after a
+        stock's last qualifying scan — matching the live behavior where
+        BearBaseCandidate rows survive into the post-bear period (which
+        is exactly when this bonus matters most).
+
+        Returns: (bonus_pts, readiness, days_on_list, reason_or_None)
+
+        Backtest-only deviations vs live:
+          - institutional_accumulation, insider_sentiment not tracked → up
+            to 8 of 15 accumulation pts unavailable. Affects all candidates
+            uniformly; relative ranking preserved.
+          - Watchlist eligibility derives from already-evaluated buy
+            candidates instead of the full universe. Live's
+            BearBaseCandidate is broader, but the candidates we'd boost
+            are those passing quality filters anyway — same effective set.
+        """
+        from types import SimpleNamespace
+
+        base_pattern = score_data.get("base_pattern") or {}
+        base_type = base_pattern.get("type", "none")
+        weeks = score_data.get("weeks_in_base", 0) or 0
+        canslim = score_data.get("total_score") or 0
+        rs_3m = score_data.get("rs_3m")
+
+        has_valid_base = (
+            base_type and base_type not in ('none', '')
+            and weeks >= 3 and rs_3m is not None
+        )
+        has_dryup = (
+            score_data.get("_volume_dry_up") and canslim >= 50
+            and rs_3m is not None
+        )
+
+        readiness = 0
+        if has_valid_base or has_dryup:
+            try:
+                atr_raw = self.data_provider.get_atr(ticker, current_date, 14)
+                atr_pct = (
+                    _nan_safe(atr_raw)
+                    if isinstance(atr_raw, (int, float)) and not isinstance(atr_raw, bool)
+                    else None
+                )
+            except Exception:
+                atr_pct = None
+            proxy = SimpleNamespace(
+                c_score=score_data.get("c_score") or 0,
+                a_score=score_data.get("a_score") or 0,
+                l_score=score_data.get("l_score") or 0,
+                canslim_score=canslim,
+                rs_3m=rs_3m,
+                rs_12m=score_data.get("rs_12m"),
+                base_type=base_type,
+                weeks_in_base=weeks,
+                atr_pct=atr_pct,
+                volume_dry_up=score_data.get("_volume_dry_up", False),
+                institutional_accumulation=False,
+                insider_sentiment="",
+                industry_group_rank=static_data.get("industry_group_rank", 50) or 50,
+                pivot_price=score_data.get("pivot_price", 0),
+                current_price=price,
+            )
+            readiness, _ = compute_readiness_score(proxy)
+
+        # Update watchlist on every scan where stock qualifies (>=20).
+        if readiness >= 20:
+            existing = self._bear_base_watchlist.get(ticker)
+            if existing:
+                existing['readiness'] = readiness
+                existing['last_seen'] = current_date
+            else:
+                self._bear_base_watchlist[ticker] = {
+                    'readiness': readiness,
+                    'first_seen': current_date,
+                    'last_seen': current_date,
+                }
+
+        bb = self._bear_base_watchlist.get(ticker)
+        if not bb or (current_date - bb['last_seen']).days > 30:
+            return 0, readiness, 0, None
+
+        days_on_list = (current_date - bb['first_seen']).days
+        if bb['readiness'] >= 70:
+            bonus = 15
+        elif bb['readiness'] >= 50:
+            bonus = 10
+        elif bb['readiness'] >= 30:
+            bonus = 5
+        else:
+            bonus = 0
+        if days_on_list >= 14:
+            bonus += 3
+        elif days_on_list >= 7:
+            bonus += 1
+
+        reason = f"BearBase+{bonus} (ready={bb['readiness']:.0f})" if bonus > 0 else None
+        return bonus, bb['readiness'], days_on_list, reason
 
     def _calculate_final_metrics(self):
         """Calculate final backtest metrics"""
