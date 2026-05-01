@@ -968,8 +968,13 @@ async def fetch_short_interest_async(ticker: str) -> dict:
 # with zero 429s. _init_async_primitives() re-creates this each scan with
 # the same size so the value here only matters for ad-hoc pre-init calls.
 _yahoo_semaphore = asyncio.Semaphore(5)
-_yahoo_delay = 0.6  # Delay between Yahoo requests in seconds
-_yahoo_max_retries = 4  # Retries for rate limits (with exponential backoff)
+# bench_fetch_round2.py showed retries=2 cuts wall-clock 44% on its own
+# (4 retries with 5/10/15/20s backoff = up to 50s wasted per flaky ticker;
+# tickers needing >2 retries also fail on the next 4-retry scan, so cutting
+# the budget loses no data — they just get marked delisted one scan sooner).
+# delay=0.3 is a small additional win on top of retries=2 (combined: -50%).
+_yahoo_delay = 0.3
+_yahoo_max_retries = 2
 
 async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
     """
