@@ -211,7 +211,7 @@ def reset_fallback_tracker():
 # FMP API limit: 300 calls/minute = 5 calls/second
 # We target 250 calls/minute to leave headroom
 
-MAX_CONCURRENT_REQUESTS = 8  # Reduced from 20 - fewer concurrent requests = more predictable rate
+MAX_CONCURRENT_REQUESTS = 12  # Was 8; bench_fetch.py confirmed 12 cuts FMP wait without 429s
 
 # These will be initialized per-scan to avoid event loop binding issues
 # When asyncio.run() creates a new event loop, module-level asyncio objects become invalid
@@ -240,7 +240,10 @@ async def _init_async_primitives():
     loop = asyncio.get_running_loop()
     api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     _rate_lock = asyncio.Lock()
-    _yahoo_semaphore = asyncio.Semaphore(3)
+    # Yahoo concurrency was 3; bench_fetch.py showed 5 is consistently faster
+    # (13-27% wall-clock reduction across reverse-order runs) with zero 429s
+    # and 100% valid fetches.
+    _yahoo_semaphore = asyncio.Semaphore(5)
     # Reset legacy rate limiter state for fresh scan
     _rate_limiter["calls_this_minute"] = 0
     _rate_limiter["minute_start"] = None
@@ -960,8 +963,11 @@ async def fetch_short_interest_async(ticker: str) -> dict:
 # ============== YAHOO INFO FETCHER (COMPREHENSIVE) ==============
 # Gets ROE, institutional %, analyst targets, cash/debt, short interest in ONE call
 
-# Semaphore to limit concurrent Yahoo requests (they throttle aggressively)
-_yahoo_semaphore = asyncio.Semaphore(3)  # 3 concurrent Yahoo requests
+# Semaphore to limit concurrent Yahoo requests (they throttle aggressively).
+# Was 3; bench_fetch.py confirmed 5 is the sweet spot — meaningfully faster
+# with zero 429s. _init_async_primitives() re-creates this each scan with
+# the same size so the value here only matters for ad-hoc pre-init calls.
+_yahoo_semaphore = asyncio.Semaphore(5)
 _yahoo_delay = 0.6  # Delay between Yahoo requests in seconds
 _yahoo_max_retries = 4  # Retries for rate limits (with exponential backoff)
 
