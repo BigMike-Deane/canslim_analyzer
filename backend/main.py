@@ -191,12 +191,14 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(5)  # Wait for app to fully initialize
             try:
                 from backend.scheduler import start_continuous_scanning
-                # Full-universe scan currently takes ~58 min end-to-end. A 30-min
-                # interval caused APScheduler to skip every other firing
-                # (max_instances=1), so the configured cadence was a fiction.
-                # 60 min matches reality and silences the "skipped" WARNING.
-                logger.info("Auto-starting scanner: source=all, interval=60 minutes")
-                start_continuous_scanning(source="all", interval_minutes=60)
+                # Round 1+2 fetcher tuning brought full-universe scan to
+                # ~28.5 min (was ~58 min). 35 min gives a 22% buffer over
+                # observed wall-clock — robust to normal Yahoo/FMP variance
+                # while keeping near-real-time freshness. If a scan ever
+                # exceeds 35 min APScheduler skips one firing → that cycle
+                # falls back to 70 min (max_instances=1).
+                logger.info("Auto-starting scanner: source=all, interval=35 minutes")
+                start_continuous_scanning(source="all", interval_minutes=35)
                 logger.info("Scanner auto-started successfully")
             except Exception as e:
                 logger.error(f"Failed to auto-start scanner: {e}")
