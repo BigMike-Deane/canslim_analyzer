@@ -25,7 +25,8 @@ from data_fetcher import (
     get_cached_data, set_cached_data, mark_data_fetched, is_data_fresh,
     fetch_price_from_chart_api, fetch_weekly_price_history,
     REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
-    load_cache_from_db, mark_ticker_as_delisted, clear_delisted_ticker
+    load_cache_from_db, mark_ticker_as_delisted, clear_delisted_ticker,
+    refresh_delisted_cache,
 )
 import fmp_rate_limiter
 
@@ -1522,6 +1523,10 @@ async def fetch_stocks_batch_async(
     # Load DB cache on startup to enable freshness checks
     # This prevents re-fetching data that's already fresh from previous scans
     load_cache_from_db()
+
+    # Snapshot the delisted-ticker set so clear_delisted_ticker can short-
+    # circuit for tickers that were never marked (most of them).
+    refresh_delisted_cache()
 
     # Reset fallback tracker for this scan
     reset_fallback_tracker()

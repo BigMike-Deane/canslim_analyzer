@@ -577,6 +577,35 @@ def _fmp_get(url: str, **kwargs) -> requests.Response:
 
 # ============== DELISTED TICKER TRACKING ==============
 
+# In-memory cache of tickers currently tracked in delisted_tickers (any
+# failure_count). Populated by refresh_delisted_cache() at scan start.
+# Used to short-circuit clear_delisted_ticker for tickers that were never
+# delisted — that path otherwise issues ~2000 no-op DELETEs per scan.
+_known_delisted_cache: set = set()
+_delisted_cache_loaded = False
+
+
+def refresh_delisted_cache():
+    """Reload the in-memory delisted-ticker cache from the database.
+
+    Called at scan start. Subsequent clear_delisted_ticker calls use the
+    cache to skip DB roundtrips for tickers that were never marked.
+    """
+    global _known_delisted_cache, _delisted_cache_loaded
+    db = _get_db_session()
+    if not db:
+        return
+    try:
+        from backend.database import DelistedTicker
+        rows = db.query(DelistedTicker.ticker).all()
+        _known_delisted_cache = {r.ticker for r in rows}
+        _delisted_cache_loaded = True
+    except Exception as e:
+        logger.debug(f"Failed to refresh delisted cache: {e}")
+    finally:
+        db.close()
+
+
 def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = None):
     """
     Mark a ticker as delisted/invalid so it's excluded from future scans.
@@ -594,8 +623,9 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
 
         existing = db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).first()
         if existing:
-            # Only increment once per day to prevent a single scan cycle
-            # from pushing a ticker over the threshold via multiple code paths
+            # Cap one increment per hour so a single scan cycle that touches
+            # the same ticker through multiple code paths can't push it over
+            # the threshold prematurely.
             if existing.last_failed_at and (datetime.now() - existing.last_failed_at).total_seconds() < 3600:
                 logger.debug(f"{ticker} already marked this hour, skipping duplicate")
                 return
@@ -622,6 +652,7 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
                 recheck_after=datetime.now() + timedelta(days=7)  # Recheck after 7 days initially
             )
             db.add(delisted)
+            _known_delisted_cache.add(ticker)
 
         db.commit()
         logger.info(f"Marked {ticker} as delisted/invalid: {reason} (count: {existing.failure_count if existing else 1})")
@@ -680,16 +711,30 @@ def get_delisted_tickers() -> set:
 
 
 def clear_delisted_ticker(ticker: str):
-    """Remove a ticker from the delisted list (e.g., if it starts working again)"""
+    """Remove a ticker from the delisted list (e.g., if it starts working again).
+
+    Most tickers are never delisted, so we short-circuit on the in-memory
+    cache populated by refresh_delisted_cache() at scan start. The DELETE
+    only runs when a row actually exists, and the success log fires only
+    when a row was removed.
+    """
+    # Fast path: skip DB entirely if cache says this ticker isn't tracked.
+    # If the cache was never loaded (ad-hoc callers outside a scan), fall
+    # through to the DB so we never miss a real cleanup.
+    if _delisted_cache_loaded and ticker not in _known_delisted_cache:
+        return
+
     db = _get_db_session()
     if not db:
         return
 
     try:
         from backend.database import DelistedTicker
-        db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).delete()
+        deleted = db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).delete()
         db.commit()
-        logger.info(f"Removed {ticker} from delisted tickers")
+        if deleted:
+            _known_delisted_cache.discard(ticker)
+            logger.info(f"Removed {ticker} from delisted tickers")
     except Exception as e:
         logger.debug(f"Failed to clear delisted ticker {ticker}: {e}")
         db.rollback()
