@@ -44,6 +44,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class _YFinanceDelistedFilter(logging.Filter):
+    """Drop yfinance ERROR records that just restate that a ticker is delisted.
+
+    Why: we already track delisted symbols in the `DelistedTicker` table via
+    `data_fetcher.mark_ticker_as_delisted` and exclude them on subsequent
+    scans. The same tickers still surface inside batch fetches, where
+    yfinance logs them at ERROR level. Those lines drown out genuine signal
+    (rate-limits, network failures) without being actionable themselves.
+    """
+
+    _NOISE_SUBSTRINGS = (
+        "possibly delisted",
+        "Failed download",  # covers "Failed download" / "Failed downloads"
+        "Quote not found",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return not any(s in msg for s in self._NOISE_SUBSTRINGS)
+
+
+logging.getLogger("yfinance").addFilter(_YFinanceDelistedFilter())
+
+
 # ============== Request Models ==============
 
 from pydantic import Field, field_validator
@@ -164,8 +191,12 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(5)  # Wait for app to fully initialize
             try:
                 from backend.scheduler import start_continuous_scanning
-                logger.info("Auto-starting scanner: source=all, interval=30 minutes")
-                start_continuous_scanning(source="all", interval_minutes=30)
+                # Full-universe scan currently takes ~58 min end-to-end. A 30-min
+                # interval caused APScheduler to skip every other firing
+                # (max_instances=1), so the configured cadence was a fiction.
+                # 60 min matches reality and silences the "skipped" WARNING.
+                logger.info("Auto-starting scanner: source=all, interval=60 minutes")
+                start_continuous_scanning(source="all", interval_minutes=60)
                 logger.info("Scanner auto-started successfully")
             except Exception as e:
                 logger.error(f"Failed to auto-start scanner: {e}")
@@ -1443,7 +1474,7 @@ async def get_insider_sentiment(
 @app.get("/api/stocks/{ticker}")
 async def get_stock(
     ticker: str,
-    resolution: str = Query("daily", regex="^(daily|all)$"),
+    resolution: str = Query("daily", pattern="^(daily|all)$"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
     background_tasks: BackgroundTasks = None,
