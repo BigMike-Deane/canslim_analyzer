@@ -5045,12 +5045,18 @@ async def update_ai_portfolio_config_v2(
 # ============== Strategy Profiles ==============
 
 @app.get("/api/strategies")
-async def list_strategies(current_user: User = Depends(get_current_active_user)):
-    """List all available strategy profiles with their descriptions."""
+async def list_strategies(
+    include_hidden: bool = Query(False),
+    current_user: User = Depends(get_current_active_user),
+):
+    """List available strategy profiles. Hides profiles flagged `hidden: true`
+    in YAML unless include_hidden=true (research/admin use)."""
     from config_loader import config as yaml_config
     profiles = yaml_config.get('strategy_profiles', {})
     result = []
     for name, profile in profiles.items():
+        if profile.get("hidden", False) and not include_hidden:
+            continue
         result.append({
             "name": name,
             "label": profile.get("label", name.replace("_", " ").title()),
@@ -5061,6 +5067,7 @@ async def list_strategies(current_user: User = Depends(get_current_active_user))
             "take_profit_pct": profile.get("take_profit_pct", 75.0),
             "market_state_enabled": profile.get("market_state", {}).get("enabled", True) if isinstance(profile.get("market_state"), dict) else True,
             "seed_count": profile.get("seed_count", 3),
+            "hidden": profile.get("hidden", False),
         })
     return result
 

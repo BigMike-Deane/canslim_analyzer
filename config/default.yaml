@@ -942,6 +942,7 @@ strategy_profiles:
   # === CORRECTION ZONE STRATEGIES (A/B test vs binary gate) ===
 
   nostate_correction_zone:
+    hidden: true  # May 1 2026: retired from picker — broke down across rolling-window matrix
     label: "NoState + Correction Zone"
     description: "Binary gate + graduated buying when SPY between 200MA and 50MA (C+A+L >= 38, half size)"
     min_score: 72
@@ -975,6 +976,7 @@ strategy_profiles:
       veto_action: "skip"
 
   nostate_high_conviction:
+    hidden: true  # May 1 2026: retired from picker — lost money on full 4yr rolling matrix
     label: "NoState + High Conviction"
     description: "Correction zone with strict filters: C+A+L >= 40, must be in base with RS, half size"
     min_score: 72

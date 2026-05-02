@@ -566,6 +566,20 @@ class TestStrategies:
             assert "name" in s
             assert "min_score" in s
 
+    def test_strategies_hides_flagged_profiles(self):
+        names = {s["name"] for s in client.get("/api/strategies").json()}
+        # These two were retired May 1 2026 after the rolling-window matrix
+        assert "nostate_correction_zone" not in names
+        assert "nostate_high_conviction" not in names
+        # But the live winners must still be visible
+        assert "nostate_optimized" in names
+        assert "nostate_cs_bear" in names
+
+    def test_strategies_include_hidden_returns_all(self):
+        names = {s["name"] for s in client.get("/api/strategies?include_hidden=true").json()}
+        assert "nostate_correction_zone" in names
+        assert "nostate_high_conviction" in names
+
 
 class TestSystemHealth:
     """The /api/system-health endpoint imports scheduler, backup, redis modules.
