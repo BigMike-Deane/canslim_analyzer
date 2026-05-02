@@ -174,6 +174,27 @@ class TestBacktestEngine:
         # Should allow a different sector
         assert engine._check_sector_limit("Healthcare") is True
 
+    def test_overlay_stats_initialized(self, mock_db):
+        """overlay_stats dict must exist with all expected counters at zero (May 1 2026)"""
+        from backend.backtester import BacktestEngine
+
+        mock_session, _ = mock_db
+        engine = BacktestEngine(mock_session, 1)
+
+        expected_keys = {
+            'cz_active_days',
+            'cz_pre_filter_rejected',
+            'cz_cs_only_rejected',
+            'cz_cs_confidence_rejected',
+            'cz_pass',
+            'cz_position_mult_applied',
+            'bear_base_bonus_applied',
+            'bear_base_bonus_total',
+        }
+        assert set(engine.overlay_stats.keys()) == expected_keys
+        for k, v in engine.overlay_stats.items():
+            assert v == 0, f"overlay_stats[{k}] should start at 0, got {v}"
+
 
 class TestSimulatedPosition:
     """Tests for SimulatedPosition dataclass"""

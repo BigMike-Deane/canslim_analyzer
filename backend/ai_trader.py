@@ -1903,6 +1903,20 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     # Correction zone flag (set when SPY between 200MA and 50MA with CZ profile enabled)
     correction_zone_active = False
 
+    # Per-cycle overlay diagnostics (mirrors backtester self.overlay_stats —
+    # logged at end of evaluate_buys so operators can see if the cs_bear
+    # overlay is actually firing in live trading).
+    _overlay_stats = {
+        'cz_active': False,
+        'cz_pre_filter_rejected': 0,
+        'cz_cs_only_rejected': 0,
+        'cz_cs_confidence_rejected': 0,
+        'cz_pass': 0,
+        'cz_position_mult_applied': 0,
+        'bear_base_bonus_applied': 0,
+        'bear_base_bonus_total': 0,
+    }
+
     # MARKET STATE MACHINE: Graduated exposure system (replaces binary regime gate)
     # In bull markets (SPY > 50MA), this is always TRENDING at 100% — identical to before.
     # Read from profile first (nostate_optimized has market_state.enabled: false), fallback to global config
@@ -1981,6 +1995,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                         and spy_px >= spy_ma200):
                     # CORRECTION ZONE: SPY between 200MA and 50MA
                     correction_zone_active = True
+                    _overlay_stats['cz_active'] = True
                     logger.info(
                         f"CORRECTION ZONE: SPY ${spy_px:.2f} between "
                         f"200MA ${spy_ma200:.2f} and 50MA ${spy_50:.2f}, "
@@ -2295,21 +2310,25 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                        _nan_safe(getattr(stock, 'a_score', 0)) +
                        _nan_safe(getattr(stock, 'l_score', 0)))
                 if cal < cz_min_cal:
+                    _overlay_stats['cz_pre_filter_rejected'] += 1
                     continue
 
                 if cz_config.get('require_base', False):
                     base = getattr(stock, 'base_type', 'none') or 'none'
                     weeks = getattr(stock, 'weeks_in_base', 0) or 0
                     if base in ('none', '', None) or weeks < cz_config.get('min_base_weeks', 0):
+                        _overlay_stats['cz_pre_filter_rejected'] += 1
                         continue
 
                 if cz_config.get('require_relative_strength', False):
                     stock_ma21 = _nan_safe(getattr(stock, 'ma_21', 0))
                     stock_price = _nan_safe(stock.current_price or 0)
                     if stock_ma21 > 0 and stock_price < stock_ma21:
+                        _overlay_stats['cz_pre_filter_rejected'] += 1
                         continue
 
                 cz_entry = True
+                _overlay_stats['cz_pass'] += 1
 
         # Determine if this is a growth stock and get effective score
         is_growth = stock.is_growth_stock or False
@@ -2487,10 +2506,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if cz_cs_only_required:
             has_cs = hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring')
             if not has_cs:
+                _overlay_stats['cz_cs_only_rejected'] += 1
                 continue  # Not a CS candidate — skip in cs_only mode
             cs_conf = stock._cs_result.get('confidence', 0) if has_cs else 0
             if cs_conf < cz_min_cs_confidence:
+                _overlay_stats['cz_cs_confidence_rejected'] += 1
                 continue  # CS confidence too low
+            _overlay_stats['cz_pass'] += 1
             logger.info(f"CZ CS-ONLY pass: {stock.ticker} CS confidence={cs_conf}")
 
         # Calculate base quality bonus (up to 15 points)
@@ -2681,6 +2703,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             elif days_on_list >= 7:
                 bear_base_bonus += 1
             composite_score += bear_base_bonus
+            if bear_base_bonus > 0:
+                _overlay_stats['bear_base_bonus_applied'] += 1
+                _overlay_stats['bear_base_bonus_total'] += bear_base_bonus
 
         # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
@@ -2882,6 +2907,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if cz_entry:
             buy_signal_factors["correction_zone_entry"] = True
             buy_signal_factors["correction_zone_mult"] = cz_position_mult
+            _overlay_stats['cz_position_mult_applied'] += 1
         if in_soft_zone:
             buy_signal_factors["soft_zone"] = True
             buy_signal_factors["soft_zone_multiplier"] = soft_zone_mult
@@ -3003,6 +3029,16 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     "composite_score": round(effective_score, 1),
                 }
             })
+
+    # Emit overlay-stats summary so we can see whether the cs_bear / correction_zone
+    # overlay actually fired this cycle. If cz_active=False the rest of the keys
+    # should be 0 — cs_bear is then behaving identically to nostate_optimized.
+    if (_overlay_stats['cz_active']
+            or _overlay_stats['cz_pre_filter_rejected']
+            or _overlay_stats['cz_cs_only_rejected']
+            or _overlay_stats['cz_pass']
+            or _overlay_stats['bear_base_bonus_applied']):
+        logger.info(f"OVERLAY STATS (user={user_id}): {_overlay_stats}")
 
     return final_buys
 

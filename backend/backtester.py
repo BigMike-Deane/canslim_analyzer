@@ -208,6 +208,20 @@ class BacktestEngine:
         # Score floor decay: count consecutive trading days under-invested in a bull market
         self.underinvested_days: int = 0
 
+        # cs_bear / correction_zone overlay diagnostics — track whether the bear
+        # overlay code paths actually fire during this backtest. Persisted to
+        # BacktestRun.overlay_stats on completion. See canslim-rolling-matrix-may1.
+        self.overlay_stats: dict = {
+            'cz_active_days': 0,            # days correction_zone_active was True
+            'cz_pre_filter_rejected': 0,    # candidates filtered by C+A+L / RS / base requirement
+            'cz_cs_only_rejected': 0,       # candidates rejected by cs_only mode (non-CS)
+            'cz_cs_confidence_rejected': 0, # candidates rejected by cs_only mode (CS confidence too low)
+            'cz_pass': 0,                   # candidates that passed CZ filtering
+            'cz_position_mult_applied': 0,  # times position size was reduced via _correction_zone_mult
+            'bear_base_bonus_applied': 0,   # candidates that received bear base bonus
+            'bear_base_bonus_total': 0,     # cumulative bonus points awarded
+        }
+
         # SPY tracking for benchmark
         self.spy_start_price: float = 0.0
         self.spy_shares: float = 0.0  # Hypothetical SPY buy-and-hold
@@ -538,11 +552,13 @@ class BacktestEngine:
             # Store data fingerprint for reproducibility tracking
             if hasattr(self, '_data_fingerprint'):
                 self.backtest.error_message = f"data_fp:{self._data_fingerprint}"
+            self.backtest.overlay_stats = dict(self.overlay_stats)
             self.db.commit()
 
             logger.info(f"Backtest {self.backtest.id} completed: "
                         f"{self.backtest.total_return_pct:.1f}% return, "
                         f"{self.backtest.total_trades} trades")
+            logger.info(f"Backtest {self.backtest.id} overlay_stats: {self.overlay_stats}")
 
             # Log market state summary
             if self.market_state_enabled and self.market_state.state_history:
@@ -1453,6 +1469,7 @@ class BacktestEngine:
                         # CORRECTION ZONE: SPY between 200MA and 50MA
                         # Allow buying with tighter filters + reduced position size
                         self.correction_zone_active = True
+                        self.overlay_stats['cz_active_days'] += 1
                         can_buy = True
                         logger.debug(
                             f"CORRECTION ZONE: SPY ${spy_price:.2f} between "
@@ -2666,6 +2683,7 @@ class BacktestEngine:
                        _nan_safe(data.get("a_score", 0)) +
                        _nan_safe(data.get("l_score", 0)))
                 if cal < cz_min_cal:
+                    self.overlay_stats['cz_pre_filter_rejected'] += 1
                     continue
 
                 # Base requirement
@@ -2673,6 +2691,7 @@ class BacktestEngine:
                     base = data.get("base_type", "none")
                     weeks = data.get("weeks_in_base", 0)
                     if base in ("none", None) or weeks < cz_min_base_weeks:
+                        self.overlay_stats['cz_pre_filter_rejected'] += 1
                         continue
 
                 # Relative strength: stock price above its own 21MA
@@ -2680,11 +2699,13 @@ class BacktestEngine:
                     stock_ma21 = self.data_provider.get_moving_average(ticker, current_date, 21)
                     stock_price = self.data_provider.get_price_on_date(ticker, current_date)
                     if stock_ma21 > 0 and stock_price and stock_price < stock_ma21:
+                        self.overlay_stats['cz_pre_filter_rejected'] += 1
                         continue
 
                 data["_correction_zone_entry"] = True
                 data["_correction_zone_mult"] = cz_position_mult
                 filtered.append((ticker, data))
+                self.overlay_stats['cz_pass'] += 1
                 logger.debug(f"CZ pass: {ticker} score={data['total_score']:.0f} C+A+L={cal:.0f}")
 
             candidates = filtered
@@ -2842,8 +2863,10 @@ class BacktestEngine:
             # Correction zone CS-only gate: reject non-CS candidates
             if score_data.get("_cz_cs_only_required"):
                 if coiled_spring_bonus <= 0:
+                    self.overlay_stats['cz_cs_only_rejected'] += 1
                     continue  # Not a CS candidate — skip in cs_only mode
                 if cs_result and cs_result.get("confidence", 0) < score_data.get("_cz_min_cs_confidence", 60):
+                    self.overlay_stats['cz_cs_confidence_rejected'] += 1
                     continue  # CS confidence too low
 
             # Get breakout status and volume ratio from cached scores
@@ -3023,6 +3046,8 @@ class BacktestEngine:
             )
             if bear_base_bonus > 0:
                 composite_score += bear_base_bonus
+                self.overlay_stats['bear_base_bonus_applied'] += 1
+                self.overlay_stats['bear_base_bonus_total'] += bear_base_bonus
 
             # Composite score used for ranking/priority only — CANSLIM score is the quality gate
 
@@ -3086,6 +3111,7 @@ class BacktestEngine:
             # Reduce position size for correction zone entries
             if score_data.get("_correction_zone_entry"):
                 position_pct *= score_data.get("_correction_zone_mult", 0.50)
+                self.overlay_stats['cz_position_mult_applied'] += 1
 
             # CORRELATION-AWARE SIZING: Reduce position if highly correlated with existing holdings
             corr_config = config.get('correlation_sizing', {})

@@ -192,6 +192,8 @@ def run_migrations():
         ("stocks", "volume_dry_up_score", "INTEGER DEFAULT 0"),
         # Per-user notification webhook (Apr 2026)
         ("users", "webhook_url", "VARCHAR"),
+        # cs_bear/correction_zone overlay firing counters (May 2026)
+        ("backtest_runs", "overlay_stats", "TEXT"),
     ]
 
     # Build a cache of existing columns per table
@@ -935,6 +937,7 @@ class BacktestRun(Base):
     cancel_requested = Column(Boolean, default=False)  # Flag to request cancellation
     force_refresh = Column(Boolean, default=False)  # Force fresh FMP earnings fetch (ignore cache)
     profile_overrides = Column(JSON, nullable=True)  # Optional strategy profile overrides for A/B testing
+    overlay_stats = Column(JSON, nullable=True)  # cs_bear/correction_zone overlay firing counters for diagnosis
 
     # Relationships (cascade delete when backtest is deleted)
     daily_snapshots = relationship("BacktestSnapshot", back_populates="backtest_run", cascade="all, delete-orphan")
