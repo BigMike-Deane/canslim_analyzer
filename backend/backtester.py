@@ -211,6 +211,14 @@ class BacktestEngine:
         # cs_bear / correction_zone overlay diagnostics — track whether the bear
         # overlay code paths actually fire during this backtest. Persisted to
         # BacktestRun.overlay_stats on completion. See canslim-rolling-matrix-may1.
+        # Snapshot whether ML actually gated trades on this run, computed
+        # against the resolved profile (YAML default + any profile_overrides).
+        # ML training uses this to exclude self-influenced runs — relying only
+        # on profile_overrides, like the original _is_ml_contaminated did,
+        # silently mis-classifies every default-ML-on run as clean training data.
+        ml_cfg = self.profile.get('ml_signal', {}) or {}
+        ml_was_active = bool(ml_cfg.get('enabled', False)) and not bool(ml_cfg.get('log_only', True))
+
         self.overlay_stats: dict = {
             'cz_active_days': 0,            # days correction_zone_active was True
             'cz_pre_filter_rejected': 0,    # candidates filtered by C+A+L / RS / base requirement
@@ -220,6 +228,7 @@ class BacktestEngine:
             'cz_position_mult_applied': 0,  # times position size was reduced via _correction_zone_mult
             'bear_base_bonus_applied': 0,   # candidates that received bear base bonus
             'bear_base_bonus_total': 0,     # cumulative bonus points awarded
+            'ml_was_active': ml_was_active, # True iff ML actively gated trades (read by ML training dedup)
         }
 
         # SPY tracking for benchmark

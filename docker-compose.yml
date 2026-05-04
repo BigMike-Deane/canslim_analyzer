@@ -20,6 +20,10 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+    # NOTE: this block uses LIST syntax (- KEY=VAL). The postgres service
+    # below uses MAP syntax (KEY: VAL). Don't append entries to one block
+    # via a sed pattern that also matches the other — the shapes are not
+    # interchangeable and YAML parsing will break.
     environment:
       - DEBUG=false
       - FMP_API_KEY=${FMP_API_KEY}
@@ -49,6 +53,7 @@ services:
     container_name: canslim-postgres
     ports:
       - "100.104.189.36:5432:5432"  # Tailscale-only access for MCP/dev tools
+    # NOTE: postgres uses MAP syntax (KEY: VAL) — see canslim service note.
     environment:
       POSTGRES_DB: canslim
       POSTGRES_USER: canslim

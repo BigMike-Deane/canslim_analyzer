@@ -215,10 +215,15 @@ class TestBacktestEngine:
             'cz_position_mult_applied',
             'bear_base_bonus_applied',
             'bear_base_bonus_total',
+            'ml_was_active',  # Set from resolved profile; bool, not counter.
         }
         assert set(engine.overlay_stats.keys()) == expected_keys
+        # Counter fields start at 0; ml_was_active is bool from resolved profile.
         for k, v in engine.overlay_stats.items():
-            assert v == 0, f"overlay_stats[{k}] should start at 0, got {v}"
+            if k == 'ml_was_active':
+                assert isinstance(v, bool)
+            else:
+                assert v == 0, f"overlay_stats[{k}] should start at 0, got {v}"
 
     def test_cs_only_branch_increments_cz_pass(self, mock_db):
         """Regression: 5cf7b52 added cz_pass++ on the non-cs_only branch but

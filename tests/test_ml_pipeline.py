@@ -98,8 +98,14 @@ def _make_trade(
 
 
 def _make_backtest_run(id, strategy="nostate_optimized", start_date="2022-01-01",
-                       end_date="2026-03-01", status="completed", profile_overrides=None):
-    """Create a mock BacktestRun-like object."""
+                       end_date="2026-03-01", status="completed", profile_overrides=None,
+                       overlay_stats=None, created_at=None):
+    """Create a mock BacktestRun-like object.
+
+    overlay_stats and created_at default to None so existing tests fall
+    through cleanly. Set them when exercising the post-fix
+    overlay_stats.ml_was_active path or the graduation-date heuristic.
+    """
     run = MagicMock()
     run.id = id
     run.strategy = strategy
@@ -107,6 +113,8 @@ def _make_backtest_run(id, strategy="nostate_optimized", start_date="2022-01-01"
     run.end_date = end_date
     run.status = status
     run.profile_overrides = profile_overrides
+    run.overlay_stats = overlay_stats
+    run.created_at = created_at
     return run
 
 
@@ -496,6 +504,59 @@ class TestIsMlContaminated:
         run = _make_backtest_run(1, profile_overrides={
             "stop_loss_pct": 5.0
         })
+        assert _is_ml_contaminated(run) is False
+
+    # --- Post-fix: overlay_stats.ml_was_active is authoritative ---
+
+    def test_overlay_stats_ml_was_active_true(self):
+        """overlay_stats.ml_was_active=True → contaminated regardless of overrides."""
+        run = _make_backtest_run(1, profile_overrides=None,
+                                 overlay_stats={"ml_was_active": True})
+        assert _is_ml_contaminated(run) is True
+
+    def test_overlay_stats_ml_was_active_false(self):
+        """overlay_stats.ml_was_active=False → clean even if heuristic would flag."""
+        from datetime import datetime
+        run = _make_backtest_run(1, profile_overrides=None,
+                                 overlay_stats={"ml_was_active": False},
+                                 created_at=datetime(2026, 5, 4))
+        assert _is_ml_contaminated(run) is False
+
+    def test_overlay_stats_as_json_string(self):
+        """overlay_stats stored as TEXT in production Postgres — must be decoded."""
+        run = _make_backtest_run(1, profile_overrides=None,
+                                 overlay_stats='{"ml_was_active": true}')
+        assert _is_ml_contaminated(run) is True
+
+    # --- Heuristic for pre-fix runs without overlay_stats or overrides ---
+
+    def test_post_graduation_no_signals_assumed_contaminated(self):
+        """Regression for the silent-contamination bug: nostate_optimized
+        runs after Apr 29 with neither overlay_stats nor profile_overrides
+        previously slipped into training as 'clean' even though the YAML
+        default sets ml_signal.log_only=false."""
+        from datetime import datetime
+        run = _make_backtest_run(1, strategy="nostate_optimized",
+                                 profile_overrides=None, overlay_stats=None,
+                                 created_at=datetime(2026, 5, 4))
+        assert _is_ml_contaminated(run) is True
+
+    def test_pre_graduation_no_signals_clean(self):
+        """Pre-graduation runs lack the contamination since YAML default
+        was log_only=true at that point."""
+        from datetime import datetime
+        run = _make_backtest_run(1, strategy="nostate_optimized",
+                                 profile_overrides=None, overlay_stats=None,
+                                 created_at=datetime(2026, 4, 15))
+        assert _is_ml_contaminated(run) is False
+
+    def test_cs_bear_post_graduation_not_auto_flagged(self):
+        """cs_bear's YAML default stays log_only=true even after Apr 29,
+        so it should NOT be in the auto-flag table."""
+        from datetime import datetime
+        run = _make_backtest_run(1, strategy="nostate_cs_bear",
+                                 profile_overrides=None, overlay_stats=None,
+                                 created_at=datetime(2026, 5, 4))
         assert _is_ml_contaminated(run) is False
 
 

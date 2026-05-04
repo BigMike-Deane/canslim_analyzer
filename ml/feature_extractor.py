@@ -203,32 +203,63 @@ def _select_deduplicated_backtests(db: Session, strategy: str, stats: dict) -> l
 
 
 def _is_ml_contaminated(run) -> bool:
-    """Check if a backtest had ML actively influencing trade decisions."""
-    overrides = run.profile_overrides
-    if not overrides:
-        return False
+    """Check if a backtest had ML actively influencing trade decisions.
 
-    # profile_overrides is JSON in the ORM but stored as TEXT in production
-    # Postgres — older rows come back as strings. Match the defensive pattern
-    # used in backtest_queue.py (commit f17960c).
+    Resolution order:
+      1. overlay_stats.ml_was_active — authoritative when present (set in
+         backtester.run_backtest from the resolved profile, post-fix). This
+         catches runs whose ML config came from the strategy YAML default
+         rather than profile_overrides.
+      2. profile_overrides.ml_signal — only sees per-run overrides, misses
+         YAML defaults. Kept as a fallback for runs created before the
+         overlay_stats.ml_was_active field existed.
+      3. Date heuristic — the original code returned False when no override
+         was present, which silently let every YAML-default ML run into the
+         training set after Apr 29 graduation. For runs with no overlay
+         stats AND no override, default-deny if the run was created after
+         the v12 graduation date for nostate_optimized.
+    """
+    import json
+
+    # 1. Authoritative: overlay_stats.ml_was_active
+    overlay = run.overlay_stats
+    if isinstance(overlay, str):
+        try:
+            overlay = json.loads(overlay)
+        except (ValueError, TypeError):
+            overlay = None
+    if isinstance(overlay, dict) and 'ml_was_active' in overlay:
+        return bool(overlay['ml_was_active'])
+
+    # 2. Legacy: profile_overrides.ml_signal
+    overrides = run.profile_overrides
     if isinstance(overrides, str):
         try:
-            import json
             overrides = json.loads(overrides)
         except (ValueError, TypeError):
-            return False
-    if not isinstance(overrides, dict):
-        return False
+            overrides = None
+    if isinstance(overrides, dict):
+        ml_override = overrides.get("ml_signal", {})
+        if ml_override:
+            enabled = ml_override.get("enabled", False)
+            log_only = ml_override.get("log_only", True)
+            return bool(enabled and not log_only)
 
-    ml_override = overrides.get("ml_signal", {})
-    if not ml_override:
-        return False
+    # 3. Heuristic for runs predating the overlay_stats.ml_was_active field
+    # AND without an explicit ml_signal override. ML graduated for
+    # nostate_optimized on 2026-04-29 (D config: log_only=false). Treat
+    # post-graduation runs as contaminated when we have no other signal —
+    # the cs_bear default stays log_only=true so it isn't auto-flagged.
+    from datetime import date as _date
+    GRADUATION_BY_STRATEGY = {
+        "nostate_optimized": _date(2026, 4, 29),
+    }
+    grad_date = GRADUATION_BY_STRATEGY.get(run.strategy)
+    if grad_date is not None and run.created_at is not None:
+        if run.created_at.date() >= grad_date:
+            return True
 
-    # ML-contaminated if ML was enabled AND not in log-only mode
-    enabled = ml_override.get("enabled", False)
-    log_only = ml_override.get("log_only", True)
-
-    return enabled and not log_only
+    return False
 
 
 def _deduplicate_trades(rows: list) -> list:
