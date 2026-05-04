@@ -32,11 +32,16 @@ const CACHE_TTL = {
   '/api/notifications/unread-count': 15,
 }
 
+// Longest-prefix wins. Object.entries() returns insertion order, so without
+// sorting "/api/stocks" (300s) would shadow "/api/stocks/" (600s) for
+// /api/stocks/MPWR. Sort once at module init.
+const CACHE_TTL_ENTRIES = Object.entries(CACHE_TTL).sort((a, b) => b[0].length - a[0].length)
+
 function getCacheTTL(endpoint) {
   // Check exact matches first
   if (CACHE_TTL[endpoint]) return CACHE_TTL[endpoint]
-  // Check prefix matches (e.g., /api/stocks/AAPL matches /api/stocks/)
-  for (const [pattern, ttl] of Object.entries(CACHE_TTL)) {
+  // Longest matching prefix wins
+  for (const [pattern, ttl] of CACHE_TTL_ENTRIES) {
     if (endpoint.startsWith(pattern)) return ttl
   }
   return 300 // Default 5 min

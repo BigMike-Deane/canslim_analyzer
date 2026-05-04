@@ -960,10 +960,13 @@ export default function StockDetail() {
 
   const fetchStock = async (resolution = scoreResolution) => {
     try {
+      // Reset before fetching so a failure on a new ticker doesn't render
+      // the previously-loaded ticker's data with no error indicator.
+      setStock(null)
+      setError(null)
       setLoading(true)
       const data = await api.getStock(ticker, { resolution })
       setStock(data)
-      setError(null)
     } catch (err) {
       console.error('Failed to fetch stock:', err)
       setError(err.message || 'Failed to load stock data')
