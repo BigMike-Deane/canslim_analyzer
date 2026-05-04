@@ -1,6 +1,9 @@
-const CACHE_NAME = 'canslim-v1'
+// v2: HTML is now network-first so a fresh deploy doesn't get masked by a
+// stale cached index.html that points at an obsolete hashed bundle. Hashed
+// /assets/* files are still cache-first since their filenames change on each
+// build. Bumping the cache name forces v1 to be purged on activate.
+const CACHE_NAME = 'canslim-v2'
 const STATIC_ASSETS = [
-  '/',
   '/manifest.json',
 ]
 
@@ -62,32 +65,54 @@ self.addEventListener('notificationclick', (event) => {
   })())
 })
 
-// Fetch: network-first for API, cache-first for static
+// Fetch strategy:
+//   - /api/* and /health: pass through to network (no SW interception)
+//   - /assets/* (Vite-hashed JS/CSS): cache-first. Filenames are content-hashed
+//     so a new build produces new filenames; stale files are harmless.
+//   - everything else (HTML shell, manifest, icons): network-first. Falls back
+//     to cache only when offline. This is what guarantees a fresh deploy
+//     reaches users on the next normal refresh.
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return
   const url = new URL(event.request.url)
 
-  // API calls: always go to network
   if (url.pathname.startsWith('/api/') || url.pathname === '/health') {
     return
   }
 
-  // Static assets: try cache, fall back to network
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached
-      return fetch(event.request).then((response) => {
-        // Cache successful GET responses
-        if (response.ok && event.request.method === 'GET') {
-          const clone = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
-        }
-        return response
+  const isHashedAsset = url.pathname.startsWith('/assets/')
+
+  if (isHashedAsset) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached
+        return fetch(event.request).then((response) => {
+          if (response.ok) {
+            const clone = response.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
+          }
+          return response
+        })
       })
-    }).catch(() => {
-      // Offline fallback for navigation requests
-      if (event.request.mode === 'navigate') {
-        return caches.match('/')
+    )
+    return
+  }
+
+  // Network-first for HTML / navigations / everything else
+  event.respondWith(
+    fetch(event.request).then((response) => {
+      if (response.ok) {
+        const clone = response.clone()
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
       }
-    })
+      return response
+    }).catch(() =>
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached
+        // Offline fallback for navigation requests
+        if (event.request.mode === 'navigate') return caches.match('/manifest.json')
+        return new Response('', { status: 504, statusText: 'Offline' })
+      })
+    )
   )
 })
