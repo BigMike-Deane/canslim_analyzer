@@ -639,13 +639,15 @@ function ContinuousScanner({ scannerStatus, onToggle, onConfigChange }) {
   const [updating, setUpdating] = useState(false)
 
   const sourceOptions = [
-    { value: 'all', label: 'All Stocks', interval: 90 },
+    // 'all' suggested = 35min; matches the production-validated cadence
+    // (full universe scan runs ~28.5min; 35 gives a 22% buffer).
+    { value: 'all', label: 'All Stocks', interval: 35 },
     { value: 'sp500', label: 'S&P 500', interval: 30 },
     { value: 'russell', label: 'Russell 2000', interval: 45 },
     { value: 'top50', label: 'Top 50', interval: 15 },
   ]
 
-  const intervalOptions = [15, 30, 45, 60, 90, 120, 180]
+  const intervalOptions = [15, 30, 35, 45, 60, 90, 120, 180]
 
   const handleToggle = async () => {
     setUpdating(true)
