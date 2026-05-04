@@ -64,14 +64,20 @@ class HistoricalDataProvider:
     All data is preloaded and cached for efficient day-by-day simulation.
     """
 
-    def __init__(self, tickers: List[str]):
+    def __init__(self, tickers: List[str], data_reference_date: Optional[date] = None):
         """
         Initialize with list of tickers to track.
 
         Args:
             tickers: List of stock tickers to include in the backtest
+            data_reference_date: Wall-clock date used as the cutoff in
+                _filter_available_earnings. Captured once per backtest so the
+                run is deterministic for its duration; defaults to date.today()
+                when omitted. Was previously read from date.today() each call,
+                which made the same backtest non-deterministic across days.
         """
         self.tickers = tickers
+        self.data_reference_date = data_reference_date or date.today()
 
         # Price history cache: {ticker: DataFrame with columns [date, open, high, low, close, volume]}
         self._price_cache: Dict[str, pd.DataFrame] = {}
@@ -770,8 +776,10 @@ class HistoricalDataProvider:
 
         # Calculate how many periods to skip based on the time difference
         # The database has current earnings - we need to remove recent ones
-        # that wouldn't have been available on as_of_date
-        today = date.today()
+        # that wouldn't have been available on as_of_date.
+        # Reference date is captured at HistoricalDataProvider construction so
+        # this stays deterministic for the duration of one backtest.
+        today = self.data_reference_date
         days_diff = (today - as_of_date).days
 
         if days_diff <= 0:

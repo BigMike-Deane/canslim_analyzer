@@ -78,6 +78,31 @@ class TestHistoricalDataProvider:
         signal = provider._calculate_index_signal(price=92, ma_50=90, ma_200=95)
         assert signal == 0
 
+    def test_filter_available_earnings_uses_data_reference_date(self):
+        """Two providers with the same data_reference_date must filter
+        identically regardless of when each was constructed. This is the
+        regression for the date.today() look-ahead bug — historically the
+        slice point depended on wall-clock time so re-running an old
+        backtest produced different earnings windows."""
+        from backend.historical_data import HistoricalDataProvider
+
+        ref = date(2026, 5, 4)
+        as_of = date(2023, 4, 15)
+        earnings = [10.0, 9.5, 9.0, 8.5, 8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5]
+
+        p1 = HistoricalDataProvider([], data_reference_date=ref)
+        p2 = HistoricalDataProvider([], data_reference_date=ref)
+        assert p1._filter_available_earnings(earnings, as_of, quarterly=True) == \
+               p2._filter_available_earnings(earnings, as_of, quarterly=True)
+
+        # And a different reference date produces a different slice point —
+        # confirming the parameter is actually load-bearing
+        p3 = HistoricalDataProvider([], data_reference_date=date(2025, 5, 4))
+        result_2026 = p1._filter_available_earnings(earnings, as_of, quarterly=True)
+        result_2025 = p3._filter_available_earnings(earnings, as_of, quarterly=True)
+        assert len(result_2026) < len(result_2025), \
+            "More days back from reference => more earnings to skip"
+
 
 # Test BacktestEngine
 class TestBacktestEngine:

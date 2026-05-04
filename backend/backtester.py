@@ -426,8 +426,9 @@ class BacktestEngine:
             logger.info(f"Backtest {self.backtest.id}: {len(tickers)} tickers, "
                         f"{self.backtest.start_date} to {self.backtest.end_date}")
 
-            # Initialize data provider
-            self.data_provider = HistoricalDataProvider(tickers)
+            # Initialize data provider — capture today's date once so
+            # _filter_available_earnings stays deterministic for this run
+            self.data_provider = HistoricalDataProvider(tickers, data_reference_date=date.today())
 
             # Initialize persistent score cache (reused across backtest runs)
             self._init_persistent_score_cache()
