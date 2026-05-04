@@ -68,8 +68,9 @@ def init_db():
             failed.append((table.name, str(te)))
             log.warning(f"init_db: failed to create {table.name}: {te}")
 
+    log.info(f"init_db: {len(created)} created, {len(skipped)} already present, {len(failed)} failed")
     if created:
-        log.info(f"init_db: created {len(created)} new tables: {created}")
+        log.info(f"init_db: new tables this run: {created}")
     if failed:
         log.error(f"init_db: {len(failed)} tables failed to create: {failed}")
 
