@@ -3575,6 +3575,17 @@ async def create_backtest(
     db.commit()
     db.refresh(backtest)
 
+    # Snapshot the live P1 cache at creation time so the run is
+    # reproducible. Backtester._load_static_data prefers the snapshot
+    # over the live Stock columns when one exists for this backtest_id.
+    try:
+        from backend.backtester import create_backtest_static_snapshot
+        create_backtest_static_snapshot(db, backtest.id)
+    except Exception as snap_err:
+        # Snapshot is best-effort — engine will fall back to the live
+        # cache if it's missing. Don't block backtest creation on this.
+        logger.warning(f"P1 snapshot failed for backtest {backtest.id}: {snap_err}")
+
     # Enqueue for sequential execution
     from backend.backtest_queue import backtest_queue
     backtest_queue.enqueue(backtest.id)

@@ -3239,3 +3239,120 @@ class TestDeterministicSoftZoneGate:
         assert len(buys) > 0
         sf = buys[0]._signal_factors
         assert "soft_zone" not in sf  # Full position, not soft zone
+
+
+# ============== BacktestStaticSnapshot mechanism (Option A reproducibility fix) ==============
+
+
+class TestBacktestStaticSnapshot:
+    """Verify per-backtest P1 snapshot creation + read path. Solves the
+    cross-day reproducibility bug from canslim-livescan-churn-investigation:
+    re-running the same backtest against drifted live cache state must
+    still produce identical trades when a snapshot exists."""
+
+    def _fresh_session(self):
+        """Build an in-memory SQLite session with all tables."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from backend.database import Base
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        return sessionmaker(bind=engine)()
+
+    def _make_stock(self, ticker, **p1):
+        """Stock factory with P1 fields."""
+        from backend.database import Stock
+        return Stock(
+            ticker=ticker,
+            name=p1.pop("name", ticker),
+            sector=p1.pop("sector", "Technology"),
+            current_price=p1.pop("current_price", 100.0),
+            days_to_earnings=p1.pop("days_to_earnings", None),
+            earnings_beat_streak=p1.pop("earnings_beat_streak", None),
+            eps_estimate_revision_pct=p1.pop("eps_estimate_revision_pct", None),
+            industry_group_rank=p1.pop("industry_group_rank", None),
+            weeks_in_base=p1.pop("weeks_in_base", None),
+        )
+
+    def _make_backtest(self, db, id=1):
+        from backend.database import BacktestRun
+        bt = BacktestRun(
+            id=id,
+            name="snapshot-test",
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 12, 31),
+            starting_cash=25000.0,
+            stock_universe="all",
+            strategy="nostate_optimized",
+            status="pending",
+        )
+        db.add(bt)
+        db.commit()
+        return bt
+
+    def test_snapshot_captures_all_p1_fields(self):
+        """Snapshot row mirrors live Stock P1 values per ticker."""
+        from backend.backtester import create_backtest_static_snapshot
+        from backend.database import BacktestStaticSnapshot
+
+        db = self._fresh_session()
+        db.add(self._make_stock("NVDA", days_to_earnings=16, earnings_beat_streak=13,
+                                eps_estimate_revision_pct=59.01, industry_group_rank=3,
+                                weeks_in_base=8))
+        db.add(self._make_stock("MPWR", days_to_earnings=87, earnings_beat_streak=27,
+                                eps_estimate_revision_pct=34.44, industry_group_rank=12,
+                                weeks_in_base=15))
+        bt = self._make_backtest(db)
+        db.commit()
+
+        n = create_backtest_static_snapshot(db, bt.id)
+        assert n == 2
+
+        snaps = {s.ticker: s for s in db.query(BacktestStaticSnapshot).all()}
+        assert snaps["NVDA"].days_to_earnings == 16
+        assert snaps["NVDA"].earnings_beat_streak == 13
+        assert snaps["NVDA"].eps_estimate_revision_pct == 59.01
+        assert snaps["MPWR"].industry_group_rank == 12
+        assert snaps["MPWR"].weeks_in_base == 15
+
+    def test_snapshot_is_idempotent(self):
+        """Re-calling snapshot creation for the same backtest is a no-op."""
+        from backend.backtester import create_backtest_static_snapshot
+        from backend.database import BacktestStaticSnapshot
+
+        db = self._fresh_session()
+        db.add(self._make_stock("AAPL", days_to_earnings=87))
+        bt = self._make_backtest(db)
+        db.commit()
+
+        first = create_backtest_static_snapshot(db, bt.id)
+        second = create_backtest_static_snapshot(db, bt.id)
+        assert first == 1
+        assert second == 0  # idempotent — second call does nothing
+        assert db.query(BacktestStaticSnapshot).count() == 1
+
+    def test_snapshot_isolates_p1_drift(self):
+        """The whole point: live Stock P1 values can change between
+        backtest creation and execution; the snapshot must keep the
+        original values for reproducibility."""
+        from backend.backtester import create_backtest_static_snapshot
+        from backend.database import BacktestStaticSnapshot, Stock
+
+        db = self._fresh_session()
+        db.add(self._make_stock("NVDA", days_to_earnings=16, earnings_beat_streak=13))
+        bt = self._make_backtest(db)
+        db.commit()
+
+        # Snapshot at creation
+        create_backtest_static_snapshot(db, bt.id)
+
+        # Live cache drifts (new earnings cycle, new beats reported)
+        nvda = db.query(Stock).filter_by(ticker="NVDA").one()
+        nvda.days_to_earnings = 91
+        nvda.earnings_beat_streak = 14
+        db.commit()
+
+        # Snapshot still reflects creation-time values
+        snap = db.query(BacktestStaticSnapshot).filter_by(ticker="NVDA").one()
+        assert snap.days_to_earnings == 16
+        assert snap.earnings_beat_streak == 13

@@ -104,6 +104,43 @@ class SimulatedTrade:
     sell_pct: float = 100.0  # Percentage to sell (for partial sells)
 
 
+def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
+    """Snapshot mutable P1-cache scalars for every stock at backtest
+    creation time. Backtester._load_static_data prefers these snapshot
+    rows over the live cache so the run is reproducible regardless of
+    when it executes vs when it was created.
+
+    Idempotent — returns 0 if a snapshot already exists for this
+    backtest_id (avoids duplicate-key errors on re-trigger).
+    """
+    from backend.database import BacktestStaticSnapshot, Stock
+
+    existing = db.query(BacktestStaticSnapshot.id).filter(
+        BacktestStaticSnapshot.backtest_id == backtest_id
+    ).first()
+    if existing is not None:
+        logger.debug(f"Snapshot already exists for backtest {backtest_id}, skipping")
+        return 0
+
+    stocks = db.query(Stock).all()
+    snapshots = [
+        BacktestStaticSnapshot(
+            backtest_id=backtest_id,
+            ticker=s.ticker,
+            days_to_earnings=getattr(s, 'days_to_earnings', None),
+            earnings_beat_streak=getattr(s, 'earnings_beat_streak', None),
+            eps_estimate_revision_pct=getattr(s, 'eps_estimate_revision_pct', None),
+            industry_group_rank=getattr(s, 'industry_group_rank', None),
+            weeks_in_base=getattr(s, 'weeks_in_base', None),
+        )
+        for s in stocks
+    ]
+    db.bulk_save_objects(snapshots)
+    db.commit()
+    logger.info(f"Snapshotted {len(snapshots)} tickers for backtest {backtest_id}")
+    return len(snapshots)
+
+
 class BacktestEngine:
     """
     Runs a historical simulation of the CANSLIM AI trading strategy.
@@ -430,6 +467,18 @@ class BacktestEngine:
             self.backtest.status = "running"
             self.db.commit()
 
+            # Safety net: snapshot the live P1 cache if no snapshot was
+            # written at creation time (e.g. internal callers, batch
+            # endpoints, or backtests created before the snapshot
+            # mechanism existed). create_backtest_static_snapshot is
+            # idempotent — no-op when rows already exist.
+            try:
+                create_backtest_static_snapshot(self.db, self.backtest.id)
+            except Exception as snap_err:
+                logger.warning(
+                    f"Engine-side snapshot failed for backtest {self.backtest.id}: {snap_err}"
+                )
+
             # Get stock universe
             tickers = self._get_universe_tickers()
             logger.info(f"Backtest {self.backtest.id}: {len(tickers)} tickers, "
@@ -625,8 +674,19 @@ class BacktestEngine:
         return tickers
 
     def _load_static_data(self):
-        """Load static stock data (sector, earnings, ROE) from database"""
-        from backend.database import StockDataCache
+        """Load static stock data (sector, earnings, ROE) from database.
+
+        P1-cache scalars (days_to_earnings, earnings_beat_streak,
+        eps_estimate_revision_pct, industry_group_rank, weeks_in_base) are
+        read from the per-backtest BacktestStaticSnapshot table when one
+        exists for this backtest_id. That snapshot is populated at
+        backtest creation, so re-running the same backtest later is
+        deterministic regardless of how the live cache has drifted in
+        between. Backtests created before the snapshot mechanism existed
+        have no rows in that table and fall back to the live Stock
+        columns — preserving legacy behavior.
+        """
+        from backend.database import StockDataCache, BacktestStaticSnapshot
 
         stocks = self.db.query(Stock).all()
 
@@ -634,8 +694,21 @@ class BacktestEngine:
         cache_entries = self.db.query(StockDataCache).all()
         cache_by_ticker = {c.ticker: c for c in cache_entries}
 
+        # Per-backtest P1 snapshot (May 2026 fix). When present, prefer
+        # these over live Stock columns so the run reproduces.
+        snapshots = self.db.query(BacktestStaticSnapshot).filter(
+            BacktestStaticSnapshot.backtest_id == self.backtest.id
+        ).all()
+        snap_by_ticker = {s.ticker: s for s in snapshots}
+        if snap_by_ticker:
+            logger.info(
+                f"Loaded {len(snap_by_ticker)} P1 snapshots for backtest "
+                f"{self.backtest.id} (deterministic mode)"
+            )
+
         for stock in stocks:
             cache = cache_by_ticker.get(stock.ticker)
+            snap = snap_by_ticker.get(stock.ticker)
 
             # Extract ROE from StockDataCache (stored as decimal, e.g. 0.25 = 25%)
             roe = 0.0
@@ -654,6 +727,15 @@ class BacktestEngine:
                 analyst_target = getattr(cache, 'analyst_target_price', 0) or 0
                 num_analysts = getattr(cache, 'num_analyst_opinions', 0) or 0
 
+            # P1 fields: snapshot preferred over live Stock columns when present.
+            # _snap returns the snapshot value if defined; otherwise the live one.
+            def _p1(field, live, default):
+                if snap is not None:
+                    snap_val = getattr(snap, field, None)
+                    if snap_val is not None:
+                        return snap_val
+                return live if live is not None else default
+
             self.static_data[stock.ticker] = {
                 "sector": stock.sector or "Unknown",
                 "name": stock.name or stock.ticker,
@@ -664,13 +746,13 @@ class BacktestEngine:
                 "quarterly_earnings": stock.quarterly_earnings or [],
                 "annual_earnings": stock.annual_earnings or [],
                 "quarterly_revenue": stock.quarterly_revenue or [],
-                # Coiled Spring fields
-                "weeks_in_base": getattr(stock, 'weeks_in_base', 0) or 0,
-                "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', 0) or 0,
-                "days_to_earnings": getattr(stock, 'days_to_earnings', None),
-                "eps_estimate_revision_pct": getattr(stock, 'eps_estimate_revision_pct', None),
+                # Coiled Spring fields — P1 snapshot preferred when present
+                "weeks_in_base": _p1('weeks_in_base', getattr(stock, 'weeks_in_base', 0), 0) or 0,
+                "earnings_beat_streak": _p1('earnings_beat_streak', getattr(stock, 'earnings_beat_streak', 0), 0) or 0,
+                "days_to_earnings": _p1('days_to_earnings', getattr(stock, 'days_to_earnings', None), None),
+                "eps_estimate_revision_pct": _p1('eps_estimate_revision_pct', getattr(stock, 'eps_estimate_revision_pct', None), None),
                 # ML v11: sector rank
-                "industry_group_rank": getattr(stock, 'industry_group_rank', 50) or 50,
+                "industry_group_rank": _p1('industry_group_rank', getattr(stock, 'industry_group_rank', 50), 50) or 50,
             }
 
     def _compute_fingerprint(self):

@@ -1038,6 +1038,40 @@ class BacktestPosition(Base):
     backtest_run = relationship("BacktestRun", back_populates="positions")
 
 
+class BacktestStaticSnapshot(Base):
+    """Per-ticker snapshot of mutable P1-cache scalars taken at backtest
+    creation. Solves the cross-day reproducibility problem from
+    canslim-livescan-churn-investigation.md: stock_data_cache is a
+    single-row-per-ticker mutable cache, so two backtests created days
+    apart against the same window read different P1 values and produce
+    different trades. Reading from a snapshot keyed by backtest_id makes
+    re-runs identical and lets historical comparisons stay meaningful.
+
+    Backwards compat: existing backtests with no snapshot rows fall back
+    to the live cache in BacktestEngine._load_static_data, preserving
+    legacy behavior.
+    """
+    __tablename__ = "backtest_static_snapshot"
+
+    id = Column(Integer, primary_key=True)
+    backtest_id = Column(Integer, ForeignKey("backtest_runs.id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    ticker = Column(String, nullable=False, index=True)
+
+    # P1 fields confirmed leaky in the May 4 ablation experiment
+    days_to_earnings = Column(Integer)
+    earnings_beat_streak = Column(Integer)
+    eps_estimate_revision_pct = Column(Float)
+    industry_group_rank = Column(Integer)
+    weeks_in_base = Column(Integer)
+
+    snapshot_taken_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index('ix_backtest_static_snap_btid_ticker', 'backtest_id', 'ticker', unique=True),
+    )
+
+
 # ============== Data Caching Models ==============
 
 class StockDataCache(Base):
