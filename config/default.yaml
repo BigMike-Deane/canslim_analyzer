@@ -939,6 +939,40 @@ strategy_profiles:
       min_confidence: 0.30   # Veto path on — skip buys with predicted P(win) < 0.30
       veto_action: "skip"    # "skip" or "reduce" (half position)
 
+  # Experimental: same as nostate_optimized but with earnings_avoidance_days=3
+  # (default 5). Drives the avoidance-gate-too-conservative test from the
+  # canslim-livescan-churn-investigation loose threads. The C→B path on
+  # optimized added ~30pp return without hurting Sharpe — testing whether
+  # tightening the gate window leaves alpha on the table.
+  nostate_optimized_avoid3:
+    hidden: true             # Experimental — keep out of normal picker
+    label: "NoState Optimized (avoid3)"
+    description: "nostate_optimized with earnings_avoidance_days=3 instead of 5"
+    min_score: 72
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    earnings_avoidance_days: 3   # the variable under test
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: false
+      min_confidence: 0.30
+      veto_action: "skip"
+
   # === CORRECTION ZONE STRATEGIES (A/B test vs binary gate) ===
 
   nostate_correction_zone:

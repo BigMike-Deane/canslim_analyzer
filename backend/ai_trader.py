@@ -2458,8 +2458,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
         block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
 
-        # Non-CS earnings avoidance settings
-        avoidance_days = earnings_config.get('avoidance_days', 5)
+        # Non-CS earnings avoidance settings (profile-level override mirrors backtester).
+        avoidance_days = profile.get('earnings_avoidance_days',
+                                     earnings_config.get('avoidance_days', 5))
         cs_override_enabled = earnings_config.get('cs_override', True)
 
         # Config validation: allow_buy_days should be >= avoidance_days

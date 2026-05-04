@@ -2836,7 +2836,11 @@ class BacktestEngine:
             earnings_config = config.get('ai_trader.earnings', {})
             allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
             block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
-            avoidance_days = earnings_config.get('avoidance_days', 5)
+            # Profile-level override for non-CS earnings avoidance window. Lets us
+            # A/B test alternate gate widths (e.g. nostate_optimized_avoid3) without
+            # touching the live YAML default that the AI trader also reads.
+            avoidance_days = self.profile.get('earnings_avoidance_days',
+                                              earnings_config.get('avoidance_days', 5))
             cs_override_enabled = earnings_config.get('cs_override', True)
 
             # Initialize CS result
