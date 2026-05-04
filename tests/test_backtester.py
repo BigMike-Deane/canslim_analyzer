@@ -195,6 +195,56 @@ class TestBacktestEngine:
         for k, v in engine.overlay_stats.items():
             assert v == 0, f"overlay_stats[{k}] should start at 0, got {v}"
 
+    def test_cs_only_branch_increments_cz_pass(self, mock_db):
+        """Regression: 5cf7b52 added cz_pass++ on the non-cs_only branch but
+        forgot the cs_only success path, leaving cz_pass dead-code-zero whenever
+        cs_bear ran. Lock down both cs_only outcomes here."""
+        from backend.backtester import BacktestEngine
+
+        mock_session, _ = mock_db
+        engine = BacktestEngine(mock_session, 1)
+        engine.profile = {
+            'correction_zone': {'enabled': True, 'cs_only': True, 'min_cs_confidence': 60, 'position_mult': 0.5},
+            'min_score': 60,
+            'quality_filters': {'min_c_score': 0, 'min_l_score': 0},
+        }
+        engine.correction_zone_active = True
+        # PASS has earnings in CS window (5d) so it can earn the CS bonus.
+        # FAIL has no upcoming earnings so it skips CS entirely with bonus=0,
+        # which is the precondition we need to drive the cs_only_rejected branch.
+        engine.static_data = {"PASS": {"sector": "Technology", "days_to_earnings": 5},
+                              "FAIL": {"sector": "Technology", "days_to_earnings": None}}
+
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.data_provider.get_moving_average.return_value = 95.0
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 1.5, "spy": {"price": 500, "ma_50": 490}
+        }
+
+        def fake_cs(ticker, *_args, **_kwargs):
+            if ticker == "PASS":
+                return {"is_coiled_spring": True, "confidence": 70, "cs_score": 20,
+                        "cs_details": "test", "factors": {}, "quality_rank": 80}
+            return {"is_coiled_spring": False, "confidence": 0, "cs_score": 0,
+                    "cs_details": "", "factors": {}, "quality_rank": 0}
+
+        with patch.object(engine, '_calculate_coiled_spring_for_backtest', side_effect=fake_cs):
+            base_score = {
+                "total_score": 80, "c_score": 12, "a_score": 12, "l_score": 10,
+                "n_score": 10, "s_score": 10, "i_score": 8,
+                "has_base_pattern": True, "base_pattern": {"type": "flat"},
+                "weeks_in_base": 6, "pct_from_pivot": 5, "pct_from_high": 5,
+                "is_breaking_out": False, "volume_ratio": 1.3,
+                "rs_12m": 1.2, "rs_3m": 1.15, "is_growth_stock": False,
+            }
+            engine._evaluate_buys(date.today(), {"PASS": dict(base_score), "FAIL": dict(base_score)})
+
+        assert engine.overlay_stats['cz_pass'] >= 1, \
+            "cz_pass must increment when a cs_only candidate clears both filters"
+        assert engine.overlay_stats['cz_cs_only_rejected'] >= 1, \
+            "cz_cs_only_rejected must increment when a cs_only candidate has no CS bonus"
+
 
 class TestSimulatedPosition:
     """Tests for SimulatedPosition dataclass"""

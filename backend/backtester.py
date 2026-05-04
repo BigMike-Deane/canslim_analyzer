@@ -549,10 +549,10 @@ class BacktestEngine:
             self.backtest.status = "completed"
             self.backtest.completed_at = datetime.now(timezone.utc)
             self.backtest.progress_pct = 100
-            # Store data fingerprint for reproducibility tracking
+            overlay_payload = dict(self.overlay_stats)
             if hasattr(self, '_data_fingerprint'):
-                self.backtest.error_message = f"data_fp:{self._data_fingerprint}"
-            self.backtest.overlay_stats = dict(self.overlay_stats)
+                overlay_payload['data_fingerprint'] = self._data_fingerprint
+            self.backtest.overlay_stats = overlay_payload
             self.db.commit()
 
             logger.info(f"Backtest {self.backtest.id} completed: "
@@ -2868,6 +2868,8 @@ class BacktestEngine:
                 if cs_result and cs_result.get("confidence", 0) < score_data.get("_cz_min_cs_confidence", 60):
                     self.overlay_stats['cz_cs_confidence_rejected'] += 1
                     continue  # CS confidence too low
+                # Mirrors ai_trader.evaluate_buys: count the cs_only successes too.
+                self.overlay_stats['cz_pass'] += 1
 
             # Get breakout status and volume ratio from cached scores
             is_breaking_out = score_data.get("is_breaking_out", False)
