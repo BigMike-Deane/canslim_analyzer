@@ -618,6 +618,18 @@ class BacktestEngine:
         """Load static stock data (sector, earnings, ROE) from database"""
         from backend.database import StockDataCache
 
+        # Look-ahead bias ablation flags (see canslim-livescan-churn-investigation.md).
+        # NULL_P1: replace days_to_earnings, earnings_beat_streak, eps_estimate_revision_pct
+        # with neutral values for every ticker. Disables earnings-aware logic entirely.
+        # NULL_P1_BONUSES_ONLY: keep days_to_earnings (gate stays live) but null the two
+        # fields that drive score bonuses. Default off; experiment-only.
+        null_p1 = os.getenv('BACKTEST_NULL_P1', '0') == '1'
+        null_p1_bonuses_only = os.getenv('BACKTEST_NULL_P1_BONUSES_ONLY', '0') == '1'
+        if null_p1:
+            logger.warning("BACKTEST_NULL_P1=1: nulling days_to_earnings, earnings_beat_streak, eps_estimate_revision_pct")
+        elif null_p1_bonuses_only:
+            logger.warning("BACKTEST_NULL_P1_BONUSES_ONLY=1: nulling earnings_beat_streak and eps_estimate_revision_pct")
+
         stocks = self.db.query(Stock).all()
 
         # Batch-load ROE and analyst data from StockDataCache
@@ -656,9 +668,18 @@ class BacktestEngine:
                 "quarterly_revenue": stock.quarterly_revenue or [],
                 # Coiled Spring fields
                 "weeks_in_base": getattr(stock, 'weeks_in_base', 0) or 0,
-                "earnings_beat_streak": getattr(stock, 'earnings_beat_streak', 0) or 0,
-                "days_to_earnings": getattr(stock, 'days_to_earnings', None),
-                "eps_estimate_revision_pct": getattr(stock, 'eps_estimate_revision_pct', None),
+                "earnings_beat_streak": (
+                    0 if (null_p1 or null_p1_bonuses_only)
+                    else (getattr(stock, 'earnings_beat_streak', 0) or 0)
+                ),
+                "days_to_earnings": (
+                    None if null_p1
+                    else getattr(stock, 'days_to_earnings', None)
+                ),
+                "eps_estimate_revision_pct": (
+                    None if (null_p1 or null_p1_bonuses_only)
+                    else getattr(stock, 'eps_estimate_revision_pct', None)
+                ),
                 # ML v11: sector rank
                 "industry_group_rank": getattr(stock, 'industry_group_rank', 50) or 50,
             }
