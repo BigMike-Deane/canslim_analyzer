@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api } from '../api'
+import { api, formatPercent } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
@@ -129,7 +129,7 @@ export default function Breadth() {
           stats={[
             {
               label: 'A/D Ratio',
-              value: data.ad_ratio,
+              value: data.ad_ratio != null ? data.ad_ratio.toFixed(2) : '-',
               sublabel: `${data.advancing} adv / ${data.declining} dec`,
               color: adHealthy ? 'text-emerald-400' : data.ad_ratio >= 1 ? 'text-amber-400' : 'text-red-400',
             },
@@ -141,7 +141,7 @@ export default function Breadth() {
             },
             {
               label: 'Near 52w High',
-              value: `${data.near_high_pct}%`,
+              value: formatPercent(data.near_high_pct),
               sublabel: `of ${data.total} stocks`,
             },
             {

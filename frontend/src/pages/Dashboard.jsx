@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, getScoreClass, formatCurrency, formatTime } from '../api'
+import { api, getScoreClass, formatCurrency, formatPercent, formatTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -539,7 +539,7 @@ function CoiledSpringStats({ stats, loading }) {
       <StatGrid
         columns={4}
         stats={[
-          { label: 'Win Rate', value: `${cumulative_stats.overall_win_rate}%`, color: winRateColor },
+          { label: 'Win Rate', value: formatPercent(cumulative_stats.overall_win_rate), color: winRateColor },
           { label: 'Wins', value: cumulative_stats.wins, color: 'text-green-400' },
           { label: 'Losses', value: cumulative_stats.losses, color: 'text-red-400' },
           { label: 'Big Wins', value: cumulative_stats.big_wins, color: 'text-blue-400' },
@@ -551,7 +551,7 @@ function CoiledSpringStats({ stats, loading }) {
       {sortedBases.length > 0 && (
         <div className="text-[10px] text-dark-500 pt-2 border-t border-dark-700">
           <span className="font-medium text-purple-400">Best pattern: </span>
-          {sortedBases[0][0].replace('_', ' ')} ({sortedBases[0][1].win_rate}% win rate, {sortedBases[0][1].with_outcome} samples)
+          {sortedBases[0][0].replace('_', ' ')} ({formatPercent(sortedBases[0][1].win_rate)} win rate, {sortedBases[0][1].with_outcome} samples)
         </div>
       )}
     </Card>

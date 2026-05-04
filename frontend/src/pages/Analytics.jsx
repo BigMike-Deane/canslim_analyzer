@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api, formatCurrency } from '../api'
+import { api, formatCurrency, formatPercent } from '../api'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, AreaChart, Area, ReferenceLine } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { PnlText } from '../components/Badge'
@@ -222,7 +222,7 @@ function TradeCard({ trade, rank }) {
       <div className="flex items-center gap-2 shrink-0">
         <PnlText value={trade.pnl} prefix="$" className="text-sm font-medium" />
         <span className={`text-[10px] font-data w-14 text-right ${isWin ? 'text-emerald-400' : 'text-red-400'}`}>
-          {trade.return_pct >= 0 ? '+' : ''}{trade.return_pct}%
+          {formatPercent(trade.return_pct, true)}
         </span>
       </div>
     </div>

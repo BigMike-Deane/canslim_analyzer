@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, memo } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, formatTime, formatRelativeTime, getScoreClass } from '../api'
+import { api, formatCurrency, formatPercent, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -110,7 +110,7 @@ function CoiledSpringSection({ cs }) {
           columns={4}
           className="mb-3"
           stats={[
-            { label: 'Win Rate', value: `${stats.win_rate}%`, color: 'text-purple-300' },
+            { label: 'Win Rate', value: formatPercent(stats.win_rate), color: 'text-purple-300' },
             { label: 'Wins', value: stats.wins, color: 'text-emerald-400' },
             { label: 'Losses', value: stats.losses, color: 'text-red-400' },
             { label: 'Flat', value: stats.flat, color: 'text-yellow-400' },
@@ -477,7 +477,7 @@ export default function CommandCenter() {
             {risk?.top_sectors?.slice(0, 3).map(s => (
               <div key={s.sector} className="flex justify-between text-[11px] py-1 border-b border-dark-700/20 last:border-0">
                 <span className="text-dark-400 truncate max-w-[100px]">{s.sector}</span>
-                <span className="font-data text-dark-300">{s.pct}%</span>
+                <span className="font-data text-dark-300">{formatPercent(s.pct)}</span>
               </div>
             ))}
           </Card>
@@ -616,7 +616,7 @@ export default function CommandCenter() {
               {risk?.top_sectors?.slice(0, 3).map(s => (
                 <div key={s.sector} className="flex justify-between text-[11px] py-1 border-b border-dark-700/20 last:border-0">
                   <span className="text-dark-400 truncate max-w-[100px]">{s.sector}</span>
-                  <span className="font-data text-dark-300">{s.pct}%</span>
+                  <span className="font-data text-dark-300">{formatPercent(s.pct)}</span>
                 </div>
               ))}
             </CollapsibleSection>

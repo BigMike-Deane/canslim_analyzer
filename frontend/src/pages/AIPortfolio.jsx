@@ -894,7 +894,7 @@ function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
         title="Risk Monitor"
         badge={
           <div className="flex items-center gap-1.5">
-            <TagBadge color={heatColor}>Heat: {riskData.portfolio_heat}%</TagBadge>
+            <TagBadge color={heatColor}>Heat: {formatPercent(riskData.portfolio_heat)}</TagBadge>
             {riskData.position_alerts?.length > 0 && (
               <TagBadge color="red">{riskData.position_alerts.length} alerts</TagBadge>
             )}
@@ -926,7 +926,7 @@ function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
                     key={s.sector}
                     color={s.count >= 3 ? 'amber' : 'default'}
                   >
-                    {s.sector}: {s.count} ({s.pct}%)
+                    {s.sector}: {s.count} ({formatPercent(s.pct)})
                   </TagBadge>
                 ))}
               </div>
@@ -940,7 +940,7 @@ function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
                 <div key={s.ticker} className="flex justify-between text-xs py-0.5">
                   <span className="font-medium text-dark-200">{s.ticker}</span>
                   <span className={`font-data ${s.distance_pct < 5 ? 'text-red-400' : 'text-dark-300'}`}>
-                    {s.distance_pct}% ({s.gain_pct >= 0 ? '+' : ''}{s.gain_pct}%)
+                    {formatPercent(s.distance_pct)} ({formatPercent(s.gain_pct, true)})
                   </span>
                 </div>
               ))}
@@ -992,7 +992,7 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
                   {p.days_to_earnings}d
                 </TagBadge>
                 <span className={`text-xs font-data ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct}%
+                  {formatPercent(p.gain_pct, true)}
                 </span>
               </div>
             </div>
