@@ -351,6 +351,7 @@ export default function CommandCenter() {
               value={portfolio?.total_return_pct}
               className="text-sm"
               prefix={portfolio?.total_return_pct >= 0 ? '+' : ''}
+              decimals={2}
             />
           </div>
           {sparkline && sparkline.length > 1 && (
@@ -435,6 +436,7 @@ export default function CommandCenter() {
                 value={portfolio?.total_return_pct}
                 className="text-xs"
                 prefix={portfolio?.total_return_pct >= 0 ? '+' : ''}
+                decimals={2}
               />
               <span className="text-dark-600">|</span>
               <span className="text-xs font-data text-dark-400">
