@@ -38,19 +38,49 @@ def get_db():
 
 
 def init_db():
-    """Initialize database tables and run migrations"""
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        # PostgreSQL may error on duplicate indexes if any remain.
-        # Fall back to creating each table individually with checkfirst.
-        import logging
-        logging.getLogger(__name__).warning(f"create_all failed ({e}), creating tables individually")
-        for table in Base.metadata.sorted_tables:
-            try:
-                table.create(bind=engine, checkfirst=True)
-            except Exception as te:
-                logging.getLogger(__name__).warning(f"Failed to create table {table.name}: {te}")
+    """Initialize database tables and run migrations.
+
+    Iterates each table in Base.metadata explicitly with checkfirst=True
+    instead of relying on Base.metadata.create_all. The bulk call has
+    bitten us once already (commit befca59 — backtest_static_snapshot
+    silently failed to materialize on first deploy even though create_all
+    raised no error). The explicit loop logs SUCCESS / SKIP / FAIL per
+    table, so a missing table after deploy is immediately visible rather
+    than masquerading as 'migrations complete'.
+    """
+    import logging
+    from sqlalchemy import inspect
+
+    log = logging.getLogger(__name__)
+
+    inspector = inspect(engine)
+    existing_before = set(inspector.get_table_names())
+
+    created, skipped, failed = [], [], []
+    for table in Base.metadata.sorted_tables:
+        if table.name in existing_before:
+            skipped.append(table.name)
+            continue
+        try:
+            table.create(bind=engine, checkfirst=True)
+            created.append(table.name)
+        except Exception as te:
+            failed.append((table.name, str(te)))
+            log.warning(f"init_db: failed to create {table.name}: {te}")
+
+    if created:
+        log.info(f"init_db: created {len(created)} new tables: {created}")
+    if failed:
+        log.error(f"init_db: {len(failed)} tables failed to create: {failed}")
+
+    # Cross-check: any table still missing after the loop is a real bug.
+    inspector = inspect(engine)
+    existing_after = set(inspector.get_table_names())
+    expected = set(Base.metadata.tables.keys())
+    still_missing = expected - existing_after
+    if still_missing:
+        log.error(f"init_db: tables in metadata but missing from DB after init: {still_missing}")
+
     run_migrations()
 
 
