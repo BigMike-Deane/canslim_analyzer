@@ -782,20 +782,27 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
     return pyramids
 
 
-def _get_active_ml_model_id(db: Session):
-    """Return the id of the currently-active MLModel row, or None.
+def _get_active_ml_model_id(db: Session, strategy: Optional[str] = None):
+    """Return the id of the currently-active MLModel row for the given
+    strategy, or None.
+
+    Strategy filter added because the previous unfiltered query picked
+    the latest active model regardless of strategy, which meant
+    activating an experimental model for one strategy (e.g. v17 for
+    nostate_optimized) would silently affect a different live strategy
+    (e.g. nostate_cs_bear). Now scoped per-strategy. Falls back to the
+    unfiltered query only when strategy is None to preserve any caller
+    that genuinely wants 'any active model'.
 
     Looked up once per evaluate_buys call and reused across candidates so
     we don't pay a query per stock. Failures are swallowed — audit logging
     must never block trading.
     """
     try:
-        row = (
-            db.query(MLModel.id)
-            .filter(MLModel.status == 'active')
-            .order_by(MLModel.id.desc())
-            .first()
-        )
+        q = db.query(MLModel.id).filter(MLModel.status == 'active')
+        if strategy is not None:
+            q = q.filter(MLModel.strategy == strategy)
+        row = q.order_by(MLModel.id.desc()).first()
         return row[0] if row else None
     except Exception as e:
         logger.warning(f"Failed to look up active ML model id: {e}")
@@ -1889,9 +1896,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     profile = get_strategy_profile(strategy)
 
     # Resolve active ML model once per cycle for prediction audit logging.
-    # None when ML is disabled or no model is active — recorder is a no-op then.
+    # Strategy-scoped so a model trained for one strategy doesn't leak
+    # into another. None when ML is disabled or no model is active —
+    # recorder is a no-op then.
     _active_ml_model_id = (
-        _get_active_ml_model_id(db) if profile.get('ml_signal', {}).get('enabled', False) else None
+        _get_active_ml_model_id(db, strategy=strategy) if profile.get('ml_signal', {}).get('enabled', False) else None
     )
 
     # Apply profile-level cooldown overrides now that profile is loaded
