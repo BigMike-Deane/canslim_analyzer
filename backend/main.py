@@ -26,7 +26,7 @@ from backend.database import (
     init_db, get_db, Stock, StockScore, PortfolioPosition,
     Watchlist, AnalysisJob, MarketSnapshot,
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
-    BacktestRun, BacktestSnapshot, BacktestTrade, CoiledSpringAlert,
+    BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, CoiledSpringAlert,
     EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade,
     User, MLModel, MLPrediction
 )
@@ -3973,6 +3973,68 @@ async def cancel_backtest(backtest_id: int, current_user: User = Depends(get_cur
         "message": "Backtest cancelled",
         "id": backtest.id,
         "status": "cancelled"
+    }
+
+
+@app.post("/api/backtests/{backtest_id}/rerun")
+async def rerun_backtest(
+    backtest_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Re-execute an existing completed backtest.
+
+    Resets the run record + clears trades/snapshots, then enqueues for
+    a fresh execution. The BacktestStaticSnapshot rows for this id are
+    PRESERVED, so the re-run reads the same frozen P1 data and reproduces
+    the same trades (post-d42d2b0 backtests are byte-identical on re-run).
+
+    Eliminates the docker-exec queue.enqueue footgun: the queue is
+    in-memory per-process, so an out-of-band enqueue from a one-off
+    script went to a dead queue. This endpoint runs inside the live
+    uvicorn worker, so the enqueue lands on the right queue.
+    """
+    backtest = db.query(BacktestRun).filter(
+        BacktestRun.id == backtest_id,
+        BacktestRun.user_id == current_user.id,
+    ).first()
+    if not backtest:
+        raise HTTPException(404, "Backtest not found")
+
+    if backtest.status in ("pending", "running"):
+        raise HTTPException(400, f"Cannot re-run a backtest already in status: {backtest.status}")
+
+    # Reset run results — keep id, dates, strategy, config, profile_overrides.
+    # BacktestStaticSnapshot rows are kept (point of the re-run mechanism).
+    backtest.status = "pending"
+    backtest.total_return_pct = None
+    backtest.sharpe_ratio = None
+    backtest.max_drawdown_pct = None
+    backtest.win_rate = None
+    backtest.total_trades = None
+    backtest.spy_final_value = None
+    backtest.spy_return_pct = None
+    backtest.final_value = None
+    backtest.completed_at = None
+    backtest.progress_pct = 0.0
+    backtest.error_message = None
+    backtest.overlay_stats = None
+    backtest.cancel_requested = False
+    db.query(BacktestTrade).filter(BacktestTrade.backtest_id == backtest_id).delete()
+    db.query(BacktestSnapshot).filter(BacktestSnapshot.backtest_id == backtest_id).delete()
+    db.query(BacktestPosition).filter(BacktestPosition.backtest_id == backtest_id).delete()
+    db.commit()
+
+    from backend.backtest_queue import backtest_queue
+    backtest_queue.enqueue(backtest.id)
+    queue_pos = backtest_queue.get_queue_position(backtest.id)
+
+    logger.info(f"Backtest {backtest_id} re-queued for execution (snapshot preserved)")
+    return {
+        "id": backtest.id,
+        "status": "pending",
+        "message": "Backtest re-queued",
+        "queue_position": queue_pos,
     }
 
 

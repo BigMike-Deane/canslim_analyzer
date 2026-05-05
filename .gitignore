@@ -39,3 +39,8 @@ dist/
 build/
 CLAUDE.local.md
 .claude/
+
+# Test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
