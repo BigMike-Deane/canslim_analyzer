@@ -30,6 +30,8 @@ from backend.trading_utils import (
     MAX_SECTOR_ALLOCATION,
     MAX_STOCKS_PER_SECTOR,
     MAX_POSITION_ALLOCATION,
+    should_take_partial_on_trailing_stop,
+    apply_sector_allocation_cap,
 )
 
 # Shared trading engine logic (also used by ai_trader.py)
@@ -2540,9 +2542,14 @@ class BacktestEngine:
 
                     if drop_from_peak >= effective_trailing_stop:
                         # High conviction: partial sell + widen stop on remainder
-                        if (partial_on_trailing and
-                                position.pyramid_count >= partial_min_pyramid and
-                                current_score >= partial_min_score):
+                        # (shared helper — mirrored in ai_trader.evaluate_sells)
+                        if should_take_partial_on_trailing_stop(
+                            pyramid_count=position.pyramid_count,
+                            score=current_score,
+                            partial_on_trailing=partial_on_trailing,
+                            partial_min_pyramid_count=partial_min_pyramid,
+                            partial_min_score=partial_min_score,
+                        ):
                             shares_to_sell = position.shares * (partial_sell_pct / 100)
                             trade = SimulatedTrade(
                                 ticker=ticker,
@@ -3431,21 +3438,23 @@ class BacktestEngine:
             if position_value < 100:
                 continue
 
-            # Check sector allocation % limit (matches live trader)
+            # Check sector allocation % limit (shared helper — mirrored in ai_trader.check_sector_limit)
             if portfolio_value > 0:
                 sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
                 sector_value = sum(
                     p.shares * (self.data_provider.get_price_on_date(p.ticker, current_date) or p.cost_basis)
                     for p in self.positions.values() if p.sector == sector
                 )
-                current_alloc = sector_value / portfolio_value
-                new_alloc = current_alloc + (position_value / portfolio_value)
-                if new_alloc > MAX_SECTOR_ALLOCATION:
-                    remaining_room = MAX_SECTOR_ALLOCATION - current_alloc
-                    if remaining_room <= 0.02:  # Less than 2% room
-                        _funnel["sector"] += 1
-                        continue
-                    position_value = remaining_room * portfolio_value
+                adjusted_value = apply_sector_allocation_cap(
+                    requested_position_value=position_value,
+                    current_sector_value=sector_value,
+                    portfolio_value=portfolio_value,
+                    max_sector_allocation=MAX_SECTOR_ALLOCATION,
+                )
+                if adjusted_value == 0.0:
+                    _funnel["sector"] += 1
+                    continue
+                position_value = adjusted_value
 
             # CORRELATION GUARD: Check price correlation with held positions
             corr_config = config.get('ai_trader.correlation_guard', {})

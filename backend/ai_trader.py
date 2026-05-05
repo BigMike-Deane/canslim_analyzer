@@ -29,6 +29,8 @@ from backend.trading_utils import (
     MAX_SECTOR_ALLOCATION,
     MAX_STOCKS_PER_SECTOR,
     MAX_POSITION_ALLOCATION,
+    should_take_partial_on_trailing_stop,
+    apply_sector_allocation_cap,
 )
 
 # Shared trading engine logic (also used by backtester.py)
@@ -599,16 +601,19 @@ def check_sector_limit(db: Session, ticker: str, buy_amount: float, user_id: int
     if current_count >= MAX_STOCKS_PER_SECTOR:
         return 0, f"Max {MAX_STOCKS_PER_SECTOR} stocks in {sector}"
 
-    # Check allocation limit
+    # Check allocation limit (shared helper — mirrored in backtester)
     if portfolio_value > 0:
-        new_allocation = current_allocation + (buy_amount / portfolio_value)
-        if new_allocation > MAX_SECTOR_ALLOCATION:
-            # Calculate how much we can still buy
-            remaining_room = MAX_SECTOR_ALLOCATION - current_allocation
-            if remaining_room <= 0.02:  # Less than 2% room
-                return 0, f"Sector {sector} at {current_allocation*100:.0f}% (max {MAX_SECTOR_ALLOCATION*100:.0f}%)"
-            adjusted_amount = remaining_room * portfolio_value
-            return adjusted_amount, f"Reduced for sector limit"
+        current_sector_value = current_allocation * portfolio_value
+        adjusted = apply_sector_allocation_cap(
+            requested_position_value=buy_amount,
+            current_sector_value=current_sector_value,
+            portfolio_value=portfolio_value,
+            max_sector_allocation=MAX_SECTOR_ALLOCATION,
+        )
+        if adjusted == 0.0:
+            return 0, f"Sector {sector} at {current_allocation*100:.0f}% (max {MAX_SECTOR_ALLOCATION*100:.0f}%)"
+        if adjusted < buy_amount:
+            return adjusted, f"Reduced for sector limit"
 
     return buy_amount, ""
 
@@ -1636,8 +1641,15 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
                 partial_min_score = partial_trailing_config.get('partial_min_score', 65)
                 partial_sell_pct_config = partial_trailing_config.get('partial_sell_pct', 50)
 
-                if (partial_on_trailing and pyramid_count >= partial_min_pyramids
-                        and score_available and score >= partial_min_score):
+                # Pass score=0 when score_available is False to reproduce the
+                # original `score_available and score >= partial_min_score` gate.
+                if should_take_partial_on_trailing_stop(
+                    pyramid_count=pyramid_count,
+                    score=score if score_available else 0,
+                    partial_on_trailing=partial_on_trailing,
+                    partial_min_pyramid_count=partial_min_pyramids,
+                    partial_min_score=partial_min_score,
+                ):
                     sells.append({
                         "position": position,
                         "reason": f"PARTIAL TRAILING STOP: Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%), keeping {100-partial_sell_pct_config}%",

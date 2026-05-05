@@ -1734,13 +1734,21 @@ class TestBacktesterSectorAllocationLimit:
         assert 0 < MAX_SECTOR_ALLOCATION <= 1.0  # Must be a valid percentage
 
     def test_backtester_has_allocation_check_in_evaluate_buys(self):
-        """The sector allocation % check must exist in backtester's buy evaluation."""
+        """The sector allocation % check must exist in backtester's buy evaluation.
+
+        After the May 2026 sync-helper extraction the inline literal
+        comparison was replaced by a call to apply_sector_allocation_cap()
+        from backend.trading_utils. This regression test was updated to
+        assert the new structural invariant: the helper is imported AND
+        called from backtester's buy evaluation, with MAX_SECTOR_ALLOCATION
+        flowing through as the cap.
+        """
         from pathlib import Path
         source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
         assert "MAX_SECTOR_ALLOCATION" in source
-        # Must appear in _evaluate_buys context (after position sizing, not just at module level)
-        # Check that it's used in a comparison, not just defined
-        assert "new_alloc > MAX_SECTOR_ALLOCATION" in source
+        # Helper must be imported and invoked — that's how the cap is enforced now.
+        assert "apply_sector_allocation_cap" in source
+        assert "max_sector_allocation=MAX_SECTOR_ALLOCATION" in source
 
     def test_earnings_drift_gate_in_ai_trader(self):
         """ai_trader earnings drift must require days_to_earnings is not None."""
