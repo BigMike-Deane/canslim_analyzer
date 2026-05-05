@@ -3331,6 +3331,46 @@ class TestBacktestStaticSnapshot:
         assert second == 0  # idempotent — second call does nothing
         assert db.query(BacktestStaticSnapshot).count() == 1
 
+    def test_snapshot_captures_extended_fields(self):
+        """Second-pass extension: sector + roe + earnings/revenue + score_details.
+        These fields are also read by _load_static_data, so a partial snapshot
+        leaves residual drift (~0.5pp observed in #631 re-run validation).
+        Verify the writer captures them."""
+        from backend.backtester import create_backtest_static_snapshot
+        from backend.database import BacktestStaticSnapshot, Stock, StockDataCache
+        import json
+
+        db = self._fresh_session()
+        stk = self._make_stock("AAPL", days_to_earnings=87)
+        stk.sector = "Technology"
+        stk.quarterly_earnings = [1.5, 1.4, 1.3, 1.2]
+        stk.annual_earnings = [5.5, 4.8, 4.2]
+        stk.quarterly_revenue = [90e9, 85e9]
+        stk.score_details = {"i": {"institutional_pct": 60.5}, "a": {"roe": 0.28}}
+        db.add(stk)
+        # Note: StockDataCache field is `analyst_count`, not `num_analyst_opinions`
+        # — the backtester's existing read uses the wrong name (latent bug
+        # that always returns 0). Snapshot intentionally preserves this
+        # buggy-but-stable behavior, so we don't assert on num_analyst_opinions
+        # below either.
+        db.add(StockDataCache(ticker="AAPL", roe=0.28,
+                              analyst_target_price=210.0, analyst_count=42))
+        bt = self._make_backtest(db)
+        db.commit()
+
+        n = create_backtest_static_snapshot(db, bt.id)
+        assert n == 1
+
+        snap = db.query(BacktestStaticSnapshot).filter_by(ticker="AAPL").one()
+        assert snap.sector == "Technology"
+        assert snap.roe == 0.28
+        assert snap.analyst_target_price == 210.0
+        assert snap.num_analyst_opinions is None  # Preserves latent bug — see writer comment
+        assert json.loads(snap.quarterly_earnings) == [1.5, 1.4, 1.3, 1.2]
+        assert json.loads(snap.annual_earnings) == [5.5, 4.8, 4.2]
+        assert json.loads(snap.quarterly_revenue) == [90e9, 85e9]
+        assert json.loads(snap.score_details)["i"]["institutional_pct"] == 60.5
+
     def test_snapshot_isolates_p1_drift(self):
         """The whole point: live Stock P1 values can change between
         backtest creation and execution; the snapshot must keep the

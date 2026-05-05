@@ -225,6 +225,16 @@ def run_migrations():
         ("users", "webhook_url", "VARCHAR"),
         # cs_bear/correction_zone overlay firing counters (May 2026)
         ("backtest_runs", "overlay_stats", "TEXT"),
+        # Per-backtest static snapshot extended fields (May 2026 second pass —
+        # add the rest of the static_data fields beyond the original P1 set)
+        ("backtest_static_snapshot", "sector", "VARCHAR"),
+        ("backtest_static_snapshot", "roe", "FLOAT"),
+        ("backtest_static_snapshot", "analyst_target_price", "FLOAT"),
+        ("backtest_static_snapshot", "num_analyst_opinions", "INTEGER"),
+        ("backtest_static_snapshot", "quarterly_earnings", "TEXT"),
+        ("backtest_static_snapshot", "annual_earnings", "TEXT"),
+        ("backtest_static_snapshot", "quarterly_revenue", "TEXT"),
+        ("backtest_static_snapshot", "score_details", "TEXT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1089,12 +1099,24 @@ class BacktestStaticSnapshot(Base):
                          nullable=False, index=True)
     ticker = Column(String, nullable=False, index=True)
 
-    # P1 fields confirmed leaky in the May 4 ablation experiment
+    # P1 fields (May 4 first-pass — caught the 50pp leak)
     days_to_earnings = Column(Integer)
     earnings_beat_streak = Column(Integer)
     eps_estimate_revision_pct = Column(Float)
     industry_group_rank = Column(Integer)
     weeks_in_base = Column(Integer)
+
+    # Extended fields (May 4 second-pass — close the residual 0.5pp drift).
+    # Every other static_data input read in BacktestEngine._load_static_data
+    # so a re-run with this snapshot reproduces identically.
+    sector = Column(String)
+    roe = Column(Float)
+    analyst_target_price = Column(Float)
+    num_analyst_opinions = Column(Integer)
+    quarterly_earnings = Column(Text)  # JSON array
+    annual_earnings = Column(Text)     # JSON array
+    quarterly_revenue = Column(Text)   # JSON array
+    score_details = Column(Text)       # JSON object — used for institutional_holders_pct
 
     snapshot_taken_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

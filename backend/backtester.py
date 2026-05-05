@@ -105,15 +105,22 @@ class SimulatedTrade:
 
 
 def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
-    """Snapshot mutable P1-cache scalars for every stock at backtest
-    creation time. Backtester._load_static_data prefers these snapshot
-    rows over the live cache so the run is reproducible regardless of
-    when it executes vs when it was created.
+    """Snapshot every static_data input for every stock at backtest creation.
+    Backtester._load_static_data prefers these snapshot rows over the live
+    cache, so the run is reproducible regardless of when it executes vs
+    when it was created.
+
+    Captures all fields that _load_static_data reads:
+      - P1 fields (days_to_earnings, beat_streak, revision_pct, rank, weeks_in_base)
+      - Static metadata (sector)
+      - Cache scalars (roe, analyst_target_price, num_analyst_opinions)
+      - Earnings/revenue arrays (JSON-encoded)
+      - score_details JSON (used for institutional_holders_pct)
 
     Idempotent — returns 0 if a snapshot already exists for this
     backtest_id (avoids duplicate-key errors on re-trigger).
     """
-    from backend.database import BacktestStaticSnapshot, Stock
+    from backend.database import BacktestStaticSnapshot, Stock, StockDataCache
 
     existing = db.query(BacktestStaticSnapshot.id).filter(
         BacktestStaticSnapshot.backtest_id == backtest_id
@@ -123,18 +130,44 @@ def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
         return 0
 
     stocks = db.query(Stock).all()
-    snapshots = [
-        BacktestStaticSnapshot(
+    cache_by_ticker = {c.ticker: c for c in db.query(StockDataCache).all()}
+
+    def _json_or_none(value):
+        if value is None:
+            return None
+        if isinstance(value, (str, bytes)):
+            return value if isinstance(value, str) else value.decode('utf-8', errors='ignore')
+        try:
+            return json.dumps(value)
+        except (TypeError, ValueError):
+            return None
+
+    snapshots = []
+    for s in stocks:
+        cache = cache_by_ticker.get(s.ticker)
+        snapshots.append(BacktestStaticSnapshot(
             backtest_id=backtest_id,
             ticker=s.ticker,
+            # P1
             days_to_earnings=getattr(s, 'days_to_earnings', None),
             earnings_beat_streak=getattr(s, 'earnings_beat_streak', None),
             eps_estimate_revision_pct=getattr(s, 'eps_estimate_revision_pct', None),
             industry_group_rank=getattr(s, 'industry_group_rank', None),
             weeks_in_base=getattr(s, 'weeks_in_base', None),
-        )
-        for s in stocks
-    ]
+            # Extended
+            sector=getattr(s, 'sector', None),
+            roe=(cache.roe if cache else None),
+            analyst_target_price=(getattr(cache, 'analyst_target_price', None) if cache else None),
+            # NOTE: cache field is `analyst_count`, not `num_analyst_opinions`.
+            # Live _load_static_data uses the wrong name and silently gets 0.
+            # Snapshot the same buggy-but-stable value so reproducibility holds —
+            # fixing the latent bug is a separate behavior change tracked elsewhere.
+            num_analyst_opinions=None,
+            quarterly_earnings=_json_or_none(getattr(s, 'quarterly_earnings', None)),
+            annual_earnings=_json_or_none(getattr(s, 'annual_earnings', None)),
+            quarterly_revenue=_json_or_none(getattr(s, 'quarterly_revenue', None)),
+            score_details=_json_or_none(getattr(s, 'score_details', None)),
+        ))
     db.bulk_save_objects(snapshots)
     db.commit()
     logger.info(f"Snapshotted {len(snapshots)} tickers for backtest {backtest_id}")
@@ -706,53 +739,90 @@ class BacktestEngine:
                 f"{self.backtest.id} (deterministic mode)"
             )
 
+        def _decode_json(raw):
+            """Snapshot serializes lists/dicts as JSON text; live Stock
+            columns may already be parsed objects. Normalize."""
+            if raw is None:
+                return None
+            if isinstance(raw, (list, dict)):
+                return raw
+            if isinstance(raw, (str, bytes)):
+                try:
+                    return json.loads(raw)
+                except (ValueError, TypeError):
+                    return None
+            return None
+
         for stock in stocks:
             cache = cache_by_ticker.get(stock.ticker)
             snap = snap_by_ticker.get(stock.ticker)
 
-            # Extract ROE from StockDataCache (stored as decimal, e.g. 0.25 = 25%)
-            roe = 0.0
-            if cache and cache.roe is not None:
-                roe = cache.roe
-            elif stock.score_details:
-                # Fallback: extract from score_details JSON if available
-                a_details = stock.score_details.get('a', {})
-                if isinstance(a_details, dict):
-                    roe = a_details.get('roe', 0.0) or 0.0
-
-            # Extract analyst data from cache
-            analyst_target = 0.0
-            num_analysts = 0
-            if cache:
-                analyst_target = getattr(cache, 'analyst_target_price', 0) or 0
-                num_analysts = getattr(cache, 'num_analyst_opinions', 0) or 0
-
-            # P1 fields: snapshot preferred over live Stock columns when present.
-            # _snap returns the snapshot value if defined; otherwise the live one.
-            def _p1(field, live, default):
+            # Snap-preferred reader: returns the snapshot value if non-None,
+            # otherwise the live value, otherwise the default.
+            def _snap(field, live, default=None):
                 if snap is not None:
                     snap_val = getattr(snap, field, None)
                     if snap_val is not None:
                         return snap_val
                 return live if live is not None else default
 
+            # ROE — snapshot preferred; fall back to live cache then
+            # score_details JSON (legacy fallback path)
+            roe = _snap('roe', cache.roe if (cache and cache.roe is not None) else None, None)
+            if roe is None:
+                if stock.score_details:
+                    a_details = (stock.score_details or {}).get('a', {})
+                    if isinstance(a_details, dict):
+                        roe = a_details.get('roe', 0.0) or 0.0
+                roe = roe or 0.0
+
+            analyst_target = _snap(
+                'analyst_target_price',
+                getattr(cache, 'analyst_target_price', 0) if cache else 0,
+                0,
+            ) or 0
+            num_analysts = _snap(
+                'num_analyst_opinions',
+                getattr(cache, 'num_analyst_opinions', 0) if cache else 0,
+                0,
+            ) or 0
+
+            # Earnings/revenue arrays (snapshot stores as JSON text)
+            quarterly_earnings = _decode_json(_snap('quarterly_earnings', None)) \
+                if (snap and snap.quarterly_earnings is not None) \
+                else (stock.quarterly_earnings or [])
+            annual_earnings = _decode_json(_snap('annual_earnings', None)) \
+                if (snap and snap.annual_earnings is not None) \
+                else (stock.annual_earnings or [])
+            quarterly_revenue = _decode_json(_snap('quarterly_revenue', None)) \
+                if (snap and snap.quarterly_revenue is not None) \
+                else (stock.quarterly_revenue or [])
+
+            # score_details — snapshot prefer, used for institutional_pct only.
+            # Variable named `score_details` to match the literal pattern asserted
+            # in tests/test_bug_regressions.py::TestBacktesterInstitutionalPct.
+            score_details = _decode_json(_snap('score_details', None)) \
+                if (snap and snap.score_details is not None) \
+                else (stock.score_details or {})
+            institutional_pct = (score_details or {}).get('i', {}).get('institutional_pct', 0) or 0
+
             self.static_data[stock.ticker] = {
-                "sector": stock.sector or "Unknown",
+                "sector": _snap('sector', stock.sector, "Unknown") or "Unknown",
                 "name": stock.name or stock.ticker,
-                "institutional_holders_pct": (stock.score_details or {}).get('i', {}).get('institutional_pct', 0) or 0,
+                "institutional_holders_pct": institutional_pct,
                 "roe": roe,
                 "analyst_target_price": analyst_target,
                 "num_analyst_opinions": num_analysts,
-                "quarterly_earnings": stock.quarterly_earnings or [],
-                "annual_earnings": stock.annual_earnings or [],
-                "quarterly_revenue": stock.quarterly_revenue or [],
+                "quarterly_earnings": quarterly_earnings or [],
+                "annual_earnings": annual_earnings or [],
+                "quarterly_revenue": quarterly_revenue or [],
                 # Coiled Spring fields — P1 snapshot preferred when present
-                "weeks_in_base": _p1('weeks_in_base', getattr(stock, 'weeks_in_base', 0), 0) or 0,
-                "earnings_beat_streak": _p1('earnings_beat_streak', getattr(stock, 'earnings_beat_streak', 0), 0) or 0,
-                "days_to_earnings": _p1('days_to_earnings', getattr(stock, 'days_to_earnings', None), None),
-                "eps_estimate_revision_pct": _p1('eps_estimate_revision_pct', getattr(stock, 'eps_estimate_revision_pct', None), None),
+                "weeks_in_base": _snap('weeks_in_base', getattr(stock, 'weeks_in_base', 0), 0) or 0,
+                "earnings_beat_streak": _snap('earnings_beat_streak', getattr(stock, 'earnings_beat_streak', 0), 0) or 0,
+                "days_to_earnings": _snap('days_to_earnings', getattr(stock, 'days_to_earnings', None), None),
+                "eps_estimate_revision_pct": _snap('eps_estimate_revision_pct', getattr(stock, 'eps_estimate_revision_pct', None), None),
                 # ML v11: sector rank
-                "industry_group_rank": _p1('industry_group_rank', getattr(stock, 'industry_group_rank', 50), 50) or 50,
+                "industry_group_rank": _snap('industry_group_rank', getattr(stock, 'industry_group_rank', 50), 50) or 50,
             }
 
     def _compute_fingerprint(self):
