@@ -3515,6 +3515,7 @@ class BacktestCreate(BaseModel):
     stop_loss_pct: Optional[float] = Field(None, ge=1.0, le=50.0)
     strategy: str = "balanced"
     force_refresh: bool = False  # Force fresh FMP earnings fetch (ignore cache)
+    profile_overrides: Optional[dict] = None  # Optional nested overrides on resolved strategy profile
 
     @field_validator('custom_tickers')
     @classmethod
@@ -3569,6 +3570,7 @@ async def create_backtest(
         stop_loss_pct=config.stop_loss_pct or default_stop_loss,
         force_refresh=config.force_refresh,
         status="pending",
+        profile_overrides=config.profile_overrides,
         user_id=current_user.id
     )
     db.add(backtest)
