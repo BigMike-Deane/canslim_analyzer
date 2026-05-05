@@ -37,6 +37,120 @@ def _get_active_model_metric(db, strategy: str, model_type: str) -> tuple:
         return active.roc_auc, active.version
 
 
+# Standardized eval-backtest config. Held constant so candidate models are
+# always compared on the same window — drift in window changes the apparent
+# delta and would falsely accept/reject candidates. 4-year window, $25k seed,
+# universe="all", ML config from YAML default (so the candidate is exercised
+# under the production gating regime that ai_trader uses live).
+EVAL_BACKTEST_START = "2022-01-01"
+EVAL_BACKTEST_END = "2026-04-28"
+EVAL_BACKTEST_CASH = 25000.0
+EVAL_BACKTEST_UNIVERSE = "all"
+
+# Graduation thresholds. A new model must beat the incumbent's eval return by
+# at least MIN_RETURN_DELTA_PP, and must not regress Sharpe by more than
+# MAX_SHARPE_REGRESSION. Both gates required (AND, not OR) — return-only gates
+# can accept reckless models that hit return at the cost of risk-adjusted quality.
+MIN_RETURN_DELTA_PP = 5.0
+MAX_SHARPE_REGRESSION = 0.10
+
+
+def _eval_gate_decision(
+    candidate_return,
+    candidate_sharpe,
+    incumbent_return,
+    incumbent_sharpe,
+) -> tuple:
+    """Pure decision function for the eval-backtest graduation gate.
+
+    Returns (passes, reason). passes=True means activate the candidate;
+    reason is a human-readable string suitable for the MLModel.error_message
+    field or a log line.
+
+    First-model case: when incumbent has no eval baseline (eval_return_pct
+    is None — either because no incumbent exists or its baseline wasn't
+    backfilled), candidate auto-passes. The candidate's metrics get stored
+    so the next model has something to compare against.
+
+    None-on-candidate is a hard fail — the eval backtest didn't produce
+    metrics, can't make an informed decision, default to don't-activate.
+    """
+    if candidate_return is None or candidate_sharpe is None:
+        return False, "candidate eval backtest produced no metrics"
+    if incumbent_return is None or incumbent_sharpe is None:
+        return True, "no incumbent eval baseline; auto-pass and record"
+    return_delta = candidate_return - incumbent_return
+    sharpe_delta = candidate_sharpe - incumbent_sharpe
+    # Small epsilon to avoid float-arithmetic boundary failures (e.g.
+    # 2.04 - 0.10 stored as 1.9400000000000002, then 1.94 - 2.04 = -0.1000...01
+    # would fail an exact >= -0.10 check). The tolerance is far below any
+    # meaningful difference in return (pp) or Sharpe scale.
+    eps = 1e-9
+    passes_return = return_delta >= MIN_RETURN_DELTA_PP - eps
+    passes_sharpe = sharpe_delta >= -MAX_SHARPE_REGRESSION - eps
+    if passes_return and passes_sharpe:
+        return True, (
+            f"return Δ={return_delta:+.2f}pp (≥+{MIN_RETURN_DELTA_PP}), "
+            f"sharpe Δ={sharpe_delta:+.3f} (≥{-MAX_SHARPE_REGRESSION})"
+        )
+    reasons = []
+    if not passes_return:
+        reasons.append(f"return Δ={return_delta:+.2f}pp < +{MIN_RETURN_DELTA_PP}")
+    if not passes_sharpe:
+        reasons.append(f"sharpe Δ={sharpe_delta:+.3f} < {-MAX_SHARPE_REGRESSION}")
+    return False, "; ".join(reasons)
+
+
+def _run_evaluation_backtest(db, model_path: str, strategy: str, ml_record_id: int) -> dict:
+    """Run a standardized backtest with the candidate model file as the
+    ML override. Returns {return_pct, sharpe, max_drawdown_pct, backtest_id}
+    on success or {error: ...} on failure.
+
+    Synchronous: runs in the calling background task. Takes ~10-15 min for
+    the 4-year window — acceptable cost for the graduation decision since
+    training is already a bg task.
+    """
+    from datetime import date as date_cls
+    from backend.database import BacktestRun
+    from backend.backtester import run_backtest
+
+    try:
+        start = date_cls.fromisoformat(EVAL_BACKTEST_START)
+        end = date_cls.fromisoformat(EVAL_BACKTEST_END)
+        bt = BacktestRun(
+            name=f"eval_for_ml_v{ml_record_id}",
+            status="pending",
+            start_date=start,
+            end_date=end,
+            starting_cash=EVAL_BACKTEST_CASH,
+            stock_universe=EVAL_BACKTEST_UNIVERSE,
+            strategy=strategy,
+            profile_overrides={"ml_signal": {"model_path": model_path}},
+        )
+        db.add(bt)
+        db.commit()
+        db.refresh(bt)
+        logger.info(f"Eval backtest {bt.id} created for ml v{ml_record_id} candidate ({model_path})")
+
+        # Run synchronously in this task's session
+        completed = run_backtest(db, bt.id, profile_overrides={"ml_signal": {"model_path": model_path}})
+        if completed is None or completed.status != "completed":
+            return {
+                "error": f"Eval backtest did not complete (status={completed.status if completed else 'unknown'})",
+                "backtest_id": bt.id,
+            }
+
+        return {
+            "backtest_id": completed.id,
+            "return_pct": float(completed.total_return_pct) if completed.total_return_pct is not None else None,
+            "sharpe": float(completed.sharpe_ratio) if completed.sharpe_ratio is not None else None,
+            "max_drawdown_pct": float(completed.max_drawdown_pct) if completed.max_drawdown_pct is not None else None,
+        }
+    except Exception as e:
+        logger.error(f"Eval backtest failed for ml v{ml_record_id}: {e}", exc_info=True)
+        return {"error": str(e)[:500]}
+
+
 def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: int,
                   mode: str = "regression",
                   excluded_features: Optional[list] = None,
@@ -237,11 +351,12 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
             )
             return
 
-        # Improvement gate: only activate if better than current active model
+        # Improvement gate (Phase 1): only activate if better than current
+        # active model on the in-sample CV metric. Acts as cheap filter before
+        # the expensive eval backtest.
         current_metric, current_version = _get_active_model_metric(db, strategy, model_type)
 
         if current_metric is not None and new_metric is not None and new_metric < current_metric:
-            # New model is worse — save as completed but don't activate
             ml_record.status = "completed"
             ml_record.error_message = (
                 f"Not activated: {metric_name} {new_metric:.4f} < "
@@ -253,6 +368,62 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 f"{metric_name} {new_metric:.4f} < {current_metric:.4f} (v{current_version})"
             )
             return
+
+        # Improvement gate (Phase 2): standardized eval backtest. AUC/Spearman
+        # were shown to disagree with portfolio return (May 5 diagnostic) so
+        # gating on CV alone is insufficient. Run the candidate through a
+        # 4-year backtest at v12-equivalent config, compare return + Sharpe
+        # vs incumbent's stored eval metrics. First-model case (no incumbent
+        # eval baseline): activate but record the metrics for next time.
+        logger.info(f"Running eval backtest for ml v{ml_record.version} candidate...")
+        eval_result = _run_evaluation_backtest(db, str(model_path), strategy, ml_record.id)
+
+        if "error" in eval_result:
+            ml_record.status = "failed"
+            ml_record.error_message = f"Eval backtest failed: {eval_result['error']}"[:500]
+            db.commit()
+            logger.error(
+                f"ML v{ml_record.version} eval backtest failed: {eval_result.get('error')}"
+            )
+            return
+
+        ml_record.eval_backtest_id = eval_result.get("backtest_id")
+        ml_record.eval_return_pct = eval_result.get("return_pct")
+        ml_record.eval_sharpe = eval_result.get("sharpe")
+        ml_record.eval_max_drawdown_pct = eval_result.get("max_drawdown_pct")
+        db.commit()
+
+        incumbent = db.query(MLModel).filter(
+            MLModel.strategy == strategy,
+            MLModel.status == "active",
+            MLModel.id != ml_record.id,
+        ).order_by(desc(MLModel.activated_at)).first()
+
+        incumbent_return = incumbent.eval_return_pct if incumbent is not None else None
+        incumbent_sharpe = incumbent.eval_sharpe if incumbent is not None else None
+        passes, reason = _eval_gate_decision(
+            ml_record.eval_return_pct, ml_record.eval_sharpe,
+            incumbent_return, incumbent_sharpe,
+        )
+        incumbent_descr = (
+            f"incumbent v{incumbent.version}" if incumbent is not None else "no incumbent"
+        )
+        candidate_descr = (
+            f"ret={ml_record.eval_return_pct:.2f}% sh={ml_record.eval_sharpe:.3f}"
+            if ml_record.eval_return_pct is not None and ml_record.eval_sharpe is not None
+            else "ret=? sh=?"
+        )
+        if not passes:
+            ml_record.status = "completed"
+            ml_record.error_message = f"Eval gate: {reason}. Candidate: {candidate_descr} vs {incumbent_descr}"[:500]
+            db.commit()
+            logger.warning(
+                f"ML v{ml_record.version} blocked by eval gate: {reason}"
+            )
+            return
+        logger.info(
+            f"ML v{ml_record.version} passed eval gate ({reason}); candidate {candidate_descr} vs {incumbent_descr}"
+        )
 
         # Deactivate previous active models for this strategy
         # Exclude current record to avoid self-deactivation race

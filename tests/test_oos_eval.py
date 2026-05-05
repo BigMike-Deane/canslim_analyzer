@@ -125,6 +125,100 @@ class TestEvaluateModelOnTrades:
         with pytest.raises(FileNotFoundError):
             evaluate_model_on_trades("/tmp/does/not/exist.joblib", df)
 
+    def test_top_decile_wr_populated(self):
+        """The May-5 diagnostic showed AUC was the wrong selection metric for
+        our use case; top-decile WR is the head-of-distribution number that
+        backtest actually filters on. The result must surface it."""
+        from ml.oos_eval import evaluate_model_on_trades
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols, n=100)
+        result = evaluate_model_on_trades(path, df, min_gain_pct=0.0)
+
+        assert "top_decile_wr" in result
+        assert "top_decile_n" in result
+        assert "top_decile_mean_proba" in result
+        assert 0.0 <= result["top_decile_wr"] <= 1.0
+        assert result["top_decile_n"] == 10  # 10% of 100
+        # Top decile by predicted prob should beat overall WR for any
+        # reasonably trained model — synthetic data is heavily separable.
+        assert result["top_decile_wr"] >= result["win_rate"]
+
+    def test_top_decile_floor_when_holdout_small(self):
+        """Holdout with fewer than 10 trades — top decile is at least 1."""
+        from ml.oos_eval import evaluate_model_on_trades
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols, n=5)
+        result = evaluate_model_on_trades(path, df, min_gain_pct=0.0)
+        # 5 // 10 == 0, but we floor at 1 so it's a meaningful number
+        assert result["top_decile_n"] == 1
+
+
+class TestTopNWrAtCount:
+    """top_n_wr_at_count is the trade-count-matched comparison primitive.
+    Use case: v17 vs v12 at v12's actual backtest trade count (e.g. 245)."""
+
+    def test_basic_top_n_wr(self):
+        from ml.oos_eval import top_n_wr_at_count
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols, n=100)
+        result = top_n_wr_at_count(path, df, n_picks=20, min_gain_pct=0.0)
+
+        assert "error" not in result
+        assert result["n_picks"] == 20
+        assert result["n_holdout"] == 100
+        assert 0.0 <= result["top_n_wr"] <= 1.0
+        # Top-N WR should be at least as good as random for a model with
+        # any signal; synthetic data should give a clean lift
+        overall_wr = (df["gain_pct"] > 0).mean()
+        assert result["top_n_wr"] >= overall_wr - 0.01  # tolerance
+
+    def test_n_picks_exceeds_holdout_returns_error(self):
+        from ml.oos_eval import top_n_wr_at_count
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols, n=10)
+        result = top_n_wr_at_count(path, df, n_picks=50)
+        assert "error" in result
+        assert "exceeds" in result["error"]
+
+    def test_zero_or_negative_n_picks_returns_error(self):
+        from ml.oos_eval import top_n_wr_at_count
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols)
+        for n in [0, -1]:
+            result = top_n_wr_at_count(path, df, n_picks=n)
+            assert "error" in result
+
+    def test_empty_df_returns_error(self):
+        from ml.oos_eval import top_n_wr_at_count
+
+        path, _ = _make_test_model()
+        result = top_n_wr_at_count(path, pd.DataFrame(), n_picks=10)
+        assert "error" in result
+
+    def test_missing_gain_pct_returns_error(self):
+        from ml.oos_eval import top_n_wr_at_count
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols)
+        df = df.drop(columns=["gain_pct"])
+        result = top_n_wr_at_count(path, df, n_picks=10)
+        assert "error" in result
+        assert "gain_pct" in result["error"]
+
+    def test_missing_features_returns_error(self):
+        from ml.oos_eval import top_n_wr_at_count
+
+        path, _ = _make_test_model(feature_cols=["a", "b", "c", "d"])
+        df = _make_holdout_df(["a", "b", "c"])  # missing "d"
+        result = top_n_wr_at_count(path, df, n_picks=10)
+        assert "error" in result
+        assert "missing_features" in result
+
 
 # =============== get_holdout_trades ===============
 

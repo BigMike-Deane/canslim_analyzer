@@ -235,6 +235,14 @@ def run_migrations():
         ("backtest_static_snapshot", "annual_earnings", "TEXT"),
         ("backtest_static_snapshot", "quarterly_revenue", "TEXT"),
         ("backtest_static_snapshot", "score_details", "TEXT"),
+        # Model graduation gate metrics (May 2026 — see _run_evaluation_backtest):
+        # the eval backtest's portfolio metrics are stored on the MLModel row so
+        # future candidates can be compared apples-to-apples against the
+        # incumbent without re-running the incumbent's backtest each time.
+        ("ml_models", "eval_backtest_id", "INTEGER"),
+        ("ml_models", "eval_return_pct", "FLOAT"),
+        ("ml_models", "eval_sharpe", "FLOAT"),
+        ("ml_models", "eval_max_drawdown_pct", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1298,6 +1306,17 @@ class MLModel(Base):
 
     model_path = Column(String)
     error_message = Column(String)
+
+    # Model graduation gate metrics: portfolio outcome of running this model
+    # in a standardized eval backtest. Used by _run_training to compare a
+    # new candidate against the incumbent's stored eval_return_pct + eval_sharpe.
+    # Per-trade WR + AUC on the OOS holdout were both shown to disagree with
+    # actual portfolio return (May 5 diagnostic), so we gate on the thing we
+    # actually care about — return + Sharpe — not a proxy.
+    eval_backtest_id = Column(Integer)
+    eval_return_pct = Column(Float)
+    eval_sharpe = Column(Float)
+    eval_max_drawdown_pct = Column(Float)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     activated_at = Column(DateTime)

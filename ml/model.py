@@ -33,6 +33,61 @@ _cache_hits: int = 0
 _cache_misses: int = 0
 
 
+def _predict_from_payload(model, metadata: dict, features: dict) -> Optional[float]:
+    """Core prediction logic shared by global and per-payload predict paths.
+
+    Returns confidence in [0.0, 1.0], or None if features can't be prepared
+    or the model produces NaN. No caching — caller manages cache if desired.
+    """
+    # Prefer the model's own feature_names_in_ (training order) over
+    # metadata.feature_columns (importance-sorted in some legacy save paths,
+    # fixed in trainer commit 561e33c — fallback retained for backward compat).
+    model_feature_names = getattr(model, "feature_names_in_", None)
+    if model_feature_names is not None and len(model_feature_names) > 0:
+        feature_columns = list(model_feature_names)
+    else:
+        feature_columns = metadata.get("feature_columns")
+    if not feature_columns:
+        return None
+
+    row = {col: features.get(col, 0) for col in feature_columns}
+    for k, v in row.items():
+        if isinstance(v, bool):
+            row[k] = int(v)
+
+    X = pd.DataFrame([row], columns=feature_columns).fillna(0)
+    model_type = metadata.get("metadata", {}).get("model_type", "classifier")
+
+    if model_type == "regression":
+        predicted_gain = float(model.predict(X)[0])
+        confidence = 1.0 / (1.0 + np.exp(-predicted_gain / _GAIN_SIGMOID_SCALE))
+    else:
+        proba = model.predict_proba(X)[:, 1]
+        confidence = float(proba[0])
+
+    confidence = round(float(np.clip(confidence, 0.0, 1.0)), 4)
+    if confidence != confidence:  # NaN != NaN per IEEE 754
+        return None
+    return confidence
+
+
+def get_ml_prediction_with_model(payload: dict, **features) -> Optional[float]:
+    """Predict using an explicitly provided model payload — used by the eval
+    backtest gate to score candidate models without polluting the global cache.
+
+    payload: a dict matching ml.trainer.load_model output (must contain
+    'model' and either model.feature_names_in_ or 'feature_columns').
+    Bypasses the global model cache and prediction cache. Never raises.
+    """
+    if not payload or "model" not in payload:
+        return None
+    try:
+        return _predict_from_payload(payload["model"], payload, features)
+    except Exception as e:
+        logger.error(f"ML prediction (per-payload) error: {e}")
+        return None
+
+
 def get_ml_prediction(**features) -> Optional[float]:
     """
     Returns confidence in [0.0, 1.0] or None if model unavailable.
@@ -50,10 +105,6 @@ def get_ml_prediction(**features) -> Optional[float]:
         if model is None:
             return None
 
-        # Prefer the model's own feature_names_in_ (training order) over
-        # payload.feature_columns (importance-sorted in some legacy save
-        # paths — bug in trainer's save_model call site). Falls back to
-        # the payload list when feature_names_in_ isn't populated.
         model_feature_names = getattr(model, "feature_names_in_", None)
         if model_feature_names is not None and len(model_feature_names) > 0:
             feature_columns = list(model_feature_names)
@@ -62,41 +113,22 @@ def get_ml_prediction(**features) -> Optional[float]:
         if not feature_columns:
             return None
 
-        # Build feature vector in correct column order
         row = {col: features.get(col, 0) for col in feature_columns}
-
-        # Convert booleans to int
         for k, v in row.items():
             if isinstance(v, bool):
                 row[k] = int(v)
 
-        # Check prediction cache
         cache_key = tuple(sorted((k, round(v, 6) if isinstance(v, float) else v) for k, v in row.items()))
         if cache_key in _prediction_cache:
             _cache_hits += 1
             return _prediction_cache[cache_key]
         _cache_misses += 1
 
-        X = pd.DataFrame([row], columns=feature_columns)
-        X = X.fillna(0)
-
-        model_type = metadata.get("metadata", {}).get("model_type", "classifier")
-
-        if model_type == "regression":
-            # Regression: predicted gain_pct → sigmoid → [0, 1]
-            predicted_gain = float(model.predict(X)[0])
-            confidence = 1.0 / (1.0 + np.exp(-predicted_gain / _GAIN_SIGMOID_SCALE))
-        else:
-            # Classifier: P(win) directly
-            proba = model.predict_proba(X)[:, 1]
-            confidence = float(proba[0])
-
-        confidence = round(float(np.clip(confidence, 0.0, 1.0)), 4)
-        if confidence != confidence:  # NaN != NaN per IEEE 754
-            logger.warning("ML model produced NaN confidence — returning None")
+        confidence = _predict_from_payload(model, metadata, features)
+        if confidence is None:
+            logger.warning("ML model produced NaN confidence or missing features — returning None")
             return None
 
-        # Store in cache
         _prediction_cache[cache_key] = confidence
         return confidence
 

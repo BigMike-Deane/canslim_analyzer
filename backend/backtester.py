@@ -289,6 +289,31 @@ class BacktestEngine:
         ml_cfg = self.profile.get('ml_signal', {}) or {}
         ml_was_active = bool(ml_cfg.get('enabled', False)) and not bool(ml_cfg.get('log_only', True))
 
+        # Optional per-backtest ML model override. Used by the model-graduation
+        # gate (routes/ml.py: _run_evaluation_backtest) to score a candidate
+        # model file without swapping the production active model. When set,
+        # all ml predictions in this run use the override instead of the global
+        # active model. None → use global ml_model_active.joblib as today.
+        self._eval_model_payload: Optional[dict] = None
+        eval_model_path = ml_cfg.get('model_path')
+        if eval_model_path:
+            try:
+                from ml.trainer import load_model
+                from pathlib import Path
+                self._eval_model_payload = load_model(Path(eval_model_path))
+                if self._eval_model_payload is None:
+                    logger.warning(
+                        f"Eval model override path {eval_model_path} did not load — "
+                        f"falling back to global active model"
+                    )
+                else:
+                    logger.info(
+                        f"Backtest {backtest_id} using ML model override: {eval_model_path}"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to load eval model override {eval_model_path}: {e}")
+                self._eval_model_payload = None
+
         self.overlay_stats: dict = {
             'cz_active_days': 0,            # days correction_zone_active was True
             'cz_pre_filter_rejected': 0,    # candidates filtered by C+A+L / RS / base requirement
@@ -3502,7 +3527,13 @@ class BacktestEngine:
                     _ml_features["coiled_spring"] = 1 if coiled_spring_bonus > 0 else 0
                     _ml_features["soft_zone"] = 1 if score_data.get("_in_soft_zone") else 0
                     _ml_features["volume_dry_up"] = 1 if signal_factors.get("volume_dry_up") else 0
-                    ml_confidence = get_ml_prediction(**_ml_features)
+                    if self._eval_model_payload is not None:
+                        from ml.model import get_ml_prediction_with_model
+                        ml_confidence = get_ml_prediction_with_model(
+                            self._eval_model_payload, **_ml_features
+                        )
+                    else:
+                        ml_confidence = get_ml_prediction(**_ml_features)
                     if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                         ml_weight = ml_config.get('weight', 20)
                         ml_bonus = (ml_confidence - 0.5) * ml_weight

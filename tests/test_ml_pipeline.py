@@ -1148,6 +1148,90 @@ class TestGetMlPrediction:
             assert 0.0 <= result <= 1.0
 
 
+class TestGetMlPredictionWithModel:
+    """get_ml_prediction_with_model bypasses the global cache so the eval
+    backtest gate can score a candidate model file without disturbing
+    production. These tests verify the override path is functional and
+    isolated from the global cache."""
+
+    def test_returns_none_for_empty_payload(self):
+        from ml.model import get_ml_prediction_with_model
+        assert get_ml_prediction_with_model({}, total_score=85) is None
+        assert get_ml_prediction_with_model(None, total_score=85) is None
+
+    def test_predicts_from_explicit_payload(self, tmp_path):
+        """Pass a freshly-loaded payload; result must be in [0,1]."""
+        from ml.model import get_ml_prediction_with_model
+        df = _make_labeled_df(n=200)
+        X, y, _, _ = get_feature_matrix(df)
+        model = _create_xgb_model()
+        model.fit(X, y)
+
+        path = tmp_path / "candidate.joblib"
+        save_model(model, {"model_type": "classifier"}, path=path)
+        payload = load_model(path=path)
+
+        result = get_ml_prediction_with_model(
+            payload,
+            total_score=85, composite_score=50, entry_type=0, market_regime=2,
+            estimate_revision_bonus=1.5, coiled_spring=1, soft_zone=0,
+            soft_zone_multiplier=1.0, deterministic_boost=0,
+        )
+        assert result is not None
+        assert 0.0 <= result <= 1.0
+
+    def test_global_cache_not_polluted_by_per_payload_predict(self, tmp_path):
+        """Critical for production: the eval gate must not push into the
+        global prediction cache or set the cached active-model state."""
+        from ml.model import (
+            get_ml_prediction_with_model,
+            get_prediction_cache_stats,
+            clear_prediction_cache,
+            is_model_loaded,
+        )
+        df = _make_labeled_df(n=200)
+        X, y, _, _ = get_feature_matrix(df)
+        model = _create_xgb_model()
+        model.fit(X, y)
+        path = tmp_path / "candidate2.joblib"
+        save_model(model, {"model_type": "classifier"}, path=path)
+        payload = load_model(path=path)
+
+        reload_model()
+        clear_prediction_cache()
+        stats_before = get_prediction_cache_stats()
+        loaded_before = is_model_loaded()
+
+        # Two predictions through the override path
+        for _ in range(2):
+            get_ml_prediction_with_model(
+                payload,
+                total_score=85, composite_score=50, entry_type=0, market_regime=2,
+                estimate_revision_bonus=1.5, coiled_spring=1, soft_zone=0,
+                soft_zone_multiplier=1.0, deterministic_boost=0,
+            )
+
+        stats_after = get_prediction_cache_stats()
+        # Cache size and hit/miss counts must be unchanged
+        assert stats_after == stats_before
+        # No global model should be loaded as a side effect
+        assert is_model_loaded() == loaded_before
+
+    def test_returns_none_when_model_predict_raises(self, tmp_path):
+        """Robustness: a malformed payload that raises during predict must
+        return None instead of bubbling up — the eval gate must never crash
+        the training pipeline."""
+        from ml.model import get_ml_prediction_with_model
+
+        class BrokenModel:
+            feature_names_in_ = ["a", "b"]
+            def predict_proba(self, X):
+                raise RuntimeError("simulated predict failure")
+
+        payload = {"model": BrokenModel(), "feature_columns": ["a", "b"], "metadata": {"model_type": "classifier"}}
+        assert get_ml_prediction_with_model(payload, a=1.0, b=2.0) is None
+
+
 class TestWalkForwardNoLeakage:
     def test_train_indices_always_before_test(self):
         """Verify walk-forward folds never train on future data."""
@@ -1215,3 +1299,79 @@ class TestImprovementGate:
         metric, version = _get_active_model_metric(db, "nostate_optimized", "regression")
         assert metric == 0.22
         assert version == 2
+
+
+class TestEvalGateDecision:
+    """The model-graduation eval-backtest gate replaces (well, supplements)
+    the AUC-only gate. Pure decision function: deterministic, easy to lock
+    down with regression tests so threshold tweaks are explicit."""
+
+    def test_clear_winner_passes(self):
+        from backend.routes.ml import _eval_gate_decision
+        # Candidate beats incumbent on both axes
+        passes, reason = _eval_gate_decision(200.0, 2.10, 192.0, 2.04)
+        assert passes is True
+        assert "+8.00pp" in reason
+        assert "+0.060" in reason
+
+    def test_below_return_threshold_blocked(self):
+        from backend.routes.ml import _eval_gate_decision, MIN_RETURN_DELTA_PP
+        # Beats incumbent by 4pp — below the 5pp default
+        passes, reason = _eval_gate_decision(196.0, 2.10, 192.0, 2.04)
+        assert passes is False
+        assert "return Δ=+4.00pp" in reason
+        assert f"+{MIN_RETURN_DELTA_PP}" in reason
+
+    def test_sharpe_regression_blocked_even_if_return_passes(self):
+        from backend.routes.ml import _eval_gate_decision, MAX_SHARPE_REGRESSION
+        # Big return win but Sharpe drops too far
+        passes, reason = _eval_gate_decision(220.0, 1.80, 192.0, 2.04)
+        assert passes is False
+        assert "sharpe Δ=-0.240" in reason
+        assert f"{-MAX_SHARPE_REGRESSION}" in reason
+
+    def test_small_sharpe_dip_within_tolerance_passes(self):
+        """Sharpe 0.05 below incumbent is within MAX_SHARPE_REGRESSION=0.10 — pass."""
+        from backend.routes.ml import _eval_gate_decision
+        passes, _ = _eval_gate_decision(200.0, 1.99, 192.0, 2.04)
+        assert passes is True
+
+    def test_first_model_no_incumbent_auto_passes(self):
+        """When no incumbent has eval baseline, candidate auto-passes —
+        otherwise we'd never bootstrap the system."""
+        from backend.routes.ml import _eval_gate_decision
+        passes, reason = _eval_gate_decision(150.0, 1.5, None, None)
+        assert passes is True
+        assert "no incumbent" in reason.lower()
+
+    def test_partial_incumbent_baseline_treated_as_missing(self):
+        """If incumbent has return but missing sharpe (or vice versa),
+        we don't pretend to compare — auto-pass and store new baseline."""
+        from backend.routes.ml import _eval_gate_decision
+        passes, _ = _eval_gate_decision(150.0, 1.5, 192.0, None)
+        assert passes is True
+        passes, _ = _eval_gate_decision(150.0, 1.5, None, 2.04)
+        assert passes is True
+
+    def test_missing_candidate_metrics_blocks(self):
+        """If the eval backtest didn't produce return or sharpe, we can't
+        decide — default to don't-activate. This is the safe direction."""
+        from backend.routes.ml import _eval_gate_decision
+        passes, reason = _eval_gate_decision(None, 2.10, 192.0, 2.04)
+        assert passes is False
+        assert "no metrics" in reason.lower()
+        passes, reason = _eval_gate_decision(200.0, None, 192.0, 2.04)
+        assert passes is False
+
+    def test_exact_threshold_passes(self):
+        """Boundary: return delta exactly at the threshold counts as a pass.
+        Locks in the >= semantics so a future tweak to > would break this test."""
+        from backend.routes.ml import _eval_gate_decision, MIN_RETURN_DELTA_PP
+        passes, _ = _eval_gate_decision(192.0 + MIN_RETURN_DELTA_PP, 2.04, 192.0, 2.04)
+        assert passes is True
+
+    def test_exact_sharpe_floor_passes(self):
+        """Sharpe regression equal to MAX_SHARPE_REGRESSION counts as passing."""
+        from backend.routes.ml import _eval_gate_decision, MAX_SHARPE_REGRESSION
+        passes, _ = _eval_gate_decision(200.0, 2.04 - MAX_SHARPE_REGRESSION, 192.0, 2.04)
+        assert passes is True
