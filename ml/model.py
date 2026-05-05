@@ -50,7 +50,15 @@ def get_ml_prediction(**features) -> Optional[float]:
         if model is None:
             return None
 
-        feature_columns = metadata.get("feature_columns")
+        # Prefer the model's own feature_names_in_ (training order) over
+        # payload.feature_columns (importance-sorted in some legacy save
+        # paths — bug in trainer's save_model call site). Falls back to
+        # the payload list when feature_names_in_ isn't populated.
+        model_feature_names = getattr(model, "feature_names_in_", None)
+        if model_feature_names is not None and len(model_feature_names) > 0:
+            feature_columns = list(model_feature_names)
+        else:
+            feature_columns = metadata.get("feature_columns")
         if not feature_columns:
             return None
 
