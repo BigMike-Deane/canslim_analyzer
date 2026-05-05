@@ -13,6 +13,7 @@ import logging
 import threading
 import sys
 import os
+from typing import Optional
 
 # Add parent directory to path for config_loader import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
