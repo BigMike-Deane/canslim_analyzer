@@ -3365,7 +3365,10 @@ class TestBacktestStaticSnapshot:
         assert snap.sector == "Technology"
         assert snap.roe == 0.28
         assert snap.analyst_target_price == 210.0
-        assert snap.num_analyst_opinions is None  # Preserves latent bug — see writer comment
+        # Latent bug fixed in commit after extended snapshot — snapshot now
+        # captures cache.analyst_count under the historical num_analyst_opinions
+        # column name. Was None pre-fix; now mirrors the real cache value.
+        assert snap.num_analyst_opinions == 42
         assert json.loads(snap.quarterly_earnings) == [1.5, 1.4, 1.3, 1.2]
         assert json.loads(snap.annual_earnings) == [5.5, 4.8, 4.2]
         assert json.loads(snap.quarterly_revenue) == [90e9, 85e9]

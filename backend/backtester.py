@@ -158,11 +158,11 @@ def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
             sector=getattr(s, 'sector', None),
             roe=(cache.roe if cache else None),
             analyst_target_price=(getattr(cache, 'analyst_target_price', None) if cache else None),
-            # NOTE: cache field is `analyst_count`, not `num_analyst_opinions`.
-            # Live _load_static_data uses the wrong name and silently gets 0.
-            # Snapshot the same buggy-but-stable value so reproducibility holds —
-            # fixing the latent bug is a separate behavior change tracked elsewhere.
-            num_analyst_opinions=None,
+            # StockDataCache column is `analyst_count`; the historical_data
+            # / static_data dict key is `num_analyst_opinions`. Snapshot the
+            # real value (was previously hard-coded None to preserve a latent
+            # bug — fixed in this commit, see comment in _load_static_data).
+            num_analyst_opinions=(getattr(cache, 'analyst_count', None) if cache else None),
             quarterly_earnings=_json_or_none(getattr(s, 'quarterly_earnings', None)),
             annual_earnings=_json_or_none(getattr(s, 'annual_earnings', None)),
             quarterly_revenue=_json_or_none(getattr(s, 'quarterly_revenue', None)),
@@ -781,9 +781,17 @@ class BacktestEngine:
                 getattr(cache, 'analyst_target_price', 0) if cache else 0,
                 0,
             ) or 0
+            # Latent-bug fix: the StockDataCache column is `analyst_count`,
+            # not `num_analyst_opinions`. The original read used the wrong
+            # attribute name and silently returned 0 for everything via the
+            # getattr default — so growth_projector branches that test
+            # >= 5/10/20 analysts have never fired in production. Now reads
+            # the real column. Snapshots written before this commit have
+            # num_analyst_opinions=None (was hard-coded to preserve the bug);
+            # they fall through to the live cache.analyst_count value.
             num_analysts = _snap(
                 'num_analyst_opinions',
-                getattr(cache, 'num_analyst_opinions', 0) if cache else 0,
+                getattr(cache, 'analyst_count', 0) if cache else 0,
                 0,
             ) or 0
 
