@@ -739,6 +739,32 @@ class TestTrainModel:
         assert result_strict.get("win_rate", 1.0) <= result_loose.get("win_rate", 0.0) + 1e-9
         assert result_strict.get("min_gain_pct") == 10.0
 
+    def test_result_feature_columns_in_training_order(self):
+        """Regression: train_model must surface feature_columns in training
+        order on the result dict. The buggy call site read
+        result['feature_importance'].keys() — that's importance-sorted, not
+        training order, and broke v17 in two prediction code paths."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0)
+        if result.get("passed_gate"):
+            assert "feature_columns" in result
+            # Must equal the model's own training-order record
+            assert result["feature_columns"] == list(result["model"].feature_names_in_)
+            # And must equal FEATURE_COLUMNS when no exclusion is set
+            assert result["feature_columns"] == list(FEATURE_COLUMNS)
+
+    def test_result_feature_columns_with_exclusion(self):
+        """When excluded_features drops columns, result['feature_columns'] must
+        reflect the surviving subset in training order."""
+        excluded = ["total_score", "composite_score"]
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0, excluded_features=excluded)
+        if result.get("passed_gate"):
+            assert result["feature_columns"] == list(result["model"].feature_names_in_)
+            for name in excluded:
+                assert name not in result["feature_columns"]
+            assert len(result["feature_columns"]) == len(FEATURE_COLUMNS) - len(excluded)
+
     def test_per_regime_auc_computed_in_folds(self):
         """Walk-forward CV folds should include per_regime_auc dict when regime feature is present."""
         df = _make_labeled_df(n=300, win_rate=0.65)
@@ -961,6 +987,64 @@ class TestSaveLoadModel:
         loaded = load_model(path=path)
         assert loaded is not None
         assert loaded["metadata"]["model_type"] == "regression"
+
+    def test_save_model_preserves_training_order_no_explicit_columns(self, tmp_path):
+        """Regression: with no feature_columns arg, save_model must derive from
+        model.feature_names_in_ (training order), NOT FEATURE_COLUMNS or any
+        importance-sorted source. v17 hit this in two paths (commits 1bbf4c9, 61d55fb).
+        """
+        df = _make_labeled_df(n=100)
+        X, y, _, _ = get_feature_matrix(df)
+        model = _create_xgb_model()
+        model.fit(X, y)
+
+        path = tmp_path / "no_explicit_cols.joblib"
+        save_model(model, {}, path=path)
+        loaded = load_model(path=path)
+
+        assert loaded["feature_columns"] == list(model.feature_names_in_)
+
+    def test_save_model_preserves_training_order_explicit_columns(self, tmp_path):
+        """When the caller passes feature_columns explicitly (the production path
+        from backend/routes/ml.py), the saved list must equal what was passed in
+        and equal model.feature_names_in_."""
+        df = _make_labeled_df(n=100)
+        X, y, _, _ = get_feature_matrix(df)
+        model = _create_xgb_model()
+        model.fit(X, y)
+
+        training_order = list(X.columns)
+        path = tmp_path / "explicit_cols.joblib"
+        save_model(model, {}, path=path, feature_columns=training_order)
+        loaded = load_model(path=path)
+
+        assert loaded["feature_columns"] == training_order
+        assert loaded["feature_columns"] == list(model.feature_names_in_)
+
+    def test_save_model_rejects_importance_sorted_via_default(self, tmp_path):
+        """End-to-end: a real classifier training run where one feature dominates
+        importance. Saved feature_columns must NOT be importance-sorted (the v17 bug).
+        """
+        df = _make_labeled_df(n=200)
+        X, y, _, _ = get_feature_matrix(df)
+        model = _create_xgb_model()
+        model.fit(X, y)
+
+        # Build the importance-sorted list the way the buggy call site did.
+        importances = dict(zip(X.columns, model.feature_importances_.tolist()))
+        importance_sorted = [k for k, _ in sorted(importances.items(), key=lambda kv: -kv[1])]
+
+        path = tmp_path / "default_save.joblib"
+        save_model(model, {}, path=path)
+        loaded = load_model(path=path)
+
+        # Only meaningful if the two orders actually differ — guard against the
+        # rare case where xgboost happens to produce features sorted in training order.
+        if importance_sorted != list(X.columns):
+            assert loaded["feature_columns"] != importance_sorted, (
+                "save_model must not save feature_columns in importance-sorted order"
+            )
+        assert loaded["feature_columns"] == list(model.feature_names_in_)
 
 
 class TestAggregateMetrics:

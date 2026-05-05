@@ -147,8 +147,13 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         model = result["model"]
         metrics = result["metrics"]
         is_experimental = bool(excluded_features) or not auto_activate
-        feat_cols = result.get("feature_count_columns") or None  # forward-compat
-        active_features = list(result.get("feature_importance", {}).keys()) or None
+        # CRITICAL: must be training order, not importance-sorted. xgboost rejects
+        # predict() with feature_names_mismatch when order differs (v17 hit this in
+        # both live + OOS paths — commits 1bbf4c9 + 61d55fb worked around it). Trainer
+        # now emits result["feature_columns"] in training order; older paths that
+        # read feature_importance.keys() got the sorted-by-importance list, which is
+        # the bug.
+        active_features = result.get("feature_columns") or None
         if is_experimental:
             from ml.trainer import MODEL_DIR
             exp_path = MODEL_DIR / f"ml_model_v{ml_record.version}_experimental.joblib"

@@ -163,6 +163,7 @@ def train_model(
         "model": model,
         "metrics": metrics,
         "feature_importance": importance,
+        "feature_columns": active_features,
         "cv_results": cv_results,
         "mean_roc_auc": round(mean_auc, 4),
         "baseline_comparison": baseline_results,
@@ -255,6 +256,7 @@ def train_model_regression(
         "model": model,
         "metrics": metrics,
         "feature_importance": importance,
+        "feature_columns": list(X.columns),
         "cv_results": cv_results,
         "mean_spearman": round(mean_spearman, 4),
         "baseline_comparison": baseline_results,
@@ -273,22 +275,36 @@ def save_model(model, metadata: dict, path: Optional[Path] = None,
                feature_columns: Optional[list] = None) -> Path:
     """Save model + metadata to disk.
 
-    feature_columns: explicit feature list to save with the model. Defaults to
-    the full FEATURE_COLUMNS — but ablation/leakage trainings drop columns,
-    and the saved list MUST match the columns the model actually learned on,
-    otherwise predict-time will pass features the model has never seen.
+    feature_columns MUST be in the SAME ORDER the model was trained on. xgboost
+    rejects predict() with feature_names_mismatch when the order differs. Three
+    code paths used to confuse importance-sorted vs training-order — all three
+    bit us across v17 (1bbf4c9, 61d55fb). Order of preference:
+      1) Caller-provided feature_columns (trusted — usually from result["feature_columns"])
+      2) model.feature_names_in_ (the model's own record of training order)
+      3) FEATURE_COLUMNS module constant (full default — last resort)
     """
     path = path or ACTIVE_MODEL_PATH
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+    if feature_columns is None:
+        # Calibrated models keep the underlying estimator's feature_names_in_
+        # on each fold-fitted classifier. Fall through to the first available.
+        names = getattr(model, "feature_names_in_", None)
+        if names is None and hasattr(model, "calibrated_classifiers_"):
+            for cc in model.calibrated_classifiers_:
+                names = getattr(cc.estimator, "feature_names_in_", None)
+                if names is not None:
+                    break
+        feature_columns = list(names) if names is not None else list(FEATURE_COLUMNS)
+
     payload = {
         "model": model,
         "metadata": metadata,
-        "feature_columns": feature_columns or FEATURE_COLUMNS,
+        "feature_columns": list(feature_columns),
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     joblib.dump(payload, path)
-    logger.info(f"Model saved to {path}")
+    logger.info(f"Model saved to {path} ({len(payload['feature_columns'])} features)")
     return path
 
 
