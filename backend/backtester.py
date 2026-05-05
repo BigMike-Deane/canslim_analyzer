@@ -174,6 +174,75 @@ def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
     return len(snapshots)
 
 
+def copy_backtest_static_snapshot(db: Session, source_backtest_id: int, target_backtest_id: int) -> int:
+    """Copy every BacktestStaticSnapshot row from source to target backtest.
+
+    Used by the model-graduation eval gate to give two consecutive backtests
+    (incumbent vs. candidate) byte-identical inputs. Without this, two
+    backtests run minutes apart can drift by 12pp simply because the
+    stock_data_cache has been refreshed between them — the original drift
+    mechanism documented in canslim-livescan-churn-investigation.md.
+
+    Behavior:
+    - Idempotent: if target already has any snapshot rows, return 0 without
+      copying. Same pattern as create_backtest_static_snapshot. Lets the
+      caller invoke this safely after BacktestEngine.run() (which itself
+      idempotently creates rows).
+    - Refuses to operate when source has no snapshot. The eval gate must
+      capture from a real snapshotted run; sourceless copy is a misuse and
+      would silently produce an empty target.
+
+    Returns the number of rows inserted.
+    """
+    from backend.database import BacktestStaticSnapshot
+
+    if source_backtest_id == target_backtest_id:
+        raise ValueError(f"copy_backtest_static_snapshot: source == target ({source_backtest_id})")
+
+    existing_target = db.query(BacktestStaticSnapshot.id).filter(
+        BacktestStaticSnapshot.backtest_id == target_backtest_id
+    ).first()
+    if existing_target is not None:
+        logger.debug(f"Target backtest {target_backtest_id} already has snapshot rows; skipping copy")
+        return 0
+
+    source_rows = db.query(BacktestStaticSnapshot).filter(
+        BacktestStaticSnapshot.backtest_id == source_backtest_id
+    ).all()
+    if not source_rows:
+        raise ValueError(
+            f"Source backtest {source_backtest_id} has no static snapshot rows to copy. "
+            f"Run the source backtest first (or call create_backtest_static_snapshot) before copying."
+        )
+
+    copies = []
+    for src in source_rows:
+        copies.append(BacktestStaticSnapshot(
+            backtest_id=target_backtest_id,
+            ticker=src.ticker,
+            days_to_earnings=src.days_to_earnings,
+            earnings_beat_streak=src.earnings_beat_streak,
+            eps_estimate_revision_pct=src.eps_estimate_revision_pct,
+            industry_group_rank=src.industry_group_rank,
+            weeks_in_base=src.weeks_in_base,
+            sector=src.sector,
+            roe=src.roe,
+            analyst_target_price=src.analyst_target_price,
+            num_analyst_opinions=src.num_analyst_opinions,
+            quarterly_earnings=src.quarterly_earnings,
+            annual_earnings=src.annual_earnings,
+            quarterly_revenue=src.quarterly_revenue,
+            score_details=src.score_details,
+        ))
+    db.bulk_save_objects(copies)
+    db.commit()
+    logger.info(
+        f"Copied {len(copies)} snapshot rows from backtest {source_backtest_id} "
+        f"to backtest {target_backtest_id}"
+    )
+    return len(copies)
+
+
 class BacktestEngine:
     """
     Runs a historical simulation of the CANSLIM AI trading strategy.

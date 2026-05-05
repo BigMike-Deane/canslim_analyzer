@@ -3399,3 +3399,151 @@ class TestBacktestStaticSnapshot:
         snap = db.query(BacktestStaticSnapshot).filter_by(ticker="NVDA").one()
         assert snap.days_to_earnings == 16
         assert snap.earnings_beat_streak == 13
+
+
+class TestCopyBacktestStaticSnapshot:
+    """copy_backtest_static_snapshot enables the dual-run model graduation
+    gate: candidate runs first (creates snapshot), incumbent runs against
+    a copy of that snapshot — same inputs, no cache-drift bias in the
+    A/B comparison. ~12pp drift was observed on identical-config v12 runs
+    measured days apart, so this matters."""
+
+    def _fresh_session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from backend.database import Base
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        return sessionmaker(bind=engine)()
+
+    def _make_backtest(self, db, id):
+        from backend.database import BacktestRun
+        bt = BacktestRun(
+            id=id, name=f"copy-test-{id}",
+            start_date=date(2024, 1, 1), end_date=date(2024, 12, 31),
+            starting_cash=25000.0, stock_universe="all",
+            strategy="nostate_optimized", status="pending",
+        )
+        db.add(bt)
+        db.commit()
+        return bt
+
+    def _make_stock(self, ticker, **p1):
+        from backend.database import Stock
+        return Stock(
+            ticker=ticker,
+            name=p1.pop("name", ticker),
+            sector=p1.pop("sector", "Technology"),
+            current_price=p1.pop("current_price", 100.0),
+            days_to_earnings=p1.pop("days_to_earnings", None),
+            earnings_beat_streak=p1.pop("earnings_beat_streak", None),
+            eps_estimate_revision_pct=p1.pop("eps_estimate_revision_pct", None),
+            industry_group_rank=p1.pop("industry_group_rank", None),
+            weeks_in_base=p1.pop("weeks_in_base", None),
+        )
+
+    def test_copy_produces_identical_rows_per_field(self):
+        """Every captured field must round-trip exactly. Float comparison
+        is exact because we're copying same-precision floats, not recomputing."""
+        from backend.backtester import (
+            create_backtest_static_snapshot, copy_backtest_static_snapshot,
+        )
+        from backend.database import BacktestStaticSnapshot, Stock, StockDataCache
+        import json
+
+        db = self._fresh_session()
+        stk = self._make_stock(
+            "NVDA", days_to_earnings=16, earnings_beat_streak=13,
+            eps_estimate_revision_pct=59.01, industry_group_rank=3, weeks_in_base=8,
+        )
+        stk.quarterly_earnings = [1.5, 1.4, 1.3]
+        stk.score_details = {"i": {"institutional_pct": 60.5}}
+        db.add(stk)
+        db.add(StockDataCache(ticker="NVDA", roe=0.45, analyst_target_price=180.0, analyst_count=37))
+        src = self._make_backtest(db, id=100)
+        dst = self._make_backtest(db, id=101)
+
+        create_backtest_static_snapshot(db, src.id)
+        copied = copy_backtest_static_snapshot(db, src.id, dst.id)
+        assert copied == 1
+
+        src_row = db.query(BacktestStaticSnapshot).filter_by(backtest_id=100).one()
+        dst_row = db.query(BacktestStaticSnapshot).filter_by(backtest_id=101).one()
+        for field in (
+            "ticker", "days_to_earnings", "earnings_beat_streak",
+            "eps_estimate_revision_pct", "industry_group_rank", "weeks_in_base",
+            "sector", "roe", "analyst_target_price", "num_analyst_opinions",
+            "quarterly_earnings", "annual_earnings", "quarterly_revenue", "score_details",
+        ):
+            assert getattr(src_row, field) == getattr(dst_row, field), (
+                f"Field {field} did not round-trip on copy"
+            )
+
+    def test_copy_does_not_mutate_source(self):
+        """Source rows must remain after copy — eval gate uses both backtest
+        IDs and would break if source rows disappeared on copy."""
+        from backend.backtester import (
+            create_backtest_static_snapshot, copy_backtest_static_snapshot,
+        )
+        from backend.database import BacktestStaticSnapshot
+
+        db = self._fresh_session()
+        db.add(self._make_stock("AAPL", days_to_earnings=87))
+        db.add(self._make_stock("MSFT", days_to_earnings=42))
+        src = self._make_backtest(db, id=200)
+        dst = self._make_backtest(db, id=201)
+
+        create_backtest_static_snapshot(db, src.id)
+        assert db.query(BacktestStaticSnapshot).filter_by(backtest_id=200).count() == 2
+
+        copy_backtest_static_snapshot(db, src.id, dst.id)
+        # Source still intact
+        assert db.query(BacktestStaticSnapshot).filter_by(backtest_id=200).count() == 2
+        # Target populated
+        assert db.query(BacktestStaticSnapshot).filter_by(backtest_id=201).count() == 2
+
+    def test_copy_idempotent_when_target_already_has_rows(self):
+        """If target already has any snapshot rows (e.g. BacktestEngine ran
+        first and created its own), copy is a no-op. Same pattern as
+        create_backtest_static_snapshot."""
+        from backend.backtester import (
+            create_backtest_static_snapshot, copy_backtest_static_snapshot,
+        )
+        from backend.database import BacktestStaticSnapshot
+
+        db = self._fresh_session()
+        db.add(self._make_stock("AAPL", days_to_earnings=87))
+        db.add(self._make_stock("MSFT", days_to_earnings=42))
+        src = self._make_backtest(db, id=300)
+        dst = self._make_backtest(db, id=301)
+        create_backtest_static_snapshot(db, src.id)
+        # Target gets a snapshot independently first
+        create_backtest_static_snapshot(db, dst.id)
+
+        copied = copy_backtest_static_snapshot(db, src.id, dst.id)
+        assert copied == 0  # idempotent
+        assert db.query(BacktestStaticSnapshot).filter_by(backtest_id=301).count() == 2
+
+    def test_copy_refuses_when_source_has_no_snapshot(self):
+        """Sourceless copy is a misuse — would silently produce empty target.
+        Raise so the eval gate fails loudly instead of activating a candidate
+        based on a degenerate backtest."""
+        from backend.backtester import copy_backtest_static_snapshot
+
+        db = self._fresh_session()
+        db.add(self._make_stock("AAPL", days_to_earnings=87))
+        src = self._make_backtest(db, id=400)
+        dst = self._make_backtest(db, id=401)
+
+        with pytest.raises(ValueError, match="no static snapshot"):
+            copy_backtest_static_snapshot(db, src.id, dst.id)
+
+    def test_copy_refuses_self_target(self):
+        """source == target is always a programming error — would either
+        no-op or duplicate rows depending on idempotency check ordering.
+        Either is wrong; raise."""
+        from backend.backtester import copy_backtest_static_snapshot
+
+        db = self._fresh_session()
+        with pytest.raises(ValueError, match="source == target"):
+            copy_backtest_static_snapshot(db, 500, 500)

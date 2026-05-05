@@ -101,50 +101,119 @@ def _eval_gate_decision(
     return False, "; ".join(reasons)
 
 
-def _run_evaluation_backtest(db, model_path: str, strategy: str, ml_record_id: int) -> dict:
+def _create_and_run_eval_backtest(
+    db, model_path: str, strategy: str, name: str, copy_snapshot_from: int = None
+) -> dict:
+    """Internal helper: create one BacktestRun configured for eval, optionally
+    seed its static-data snapshot from another backtest, run synchronously,
+    return metrics or {error: ...}.
+
+    copy_snapshot_from: if set, the candidate's snapshot rows are copied to
+    this new run BEFORE BacktestEngine.run() executes. The engine sees
+    pre-populated rows, skips its own snapshot creation step (idempotent),
+    so the run reads from the copied data — same inputs as the source.
+    """
+    from datetime import date as date_cls
+    from backend.database import BacktestRun
+    from backend.backtester import run_backtest, copy_backtest_static_snapshot
+
+    start = date_cls.fromisoformat(EVAL_BACKTEST_START)
+    end = date_cls.fromisoformat(EVAL_BACKTEST_END)
+    bt = BacktestRun(
+        name=name,
+        status="pending",
+        start_date=start,
+        end_date=end,
+        starting_cash=EVAL_BACKTEST_CASH,
+        stock_universe=EVAL_BACKTEST_UNIVERSE,
+        strategy=strategy,
+        profile_overrides={"ml_signal": {"model_path": model_path}},
+    )
+    db.add(bt)
+    db.commit()
+    db.refresh(bt)
+    logger.info(f"Eval backtest {bt.id} created ({name}, model={model_path})")
+
+    if copy_snapshot_from is not None:
+        copied = copy_backtest_static_snapshot(db, copy_snapshot_from, bt.id)
+        logger.info(
+            f"Eval backtest {bt.id} seeded with {copied} snapshot rows "
+            f"from backtest {copy_snapshot_from} (dual-run: identical inputs)"
+        )
+
+    completed = run_backtest(db, bt.id, profile_overrides={"ml_signal": {"model_path": model_path}})
+    if completed is None or completed.status != "completed":
+        return {
+            "error": f"Eval backtest did not complete (status={completed.status if completed else 'unknown'})",
+            "backtest_id": bt.id,
+        }
+
+    return {
+        "backtest_id": completed.id,
+        "return_pct": float(completed.total_return_pct) if completed.total_return_pct is not None else None,
+        "sharpe": float(completed.sharpe_ratio) if completed.sharpe_ratio is not None else None,
+        "max_drawdown_pct": float(completed.max_drawdown_pct) if completed.max_drawdown_pct is not None else None,
+    }
+
+
+def _run_evaluation_backtest(
+    db, candidate_path: str, strategy: str, ml_record_id: int,
+    incumbent_path: str = None,
+) -> dict:
     """Run a standardized backtest with the candidate model file as the
     ML override. Returns {return_pct, sharpe, max_drawdown_pct, backtest_id}
     on success or {error: ...} on failure.
 
-    Synchronous: runs in the calling background task. Takes ~10-15 min for
-    the 4-year window — acceptable cost for the graduation decision since
-    training is already a bg task.
+    Synchronous: runs in the calling background task. ~12-15 min per backtest.
+
+    incumbent_path: when provided, performs a DUAL-RUN. The candidate runs
+    first (creating a static-data snapshot from current cache state), then
+    the incumbent runs against a COPY of the candidate's snapshot — same
+    inputs, isolating the model delta from cache drift. Without this, two
+    eval backtests minutes apart can drift up to ~12pp on identical models
+    (canslim-livescan-churn-investigation.md). Returns separate
+    incumbent_* fields when dual-run is performed; the gate compares against
+    these instead of the incumbent's stored eval baseline.
+
+    incumbent_path=None: legacy single-run mode. The candidate is compared
+    against whatever incumbent.eval_return_pct / eval_sharpe is stored on
+    the active MLModel row — subject to cache-drift bias.
     """
-    from datetime import date as date_cls
-    from backend.database import BacktestRun
-    from backend.backtester import run_backtest
-
     try:
-        start = date_cls.fromisoformat(EVAL_BACKTEST_START)
-        end = date_cls.fromisoformat(EVAL_BACKTEST_END)
-        bt = BacktestRun(
+        candidate_result = _create_and_run_eval_backtest(
+            db, candidate_path, strategy,
             name=f"eval_for_ml_v{ml_record_id}",
-            status="pending",
-            start_date=start,
-            end_date=end,
-            starting_cash=EVAL_BACKTEST_CASH,
-            stock_universe=EVAL_BACKTEST_UNIVERSE,
-            strategy=strategy,
-            profile_overrides={"ml_signal": {"model_path": model_path}},
         )
-        db.add(bt)
-        db.commit()
-        db.refresh(bt)
-        logger.info(f"Eval backtest {bt.id} created for ml v{ml_record_id} candidate ({model_path})")
+        if "error" in candidate_result:
+            return candidate_result
 
-        # Run synchronously in this task's session
-        completed = run_backtest(db, bt.id, profile_overrides={"ml_signal": {"model_path": model_path}})
-        if completed is None or completed.status != "completed":
+        if incumbent_path is None:
+            return candidate_result
+
+        incumbent_result = _create_and_run_eval_backtest(
+            db, incumbent_path, strategy,
+            name=f"eval_for_ml_v{ml_record_id}_incumbent_baseline",
+            copy_snapshot_from=candidate_result["backtest_id"],
+        )
+        if "error" in incumbent_result:
+            # Candidate ran fine; the incumbent control failed. Without a
+            # comparable incumbent metric we can't make a dual-run decision.
+            # Return the candidate metrics PLUS the failure so the caller
+            # can choose between fail-closed (what the gate does) and
+            # fall-back-to-stored-baseline (future option).
             return {
-                "error": f"Eval backtest did not complete (status={completed.status if completed else 'unknown'})",
-                "backtest_id": bt.id,
+                **candidate_result,
+                "incumbent_error": incumbent_result["error"],
+                "incumbent_backtest_id": incumbent_result.get("backtest_id"),
             }
 
+        # Both legs succeeded — return both sides for the gate.
         return {
-            "backtest_id": completed.id,
-            "return_pct": float(completed.total_return_pct) if completed.total_return_pct is not None else None,
-            "sharpe": float(completed.sharpe_ratio) if completed.sharpe_ratio is not None else None,
-            "max_drawdown_pct": float(completed.max_drawdown_pct) if completed.max_drawdown_pct is not None else None,
+            **candidate_result,
+            "incumbent_backtest_id": incumbent_result["backtest_id"],
+            "incumbent_return_pct": incumbent_result["return_pct"],
+            "incumbent_sharpe": incumbent_result["sharpe"],
+            "incumbent_max_drawdown_pct": incumbent_result["max_drawdown_pct"],
         }
     except Exception as e:
         logger.error(f"Eval backtest failed for ml v{ml_record_id}: {e}", exc_info=True)
@@ -371,12 +440,33 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
 
         # Improvement gate (Phase 2): standardized eval backtest. AUC/Spearman
         # were shown to disagree with portfolio return (May 5 diagnostic) so
-        # gating on CV alone is insufficient. Run the candidate through a
-        # 4-year backtest at v12-equivalent config, compare return + Sharpe
-        # vs incumbent's stored eval metrics. First-model case (no incumbent
-        # eval baseline): activate but record the metrics for next time.
-        logger.info(f"Running eval backtest for ml v{ml_record.version} candidate...")
-        eval_result = _run_evaluation_backtest(db, str(model_path), strategy, ml_record.id)
+        # gating on CV alone is insufficient.
+        #
+        # Dual-run pattern: when an incumbent has an eval baseline, run BOTH
+        # the candidate and the incumbent against the SAME static-data
+        # snapshot — eliminates cache-drift bias (without it, a candidate
+        # measured today can falsely beat an incumbent baseline measured
+        # last week purely because the cache shifted in between, ~12pp
+        # observed). First-model case (no incumbent baseline): single-run
+        # the candidate, store as new baseline, auto-activate.
+        incumbent = db.query(MLModel).filter(
+            MLModel.strategy == strategy,
+            MLModel.status == "active",
+            MLModel.id != ml_record.id,
+        ).order_by(desc(MLModel.activated_at)).first()
+        incumbent_path = (
+            incumbent.model_path if incumbent is not None and incumbent.model_path else None
+        )
+        do_dual_run = incumbent is not None and incumbent_path is not None
+
+        logger.info(
+            f"Running eval backtest for ml v{ml_record.version} candidate "
+            f"({'dual-run vs v' + str(incumbent.version) if do_dual_run else 'single-run, no incumbent baseline'})"
+        )
+        eval_result = _run_evaluation_backtest(
+            db, str(model_path), strategy, ml_record.id,
+            incumbent_path=incumbent_path if do_dual_run else None,
+        )
 
         if "error" in eval_result:
             ml_record.status = "failed"
@@ -393,14 +483,31 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         ml_record.eval_max_drawdown_pct = eval_result.get("max_drawdown_pct")
         db.commit()
 
-        incumbent = db.query(MLModel).filter(
-            MLModel.strategy == strategy,
-            MLModel.status == "active",
-            MLModel.id != ml_record.id,
-        ).order_by(desc(MLModel.activated_at)).first()
+        # Decide which incumbent metrics to compare against:
+        #  - dual-run succeeded: use the freshly-computed incumbent_* values
+        #    (apples-to-apples on the same snapshot — no drift)
+        #  - dual-run failed mid-flight (incumbent_error): fall back to the
+        #    stored eval_return_pct on the incumbent row, with the caveat
+        #    documented in MEMORY.md (drift-biased but better than nothing).
+        #  - single-run (first-model bootstrap): incumbent metrics are None
+        #    and _eval_gate_decision auto-passes.
+        if do_dual_run and "incumbent_return_pct" in eval_result:
+            incumbent_return = eval_result["incumbent_return_pct"]
+            incumbent_sharpe = eval_result["incumbent_sharpe"]
+            comparison_mode = "dual-run (same snapshot)"
+        elif do_dual_run and "incumbent_error" in eval_result:
+            incumbent_return = incumbent.eval_return_pct
+            incumbent_sharpe = incumbent.eval_sharpe
+            comparison_mode = f"single-run fallback (incumbent leg failed: {eval_result['incumbent_error']})"
+            logger.warning(
+                f"ML v{ml_record.version}: dual-run incumbent leg failed, "
+                f"falling back to stored baseline (drift-biased)"
+            )
+        else:
+            incumbent_return = None
+            incumbent_sharpe = None
+            comparison_mode = "first-model (no incumbent baseline)"
 
-        incumbent_return = incumbent.eval_return_pct if incumbent is not None else None
-        incumbent_sharpe = incumbent.eval_sharpe if incumbent is not None else None
         passes, reason = _eval_gate_decision(
             ml_record.eval_return_pct, ml_record.eval_sharpe,
             incumbent_return, incumbent_sharpe,
@@ -415,14 +522,18 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         )
         if not passes:
             ml_record.status = "completed"
-            ml_record.error_message = f"Eval gate: {reason}. Candidate: {candidate_descr} vs {incumbent_descr}"[:500]
+            ml_record.error_message = (
+                f"Eval gate ({comparison_mode}): {reason}. "
+                f"Candidate: {candidate_descr} vs {incumbent_descr}"
+            )[:500]
             db.commit()
             logger.warning(
-                f"ML v{ml_record.version} blocked by eval gate: {reason}"
+                f"ML v{ml_record.version} blocked by eval gate: {reason} ({comparison_mode})"
             )
             return
         logger.info(
-            f"ML v{ml_record.version} passed eval gate ({reason}); candidate {candidate_descr} vs {incumbent_descr}"
+            f"ML v{ml_record.version} passed eval gate ({reason}); "
+            f"comparison_mode={comparison_mode}; candidate {candidate_descr} vs {incumbent_descr}"
         )
 
         # Deactivate previous active models for this strategy
