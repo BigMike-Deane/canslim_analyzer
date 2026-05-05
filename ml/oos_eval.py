@@ -76,7 +76,15 @@ def evaluate_model_on_trades(
 
     payload = _load_model_payload(model_path)
     model = payload["model"]
-    feature_cols = payload.get("feature_columns") or FEATURE_COLUMNS
+    # Prefer the model's own feature_names_in_ (the actual training order)
+    # over payload['feature_columns'] (which is importance-sorted in some
+    # legacy save paths — bug in trainer's save_model call site, not yet
+    # tracked separately). Fall back to the payload list, then global default.
+    model_feature_names = getattr(model, "feature_names_in_", None)
+    if model_feature_names is not None and len(model_feature_names) > 0:
+        feature_cols = list(model_feature_names)
+    else:
+        feature_cols = payload.get("feature_columns") or FEATURE_COLUMNS
 
     missing = [c for c in feature_cols if c not in df.columns]
     if missing:
