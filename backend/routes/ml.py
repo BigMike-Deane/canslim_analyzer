@@ -383,6 +383,76 @@ async def trigger_training(
     }
 
 
+@router.post("/evaluate-oos")
+async def evaluate_oos_endpoint(
+    strategy: str = Query(default="nostate_optimized"),
+    cutoff_iso: Optional[str] = Query(default=None, description="ISO timestamp; backtests created on/after are the OOS holdout. Defaults to (now - holdout_hours)."),
+    holdout_hours: float = Query(default=72.0, description="Used when cutoff_iso is omitted: cutoff = now - holdout_hours."),
+    model_ids: str = Query(default="", description="Comma-separated MLModel.id values to compare. Empty = current active model only."),
+    min_gain_pct: float = Query(default=10.0, description="Label threshold: positive class = gain_pct > min_gain_pct."),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Evaluate one or more saved models on backtests the model never saw.
+
+    Distinct from walk-forward CV — OOS uses backtests created AFTER the
+    cutoff, which (assuming the model was trained before cutoff) the model
+    cannot have learned from. This is the only way to compare candidate
+    models honestly: training metrics from different models trained on
+    different (often overlapping) pools aren't comparable.
+
+    Caveats:
+    - Caller is responsible for picking a cutoff that places each candidate
+      model's training data on the correct side. There's no automatic check
+      that model X was actually trained pre-cutoff.
+    - The model file must exist on disk (joblib payload). MLModel.model_path
+      is consulted; missing rows are reported per-id.
+    """
+    from ml.oos_eval import compare_models_oos, evaluate_oos
+
+    if cutoff_iso:
+        try:
+            cutoff = datetime.fromisoformat(cutoff_iso.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise HTTPException(400, f"Invalid cutoff_iso: {e}")
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=holdout_hours)
+
+    # Resolve cutoff to naive UTC for comparison with DB columns (which are naive)
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+
+    # Build {label: model_path} mapping
+    ids = [int(x) for x in model_ids.split(",") if x.strip()]
+    paths = {}
+    if ids:
+        rows = db.query(MLModel).filter(MLModel.id.in_(ids)).all()
+        for r in rows:
+            if not r.model_path:
+                continue
+            paths[f"v{r.version}_id{r.id}"] = r.model_path
+        missing = set(ids) - {r.id for r in rows}
+        if missing:
+            raise HTTPException(404, f"MLModel ids not found: {sorted(missing)}")
+    else:
+        # Default: current active model
+        active = db.query(MLModel).filter(
+            MLModel.strategy == strategy,
+            MLModel.status == "active",
+        ).order_by(desc(MLModel.id)).first()
+        if not active or not active.model_path:
+            raise HTTPException(404, f"No active model with stored path for {strategy}")
+        paths[f"v{active.version}_active"] = active.model_path
+
+    if len(paths) == 1:
+        # Single model — return its metrics directly for cleaner JSON
+        label, path = next(iter(paths.items()))
+        result = evaluate_oos(db, path, strategy, cutoff, min_gain_pct=min_gain_pct)
+        return {"label": label, "result": result, "cutoff_used": cutoff.isoformat()}
+
+    return compare_models_oos(db, paths, strategy, cutoff, min_gain_pct=min_gain_pct)
+
+
 @router.get("/health")
 async def get_ml_health(
     strategy: str = Query(default="nostate_optimized"),
