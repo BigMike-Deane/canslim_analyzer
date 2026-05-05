@@ -1375,3 +1375,47 @@ class TestEvalGateDecision:
         from backend.routes.ml import _eval_gate_decision, MAX_SHARPE_REGRESSION
         passes, _ = _eval_gate_decision(200.0, 2.04 - MAX_SHARPE_REGRESSION, 192.0, 2.04)
         assert passes is True
+
+
+class TestSaveModelPathing:
+    """Regression: in the original eval-gate (1e11fc6) candidates were saved
+    DIRECTLY to ACTIVE_MODEL_PATH, overwriting the incumbent's joblib BEFORE
+    the gate ran. The dual-run (4c965a1) then compared candidate-vs-candidate
+    instead of candidate-vs-incumbent. Lock down the new pathing semantics
+    so this can't recur."""
+
+    def test_save_model_with_explicit_path_writes_there_not_active(self, tmp_path):
+        """save_model(path=...) must write to the explicit path, leaving
+        ACTIVE_MODEL_PATH untouched. The fixed _run_training relies on this
+        invariant to keep the incumbent's file intact during gating."""
+        from ml.trainer import save_model, load_model, ACTIVE_MODEL_PATH
+
+        # Capture current active.joblib state (whatever bytes happen to be there).
+        # If it doesn't exist that's also fine — we just confirm save_model
+        # doesn't *create* it when given an explicit path.
+        active_existed_before = ACTIVE_MODEL_PATH.exists()
+        active_bytes_before = ACTIVE_MODEL_PATH.read_bytes() if active_existed_before else None
+
+        df = _make_labeled_df(n=100)
+        X, y, _, _ = get_feature_matrix(df)
+        model = _create_xgb_model()
+        model.fit(X, y)
+
+        candidate_path = tmp_path / "ml_model_v999.joblib"
+        save_model(model, {"version": 999}, path=candidate_path)
+
+        # Candidate file landed at the explicit path
+        assert candidate_path.exists()
+        loaded = load_model(path=candidate_path)
+        assert loaded["metadata"]["version"] == 999
+
+        # ACTIVE_MODEL_PATH was not modified by this save
+        if active_existed_before:
+            assert ACTIVE_MODEL_PATH.read_bytes() == active_bytes_before, (
+                "save_model with explicit path must not modify ACTIVE_MODEL_PATH — "
+                "doing so would overwrite the incumbent's file mid-gating."
+            )
+        else:
+            # Either still doesn't exist, or if it does, must not be the candidate's bytes
+            if ACTIVE_MODEL_PATH.exists():
+                assert ACTIVE_MODEL_PATH.read_bytes() != candidate_path.read_bytes()

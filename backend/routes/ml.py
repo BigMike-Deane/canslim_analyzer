@@ -337,8 +337,8 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         # read feature_importance.keys() got the sorted-by-importance list, which is
         # the bug.
         active_features = result.get("feature_columns") or None
+        from ml.trainer import MODEL_DIR
         if is_experimental:
-            from ml.trainer import MODEL_DIR
             exp_path = MODEL_DIR / f"ml_model_v{ml_record.version}_experimental.joblib"
             model_path = save_model(model, {
                 "strategy": strategy,
@@ -351,6 +351,13 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 "experimental": True,
             }, path=exp_path, feature_columns=active_features)
         else:
+            # CRITICAL: save to versioned candidate path, NOT directly to
+            # ACTIVE_MODEL_PATH. Otherwise the eval gate's incumbent file
+            # gets overwritten by the candidate before the gate runs, and
+            # the comparison ends up "candidate vs candidate". Promotion
+            # to active.joblib happens only after the gate passes (see
+            # _promote_to_active_path below).
+            candidate_path = MODEL_DIR / f"ml_model_v{ml_record.version}.joblib"
             model_path = save_model(model, {
                 "strategy": strategy,
                 "version": ml_record.version,
@@ -358,7 +365,7 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 "feature_importance": result["feature_importance"],
                 "model_type": model_type,
                 "calibrated": bool(calibrate),
-            }, feature_columns=active_features)
+            }, path=candidate_path, feature_columns=active_features)
 
         # Update DB record with metrics
         ml_record.model_type = model_type
@@ -536,6 +543,26 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
             f"comparison_mode={comparison_mode}; candidate {candidate_descr} vs {incumbent_descr}"
         )
 
+        # Promote candidate file to ACTIVE_MODEL_PATH. Done BEFORE the DB
+        # status flip so a copy failure doesn't leave us with an "active"
+        # row pointing at a stale file. ml_record.model_path stays at the
+        # versioned path (immutable training output); the active path is a
+        # copy that the live process loads via reload_model. This separation
+        # is what keeps the eval gate's incumbent file intact during gating.
+        try:
+            import shutil
+            from ml.trainer import ACTIVE_MODEL_PATH
+            shutil.copy2(str(model_path), str(ACTIVE_MODEL_PATH))
+            logger.info(
+                f"Promoted v{ml_record.version} candidate {model_path} → active path {ACTIVE_MODEL_PATH}"
+            )
+        except Exception as e:
+            ml_record.status = "failed"
+            ml_record.error_message = f"Promotion to active path failed: {e}"[:500]
+            db.commit()
+            logger.error(f"ML v{ml_record.version} promotion failed: {e}", exc_info=True)
+            return
+
         # Deactivate previous active models for this strategy
         # Exclude current record to avoid self-deactivation race
         db.query(MLModel).filter(
@@ -548,7 +575,7 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         ml_record.activated_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Reload model in memory
+        # Reload model in memory — picks up the freshly-copied active.joblib
         try:
             from ml.model import reload_model
             reload_model()
