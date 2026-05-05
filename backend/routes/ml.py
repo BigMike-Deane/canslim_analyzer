@@ -767,6 +767,93 @@ async def evaluate_oos_endpoint(
     return compare_models_oos(db, paths, strategy, cutoff, min_gain_pct=min_gain_pct)
 
 
+@router.post("/diagnose")
+async def diagnose_models(
+    model_ids: str = Query(..., description="Comma-separated MLModel.id list, e.g. '12,17,18'"),
+    strategy: str = Query(default="nostate_optimized"),
+    cutoff_iso: str = Query(..., description="ISO datetime; backtests created on/after are the OOS holdout."),
+    min_gain_pct: float = Query(default=10.0, description="Label threshold: positive class = gain_pct > min_gain_pct."),
+    threshold: float = Query(default=0.30, description="Pick threshold for the disagreement breakdown (production veto threshold = 0.30)."),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Per-trade ML model diagnostics on an OOS holdout slice.
+
+    Computes (a) probability distribution per model, (b) pairwise Spearman
+    rank correlation, (c) disagreement at threshold (only-A / only-B / both
+    / neither, with WRs), (d) top-decile WR, (e) bottom-decile WR.
+
+    Replaces the VPS-only oos_disagreement.py one-off script. Used to
+    investigate why a higher-AUC candidate doesn't always translate into a
+    backtest-return advantage — the disagreement structure typically shows
+    the AUC delta concentrated in middle-rank discrimination that
+    backtest's score+max_positions filter never reaches.
+
+    Looks up MLModel.model_path regardless of status — works for active,
+    completed, and experimental models alike.
+    """
+    from ml.diagnostics import run_full_diagnostic
+    from ml.oos_eval import get_holdout_trades
+
+    try:
+        cutoff = datetime.fromisoformat(cutoff_iso.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid cutoff_iso: {e}")
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+
+    try:
+        ids = [int(x.strip()) for x in model_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, "Invalid model_ids format (expected comma-separated integers)")
+    if not ids:
+        raise HTTPException(400, "model_ids must contain at least one ID")
+
+    rows = db.query(MLModel).filter(MLModel.id.in_(ids)).all()
+    by_id = {r.id: r for r in rows}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise HTTPException(404, f"MLModel ids not found: {missing}")
+
+    paths: dict = {}
+    no_path: list = []
+    for mid in ids:
+        r = by_id[mid]
+        if not r.model_path:
+            no_path.append(mid)
+            continue
+        paths[f"v{r.version}_id{r.id}"] = r.model_path
+    if no_path:
+        raise HTTPException(
+            400,
+            f"MLModel ids missing model_path (no saved file): {no_path}",
+        )
+    if len(paths) < 2:
+        raise HTTPException(
+            400,
+            "Diagnostic needs at least 2 models with saved paths to be meaningful",
+        )
+
+    holdout = get_holdout_trades(db, strategy, cutoff, after=True)
+    if holdout.empty:
+        return {
+            "error": f"No holdout trades for {strategy} after {cutoff.isoformat()}",
+            "cutoff_used": cutoff.isoformat(),
+            "strategy": strategy,
+            "models": [{"id": mid, "version": by_id[mid].version, "model_path": by_id[mid].model_path} for mid in ids],
+        }
+
+    diagnostic = run_full_diagnostic(
+        paths, holdout, min_gain_pct=min_gain_pct, threshold=threshold,
+    )
+    diagnostic["cutoff_used"] = cutoff.isoformat()
+    diagnostic["strategy"] = strategy
+    diagnostic["holdout_backtest_count"] = (
+        int(holdout["backtest_id"].nunique()) if "backtest_id" in holdout.columns else None
+    )
+    return diagnostic
+
+
 @router.get("/health")
 async def get_ml_health(
     strategy: str = Query(default="nostate_optimized"),
