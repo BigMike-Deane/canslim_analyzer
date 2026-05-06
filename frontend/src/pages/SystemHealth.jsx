@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api'
+import Card, { CardHeader } from '../components/Card'
 
 function StatusBadge({ status }) {
   const color = status === 'healthy' ? 'bg-green-500/20 text-green-400'
@@ -9,15 +10,15 @@ function StatusBadge({ status }) {
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${color}`}>{status}</span>
 }
 
-function Card({ title, children, status }) {
+function HealthCard({ title, children, status }) {
   return (
-    <div className="bg-dark-800 rounded-lg border border-dark-700 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-dark-200 uppercase tracking-wide">{title}</h3>
-        {status && <StatusBadge status={status} />}
-      </div>
+    <Card>
+      <CardHeader
+        title={<span className="uppercase tracking-wide text-dark-200">{title}</span>}
+        action={status && <StatusBadge status={status} />}
+      />
       {children}
-    </div>
+    </Card>
   )
 }
 
@@ -104,31 +105,31 @@ export default function SystemHealth() {
 
       {/* Status Overview */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card title="Database" status={database?.status}>
+        <HealthCard title="Database" status={database?.status}>
           <Stat label="Size" value={database?.size} />
           <Stat label="Stocks" value={`${database?.scored_count?.toLocaleString()} / ${database?.stock_count?.toLocaleString()}`} sub="scored / total" />
-        </Card>
+        </HealthCard>
 
-        <Card title="Redis" status={redis?.status}>
+        <HealthCard title="Redis" status={redis?.status}>
           <Stat label="Memory" value={redis?.used_memory_human} />
           <Stat label="Clients" value={redis?.connected_clients} />
-        </Card>
+        </HealthCard>
 
-        <Card title="Scanner" status={scanner?.is_scanning ? 'scanning' : scanner?.enabled ? 'healthy' : 'stopped'}>
+        <HealthCard title="Scanner" status={scanner?.is_scanning ? 'scanning' : scanner?.enabled ? 'healthy' : 'stopped'}>
           <Stat label="Phase" value={scanner?.phase || 'idle'} />
           <Stat label="Progress" value={scanner?.total_stocks ? `${scanner.stocks_scanned}/${scanner.total_stocks}` : '-'} />
           <Stat label="Last Scan" value={<TimeAgo iso={scanner?.last_scan_end} />} />
-        </Card>
+        </HealthCard>
 
-        <Card title="AI Portfolio" status={ai_portfolio?.active ? 'healthy' : 'inactive'}>
+        <HealthCard title="AI Portfolio" status={ai_portfolio?.active ? 'healthy' : 'inactive'}>
           <Stat label="Strategy" value={ai_portfolio?.strategy} />
           <Stat label="Positions" value={ai_portfolio?.positions} />
-        </Card>
+        </HealthCard>
       </div>
 
       {/* Scheduler Health */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card title="Scheduler Tasks">
+        <HealthCard title="Scheduler Tasks">
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-dark-300">Last Successful Scan</span>
@@ -167,9 +168,9 @@ export default function SystemHealth() {
               <div className="mt-0.5 text-dark-500"><TimeAgo iso={scheduler.last_trade_cycle_error.timestamp} /></div>
             </div>
           )}
-        </Card>
+        </HealthCard>
 
-        <Card title="FMP API">
+        <HealthCard title="FMP API">
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-dark-300">Calls This Minute</span>
@@ -191,11 +192,11 @@ export default function SystemHealth() {
               />
             </div>
           </div>
-        </Card>
+        </HealthCard>
       </div>
 
       {/* Backups */}
-      <Card title="Database Backups">
+      <HealthCard title="Database Backups">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm text-dark-300">
             {backupStatus?.total_backups || 0} backups ({backupStatus?.daily_count || 0} daily, {backupStatus?.weekly_count || 0} weekly)
@@ -239,11 +240,11 @@ export default function SystemHealth() {
         ) : (
           <div className="text-center py-4 text-dark-500 text-sm">No backups yet. Click "Backup Now" to create one.</div>
         )}
-      </Card>
+      </HealthCard>
 
       {/* Recent Errors */}
       {scheduler?.errors_today?.length > 0 && (
-        <Card title="Recent Errors">
+        <HealthCard title="Recent Errors">
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {[...scheduler.errors_today].reverse().map((e, i) => (
               <div key={i} className="flex items-start gap-2 text-xs p-2 bg-dark-900 rounded">
@@ -253,7 +254,7 @@ export default function SystemHealth() {
               </div>
             ))}
           </div>
-        </Card>
+        </HealthCard>
       )}
     </div>
   )

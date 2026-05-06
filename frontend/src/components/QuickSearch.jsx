@@ -6,15 +6,13 @@ import { ScoreBadge } from './Badge'
 const PAGES = [
   { label: 'Command Center', path: '/', keywords: 'home cmd' },
   { label: 'AI Portfolio', path: '/ai-portfolio', keywords: 'ai trading positions' },
-  { label: 'Dashboard', path: '/dashboard', keywords: 'research market' },
-  { label: 'Screener', path: '/screener', keywords: 'filter stocks scan' },
+  { label: 'Screener', path: '/screener', keywords: 'filter stocks scan research' },
   { label: 'Breakouts', path: '/breakouts', keywords: 'breaking base pattern' },
   { label: 'Backtest', path: '/backtest', keywords: 'test historical' },
   { label: 'Analytics', path: '/analytics', keywords: 'trades performance' },
   { label: 'Watchlist', path: '/watchlist', keywords: 'watch alerts' },
   { label: 'Coiled Spring', path: '/coiled-spring/history', keywords: 'earnings catalyst' },
   { label: 'Insider Sentiment', path: '/insider-sentiment', keywords: 'insiders smart money' },
-  { label: 'Portfolio', path: '/portfolio', keywords: 'holdings positions manual' },
   { label: 'Documentation', path: '/docs', keywords: 'help canslim guide' },
 ]
 

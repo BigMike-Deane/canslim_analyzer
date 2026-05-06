@@ -79,7 +79,7 @@ function ScoreDetailContent({ scoreKey, scoreData, details, stock }) {
           <div className="space-y-3">
             <SectionLabel>Quarterly EPS (Most Recent First)</SectionLabel>
             {quarterlyEps.length > 0 ? (
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {quarterlyEps.slice(0, 4).map((eps, i) => (
                   <Card key={i} variant="stat" padding="p-2" rounded="rounded-lg">
                     <div className="text-center">
@@ -116,7 +116,7 @@ function ScoreDetailContent({ scoreKey, scoreData, details, stock }) {
           <div className="space-y-3">
             <SectionLabel>Annual EPS (Most Recent First)</SectionLabel>
             {annualEps.length > 0 ? (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {annualEps.slice(0, 3).map((eps, i) => (
                   <Card key={i} variant="stat" padding="p-2" rounded="rounded-lg">
                     <div className="text-center">
@@ -493,7 +493,7 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
         </div>
       )}
       {showComponents && (
-        <div className="grid grid-cols-4 gap-x-3 gap-y-0.5 mt-1 pt-1 border-t border-white/5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-0.5 mt-1 pt-1 border-t border-white/5">
           {['c','a','n','s','l','i','m'].map(k => (
             <span key={k} style={{ color: COMPONENT_COLORS[k] }}>
               {k.toUpperCase()}: {d[k] != null ? Math.round(d[k]) : '-'}

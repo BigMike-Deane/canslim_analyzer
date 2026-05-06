@@ -6,34 +6,11 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
+import CollapsibleSection from '../components/CollapsibleSection'
+import { tooltipStyle } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
-
-// ── Collapsible Section (local helper) ──────────────────────────────
-function CollapsibleSection({ title, badge, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen)
-  return (
-    <div>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center justify-between w-full mb-2 group"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{title}</span>
-          {badge}
-        </div>
-        <svg
-          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          strokeWidth="2" strokeLinecap="round"
-          className={`text-dark-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {open && children}
-    </div>
-  )
-}
+import PortfolioDetailView from '../components/PortfolioDetailView'
 
 // ── Performance Chart ───────────────────────────────────────────────
 function PerformanceChart({ history, startingCash }) {
@@ -150,13 +127,7 @@ function PerformanceChart({ history, startingCash }) {
               label={{ value: 'Start', position: 'right', fill: '#666', fontSize: 10 }}
             />
             <Tooltip
-              contentStyle={{
-                background: 'rgba(20, 20, 31, 0.95)',
-                border: '1px solid #222233',
-                borderRadius: '10px',
-                fontFamily: 'JetBrains Mono',
-                fontSize: 12,
-              }}
+              contentStyle={tooltipStyle}
               labelStyle={{ color: '#6e6e82' }}
               formatter={(value) => [formatCurrency(value), 'Value']}
               labelFormatter={(_, payload) => {
@@ -626,13 +597,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
                 ))}
               </Pie>
               <Tooltip
-                contentStyle={{
-                  background: 'rgba(20, 20, 31, 0.95)',
-                  border: '1px solid #222233',
-                  borderRadius: '10px',
-                  fontFamily: 'JetBrains Mono',
-                  fontSize: 12,
-                }}
+                contentStyle={tooltipStyle}
                 formatter={(v) => `${v.toFixed(1)}%`}
               />
             </PieChart>
@@ -1006,8 +971,14 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
 // ══════════════════════════════════════════════════════════════════════
 // ── Main Page Component ─────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════
+const TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'detail', label: 'Detail' },
+]
+
 export default function AIPortfolio() {
   const toast = useToast()
+  const [activeTab, setActiveTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [portfolio, setPortfolio] = useState(null)
   const [history, setHistory] = useState([])
@@ -1321,46 +1292,69 @@ export default function AIPortfolio() {
         setEarningsExpanded={setEarningsExpanded}
       />
 
-      <PerformanceChart
-        history={history}
-        startingCash={portfolio?.config?.starting_cash || 25000}
-      />
-
-      <SectorAllocationChart
-        riskData={riskData}
-        cashPct={portfolio?.summary?.total_value > 0
-          ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
-          : 0}
-      />
-
-      <SummaryCard
-        summary={portfolio?.summary}
-        config={portfolio?.config}
-      />
-
-      <ConfigPanel
-        config={portfolio?.config}
-        onUpdate={handleUpdateConfig}
-        onInitialize={handleInitialize}
-        onRefresh={handleRefresh}
-        onRunCycle={handleRunCycle}
-        waitingForTrades={waitingForTrades}
-      />
-
-      <PositionsList positions={portfolio?.positions} />
-
-      <TradeHistory trades={trades} />
-
-      {/* Links */}
-      <SectionLabel>More</SectionLabel>
-      <div className="flex gap-4 mb-4">
-        <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
-          Trade Analytics
-        </Link>
-        <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
-          Run Backtest
-        </Link>
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b border-dark-700/50 overflow-x-auto">
+        {TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-3 py-2 text-xs font-semibold tracking-wider uppercase transition-colors whitespace-nowrap border-b-2 ${
+              activeTab === tab.key
+                ? 'text-primary-400 border-primary-500'
+                : 'text-dark-400 border-transparent hover:text-dark-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {activeTab === 'overview' && (
+        <>
+          <PerformanceChart
+            history={history}
+            startingCash={portfolio?.config?.starting_cash || 25000}
+          />
+
+          <SectorAllocationChart
+            riskData={riskData}
+            cashPct={portfolio?.summary?.total_value > 0
+              ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
+              : 0}
+          />
+
+          <SummaryCard
+            summary={portfolio?.summary}
+            config={portfolio?.config}
+          />
+
+          <ConfigPanel
+            config={portfolio?.config}
+            onUpdate={handleUpdateConfig}
+            onInitialize={handleInitialize}
+            onRefresh={handleRefresh}
+            onRunCycle={handleRunCycle}
+            waitingForTrades={waitingForTrades}
+          />
+
+          <PositionsList positions={portfolio?.positions} />
+
+          <TradeHistory trades={trades} />
+
+          {/* Links */}
+          <SectionLabel>More</SectionLabel>
+          <div className="flex gap-4 mb-4">
+            <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              Trade Analytics
+            </Link>
+            <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              Run Backtest
+            </Link>
+          </div>
+        </>
+      )}
+
+      {activeTab === 'detail' && <PortfolioDetailView />}
 
       <div className="h-4" />
     </div>

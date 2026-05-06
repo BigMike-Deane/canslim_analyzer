@@ -5,6 +5,7 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
+import { tooltipStyle as TOOLTIP_STYLE } from '../components/chartTheme'
 
 const SELL_REASON_COLORS = {
   'STOP LOSS': '#ef4444',
@@ -16,15 +17,6 @@ const SELL_REASON_COLORS = {
   'PROTECT GAINS': '#22d3ee',
   'WEAK POSITION': '#6b7280',
   'CIRCUIT BREAKER': '#a855f7',
-}
-
-const TOOLTIP_STYLE = {
-  background: '#14141f',
-  border: '1px solid rgba(255,255,255,0.06)',
-  borderRadius: '10px',
-  fontFamily: 'JetBrains Mono',
-  fontSize: 13,
-  maxWidth: '280px',
 }
 
 function BreakdownRow({ label, trades, pnl, winRate, indicator }) {

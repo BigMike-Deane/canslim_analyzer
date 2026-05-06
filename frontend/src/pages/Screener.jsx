@@ -231,7 +231,7 @@ export default function Screener() {
         <Card variant="glass" className="text-center py-8">
           <div className="font-semibold text-dark-100 mb-2">No Stocks Found</div>
           <div className="text-dark-400 text-sm">
-            Try adjusting your filters or run a scan from the Dashboard.
+            Try adjusting your filters or run a scan from the Command Center.
           </div>
         </Card>
       ) : (
