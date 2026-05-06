@@ -263,6 +263,7 @@ class TestAScore:
     # up to 13.5. The primary 3-yr CAGR path applied the ROE bonus correctly;
     # the Turnaround branch did not.
 
+    @pytest.mark.skip(reason="Split-test May 6: Turnaround ROE bonus reverted to isolate Bundle 2 regression")
     def test_turnaround_applies_roe_bonus_high(self):
         """Turnaround stock with strong ROE should exceed flat 10.5-pt floor."""
         scorer = _make_scorer()
@@ -286,6 +287,7 @@ class TestAScore:
         score = scorer.score_stock(stock)
         assert score.a_score == pytest.approx(10.5, abs=0.01)
 
+    @pytest.mark.skip(reason="Split-test May 6: Turnaround ROE bonus reverted to isolate Bundle 2 regression")
     def test_turnaround_partial_roe_bonus(self):
         """Turnaround with 17%-tier ROE should land between 10.5 and 13.5."""
         scorer = _make_scorer()

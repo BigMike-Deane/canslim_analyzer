@@ -450,13 +450,10 @@ class CANSLIMScorer:
 
         if older <= 0 or recent <= 0:
             if recent > 0 and older <= 0:
-                # Turnaround: positive recent earnings after a loss year. Apply
-                # the same ROE bonus the primary path uses so quality companies
-                # coming off a bad year aren't capped at 10.5 pts.
-                turnaround_base = max_score * 0.7  # 10.5 pts
-                roe_bonus, roe_detail = self._calculate_roe_bonus(data, roe_max)
-                total = min(turnaround_base + roe_bonus, max_score)
-                return round(total, 1), f"Turnaround{roe_detail}"
+                # SPLIT-TEST May 6: temporarily reverted Turnaround ROE bonus to
+                # isolate which Bundle 2 sub-fix caused bt 661's -64pp regression.
+                # If this restores baseline performance, ROE bonus was the cause.
+                return max_score * 0.7, "Turnaround"
             return 0, "Negative earnings"
 
         cagr = ((recent / older) ** (1 / 3) - 1) * 100
