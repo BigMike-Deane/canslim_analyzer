@@ -226,9 +226,30 @@ class CANSLIMScorer:
                     accel_score = accel_max * 0.5
                     accel_detail = " steady"
 
-        # Earnings surprise bonus (up to 2 pts)
-        # Reward companies that beat analyst estimates
-        surprise_score = 0
+        # Apply analyst-revision / earnings-surprise / beat-streak bonuses
+        bonus_score, bonus_detail = self._apply_earnings_bonuses(
+            data, surprise_max=surprise_max
+        )
+
+        total_score = min(base_score + accel_score + bonus_score, max_score)
+        total_score = max(total_score, 0)  # Don't go below 0
+        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{bonus_detail}"
+
+    def _apply_earnings_bonuses(self, data: StockData, surprise_max: float = 2) -> tuple[float, str]:
+        """
+        Compute the analyst-revision / earnings-surprise / beat-streak bonus block.
+
+        Returns a (delta, detail_suffix) pair where delta is the signed bonus to add
+        to a partially-computed C score and detail_suffix is the human-readable
+        annotation to append to the C-score detail string.
+
+        Extracted from the primary 8-quarter TTM path so the < 8-quarter fallback
+        (`_score_earnings_with_anomaly_filter`) can apply the same bonuses. Without
+        this, a stock with strong analyst revisions but only 4-7 quarters of EPS
+        history silently lost up to 8 pts that the primary path would have awarded.
+        """
+        # Earnings surprise bonus (up to surprise_max pts)
+        surprise_score = 0.0
         surprise_detail = ""
         earnings_surprise = getattr(data, 'earnings_surprise_pct', 0) or 0
         eps_beat_streak = getattr(data, 'eps_beat_streak', 0) or 0
@@ -238,15 +259,14 @@ class CANSLIMScorer:
             surprise_detail = f" +beat {earnings_surprise:.0f}%"
         elif earnings_surprise >= 5:
             surprise_score = surprise_max * 0.75
-            surprise_detail = f" +beat"
+            surprise_detail = " +beat"
         elif earnings_surprise > 0:
             surprise_score = surprise_max * 0.5
 
         # Extra bonus for consistent beats (4+ quarters)
-        beat_streak_bonus = 0
         beat_streak_detail = ""
         if eps_beat_streak >= 4:
-            # +1 for 4 beats, +2 for 5+ beats (capped at 2)
+            # +1 for 4 beats, +2 for 5+ beats (capped at surprise_max)
             beat_streak_bonus = min(2, eps_beat_streak - 3)
             beat_streak_detail = f" +{eps_beat_streak}beats"
             surprise_score = min(surprise_score + beat_streak_bonus, surprise_max)
@@ -268,23 +288,27 @@ class CANSLIMScorer:
                 revision_detail = f" +est↑{estimate_revision_pct:.0f}%"
             elif estimate_revision_pct >= 5:
                 revision_bonus = 2
-                revision_detail = f" +est↑"
+                revision_detail = " +est↑"
             elif estimate_revision_pct <= -10:
                 revision_bonus = -4  # Strong downward revision
-                revision_detail = f" est↓↓"
+                revision_detail = " est↓↓"
             elif estimate_revision_pct <= -5:
                 revision_bonus = -2
-                revision_detail = f" est↓"
+                revision_detail = " est↓"
 
-        total_score = min(base_score + accel_score + surprise_score + revision_bonus, max_score)
-        total_score = max(total_score, 0)  # Don't go below 0
-        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{surprise_detail}{beat_streak_detail}{revision_detail}"
+        delta = surprise_score + revision_bonus
+        detail = f"{surprise_detail}{beat_streak_detail}{revision_detail}"
+        return delta, detail
 
     def _score_earnings_with_anomaly_filter(self, data: StockData, max_score: float) -> tuple[float, str]:
         """
         Fallback scoring with anomaly filtering for stocks with limited data.
-        Filters out extreme QoQ swings (>50%) that are likely one-time items.
+        Filters out extreme QoQ swings that are likely one-time items / restatements.
         IMPORTANT: Companies with negative earnings get penalized regardless of "growth" trend.
+
+        Applies the same analyst-revision / surprise / beat-streak bonuses as the
+        primary 8-quarter TTM path so a stock with strong forward signals doesn't
+        silently lose those bonuses just because its EPS history is short.
         """
         # Filter out None and NaN values
         earnings = _clean_earnings(data.quarterly_earnings[:4])
@@ -305,39 +329,57 @@ class CANSLIMScorer:
                 # Q0 > Q1 (less negative), so improvement = (Q0 - Q1) / |Q1|
                 # Guard against near-zero division
                 if abs(earnings[1]) < 0.001:
-                    return round(max_score * 0.2, 1), "Losses near zero"
+                    base = max_score * 0.2
+                    bonus, bonus_detail = self._apply_earnings_bonuses(data)
+                    final = round(max(0.0, min(max_score, base + bonus)), 1)
+                    return final, f"Losses near zero{bonus_detail}"
                 improvement = ((earnings[0] - earnings[1]) / abs(earnings[1])) * 100
                 partial_score = max(0, min(max_score * 0.35, (improvement / 50) * max_score * 0.35))
-                return round(max(partial_score, max_score * 0.1), 1), f"Losses shrinking ({improvement:+.0f}%)"
+                base = max(partial_score, max_score * 0.1)
+                bonus, bonus_detail = self._apply_earnings_bonuses(data)
+                final = round(max(0.0, min(max_score, base + bonus)), 1)
+                return final, f"Losses shrinking ({improvement:+.0f}%){bonus_detail}"
 
         # Calculate growth rates between consecutive quarters
         growth_rates = []
         for i in range(len(earnings) - 1):
             if earnings[i + 1] != 0 and abs(earnings[i + 1]) >= 0.001:
                 rate = ((earnings[i] - earnings[i + 1]) / abs(earnings[i + 1])) * 100
-                # Filter anomalies: ignore swings > 100%
-                if abs(rate) <= 100:
+                # Filter anomalies: ignore swings > 300%
+                # Rationale: real one-time items (write-offs, restatements) regularly
+                # produce swings of thousands of percent. Legitimate post-trough
+                # recoveries (e.g., AMD $0.48 -> $1.20 = +150%) live well below 300%
+                # and are exactly the recoveries CANSLIM is supposed to reward. The
+                # prior 100% cap silently discarded those signals.
+                if abs(rate) <= 300:
                     growth_rates.append(rate)
 
         if not growth_rates:
             # All data was anomalous, use forward estimate if available
             if data.earnings_growth_estimate > 0:
                 est_growth = data.earnings_growth_estimate * 100
-                score = min(max_score, (est_growth / 25) * max_score)
-                return round(score, 1), f"Est: {est_growth:+.0f}%"
+                base = min(max_score, (est_growth / 25) * max_score)
+                bonus, bonus_detail = self._apply_earnings_bonuses(data)
+                final = round(max(0.0, min(max_score, base + bonus)), 1)
+                return final, f"Est: {est_growth:+.0f}%{bonus_detail}"
             return 0, "Data anomaly"
 
         # Use median to be robust to outliers
         avg_growth = np.median(growth_rates)
 
         if avg_growth >= 25:
-            score = max_score
+            base = max_score
         elif avg_growth >= 0:
-            score = (avg_growth / 25) * max_score
+            base = (avg_growth / 25) * max_score
         else:
-            score = max(0, (1 + avg_growth / 50) * max_score * 0.3)
+            base = max(0, (1 + avg_growth / 50) * max_score * 0.3)
 
-        return round(score, 1), f"Avg QoQ: {avg_growth:+.0f}%"
+        # Apply the same bonus block used by the primary 8-quarter path so the
+        # fallback isn't silently dropping analyst-revision / surprise / beat-streak
+        # signals worth up to ~10 pts.
+        bonus, bonus_detail = self._apply_earnings_bonuses(data)
+        final = round(max(0.0, min(max_score, base + bonus)), 1)
+        return final, f"Avg QoQ: {avg_growth:+.0f}%{bonus_detail}"
 
     def _score_annual_earnings(self, data: StockData) -> tuple[float, str]:
         """

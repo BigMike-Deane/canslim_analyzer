@@ -1896,8 +1896,14 @@ class DataFetcher:
 
                 # Use ADJUSTED EPS if available (preferred for CANSLIM scoring)
                 # This is the EPS analysts track, not GAAP EPS which is often distorted by SBC
+                # POST-SPLIT CORRECTNESS: adjusted_eps wins outright when it has enough samples
+                # for the 8-quarter TTM-vs-prior-TTM scorer path. Below 8, supplement with GAAP
+                # so the scorer doesn't silently fall back to the QoQ anomaly-filter path.
+                # (Bug fix: was `>= 4`, which truncated the 8-quarter GAAP series whenever
+                # FMP returned 4-7 adjusted quarters, forcing the C scorer into its short-data
+                # fallback that ignores the analyst-revision/surprise/beat-streak bonuses.)
                 adjusted_eps = earnings_surprise.get("quarterly_adjusted_eps", [])
-                if adjusted_eps and len(adjusted_eps) >= 4:
+                if adjusted_eps and len(adjusted_eps) >= 8:
                     logger.debug(f"{ticker}: Using ADJUSTED EPS from earnings-surprise: {adjusted_eps[:4]}")
                     stock_data.quarterly_earnings = adjusted_eps
                 elif adjusted_eps:
