@@ -54,6 +54,18 @@ EVAL_BACKTEST_UNIVERSE = "all"
 MIN_RETURN_DELTA_PP = 5.0
 MAX_SHARPE_REGRESSION = 0.10
 
+# Absolute CV-metric floors. Phase 1 of the gate is a sanity filter: did the
+# model converge to *something*? Anything passing this floor proceeds to the
+# eval gate (Phase 2), which decides activation based on portfolio outcome.
+# We deliberately don't compare against the incumbent's stored CV metric
+# anymore: v12's stored AUC was inflated by training-pool contamination
+# pre-fix, and unreachable by any honest retrain. Any reasonable model on
+# this domain hits at least 0.55 AUC / 0.05 Spearman.
+ABSOLUTE_CV_FLOOR = {
+    "classifier": 0.55,
+    "regression": 0.05,
+}
+
 
 def _eval_gate_decision(
     candidate_return,
@@ -427,23 +439,38 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
             )
             return
 
-        # Improvement gate (Phase 1): only activate if better than current
-        # active model on the in-sample CV metric. Acts as cheap filter before
-        # the expensive eval backtest.
-        current_metric, current_version = _get_active_model_metric(db, strategy, model_type)
-
-        if current_metric is not None and new_metric is not None and new_metric < current_metric:
+        # Phase 1: absolute CV-metric floor. The May 5 OOS diagnostic proved
+        # AUC is the wrong selection metric for this strategy (top-decile WR
+        # matters, not full-distribution rank correctness), so the eval gate
+        # at Phase 2 is the authoritative criterion. Phase 1's job is just to
+        # filter out garbage models that didn't converge — not to compare
+        # against incumbent CV. Comparing against incumbent CV was over-blocking:
+        # v12's stored AUC (0.6116) was inflated by training-pool contamination
+        # before the Apr 29 fix, and every cleaner retrain (~0.5877) was
+        # auto-rejected before the eval gate could even fire. Switched to
+        # absolute floors: garbage filter only, eval gate decides activation.
+        if new_metric is not None and new_metric < ABSOLUTE_CV_FLOOR[model_type]:
             ml_record.status = "completed"
             ml_record.error_message = (
-                f"Not activated: {metric_name} {new_metric:.4f} < "
-                f"current active v{current_version} {current_metric:.4f}"
+                f"Not activated: {metric_name} {new_metric:.4f} < absolute floor "
+                f"{ABSOLUTE_CV_FLOOR[model_type]:.4f}"
             )
             db.commit()
             logger.warning(
-                f"ML model v{ml_record.version} passed gate but worse than active: "
-                f"{metric_name} {new_metric:.4f} < {current_metric:.4f} (v{current_version})"
+                f"ML model v{ml_record.version} blocked at absolute floor: "
+                f"{metric_name} {new_metric:.4f} < {ABSOLUTE_CV_FLOOR[model_type]:.4f}"
             )
             return
+
+        # Log the historical incumbent comparison for diagnostic context only.
+        # No longer used as a blocking gate — see comment above.
+        current_metric, current_version = _get_active_model_metric(db, strategy, model_type)
+        if current_metric is not None and new_metric is not None:
+            delta = new_metric - current_metric
+            logger.info(
+                f"ML v{ml_record.version} CV {metric_name}={new_metric:.4f} "
+                f"vs incumbent v{current_version} {current_metric:.4f} (Δ={delta:+.4f}, informational)"
+            )
 
         # Improvement gate (Phase 2): standardized eval backtest. AUC/Spearman
         # were shown to disagree with portfolio return (May 5 diagnostic) so

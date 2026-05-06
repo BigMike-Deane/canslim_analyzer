@@ -1377,6 +1377,45 @@ class TestEvalGateDecision:
         assert passes is True
 
 
+class TestAbsoluteCVFloor:
+    """The Phase-1 gate was changed from "must beat incumbent CV metric" to
+    "must clear an absolute sanity floor" because incumbent comparison was
+    over-blocking. v12's stored AUC (0.6116) was inflated by training-pool
+    contamination; honest retrains land ~0.5877 and would never beat 0.6116
+    no matter how good the model was on portfolio metrics. The eval gate
+    (Phase 2) is the authoritative graduation criterion now."""
+
+    def test_classifier_floor_is_055(self):
+        from backend.routes.ml import ABSOLUTE_CV_FLOOR
+        assert ABSOLUTE_CV_FLOOR["classifier"] == 0.55
+
+    def test_regression_floor_is_005(self):
+        from backend.routes.ml import ABSOLUTE_CV_FLOOR
+        assert ABSOLUTE_CV_FLOOR["regression"] == 0.05
+
+    def test_floor_clears_v17_v18_honest_retrains(self):
+        """v17 and v18 had honest CV AUC of 0.5877 — must pass the 0.55 floor.
+        This is the whole point of switching from incumbent-comparison: cleaner
+        retrains shouldn't be blocked just because v12's metric is stale."""
+        from backend.routes.ml import ABSOLUTE_CV_FLOOR
+        assert 0.5877 >= ABSOLUTE_CV_FLOOR["classifier"]
+
+    def test_floor_blocks_pure_garbage_model(self):
+        """A model with AUC near 0.50 (coin-flip) should still be blocked —
+        the floor isn't 'accept everything'."""
+        from backend.routes.ml import ABSOLUTE_CV_FLOOR
+        assert 0.51 < ABSOLUTE_CV_FLOOR["classifier"]
+        assert 0.50 < ABSOLUTE_CV_FLOOR["classifier"]
+
+    def test_floor_blocks_v12_inflated_auc_ironically(self):
+        """v12's stored 0.6116 still passes (it would graduate if retrained
+        today). This is by design — the floor is about absolute model quality,
+        not about who came first. v12 is good; we just need cleaner retrains
+        to also be eligible without inheriting v12's stale anchor."""
+        from backend.routes.ml import ABSOLUTE_CV_FLOOR
+        assert 0.6116 >= ABSOLUTE_CV_FLOOR["classifier"]
+
+
 class TestSaveModelPathing:
     """Regression: in the original eval-gate (1e11fc6) candidates were saved
     DIRECTLY to ACTIVE_MODEL_PATH, overwriting the incumbent's joblib BEFORE
