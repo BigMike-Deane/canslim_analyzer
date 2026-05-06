@@ -1510,12 +1510,17 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         logger.info(f"AI {action}: {ticker} - {shares:.2f} shares @ ${price:.2f} "
                     f"({stock_type} {effective:.0f}) - {reason}")
 
-        # Send webhook notification for buys (routes to this user's webhook only)
+        # Send webhook notification for buys/pyramids (routes to this user's
+        # webhook only). The ntfy template only knows BUY/SELL — re-label
+        # PYRAMID as BUY for the wire so existing notification UIs still
+        # render. The reason string ("PYRAMID: ...") makes the distinction
+        # human-visible.
         try:
             from backend.email_utils import send_trade_webhook
-            send_trade_webhook(ticker, "BUY", shares, price, reason, user_id=user_id)
+            wire_action = "BUY" if action == "PYRAMID" else action
+            send_trade_webhook(ticker, wire_action, shares, price, reason, user_id=user_id)
         except Exception as e:
-            logger.warning(f"Trade webhook failed for BUY {ticker}: {e}")
+            logger.warning(f"Trade webhook failed for {action} {ticker}: {e}")
 
     return trade
 
@@ -3332,11 +3337,18 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 if config.current_cash < actual_value:
                     continue
 
-                # Execute the pyramid buy with both scores
+                # Execute the pyramid buy with both scores.
+                # SYNC: action="PYRAMID" matches backtester.py SimulatedTrade(action="PYRAMID")
+                # and the canonical AIPortfolioTrade.action enum documented in
+                # backend/database.py:1036. Historical rows (pre-2026-05-05) carry the
+                # old shape `action="BUY" + reason="PYRAMID:..."` and are intentionally
+                # left untouched. Downstream consumers that filter by action="BUY" for
+                # AIPortfolioTrade should now exclude pyramids automatically; consumers
+                # that want pyramids must include action="PYRAMID" explicitly.
                 execute_trade(
                     db=db,
                     ticker=position.ticker,
-                    action="BUY",
+                    action="PYRAMID",
                     shares=actual_shares,
                     price=live_price,
                     reason=f"PYRAMID: {pyramid['reason']}",

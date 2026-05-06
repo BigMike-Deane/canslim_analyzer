@@ -109,6 +109,11 @@ def backfill_actual_outcomes(
         day_start = datetime.combine(pred.prediction_date, datetime.min.time())
         day_end = day_start + timedelta(days=2)
 
+        # Pyramids are not ML-gated and must NOT anchor an ml_prediction
+        # outcome. As of 2026-05-05 live pyramids carry action="PYRAMID";
+        # legacy rows (pre-fix) carry action="BUY" + reason="PYRAMID:..."
+        # so we exclude both shapes defensively.
+        from sqlalchemy import or_
         buy = (
             db.query(AIPortfolioTrade)
             .filter(
@@ -116,6 +121,10 @@ def backfill_actual_outcomes(
                 AIPortfolioTrade.action == "BUY",
                 AIPortfolioTrade.executed_at >= day_start,
                 AIPortfolioTrade.executed_at < day_end,
+                or_(
+                    AIPortfolioTrade.reason.is_(None),
+                    ~AIPortfolioTrade.reason.like("PYRAMID:%"),
+                ),
             )
             .order_by(AIPortfolioTrade.executed_at.asc())
             .first()
@@ -229,6 +238,9 @@ def counterfactual_backfill(
         # realized backfill owns those rows.
         day_start = datetime.combine(pred.prediction_date, datetime.min.time())
         day_end = day_start + timedelta(days=2)
+        # Same pyramid-exclusion as backfill_actual_outcomes — only a real
+        # ML-gated BUY counts as "owned by the realized backfill".
+        from sqlalchemy import or_
         has_buy = (
             db.query(AIPortfolioTrade.id)
             .filter(
@@ -236,6 +248,10 @@ def counterfactual_backfill(
                 AIPortfolioTrade.action == "BUY",
                 AIPortfolioTrade.executed_at >= day_start,
                 AIPortfolioTrade.executed_at < day_end,
+                or_(
+                    AIPortfolioTrade.reason.is_(None),
+                    ~AIPortfolioTrade.reason.like("PYRAMID:%"),
+                ),
             )
             .first()
         )

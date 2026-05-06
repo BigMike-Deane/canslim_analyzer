@@ -60,6 +60,9 @@ const actionCfg = {
   ADD: { cls: 'bg-green-500/15 text-green-400 border-green-500/20' },
   WATCH: { cls: 'bg-purple-500/15 text-purple-400 border-purple-500/20' },
   SEED: { cls: 'bg-primary-500/15 text-primary-400 border-primary-500/20' },
+  // Pyramid additions (live + backtest both write action="PYRAMID" as of 2026-05-05)
+  PYRAMID: { cls: 'bg-blue-500/15 text-blue-400 border-blue-500/20' },
+  VETOED: { cls: 'bg-amber-500/15 text-amber-400 border-amber-500/20' },
 }
 
 export function ActionBadge({ action, className = '' }) {
