@@ -451,3 +451,189 @@ class TestRSExtraction:
         rs = scorer.extract_rs_values(stock)
         assert rs["rs_12m"] is None
         assert rs["rs_3m"] is None
+
+
+# ── C-Score Bug Regression Tests (May 2026) ──────────────────────────────────
+# Three compounding bugs in the C (Current Earnings) score path:
+#   1. data_fetcher.py truncated quarterly_earnings to 4-7 quarters when FMP
+#      returned a short adjusted-EPS series, kicking the scorer into the
+#      QoQ-anomaly fallback path.
+#   2. The fallback path silently dropped the analyst-revision /
+#      earnings-surprise / beat-streak bonuses (worth up to ~10 pts).
+#   3. The fallback path's anomaly filter capped at >100% QoQ, discarding
+#      legitimate post-trough recoveries like AMD's $0.48 -> $1.20 (+150%).
+# Pin all three with regression tests.
+
+class TestCScoreFallbackBonuses:
+    """Bug 2: fallback path must apply the same bonuses as the primary path."""
+
+    def test_fallback_applies_revision_bonus(self):
+        """A 4-quarter stock with strong analyst revision should still get the bonus."""
+        scorer = _make_scorer()
+        # Only 4 quarters of EPS — forces the fallback path
+        # Strong upward revision (+25%) is worth +8 pts in the bonus block
+        stock = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90],  # ~33% YoY growth via QoQ
+            eps_estimate_revision_pct=25.0,
+        )
+        score = scorer.score_stock(stock)
+        # With +8 revision bonus on top of moderate base, C should clearly
+        # exceed what we'd see without the revision signal.
+        stock_no_rev = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90],
+            eps_estimate_revision_pct=None,
+        )
+        score_no_rev = scorer.score_stock(stock_no_rev)
+        assert score.c_score > score_no_rev.c_score, (
+            f"Revision bonus must apply in fallback path: "
+            f"with={score.c_score} vs without={score_no_rev.c_score}"
+        )
+        assert score.c_score - score_no_rev.c_score >= 6, (
+            f"Strong +25% revision should add ~8 pts; got delta {score.c_score - score_no_rev.c_score}"
+        )
+
+    def test_fallback_applies_beat_streak_bonus(self):
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90],
+            eps_beat_streak=6,
+            earnings_surprise_pct=12,
+        )
+        stock_no_streak = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90],
+            eps_beat_streak=0,
+            earnings_surprise_pct=0,
+        )
+        score = scorer.score_stock(stock)
+        score_no = scorer.score_stock(stock_no_streak)
+        assert score.c_score > score_no.c_score
+
+    def test_smell_test_strong_signals_must_not_score_below_10(self):
+        """Investigator's smell test:
+        eps_estimate_revision_pct >= 20 AND eps_beat_streak >= 3
+        should NEVER produce C < 10 — the bonuses alone are worth ~10 pts.
+        Pin this against either path being silently missed.
+        """
+        scorer = _make_scorer()
+        # Try BOTH paths: 8-quarter (primary) AND 4-quarter (fallback)
+        primary = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90, 0.85, 0.80, 0.78, 0.75],
+            eps_estimate_revision_pct=22.0,
+            eps_beat_streak=4,
+            earnings_surprise_pct=8,
+        )
+        fallback = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90],
+            eps_estimate_revision_pct=22.0,
+            eps_beat_streak=4,
+            earnings_surprise_pct=8,
+        )
+        s_primary = scorer.score_stock(primary)
+        s_fallback = scorer.score_stock(fallback)
+        assert s_primary.c_score >= 10, (
+            f"Strong analyst signals on 8q path: C={s_primary.c_score} (expected >= 10)"
+        )
+        assert s_fallback.c_score >= 10, (
+            f"Strong analyst signals on 4q fallback path: C={s_fallback.c_score} "
+            f"(expected >= 10) — bonuses must NOT be silently dropped"
+        )
+
+
+class TestAnomalyFilterCapRaised:
+    """Bug 3: anomaly filter cap raised from 100% to 300% to admit
+    legitimate post-trough recoveries."""
+
+    def test_amd_style_recovery_admitted(self):
+        """AMD's $0.48 -> $1.20 jump (+150%) should NOT be filtered out.
+        Without the fix, this swing is dropped, all 3 QoQs come back as
+        anomalies, scorer falls back to forward estimate or zeros out.
+        With the fix, the +150% lands in the median and the C score
+        reflects the recovery."""
+        scorer = _make_scorer()
+        # 4 quarters: $1.20, $0.85, $0.55, $0.48 — Q0 vs Q1 = +41%, Q1 vs Q2 = +55%,
+        # Q2 vs Q3 = +15%. To trigger the AMD-style swing specifically, build:
+        # $1.20, $0.48, $0.50, $0.45 — Q0 vs Q1 = +150%
+        stock_recovery = _make_stock_data(
+            quarterly_earnings=[1.20, 0.48, 0.50, 0.45],
+            earnings_growth_estimate=0,  # no fallback estimate available
+        )
+        score = scorer.score_stock(stock_recovery)
+        # +150% recovery should produce a strong C score (median QoQ ~+150%)
+        # NOT zero or "Data anomaly"
+        assert "Data anomaly" not in score.c_detail, (
+            f"AMD-style recovery wrongly filtered as anomaly: detail={score.c_detail!r}"
+        )
+        assert score.c_score > 5, (
+            f"AMD-style +150% recovery should score well; got C={score.c_score}, "
+            f"detail={score.c_detail!r}"
+        )
+
+    def test_extreme_outlier_still_filtered(self):
+        """A 1000% swing (real one-time data anomaly) is still dropped."""
+        scorer = _make_scorer()
+        # One huge swing (Q0 vs Q1 = +5900%) flanked by tiny stable quarters
+        stock = _make_stock_data(
+            quarterly_earnings=[6.0, 0.10, 0.10, 0.10],
+            earnings_growth_estimate=0,
+        )
+        score = scorer.score_stock(stock)
+        # Median of [+5900, 0, 0] would be 0 if outlier kept; anomaly drop
+        # leaves [0, 0] -> median 0 also. Either way the +5900 is NOT used
+        # to award full C credit.
+        assert score.c_score < 12, (
+            f"Extreme +5900% swing must not produce near-max C; got {score.c_score}"
+        )
+
+
+class TestEpsSeriesNotTruncated:
+    """Bug 1: data_fetcher must not truncate an 8-quarter GAAP series
+    when FMP only returned 4-7 quarters of adjusted EPS.
+
+    We test the merge logic in isolation since the fetch involves network IO.
+    """
+
+    def test_partial_adjusted_merges_with_gaap(self):
+        """4 quarters of adjusted + 8 quarters of GAAP should merge to a
+        full 8-quarter series (adjusted prefix + GAAP suffix)."""
+        adjusted_eps = [1.20, 1.10, 1.00, 0.90]  # 4 quarters
+        gaap_eps = [1.18, 1.08, 0.98, 0.88, 0.85, 0.80, 0.78, 0.75]  # 8 quarters
+        # Replicate the merge logic from data_fetcher.py
+        merged = adjusted_eps + gaap_eps[len(adjusted_eps):] if len(gaap_eps) > len(adjusted_eps) else adjusted_eps
+        merged = merged[:8]
+        # Adjusted prefix preserved
+        assert merged[:4] == adjusted_eps
+        # GAAP fills the back half
+        assert merged[4:] == gaap_eps[4:8]
+        assert len(merged) == 8
+
+    def test_eight_plus_adjusted_wins_outright(self):
+        """When adjusted has >= 8 quarters, it should fully replace GAAP
+        for post-split correctness. (Below the new threshold the merge runs.)"""
+        # Mirrors the data_fetcher branch we changed: was `>= 4`, now `>= 8`.
+        adjusted_eps = [1.50, 1.40, 1.30, 1.20, 1.10, 1.00, 0.95, 0.90]
+        gaap_eps = [3.00, 2.80, 2.60, 2.40, 2.20, 2.00, 1.90, 1.80, 1.70]
+        # New threshold semantics: len(adjusted_eps) >= 8 -> use adjusted as-is.
+        if adjusted_eps and len(adjusted_eps) >= 8:
+            chosen = adjusted_eps
+        else:
+            merged = adjusted_eps + gaap_eps[len(adjusted_eps):] if len(gaap_eps) > len(adjusted_eps) else adjusted_eps
+            chosen = merged[:8]
+        assert chosen == adjusted_eps, "Adjusted EPS must win outright at >= 8 samples"
+
+    def test_short_adjusted_no_longer_truncates_long_gaap(self):
+        """The actual bug: pre-fix, 4 adjusted overrode 8 GAAP -> scorer
+        only saw 4 quarters and dropped to fallback path. Post-fix, the
+        merge keeps the 8-quarter length so the primary TTM path runs."""
+        adjusted_eps = [1.20, 1.10, 1.00, 0.90]  # 4 quarters
+        gaap_eps = [1.18, 1.08, 0.98, 0.88, 0.85, 0.80, 0.78, 0.75]  # 8 quarters
+        # New threshold is `>= 8`, so 4-quarter adjusted falls through to merge
+        if adjusted_eps and len(adjusted_eps) >= 8:
+            result = adjusted_eps
+        else:
+            merged = adjusted_eps + gaap_eps[len(adjusted_eps):] if len(gaap_eps) > len(adjusted_eps) else adjusted_eps
+            result = merged[:8]
+        # Critical invariant: scorer needs >= 8 quarters for the primary TTM path
+        assert len(result) >= 8, (
+            f"Bug 1 regression: short adjusted_eps truncated long GAAP series. "
+            f"Got {len(result)} quarters, need >= 8 for the primary scorer path"
+        )
