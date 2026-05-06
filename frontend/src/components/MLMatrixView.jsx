@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import Card, { CardHeader } from '../components/Card'
-import PageHeader from '../components/PageHeader'
+import Card, { CardHeader } from './Card'
 
 const VARIANT_LABELS = ['A baseline', 'B bonus-only', 'C veto-only', 'D both']
 
@@ -81,7 +80,7 @@ function MatrixCard({ matrix }) {
                       </div>
                       {v?.id && (
                         <Link
-                          to={`/backtest/${v.id}`}
+                          to={`/backtest?id=${v.id}`}
                           className="text-[10px] text-primary-400 hover:text-primary-300 mt-1 inline-block normal-case font-normal"
                         >
                           Open #{v.id} →
@@ -131,7 +130,7 @@ function MatrixCard({ matrix }) {
   )
 }
 
-export default function MLMatrix() {
+export default function MLMatrixView() {
   const [matrices, setMatrices] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -158,14 +157,7 @@ export default function MLMatrix() {
   }, [])
 
   return (
-    <div className="px-4 pt-6">
-      <PageHeader
-        title="ML Matrix"
-        subtitle="4-way A/B/C/D backtest comparison: baseline vs bonus-only vs veto-only vs both"
-        backTo="/backtest/compare"
-        backLabel="Compare"
-      />
-
+    <div>
       <Card variant="glass" className="mb-4">
         <CardHeader title="Variants" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">

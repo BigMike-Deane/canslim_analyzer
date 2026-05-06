@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
-import Card, { CardHeader } from '../components/Card'
-import PageHeader from '../components/PageHeader'
-import { tooltipStyle as TOOLTIP_STYLE } from '../components/chartTheme'
+import Card, { CardHeader } from './Card'
 
 const COLORS = {
   btA: '#22c55e',
@@ -184,7 +182,7 @@ function StatsTable({ statsTable, backtests }) {
   )
 }
 
-export default function BacktestCompare() {
+export default function BacktestCompareView() {
   const [backtestList, setBacktestList] = useState([])
   const [idA, setIdA] = useState('')
   const [idB, setIdB] = useState('')
@@ -193,7 +191,6 @@ export default function BacktestCompare() {
   const [listLoading, setListLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  // Fetch completed backtests
   useEffect(() => {
     async function fetchList() {
       try {
@@ -211,7 +208,6 @@ export default function BacktestCompare() {
     fetchList()
   }, [])
 
-  // Fetch comparison when both selected
   useEffect(() => {
     if (!idA || !idB || idA === idB) {
       setComparison(null)
@@ -259,15 +255,7 @@ export default function BacktestCompare() {
   }
 
   return (
-    <div className="px-4 pt-6">
-      <PageHeader
-        title="Backtest Comparison"
-        subtitle="Compare two backtests side by side"
-        backTo="/backtest"
-        backLabel="Backtests"
-      />
-
-      {/* Selectors */}
+    <div>
       <Card variant="glass" className="mb-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -305,21 +293,18 @@ export default function BacktestCompare() {
         </div>
       </Card>
 
-      {/* Error */}
       {error && (
         <Card variant="glass" className="mb-4 border-red-500/30">
           <p className="text-red-400 text-sm">{error}</p>
         </Card>
       )}
 
-      {/* Loading */}
       {loading && (
         <div className="flex items-center justify-center py-16">
           <div className="w-8 h-8 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
         </div>
       )}
 
-      {/* Empty state */}
       {!loading && idA && idB && idA === idB && (
         <Card variant="glass" className="mb-4">
           <p className="text-dark-400 text-sm text-center py-8">Please select two different backtests to compare.</p>
@@ -332,10 +317,8 @@ export default function BacktestCompare() {
         </Card>
       )}
 
-      {/* Results */}
       {!loading && comparison && (
         <>
-          {/* Quick Summary */}
           {summaryText && (
             <Card variant="glass" className="mb-4">
               <div className="flex items-center justify-center gap-3 py-2">
@@ -348,13 +331,11 @@ export default function BacktestCompare() {
             </Card>
           )}
 
-          {/* Equity Curves */}
           <ComparisonChart
             chartData={comparison.chart_data}
             backtests={comparison.backtests}
           />
 
-          {/* Stats Table */}
           <StatsTable
             statsTable={comparison.stats_table}
             backtests={comparison.backtests}

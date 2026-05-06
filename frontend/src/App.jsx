@@ -21,8 +21,6 @@ import InsiderSentiment from './pages/InsiderSentiment'
 import FidelitySync from './pages/FidelitySync'
 import Breadth from './pages/Breadth'
 import Admin from './pages/Admin'
-import BacktestCompare from './pages/BacktestCompare'
-import MLMatrix from './pages/MLMatrix'
 import TradeJournal from './pages/TradeJournal'
 import BearBase from './pages/BearBase'
 import CorrelationMatrix from './pages/CorrelationMatrix'
@@ -68,8 +66,8 @@ function AppContent() {
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/breakouts" element={<Breakouts />} />
             <Route path="/docs" element={<Documentation />} />
-            <Route path="/backtest/compare" element={<BacktestCompare />} />
-            <Route path="/backtest/ml-matrix" element={<MLMatrix />} />
+            <Route path="/backtest/compare" element={<Backtest />} />
+            <Route path="/backtest/ml-matrix" element={<Backtest />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />

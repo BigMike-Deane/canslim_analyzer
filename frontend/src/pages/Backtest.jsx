@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useSearchParams, useLocation } from 'react-router-dom'
 import { api, formatCurrency, APIError } from '../api'
 import { Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, Area, AreaChart, ReferenceLine, ComposedChart } from 'recharts'
 import Card, { CardHeader } from '../components/Card'
@@ -7,6 +8,8 @@ import StatGrid from '../components/StatGrid'
 import DataTable from '../components/DataTable'
 import PageHeader from '../components/PageHeader'
 import { tooltipStyle } from '../components/chartTheme'
+import BacktestCompareView from '../components/BacktestCompareView'
+import MLMatrixView from '../components/MLMatrixView'
 
 function PerformanceChart({ data, startingCash }) {
   if (!data || data.length < 2) {
@@ -667,7 +670,32 @@ function MultiPeriodPanel({ onLaunch, isLoading }) {
   )
 }
 
+const TABS = [
+  { key: 'run', label: 'Run' },
+  { key: 'list', label: 'List' },
+  { key: 'compare', label: 'Compare' },
+  { key: 'ml-matrix', label: 'ML Matrix' },
+]
+
+function defaultTabFromPath(pathname) {
+  if (pathname.endsWith('/backtest/compare')) return 'compare'
+  if (pathname.endsWith('/backtest/ml-matrix')) return 'ml-matrix'
+  return 'run'
+}
+
 export default function Backtest() {
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const pathDefault = defaultTabFromPath(location.pathname)
+  const activeTab = TABS.find(t => t.key === tabParam) ? tabParam : pathDefault
+  const setActiveTab = (key) => {
+    const next = new URLSearchParams(searchParams)
+    if (key === 'run') next.delete('tab')
+    else next.set('tab', key)
+    setSearchParams(next, { replace: true })
+  }
+
   const [backtests, setBacktests] = useState([])
   const [selectedBacktest, setSelectedBacktest] = useState(null)
   const [comparison, setComparison] = useState(null)
@@ -790,23 +818,44 @@ export default function Backtest() {
         subtitle="Test the AI trading strategy against historical data to see how it would have performed."
       />
 
+      <div className="flex gap-1 mb-4 border-b border-dark-700/50 overflow-x-auto">
+        {TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-3 py-2 text-xs font-semibold tracking-wider uppercase transition-colors whitespace-nowrap border-b-2 ${
+              activeTab === tab.key
+                ? 'text-primary-400 border-primary-500'
+                : 'text-dark-400 border-transparent hover:text-dark-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {error && (
         <Card variant="accent" accent="red" className="mb-4" padding="p-3">
           <p className="text-red-400 text-sm">{error}</p>
         </Card>
       )}
 
-      {comparison ? (
-        <ComparisonView comparison={comparison} onClose={() => setComparison(null)} />
-      ) : selectedBacktest ? (
-        <BacktestResults
-          backtest={selectedBacktest}
-          onClose={() => setSelectedBacktest(null)}
-        />
-      ) : (
+      {activeTab === 'run' && (
         <>
           <BacktestForm onSubmit={startBacktest} isLoading={isLoading} />
           <MultiPeriodPanel onLaunch={handleMultiPeriod} isLoading={isLoading} />
+        </>
+      )}
+
+      {activeTab === 'list' && (
+        comparison ? (
+          <ComparisonView comparison={comparison} onClose={() => setComparison(null)} />
+        ) : selectedBacktest ? (
+          <BacktestResults
+            backtest={selectedBacktest}
+            onClose={() => setSelectedBacktest(null)}
+          />
+        ) : (
           <BacktestList
             backtests={backtests}
             onSelect={selectBacktest}
@@ -814,8 +863,12 @@ export default function Backtest() {
             onCancel={cancelBacktest}
             onCompare={handleCompare}
           />
-        </>
+        )
       )}
+
+      {activeTab === 'compare' && <BacktestCompareView />}
+
+      {activeTab === 'ml-matrix' && <MLMatrixView />}
     </div>
   )
 }

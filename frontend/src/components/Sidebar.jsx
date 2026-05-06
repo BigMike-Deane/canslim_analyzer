@@ -32,8 +32,6 @@ const navGroups = [
     label: 'TOOLS',
     items: [
       { to: '/backtest', icon: 'rewind', label: 'Backtest' },
-      { to: '/backtest/compare', icon: 'chart', label: 'Compare' },
-      { to: '/backtest/ml-matrix', icon: 'brain', label: 'ML Matrix' },
       { to: '/watchlist', icon: 'eye', label: 'Watchlist' },
       { to: '/portfolio', icon: 'briefcase', label: 'Portfolio' },
       { to: '/fidelity', icon: 'sync', label: 'My Portfolio' },
