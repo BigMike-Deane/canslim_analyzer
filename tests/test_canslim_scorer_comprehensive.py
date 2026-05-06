@@ -319,6 +319,7 @@ class TestAScore:
 # to `default` (excellent=25, good=15) instead of the tuned values for their
 # GICS equivalents. Affects both A and C scoring (both call _get_sector_thresholds).
 
+@pytest.mark.skip(reason="Sector aliases reverted May 6 2026 — bt 661/662 showed they hurt portfolio returns. See canslim-may6-bundle2-revert.md memory.")
 class TestSectorThresholds:
     """Test sector threshold lookup honors Morningstar -> GICS aliases."""
 

@@ -74,16 +74,12 @@ class CANSLIMScorer:
         'default': {'excellent': 25, 'good': 15},
     }
 
-    # Morningstar -> GICS sector aliases. FMP and Yahoo emit Morningstar names
-    # for ~765 stocks (37% of universe) which previously fell through to the
-    # default thresholds, silently overstating the bar for Financials/Materials/
-    # Staples and understating it for Consumer Discretionary. Affects A and C.
-    SECTOR_ALIASES = {
-        'Financial Services': 'Financials',
-        'Consumer Cyclical': 'Consumer Discretionary',
-        'Consumer Defensive': 'Consumer Staples',
-        'Basic Materials': 'Materials',
-    }
+    # Note: SECTOR_ALIASES (Morningstar -> GICS normalization) was reverted
+    # May 6 2026. Bundle 2's split-test (bt 661/662) showed the "correctness"
+    # fix actually hurts portfolio returns — Financials/Materials/Staples
+    # falling through to lenient default thresholds was load-bearing
+    # calibration that favored better picks. Same lesson as A-score CAGR
+    # exponent (memory). DO NOT re-introduce without a fresh backtest.
 
     def __init__(self, data_fetcher: DataFetcher):
         self.fetcher = data_fetcher
@@ -91,15 +87,9 @@ class CANSLIMScorer:
         self._market_detail: str = ""
 
     def _get_sector_thresholds(self, sector: str) -> dict:
-        """Get growth thresholds for a given sector.
-
-        Normalizes Morningstar sector names to GICS via SECTOR_ALIASES before
-        lookup so FMP/Yahoo-sourced sectors hit the tuned thresholds instead of
-        falling through to `default`.
-        """
-        canonical = self.SECTOR_ALIASES.get(sector, sector)
+        """Get growth thresholds for a given sector. Unknown sectors use default."""
         return self.SECTOR_GROWTH_THRESHOLDS.get(
-            canonical,
+            sector,
             self.SECTOR_GROWTH_THRESHOLDS['default']
         )
 
