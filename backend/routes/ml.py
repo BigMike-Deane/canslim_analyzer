@@ -406,12 +406,12 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         # — regression doesn't have isotonic calibration in this trainer.
         result = None
         if mode == "classifier":
-            result = train_model(df, excluded_features=excluded_features, calibrate=calibrate, min_gain_pct=min_gain_pct)
+            result = train_model(df, min_roc_auc=ABSOLUTE_CV_FLOOR["classifier"], excluded_features=excluded_features, calibrate=calibrate, min_gain_pct=min_gain_pct)
         elif mode == "regression":
             result = train_model_regression(df)
         elif mode == "both":
             # Train both, prefer regression if it passes
-            cls_result = train_model(df, excluded_features=excluded_features, calibrate=calibrate, min_gain_pct=min_gain_pct)
+            cls_result = train_model(df, min_roc_auc=ABSOLUTE_CV_FLOOR["classifier"], excluded_features=excluded_features, calibrate=calibrate, min_gain_pct=min_gain_pct)
             reg_result = train_model_regression(df)
             if reg_result.get("passed_gate"):
                 result = reg_result

@@ -39,7 +39,9 @@ MODEL_DIR = Path(__file__).parent.parent / "data"
 ACTIVE_MODEL_PATH = MODEL_DIR / "ml_model_active.joblib"
 MIN_TRAINING_SAMPLES = 80  # Minimum samples per CV fold (raised from 50)
 MIN_TOTAL_SAMPLES = 200  # Minimum total labeled trades before allowing activation
-MIN_ROC_AUC = 0.55  # Hard gate — classifier must beat this (raised back from 0.52)
+MIN_ROC_AUC = 0.54  # Default floor; route caller (backend/routes/ml.py) is the
+                    # authoritative source via ABSOLUTE_CV_FLOOR["classifier"] —
+                    # this default is only used by direct callers (tests, scripts).
 MIN_SPEARMAN = 0.15  # Hard gate — regressor must beat this (raised back from 0.10)
 
 
