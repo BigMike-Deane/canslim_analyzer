@@ -360,6 +360,7 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 "model_type": model_type,
                 "excluded_features": list(excluded_features or []),
                 "calibrated": bool(calibrate),
+                "calibration_method": result.get("calibration_method"),
                 "experimental": True,
             }, path=exp_path, feature_columns=active_features)
         else:
@@ -377,6 +378,7 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 "feature_importance": result["feature_importance"],
                 "model_type": model_type,
                 "calibrated": bool(calibrate),
+                "calibration_method": result.get("calibration_method"),
             }, path=candidate_path, feature_columns=active_features)
 
         # Update DB record with metrics
