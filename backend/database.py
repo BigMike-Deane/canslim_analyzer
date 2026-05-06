@@ -721,6 +721,62 @@ class CoiledSpringAlert(Base):
     )
 
 
+class BreakoutAlert(Base):
+    """
+    Track intraday breakout alerts with DB-backed dedup + daily-cap enforcement.
+
+    Mirrors the CoiledSpringAlert pattern (DB-backed, survives restart) so the
+    breakout monitor's per-ticker cooldown and daily cap are not wiped every
+    container redeploy. Pre-fix, the dedup lived in a Python module-level dict
+    that reset on every restart, producing repeat alerts for the same ticker
+    multiple times per day across redeploys.
+
+    Cooldown semantics:
+      - One alert per ticker per 24h (queried by created_at).
+      - Hard daily cap (queried by alert_date), default 10.
+    """
+    __tablename__ = "breakout_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    alert_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # Snapshot at alert time
+    pivot_price = Column(Float)
+    current_price = Column(Float)
+    vol_ratio = Column(Float)
+    label = Column(String)  # "BREAKOUT" or "BREAKOUT + VOLUME"
+
+    __table_args__ = (
+        Index('ix_breakout_alerts_ticker_created', 'ticker', 'created_at'),
+        Index('ix_breakout_alerts_date', 'alert_date'),
+    )
+
+
+class SystemState(Base):
+    """
+    Tiny key/value store for cross-restart system state that doesn't justify
+    its own table.
+
+    Use cases (May 2026):
+      - last_spy_gate_state: BULLISH/BEARISH; survives restart so the
+        SPY-flip notification only fires on a real state change.
+      - last_briefing_date: ISO date of last morning briefing; survives
+        restart so a redeploy mid-morning doesn't trigger a duplicate
+        briefing.
+
+    Keep this lean. If a use case needs more than (key, value, updated_at),
+    give it its own table.
+    """
+    __tablename__ = "system_state"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+
 class EarningsAudit(Base):
     """
     Deep fundamental audit of buy candidates using FMP data.
@@ -1489,3 +1545,31 @@ class Notification(Base):
         Index('ix_notifications_user_read_created', 'user_id', 'read_at', 'created_at'),
         Index('ix_notifications_user_created', 'user_id', 'created_at'),
     )
+
+
+# ── SystemState helpers ───────────────────────────────────────────────────────
+# Tiny accessors that hide the ORM boilerplate at every call site. Both the
+# SPY-flip detector (ai_trader) and the morning-briefing dedup (scheduler)
+# use the same two-call pattern (read previous, write current after acting).
+
+def get_system_state(db, key: str, default=None) -> str:
+    """Read a SystemState value by key. Returns ``default`` if absent."""
+    row = db.query(SystemState).filter(SystemState.key == key).first()
+    if row is None:
+        return default
+    return row.value
+
+
+def set_system_state(db, key: str, value) -> None:
+    """Upsert a SystemState (key, value). Caller commits.
+
+    ``value`` is coerced to str (the column is Text). Pass dates as ISO strings.
+    """
+    row = db.query(SystemState).filter(SystemState.key == key).first()
+    str_value = None if value is None else str(value)
+    if row is None:
+        db.add(SystemState(key=key, value=str_value,
+                           updated_at=datetime.now(timezone.utc)))
+    else:
+        row.value = str_value
+        row.updated_at = datetime.now(timezone.utc)

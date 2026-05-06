@@ -733,6 +733,13 @@ morning_briefing:
   include_earnings_this_week: true     # Stocks reporting earnings this week
   include_market_regime: true          # Current market regime summary
 
+# Intraday Breakout Monitor — DB-backed dedup + daily cap (May 2026)
+# Pre-fix, the monitor's cooldown lived in a Python module-level dict that
+# got wiped on every container redeploy, producing repeat alerts per ticker.
+# Now BreakoutAlert rows back the cooldown + cap, so they survive restart.
+breakout_monitor:
+  daily_cap: 10                        # Max breakout alerts per day (cluster spam guard)
+
 # Trade Journal / Performance Attribution
 trade_journal:
   enabled: true
