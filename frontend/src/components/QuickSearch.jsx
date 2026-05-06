@@ -13,7 +13,6 @@ const PAGES = [
   { label: 'Watchlist', path: '/watchlist', keywords: 'watch alerts' },
   { label: 'Coiled Spring', path: '/coiled-spring/history', keywords: 'earnings catalyst' },
   { label: 'Insider Sentiment', path: '/insider-sentiment', keywords: 'insiders smart money' },
-  { label: 'Portfolio', path: '/portfolio', keywords: 'holdings positions manual' },
   { label: 'Documentation', path: '/docs', keywords: 'help canslim guide' },
 ]
 

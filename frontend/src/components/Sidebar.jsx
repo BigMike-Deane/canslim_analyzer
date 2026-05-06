@@ -11,7 +11,6 @@ const navGroups = [
       { to: '/', icon: 'terminal', label: 'Command Center', end: true },
       { to: '/ai-portfolio', icon: 'brain', label: 'AI Portfolio' },
       { to: '/analytics', icon: 'chart', label: 'Analytics' },
-      { to: '/portfolio-summary', icon: 'briefcase', label: 'Summary' },
       { to: '/trade-journal', icon: 'book', label: 'Trade Journal' },
       { to: '/correlation', icon: 'activity', label: 'Correlation' },
     ],
@@ -33,7 +32,6 @@ const navGroups = [
     items: [
       { to: '/backtest', icon: 'rewind', label: 'Backtest' },
       { to: '/watchlist', icon: 'eye', label: 'Watchlist' },
-      { to: '/portfolio', icon: 'briefcase', label: 'Portfolio' },
       { to: '/fidelity', icon: 'sync', label: 'My Portfolio' },
     ],
   },

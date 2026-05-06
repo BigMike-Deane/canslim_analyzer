@@ -9,7 +9,6 @@ import Login from './pages/Login'
 import CommandCenter from './pages/CommandCenter'
 import Screener from './pages/Screener'
 import StockDetail from './pages/StockDetail'
-import Portfolio from './pages/Portfolio'
 import Watchlist from './pages/Watchlist'
 import Documentation from './pages/Documentation'
 import AIPortfolio from './pages/AIPortfolio'
@@ -26,7 +25,6 @@ import BearBase from './pages/BearBase'
 import CorrelationMatrix from './pages/CorrelationMatrix'
 import SectorRotation from './pages/SectorRotation'
 import SystemHealth from './pages/SystemHealth'
-import PortfolioSummary from './pages/PortfolioSummary'
 import Settings from './pages/Settings'
 import Notifications from './pages/Notifications'
 
@@ -61,7 +59,7 @@ function AppContent() {
             <Route path="/" element={<CommandCenter />} />
             <Route path="/screener" element={<Screener />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
-            <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/portfolio" element={<AIPortfolio />} />
             <Route path="/ai-portfolio" element={<AIPortfolio />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/breakouts" element={<Breakouts />} />
@@ -78,7 +76,7 @@ function AppContent() {
             <Route path="/bear-base" element={<BearBase />} />
             <Route path="/correlation" element={<CorrelationMatrix />} />
             <Route path="/sector-rotation" element={<SectorRotation />} />
-            <Route path="/portfolio-summary" element={<PortfolioSummary />} />
+            <Route path="/portfolio-summary" element={<AIPortfolio />} />
             <Route path="/system-health" element={<SystemHealth />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/notifications" element={<Notifications />} />

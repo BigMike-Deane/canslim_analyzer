@@ -10,6 +10,7 @@ import CollapsibleSection from '../components/CollapsibleSection'
 import { tooltipStyle } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
+import PortfolioDetailView from '../components/PortfolioDetailView'
 
 // ── Performance Chart ───────────────────────────────────────────────
 function PerformanceChart({ history, startingCash }) {
@@ -970,8 +971,14 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
 // ══════════════════════════════════════════════════════════════════════
 // ── Main Page Component ─────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════
+const TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'detail', label: 'Detail' },
+]
+
 export default function AIPortfolio() {
   const toast = useToast()
+  const [activeTab, setActiveTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [portfolio, setPortfolio] = useState(null)
   const [history, setHistory] = useState([])
@@ -1285,46 +1292,69 @@ export default function AIPortfolio() {
         setEarningsExpanded={setEarningsExpanded}
       />
 
-      <PerformanceChart
-        history={history}
-        startingCash={portfolio?.config?.starting_cash || 25000}
-      />
-
-      <SectorAllocationChart
-        riskData={riskData}
-        cashPct={portfolio?.summary?.total_value > 0
-          ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
-          : 0}
-      />
-
-      <SummaryCard
-        summary={portfolio?.summary}
-        config={portfolio?.config}
-      />
-
-      <ConfigPanel
-        config={portfolio?.config}
-        onUpdate={handleUpdateConfig}
-        onInitialize={handleInitialize}
-        onRefresh={handleRefresh}
-        onRunCycle={handleRunCycle}
-        waitingForTrades={waitingForTrades}
-      />
-
-      <PositionsList positions={portfolio?.positions} />
-
-      <TradeHistory trades={trades} />
-
-      {/* Links */}
-      <SectionLabel>More</SectionLabel>
-      <div className="flex gap-4 mb-4">
-        <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
-          Trade Analytics
-        </Link>
-        <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
-          Run Backtest
-        </Link>
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b border-dark-700/50 overflow-x-auto">
+        {TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-3 py-2 text-xs font-semibold tracking-wider uppercase transition-colors whitespace-nowrap border-b-2 ${
+              activeTab === tab.key
+                ? 'text-primary-400 border-primary-500'
+                : 'text-dark-400 border-transparent hover:text-dark-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {activeTab === 'overview' && (
+        <>
+          <PerformanceChart
+            history={history}
+            startingCash={portfolio?.config?.starting_cash || 25000}
+          />
+
+          <SectorAllocationChart
+            riskData={riskData}
+            cashPct={portfolio?.summary?.total_value > 0
+              ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
+              : 0}
+          />
+
+          <SummaryCard
+            summary={portfolio?.summary}
+            config={portfolio?.config}
+          />
+
+          <ConfigPanel
+            config={portfolio?.config}
+            onUpdate={handleUpdateConfig}
+            onInitialize={handleInitialize}
+            onRefresh={handleRefresh}
+            onRunCycle={handleRunCycle}
+            waitingForTrades={waitingForTrades}
+          />
+
+          <PositionsList positions={portfolio?.positions} />
+
+          <TradeHistory trades={trades} />
+
+          {/* Links */}
+          <SectionLabel>More</SectionLabel>
+          <div className="flex gap-4 mb-4">
+            <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              Trade Analytics
+            </Link>
+            <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              Run Backtest
+            </Link>
+          </div>
+        </>
+      )}
+
+      {activeTab === 'detail' && <PortfolioDetailView />}
 
       <div className="h-4" />
     </div>
