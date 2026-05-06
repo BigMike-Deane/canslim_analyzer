@@ -243,7 +243,104 @@ class CANSLIMScorer:
 
         total_score = min(base_score + accel_score + bonus_score, max_score)
         total_score = max(total_score, 0)  # Don't go below 0
-        return round(total_score, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{bonus_detail}"
+
+        # Excellence-tier cap: require multiple top-tier signals to earn the
+        # full 15. See _count_excellence_signals docstring.
+        signals = self._count_excellence_signals(
+            data, path="primary", ttm_growth=ttm_growth
+        )
+        capped = self._apply_excellence_cap(total_score, signals)
+        cap_detail = ""
+        if capped < total_score:
+            cap_detail = f" (excellence:{signals}/4, cap:{capped:.1f})"
+        else:
+            cap_detail = f" (excellence:{signals}/4)"
+
+        return round(capped, 1), f"TTM: {ttm_growth:+.0f}%{accel_detail}{bonus_detail}{cap_detail}"
+
+    # Excellence-tier cap thresholds. After C is computed, count how many of
+    # 4 "broad-based excellence" signals are present and clip the final score
+    # accordingly. Today's audit (May 6, 2026) found 49.4% of admits (canslim≥73)
+    # are at C=15 cap — additive bonuses stack to the cap from a single strong
+    # signal. The cap requires CONJUNCTION: only stocks corroborated on multiple
+    # axes earn the full 15. Soft 15 → 11.5/13 unless multiple signals agree.
+    EXCELLENCE_CAPS = {
+        4: 15.0,    # 4-of-4: no cap, keep full score
+        3: 13.0,
+        2: 13.0,
+        1: 11.5,
+        0: 10.0,
+    }
+    # Path-specific growth thresholds for the "strong growth" excellence signal.
+    EXCELLENCE_PRIMARY_TTM_GROWTH = 50.0    # 8-quarter TTM path
+    EXCELLENCE_FALLBACK_QOQ_GROWTH = 40.0   # <8-quarter median QoQ path
+    EXCELLENCE_BEAT_STREAK = 5
+    EXCELLENCE_REVISION_PCT = 30.0
+    EXCELLENCE_SURPRISE_PCT = 10.0
+
+    def _count_excellence_signals(self, data: StockData, path: str,
+                                   ttm_growth: float | None = None,
+                                   avg_qoq_growth: float | None = None) -> int:
+        """
+        Count how many of 4 broad-based excellence signals a stock exhibits.
+
+        Returns 0-4. Used by `_apply_excellence_cap` to clip an unconstrained
+        C score so a single strong signal can't max out the 15-pt scale.
+
+        Signals (each binary):
+          1. Strong growth — path-dependent:
+             - "primary": TTM growth ≥ EXCELLENCE_PRIMARY_TTM_GROWTH (50%)
+             - "fallback": median QoQ growth ≥ EXCELLENCE_FALLBACK_QOQ_GROWTH (40%)
+          2. Long beat streak: earnings_beat_streak ≥ EXCELLENCE_BEAT_STREAK (5)
+          3. Strong analyst revision: eps_estimate_revision_pct ≥ 30
+          4. Big earnings surprise: earnings_surprise_pct ≥ 10
+        """
+        signals = 0
+
+        # Signal 1: Strong growth (path-dependent)
+        if path == "primary" and ttm_growth is not None:
+            if ttm_growth >= self.EXCELLENCE_PRIMARY_TTM_GROWTH:
+                signals += 1
+        elif path == "fallback" and avg_qoq_growth is not None:
+            if avg_qoq_growth >= self.EXCELLENCE_FALLBACK_QOQ_GROWTH:
+                signals += 1
+
+        # Signal 2: Long beat streak. Two related fields exist on StockData
+        # (eps_beat_streak from the earnings-surprise pipeline,
+        # earnings_beat_streak from the P1 calendar pipeline). Take max so the
+        # signal fires when either source has populated it.
+        eps_streak = getattr(data, 'eps_beat_streak', 0) or 0
+        earn_streak = getattr(data, 'earnings_beat_streak', 0) or 0
+        if max(eps_streak, earn_streak) >= self.EXCELLENCE_BEAT_STREAK:
+            signals += 1
+
+        # Signal 3: Strong analyst revision
+        revision = getattr(data, 'eps_estimate_revision_pct', None)
+        if revision is not None and revision >= self.EXCELLENCE_REVISION_PCT:
+            signals += 1
+
+        # Signal 4: Big earnings surprise
+        surprise = getattr(data, 'earnings_surprise_pct', 0) or 0
+        if surprise >= self.EXCELLENCE_SURPRISE_PCT:
+            signals += 1
+
+        return signals
+
+    def _apply_excellence_cap(self, score: float, signals: int) -> float:
+        """
+        Clip an unconstrained C score to the cap implied by excellence signals.
+
+        The cap is a CEILING — never raises a low score, only clips a high one.
+        A stock scoring 7 with 0 signals stays 7, not raised to 10.
+
+        Cap table:
+          4 signals → 15  (no cap)
+          2-3       → 13
+          1         → 11.5
+          0         → 10
+        """
+        cap = self.EXCELLENCE_CAPS.get(signals, 15.0)
+        return min(score, cap)
 
     def _apply_earnings_bonuses(self, data: StockData, surprise_max: float = 2) -> tuple[float, str]:
         """
@@ -341,14 +438,20 @@ class CANSLIMScorer:
                 if abs(earnings[1]) < 0.001:
                     base = max_score * 0.2
                     bonus, bonus_detail = self._apply_earnings_bonuses(data)
-                    final = round(max(0.0, min(max_score, base + bonus)), 1)
-                    return final, f"Losses near zero{bonus_detail}"
+                    raw = max(0.0, min(max_score, base + bonus))
+                    signals = self._count_excellence_signals(data, path="fallback")
+                    capped = self._apply_excellence_cap(raw, signals)
+                    cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
+                    return round(capped, 1), f"Losses near zero{bonus_detail}{cap_detail}"
                 improvement = ((earnings[0] - earnings[1]) / abs(earnings[1])) * 100
                 partial_score = max(0, min(max_score * 0.35, (improvement / 50) * max_score * 0.35))
                 base = max(partial_score, max_score * 0.1)
                 bonus, bonus_detail = self._apply_earnings_bonuses(data)
-                final = round(max(0.0, min(max_score, base + bonus)), 1)
-                return final, f"Losses shrinking ({improvement:+.0f}%){bonus_detail}"
+                raw = max(0.0, min(max_score, base + bonus))
+                signals = self._count_excellence_signals(data, path="fallback")
+                capped = self._apply_excellence_cap(raw, signals)
+                cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
+                return round(capped, 1), f"Losses shrinking ({improvement:+.0f}%){bonus_detail}{cap_detail}"
 
         # Calculate growth rates between consecutive quarters
         growth_rates = []
@@ -370,8 +473,12 @@ class CANSLIMScorer:
                 est_growth = data.earnings_growth_estimate * 100
                 base = min(max_score, (est_growth / 25) * max_score)
                 bonus, bonus_detail = self._apply_earnings_bonuses(data)
-                final = round(max(0.0, min(max_score, base + bonus)), 1)
-                return final, f"Est: {est_growth:+.0f}%{bonus_detail}"
+                raw = max(0.0, min(max_score, base + bonus))
+                # No measured growth path here (estimate-only), so signal 1 can't fire.
+                signals = self._count_excellence_signals(data, path="fallback")
+                capped = self._apply_excellence_cap(raw, signals)
+                cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
+                return round(capped, 1), f"Est: {est_growth:+.0f}%{bonus_detail}{cap_detail}"
             return 0, "Data anomaly"
 
         # Use median to be robust to outliers
@@ -388,8 +495,15 @@ class CANSLIMScorer:
         # fallback isn't silently dropping analyst-revision / surprise / beat-streak
         # signals worth up to ~10 pts.
         bonus, bonus_detail = self._apply_earnings_bonuses(data)
-        final = round(max(0.0, min(max_score, base + bonus)), 1)
-        return final, f"Avg QoQ: {avg_growth:+.0f}%{bonus_detail}"
+        raw = max(0.0, min(max_score, base + bonus))
+
+        # Excellence-tier cap (fallback path uses median QoQ growth for signal 1).
+        signals = self._count_excellence_signals(
+            data, path="fallback", avg_qoq_growth=avg_growth
+        )
+        capped = self._apply_excellence_cap(raw, signals)
+        cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
+        return round(capped, 1), f"Avg QoQ: {avg_growth:+.0f}%{bonus_detail}{cap_detail}"
 
     def _calculate_roe_bonus(self, data: StockData, max_pts: float = 3) -> tuple[float, str]:
         """

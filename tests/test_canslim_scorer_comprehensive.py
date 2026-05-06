@@ -42,6 +42,7 @@ def _make_stock_data(**overrides):
     stock.earnings_growth_estimate = overrides.get("earnings_growth_estimate", 0.15)
     stock.earnings_surprise_pct = overrides.get("earnings_surprise_pct", 0)
     stock.eps_beat_streak = overrides.get("eps_beat_streak", 0)
+    stock.earnings_beat_streak = overrides.get("earnings_beat_streak", 0)
     stock.eps_estimate_revision_pct = overrides.get("eps_estimate_revision_pct", None)
 
     # Earnings data
@@ -610,17 +611,22 @@ class TestCScoreFallbackBonuses:
     """Bug 2: fallback path must apply the same bonuses as the primary path."""
 
     def test_fallback_applies_revision_bonus(self):
-        """A 4-quarter stock with strong analyst revision should still get the bonus."""
+        """A 4-quarter stock with strong analyst revision should still get the bonus.
+
+        Note (May 6, 2026 excellence-cap): a +25% revision is BELOW the
+        excellence threshold (30%) so signal-3 doesn't fire. With 0 excellence
+        signals the cap clips the post-bonus score at 10 — but the bonus must
+        still register as a strict improvement over the no-revision baseline.
+        We pin "strict improvement" rather than the exact pre-cap delta because
+        the cap will (correctly) clip near-cap stocks.
+        """
         scorer = _make_scorer()
         # Only 4 quarters of EPS — forces the fallback path
-        # Strong upward revision (+25%) is worth +8 pts in the bonus block
         stock = _make_stock_data(
             quarterly_earnings=[1.20, 1.10, 1.00, 0.90],  # ~33% YoY growth via QoQ
             eps_estimate_revision_pct=25.0,
         )
         score = scorer.score_stock(stock)
-        # With +8 revision bonus on top of moderate base, C should clearly
-        # exceed what we'd see without the revision signal.
         stock_no_rev = _make_stock_data(
             quarterly_earnings=[1.20, 1.10, 1.00, 0.90],
             eps_estimate_revision_pct=None,
@@ -630,8 +636,10 @@ class TestCScoreFallbackBonuses:
             f"Revision bonus must apply in fallback path: "
             f"with={score.c_score} vs without={score_no_rev.c_score}"
         )
-        assert score.c_score - score_no_rev.c_score >= 6, (
-            f"Strong +25% revision should add ~8 pts; got delta {score.c_score - score_no_rev.c_score}"
+        # Bonus must move the score upward by at least the next-tier gap (~3 pts).
+        # Pre-cap the gap was ~8 pts; post-cap it's clipped to 10 from ~14.
+        assert score.c_score - score_no_rev.c_score >= 3, (
+            f"Revision bonus should produce a meaningful lift; got delta {score.c_score - score_no_rev.c_score}"
         )
 
     def test_fallback_applies_beat_streak_bonus(self):
@@ -778,4 +786,266 @@ class TestEpsSeriesNotTruncated:
         assert len(result) >= 8, (
             f"Bug 1 regression: short adjusted_eps truncated long GAAP series. "
             f"Got {len(result)} quarters, need >= 8 for the primary scorer path"
+        )
+
+
+# ── C Score Excellence-Tier Cap (May 6, 2026) ─────────────────────────────────
+# Today's audit (May 6) found 49.4% of canslim>=73 admits at C=15 cap (38/77) —
+# C lost discrimination at the top because additive bonuses stack to the cap
+# from a single strong signal. The cap requires CONJUNCTION: only stocks with
+# multiple "broad-based excellence" signals earn the full 15.
+#
+# Cap table:
+#   4 of 4 signals -> 15 (no cap)
+#   2-3            -> 13
+#   1              -> 11.5
+#   0              -> 10
+#
+# Excellence signals (each binary):
+#   1. Strong growth (TTM>=50% on primary path, median QoQ>=40% on fallback)
+#   2. Long beat streak (>=5)
+#   3. Strong analyst revision (>=30%)
+#   4. Big earnings surprise (>=10%)
+
+class TestCExcellenceCap:
+    """Pin the excellence-tier cap on C score."""
+
+    # Strong primary-path stock that pre-cap would naturally score 15:
+    #   - TTM 7.4 vs 3.4 = +118% growth (signal 1: yes)
+    #   - 8 quarters of accelerating earnings (acceleration bonus = 5 pts)
+    # Add or omit signals 2/3/4 to drive the excellence count.
+    _STRONG_GROWTH_EARNINGS = [2.0, 1.9, 1.8, 1.7, 1.0, 0.9, 0.8, 0.7]
+
+    def test_4_of_4_keeps_full_score(self):
+        """All four signals present -> no cap, score may reach 15."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            quarterly_earnings=self._STRONG_GROWTH_EARNINGS,  # signal 1
+            earnings_beat_streak=6,                            # signal 2
+            eps_estimate_revision_pct=35.0,                    # signal 3
+            earnings_surprise_pct=15.0,                        # signal 4
+        )
+        score = scorer.score_stock(stock)
+        # Pre-cap natural score is at the 15 ceiling; with 4/4 signals, no clip.
+        assert score.c_score == pytest.approx(15.0, abs=0.05)
+        assert "excellence:4/4" in score.c_detail
+        assert "cap:" not in score.c_detail  # no cap line because no clip
+
+    def test_3_of_4_caps_at_13(self):
+        """Three signals present -> capped at 13 even if natural score was 15."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            quarterly_earnings=self._STRONG_GROWTH_EARNINGS,  # signal 1
+            earnings_beat_streak=6,                            # signal 2
+            eps_estimate_revision_pct=35.0,                    # signal 3
+            earnings_surprise_pct=2.0,                         # signal 4 NO (<10)
+        )
+        score = scorer.score_stock(stock)
+        assert score.c_score == pytest.approx(13.0, abs=0.05), (
+            f"3-of-4 should cap at 13; got {score.c_score} ({score.c_detail})"
+        )
+        assert "excellence:3/4" in score.c_detail
+        assert "cap:13" in score.c_detail
+
+    def test_2_of_4_caps_at_13(self):
+        """Two signals present -> still 13 (same tier as 3-of-4)."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            quarterly_earnings=self._STRONG_GROWTH_EARNINGS,  # signal 1
+            earnings_beat_streak=6,                            # signal 2
+            eps_estimate_revision_pct=10.0,                    # signal 3 NO (<30)
+            earnings_surprise_pct=3.0,                         # signal 4 NO
+        )
+        score = scorer.score_stock(stock)
+        assert score.c_score == pytest.approx(13.0, abs=0.05), (
+            f"2-of-4 should cap at 13; got {score.c_score} ({score.c_detail})"
+        )
+        assert "excellence:2/4" in score.c_detail
+
+    def test_1_of_4_caps_at_11_5(self):
+        """One signal present -> capped at 11.5."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            quarterly_earnings=self._STRONG_GROWTH_EARNINGS,  # signal 1
+            earnings_beat_streak=2,                            # NO (<5)
+            eps_estimate_revision_pct=10.0,                    # NO (<30)
+            earnings_surprise_pct=3.0,                         # NO (<10)
+        )
+        score = scorer.score_stock(stock)
+        assert score.c_score == pytest.approx(11.5, abs=0.05), (
+            f"1-of-4 should cap at 11.5; got {score.c_score} ({score.c_detail})"
+        )
+        assert "excellence:1/4" in score.c_detail
+        assert "cap:11.5" in score.c_detail
+
+    def test_0_of_4_caps_at_10(self):
+        """Zero signals -> capped at 10. Use weak growth + heavy bonuses
+        to force a near-cap natural score with 0 excellence signals."""
+        scorer = _make_scorer()
+        # ~30% TTM growth (signal 1 NO, 30 < 50). Pile up bonuses that don't
+        # individually trip the excellence thresholds:
+        #   - revision +25% (NO, 25 < 30) -> +8 bonus pts
+        #   - surprise 8% (NO, 8 < 10)    -> +1.5 bonus pts
+        #   - beat streak 4 (NO, 4 < 5)   -> +1 bonus pt
+        # Combined: base ~9 + bonuses ~10.5 ~= caps at max_score, but
+        # excellence cap clips it to 10.
+        stock = _make_stock_data(
+            quarterly_earnings=[1.30, 1.25, 1.20, 1.15, 1.00, 0.95, 0.90, 0.85],
+            earnings_beat_streak=4,
+            eps_estimate_revision_pct=25.0,
+            earnings_surprise_pct=8.0,
+        )
+        score = scorer.score_stock(stock)
+        assert score.c_score == pytest.approx(10.0, abs=0.05), (
+            f"0-of-4 should cap at 10; got {score.c_score} ({score.c_detail})"
+        )
+        assert "excellence:0/4" in score.c_detail
+        assert "cap:10" in score.c_detail
+
+    def test_cap_does_not_elevate_low_scores(self):
+        """A stock scoring 7 with 0 signals stays 7, not raised to 10.
+        The cap is a CEILING only, never a floor."""
+        scorer = _make_scorer()
+        # Mild growth (~10% TTM) -> low base (~3-5). No bonuses -> 0 signals.
+        stock = _make_stock_data(
+            quarterly_earnings=[1.10, 1.08, 1.05, 1.03, 1.00, 0.98, 0.95, 0.93],
+            earnings_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_surprise_pct=0,
+        )
+        score = scorer.score_stock(stock)
+        # Natural score is below the cap floor; cap doesn't elevate.
+        assert score.c_score < 10.0, (
+            f"Cap must not elevate sub-10 scores; got {score.c_score} ({score.c_detail})"
+        )
+        # Detail still shows the count but no "cap:" tag because no clip happened.
+        assert "excellence:0/4" in score.c_detail
+        assert "cap:" not in score.c_detail
+
+    def test_detail_string_contains_excellence_count(self):
+        """Every C-score detail (primary path) reports the excellence count
+        so the user can see why their stock was capped at 11.5 vs 15.
+
+        Build stocks with exactly N signals firing by toggling fields:
+          signal 1 = strong growth (use STRONG earnings; weak earnings disable)
+          signal 2 = beat streak >= 5
+          signal 3 = revision >= 30%
+          signal 4 = surprise >= 10%
+        Order signals 1,2,3,4 to construct any count 0..4.
+        """
+        # Weak earnings: ~10% TTM growth -> signal 1 NO (10 < 50)
+        weak = [1.10, 1.08, 1.05, 1.03, 1.00, 0.98, 0.95, 0.93]
+        scorer = _make_scorer()
+        for n_signals in range(5):
+            stock = _make_stock_data(
+                quarterly_earnings=self._STRONG_GROWTH_EARNINGS if n_signals >= 1 else weak,
+                earnings_beat_streak=6 if n_signals >= 2 else 0,
+                eps_estimate_revision_pct=35.0 if n_signals >= 3 else None,
+                earnings_surprise_pct=15.0 if n_signals >= 4 else 0,
+            )
+            score = scorer.score_stock(stock)
+            assert f"excellence:{n_signals}/4" in score.c_detail, (
+                f"Expected excellence:{n_signals}/4 in detail; got {score.c_detail!r}"
+            )
+
+    def test_fallback_path_applies_cap(self):
+        """The <8-quarter fallback path also applies the cap."""
+        scorer = _make_scorer()
+        # 4 quarters only -> fallback. ~33% median QoQ growth (signal 1 NO,
+        # 33 < 40). Add 0 other signals -> 0/4 -> cap at 10.
+        stock = _make_stock_data(
+            quarterly_earnings=[1.20, 1.10, 1.00, 0.90],
+            earnings_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_surprise_pct=0,
+        )
+        score = scorer.score_stock(stock)
+        assert "excellence:" in score.c_detail, (
+            f"Fallback path must report excellence count; got {score.c_detail!r}"
+        )
+        # 0/4 signals -> cap at 10. Whether the natural score reaches the
+        # cap depends on bonuses; we pin only the upper bound.
+        assert score.c_score <= 10.0, (
+            f"Fallback path with 0 signals must cap at 10; got {score.c_score}"
+        )
+
+    def test_fallback_path_strong_growth_signal_fires(self):
+        """Fallback path uses median QoQ >= 40 to fire signal 1.
+
+        4-quarter series with strong sequential growth produces median QoQ
+        >= 40%, which counts toward the excellence count. Combined with
+        another signal, total goes from 0/4 -> 2/4 (cap 13)."""
+        scorer = _make_scorer()
+        # QoQ rates: +25%, +33%, +33%; median ~33% (still below 40 -> signal 1 NO).
+        # Steeper: $1.50, $1.00, $0.65, $0.45 -> +50%, +54%, +44%; median ~50% (signal 1 YES).
+        stock_strong = _make_stock_data(
+            quarterly_earnings=[1.50, 1.00, 0.65, 0.45],
+            earnings_beat_streak=6,                # signal 2 YES
+            eps_estimate_revision_pct=None,
+            earnings_surprise_pct=0,
+        )
+        score = scorer.score_stock(stock_strong)
+        assert "excellence:2/4" in score.c_detail, (
+            f"Fallback path with strong QoQ + beat streak should be 2/4; got {score.c_detail!r}"
+        )
+        # 2-of-4 cap is 13; allow score to reach but not exceed it.
+        assert score.c_score <= 13.0 + 0.05
+
+    def test_count_excellence_signals_helper_directly(self):
+        """Direct unit test of the helper for clarity."""
+        scorer = _make_scorer()
+        # All 4 signals present
+        all_on = _make_stock_data(
+            earnings_beat_streak=10,
+            eps_estimate_revision_pct=50.0,
+            earnings_surprise_pct=25.0,
+        )
+        # path="primary" with ttm_growth=100 fires signal 1
+        assert scorer._count_excellence_signals(all_on, "primary", ttm_growth=100.0) == 4
+        # path="primary" with ttm_growth=20 -> signal 1 fails
+        assert scorer._count_excellence_signals(all_on, "primary", ttm_growth=20.0) == 3
+        # path="fallback" with avg_qoq_growth=10 -> signal 1 fails
+        assert scorer._count_excellence_signals(all_on, "fallback", avg_qoq_growth=10.0) == 3
+        # No path metric supplied -> signal 1 cannot fire
+        assert scorer._count_excellence_signals(all_on, "primary") == 3
+
+        # None present
+        none_on = _make_stock_data(
+            earnings_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_surprise_pct=0,
+        )
+        assert scorer._count_excellence_signals(none_on, "primary", ttm_growth=10.0) == 0
+
+    def test_apply_excellence_cap_helper_directly(self):
+        """Direct unit test of the cap helper. The cap is a min(), never a max()."""
+        scorer = _make_scorer()
+        # Cap is the ceiling
+        assert scorer._apply_excellence_cap(15.0, 0) == 10.0
+        assert scorer._apply_excellence_cap(15.0, 1) == 11.5
+        assert scorer._apply_excellence_cap(15.0, 2) == 13.0
+        assert scorer._apply_excellence_cap(15.0, 3) == 13.0
+        assert scorer._apply_excellence_cap(15.0, 4) == 15.0
+        # Below-cap scores are NOT raised
+        assert scorer._apply_excellence_cap(7.0, 0) == 7.0
+        assert scorer._apply_excellence_cap(5.0, 1) == 5.0
+        assert scorer._apply_excellence_cap(11.5, 1) == 11.5  # boundary
+        # Unknown signal count defaults to no cap (15)
+        assert scorer._apply_excellence_cap(15.0, 99) == 15.0
+
+    def test_earnings_beat_streak_field_recognized(self):
+        """Spec uses earnings_beat_streak (P1 calendar field), not the older
+        eps_beat_streak field. Helper must accept either."""
+        scorer = _make_scorer()
+        # Only earnings_beat_streak set (eps_beat_streak=0)
+        stock = _make_stock_data(
+            quarterly_earnings=self._STRONG_GROWTH_EARNINGS,  # signal 1
+            earnings_beat_streak=6,                            # signal 2 via new field
+            eps_beat_streak=0,                                 # old field unused
+            eps_estimate_revision_pct=35.0,                    # signal 3
+            earnings_surprise_pct=15.0,                        # signal 4
+        )
+        score = scorer.score_stock(stock)
+        assert "excellence:4/4" in score.c_detail, (
+            f"earnings_beat_streak field must satisfy signal 2; got {score.c_detail!r}"
         )
