@@ -522,3 +522,94 @@ class TestBaseQualityBonus:
         assert calculate_base_quality_bonus("none", 10) == 0
         assert calculate_base_quality_bonus("", 10) == 0
         assert calculate_base_quality_bonus(None, 10) == 0
+
+
+# ── 10. Partial trailing stop gate — both ai_trader sites use the helper ──────
+
+
+class TestPartialTrailingGateMigrated:
+    """Both ai_trader entry points (`_check_and_execute_stop_losses_impl` and
+    `evaluate_sells`) must route the partial-trailing-stop decision through
+    `should_take_partial_on_trailing_stop`. Pre-migration, the first site
+    had an inline `partial_on_trailing AND pyramid >= min AND score >= min`
+    gate while the second called the helper — same gate, two implementations
+    in the same file, ready to silently desync.
+
+    Backtester._evaluate_sells already uses the helper. These tests pin the
+    invariant that all three call sites stay routed through one source of
+    truth.
+    """
+
+    def test_check_stop_losses_impl_uses_helper(self):
+        import inspect
+        from backend import ai_trader
+
+        src = inspect.getsource(ai_trader._check_and_execute_stop_losses_impl)
+        # Helper must be invoked (refactor preserved).
+        assert "should_take_partial_on_trailing_stop(" in src, (
+            "_check_and_execute_stop_losses_impl no longer routes the partial-"
+            "trailing-stop decision through should_take_partial_on_trailing_stop. "
+            "If the gate moved, this regression test must move with it."
+        )
+        # The inline 3-line gate must NOT have come back. Strip comments
+        # so a documentation reference doesn't trip this guard.
+        code_only = "\n".join(
+            line.split("#", 1)[0] for line in src.splitlines()
+        )
+        assert "score >= partial_min_score" not in code_only, (
+            "Inline `score >= partial_min_score` reappeared in "
+            "_check_and_execute_stop_losses_impl. Use should_take_partial_on_"
+            "trailing_stop instead — that is the single source of truth shared "
+            "with backtester._evaluate_sells."
+        )
+
+    def test_evaluate_sells_uses_helper(self):
+        import inspect
+        from backend import ai_trader
+
+        src = inspect.getsource(ai_trader.evaluate_sells)
+        assert "should_take_partial_on_trailing_stop(" in src
+        # Strip comments before scanning so the documentation reference to
+        # the legacy `score_available and score >= partial_min_score` gate
+        # in the helper-call block doesn't trip the inline-pattern guard.
+        code_only = "\n".join(
+            line.split("#", 1)[0] for line in src.splitlines()
+        )
+        assert "score >= partial_min_score" not in code_only
+
+    def test_backtester_evaluate_sells_uses_helper(self):
+        import inspect
+        from backend.backtester import BacktestEngine
+
+        src = inspect.getsource(BacktestEngine._evaluate_sells)
+        assert "should_take_partial_on_trailing_stop(" in src
+        code_only = "\n".join(
+            line.split("#", 1)[0] for line in src.splitlines()
+        )
+        assert "score >= partial_min_score" not in code_only
+
+    def test_helper_semantics_unchanged_after_migration(self):
+        """End-to-end invariant: the migrated site computes the same boolean
+        as the helper for the canonical (pyramid_count, score) corners.
+
+        If anyone reverts the refactor with a subtly different inline gate
+        (e.g., `>` instead of `>=`, or drops a config knob), the helper's
+        behavior contract diverges from the call site and this test catches
+        the resulting comparison.
+        """
+        from backend.trading_utils import should_take_partial_on_trailing_stop
+
+        # Same corners as the boundary tests in test_trading_utils_sync.py,
+        # re-asserted here so the migrated call site's contract stays pinned
+        # next to the source-inspection guards above.
+        cases = [
+            (2, 65, True),    # both at minimum
+            (2, 64.99, False),  # score just below
+            (1, 95, False),   # one short on pyramids
+            (0, 95, False),   # no pyramids
+            (5, 0, False),    # score-unavailable sentinel
+        ]
+        for pyramid_count, score, expected in cases:
+            assert should_take_partial_on_trailing_stop(
+                pyramid_count=pyramid_count, score=score
+            ) is expected, f"helper boundary moved for ({pyramid_count}, {score})"

@@ -1370,9 +1370,13 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                 growth_score = stock.growth_mode_score if stock else None
 
                 # Partial trailing stop: high conviction positions sell 50%, reset peak
-                if (partial_on_trailing and
-                        pyramid_count >= partial_min_pyramid and
-                        score >= partial_min_score):
+                if should_take_partial_on_trailing_stop(
+                    pyramid_count=pyramid_count,
+                    score=score,
+                    partial_on_trailing=partial_on_trailing,
+                    partial_min_pyramid_count=partial_min_pyramid,
+                    partial_min_score=partial_min_score,
+                ):
                     shares_to_sell = position.shares * (partial_sell_pct_config / 100)
                     partial_value = shares_to_sell * position.current_price
                     logger.warning(f"{position.ticker}: PARTIAL TRAILING STOP - selling {partial_sell_pct_config}% ({shares_to_sell:.2f} shares)")
