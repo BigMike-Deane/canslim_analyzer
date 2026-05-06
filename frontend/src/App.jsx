@@ -7,7 +7,6 @@ import BottomNav from './components/BottomNav'
 import QuickSearch from './components/QuickSearch'
 import Login from './pages/Login'
 import CommandCenter from './pages/CommandCenter'
-import Dashboard from './pages/Dashboard'
 import Screener from './pages/Screener'
 import StockDetail from './pages/StockDetail'
 import Portfolio from './pages/Portfolio'
@@ -62,7 +61,6 @@ function AppContent() {
         <div className="max-w-[1400px] mx-auto">
           <Routes>
             <Route path="/" element={<CommandCenter />} />
-            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/screener" element={<Screener />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
             <Route path="/portfolio" element={<Portfolio />} />

@@ -25,7 +25,6 @@ function TabIcon({ name, size = 20 }) {
 const moreItems = [
   { to: '/notifications', label: 'Notifications', icon: 'bell' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
-  { to: '/dashboard', icon: 'grid', label: 'Dashboard' },
   { to: '/screener', label: 'Screener', icon: 'filter' },
   { to: '/breakouts', label: 'Breakouts', icon: 'trending' },
   { to: '/coiled-spring/history', label: 'Coiled Spring', icon: 'zap' },
@@ -82,7 +81,7 @@ export default function BottomNav() {
     { to: '/', icon: 'terminal', label: 'CMD', end: true },
     { to: '/ai-portfolio', icon: 'brain', label: 'AI' },
     { type: 'search', icon: 'search', label: 'Search' },
-    { to: '/dashboard', icon: 'grid', label: 'Research' },
+    { to: '/screener', icon: 'filter', label: 'Research' },
     { to: '/backtest', icon: 'rewind', label: 'Test' },
   ]
 

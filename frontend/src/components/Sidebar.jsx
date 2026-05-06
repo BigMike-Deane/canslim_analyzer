@@ -18,7 +18,6 @@ const navGroups = [
   {
     label: 'RESEARCH',
     items: [
-      { to: '/dashboard', icon: 'grid', label: 'Dashboard' },
       { to: '/screener', icon: 'filter', label: 'Screener' },
       { to: '/breakouts', icon: 'trending', label: 'Breakouts' },
       { to: '/coiled-spring/history', icon: 'zap', label: 'Coiled Spring' },

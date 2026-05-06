@@ -6,8 +6,7 @@ import { ScoreBadge } from './Badge'
 const PAGES = [
   { label: 'Command Center', path: '/', keywords: 'home cmd' },
   { label: 'AI Portfolio', path: '/ai-portfolio', keywords: 'ai trading positions' },
-  { label: 'Dashboard', path: '/dashboard', keywords: 'research market' },
-  { label: 'Screener', path: '/screener', keywords: 'filter stocks scan' },
+  { label: 'Screener', path: '/screener', keywords: 'filter stocks scan research' },
   { label: 'Breakouts', path: '/breakouts', keywords: 'breaking base pattern' },
   { label: 'Backtest', path: '/backtest', keywords: 'test historical' },
   { label: 'Analytics', path: '/analytics', keywords: 'trades performance' },
