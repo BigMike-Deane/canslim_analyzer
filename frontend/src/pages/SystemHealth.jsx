@@ -116,8 +116,12 @@ export default function SystemHealth() {
         </HealthCard>
 
         <HealthCard title="Scanner" status={scanner?.is_scanning ? 'scanning' : scanner?.enabled ? 'healthy' : 'stopped'}>
-          <Stat label="Phase" value={scanner?.phase || 'idle'} />
-          <Stat label="Progress" value={scanner?.total_stocks ? `${scanner.stocks_scanned}/${scanner.total_stocks}` : '-'} />
+          <Stat label="Phase" value={scanner?.phase_label || scanner?.current_phase || scanner?.phase || 'idle'} />
+          <Stat label="Stocks" value={scanner?.total_stocks ? `${scanner.stocks_scanned}/${scanner.total_stocks}` : '-'} sub="phase 1" />
+          <Stat
+            label="Phase Progress"
+            value={scanner?.is_scanning && scanner?.phase_total ? `${scanner.phase_current || 0}/${scanner.phase_total}` : '-'}
+          />
           <Stat label="Last Scan" value={<TimeAgo iso={scanner?.last_scan_end} />} />
         </HealthCard>
 

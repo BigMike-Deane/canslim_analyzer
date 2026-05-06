@@ -606,7 +606,7 @@ export default function CommandCenter() {
                 {scanner?.is_scanning ? (
                   <span className="flex items-center gap-1.5 text-[10px] text-primary-400">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse-dot" />
-                    {scanner?.phase || 'scanning'}
+                    {scanner?.current_phase || scanner?.phase || 'scanning'}
                   </span>
                 ) : (
                   <span className="text-[10px] text-dark-500">IDLE</span>
@@ -631,6 +631,30 @@ export default function CommandCenter() {
                   className="h-full bg-primary-500/60 rounded-full transition-all duration-500"
                   style={{ width: `${Math.min(100, ((scanner.stocks_scanned || 0) / scanner.total_stocks) * 100)}%` }}
                 />
+              </div>
+            )}
+            {/* Per-phase progress: keeps moving through insider/short, p1_data,
+                saving, ai_trading, etc. after Phase 1 stock fetch finishes. */}
+            {scanner?.is_scanning && scanner?.current_phase && scanner.current_phase !== 'scanning' && (
+              <div className="mt-2">
+                <div className="flex items-center justify-between text-[10px] font-data text-dark-400">
+                  <span className="truncate">
+                    {scanner.phase_label || scanner.current_phase}
+                  </span>
+                  {scanner.phase_total > 0 && (
+                    <span className="ml-2 shrink-0">
+                      {scanner.phase_current || 0}/{scanner.phase_total}
+                    </span>
+                  )}
+                </div>
+                {scanner.phase_total > 0 && (
+                  <div className="mt-1 h-1 bg-dark-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500/60 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, ((scanner.phase_current || 0) / scanner.phase_total) * 100)}%` }}
+                    />
+                  </div>
+                )}
               </div>
             )}
           </Card>

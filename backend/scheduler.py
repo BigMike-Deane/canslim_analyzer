@@ -21,7 +21,28 @@ logger = logging.getLogger(__name__)
 # Scheduler instance
 scheduler = BackgroundScheduler()
 
+# Friendly labels for the per-phase progress UI. Map phase keys (used in
+# scheduler internals + by the async scanner progress callback) to short
+# user-facing strings rendered in the CommandCenter / SystemHealth scanner card.
+_PHASE_LABELS = {
+    "scanning": "Fetching stock data",
+    "stocks": "Fetching stock data",
+    "insider_short": "Fetching insider/short data",
+    "p1_data": "Fetching P1 data",
+    "saving": "Saving to database",
+    "coiled_spring": "Checking Coiled Spring",
+    "earnings_audit": "Earnings audit",
+    "industry_groups": "Industry group rankings",
+    "bear_base": "Bear base scan",
+    "ai_trading": "AI trading cycle",
+    "cleanup": "Cleanup",
+}
+
 # State tracking
+# - stocks_scanned / total_stocks remain the Phase-1 stock-fetch counters
+#   (existing consumers depend on this contract; do not overload).
+# - current_phase / phase_current / phase_total / phase_label give the
+#   broader per-phase progress that keeps updating after Phase 1 ends.
 _scan_config = {
     "enabled": False,
     "source": "sp500",  # sp500, top50, russell, all
@@ -32,7 +53,11 @@ _scan_config = {
     "total_stocks": 0,
     "is_scanning": False,
     "phase": None,  # Current phase: "scanning", "p1_data", "saving", "ai_trading", None
-    "phase_detail": None  # Additional detail like "Fetching earnings calendar..."
+    "phase_detail": None,  # Additional detail like "Fetching earnings calendar..."
+    "current_phase": None,  # Active phase key (mirrors `phase`, kept for explicit UI use)
+    "phase_current": 0,  # Items processed in current phase (e.g. 300)
+    "phase_total": 0,  # Total items in current phase (e.g. 1426)
+    "phase_label": None,  # Friendly label like "Fetching P1 data"
 }
 
 # System health tracking for error alerting
@@ -316,6 +341,24 @@ def check_watchlist_alerts():
         db.rollback()
     finally:
         db.close()
+
+
+def _set_phase(phase, detail=None, current=0, total=0):
+    """Update the broader per-phase progress fields used by the UI.
+
+    Keeps the existing `phase` / `phase_detail` strings working while also
+    populating `current_phase` / `phase_current` / `phase_total` / `phase_label`
+    so the frontend can render a phase-tagged progress bar that updates through
+    insider/short, p1_data, saving, etc. (not just Phase 1).
+    """
+    with _state_lock:
+        _scan_config["phase"] = phase
+        _scan_config["current_phase"] = phase
+        _scan_config["phase_current"] = current
+        _scan_config["phase_total"] = total
+        _scan_config["phase_label"] = _PHASE_LABELS.get(phase) if phase else None
+        if detail is not None:
+            _scan_config["phase_detail"] = detail
 
 
 def get_scan_status():
@@ -765,6 +808,10 @@ def run_continuous_scan():
         _scan_config["total_stocks"] = 0
         _scan_config["phase"] = "scanning"
         _scan_config["phase_detail"] = "Initializing scan..."
+        _scan_config["current_phase"] = "scanning"
+        _scan_config["phase_current"] = 0
+        _scan_config["phase_total"] = 0
+        _scan_config["phase_label"] = _PHASE_LABELS.get("scanning")
 
     logger.info(f"Starting continuous scan ({_scan_config['source']})...")
 
@@ -1241,29 +1288,33 @@ def run_continuous_scan():
         from async_scanner import run_async_scan
 
         # Phase 1: Scanning stocks
-        _scan_config["phase"] = "scanning"
-        _scan_config["phase_detail"] = "Fetching stock data & P1 metrics..."
+        _set_phase("scanning", detail="Fetching stock data & P1 metrics...", current=0, total=len(tickers))
 
         # Progress callback to update frontend in real-time
         def update_progress(current, total, phase="stocks"):
-            # Only update stocks_scanned and total_stocks for the main "stocks" phase
-            # Other phases (insider_short, p1_data) have different totals that shouldn't
-            # overwrite the main stock count
+            # stocks_scanned / total_stocks remain Phase-1 only — insider_short
+            # and p1_data run over a different (smaller) population, so writing
+            # them into stocks_scanned would regress the existing UI.
             if phase == "stocks":
                 _scan_config["stocks_scanned"] = current
                 # Also update total if it differs (e.g., from checkpoint resume)
                 if _scan_config["total_stocks"] != total:
                     _scan_config["total_stocks"] = total
 
-            # Update phase detail for different phases
+            # Build the phase_detail string + drive the broader per-phase
+            # progress fields so the UI keeps moving after Phase 1 ends.
             if phase == "stocks":
-                _scan_config["phase_detail"] = f"Fetching stock data ({current}/{total})..."
+                detail = f"Fetching stock data ({current}/{total})..."
             elif phase == "insider_short":
-                _scan_config["phase_detail"] = f"Fetching insider/short data ({current}/{total})..."
+                detail = f"Fetching insider/short data ({current}/{total})..."
             elif phase == "p1_data":
-                _scan_config["phase_detail"] = f"Fetching P1 data ({current}/{total})..."
+                detail = f"Fetching P1 data ({current}/{total})..."
+            else:
+                detail = f"{phase} ({current}/{total})..."
 
-            if current % 100 == 0:  # Log every 100 items
+            _set_phase(phase, detail=detail, current=current, total=total)
+
+            if total and current % 100 == 0:  # Log every 100 items
                 logger.info(f"Progress ({phase}): {current}/{total} ({current/total*100:.1f}%)")
 
         # Fetch and analyze all stocks asynchronously (this is the fast part!)
@@ -1274,8 +1325,12 @@ def run_continuous_scan():
         logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({fetch_time/len(analysis_results):.2f}s per stock)")
 
         # Phase 2: Saving to database
-        _scan_config["phase"] = "saving"
-        _scan_config["phase_detail"] = f"Saving {len(analysis_results)} stocks to database..."
+        _set_phase(
+            "saving",
+            detail=f"Saving {len(analysis_results)} stocks to database...",
+            current=0,
+            total=len(analysis_results),
+        )
         _scan_config["stocks_scanned"] = 0  # Reset for save progress
 
         # Save results to database with BATCHED COMMITS for performance
@@ -1295,6 +1350,7 @@ def run_continuous_scan():
                     successful += 1
                     # Update progress in real-time
                     _scan_config["stocks_scanned"] = successful
+                    _scan_config["phase_current"] = successful
 
                     # Batch commit every BATCH_SIZE stocks
                     if successful % BATCH_SIZE == 0:
@@ -1356,8 +1412,7 @@ def run_continuous_scan():
 
         # Phase 2.5: Auto-record Coiled Spring alerts
         phase_start = time.time()
-        _scan_config["phase"] = "coiled_spring"
-        _scan_config["phase_detail"] = "Checking for Coiled Spring candidates..."
+        _set_phase("coiled_spring", detail="Checking for Coiled Spring candidates...")
 
         try:
             auto_record_coiled_spring_alerts()
@@ -1365,7 +1420,7 @@ def run_continuous_scan():
             logger.error(f"Coiled Spring auto-record error: {e}")
 
         # Phase 2.6: Update CS alert outcomes
-        _scan_config["phase_detail"] = "Updating CS alert outcomes..."
+        _set_phase("coiled_spring", detail="Updating CS alert outcomes...")
 
         try:
             update_coiled_spring_outcomes()
@@ -1373,8 +1428,7 @@ def run_continuous_scan():
             logger.error(f"CS outcome tracking error: {e}")
 
         # Phase 2.7: Earnings Audit (deep FMP fundamental check for top candidates)
-        _scan_config["phase"] = "earnings_audit"
-        _scan_config["phase_detail"] = "Running earnings audit on top candidates..."
+        _set_phase("earnings_audit", detail="Running earnings audit on top candidates...")
 
         try:
             from backend.earnings_audit import run_earnings_audit
@@ -1389,8 +1443,7 @@ def run_continuous_scan():
             logger.error(f"Earnings audit error: {e}")
 
         # Phase 2.8: Update industry group strength rankings
-        _scan_config["phase"] = "industry_groups"
-        _scan_config["phase_detail"] = "Computing industry group rankings..."
+        _set_phase("industry_groups", detail="Computing industry group rankings...")
 
         try:
             from backend.industry_group import compute_industry_group_rankings, update_stock_group_ranks
@@ -1413,8 +1466,7 @@ def run_continuous_scan():
             spy_px = spy_info.get('price', 0)
             spy_50 = spy_info.get('ma_50', 0)
             if spy_px and spy_50 and spy_px < spy_50:
-                _scan_config["phase"] = "bear_base"
-                _scan_config["phase_detail"] = "Scanning bear market base candidates..."
+                _set_phase("bear_base", detail="Scanning bear market base candidates...")
                 from backend.bear_base import update_bear_base_candidates
                 bb_db = SessionLocal()
                 try:
@@ -1426,8 +1478,7 @@ def run_continuous_scan():
             logger.error(f"Bear base watchlist error: {e}")
 
         # Phase 3: AI Trading
-        _scan_config["phase"] = "ai_trading"
-        _scan_config["phase_detail"] = "Running AI trading cycle..."
+        _set_phase("ai_trading", detail="Running AI trading cycle...")
 
         # Run AI trading cycle after scan completes (only during market hours)
         # Iterates over ALL active users' portfolios
@@ -1470,8 +1521,7 @@ def run_continuous_scan():
                 ai_db.close()
 
         # Phase 4: Cleanup old StockScore records
-        _scan_config["phase"] = "cleanup"
-        _scan_config["phase_detail"] = "Cleaning up old score records..."
+        _set_phase("cleanup", detail="Cleaning up old score records...")
 
         cleanup_db = None
         try:
@@ -1486,7 +1536,7 @@ def run_continuous_scan():
         cleanup_price_cache()
 
         # Phase 4.5: Post-earnings gap-up detection
-        _scan_config["phase_detail"] = "Checking post-earnings gap-ups..."
+        _set_phase("cleanup", detail="Checking post-earnings gap-ups...")
 
         try:
             from backend.earnings_gapup import find_earnings_gapups, send_gapup_alert
@@ -1502,7 +1552,7 @@ def run_continuous_scan():
             logger.error(f"Gap-up detection error: {e}")
 
         # Phase 5: Check watchlist alerts
-        _scan_config["phase_detail"] = "Checking watchlist alerts..."
+        _set_phase("cleanup", detail="Checking watchlist alerts...")
 
         try:
             check_watchlist_alerts()
@@ -1531,6 +1581,10 @@ def run_continuous_scan():
             _scan_config["last_scan_end"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
             _scan_config["phase"] = None
             _scan_config["phase_detail"] = None
+            _scan_config["current_phase"] = None
+            _scan_config["phase_current"] = 0
+            _scan_config["phase_total"] = 0
+            _scan_config["phase_label"] = None
 
 
 def _refresh_portfolio_prices():
