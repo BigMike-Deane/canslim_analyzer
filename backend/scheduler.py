@@ -403,8 +403,16 @@ def update_coiled_spring_outcomes():
     """
     Automatically update outcomes for CS alerts that have passed earnings.
     Runs after each scan to track success/failure of CS predictions.
+
+    Design note (#5, philosophical): the outcome bucket measures whether the
+    stock is up X% from `price_at_alert` at evaluation time (>= check_days
+    after earnings). It is a SIGNAL-QUALITY metric for the CS detector — it
+    is NOT a simulated trader P&L. A real trader holding through earnings
+    sees gap mechanics, intraday volatility, and exit timing that this
+    metric intentionally ignores. The AI trader simulates that separately;
+    do not try to fold trader behavior into this evaluator.
     """
-    from backend.database import SessionLocal, Stock, CoiledSpringAlert
+    from backend.database import SessionLocal, Stock, CoiledSpringAlert, MarketSnapshot
     from config_loader import config
     from datetime import date, timedelta
 
@@ -424,8 +432,14 @@ def update_coiled_spring_outcomes():
         win_pct = thresholds.get('win_pct', 5)
         loss_pct = thresholds.get('loss_pct', -5)
 
-        # Find alerts without outcomes that are old enough to evaluate
-        # Alert must be at least (days_to_earnings + check_days) old
+        # Find alerts without outcomes that are old enough to evaluate.
+        # Design note (#2, intentional): we ONLY consider rows where
+        # `outcome IS NULL`. The first evaluation wins permanently — a later
+        # choppy day cannot flip "win" → "flat". Re-evaluating on every scan
+        # would create infinite mutability and confuse users ("why did my
+        # win flip to a loss overnight?"). If the snapshot timing turns out
+        # to be a real problem, fix it by extending the wait window, NOT by
+        # re-bucketing already-evaluated alerts.
         cutoff_date = date.today() - timedelta(days=check_days)
 
         alerts_to_update = db.query(CoiledSpringAlert).filter(
@@ -444,6 +458,36 @@ def update_coiled_spring_outcomes():
         alert_stocks = db.query(Stock).filter(Stock.ticker.in_(alert_tickers)).all()
         stocks_by_ticker = {s.ticker: s for s in alert_stocks}
 
+        # SPY is used for alpha-relative bucketing (fix #4): subtract SPY's
+        # same-window % change from the alert's price change so a brutal
+        # market day doesn't directly bucket a stock-level alert as a loss.
+        # Falls back to absolute price change if SPY data is missing.
+        # `current_price` from the stocks table is the latest scan; the
+        # historical SPY-at-alert-date price comes from the daily
+        # MarketSnapshot table (one row per market day).
+        spy_stock = db.query(Stock).filter(Stock.ticker == 'SPY').first()
+        spy_current_price = (
+            spy_stock.current_price
+            if spy_stock and spy_stock.current_price and spy_stock.current_price > 0
+            else None
+        )
+
+        # Batch-fetch SPY snapshot prices for all unique alert_dates so we
+        # don't issue an N+1 of MarketSnapshot lookups inside the loop.
+        spy_at_alert_by_date: dict = {}
+        if spy_current_price is not None:
+            unique_alert_dates = list({a.alert_date for a in alerts_to_update})
+            spy_snapshots = (
+                db.query(MarketSnapshot)
+                .filter(MarketSnapshot.date.in_(unique_alert_dates))
+                .all()
+            )
+            spy_at_alert_by_date = {
+                snap.date: snap.spy_price
+                for snap in spy_snapshots
+                if snap.spy_price and snap.spy_price > 0
+            }
+
         updated = 0
         for alert in alerts_to_update:
             # Get current stock price
@@ -451,10 +495,21 @@ def update_coiled_spring_outcomes():
             if not stock or not stock.current_price:
                 continue
 
-            # Check if enough time has passed since alert (should be past earnings)
-            # If days_to_earnings was recorded, wait that many days plus check_days
+            # Determine the actual wait window. If the stock's
+            # `next_earnings_date` is available, compute the wait from the
+            # actual earnings date — handles reschedules / pre-announcements
+            # / surprise reports where the snapshotted DTE is now wrong.
+            # Falls back to the snapshotted DTE when next_earnings_date is
+            # null (legacy rows / detector ran without earnings data).
+            actual_earnings_date = getattr(stock, 'next_earnings_date', None)
             days_since_alert = (date.today() - alert.alert_date).days
-            days_needed = (alert.days_to_earnings or 7) + check_days
+            if actual_earnings_date is not None:
+                days_alert_to_earnings = max(
+                    0, (actual_earnings_date - alert.alert_date).days
+                )
+                days_needed = days_alert_to_earnings + check_days
+            else:
+                days_needed = (alert.days_to_earnings or 7) + check_days
 
             if days_since_alert < days_needed:
                 # Not enough time has passed
@@ -464,7 +519,26 @@ def update_coiled_spring_outcomes():
             if not alert.price_at_alert or alert.price_at_alert <= 0:
                 continue
 
-            price_change_pct = ((stock.current_price - alert.price_at_alert) / alert.price_at_alert) * 100
+            raw_price_change_pct = (
+                (stock.current_price - alert.price_at_alert) / alert.price_at_alert
+            ) * 100
+
+            # Alpha-relative bucketing (fix #4): subtract SPY's same-window
+            # change so a market-wide drop on eval day doesn't unfairly
+            # bucket a stock-specific alert. Falls back to raw change when
+            # SPY data isn't reliably available (preserves prior behavior).
+            spy_change_pct = None
+            if spy_current_price is not None:
+                spy_at_alert = spy_at_alert_by_date.get(alert.alert_date)
+                if spy_at_alert and spy_at_alert > 0:
+                    spy_change_pct = (
+                        (spy_current_price - spy_at_alert) / spy_at_alert
+                    ) * 100
+
+            if spy_change_pct is not None:
+                price_change_pct = raw_price_change_pct - spy_change_pct
+            else:
+                price_change_pct = raw_price_change_pct
 
             # Determine outcome
             if price_change_pct >= big_win_pct:
@@ -476,10 +550,11 @@ def update_coiled_spring_outcomes():
             else:
                 outcome = 'flat'
 
-            # Update alert
+            # Update alert (fix #1: pin outcome_updated_at for audit trail)
             alert.price_after_earnings = stock.current_price
             alert.price_change_pct = round(price_change_pct, 2)
             alert.outcome = outcome
+            alert.outcome_updated_at = datetime.now(timezone.utc)
             updated += 1
 
             logger.info(f"CS outcome {alert.ticker}: {outcome} ({price_change_pct:+.1f}%)")
