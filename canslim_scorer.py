@@ -53,8 +53,11 @@ class CANSLIMScorer:
         'M': 15,
     }
 
-    # Sector-adjusted growth thresholds
-    # A 20% growth for Industrial is excellent; for Tech it's mediocre
+    # Sector-adjusted growth thresholds (used by both A and C scoring).
+    # A 20% growth for Industrial is excellent; for Tech it's mediocre.
+    # Keys are GICS sector names. FMP/Yahoo emit Morningstar names for ~37% of
+    # the universe (e.g., "Financial Services" instead of "Financials"); those
+    # are normalized via SECTOR_ALIASES below before lookup.
     SECTOR_GROWTH_THRESHOLDS = {
         'Technology': {'excellent': 30, 'good': 20},
         'Communication Services': {'excellent': 25, 'good': 18},
@@ -71,15 +74,32 @@ class CANSLIMScorer:
         'default': {'excellent': 25, 'good': 15},
     }
 
+    # Morningstar -> GICS sector aliases. FMP and Yahoo emit Morningstar names
+    # for ~765 stocks (37% of universe) which previously fell through to the
+    # default thresholds, silently overstating the bar for Financials/Materials/
+    # Staples and understating it for Consumer Discretionary. Affects A and C.
+    SECTOR_ALIASES = {
+        'Financial Services': 'Financials',
+        'Consumer Cyclical': 'Consumer Discretionary',
+        'Consumer Defensive': 'Consumer Staples',
+        'Basic Materials': 'Materials',
+    }
+
     def __init__(self, data_fetcher: DataFetcher):
         self.fetcher = data_fetcher
         self._market_score: float | None = None
         self._market_detail: str = ""
 
     def _get_sector_thresholds(self, sector: str) -> dict:
-        """Get growth thresholds for a given sector"""
+        """Get growth thresholds for a given sector.
+
+        Normalizes Morningstar sector names to GICS via SECTOR_ALIASES before
+        lookup so FMP/Yahoo-sourced sectors hit the tuned thresholds instead of
+        falling through to `default`.
+        """
+        canonical = self.SECTOR_ALIASES.get(sector, sector)
         return self.SECTOR_GROWTH_THRESHOLDS.get(
-            sector,
+            canonical,
             self.SECTOR_GROWTH_THRESHOLDS['default']
         )
 
@@ -381,11 +401,40 @@ class CANSLIMScorer:
         final = round(max(0.0, min(max_score, base + bonus)), 1)
         return final, f"Avg QoQ: {avg_growth:+.0f}%{bonus_detail}"
 
+    def _calculate_roe_bonus(self, data: StockData, max_pts: float = 3) -> tuple[float, str]:
+        """
+        Compute ROE quality bonus (up to `max_pts`) and detail string.
+
+        Extracted from `_score_annual_earnings` so the Turnaround branch can
+        apply the same bonus as the primary 3-yr CAGR path. Without this, ~198
+        stocks (10% of universe) with positive recent + negative older earnings
+        were stuck at a flat 10.5 pts and silently lost up to 3 pts of ROE
+        credit they had earned (e.g., GEV with ROE 75.7%).
+
+        ROE from FMP is already a decimal (e.g., 0.25 = 25%). Use abs(roe) < 5
+        to detect decimal format: catches 0-500% ROE as decimal, while values
+        >= 5 are treated as already-percentage (no company has 500%+ ROE).
+        """
+        roe = getattr(data, 'roe', 0) or 0
+        roe_pct = roe * 100 if abs(roe) < 5 else roe
+
+        if roe_pct >= 25:
+            return max_pts, f", ROE {roe_pct:.0f}%"
+        if roe_pct >= 17:
+            return max_pts * 0.7, f", ROE {roe_pct:.0f}%"
+        if roe_pct >= 10:
+            return max_pts * 0.3, f", ROE {roe_pct:.0f}%"
+        if roe_pct > 0:
+            return 0, ", low ROE"
+        return 0, ""
+
     def _score_annual_earnings(self, data: StockData) -> tuple[float, str]:
         """
         A - Annual Earnings Growth (15 pts max)
         REFINED: 3-year CAGR (up to 12 pts) + ROE quality check (up to 3 pts)
         - O'Neil recommends 25%+ CAGR and 17%+ ROE
+        - Turnaround branch (older <= 0, recent > 0) also applies the ROE bonus
+          on top of a 10.5-pt base, capped at the 15-pt max.
         """
         max_score = self.MAX_SCORES['A']
         cagr_max = 12  # Base score for CAGR
@@ -401,7 +450,13 @@ class CANSLIMScorer:
 
         if older <= 0 or recent <= 0:
             if recent > 0 and older <= 0:
-                return max_score * 0.7, "Turnaround"
+                # Turnaround: positive recent earnings after a loss year. Apply
+                # the same ROE bonus the primary path uses so quality companies
+                # coming off a bad year aren't capped at 10.5 pts.
+                turnaround_base = max_score * 0.7  # 10.5 pts
+                roe_bonus, roe_detail = self._calculate_roe_bonus(data, roe_max)
+                total = min(turnaround_base + roe_bonus, max_score)
+                return round(total, 1), f"Turnaround{roe_detail}"
             return 0, "Negative earnings"
 
         cagr = ((recent / older) ** (1 / 3) - 1) * 100
@@ -424,28 +479,8 @@ class CANSLIMScorer:
         else:
             cagr_score = 0
 
-        # ROE quality bonus (up to 3 pts)
-        # O'Neil recommends ROE of 17% or higher
-        roe_score = 0
-        roe_detail = ""
-        roe = getattr(data, 'roe', 0) or 0
-
-        # ROE from FMP is already a decimal (e.g., 0.25 = 25%)
-        # Use abs(roe) < 5 to detect decimal format: catches 0-500% ROE as decimal,
-        # while values >= 5 are treated as already-percentage (no company has 500%+ ROE)
-        roe_pct = roe * 100 if abs(roe) < 5 else roe
-
-        if roe_pct >= 25:
-            roe_score = roe_max
-            roe_detail = f", ROE {roe_pct:.0f}%"
-        elif roe_pct >= 17:
-            roe_score = roe_max * 0.7
-            roe_detail = f", ROE {roe_pct:.0f}%"
-        elif roe_pct >= 10:
-            roe_score = roe_max * 0.3
-            roe_detail = f", ROE {roe_pct:.0f}%"
-        elif roe_pct > 0:
-            roe_detail = f", low ROE"
+        # ROE quality bonus (up to 3 pts) - O'Neil recommends ROE of 17% or higher
+        roe_score, roe_detail = self._calculate_roe_bonus(data, roe_max)
 
         total_score = min(cagr_score + roe_score, max_score)
         return round(total_score, 1), f"3yr CAGR: {cagr:+.0f}%{roe_detail}"

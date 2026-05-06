@@ -257,6 +257,145 @@ class TestAScore:
         score = scorer.score_stock(stock)
         assert score.a_score == 0
 
+    # ── Bug B regression: Turnaround branch must apply ROE bonus ──────────────
+    # Pre-fix: Turnaround silently returned a flat 10.5 pts and ignored ROE,
+    # capping ~198 stocks (e.g., GEV ROE 75.7%, MMM 71.5%) at 10.5 instead of
+    # up to 13.5. The primary 3-yr CAGR path applied the ROE bonus correctly;
+    # the Turnaround branch did not.
+
+    def test_turnaround_applies_roe_bonus_high(self):
+        """Turnaround stock with strong ROE should exceed flat 10.5-pt floor."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            annual_earnings=[10.0, 5.0, -1.0],  # turnaround: older<=0, recent>0
+            roe=0.50,                            # 50% ROE — full 3-pt bonus
+        )
+        score = scorer.score_stock(stock)
+        # 10.5 base + 3.0 ROE = 13.5
+        assert score.a_score == pytest.approx(13.5, abs=0.1)
+        assert "Turnaround" in score.a_detail
+        assert "ROE" in score.a_detail
+
+    def test_turnaround_zero_roe_unchanged(self):
+        """Turnaround with no ROE should still be exactly 10.5 (no regression)."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            annual_earnings=[10.0, 5.0, -1.0],
+            roe=0.0,
+        )
+        score = scorer.score_stock(stock)
+        assert score.a_score == pytest.approx(10.5, abs=0.01)
+
+    def test_turnaround_partial_roe_bonus(self):
+        """Turnaround with 17%-tier ROE should land between 10.5 and 13.5."""
+        scorer = _make_scorer()
+        stock = _make_stock_data(
+            annual_earnings=[10.0, 5.0, -1.0],
+            roe=0.18,  # 18% — 0.7 * 3 = 2.1 bonus
+        )
+        score = scorer.score_stock(stock)
+        # 10.5 + 2.1 = 12.6
+        assert score.a_score == pytest.approx(12.6, abs=0.1)
+
+    def test_turnaround_total_capped_at_max(self):
+        """Turnaround total should never exceed A score max (15)."""
+        scorer = _make_scorer()
+        # Stack the deck: massive ROE + turnaround. 10.5 + 3 = 13.5, well under
+        # 15, but pin the cap explicitly so a future bump to base/bonus can't
+        # silently exceed max_score.
+        stock = _make_stock_data(
+            annual_earnings=[10.0, 5.0, -1.0],
+            roe=10.0,  # 1000% — read as already-percentage; still caps at max_pts
+        )
+        score = scorer.score_stock(stock)
+        assert score.a_score <= 15.0
+
+
+# ── Sector threshold lookup (Bug A regression) ────────────────────────────────
+# FMP/Yahoo emit Morningstar sector names for ~37% of the universe. Pre-fix,
+# those names had no key in SECTOR_GROWTH_THRESHOLDS and silently fell through
+# to `default` (excellent=25, good=15) instead of the tuned values for their
+# GICS equivalents. Affects both A and C scoring (both call _get_sector_thresholds).
+
+class TestSectorThresholds:
+    """Test sector threshold lookup honors Morningstar -> GICS aliases."""
+
+    def test_financial_services_resolves_to_financials(self):
+        scorer = _make_scorer()
+        thresholds = scorer._get_sector_thresholds("Financial Services")
+        assert thresholds == {'excellent': 20, 'good': 12}
+
+    def test_consumer_cyclical_resolves_to_consumer_discretionary(self):
+        scorer = _make_scorer()
+        thresholds = scorer._get_sector_thresholds("Consumer Cyclical")
+        assert thresholds == {'excellent': 25, 'good': 18}
+
+    def test_consumer_defensive_resolves_to_consumer_staples(self):
+        scorer = _make_scorer()
+        thresholds = scorer._get_sector_thresholds("Consumer Defensive")
+        assert thresholds == {'excellent': 15, 'good': 10}
+
+    def test_basic_materials_resolves_to_materials(self):
+        scorer = _make_scorer()
+        thresholds = scorer._get_sector_thresholds("Basic Materials")
+        assert thresholds == {'excellent': 18, 'good': 12}
+
+    def test_aliased_does_not_fall_through_to_default(self):
+        """All four Morningstar aliases must NOT return the default thresholds."""
+        scorer = _make_scorer()
+        default = scorer.SECTOR_GROWTH_THRESHOLDS['default']
+        for morningstar_name in ('Financial Services', 'Consumer Cyclical',
+                                  'Consumer Defensive', 'Basic Materials'):
+            thresholds = scorer._get_sector_thresholds(morningstar_name)
+            # Each alias maps to a sector with different thresholds than default
+            assert thresholds != default, (
+                f"{morningstar_name} fell through to default — alias broken"
+            )
+
+    def test_gics_names_still_work(self):
+        """Native GICS names must continue to resolve correctly (no regression)."""
+        scorer = _make_scorer()
+        assert scorer._get_sector_thresholds("Technology") == {'excellent': 30, 'good': 20}
+        assert scorer._get_sector_thresholds("Financials") == {'excellent': 20, 'good': 12}
+        assert scorer._get_sector_thresholds("Materials") == {'excellent': 18, 'good': 12}
+
+    def test_unknown_sector_falls_through_to_default(self):
+        """Truly unknown sectors should still hit the default."""
+        scorer = _make_scorer()
+        thresholds = scorer._get_sector_thresholds("NonexistentSector")
+        assert thresholds == scorer.SECTOR_GROWTH_THRESHOLDS['default']
+
+    def test_alias_affects_a_score(self):
+        """Same earnings, Morningstar vs GICS sector name, should yield same A score."""
+        scorer = _make_scorer()
+        # Materials: excellent=18, good=12 — different from default (25/15)
+        stock_gics = _make_stock_data(
+            sector="Materials",
+            annual_earnings=[1.50, 1.30, 1.10],  # CAGR ~10.9%
+        )
+        stock_alias = _make_stock_data(
+            sector="Basic Materials",
+            annual_earnings=[1.50, 1.30, 1.10],
+        )
+        s_gics = scorer.score_stock(stock_gics)
+        s_alias = scorer.score_stock(stock_alias)
+        assert s_gics.a_score == s_alias.a_score, (
+            "Materials and Basic Materials must produce identical A scores"
+        )
+
+    def test_alias_affects_c_score(self):
+        """Sector aliases must also resolve via the C-score path."""
+        scorer = _make_scorer()
+        # Same earnings, Financials vs Financial Services
+        earnings = [1.2, 1.15, 1.1, 1.05, 1.0, 0.95, 0.90, 0.85]
+        stock_gics = _make_stock_data(sector="Financials", quarterly_earnings=earnings)
+        stock_alias = _make_stock_data(sector="Financial Services", quarterly_earnings=earnings)
+        s_gics = scorer.score_stock(stock_gics)
+        s_alias = scorer.score_stock(stock_alias)
+        assert s_gics.c_score == s_alias.c_score, (
+            "Financials and Financial Services must produce identical C scores"
+        )
+
 
 # ── L Score (Leader vs Laggard) ───────────────────────────────────────────────
 
