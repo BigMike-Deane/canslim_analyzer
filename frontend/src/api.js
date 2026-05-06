@@ -114,6 +114,8 @@ async function request(endpoint, options = {}) {
     // Show a visible message before redirecting
     const banner = document.createElement('div')
     banner.textContent = 'Session expired — signing out...'
+    // Brand red (primary-400) banner for session-expired notice — matches the
+    // rebrand and stays distinct from P&L red used in price/return cells.
     banner.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:12px;background:#dc2626;color:white;text-align:center;z-index:9999;font-size:14px'
     document.body.appendChild(banner)
     setTimeout(() => { window.location.href = '/' }, 1500)

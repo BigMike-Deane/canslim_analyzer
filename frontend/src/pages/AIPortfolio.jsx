@@ -128,7 +128,7 @@ function PerformanceChart({ history, startingCash }) {
             />
             <Tooltip
               contentStyle={tooltipStyle}
-              labelStyle={{ color: '#6e6e82' }}
+              labelStyle={{ color: '#8c7479' }}
               formatter={(value) => [formatCurrency(value), 'Value']}
               labelFormatter={(_, payload) => {
                 if (payload && payload[0]) {
@@ -551,8 +551,12 @@ function TradeHistory({ trades }) {
 }
 
 // ── Sector Allocation Chart ─────────────────────────────────────────
-const SECTOR_COLORS = ['#10b981', '#22d3ee', '#f59e0b', '#ef4444', '#a855f7',
-  '#ec4899', '#6366f1', '#3b82f6', '#22c55e', '#eab308']
+// Warm-leaning 10-color qualitative palette for pie slices. Anchors on the
+// brand red + accent gold, fills out with emerald/teal/copper/rose/amber to
+// stay readable against the warm-dark surface. Avoids cool blues/violets
+// that clashed with the rebrand.
+const SECTOR_COLORS = ['#dc2626', '#f59e0b', '#10b981', '#fb923c', '#f43f5e',
+  '#fbbf24', '#22d3ee', '#a855f7', '#22c55e', '#b45309']
 
 function SectorAllocationChart({ riskData, cashPct }) {
   if (!riskData?.sector_concentration || riskData.sector_concentration.length === 0) return null
@@ -593,7 +597,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
                 labelLine={false}
               >
                 {chartData.map((entry, i) => (
-                  <Cell key={i} fill={entry.name === 'Cash' ? '#4a4a5e' : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
+                  <Cell key={i} fill={entry.name === 'Cash' ? '#6b5559' : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
                 ))}
               </Pie>
               <Tooltip
@@ -607,7 +611,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
           {chartData.map((entry, i) => (
             <div key={entry.name} className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: entry.name === 'Cash' ? '#4a4a5e' : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
+                style={{ backgroundColor: entry.name === 'Cash' ? '#6b5559' : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
               <span className="text-dark-300 truncate">{entry.name}</span>
               <span className="text-dark-400 ml-auto font-data">{entry.value.toFixed(0)}%</span>
             </div>

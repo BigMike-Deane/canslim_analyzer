@@ -4,17 +4,20 @@ import { api, formatRelativeTime, formatDateTime } from '../api'
 
 const PAGE_SIZE = 50
 
+// Categorical kind colors. Kept emerald/amber/orange/yellow as semantic (gain,
+// warning, risk, info). Replaced cool cyan/violet/blue/slate with warm
+// equivalents that harmonize with the brand-red theme.
 const KIND_META = {
   trade:              { label: 'Trade',        cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
   stop_loss:          { label: 'Stop Loss',    cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
   score_crash:        { label: 'Score Drop',   cls: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
-  breakout:           { label: 'Breakout',     cls: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30' },
-  coiled_spring:      { label: 'Coiled Spring',cls: 'bg-violet-500/10 text-violet-400 border-violet-500/30' },
+  breakout:           { label: 'Breakout',     cls: 'bg-primary-500/10 text-primary-400 border-primary-500/30' },
+  coiled_spring:      { label: 'Coiled Spring',cls: 'bg-rose-500/10 text-rose-400 border-rose-500/30' },
   risk_alert:         { label: 'Risk',         cls: 'bg-orange-500/10 text-orange-400 border-orange-500/30' },
-  spy_gate_change:    { label: 'SPY Gate',     cls: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
+  spy_gate_change:    { label: 'SPY Gate',     cls: 'bg-accent-500/10 text-accent-500 border-accent-500/30' },
   market_turn:        { label: 'Market Turn',  cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
-  bear_base_update:   { label: 'Bear Bases',   cls: 'bg-slate-500/10 text-slate-300 border-slate-500/30' },
-  bear_market_report: { label: 'Bear Report',  cls: 'bg-slate-500/10 text-slate-300 border-slate-500/30' },
+  bear_base_update:   { label: 'Bear Bases',   cls: 'bg-dark-700/40 text-dark-300 border-dark-600' },
+  bear_market_report: { label: 'Bear Report',  cls: 'bg-dark-700/40 text-dark-300 border-dark-600' },
   morning_briefing:   { label: 'Briefing',     cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' },
 }
 

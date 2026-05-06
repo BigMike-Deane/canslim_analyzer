@@ -52,7 +52,7 @@ function CumulativePnLChart({ data }) {
             </defs>
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(d) => {
                 const parts = d.split('-')
                 return parts.length >= 2 ? `${parts[1]}/${parts[2]}` : d
@@ -60,10 +60,10 @@ function CumulativePnLChart({ data }) {
               interval="preserveStartEnd"
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => `$${v.toFixed(0)}`}
             />
-            <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
+            <ReferenceLine y={0} stroke="#473538" strokeWidth={1} />
             <Tooltip
               contentStyle={TOOLTIP_STYLE}
               formatter={(value, name) => {
@@ -104,14 +104,14 @@ function MonthlyPnLChart({ data }) {
           <BarChart data={data}>
             <XAxis
               dataKey="month"
-              tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(m) => {
                 const parts = m.split('-')
                 return parts.length >= 2 ? `${parts[1]}/${parts[0].slice(2)}` : m
               }}
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => `$${v.toFixed(0)}`}
             />
             <Tooltip
