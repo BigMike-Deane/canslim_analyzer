@@ -33,7 +33,7 @@ const MARKET_STATE_CFG = {
   TRENDING:   { label: 'Trending',   color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', dot: 'bg-emerald-400' },
   PRESSURE:   { label: 'Pressure',   color: 'text-amber-400',   bg: 'bg-amber-500/10 border-amber-500/20',   dot: 'bg-amber-400' },
   CORRECTION: { label: 'Correction', color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',       dot: 'bg-red-400' },
-  RECOVERY:   { label: 'Recovery',   color: 'text-blue-400',    bg: 'bg-blue-500/10 border-blue-500/20',     dot: 'bg-blue-400' },
+  RECOVERY:   { label: 'Recovery',   color: 'text-stone-300',   bg: 'bg-stone-500/10 border-stone-500/25',   dot: 'bg-stone-300' },
   CONFIRMED:  { label: 'Confirmed',  color: 'text-teal-400',    bg: 'bg-teal-500/10 border-teal-500/20',     dot: 'bg-teal-400' },
 }
 
@@ -70,13 +70,13 @@ function CoiledSpringSection({ cs }) {
   if (!hasData) return null
 
   return (
-    <Card variant="accent" accent="purple" className="bg-purple-500/[0.03]">
+    <Card variant="accent" accent="teal" className="bg-teal-500/[0.03]">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-purple-300">Coiled Spring</span>
-          <TagBadge color="purple">CATALYST</TagBadge>
+          <span className="text-sm font-semibold text-teal-300">Coiled Spring</span>
+          <TagBadge color="teal">CATALYST</TagBadge>
         </div>
-        <Link to="/coiled-spring/history" className="text-purple-400 text-[10px] hover:text-purple-300 transition-colors">
+        <Link to="/coiled-spring/history" className="text-teal-400 text-[10px] hover:text-teal-300 transition-colors">
           History &rarr;
         </Link>
       </div>
@@ -86,7 +86,7 @@ function CoiledSpringSection({ cs }) {
           columns={4}
           className="mb-3"
           stats={[
-            { label: 'Win Rate', value: formatPercent(stats.win_rate), color: 'text-purple-300' },
+            { label: 'Win Rate', value: formatPercent(stats.win_rate), color: 'text-teal-300' },
             { label: 'Wins', value: stats.wins, color: 'text-emerald-400' },
             { label: 'Losses', value: stats.losses, color: 'text-red-400' },
             { label: 'Flat', value: stats.flat, color: 'text-yellow-400' },
@@ -101,10 +101,10 @@ function CoiledSpringSection({ cs }) {
             <Link
               key={c.ticker}
               to={`/stock/${c.ticker}`}
-              className="flex items-center justify-between py-1.5 border-b border-dark-700/30 last:border-0 hover:bg-purple-500/5 -mx-1 px-1 rounded transition-colors"
+              className="flex items-center justify-between py-1.5 border-b border-dark-700/30 last:border-0 hover:bg-teal-500/5 -mx-1 px-1 rounded transition-colors"
             >
               <div className="flex items-center gap-2">
-                <span className="font-medium text-purple-300 text-xs w-10">{c.ticker}</span>
+                <span className="font-medium text-teal-300 text-xs w-10">{c.ticker}</span>
                 {c.base_type && <TagBadge>{c.base_type}</TagBadge>}
               </div>
               <div className="flex items-center gap-2">

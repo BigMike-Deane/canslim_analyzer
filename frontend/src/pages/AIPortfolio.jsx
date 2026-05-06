@@ -801,10 +801,10 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
   if (!csAlerts || csAlerts.length === 0) return null
 
   return (
-    <Card variant="accent" accent="purple" className="mb-4 bg-purple-500/[0.03]">
+    <Card variant="accent" accent="teal" className="mb-4 bg-teal-500/[0.03]">
       <CollapsibleSection
         title="Coiled Spring Alerts"
-        badge={<TagBadge color="purple">{csAlerts.length} candidates</TagBadge>}
+        badge={<TagBadge color="teal">{csAlerts.length} candidates</TagBadge>}
         defaultOpen={csExpanded}
       >
         <div className="text-[10px] text-dark-400 mb-2">
@@ -840,7 +840,7 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
               </div>
               <div className="text-right">
                 <ScoreBadge score={stock.canslim_score} size="sm" />
-                <div className="text-[10px] text-purple-400 font-data mt-0.5">+{stock.cs_bonus} bonus</div>
+                <div className="text-[10px] text-teal-400 font-data mt-0.5">+{stock.cs_bonus} bonus</div>
               </div>
             </Link>
           ))}

@@ -79,6 +79,7 @@ export function TagBadge({ children, color = 'default', className = '' }) {
     default: 'bg-dark-700 text-dark-300 border-dark-600',
     cyan: 'bg-primary-500/10 text-primary-400 border-primary-500/20',
     purple: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+    teal: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
     green: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     amber: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
     red: 'bg-red-500/10 text-red-400 border-red-500/20',

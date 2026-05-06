@@ -12,6 +12,7 @@ const accentColors = {
   red: 'border-l-red-500/60',
   purple: 'border-l-purple-500/60',
   amber: 'border-l-amber-500/60',
+  teal: 'border-l-teal-500/60',
 }
 
 export default function Card({

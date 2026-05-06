@@ -49,7 +49,7 @@ export default function CoiledSpringHistory() {
       label: 'Ticker',
       sortable: true,
       render: (_, row) => (
-        <Link to={`/stock/${row.ticker}`} className="text-purple-400 font-medium hover:text-purple-300">
+        <Link to={`/stock/${row.ticker}`} className="text-teal-400 font-medium hover:text-teal-300">
           {row.ticker}
         </Link>
       ),
@@ -126,9 +126,9 @@ export default function CoiledSpringHistory() {
         backTo="/"
         backLabel="Command Center"
         badge={
-          <TagBadge color="purple">EARNINGS CATALYST</TagBadge>
+          <TagBadge color="teal">EARNINGS CATALYST</TagBadge>
         }
-        className="[&_h1]:text-purple-300"
+        className="[&_h1]:text-teal-300"
       />
 
       {loading && !data && (

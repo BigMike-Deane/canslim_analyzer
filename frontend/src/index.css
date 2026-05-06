@@ -8,7 +8,7 @@
 
 html {
   /* Warm near-black; matches dark-950 in tailwind.config.js */
-  background-color: #0c0a08;
+  background-color: #0a0908;
 }
 
 body {
@@ -38,7 +38,12 @@ body {
   @apply bg-dark-700 animate-pulse rounded-lg;
 }
 
-/* ─── Score Badge Colors ─── */
+/* ─── Score Badge Colors ───
+   Hue-engineered to AVOID the amber brand color. Average/poor used to be
+   yellow/orange which competed visually with brand amber on cards and
+   buttons. Now: green→emerald gradient at the top, neutral stone in the
+   middle, rose→red at the bottom. Score reads instantly without confusion
+   with brand or P&L semantics. */
 .score-excellent {
   @apply bg-emerald-500/15 text-emerald-400 border border-emerald-500/20;
 }
@@ -48,11 +53,11 @@ body {
 }
 
 .score-average {
-  @apply bg-yellow-500/15 text-yellow-400 border border-yellow-500/20;
+  @apply bg-stone-500/15 text-stone-300 border border-stone-500/25;
 }
 
 .score-poor {
-  @apply bg-orange-500/15 text-orange-400 border border-orange-500/20;
+  @apply bg-rose-500/15 text-rose-300 border border-rose-500/25;
 }
 
 .score-bad {

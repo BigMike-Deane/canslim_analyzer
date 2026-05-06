@@ -7,34 +7,35 @@ export default {
   theme: {
     extend: {
       colors: {
-        // ─── Warm-tinted near-blacks (copper-brown undertone) ───
-        // Vintage-modern leather-bound aesthetic. P&L red stays distinct
-        // from the brand by hue (copper vs scarlet) and saturation.
+        // ─── Bloomberg Terminal-style warm-near-blacks ───
+        // Pure-warm neutrals (slight amber undertone) so amber brand reads
+        // crisply against them without competing for attention.
         dark: {
-          950: '#0c0a08',  // Page background — warmest near-black
-          900: '#15110d',  // Sidebar / nav background
-          850: '#1a140f',  // Stat card background
-          800: '#1c1714',  // Card surface
-          750: '#251d18',
-          700: '#2e241d',  // Borders, dividers
-          600: '#3d2f23',  // Subtle borders, warm brown-tinted
-          500: '#5c4a3d',  // Muted text
-          400: '#8a7a66',  // Secondary text
-          300: '#a89a86',  // Body text on subtle surfaces
-          200: '#cbbeac',
-          100: '#e8dccc',  // Primary text — warm cream
-          50:  '#f5ecdc',
+          950: '#0a0908',  // Page background — warm pure-black
+          900: '#11100e',  // Sidebar / nav background
+          850: '#15130f',  // Stat card background
+          800: '#1a1815',  // Card surface
+          750: '#232019',
+          700: '#2c2820',  // Borders, dividers
+          600: '#3d3628',  // Subtle borders
+          500: '#5a5240',  // Muted text
+          400: '#847a64',  // Secondary text
+          300: '#a39875',  // Body text on subtle surfaces
+          200: '#c9bfa0',
+          100: '#ebe3c8',  // Primary text — warm cream-amber
+          50:  '#f5edd5',
         },
-        // ─── Brand copper (burnished) ───
-        // The "primary" token used for sidebar accents, active states, focus
-        // rings, primary CTAs. Distinct from P&L red by hue: brand is copper/
-        // sienna; loss is the cooler Tailwind red-400/500.
+        // ─── Brand amber (Bloomberg Terminal) ───
+        // The canonical financial-terminal aesthetic: amber-on-black. The
+        // primary scale walks from deep amber (pressed) up to canonical
+        // Bloomberg amber #f59e0b (focus/accent) up to lighter amber
+        // (hover). P&L red is hue-distant; loss-red still pops.
         primary: {
-          700: '#92400e',  // Pressed CTA — deepest copper
-          600: '#b45309',  // Primary CTA bg — burnished copper
-          500: '#c2410c',  // Brand accent — active rail, focus
-          400: '#d97706',  // Hover lift — kept on the copper side, not pure orange
-          300: '#ea580c',  // Brightest variant; rarely needed for brand
+          700: '#b45309',  // Pressed CTA — deepest amber
+          600: '#d97706',  // Primary CTA bg — amber-deep
+          500: '#f59e0b',  // Brand accent — canonical Bloomberg amber
+          400: '#fbbf24',  // Hover lift
+          300: '#fcd34d',  // Brightest variant; cream-gold
         },
         // ─── Accent gold ───
         // Secondary highlight for things like the search hotkey hint, info
@@ -52,14 +53,14 @@ export default {
         // is one-file-edit. Existing code still works via the legacy aliases
         // above.
         brand: {
-          DEFAULT: '#c2410c',
-          deep:    '#92400e',
-          bright:  '#d97706',
+          DEFAULT: '#f59e0b',
+          deep:    '#b45309',
+          bright:  '#fbbf24',
         },
         surface: {
-          DEFAULT:  '#1c1714',  // = dark-800
-          elevated: '#251d18',  // = dark-750 — modals, popovers
-          sunken:   '#15110d',  // = dark-900 — sidebar, nav
+          DEFAULT:  '#1a1815',  // = dark-800
+          elevated: '#232019',  // = dark-750 — modals, popovers
+          sunken:   '#11100e',  // = dark-900 — sidebar, nav
         },
         pnl: {
           up:        '#10b981',  // emerald-500 — gain (kept; do not theme)
@@ -110,9 +111,9 @@ export default {
           '50%': { opacity: '0.5', transform: 'scale(1.5)' },
         },
         glow: {
-          // Brand copper rgb(194, 65, 12).
-          '0%': { boxShadow: '0 0 5px rgba(194, 65, 12, 0.15)' },
-          '100%': { boxShadow: '0 0 20px rgba(194, 65, 12, 0.20)' },
+          // Brand amber rgb(245, 158, 11) — Bloomberg Terminal canonical.
+          '0%': { boxShadow: '0 0 5px rgba(245, 158, 11, 0.18)' },
+          '100%': { boxShadow: '0 0 20px rgba(245, 158, 11, 0.24)' },
         },
       },
       backdropBlur: {
