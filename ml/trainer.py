@@ -49,6 +49,7 @@ def train_model(
     min_gain_pct: float = 0.0,
     excluded_features: Optional[list] = None,
     calibrate: bool = False,
+    calibration_method: str = "isotonic",
 ) -> dict:
     """
     Train XGBoost model with walk-forward CV.
@@ -62,15 +63,27 @@ def train_model(
     Used for leakage audits — dropping `total_score` lets us measure how much of the
     model's lift came from features that are derivative of the trade decision itself.
 
-    calibrate: wrap the final XGBoost model in CalibratedClassifierCV(method="isotonic")
-    so predict_proba returns calibrated probabilities. Required when using
-    min_confidence gating: without calibration, "0.30" is an arbitrary threshold;
-    with isotonic calibration, "0.30" means "30% empirical win rate."
+    calibrate: wrap the final XGBoost model in CalibratedClassifierCV so predict_proba
+    returns calibrated probabilities. Required when using min_confidence gating:
+    without calibration, "0.30" is an arbitrary threshold; with calibration, "0.30"
+    means "the model estimates ~30% empirical win rate."
+
+    calibration_method: which calibrator to use when calibrate=True. One of:
+      - "isotonic" (default, back-compat): non-parametric, flexible, but data-hungry.
+        v18 retrain (May 5, 2026) showed isotonic on ~755 samples ÷ cv=3 ≈ 250 per
+        inner model overfits and squeezes probabilities toward base rate.
+      - "sigmoid": Platt scaling — a 2-parameter logistic fit, far less data-hungry.
+        Preferred when training pool < ~2000 samples. Constraint: assumes the
+        underlying score-to-probability map is sigmoidal.
 
     Returns dict with:
         model, metrics, feature_importance, cv_results,
         passed_gate (bool), baseline_comparison
     """
+    if calibration_method not in {"isotonic", "sigmoid"}:
+        raise ValueError(
+            f"calibration_method must be 'isotonic' or 'sigmoid', got {calibration_method!r}"
+        )
     X, y_win, y_gain, metadata = get_feature_matrix(df)
     if X is None or len(X) < MIN_TRAINING_SAMPLES:
         return {
@@ -138,7 +151,7 @@ def train_model(
         from sklearn.calibration import CalibratedClassifierCV
         # Use prefit=False with cv=3 so the wrapper handles fitting both the
         # base model and the calibrator on the same data via CV.
-        model = CalibratedClassifierCV(base_model, method="isotonic", cv=3)
+        model = CalibratedClassifierCV(base_model, method=calibration_method, cv=3)
         model.fit(X, y_win)
         # Feature importance lives on the underlying estimator(s); average
         # across the cv folds for a stable view.
@@ -170,6 +183,7 @@ def train_model(
         "training_samples": len(X),
         "feature_count": len(active_features),
         "calibrated": calibrate,
+        "calibration_method": calibration_method if calibrate else None,
         "excluded_features": excluded,
         "win_rate": round(float(y_win.mean()), 4),
         "min_gain_pct": min_gain_pct,
@@ -296,6 +310,14 @@ def save_model(model, metadata: dict, path: Optional[Path] = None,
                 if names is not None:
                     break
         feature_columns = list(names) if names is not None else list(FEATURE_COLUMNS)
+
+    # Persist calibration_method when the model is a calibrator. Caller may
+    # have already set metadata["calibration_method"]; if not, recover it
+    # from the wrapper itself so reload code can introspect without reading
+    # the model object.
+    metadata = dict(metadata) if metadata else {}
+    if hasattr(model, "method") and metadata.get("calibration_method") is None:
+        metadata["calibration_method"] = getattr(model, "method", None)
 
     payload = {
         "model": model,

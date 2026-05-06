@@ -849,6 +849,95 @@ class TestCalibration:
             assert isinstance(result["model"], XGBClassifier)
             assert result.get("calibrated") in (False, None)
 
+    def test_calibration_method_default_is_isotonic(self):
+        """Back-compat: omitting calibration_method preserves isotonic behavior."""
+        from sklearn.calibration import CalibratedClassifierCV
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(df, min_roc_auc=0.0, calibrate=True)
+        if not result.get("passed_gate"):
+            pytest.skip("training skipped on this seed")
+        assert isinstance(result["model"], CalibratedClassifierCV)
+        assert result["model"].method == "isotonic"
+        assert result["calibration_method"] == "isotonic"
+
+    def test_calibration_method_sigmoid(self):
+        """Platt scaling — far less data-hungry than isotonic. Required for the
+        small training pool (~755 samples) where isotonic overfits."""
+        from sklearn.calibration import CalibratedClassifierCV
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(
+            df, min_roc_auc=0.0, calibrate=True, calibration_method="sigmoid"
+        )
+        if not result.get("passed_gate"):
+            pytest.skip("training skipped on this seed")
+        assert isinstance(result["model"], CalibratedClassifierCV)
+        assert result["model"].method == "sigmoid"
+        assert result["calibration_method"] == "sigmoid"
+        # predict_proba still works and returns valid probabilities
+        from ml.feature_extractor import get_feature_matrix
+        X, _, _, _ = get_feature_matrix(df)
+        proba = result["model"].predict_proba(X.iloc[[0]])
+        assert proba.shape == (1, 2)
+        assert abs(proba[0].sum() - 1.0) < 1e-6
+
+    def test_calibration_method_invalid_raises(self):
+        """Validation: unknown method must raise immediately, not silently coerce."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        with pytest.raises(ValueError, match="calibration_method"):
+            train_model(
+                df, min_roc_auc=0.0, calibrate=True, calibration_method="platt"
+            )
+
+    def test_calibration_method_none_when_not_calibrating(self):
+        """When calibrate=False, calibration_method in the result is None
+        regardless of what was passed — disambiguates 'not used' from a value."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(
+            df, min_roc_auc=0.0, calibrate=False, calibration_method="sigmoid"
+        )
+        if result.get("passed_gate"):
+            assert result["calibration_method"] is None
+
+    def test_save_model_persists_calibration_method(self):
+        """save_model must persist calibration_method to disk so reloaded models
+        are introspectable without re-reading the model object's .method attr."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(
+            df, min_roc_auc=0.0, calibrate=True, calibration_method="sigmoid"
+        )
+        if not result.get("passed_gate"):
+            pytest.skip("training skipped on this seed")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.joblib"
+            save_model(
+                result["model"],
+                {"calibration_method": result["calibration_method"]},
+                path=path,
+                feature_columns=result["feature_columns"],
+            )
+            payload = load_model(path=path)
+            assert payload is not None
+            assert payload["metadata"]["calibration_method"] == "sigmoid"
+
+    def test_save_model_recovers_calibration_method_from_model(self):
+        """Defensive: when caller forgets to pass calibration_method in metadata,
+        save_model recovers it from the CalibratedClassifierCV's .method attr."""
+        df = _make_labeled_df(n=300, win_rate=0.65)
+        result = train_model(
+            df, min_roc_auc=0.0, calibrate=True, calibration_method="sigmoid"
+        )
+        if not result.get("passed_gate"):
+            pytest.skip("training skipped on this seed")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.joblib"
+            # Caller passes NO calibration_method in metadata
+            save_model(
+                result["model"], {}, path=path,
+                feature_columns=result["feature_columns"],
+            )
+            payload = load_model(path=path)
+            assert payload["metadata"]["calibration_method"] == "sigmoid"
+
 
 # ============== Regression Trainer Tests ==============
 
