@@ -192,28 +192,10 @@ class TestBreakoutMonitor:
             with patch("backend.ai_trader.is_market_open", return_value=False):
                 breakout_monitor.check_intraday_breakouts()
 
-    def test_cooldown_tracking(self):
-        from backend.breakout_monitor import _recent_alerts, ALERT_COOLDOWN_HOURS
-        _recent_alerts.clear()
-        now = datetime.now(timezone.utc)
-        _recent_alerts["TEST"] = now
-        assert len(_recent_alerts) == 1
-
-        _recent_alerts["TEST"] = now - timedelta(hours=ALERT_COOLDOWN_HOURS * 3)
-        expired = [t for t, ts in _recent_alerts.items()
-                   if ts < now - timedelta(hours=ALERT_COOLDOWN_HOURS * 2)]
-        for t in expired:
-            del _recent_alerts[t]
-        assert len(_recent_alerts) == 0
-
-    def test_cooldown_prevents_duplicate(self):
-        from backend.breakout_monitor import _recent_alerts, ALERT_COOLDOWN_HOURS
-        _recent_alerts.clear()
-        now = datetime.now(timezone.utc)
-        _recent_alerts["AAPL"] = now
-        is_cooled_down = (now - _recent_alerts["AAPL"]) < timedelta(hours=ALERT_COOLDOWN_HOURS)
-        assert is_cooled_down
-        _recent_alerts.clear()
+    # Cooldown semantics are now DB-backed via BreakoutAlert rows; the
+    # behavioral tests live in tests/test_breakout_monitor_dedup.py. The two
+    # legacy module-level-dict tests have been removed (the dict no longer
+    # exists post-fix).
 
 
 # ============== Earnings Gap-Up Alert ==============

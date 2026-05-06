@@ -570,17 +570,19 @@ def update_coiled_spring_outcomes():
         db.close()
 
 
-_last_briefing_date = None  # Track when last briefing was sent
+# Morning briefing dedup is persisted in SystemState (key="last_briefing_date")
+# so a redeploy mid-morning doesn't re-trigger today's briefing. Pre-fix this
+# was a module-level global that reset on every restart.
+LAST_BRIEFING_DATE_KEY = "last_briefing_date"
 
 
 def send_morning_briefing_if_due():
     """Send morning briefing email once per day (first scan after configured time)."""
-    global _last_briefing_date
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from config_loader import config as yaml_config
-    from backend.database import SessionLocal, Stock, AIPortfolioPosition
+    from backend.database import SessionLocal, Stock, AIPortfolioPosition, get_system_state, set_system_state
 
     briefing_config = yaml_config.get('morning_briefing', {})
     if not briefing_config.get('enabled', True):
@@ -588,11 +590,16 @@ def send_morning_briefing_if_due():
 
     now = datetime.now(timezone.utc)
     today = now.date() if hasattr(now, 'date') else now
+    today_iso = today.isoformat()
 
-    # Only send once per day
-    with _state_lock:
-        if _last_briefing_date == today:
-            return
+    # Only send once per day — read previous from SystemState (survives restart)
+    dedup_db = SessionLocal()
+    try:
+        last_sent_iso = get_system_state(dedup_db, LAST_BRIEFING_DATE_KEY)
+    finally:
+        dedup_db.close()
+    if last_sent_iso == today_iso:
+        return
 
     # Check if it's after the configured send time (default 8:00 AM CT)
     from zoneinfo import ZoneInfo
@@ -723,8 +730,8 @@ def send_morning_briefing_if_due():
 
         success = send_morning_briefing_email(briefing_data)
         if success:
-            with _state_lock:
-                _last_briefing_date = today
+            set_system_state(db, LAST_BRIEFING_DATE_KEY, today_iso)
+            db.commit()
             logger.info("Morning briefing sent successfully")
         else:
             logger.warning("Morning briefing email failed to send")

@@ -171,8 +171,12 @@ _trading_cycle_lock = threading.RLock()
 _trading_cycle_started = None  # Track when cycle started for timeout
 _trading_cycle_meta_lock = threading.Lock()  # Protects access to _trading_cycle_started
 
-# SPY gate state tracking — fires notification on state change
-_spy_gate_state = None  # None = unknown, "bullish" or "bearish"
+# SPY gate state tracking — fires notification on state change.
+# Persisted in SystemState (key="last_spy_gate_state") so the previous gate
+# survives container restarts. Pre-fix this lived in a module-level global
+# that reset every redeploy, causing a duplicate flip notification on the
+# next evaluation after each restart.
+SPY_GATE_STATE_KEY = "last_spy_gate_state"
 
 def _get_cycle_started():
     """Thread-safe getter for cycle start time"""
@@ -1993,11 +1997,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             if not spy_ma200:
                 logger.warning(f"REGIME GATE: SPY 200MA missing (ma200={spy_ma200}), correction zone disabled")
 
-            # Detect SPY gate state change and send notification
-            global _spy_gate_state
+            # Detect SPY gate state change and send notification.
+            # State is read/written in SystemState so it survives restart.
+            from backend.database import get_system_state, set_system_state
             current_gate = "bullish" if spy_px >= spy_50 else "bearish"
-            if _spy_gate_state is not None and current_gate != _spy_gate_state:
-                logger.info(f"SPY GATE CHANGE: {_spy_gate_state} -> {current_gate} "
+            previous_gate = get_system_state(db, SPY_GATE_STATE_KEY)
+            if previous_gate is not None and current_gate != previous_gate:
+                logger.info(f"SPY GATE CHANGE: {previous_gate} -> {current_gate} "
                            f"(SPY ${spy_px:.2f}, 50MA ${spy_50:.2f})")
                 try:
                     from backend.email_utils import send_spy_gate_change_push
@@ -2006,7 +2012,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     logger.warning(f"SPY gate change notification failed: {e}")
 
                 # On bullish flip: send bear base ready-to-buy list
-                if current_gate == "bullish" and _spy_gate_state == "bearish":
+                if current_gate == "bullish" and previous_gate == "bearish":
                     try:
                         from backend.bear_base import get_bear_base_list
                         from backend.email_utils import send_market_turn_ready_push
@@ -2016,7 +2022,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                             logger.info(f"Market turn alert sent with {len(ready_list)} ready candidates")
                     except Exception as e:
                         logger.warning(f"Market turn ready-list notification failed: {e}")
-            _spy_gate_state = current_gate
+            if previous_gate != current_gate:
+                set_system_state(db, SPY_GATE_STATE_KEY, current_gate)
+                db.commit()
 
             if spy_px < spy_50:
                 # SPY below 50MA — check for correction zone override

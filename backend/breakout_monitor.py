@@ -7,22 +7,79 @@ Only runs during market hours. Pushes ntfy alerts on confirmed breakouts.
 Filters match AI trader criteria so every alert is actionable:
 - Score >= 72, C >= 10, L >= 8 (same as nostate_optimized)
 - Only BREAKOUT and BREAKOUT+VOLUME alerts (no "near pivot" noise)
-- 24h per-ticker cooldown (one alert per stock per day max)
+- DB-backed 24h per-ticker cooldown (one alert per stock per day max)
+- DB-backed daily cap (default 10 alerts/day) to prevent broad-market spam
+
+The cooldown + cap live in `BreakoutAlert` rows so they survive container
+restarts. Pre-fix (May 2026) they lived in a Python module-level dict that
+reset on every redeploy, causing repeat alerts for the same ticker after
+each deploy.
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 
 logger = logging.getLogger(__name__)
 
-# Track recent alerts to avoid spam (ticker -> last alert timestamp)
-_recent_alerts = {}
 ALERT_COOLDOWN_HOURS = 24
 
 # Match AI trader quality filters
 MIN_SCORE = 72
 MIN_C_SCORE = 10
 MIN_L_SCORE = 8
+
+# Default daily cap if config not set. Breakouts are more common than CS
+# catalysts, so 10/day is a reasonable noise floor (was effectively unlimited
+# pre-fix when the in-memory cooldown got wiped on each restart).
+DEFAULT_DAILY_CAP = 10
+
+
+def _get_daily_cap() -> int:
+    """Read configured daily cap, falling back to DEFAULT_DAILY_CAP."""
+    try:
+        from config_loader import config
+        cap = config.get('breakout_monitor.daily_cap', default=DEFAULT_DAILY_CAP)
+        # Defensive: guard against None / non-int from a malformed YAML
+        if cap is None:
+            return DEFAULT_DAILY_CAP
+        return int(cap)
+    except Exception:
+        return DEFAULT_DAILY_CAP
+
+
+def _was_alerted_recently(db, ticker: str, now: datetime) -> bool:
+    """Check whether ticker has a BreakoutAlert row within the cooldown window."""
+    from backend.database import BreakoutAlert
+    cutoff = now - timedelta(hours=ALERT_COOLDOWN_HOURS)
+    existing = db.query(BreakoutAlert).filter(
+        BreakoutAlert.ticker == ticker,
+        BreakoutAlert.created_at >= cutoff,
+    ).first()
+    return existing is not None
+
+
+def _todays_alert_count(db, today: date) -> int:
+    """Count BreakoutAlert rows fired today (by alert_date)."""
+    from backend.database import BreakoutAlert
+    return db.query(BreakoutAlert).filter(
+        BreakoutAlert.alert_date == today,
+    ).count()
+
+
+def _record_alert(db, ticker: str, label: str, pivot_price, current_price,
+                  vol_ratio, now: datetime) -> None:
+    """Insert a BreakoutAlert row. Caller is responsible for the surrounding commit."""
+    from backend.database import BreakoutAlert
+    alert = BreakoutAlert(
+        ticker=ticker,
+        alert_date=now.date(),
+        created_at=now,
+        pivot_price=pivot_price,
+        current_price=current_price,
+        vol_ratio=vol_ratio,
+        label=label,
+    )
+    db.add(alert)
 
 
 def check_intraday_breakouts():
@@ -35,8 +92,18 @@ def check_intraday_breakouts():
     if not is_market_open():
         return
 
+    daily_cap = _get_daily_cap()
+
     db = SessionLocal()
     try:
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        # Daily cap pre-check — short-circuit if already at the limit.
+        if _todays_alert_count(db, today) >= daily_cap:
+            logger.debug(f"Breakout monitor: daily cap ({daily_cap}) reached, skipping cycle")
+            return
+
         # Find stocks with pivot prices that meet trading quality thresholds
         candidates = db.query(Stock).filter(
             Stock.pivot_price != None,
@@ -73,7 +140,6 @@ def check_intraday_breakouts():
         if not fresh_prices:
             return
 
-        now = datetime.now(timezone.utc)
         alerts_sent = 0
 
         for stock, old_pct in near_pivot:
@@ -83,23 +149,27 @@ def check_intraday_breakouts():
 
             pct_from_pivot = ((stock.pivot_price - price) / stock.pivot_price) * 100
 
-            # Check cooldown (24h — one alert per stock per day)
-            last_alert = _recent_alerts.get(stock.ticker)
-            if last_alert and (now - last_alert) < timedelta(hours=ALERT_COOLDOWN_HOURS):
+            # Per-ticker 24h cooldown (DB-backed — survives restart)
+            if _was_alerted_recently(db, stock.ticker, now):
                 continue
+
+            # Re-check daily cap inline (an earlier loop iteration may have
+            # bumped today's total to the cap).
+            if _todays_alert_count(db, today) >= daily_cap:
+                logger.info(f"Breakout monitor: hit daily cap ({daily_cap}) mid-cycle, stopping")
+                break
 
             # Alert only on confirmed breakouts (no "near pivot" noise)
             alert = None
+            vol_ratio = getattr(stock, 'volume_ratio', None)
             if pct_from_pivot <= 0 and old_pct > 0:
                 # Just crossed above pivot — BREAKOUT
-                vol_ratio = getattr(stock, 'volume_ratio', None)
                 if vol_ratio and vol_ratio > 1.5:
                     alert = ("BREAKOUT + VOLUME", "high", ["fire", "chart_with_upwards_trend"])
                 else:
                     alert = ("BREAKOUT", "high", ["rotating_light", "chart_with_upwards_trend"])
             elif pct_from_pivot <= 0 and pct_from_pivot > -3:
                 # Already above pivot — only alert if volume confirms
-                vol_ratio = getattr(stock, 'volume_ratio', None)
                 if vol_ratio and vol_ratio > 1.5:
                     alert = ("BREAKOUT + VOLUME", "high", ["fire", "chart_with_upwards_trend"])
 
@@ -128,7 +198,8 @@ def check_intraday_breakouts():
                 # ntfy push (legacy global URL — phone alerts).
                 send_webhook_notification(title=title, message=message,
                                           priority=priority, tags=tags)
-                _recent_alerts[stock.ticker] = now
+                _record_alert(db, stock.ticker, label, stock.pivot_price,
+                              price, vol_ratio, now)
                 alerts_sent += 1
 
             # Update the stock's current price in DB while we have fresh data
@@ -137,15 +208,13 @@ def check_intraday_breakouts():
         if alerts_sent > 0:
             db.commit()
             logger.info(f"Breakout monitor: {alerts_sent} alerts sent from {len(near_pivot)} candidates")
-
-        # Cleanup old cooldowns
-        cutoff = now - timedelta(hours=ALERT_COOLDOWN_HOURS * 2)
-        expired = [t for t, ts in _recent_alerts.items() if ts < cutoff]
-        for t in expired:
-            del _recent_alerts[t]
+        else:
+            # Still commit any current_price updates that happened during the loop.
+            db.commit()
 
     except Exception as e:
         logger.error(f"Breakout monitor error: {e}")
+        db.rollback()
     finally:
         db.close()
 
@@ -175,11 +244,25 @@ def _fetch_quick_quotes(tickers: list) -> dict:
 
 def get_breakout_monitor_status() -> dict:
     """Return monitor state for health dashboard."""
-    return {
-        "active_cooldowns": len(_recent_alerts),
-        "cooldown_tickers": list(_recent_alerts.keys()),
-        "cooldown_hours": ALERT_COOLDOWN_HOURS,
-        "min_score": MIN_SCORE,
-        "min_c_score": MIN_C_SCORE,
-        "min_l_score": MIN_L_SCORE,
-    }
+    from backend.database import SessionLocal, BreakoutAlert
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=ALERT_COOLDOWN_HOURS)
+        active = db.query(BreakoutAlert).filter(
+            BreakoutAlert.created_at >= cutoff,
+        ).all()
+        active_tickers = sorted({a.ticker for a in active})
+        today_count = _todays_alert_count(db, now.date())
+        return {
+            "active_cooldowns": len(active_tickers),
+            "cooldown_tickers": active_tickers,
+            "cooldown_hours": ALERT_COOLDOWN_HOURS,
+            "alerts_today": today_count,
+            "daily_cap": _get_daily_cap(),
+            "min_score": MIN_SCORE,
+            "min_c_score": MIN_C_SCORE,
+            "min_l_score": MIN_L_SCORE,
+        }
+    finally:
+        db.close()
