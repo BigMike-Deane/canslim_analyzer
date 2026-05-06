@@ -1416,6 +1416,102 @@ class TestAbsoluteCVFloor:
         assert 0.6116 >= ABSOLUTE_CV_FLOOR["classifier"]
 
 
+class TestDecileWrGateDecision:
+    """The top-decile WR pre-gate sits between the AUC pre-gate and the
+    eval-backtest gate. Cheap (~seconds) sanity check using the May-5
+    diagnostic insight: this strategy only ever picks from the top decile,
+    so model quality there is what matters — not full-distribution AUC."""
+
+    def test_threshold_constant_is_minus_5pp(self):
+        from backend.routes.ml import MIN_DECILE_WR_DELTA_PP
+        assert MIN_DECILE_WR_DELTA_PP == -5.0
+
+    def test_above_threshold_passes(self):
+        """Candidate WR 4pp below incumbent — within the -5pp tolerance, passes."""
+        from backend.routes.ml import _decile_wr_gate_decision
+        # Incumbent 0.50, candidate 0.46 → delta = -4pp, above -5pp floor
+        passes, reason = _decile_wr_gate_decision(0.46, 0.50)
+        assert passes is True
+        assert "-4.00pp" in reason
+        assert "-5.00pp" in reason
+
+    def test_clear_winner_passes(self):
+        """Candidate strictly better than incumbent — passes."""
+        from backend.routes.ml import _decile_wr_gate_decision
+        passes, reason = _decile_wr_gate_decision(0.55, 0.50)
+        assert passes is True
+        assert "+5.00pp" in reason
+
+    def test_below_threshold_rejects(self):
+        """Candidate 6pp below incumbent — below -5pp floor, rejected."""
+        from backend.routes.ml import _decile_wr_gate_decision, MIN_DECILE_WR_DELTA_PP
+        passes, reason = _decile_wr_gate_decision(0.40, 0.46)
+        assert passes is False
+        assert "-6.00pp" in reason
+        # Reason should reference the threshold so logs are debuggable
+        assert f"{MIN_DECILE_WR_DELTA_PP:+.2f}pp" in reason
+
+    def test_first_model_no_incumbent_baseline_auto_passes(self):
+        """When incumbent has no eval_decile_wr (first-model bootstrap),
+        candidate auto-passes — otherwise we'd never bootstrap the system
+        after rolling out this column."""
+        from backend.routes.ml import _decile_wr_gate_decision
+        passes, reason = _decile_wr_gate_decision(0.42, None)
+        assert passes is True
+        assert "no incumbent" in reason.lower()
+
+    def test_missing_candidate_metric_blocks(self):
+        """If the candidate's WR couldn't be computed (empty holdout / feature
+        mismatch / load error), we can't decide — default to don't-activate."""
+        from backend.routes.ml import _decile_wr_gate_decision
+        passes, reason = _decile_wr_gate_decision(None, 0.46)
+        assert passes is False
+        assert "could not be computed" in reason.lower()
+
+    def test_exact_threshold_passes(self):
+        """Boundary: exactly -5pp delta counts as a pass (>= semantics)."""
+        from backend.routes.ml import _decile_wr_gate_decision
+        # Incumbent 0.50, candidate 0.45 → delta exactly -5pp
+        passes, reason = _decile_wr_gate_decision(0.45, 0.50)
+        assert passes is True
+
+    def test_just_below_threshold_rejects(self):
+        """Boundary: just below -5pp (e.g. -5.01pp) rejects."""
+        from backend.routes.ml import _decile_wr_gate_decision
+        # Incumbent 0.50, candidate 0.4499 → delta = -5.01pp, fails
+        passes, _ = _decile_wr_gate_decision(0.4499, 0.50)
+        assert passes is False
+
+    def test_compute_returns_none_when_holdout_empty(self):
+        """_compute_candidate_decile_wr should swallow empty-holdout and return
+        None (so the caller's gate fails the candidate, the safe direction).
+        Using mock for get_holdout_trades so this test doesn't need a real DB."""
+        from backend.routes.ml import _compute_candidate_decile_wr
+        with patch("ml.oos_eval.get_holdout_trades") as mock_holdout:
+            mock_holdout.return_value = pd.DataFrame()
+            result = _compute_candidate_decile_wr(
+                MagicMock(), "/nonexistent/model.joblib", "nostate_optimized",
+            )
+        assert result is None
+
+    def test_compute_returns_wr_when_pipeline_succeeds(self):
+        """_compute_candidate_decile_wr returns a float WR when the diagnostic
+        pipeline produces a result. Mocks the score+decile path so the test
+        doesn't need a real model on disk."""
+        from backend.routes.ml import _compute_candidate_decile_wr
+        # Holdout with gain_pct so y can be derived
+        df = pd.DataFrame({"gain_pct": [0.0, 5.0, 12.0, 20.0, 30.0]})
+        with patch("ml.oos_eval.get_holdout_trades", return_value=df), \
+             patch("ml.diagnostics.score_holdout_with_models") as mock_score, \
+             patch("ml.diagnostics.decile_wr") as mock_decile:
+            mock_score.return_value = {"candidate": np.array([0.1, 0.2, 0.3, 0.4, 0.5])}
+            mock_decile.return_value = {"wr": 0.6667, "n": 1}
+            result = _compute_candidate_decile_wr(
+                MagicMock(), "/some/model.joblib", "nostate_optimized",
+            )
+        assert result == 0.6667
+
+
 class TestSaveModelPathing:
     """Regression: in the original eval-gate (1e11fc6) candidates were saved
     DIRECTLY to ACTIVE_MODEL_PATH, overwriting the incumbent's joblib BEFORE

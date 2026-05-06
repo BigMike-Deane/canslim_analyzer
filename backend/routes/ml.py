@@ -54,6 +54,26 @@ EVAL_BACKTEST_UNIVERSE = "all"
 MIN_RETURN_DELTA_PP = 5.0
 MAX_SHARPE_REGRESSION = 0.10
 
+# Top-decile WR pre-gate. The May 5 OOS diagnostic proved AUC ranks candidates
+# wrong for this strategy: the trader only ever picks from the top decile
+# (score>=72 + max_positions=8 + sector caps already filter to top-tier), so
+# backtest-relevant model quality lives in the top-decile WR, not full-
+# distribution AUC. v17 had OOS AUC 0.6565 vs v12's 0.5949 yet v12 wins
+# backtests because v12's top-decile WR is genuinely better.
+#
+# This pre-gate runs in seconds (one inference pass per model on the holdout)
+# and rejects obvious losers before the ~10-minute eval-backtest gate. Delta
+# is candidate - incumbent in percentage points; must be >= -5.0 to pass.
+# Bootstrap (incumbent has no stored value) skips with a warning, mirroring
+# the eval-backtest gate's first-model pattern.
+MIN_DECILE_WR_DELTA_PP = -5.0
+
+# Holdout window for the decile-WR pre-gate. Uses the eval backtest start as
+# the cutoff so the same holdout logic applies — backtests created on/after
+# this date are the OOS slice. Held constant for the same reason
+# EVAL_BACKTEST_* are: drift in the cutoff changes the apparent delta.
+DECILE_WR_HOLDOUT_CUTOFF_ISO = "2026-05-01"
+
 # Absolute CV-metric floors. Phase 1 of the gate is a sanity filter: did the
 # model converge to *something*? Anything passing this floor proceeds to the
 # eval gate (Phase 2), which decides activation based on portfolio outcome.
@@ -111,6 +131,81 @@ def _eval_gate_decision(
     if not passes_sharpe:
         reasons.append(f"sharpe Δ={sharpe_delta:+.3f} < {-MAX_SHARPE_REGRESSION}")
     return False, "; ".join(reasons)
+
+
+def _decile_wr_gate_decision(
+    candidate_wr,
+    incumbent_wr,
+) -> tuple:
+    """Pure decision function for the top-decile WR pre-gate.
+
+    Returns (passes, reason). Mirrors _eval_gate_decision's bootstrap pattern:
+    when the incumbent has no stored decile-WR baseline (None), the candidate
+    auto-passes — otherwise we'd never bootstrap the system after rolling out
+    this column. Candidate WR=None is a hard fail (couldn't compute, can't
+    decide, default to don't-activate).
+
+    Delta is in percentage points, computed as candidate - incumbent. Pass
+    when delta >= MIN_DECILE_WR_DELTA_PP (i.e. candidate may be up to 5pp
+    below incumbent — small drops are expected from training-pool variance).
+    """
+    if candidate_wr is None:
+        return False, "candidate decile WR could not be computed"
+    if incumbent_wr is None:
+        return True, "no incumbent decile-WR baseline; auto-pass and record"
+    # Both WRs are 0..1 in fractional form; convert to pp for the threshold.
+    delta_pp = (candidate_wr - incumbent_wr) * 100.0
+    eps = 1e-9
+    if delta_pp >= MIN_DECILE_WR_DELTA_PP - eps:
+        return True, (
+            f"decile-WR Δ={delta_pp:+.2f}pp (≥{MIN_DECILE_WR_DELTA_PP:+.2f}pp); "
+            f"candidate {candidate_wr:.4f} vs incumbent {incumbent_wr:.4f}"
+        )
+    return False, (
+        f"decile-WR Δ={delta_pp:+.2f}pp < {MIN_DECILE_WR_DELTA_PP:+.2f}pp; "
+        f"candidate {candidate_wr:.4f} vs incumbent {incumbent_wr:.4f}"
+    )
+
+
+def _compute_candidate_decile_wr(
+    db, model_path: str, strategy: str, cutoff_iso: str = DECILE_WR_HOLDOUT_CUTOFF_ISO,
+    min_gain_pct: float = 10.0,
+) -> Optional[float]:
+    """Score the candidate model on the OOS holdout, return top-decile WR.
+
+    Returns None when the holdout is empty, the model can't be loaded, or the
+    feature set doesn't align — caller treats None as "couldn't compute" and
+    fails the gate (safe direction).
+    """
+    from ml.diagnostics import score_holdout_with_models, decile_wr
+    from ml.oos_eval import get_holdout_trades
+
+    try:
+        cutoff = datetime.fromisoformat(cutoff_iso.replace("Z", "+00:00"))
+        if cutoff.tzinfo is not None:
+            cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+        holdout = get_holdout_trades(db, strategy, cutoff, after=True)
+        if holdout.empty or "gain_pct" not in holdout.columns:
+            logger.warning(
+                f"Decile-WR pre-gate: empty/invalid holdout for {strategy} "
+                f"after {cutoff_iso} — skipping (cannot compute)"
+            )
+            return None
+        scored = score_holdout_with_models({"candidate": model_path}, holdout)
+        if "candidate" not in scored:
+            logger.warning(
+                f"Decile-WR pre-gate: model {model_path} could not be scored "
+                f"(feature mismatch) — skipping"
+            )
+            return None
+        import numpy as np
+        y = (holdout["gain_pct"] > min_gain_pct).astype(int).values
+        result = decile_wr(scored["candidate"], y, top=True, decile=0.10)
+        wr = result.get("wr")
+        return float(wr) if wr is not None else None
+    except Exception as e:
+        logger.warning(f"Decile-WR pre-gate: computation failed: {e}", exc_info=True)
+        return None
 
 
 def _create_and_run_eval_backtest(
@@ -471,6 +566,44 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 f"ML v{ml_record.version} CV {metric_name}={new_metric:.4f} "
                 f"vs incumbent v{current_version} {current_metric:.4f} (Δ={delta:+.4f}, informational)"
             )
+
+        # Phase 1.5: top-decile WR pre-gate. Cheap (~seconds), runs the
+        # candidate against the OOS holdout and compares its top-decile WR
+        # against the incumbent's stored eval_decile_wr. Rejects obvious
+        # losers before paying the ~10-min eval-backtest gate. The May 5
+        # diagnostic established that top-decile WR is the right backtest-
+        # relevant model-quality proxy for this strategy (top decile is the
+        # only slice the trader ever picks from), so this gate filters in
+        # the same dimension that Phase 2 ultimately optimizes.
+        incumbent_for_decile = db.query(MLModel).filter(
+            MLModel.strategy == strategy,
+            MLModel.status == "active",
+            MLModel.id != ml_record.id,
+        ).order_by(desc(MLModel.activated_at)).first()
+        incumbent_decile_wr = (
+            incumbent_for_decile.eval_decile_wr if incumbent_for_decile is not None else None
+        )
+        candidate_decile_wr = _compute_candidate_decile_wr(
+            db, str(model_path), strategy,
+        )
+        ml_record.eval_decile_wr = candidate_decile_wr
+        db.commit()
+        decile_passes, decile_reason = _decile_wr_gate_decision(
+            candidate_decile_wr, incumbent_decile_wr,
+        )
+        if not decile_passes:
+            ml_record.status = "completed"
+            ml_record.error_message = (
+                f"Decile-WR pre-gate: {decile_reason}"
+            )[:500]
+            db.commit()
+            logger.warning(
+                f"ML v{ml_record.version} blocked by decile-WR pre-gate: {decile_reason}"
+            )
+            return
+        logger.info(
+            f"ML v{ml_record.version} passed decile-WR pre-gate: {decile_reason}"
+        )
 
         # Improvement gate (Phase 2): standardized eval backtest. AUC/Spearman
         # were shown to disagree with portfolio return (May 5 diagnostic) so

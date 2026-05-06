@@ -243,6 +243,10 @@ def run_migrations():
         ("ml_models", "eval_return_pct", "FLOAT"),
         ("ml_models", "eval_sharpe", "FLOAT"),
         ("ml_models", "eval_max_drawdown_pct", "FLOAT"),
+        # Top-decile WR pre-gate metric (May 2026 — see _decile_wr_gate_decision):
+        # cheap pre-flight before the slow eval-backtest gate. Cached on the
+        # incumbent so candidates can be compared without re-scoring v12 each run.
+        ("ml_models", "eval_decile_wr", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1317,6 +1321,14 @@ class MLModel(Base):
     eval_return_pct = Column(Float)
     eval_sharpe = Column(Float)
     eval_max_drawdown_pct = Column(Float)
+
+    # Top-decile WR on the OOS holdout. The May 5 v12-vs-v17 diagnostic showed
+    # the strategy only ever trades from the top decile (after score>=72 +
+    # max_positions=8 + sector caps), so backtest-relevant model quality lives
+    # there — not in full-distribution AUC. Used by the decile-WR pre-gate to
+    # cheaply reject candidates whose top-decile WR is materially below the
+    # incumbent's, before paying for the ~10 min eval backtest.
+    eval_decile_wr = Column(Float)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     activated_at = Column(DateTime)
