@@ -1986,8 +1986,12 @@ class DataFetcher:
                         stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
                     if not stock_data.institutional_holders_pct:
                         inst_pct = info.get('heldPercentInstitutions', 0) or 0
-                        # Convert decimal to percentage (Yahoo returns 0.65 = 65%, 1.00002 = 100.002%)
-                        stock_data.institutional_holders_pct = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+                        # Convert decimal to percentage (Yahoo returns 0.65 = 65%, 1.00002 = 100.002%).
+                        # Clamp at 100 — Yahoo occasionally returns >100% from inst-shares ÷ shares-outstanding
+                        # rounding artifacts (103 stocks affected in May 2026 audit). Score tier (>85 → 4) is
+                        # unaffected, but the detail string would otherwise display "101% inst." etc.
+                        raw_pct = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
+                        stock_data.institutional_holders_pct = min(raw_pct, 100.0)
                     # Get ROE (critical for A score quality check)
                     # Store as decimal (e.g., 0.05 = 5%) - same format as FMP
                     if not stock_data.roe:

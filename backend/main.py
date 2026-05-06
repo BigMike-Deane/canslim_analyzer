@@ -2647,6 +2647,7 @@ async def get_coiled_spring_candidates(current_user: User = Depends(get_current_
         pre_breakout_only: If True, only return stocks NOT already breaking out
     """
     from config_loader import config
+    from canslim_scorer import calculate_cs_confidence
 
     cs_config = config.get('coiled_spring', {})
     thresholds = cs_config.get('thresholds', {})
@@ -2755,6 +2756,14 @@ async def get_coiled_spring_candidates(current_user: User = Depends(get_current_
             else:
                 entry_status = "BREAKING_OUT"
 
+            confidence = calculate_cs_confidence(
+                days_to_earnings=stock.days_to_earnings,
+                institutional_pct=inst_pct,
+                weeks_in_base=stock.weeks_in_base or 0,
+                c_score=stock.c_score or 0,
+                beat_streak=beat_streak,
+            )
+
             qualified.append({
                 "ticker": stock.ticker,
                 "name": stock.name,
@@ -2767,6 +2776,7 @@ async def get_coiled_spring_candidates(current_user: User = Depends(get_current_
                 "days_to_earnings": stock.days_to_earnings,
                 "institutional_holders_pct": inst_pct,
                 "cs_bonus": cs_bonus,
+                "confidence": confidence,
                 "quality_rank": round(quality_rank, 1),
                 "current_price": stock.current_price,
                 "pct_from_high": round(pct_from_high, 1),
