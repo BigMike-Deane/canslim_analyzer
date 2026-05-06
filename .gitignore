@@ -44,3 +44,4 @@ CLAUDE.local.md
 .coverage
 htmlcov/
 .pytest_cache/
+preview-copper-rebrand.html

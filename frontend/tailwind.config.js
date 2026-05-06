@@ -7,34 +7,34 @@ export default {
   theme: {
     extend: {
       colors: {
-        // ─── Warm-tinted near-blacks (red undertone, not blue) ───
-        // Replaces the previous cool-dark scale. All bg-dark-*, text-dark-*,
-        // border-dark-* classes throughout the app pick this up automatically.
+        // ─── Warm-tinted near-blacks (copper-brown undertone) ───
+        // Vintage-modern leather-bound aesthetic. P&L red stays distinct
+        // from the brand by hue (copper vs scarlet) and saturation.
         dark: {
-          950: '#0a0606',  // Page background — deepest warm black
-          900: '#120909',  // Sidebar / nav background
-          850: '#180c0c',  // Stat card background
-          800: '#1f1416',  // Card background (was #14141f cool-blue)
-          750: '#261a1c',
-          700: '#2f2225',  // Borders, dividers
-          600: '#473538',  // Subtle borders
-          500: '#6b5559',  // Muted text
-          400: '#8c7479',  // Secondary text
-          300: '#a89499',  // Body text on subtle surfaces
-          200: '#cbb9bd',
-          100: '#e8dcde',  // Primary text
-          50:  '#f5eced',
+          950: '#0c0a08',  // Page background — warmest near-black
+          900: '#15110d',  // Sidebar / nav background
+          850: '#1a140f',  // Stat card background
+          800: '#1c1714',  // Card surface
+          750: '#251d18',
+          700: '#2e241d',  // Borders, dividers
+          600: '#3d2f23',  // Subtle borders, warm brown-tinted
+          500: '#5c4a3d',  // Muted text
+          400: '#8a7a66',  // Secondary text
+          300: '#a89a86',  // Body text on subtle surfaces
+          200: '#cbbeac',
+          100: '#e8dccc',  // Primary text — warm cream
+          50:  '#f5ecdc',
         },
-        // ─── Brand red (deep crimson) ───
+        // ─── Brand copper (burnished) ───
         // The "primary" token used for sidebar accents, active states, focus
-        // rings, primary CTAs. Distinct from P&L red by hue depth: brand is
-        // burgundy/crimson while P&L loss is the brighter Tailwind red-400/500.
+        // rings, primary CTAs. Distinct from P&L red by hue: brand is copper/
+        // sienna; loss is the cooler Tailwind red-400/500.
         primary: {
-          700: '#7f1d1d',  // Burgundy — pressed CTA states
-          600: '#991b1b',  // Deep crimson — primary CTA bg
-          500: '#b91c1c',  // Brand red — primary accent (active rail, focus)
-          400: '#dc2626',  // Lifted brand — hover states, active text
-          300: '#ef4444',  // (kept available; rarely needed for brand)
+          700: '#92400e',  // Pressed CTA — deepest copper
+          600: '#b45309',  // Primary CTA bg — burnished copper
+          500: '#c2410c',  // Brand accent — active rail, focus
+          400: '#d97706',  // Hover lift — kept on the copper side, not pure orange
+          300: '#ea580c',  // Brightest variant; rarely needed for brand
         },
         // ─── Accent gold ───
         // Secondary highlight for things like the search hotkey hint, info
@@ -52,14 +52,14 @@ export default {
         // is one-file-edit. Existing code still works via the legacy aliases
         // above.
         brand: {
-          DEFAULT: '#b91c1c',
-          deep:    '#7f1d1d',
-          bright:  '#dc2626',
+          DEFAULT: '#c2410c',
+          deep:    '#92400e',
+          bright:  '#d97706',
         },
         surface: {
-          DEFAULT:  '#1f1416',  // = dark-800
-          elevated: '#261a1c',  // = dark-750 — modals, popovers
-          sunken:   '#120909',  // = dark-900 — sidebar, nav
+          DEFAULT:  '#1c1714',  // = dark-800
+          elevated: '#251d18',  // = dark-750 — modals, popovers
+          sunken:   '#15110d',  // = dark-900 — sidebar, nav
         },
         pnl: {
           up:        '#10b981',  // emerald-500 — gain (kept; do not theme)
@@ -110,9 +110,9 @@ export default {
           '50%': { opacity: '0.5', transform: 'scale(1.5)' },
         },
         glow: {
-          // Re-tinted from cyan to brand red.
-          '0%': { boxShadow: '0 0 5px rgba(185, 28, 28, 0.15)' },
-          '100%': { boxShadow: '0 0 20px rgba(185, 28, 28, 0.20)' },
+          // Brand copper rgb(194, 65, 12).
+          '0%': { boxShadow: '0 0 5px rgba(194, 65, 12, 0.15)' },
+          '100%': { boxShadow: '0 0 20px rgba(194, 65, 12, 0.20)' },
         },
       },
       backdropBlur: {
