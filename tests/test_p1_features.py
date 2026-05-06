@@ -272,6 +272,79 @@ class TestDataFetcherFunctions:
 
         assert beat_streak == 3, "Should count 3 consecutive beats"
 
+    def test_fetch_fmp_earnings_calendar_returns_latest_surprise_pct(self):
+        """fetch_fmp_earnings_calendar must compute latest_surprise_pct from the
+        most recent past earnings record. Regression for the C-score-cap-at-13
+        bug: prior to this, surprise % only flowed via the dead /earnings-surprises
+        endpoint, leaving DB column at 0 for all 2089 stocks.
+        """
+        from data_fetcher import fetch_fmp_earnings_calendar
+
+        # Simulated /stable/earnings response: future earning, then a beat (5.19%)
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {"symbol": "TEST", "date": "2099-12-31", "epsActual": None, "epsEstimated": 1.0},
+            {"symbol": "TEST", "date": "2026-02-25", "epsActual": 1.62, "epsEstimated": 1.54},
+            {"symbol": "TEST", "date": "2025-11-19", "epsActual": 1.30, "epsEstimated": 1.26},
+        ]
+
+        with patch("data_fetcher._fmp_get", return_value=mock_response), \
+             patch("data_fetcher.FMP_API_KEY", "fake-key"):
+            result = fetch_fmp_earnings_calendar("TEST")
+
+        assert "latest_surprise_pct" in result, "result must include latest_surprise_pct"
+        assert result["latest_surprise_pct"] is not None
+        assert abs(result["latest_surprise_pct"] - 5.1948) < 0.01, \
+            f"Expected ~5.19%, got {result['latest_surprise_pct']}"
+        assert result["earnings_beat_streak"] == 2
+
+    def test_fetch_fmp_earnings_calendar_surprise_on_miss(self):
+        """latest_surprise_pct must still be captured when most recent quarter
+        was a miss (negative %). Beat streak terminates immediately, but the
+        surprise must survive the early break.
+        """
+        from data_fetcher import fetch_fmp_earnings_calendar
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {"symbol": "TEST", "date": "2026-02-25", "epsActual": 0.90, "epsEstimated": 1.00},
+            {"symbol": "TEST", "date": "2025-11-19", "epsActual": 1.20, "epsEstimated": 1.10},
+        ]
+
+        with patch("data_fetcher._fmp_get", return_value=mock_response), \
+             patch("data_fetcher.FMP_API_KEY", "fake-key"):
+            result = fetch_fmp_earnings_calendar("TEST")
+
+        assert result.get("latest_surprise_pct") is not None
+        assert result["latest_surprise_pct"] < 0, "Miss should produce negative surprise"
+        assert abs(result["latest_surprise_pct"] - (-10.0)) < 0.01
+        assert result["earnings_beat_streak"] == 0
+
+    def test_fetch_fmp_earnings_calendar_zero_estimate_falls_through(self):
+        """Guard against ZeroDivisionError when epsEstimated == 0: skip that
+        record for surprise % and use the next eligible past record. Beat-streak
+        logic is unaffected (it doesn't divide).
+        """
+        from data_fetcher import fetch_fmp_earnings_calendar
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {"symbol": "TEST", "date": "2026-02-25", "epsActual": 0.50, "epsEstimated": 0.0},
+            {"symbol": "TEST", "date": "2025-11-19", "epsActual": 1.20, "epsEstimated": 1.10},
+        ]
+
+        with patch("data_fetcher._fmp_get", return_value=mock_response), \
+             patch("data_fetcher.FMP_API_KEY", "fake-key"):
+            result = fetch_fmp_earnings_calendar("TEST")
+
+        # First record's estimate is 0 → no division. Loop continues, captures
+        # surprise from the second past record.
+        assert result.get("latest_surprise_pct") is not None
+        assert abs(result["latest_surprise_pct"] - 9.0909) < 0.01
+
     def test_fetch_fmp_analyst_estimates_calculates_revision(self):
         """Test analyst estimate revision calculation"""
         mock_response = [

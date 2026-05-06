@@ -273,6 +273,12 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
             if earnings_calendar_data.get("earnings_beat_streak"):
                 stock_data.eps_beat_streak = earnings_calendar_data.get("earnings_beat_streak")
 
+            # Set latest earnings surprise % for C score bonus
+            # Source: epsActual/epsEstimated from /stable/earnings (computed in fetch_fmp_earnings_calendar).
+            # Replaces the dead /stable/earnings-surprises path which returns [] on the post-Aug-2025 stable API.
+            if earnings_calendar_data.get("latest_surprise_pct") is not None:
+                stock_data.earnings_surprise_pct = earnings_calendar_data["latest_surprise_pct"]
+
             # Set estimate revision for C score bonus/penalty
             if analyst_estimates_data.get("eps_estimate_revision_pct") is not None:
                 stock_data.eps_estimate_revision_pct = analyst_estimates_data.get("eps_estimate_revision_pct")

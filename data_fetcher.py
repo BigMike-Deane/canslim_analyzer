@@ -1040,6 +1040,7 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
         next_earnings_date = None
         days_to_earnings = None
         beat_streak = 0
+        latest_surprise_pct = None  # Captured from first past earnings record (most recent quarter)
         today = date_type.today()
 
         # Find next earnings (where epsActual is None) and calculate beat streak
@@ -1063,8 +1064,10 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
                 days_to_earnings = (item_date - today).days
                 continue
 
-            # Past earnings - calculate beat streak
+            # Past earnings - capture surprise % on first past record, then walk beat streak
             if actual is not None and estimated is not None:
+                if latest_surprise_pct is None and estimated != 0:
+                    latest_surprise_pct = ((actual - estimated) / abs(estimated)) * 100
                 if actual > estimated:
                     beat_streak += 1
                 else:
@@ -1086,11 +1089,12 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
                     next_earnings_date = est_next.strftime('%Y-%m-%d')
                     days_to_earnings = (est_next - today).days
 
-        if next_earnings_date or beat_streak > 0:
+        if next_earnings_date or beat_streak > 0 or latest_surprise_pct is not None:
             return {
                 "next_earnings_date": next_earnings_date,
                 "days_to_earnings": days_to_earnings,
                 "earnings_beat_streak": beat_streak,
+                "latest_surprise_pct": latest_surprise_pct,
             }
     except Exception as e:
         logger.debug(f"FMP earnings calendar error for {ticker}: {e}")
