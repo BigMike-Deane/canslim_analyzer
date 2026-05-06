@@ -6,6 +6,7 @@ import { StatusBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge } from '
 import StatGrid from '../components/StatGrid'
 import DataTable from '../components/DataTable'
 import PageHeader from '../components/PageHeader'
+import { tooltipStyle } from '../components/chartTheme'
 
 function PerformanceChart({ data, startingCash }) {
   if (!data || data.length < 2) {
@@ -277,7 +278,7 @@ function ComparisonView({ comparison, onClose }) {
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(d) => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }} interval="preserveStartEnd" axisLine={{ stroke: '#1f2937' }} tickLine={false} />
               <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
               <Tooltip
-                contentStyle={{ background: '#14141f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}
+                contentStyle={tooltipStyle}
                 labelStyle={{ color: '#6b7280', fontSize: 11 }}
                 formatter={(v, n) => [`${v?.toFixed(2)}%`, n]}
               />

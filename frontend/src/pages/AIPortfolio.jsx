@@ -6,34 +6,10 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
+import CollapsibleSection from '../components/CollapsibleSection'
+import { tooltipStyle } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
-
-// ── Collapsible Section (local helper) ──────────────────────────────
-function CollapsibleSection({ title, badge, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen)
-  return (
-    <div>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center justify-between w-full mb-2 group"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{title}</span>
-          {badge}
-        </div>
-        <svg
-          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          strokeWidth="2" strokeLinecap="round"
-          className={`text-dark-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {open && children}
-    </div>
-  )
-}
 
 // ── Performance Chart ───────────────────────────────────────────────
 function PerformanceChart({ history, startingCash }) {
@@ -150,13 +126,7 @@ function PerformanceChart({ history, startingCash }) {
               label={{ value: 'Start', position: 'right', fill: '#666', fontSize: 10 }}
             />
             <Tooltip
-              contentStyle={{
-                background: 'rgba(20, 20, 31, 0.95)',
-                border: '1px solid #222233',
-                borderRadius: '10px',
-                fontFamily: 'JetBrains Mono',
-                fontSize: 12,
-              }}
+              contentStyle={tooltipStyle}
               labelStyle={{ color: '#6e6e82' }}
               formatter={(value) => [formatCurrency(value), 'Value']}
               labelFormatter={(_, payload) => {
@@ -626,13 +596,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
                 ))}
               </Pie>
               <Tooltip
-                contentStyle={{
-                  background: 'rgba(20, 20, 31, 0.95)',
-                  border: '1px solid #222233',
-                  borderRadius: '10px',
-                  fontFamily: 'JetBrains Mono',
-                  fontSize: 12,
-                }}
+                contentStyle={tooltipStyle}
                 formatter={(v) => `${v.toFixed(1)}%`}
               />
             </PieChart>

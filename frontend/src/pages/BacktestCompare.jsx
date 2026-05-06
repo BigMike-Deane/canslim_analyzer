@@ -3,20 +3,12 @@ import { api } from '../api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import Card, { CardHeader } from '../components/Card'
 import PageHeader from '../components/PageHeader'
+import { tooltipStyle as TOOLTIP_STYLE } from '../components/chartTheme'
 
 const COLORS = {
   btA: '#22c55e',
   btB: '#3b82f6',
   spy: '#94a3b8',
-}
-
-const TOOLTIP_STYLE = {
-  background: '#14141f',
-  border: '1px solid rgba(255,255,255,0.06)',
-  borderRadius: '10px',
-  fontFamily: 'JetBrains Mono',
-  fontSize: 13,
-  maxWidth: '280px',
 }
 
 const STAT_ROWS = [
