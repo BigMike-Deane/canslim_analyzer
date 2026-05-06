@@ -174,6 +174,7 @@ def run_migrations():
         ("stock_data_cache", "next_earnings_date", "DATE"),
         ("stock_data_cache", "days_to_earnings", "INTEGER"),
         ("stock_data_cache", "earnings_beat_streak", "INTEGER"),
+        ("stock_data_cache", "latest_surprise_pct", "FLOAT"),
         ("stock_data_cache", "earnings_calendar_updated_at", "TIMESTAMP"),
         ("stock_data_cache", "eps_estimate_current", "FLOAT"),
         ("stock_data_cache", "eps_estimate_prior", "FLOAT"),
@@ -1246,6 +1247,7 @@ class StockDataCache(Base):
     next_earnings_date = Column(Date)
     days_to_earnings = Column(Integer)
     earnings_beat_streak = Column(Integer)
+    latest_surprise_pct = Column(Float)  # Most recent quarter's EPS surprise % (added May 2026)
     earnings_calendar_updated_at = Column(DateTime)
 
     # Analyst Estimates

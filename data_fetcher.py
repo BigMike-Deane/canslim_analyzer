@@ -181,7 +181,8 @@ def load_cache_from_db():
                         set_cached_data(ticker, "earnings_calendar", {
                             "next_earnings_date": record.next_earnings_date.isoformat() if record.next_earnings_date else None,
                             "days_to_earnings": record.days_to_earnings,
-                            "earnings_beat_streak": record.earnings_beat_streak
+                            "earnings_beat_streak": record.earnings_beat_streak,
+                            "latest_surprise_pct": getattr(record, 'latest_surprise_pct', None),
                         }, persist_to_db=False)
                         with _freshness_lock:
                             if ticker not in _data_freshness_cache:
@@ -319,6 +320,8 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
                 record.next_earnings_date = next_date
             record.days_to_earnings = data.get("days_to_earnings")
             record.earnings_beat_streak = data.get("earnings_beat_streak")
+            if hasattr(record, 'latest_surprise_pct'):
+                record.latest_surprise_pct = data.get("latest_surprise_pct")
             record.earnings_calendar_updated_at = now
 
         elif data_type == "analyst_estimates" and isinstance(data, dict):
