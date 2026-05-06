@@ -916,7 +916,7 @@ strategy_profiles:
   nostate_optimized:
     label: "NoState Optimized"
     description: "Best Phase 3 combo: seed_count=4 (Sharpe 1.69) + trailing_50+=25% (ret +186%)"
-    min_score: 72
+    min_score: 73
     max_positions: 8
     max_single_position_pct: 25
     max_sector_pct: 50
@@ -1054,7 +1054,7 @@ strategy_profiles:
   nostate_cs_bear:
     label: "NoState + CS Bear"
     description: "Correction zone allows ONLY coiled spring entries with confidence >= 60"
-    min_score: 72
+    min_score: 73
     max_positions: 8
     max_single_position_pct: 25
     max_sector_pct: 50
