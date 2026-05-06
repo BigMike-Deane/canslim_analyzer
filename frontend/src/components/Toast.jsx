@@ -14,7 +14,8 @@ const icons = {
     </svg>
   ),
   info: (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00e5ff" strokeWidth="2.5" strokeLinecap="round">
+    // brand red (primary-400) — was cyan #00e5ff in the old palette
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2.5" strokeLinecap="round">
       <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" />
     </svg>
   ),

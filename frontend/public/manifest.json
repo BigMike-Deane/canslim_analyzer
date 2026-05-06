@@ -4,8 +4,8 @@
   "description": "AI-powered stock trading system using CANSLIM methodology",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#06060c",
-  "theme_color": "#06060c",
+  "background_color": "#0a0606",
+  "theme_color": "#0a0606",
   "orientation": "any",
   "icons": [
     {

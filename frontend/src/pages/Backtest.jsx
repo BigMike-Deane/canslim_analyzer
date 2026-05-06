@@ -98,20 +98,20 @@ function PerformanceChart({ data, startingCash }) {
               fill="url(#portGrad)"
               dot={false}
             />
-            <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
+            <ReferenceLine y={0} stroke="#473538" strokeWidth={1} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#6b7280' }}
+              tick={{ fontSize: 10, fill: '#8c7479' }}
               tickFormatter={(d) => {
                 const date = new Date(d)
                 return `${date.getMonth()+1}/${date.getDate()}`
               }}
               interval="preserveStartEnd"
-              axisLine={{ stroke: '#1f2937' }}
+              axisLine={{ stroke: '#2f2225' }}
               tickLine={false}
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#6b7280' }}
+              tick={{ fontSize: 10, fill: '#8c7479' }}
               tickFormatter={(v) => `${v.toFixed(0)}%`}
               domain={['dataMin - 5', 'dataMax + 5']}
               axisLine={false}
@@ -231,7 +231,9 @@ function ComparisonView({ comparison, onClose }) {
   if (!comparison) return null
 
   const { backtests = [], chart_data, stats_table } = comparison
-  const colors = ['#34d399', '#22d3ee', '#fbbf24', '#f87171', '#a78bfa']
+  // Warm-leaning categorical palette for stacked backtest curves; first slot
+  // is brand red so the "primary" run reads as the focus series.
+  const colors = ['#dc2626', '#10b981', '#fbbf24', '#22d3ee', '#fb923c']
   const gradientIds = backtests.map((_, i) => `compGrad${i}`)
 
   return (
@@ -277,12 +279,12 @@ function ComparisonView({ comparison, onClose }) {
                   connectNulls
                 />
               ))}
-              <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(d) => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }} interval="preserveStartEnd" axisLine={{ stroke: '#1f2937' }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
+              <ReferenceLine y={0} stroke="#473538" strokeWidth={1} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8c7479' }} tickFormatter={(d) => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }} interval="preserveStartEnd" axisLine={{ stroke: '#2f2225' }} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: '#8c7479' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={tooltipStyle}
-                labelStyle={{ color: '#6b7280', fontSize: 11 }}
+                labelStyle={{ color: '#8c7479', fontSize: 11 }}
                 formatter={(v, n) => [`${v?.toFixed(2)}%`, n]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />

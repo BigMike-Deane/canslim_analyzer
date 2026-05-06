@@ -156,7 +156,7 @@ export default function Settings() {
       {/* Web Push (per-device) */}
       <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
         <h2 className="text-lg font-medium text-white mb-1">Push notifications</h2>
-        <p className="text-sm text-gray-400 mb-4">
+        <p className="text-sm text-dark-400 mb-4">
           Get native phone alerts when trades fire, breakouts trigger, or the SPY gate flips.
           Each device is registered separately. {' '}
           <span className="text-amber-400">On iOS</span>, this only works if you've added CANSLIM to your home screen first.
@@ -174,7 +174,7 @@ export default function Settings() {
               type="button"
               onClick={handleEnablePush}
               disabled={pushBusy}
-              className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-gray-500 text-white text-sm rounded"
+              className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm rounded"
             >
               {pushBusy ? 'Working…' : pushPermission === 'granted' ? 'Re-register this device' : 'Enable on this device'}
             </button>
@@ -183,7 +183,7 @@ export default function Settings() {
                 type="button"
                 onClick={handleTestPush}
                 disabled={pushBusy}
-                className="px-4 py-2 bg-dark-700 hover:bg-dark-600 disabled:bg-dark-800 disabled:text-gray-500 text-gray-200 text-sm rounded"
+                className="px-4 py-2 bg-dark-700 hover:bg-dark-600 disabled:bg-dark-800 disabled:text-dark-500 text-dark-200 text-sm rounded"
               >
                 Send test push
               </button>
@@ -199,15 +199,15 @@ export default function Settings() {
 
         {pushSubs.length > 0 && (
           <div className="mt-4 border-t border-dark-700/60 pt-4">
-            <div className="text-xs font-semibold tracking-wide text-gray-400 mb-2">REGISTERED DEVICES ({pushSubs.length})</div>
+            <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">REGISTERED DEVICES ({pushSubs.length})</div>
             <ul className="space-y-1.5">
               {pushSubs.map(s => (
                 <li key={s.id} className="flex items-center justify-between gap-3 text-xs">
                   <div className="min-w-0 flex-1">
-                    <div className="text-gray-200 truncate" title={s.user_agent || 'Unknown device'}>
+                    <div className="text-dark-200 truncate" title={s.user_agent || 'Unknown device'}>
                       {s.user_agent || 'Unknown device'}
                     </div>
-                    <div className="text-gray-500">
+                    <div className="text-dark-500">
                       added {formatRelativeTime(s.created_at)}
                     </div>
                   </div>
@@ -228,13 +228,13 @@ export default function Settings() {
       {/* ntfy webhook (legacy / fallback) */}
       <section className="bg-dark-900 border border-dark-700 rounded-lg p-5">
         <h2 className="text-lg font-medium text-white mb-1">ntfy webhook (fallback)</h2>
-        <p className="text-sm text-gray-400 mb-4">
-          Trade buys, sells, and stop-losses for <span className="text-gray-200">{user?.email}</span> also fire
+        <p className="text-sm text-dark-400 mb-4">
+          Trade buys, sells, and stop-losses for <span className="text-dark-200">{user?.email}</span> also fire
           to the webhook URL below. Per-user — only your trades fire to your URL.
           Leave blank to disable. Web Push above is the primary channel; ntfy is here for redundancy.
         </p>
 
-        <label className="block text-sm text-gray-300 mb-1">Webhook URL</label>
+        <label className="block text-sm text-dark-300 mb-1">Webhook URL</label>
         <input
           type="url"
           inputMode="url"
@@ -245,7 +245,7 @@ export default function Settings() {
           placeholder="https://ntfy.sh/your-private-topic"
           className="w-full px-3 py-2 bg-dark-800 border border-dark-600 rounded text-white text-sm font-mono focus:outline-none focus:border-primary-500"
         />
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-dark-500 mt-1">
           ntfy.sh format works out of the box. Pick a long, hard-to-guess topic name (anyone with the URL can read your alerts).
         </p>
 
@@ -254,7 +254,7 @@ export default function Settings() {
             type="button"
             onClick={handleSave}
             disabled={!dirty || saving}
-            className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-gray-500 text-white text-sm rounded"
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm rounded"
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
@@ -263,7 +263,7 @@ export default function Settings() {
             onClick={handleTest}
             disabled={!originalUrl || testing || dirty}
             title={dirty ? 'Save first, then test' : !originalUrl ? 'No URL configured' : 'Send a test notification'}
-            className="px-4 py-2 bg-dark-700 hover:bg-dark-600 disabled:bg-dark-800 disabled:text-gray-500 text-gray-200 text-sm rounded"
+            className="px-4 py-2 bg-dark-700 hover:bg-dark-600 disabled:bg-dark-800 disabled:text-dark-500 text-dark-200 text-sm rounded"
           >
             {testing ? 'Sending…' : 'Send test'}
           </button>

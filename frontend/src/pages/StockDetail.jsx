@@ -25,7 +25,7 @@ function ScoreGauge({ score, label }) {
         <svg className="w-24 h-24 transform -rotate-90" viewBox="0 0 100 100">
           <circle
             cx="50" cy="50" r={radius}
-            stroke="#1e1e2e"
+            stroke="#261a1c"
             strokeWidth="3"
             fill="none"
           />
@@ -448,7 +448,7 @@ const COMPONENT_COLORS = {
 }
 
 const TOOLTIP_STYLE = {
-  background: '#14141f',
+  background: '#1f1416',  // dark-800 — warm-tinted card surface
   border: '1px solid rgba(255,255,255,0.06)',
   borderRadius: '8px',
   boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
@@ -481,8 +481,9 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
     <div style={TOOLTIP_STYLE} className="px-3 py-2 text-xs">
       <div className="text-dark-500 mb-1">{displayLabel}</div>
       <div className="flex items-center gap-3 mb-1">
-        <span style={{ color: '#00e5ff' }}>Score: <b>{formatScore(d.total_score)}</b></span>
-        {d.price != null && <span style={{ color: '#a78bfa' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
+        {/* Brand red for score, gold for price — was cyan/violet pre-rebrand. */}
+        <span style={{ color: '#dc2626' }}>Score: <b>{formatScore(d.total_score)}</b></span>
+        {d.price != null && <span style={{ color: '#f59e0b' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
       </div>
       {topMover && (
         <div className="text-[11px] mb-1">
@@ -598,7 +599,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             onClick={() => setShowComponents(!showComponents)}
             className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
               showComponents
-                ? 'border-cyan-500/40 text-cyan-400 bg-cyan-500/10'
+                ? 'border-primary-500/40 text-primary-400 bg-primary-500/10'
                 : 'border-white/10 text-dark-500 hover:text-dark-400'
             }`}
           >
@@ -626,13 +627,14 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
           <ComposedChart data={data} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#00e5ff" stopOpacity={0.15} />
-                <stop offset="100%" stopColor="#00e5ff" stopOpacity={0} />
+                {/* Brand red gradient for the score area — was cyan #00e5ff. */}
+                <stop offset="0%" stopColor="#dc2626" stopOpacity={0.18} />
+                <stop offset="100%" stopColor="#dc2626" stopOpacity={0} />
               </linearGradient>
             </defs>
             <XAxis
               dataKey={xKey}
-              tick={{ fontSize: 10, fill: '#4b5563' }}
+              tick={{ fontSize: 10, fill: '#6b5559' }}
               tickFormatter={d => {
                 if (!d) return ''
                 if (isPerScan) {
@@ -650,7 +652,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             <YAxis
               yAxisId="score"
               domain={[0, 100]}
-              tick={{ fontSize: 10, fill: '#00e5ff' }}
+              tick={{ fontSize: 10, fill: '#dc2626' }}
               axisLine={false}
               tickLine={false}
               width={28}
@@ -659,7 +661,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               yAxisId="price"
               orientation="right"
               domain={[priceMin, priceMax]}
-              tick={{ fontSize: 10, fill: '#a78bfa' }}
+              tick={{ fontSize: 10, fill: '#f59e0b' }}
               axisLine={false}
               tickLine={false}
               width={45}
@@ -674,19 +676,20 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               yAxisId="score"
               type="monotone"
               dataKey="total_score"
-              stroke="#00e5ff"
+              stroke="#dc2626"
               strokeWidth={2}
               fill="url(#scoreGrad)"
               dot={false}
               name="Score"
             />
-            {/* Price line */}
+            {/* Price line — gold accent (was violet) for high-contrast pairing
+                with the brand-red score line. */}
             {prices.length > 0 && (
               <Line
                 yAxisId="price"
                 type="monotone"
                 dataKey="price"
-                stroke="#a78bfa"
+                stroke="#f59e0b"
                 strokeWidth={1.5}
                 dot={false}
                 strokeDasharray="4 2"

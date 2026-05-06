@@ -7,33 +7,67 @@ export default {
   theme: {
     extend: {
       colors: {
+        // ─── Warm-tinted near-blacks (red undertone, not blue) ───
+        // Replaces the previous cool-dark scale. All bg-dark-*, text-dark-*,
+        // border-dark-* classes throughout the app pick this up automatically.
         dark: {
-          950: '#06060c',
-          900: '#0a0a12',
-          850: '#0e0e18',
-          800: '#14141f',
-          750: '#1a1a28',
-          700: '#222233',
-          600: '#333348',
-          500: '#4a4a5e',
-          400: '#6e6e82',
-          300: '#9090a0',
-          200: '#b8b8c8',
-          100: '#e0e0ec',
-          50:  '#f0f0f8',
+          950: '#0a0606',  // Page background — deepest warm black
+          900: '#120909',  // Sidebar / nav background
+          850: '#180c0c',  // Stat card background
+          800: '#1f1416',  // Card background (was #14141f cool-blue)
+          750: '#261a1c',
+          700: '#2f2225',  // Borders, dividers
+          600: '#473538',  // Subtle borders
+          500: '#6b5559',  // Muted text
+          400: '#8c7479',  // Secondary text
+          300: '#a89499',  // Body text on subtle surfaces
+          200: '#cbb9bd',
+          100: '#e8dcde',  // Primary text
+          50:  '#f5eced',
         },
+        // ─── Brand red (deep crimson) ───
+        // The "primary" token used for sidebar accents, active states, focus
+        // rings, primary CTAs. Distinct from P&L red by hue depth: brand is
+        // burgundy/crimson while P&L loss is the brighter Tailwind red-400/500.
         primary: {
-          700: '#008ba3',
-          600: '#00b8d4',
-          500: '#00e5ff',
-          400: '#4df0ff',
-          300: '#80f5ff',
+          700: '#7f1d1d',  // Burgundy — pressed CTA states
+          600: '#991b1b',  // Deep crimson — primary CTA bg
+          500: '#b91c1c',  // Brand red — primary accent (active rail, focus)
+          400: '#dc2626',  // Lifted brand — hover states, active text
+          300: '#ef4444',  // (kept available; rarely needed for brand)
         },
+        // ─── Accent gold ───
+        // Secondary highlight for things like the search hotkey hint, info
+        // badges, ML-modulation marker. Already amber-leaning before the
+        // rebrand; tightened the palette to a copper/gold range for cohesion.
         accent: {
-          600: '#d69e2e',
-          500: '#fbbf24',
-          400: '#fcd34d',
+          700: '#b45309',  // Copper — pressed
+          600: '#d97706',  // Amber-deep
+          500: '#f59e0b',  // Gold — primary accent highlight
+          400: '#fbbf24',
+          300: '#fcd34d',
         },
+        // ─── Semantic tokens (new) ───
+        // Use these in new code instead of raw color names so future retheming
+        // is one-file-edit. Existing code still works via the legacy aliases
+        // above.
+        brand: {
+          DEFAULT: '#b91c1c',
+          deep:    '#7f1d1d',
+          bright:  '#dc2626',
+        },
+        surface: {
+          DEFAULT:  '#1f1416',  // = dark-800
+          elevated: '#261a1c',  // = dark-750 — modals, popovers
+          sunken:   '#120909',  // = dark-900 — sidebar, nav
+        },
+        pnl: {
+          up:        '#10b981',  // emerald-500 — gain (kept; do not theme)
+          'up-soft': '#34d399',  // emerald-400 — softer chart line
+          down:      '#ef4444',  // red-500 — loss (kept; do not theme)
+          'down-soft':'#f87171', // red-400 — softer chart line
+        },
+        // Score tier colors — semantic, used by getScoreClass() consumers.
         canslim: {
           excellent: '#10b981',
           good: '#22c55e',
@@ -76,8 +110,9 @@ export default {
           '50%': { opacity: '0.5', transform: 'scale(1.5)' },
         },
         glow: {
-          '0%': { boxShadow: '0 0 5px rgba(0, 229, 255, 0.1)' },
-          '100%': { boxShadow: '0 0 20px rgba(0, 229, 255, 0.15)' },
+          // Re-tinted from cyan to brand red.
+          '0%': { boxShadow: '0 0 5px rgba(185, 28, 28, 0.15)' },
+          '100%': { boxShadow: '0 0 20px rgba(185, 28, 28, 0.20)' },
         },
       },
       backdropBlur: {

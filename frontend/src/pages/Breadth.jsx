@@ -23,7 +23,7 @@ function SectorRow({ sector }) {
             {' A/D'}
           </span>
           {sector.breakouts > 0 && (
-            <span className="text-[10px] text-cyan-400">{sector.breakouts} breakouts</span>
+            <span className="text-[10px] text-primary-400">{sector.breakouts} breakouts</span>
           )}
         </div>
       </div>
@@ -51,7 +51,7 @@ function BreadthGauge({ label, value, max, color = 'emerald' }) {
     emerald: 'bg-emerald-500',
     red: 'bg-red-500',
     amber: 'bg-amber-500',
-    cyan: 'bg-cyan-500',
+    cyan: 'bg-primary-500',
   }
 
   return (
@@ -147,7 +147,7 @@ export default function Breadth() {
             {
               label: 'Breakouts',
               value: data.breaking_out,
-              color: data.breaking_out >= 20 ? 'text-cyan-400' : 'text-dark-200',
+              color: data.breaking_out >= 20 ? 'text-primary-400' : 'text-dark-200',
             },
           ]}
         />

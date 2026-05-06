@@ -247,7 +247,7 @@ export default function Admin() {
             <button
               onClick={handleRetrain}
               disabled={mlTraining}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white text-xs font-medium rounded-lg transition-colors"
+              className="px-3 py-1.5 bg-primary-600 hover:bg-primary-500 disabled:bg-primary-600/50 text-white text-xs font-medium rounded-lg transition-colors"
             >
               {mlTraining ? 'Training...' : 'Retrain Model'}
             </button>
@@ -269,7 +269,7 @@ export default function Admin() {
                   </div>
                   <div>
                     <div className="text-[10px] text-dark-500">Type</div>
-                    <div className={`text-sm font-data ${isRegression ? 'text-purple-400' : 'text-blue-400'}`}>
+                    <div className={`text-sm font-data ${isRegression ? 'text-accent-500' : 'text-primary-400'}`}>
                       {isRegression ? 'Regression' : 'Classifier'}
                     </div>
                   </div>

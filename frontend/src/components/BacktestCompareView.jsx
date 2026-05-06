@@ -3,10 +3,13 @@ import { api } from '../api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import Card, { CardHeader } from './Card'
 
+// A = emerald (green for "candidate that may win"); B = brand red (was cool blue);
+// SPY = warm muted gray. Stays distinct from raw P&L green/red because the brand
+// red is deeper than P&L red-400 and B is paired with a dedicated label.
 const COLORS = {
   btA: '#22c55e',
-  btB: '#3b82f6',
-  spy: '#94a3b8',
+  btB: '#dc2626',
+  spy: '#a89499',
 }
 
 const STAT_ROWS = [
@@ -60,7 +63,7 @@ function ComparisonChart({ chartData, backtests }) {
           <div className="flex items-center gap-2 text-xs">
             <span className="w-2 h-2 rounded-full" style={{ background: COLORS.spy }} />
             <span className="text-dark-300">SPY</span>
-            <span className="font-data ml-auto text-gray-400">
+            <span className="font-data ml-auto text-dark-400">
               {spy.value >= 0 ? '+' : ''}{spy.value.toFixed(1)}%
             </span>
           </div>
@@ -75,10 +78,10 @@ function ComparisonChart({ chartData, backtests }) {
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#2f2225" />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(d) => {
                 const parts = d.split('-')
                 return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : d
@@ -86,7 +89,7 @@ function ComparisonChart({ chartData, backtests }) {
               interval="preserveStartEnd"
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#6b7280', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => `${v.toFixed(0)}%`}
             />
             <Tooltip content={<CustomTooltip />} />
@@ -324,7 +327,7 @@ export default function BacktestCompareView() {
               <div className="flex items-center justify-center gap-3 py-2">
                 <span className="text-lg font-semibold">
                   {summaryText.winner === 'A' && <span className="text-emerald-400">{summaryText.text}</span>}
-                  {summaryText.winner === 'B' && <span className="text-blue-400">{summaryText.text}</span>}
+                  {summaryText.winner === 'B' && <span className="text-primary-400">{summaryText.text}</span>}
                   {summaryText.winner === null && <span className="text-dark-300">{summaryText.text}</span>}
                 </span>
               </div>
