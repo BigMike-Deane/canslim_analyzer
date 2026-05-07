@@ -942,6 +942,803 @@ class TestBuysGates:
         assert buys == []
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tier 1 — evaluate_buys candidate-ranking interior
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Companion to TestBuysGates above. TestBuysGates pins the early-exit gates
+# (bearish SPY → [], no SPY → []). This class pins the body the May 7 push
+# deferred: composite-score weight application, ML bonus/veto integration,
+# pre-breakout/breakout/extended classification, base-quality bonus,
+# sector-cap rejection, earnings-window separation (avoidance_days vs
+# allow_buy_days — the Feb 24 lesson, see MEMORY.md), and ranking order.
+#
+# All tests run with `nostate_optimized` (the live winner) unless they
+# explicitly need to verify cs_bear behavior. Per
+# canslim-ml-graduation-apr29.md, cs_bear is incompatible with the bonus
+# path — bonus tests MUST use nostate_optimized.
+#
+# Constraint: the Approach 2 A/B is reading live-trade data through
+# 2026-06-18. These tests are PURELY ADDITIVE — they pin existing behavior.
+# No code change to evaluate_buys is permitted during the eval window.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def disable_ml_and_yfinance(monkeypatch):
+    """Stub out three seams that evaluate_buys uses for non-pure side effects:
+
+    1. `yfinance.Ticker(...).history()` for the SPY pullback calc (line 2286).
+       Empty history → block falls back to default 30 days.
+    2. `yfinance.download(...)` for the correlation guard (called from
+       check_position_correlation when current_tickers is non-empty).
+    3. `ml.model.get_ml_prediction` for the ML bonus path. Default returns
+       None so log_only-style profiles see no bonus and no veto. Tests that
+       care about ML behavior override this seam directly.
+    """
+    import pandas as pd
+    import yfinance as yf
+
+    fake_ticker = MagicMock()
+    fake_ticker.history.return_value = pd.DataFrame()  # empty → default 30d
+    monkeypatch.setattr(yf, "Ticker", lambda *a, **kw: fake_ticker)
+    monkeypatch.setattr(yf, "download", lambda *a, **kw: pd.DataFrame())
+
+    # Default ML prediction: None (log_only-style behavior, no bonus, no veto).
+    # Individual tests override via monkeypatch.setattr inside the test body.
+    import ml.model as ml_model
+    monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: None)
+
+
+def _seed_growth_projection_stock(db, ticker, **overrides):
+    """Helper: seed a Stock that passes the standard quality gates.
+
+    Defaults: canslim_score=78 (above min_score=73 floor), c=12, l=12 (above
+    quality_filters min 10/8), volume_ratio=1.3, projected_growth=20, no base.
+    Override only what the test cares about.
+    """
+    defaults = dict(
+        canslim_score=78.0,
+        current_price=50.0,
+        week_52_high=55.0,
+        c_score=12.0,
+        a_score=12.0,
+        n_score=12.0,
+        s_score=12.0,
+        l_score=12.0,
+        i_score=8.0,
+        m_score=12.0,
+        volume_ratio=1.3,
+        projected_growth=20.0,
+        rs_12m=1.10,
+        rs_3m=1.05,
+        atr_pct=2.5,
+        ma_21=49.0,
+        ma_50=48.0,
+        industry_group_rank=70,
+        is_growth_stock=False,
+    )
+    defaults.update(overrides)
+    return _seed_stock(db, ticker, **defaults)
+
+
+class TestEvaluateBuysRanking:
+    """Tier 1: evaluate_buys candidate-ranking interior.
+
+    Each test pins one branch of the ranking pipeline. Tests are SHAPE pins,
+    not deep numerical assertions — we verify "this candidate is/isn't in
+    buys" or "this signal_factor flag is set", not "composite_score == 47.3".
+    Numerical tests would couple the suite to YAML weights that change.
+
+    All tests use `stub_market_bullish` to clear the SPY gate and the
+    `disable_ml_and_yfinance` fixture to neutralize network-bound seams.
+    """
+
+    def test_strong_candidate_appears_in_buys(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: happy path. A single high-quality candidate makes it to
+        the final buys list with a positive composite_score and shape-correct
+        return dict."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "WIN", canslim_score=80.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        b = buys[0]
+        assert b["stock"].ticker == "WIN"
+        assert b["composite_score"] > 0
+        assert b["shares"] > 0
+        assert b["value"] >= 100  # min position floor
+        assert "signal_factors" in b
+        assert b["signal_factors"]["entry_type"] == "standard"
+        assert b["is_growth_stock"] is False
+
+    def test_below_min_score_excluded_from_query(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: percentile + min_score floor. nostate_optimized has
+        min_score=73 and score_floor=45; a stock at 50 is below both
+        effective thresholds (with only one candidate, percentile=that one's
+        score so floor matters). With score=40 (below floor of 45) it's
+        excluded by the query filter."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "LOW", canslim_score=40.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_low_c_score_quality_filter_skips(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: quality_filters.min_c_score=10 (champion). c_score=5 is
+        below threshold → continue (no buy). Pin: this gate fires before
+        composite-score calc."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "LOWC", c_score=5.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_low_l_score_quality_filter_skips(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: quality_filters.min_l_score=8 (champion). l_score=5 → skip."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "LOWL", l_score=5.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_volume_gate_blocks_thin_volume(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: volume_gate. volume_ratio=0.5 with no base → below
+        min_volume_ratio (1.0) → skip. Champion default."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "THIN", volume_ratio=0.5)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_pre_breakout_classification(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: entry_type classifier. Stock 8% below pivot with a base
+        pattern → entry_type='pre-breakout', pre_breakout_bonus=40. The
+        position_pct should reflect the pre-breakout multiplier (1.40
+        default in YAML)."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=30000.0)
+        # current_price=92, pivot=100 → pct_from_pivot = 8% → pre-breakout zone (5-15%)
+        _seed_growth_projection_stock(
+            db_session, "PRE",
+            current_price=92.0,
+            week_52_high=100.0,
+            base_type="cup_with_handle",
+            weeks_in_base=8,
+            pivot_price=100.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        sf = buys[0]["signal_factors"]
+        assert sf["entry_type"] == "pre-breakout"
+        # Pre-breakout entries get high-conviction cash sizing — verify the
+        # reason string carries the pre-breakout label
+        assert "PRE-BREAKOUT" in buys[0]["reason"]
+
+    def test_breakout_classification_with_volume(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: is_breaking_out=True with breakout_volume_ratio>=1.5
+        → entry_type='breakout'. Volume gate uses breakout_min_volume_ratio
+        (1.5 default) instead of min_volume_ratio (1.0)."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=30000.0)
+        _seed_growth_projection_stock(
+            db_session, "BO",
+            current_price=110.0,
+            week_52_high=110.0,
+            is_breaking_out=True,
+            breakout_volume_ratio=2.0,
+            volume_ratio=2.0,
+            base_type="flat",
+            weeks_in_base=6,
+            pivot_price=108.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert buys[0]["signal_factors"]["entry_type"] == "breakout"
+        assert buys[0]["is_breaking_out"] is True
+        assert "BREAKOUT" in buys[0]["reason"]
+
+    def test_breakout_blocked_by_low_volume(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: volume gate. is_breaking_out=True needs volume_ratio
+        >= breakout_min_volume_ratio (1.2 in YAML). At 1.0 the gate
+        rejects — breakouts on weak volume are not real breakouts."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "BO_THIN",
+            current_price=110.0,
+            week_52_high=110.0,
+            is_breaking_out=True,
+            breakout_volume_ratio=1.0,
+            volume_ratio=1.0,
+            base_type="flat",
+            weeks_in_base=6,
+            pivot_price=108.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_extended_above_pivot_penalized(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: extended path. Stock 11% ABOVE pivot (pct_from_pivot=-11)
+        triggers extended_penalty=-20. Compared to a stock below pivot but
+        otherwise identical, the extended one ranks lower. Pin: ranking
+        respects extended_penalty subtraction."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=30000.0)
+        # Extended: above pivot, base intact → -20 extended_penalty + low momentum
+        _seed_growth_projection_stock(
+            db_session, "EXT",
+            current_price=111.0,
+            week_52_high=112.0,
+            base_type="flat",
+            weeks_in_base=6,
+            pivot_price=100.0,  # current is 11% above
+            canslim_score=78.0,
+        )
+        # Pre-breakout: below pivot in valid zone — high pre_breakout_bonus
+        _seed_growth_projection_stock(
+            db_session, "PRE",
+            current_price=92.0,
+            week_52_high=100.0,
+            base_type="flat",
+            weeks_in_base=6,
+            pivot_price=100.0,
+            canslim_score=78.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        # Both pass quality filters — pre-breakout should rank higher
+        ranks = {b["stock"].ticker: i for i, b in enumerate(buys)}
+        assert "PRE" in ranks and "EXT" in ranks
+        assert ranks["PRE"] < ranks["EXT"], (
+            f"Pre-breakout should outrank extended (PRE@{ranks['PRE']} EXT@{ranks['EXT']})"
+        )
+
+    def test_excluded_held_tickers_filtered(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: excluded_tickers. A held position blocks the same ticker
+        from re-buying. (Correlation guard is bypassed because we'd need a
+        second held position to trigger it; held=1 is a single-position case
+        where excluded_tickers is the gate that fires.)"""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "HELD")
+        _seed_position(db_session, "HELD", current_value=5000.0)
+        _seed_growth_projection_stock(db_session, "FRESH")
+
+        buys = evaluate_buys(db_session, user_id=1)
+        tickers = {b["stock"].ticker for b in buys}
+        assert "HELD" not in tickers
+        assert "FRESH" in tickers
+
+    def test_dead_stock_no_rs_no_atr_skipped(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: dead-stock guard at line ~2333. rs_12m=None AND atr_pct=0
+        → continue (acquired/halted/stale tickers shouldn't be ranked)."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "DEAD",
+            rs_12m=None,
+            atr_pct=0.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_earnings_avoidance_blocks_non_cs(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: non-CS earnings avoidance. Champion `avoidance_days=5`.
+        A non-CS stock with `days_to_earnings=3` is inside the avoidance
+        window and gets skipped. Pinned per the Feb 24 lesson:
+        avoidance_days != allow_buy_days. See MEMORY.md."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "EARN",
+            days_to_earnings=3,
+            # No CS markers (low confidence path) — would fail CS check
+            base_type="none",
+            weeks_in_base=0,
+            earnings_beat_streak=0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_earnings_outside_avoidance_window_passes(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch companion to above. days_to_earnings=10 is OUTSIDE both
+        the CS allow_buy_days=7 window and the non-CS avoidance_days=5
+        window — neither gate fires, the stock proceeds to ranking."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "FAR", days_to_earnings=10)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert buys[0]["stock"].ticker == "FAR"
+
+    def test_growth_stock_uses_growth_score(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: growth-mode dual-pool query. is_growth_stock=True with
+        growth_mode_score above threshold → enters via growth_candidates
+        list, effective_score = growth_mode_score, signal_factors flagged."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_growth_projection_stock(
+            db_session, "GROW",
+            is_growth_stock=True,
+            canslim_score=40.0,        # below threshold — would not match canslim pool
+            growth_mode_score=80.0,    # above threshold for growth pool
+            c_score=10.0,
+            a_score=0.0,               # growth bypass needs at least C OR A non-zero
+            l_score=10.0,
+            projected_growth=30.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert buys[0]["is_growth_stock"] is True
+        assert buys[0]["effective_score"] == 80.0
+
+    def test_growth_stock_zero_c_zero_a_skipped(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: growth-stock fundamental floor. c_score=0 AND a_score=0
+        means the growth bypass detects "no earnings data at all" (acquired
+        or dead) and skips."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "DEADGROW",
+            is_growth_stock=True,
+            growth_mode_score=80.0,
+            c_score=0.0,
+            a_score=0.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_ranking_orders_by_composite_score_descending(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: final sort. Two valid candidates with different
+        composite drivers (CANSLIM score, base, momentum) — the higher
+        composite must come first. Pin: priority key = -composite_score
+        and the list is sorted ascending on priority."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=30000.0)
+        _seed_growth_projection_stock(
+            db_session, "TOP", canslim_score=85.0,
+            current_price=92.0, week_52_high=100.0,
+            base_type="cup_with_handle", weeks_in_base=8, pivot_price=100.0,
+        )
+        _seed_growth_projection_stock(
+            db_session, "MID", canslim_score=78.0,
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 2
+        # Sorted ascending on priority (-composite_score) → higher composite first
+        assert buys[0]["composite_score"] > buys[1]["composite_score"]
+        assert buys[0]["stock"].ticker == "TOP"
+
+    def test_ml_veto_low_confidence_skips_candidate(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+        monkeypatch,
+    ):
+        """Branch: ML veto path. nostate_optimized has min_confidence=0.30
+        and veto_action='skip'. A 0.20 prediction triggers the veto and
+        the candidate gets dropped before reaching the buys list. Pinned
+        per canslim-ml-graduation-apr29.md (graduated Apr 29, drives most
+        of the +66.5pp lift)."""
+        from backend.ai_trader import evaluate_buys
+        import ml.model as ml_model
+
+        # Override default (None) to force veto
+        monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: 0.20)
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "VETOED", canslim_score=82.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_ml_high_confidence_bonus_increases_composite(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+        monkeypatch,
+    ):
+        """Branch: ML bonus path on nostate_optimized (D config, log_only=false).
+        ml_bonus = (confidence - 0.5) * weight = (0.95 - 0.5) * 20 = +9.0
+        added to composite. Sanity-check that the bonus is recorded in
+        signal_factors (the trade journal). Pinned regression for the
+        D-config bonus formula."""
+        from backend.ai_trader import evaluate_buys
+        import ml.model as ml_model
+
+        monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: 0.95)
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "MLWIN", canslim_score=80.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        sf = buys[0]["signal_factors"]
+        assert sf.get("ml_confidence") == pytest.approx(0.95, abs=0.001)
+        # Bonus formula: (0.95 - 0.5) * 20 = 9.0
+        assert sf.get("ml_bonus") == pytest.approx(9.0, abs=0.5)
+
+    def test_cs_bear_ml_bonus_path_off_log_only(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+        monkeypatch,
+    ):
+        """Branch: C-config (cs_bear, log_only=true). The ML confidence is
+        recorded but ml_bonus stays at 0 — the bonus path is OFF on cs_bear
+        per canslim-ml-graduation-apr29.md (bonus alone = -12pp, full = -33pp).
+
+        cs_bear's correction_zone.cs_only=true means non-CS candidates are
+        rejected when correction_zone is active. We use stub_market_bullish
+        (SPY > 50MA) so correction_zone is INACTIVE — the candidate gets
+        through standard ranking, ML logs but doesn't bonus.
+        """
+        from backend.ai_trader import evaluate_buys
+        import ml.model as ml_model
+
+        monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: 0.95)
+
+        _seed_config(db_session, strategy="nostate_cs_bear", current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "CSBEAR", canslim_score=80.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        sf = buys[0]["signal_factors"]
+        # Confidence is logged for journaling
+        assert sf.get("ml_confidence") == pytest.approx(0.95, abs=0.001)
+        # But the bonus is NOT applied — log_only=true on cs_bear
+        assert sf.get("ml_bonus", 0) == 0
+
+    def test_cooldown_blocks_recent_stop_loss_ticker(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: re-entry cooldown. A SELL trade tagged 'STOP LOSS'
+        executed within stop_loss_cooldown_days (default 5) excludes the
+        ticker from re-buying. Prevents whipsaw losses."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "STOPPED")
+        # Insert a SELL trade 2 days ago
+        db_session.add(AIPortfolioTrade(
+            user_id=1,
+            ticker="STOPPED",
+            action="SELL",
+            shares=100.0,
+            price=92.0,
+            total_value=9200.0,
+            reason="STOP LOSS: Down 7.5%",
+            executed_at=datetime.now(timezone.utc) - timedelta(days=2),
+        ))
+        db_session.commit()
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert buys == []
+
+    def test_sector_cap_rejects_when_at_max_count(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: sector_limit at line 2817. With 4 Technology positions
+        already held (MAX_STOCKS_PER_SECTOR=4 default), a fifth Technology
+        candidate gets adjusted_value=0 → continue. Pin both directions
+        (this test rejects; an Energy candidate with 4 Tech holdings would
+        pass, covered by the held-ticker test above which already proves
+        the non-rejection path through a non-overlapping sector)."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        # 4 existing Technology positions (at the cap)
+        for ticker in ("HELD1", "HELD2", "HELD3", "HELD4"):
+            _seed_growth_projection_stock(db_session, ticker, sector="Technology")
+            _seed_position(db_session, ticker, current_value=5000.0)
+        # Candidate also in Technology
+        _seed_growth_projection_stock(db_session, "FIFTH", sector="Technology")
+
+        buys = evaluate_buys(db_session, user_id=1)
+        # FIFTH must be rejected (5th Tech stock — at cap)
+        assert all(b["stock"].ticker != "FIFTH" for b in buys)
+
+    def test_rs_line_bonus_disabled_by_default_returns_zero(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: rs_line gate. YAML default has rs_line.enabled=false, so
+        even with l_score>=13 and price below high, rs_line_bonus stays 0.
+        Pinned because the YAML default IS the live config — this asserts
+        that the disabled gate is honored. If someone flips the YAML
+        default without an explicit graduation decision, this test catches
+        the change at PR review."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "RSL",
+            l_score=14.0,        # >= 13 → RS strong proxy
+            current_price=92.0,
+            week_52_high=100.0,  # 8% below high — would trigger if enabled
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert buys[0]["signal_factors"]["rs_line_bonus"] == 0
+
+    def test_earnings_drift_bonus_disabled_by_default_returns_zero(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: earnings_drift gate. YAML default has
+        earnings_drift.enabled=false, so even with beat_streak>=4, the
+        bonus is 0. Companion pin to test_rs_line above — both signals
+        are configured-off in production but the code paths exist."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "DRIFT",
+            earnings_beat_streak=4,
+            days_to_earnings=20,  # Outside avoidance window
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert buys[0]["signal_factors"]["earnings_drift_bonus"] == 0
+
+    def test_volume_dry_up_bonus_with_base(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: volume_dry_up at line 2725. volume_dry_up=True AND
+        has_base AND not is_breaking_out → +5 to composite_score.
+        Ranking signal for accumulation/dry-up before breakout."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(
+            db_session, "DRY",
+            volume_dry_up=True,
+            base_type="cup",
+            weeks_in_base=6,
+            pivot_price=55.0,
+            current_price=50.0,
+            week_52_high=55.0,
+            volume_ratio=0.7,  # passes pre-breakout gate (0.6 threshold)
+        )
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert buys[0]["signal_factors"].get("volume_dry_up") is True
+
+    def test_bear_base_readiness_bonus_applied(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: bear_base_bonus at line 2733. A pre-loaded
+        BearBaseCandidate row with readiness_score>=70 grants +15 composite
+        bonus. This is the 'ready when SPY flips bullish' lift baked into
+        the post-bear breakout flow."""
+        from backend.ai_trader import evaluate_buys
+        from backend.database import BearBaseCandidate
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_growth_projection_stock(db_session, "READY")
+        # Top-tier readiness: 75 (>= 70) and 14 days on list → +15 + 3 = +18
+        db_session.add(BearBaseCandidate(
+            ticker="READY",
+            readiness_score=75.0,
+            days_on_list=14,
+        ))
+        db_session.commit()
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        sf = buys[0]["signal_factors"]
+        assert sf.get("bear_base_bonus", 0) >= 15
+        assert sf.get("bear_base_readiness") == pytest.approx(75.0)
+
+
 class TestStrategyMLSignalConfig:
     """Pinned regression: cs_bear must be VETO-ONLY (log_only=true).
 
