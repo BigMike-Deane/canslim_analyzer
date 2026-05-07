@@ -751,7 +751,7 @@ trade_journal:
 # Backtester Settings
 backtester:
   workers: 12                         # Number of parallel workers for fetching price history
-  use_frozen_scores: false            # Compute scores fresh via canslim_scorer (May 6 — was true; flipped after the C-score refactor exposed that frozen StockScore rows captured pre-Approach-2 scoring code, so any change to canslim_scorer was invisible in backtest replay. Reproducibility now comes from BacktestStaticSnapshot freezing the INPUTS, not the scores.)
+  use_frozen_scores: true             # MUST stay true: BacktestStaticSnapshot freezes today's point-in-time scalars (earnings_surprise_pct, eps_estimate_revision_pct, eps_beat_streak, roe, institutional_holders_pct) and applies them to ALL historical replay dates. The earnings ARRAYS get date-filtered correctly, but the SCALARS don't — fresh-compute (Layer 4) would score 2022 stocks using 2026 metadata, which is semantically wrong. We learned this May 6-7 2026: flipped to false to evaluate Approach 2, baseline returned -15% (vs +136.84% under frozen). The frozen StockScore rows are correct because the live scanner wrote them at each scan date with then-current data. Approach 2 (and any canslim_scorer change) must be evaluated via live A/B, NOT via backtest replay. See canslim_scorer-refactor-may6.md memory note.
   disk_cache:
     enabled: true                     # Enable disk caching for price history
     database: null                    # Path to cache database (null = default: data/price_cache.db)
