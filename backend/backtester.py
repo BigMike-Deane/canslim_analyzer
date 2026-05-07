@@ -61,8 +61,12 @@ from canslim_scorer import CANSLIMScorer, calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
 
-# Bump this version when scoring logic changes to invalidate cached scores
-SCORE_CACHE_VERSION = 1
+# Bump this version when scoring logic changes to invalidate cached scores.
+# v1 (legacy): pre-C-score refactor; cached pre-refactor canslim_scorer outputs.
+# v3: post-C-score-refactor + use_frozen_scores=false. v2 is reserved for the
+# test/approach-2-on-refactor candidate branch so the two branches' caches
+# don't cross-contaminate during apples-to-apples evaluation.
+SCORE_CACHE_VERSION = 3
 SCORE_CACHE_DIR = "/tmp/backtest_cache"
 
 # Lazy import for graceful fallback when ML dependencies not installed
