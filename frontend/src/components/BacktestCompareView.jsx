@@ -3,12 +3,12 @@ import { api } from '../api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import Card, { CardHeader } from './Card'
 
-// A = emerald (green for "candidate that may win"); B = brand red (was cool blue);
-// SPY = warm muted gray. Stays distinct from raw P&L green/red because the brand
-// red is deeper than P&L red-400 and B is paired with a dedicated label.
+// A = emerald (green for "candidate that may win"); B = brand amber (was red);
+// SPY = warm muted gray. Stays distinct from raw P&L green/red because B is
+// hue-distant from P&L red-400 and is paired with a dedicated label.
 const COLORS = {
   btA: '#22c55e',
-  btB: '#dc2626',
+  btB: '#f59e0b',
   spy: '#a89499',
 }
 

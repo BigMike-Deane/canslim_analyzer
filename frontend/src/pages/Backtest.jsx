@@ -232,8 +232,9 @@ function ComparisonView({ comparison, onClose }) {
 
   const { backtests = [], chart_data, stats_table } = comparison
   // Warm-leaning categorical palette for stacked backtest curves; first slot
-  // is brand red so the "primary" run reads as the focus series.
-  const colors = ['#dc2626', '#10b981', '#fbbf24', '#22d3ee', '#fb923c']
+  // is deep copper so the "primary" run reads as the focus series, with the
+  // remaining slots staying hue-distinct from each other.
+  const colors = ['#b45309', '#10b981', '#fbbf24', '#22d3ee', '#fb923c']
   const gradientIds = backtests.map((_, i) => `compGrad${i}`)
 
   return (

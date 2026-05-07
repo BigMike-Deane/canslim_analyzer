@@ -481,9 +481,9 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
     <div style={TOOLTIP_STYLE} className="px-3 py-2 text-xs">
       <div className="text-dark-500 mb-1">{displayLabel}</div>
       <div className="flex items-center gap-3 mb-1">
-        {/* Brand red for score, gold for price — was cyan/violet pre-rebrand. */}
-        <span style={{ color: '#dc2626' }}>Score: <b>{formatScore(d.total_score)}</b></span>
-        {d.price != null && <span style={{ color: '#f59e0b' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
+        {/* Brand amber for score, pale gold for price — was red/gold pre-rebrand. */}
+        <span style={{ color: '#f59e0b' }}>Score: <b>{formatScore(d.total_score)}</b></span>
+        {d.price != null && <span style={{ color: '#fde68a' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
       </div>
       {topMover && (
         <div className="text-[11px] mb-1">
@@ -627,9 +627,9 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
           <ComposedChart data={data} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
-                {/* Brand red gradient for the score area — was cyan #00e5ff. */}
-                <stop offset="0%" stopColor="#dc2626" stopOpacity={0.18} />
-                <stop offset="100%" stopColor="#dc2626" stopOpacity={0} />
+                {/* Brand amber gradient for the score area — was red #dc2626. */}
+                <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.18} />
+                <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
               </linearGradient>
             </defs>
             <XAxis
@@ -652,7 +652,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             <YAxis
               yAxisId="score"
               domain={[0, 100]}
-              tick={{ fontSize: 10, fill: '#dc2626' }}
+              tick={{ fontSize: 10, fill: '#f59e0b' }}
               axisLine={false}
               tickLine={false}
               width={28}
@@ -661,7 +661,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               yAxisId="price"
               orientation="right"
               domain={[priceMin, priceMax]}
-              tick={{ fontSize: 10, fill: '#f59e0b' }}
+              tick={{ fontSize: 10, fill: '#fde68a' }}
               axisLine={false}
               tickLine={false}
               width={45}
@@ -676,20 +676,20 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               yAxisId="score"
               type="monotone"
               dataKey="total_score"
-              stroke="#dc2626"
+              stroke="#f59e0b"
               strokeWidth={2}
               fill="url(#scoreGrad)"
               dot={false}
               name="Score"
             />
-            {/* Price line — gold accent (was violet) for high-contrast pairing
-                with the brand-red score line. */}
+            {/* Price line — pale gold (was red/gold) for high-contrast pairing
+                with the brand-amber score line; dashed for axis disambiguation. */}
             {prices.length > 0 && (
               <Line
                 yAxisId="price"
                 type="monotone"
                 dataKey="price"
-                stroke="#f59e0b"
+                stroke="#fde68a"
                 strokeWidth={1.5}
                 dot={false}
                 strokeDasharray="4 2"

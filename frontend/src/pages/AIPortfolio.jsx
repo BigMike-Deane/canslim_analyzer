@@ -552,11 +552,11 @@ function TradeHistory({ trades }) {
 
 // ── Sector Allocation Chart ─────────────────────────────────────────
 // Warm-leaning 10-color qualitative palette for pie slices. Anchors on the
-// brand red + accent gold, fills out with emerald/teal/copper/rose/amber to
-// stay readable against the warm-dark surface. Avoids cool blues/violets
-// that clashed with the rebrand.
-const SECTOR_COLORS = ['#dc2626', '#f59e0b', '#10b981', '#fb923c', '#f43f5e',
-  '#fbbf24', '#22d3ee', '#a855f7', '#22c55e', '#b45309']
+// brand amber + deep copper, fills out with emerald/teal/rose/etc. to stay
+// readable against the warm-dark surface. Avoids cool blues/violets that
+// clashed with the rebrand.
+const SECTOR_COLORS = ['#f59e0b', '#b45309', '#10b981', '#fb923c', '#f43f5e',
+  '#fbbf24', '#22d3ee', '#a855f7', '#22c55e', '#fde68a']
 
 function SectorAllocationChart({ riskData, cashPct }) {
   if (!riskData?.sector_concentration || riskData.sector_concentration.length === 0) return null
