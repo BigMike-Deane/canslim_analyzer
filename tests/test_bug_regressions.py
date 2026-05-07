@@ -267,6 +267,28 @@ class TestDelistedTickerRecheck:
         recheck_after = now + timedelta(days=30)
         assert 29 < (recheck_after - now).days <= 30
 
+    def test_yahoo_info_no_price_does_not_mark_delisted(self):
+        """Regression (May 2026): fetch_yahoo_info_comprehensive_async used to
+        call mark_ticker_as_delisted whenever Yahoo's `info` returned no
+        regularMarketPrice, BEFORE the chart-API fallback (in get_stock_data_async)
+        had a chance to recover the price. During Yahoo crumb-rotation 401 storms
+        this eroded the ticker universe — major-caps like NVDA/AAPL/META got
+        accumulated failures and dropped from scans. The fix removes that
+        premature mark; the authoritative delist decision lives at the end of
+        get_stock_data_async (when ALL price sources have failed).
+        """
+        import asyncio
+        from async_data_fetcher import fetch_yahoo_info_comprehensive_async
+
+        with patch('async_data_fetcher.yf_safe_call', return_value=None) as mock_yf, \
+             patch('async_data_fetcher.mark_ticker_as_delisted') as mock_mark:
+            result = asyncio.run(fetch_yahoo_info_comprehensive_async("NVDA"))
+
+        assert result["success"] is False
+        assert mock_yf.called
+        assert not mock_mark.called, \
+            "fetch_yahoo_info_comprehensive_async must NOT mark delisted on its own; that's the caller's responsibility after all sources fail"
+
     @patch('data_fetcher._get_db_session')
     def test_get_delisted_tickers_filters_by_recheck(self, mock_get_db):
         """Verify the query filters by failure_count >= 3 AND recheck_after > now."""

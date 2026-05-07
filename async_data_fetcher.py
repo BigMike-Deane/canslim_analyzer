@@ -1025,8 +1025,12 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
 
             if not info or not info.get('regularMarketPrice'):
                 logger.debug(f"{ticker}: Yahoo info returned no data")
-                # Mark as potentially delisted if Yahoo returns no price
-                mark_ticker_as_delisted(ticker, reason="yahoo_no_price", source="async_data_fetcher")
+                # Don't mark delisted here — chart-API fallback (called later in
+                # get_stock_data_async around L1428) may still recover price data.
+                # The authoritative delist decision lives at the end of
+                # get_stock_data_async (L1486) and only fires when EVERY price
+                # source has failed. Marking here pre-emptively erodes the
+                # ticker universe whenever Yahoo crumb-rotates a 401 storm.
                 return result
 
             # Key metrics - store as decimal (e.g., 0.05 = 5%) for consistency with FMP
