@@ -321,7 +321,12 @@ def check_watchlist_alerts():
                     item.alert_triggered_at = datetime.now(timezone.utc)
                     item.alert_sent = True
 
-                    if send_watchlist_alert_email(item, stock, reasons):
+                    # Gate on email.automated_enabled (May 7 2026 — user opted out
+                    # of routine emails; in-app notification bell still records
+                    # the trigger, so signal isn't lost).
+                    if not config.get('email.automated_enabled', False):
+                        logger.debug(f"Watchlist alert for {item.ticker} skipped: email.automated_enabled=false")
+                    elif send_watchlist_alert_email(item, stock, reasons):
                         alerts_sent += 1
                         logger.info(f"Watchlist alert sent for {item.ticker}: {', '.join(reasons)}")
                     else:
@@ -771,15 +776,26 @@ def send_morning_briefing_if_due():
             "earnings_warnings": earnings_warnings,
         }
 
-        success = send_morning_briefing_email(briefing_data)
-        if success:
+        # Gate email path on email.automated_enabled (May 7 2026 — push
+        # notification path below stays on; that's the channel the user wants).
+        # NOTE: This function imports config_loader as `yaml_config` (line ~632).
+        if yaml_config.get('email.automated_enabled', False):
+            success = send_morning_briefing_email(briefing_data)
+            if success:
+                set_system_state(db, LAST_BRIEFING_DATE_KEY, today_iso)
+                db.commit()
+                logger.info("Morning briefing sent successfully")
+            else:
+                logger.warning("Morning briefing email failed to send")
+        else:
+            # Email path disabled — still mark as fired so we don't re-attempt
+            # the briefing later in the day via the push path.
             set_system_state(db, LAST_BRIEFING_DATE_KEY, today_iso)
             db.commit()
-            logger.info("Morning briefing sent successfully")
-        else:
-            logger.warning("Morning briefing email failed to send")
+            logger.debug("Morning briefing email skipped: email.automated_enabled=false (push still sent)")
 
-        # Also send compact push notification
+        # Also send compact push notification (always on — push is the
+        # preferred channel; user disabled email separately).
         try:
             from backend.email_utils import send_morning_briefing_push
             send_morning_briefing_push(briefing_data)
@@ -1722,7 +1738,17 @@ def send_weekly_performance_email():
     """
     Send weekly performance summary email comparing portfolio to SPY.
     Scheduled to run every Saturday at 9 AM.
+
+    Disabled by default May 7 2026 via email.automated_enabled config flag.
+    The cron job still fires (cheaper than removing+re-adding it) but the
+    function early-returns when the flag is false.
     """
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config_loader import config
+    if not config.get('email.automated_enabled', False):
+        logger.debug("Weekly performance email skipped: email.automated_enabled=false")
+        return
     from backend.database import SessionLocal, AIPortfolioSnapshot, AIPortfolioTrade
     from backend.email_utils import send_email
     from datetime import timedelta
@@ -1998,7 +2024,17 @@ def send_weekly_bear_market_report():
 
 
 def _send_bear_report_email(report_data: dict, candidates: list):
-    """Send detailed bear market report via email."""
+    """Send detailed bear market report via email.
+
+    Gated on email.automated_enabled (May 7 2026) — early-return when off.
+    Push channel for bear-market readiness lives elsewhere (send_bear_market_report_push).
+    """
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config_loader import config
+    if not config.get('email.automated_enabled', False):
+        logger.debug("Bear report email skipped: email.automated_enabled=false")
+        return
     from backend.email_utils import send_email
 
     spy_px = report_data.get('spy_price', 0)
