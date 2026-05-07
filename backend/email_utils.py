@@ -56,8 +56,17 @@ def send_email(subject: str, html_content: str, text_content: str) -> bool:
     msg.attach(part1)
     msg.attach(part2)
 
+    # Port 465 (SMTPS) is blocked from this VPS's network egress; use port 587
+    # (STARTTLS) instead. Discovered May 7 2026 — the original 465 path was
+    # silently failing, which is why no watchlist-alert emails had been
+    # delivered. Verified port 587 reaches smtp.gmail.com from the VPS host
+    # AND from inside the Docker container (the previous "Network is unreachable"
+    # error was specifically port 465).
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as server:
+        import ssl
+        context = ssl.create_default_context()
+        with smtplib.SMTP('smtp.gmail.com', 587, timeout=30) as server:
+            server.starttls(context=context)
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
         logger.info(f"Email sent successfully to {RECIPIENT_EMAIL}")
