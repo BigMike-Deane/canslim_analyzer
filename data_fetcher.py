@@ -1070,7 +1070,12 @@ def fetch_fmp_earnings_calendar(ticker: str) -> dict:
             # Past earnings - capture surprise % on first past record, then walk beat streak
             if actual is not None and estimated is not None:
                 if latest_surprise_pct is None and estimated != 0:
-                    latest_surprise_pct = ((actual - estimated) / abs(estimated)) * 100
+                    raw = ((actual - estimated) / abs(estimated)) * 100
+                    # Clamp to ±200%: near-zero estimates produce mathematically valid but
+                    # behaviorally meaningless extremes (e.g. estimated=$0.001 → ±69,000%).
+                    # The C-scorer is immune (it buckets at ≥10%), but downstream ML
+                    # features and ranking displays would otherwise see surprise bombs.
+                    latest_surprise_pct = max(-200.0, min(200.0, raw))
                 if actual > estimated:
                     beat_streak += 1
                 else:

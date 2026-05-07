@@ -322,6 +322,44 @@ class TestDataFetcherFunctions:
         assert abs(result["latest_surprise_pct"] - (-10.0)) < 0.01
         assert result["earnings_beat_streak"] == 0
 
+    def test_fetch_fmp_earnings_calendar_clamps_extreme_surprise(self):
+        """latest_surprise_pct must be clamped to ±200% to prevent near-zero
+        estimates from producing surprise bombs (real production data showed
+        min=-69,431% / max=+4,409% from companies with $0.001 estimates).
+        """
+        from data_fetcher import fetch_fmp_earnings_calendar
+
+        # Estimate of 0.001 with actual of 1.0 → raw = +99,900% → should clamp to +200
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {"symbol": "TEST", "date": "2026-02-25", "epsActual": 1.0, "epsEstimated": 0.001},
+        ]
+        with patch("data_fetcher._fmp_get", return_value=mock_response), \
+             patch("data_fetcher.FMP_API_KEY", "fake-key"):
+            result = fetch_fmp_earnings_calendar("TEST")
+        assert result["latest_surprise_pct"] == 200.0, \
+            f"Expected clamp to +200, got {result['latest_surprise_pct']}"
+
+        # Estimate of 0.001 with actual of -1.0 → raw = -100,100% → should clamp to -200
+        mock_response.json.return_value = [
+            {"symbol": "TEST", "date": "2026-02-25", "epsActual": -1.0, "epsEstimated": 0.001},
+        ]
+        with patch("data_fetcher._fmp_get", return_value=mock_response), \
+             patch("data_fetcher.FMP_API_KEY", "fake-key"):
+            result = fetch_fmp_earnings_calendar("TEST")
+        assert result["latest_surprise_pct"] == -200.0
+
+        # Sanity: in-range values should NOT be clamped
+        mock_response.json.return_value = [
+            {"symbol": "TEST", "date": "2026-02-25", "epsActual": 1.62, "epsEstimated": 1.54},
+        ]
+        with patch("data_fetcher._fmp_get", return_value=mock_response), \
+             patch("data_fetcher.FMP_API_KEY", "fake-key"):
+            result = fetch_fmp_earnings_calendar("TEST")
+        assert abs(result["latest_surprise_pct"] - 5.1948) < 0.01, \
+            "In-range surprise % should be untouched"
+
     def test_fetch_fmp_earnings_calendar_zero_estimate_falls_through(self):
         """Guard against ZeroDivisionError when epsEstimated == 0: skip that
         record for surprise % and use the next eligible past record. Beat-streak
