@@ -751,7 +751,7 @@ trade_journal:
 # Backtester Settings
 backtester:
   workers: 12                         # Number of parallel workers for fetching price history
-  use_frozen_scores: true             # Use StockScore table snapshots for reproducible backtests
+  use_frozen_scores: false            # Compute scores fresh via canslim_scorer (May 6 — was true; flipped after the C-score refactor exposed that frozen StockScore rows captured pre-Approach-2 scoring code, so any change to canslim_scorer was invisible in backtest replay. Reproducibility now comes from BacktestStaticSnapshot freezing the INPUTS, not the scores.)
   disk_cache:
     enabled: true                     # Enable disk caching for price history
     database: null                    # Path to cache database (null = default: data/price_cache.db)
