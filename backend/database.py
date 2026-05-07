@@ -236,6 +236,9 @@ def run_migrations():
         ("backtest_static_snapshot", "annual_earnings", "TEXT"),
         ("backtest_static_snapshot", "quarterly_revenue", "TEXT"),
         ("backtest_static_snapshot", "score_details", "TEXT"),
+        # C-score surprise signal (May 6 2026 — added when backtester routed
+        # through canslim_scorer; surprise/beat-streak bonus needs this field).
+        ("backtest_static_snapshot", "earnings_surprise_pct", "FLOAT"),
         # Model graduation gate metrics (May 2026 — see _run_evaluation_backtest):
         # the eval backtest's portfolio metrics are stored on the MLModel row so
         # future candidates can be compared apples-to-apples against the
@@ -1186,6 +1189,12 @@ class BacktestStaticSnapshot(Base):
     annual_earnings = Column(Text)     # JSON array
     quarterly_revenue = Column(Text)   # JSON array
     score_details = Column(Text)       # JSON object — used for institutional_holders_pct
+
+    # C-score signal (May 6 — added when backtester routed through canslim_scorer
+    # which reads `earnings_surprise_pct` for its surprise/beat-streak bonus block.
+    # Without this column the snapshot couldn't reproduce historical C scores
+    # because the bonus was unreachable in replay.
+    earnings_surprise_pct = Column(Float)
 
     snapshot_taken_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

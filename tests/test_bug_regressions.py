@@ -2813,6 +2813,13 @@ class TestBacktesterCScoreSync:
         mock_stock_data.quarterly_earnings = [1.0, 0.8, 0.7, 0.5, -0.5, -0.5, -0.5, -0.5]
         mock_stock_data.annual_earnings = [3.0, -2.0, -3.0]
         mock_stock_data.quarterly_revenue = [100, 90, 80, 70]
+        # C-score bonus inputs read by canslim_scorer (May 6 — set explicitly
+        # so MagicMock auto-attributes don't satisfy `>=` comparisons).
+        mock_stock_data.earnings_surprise_pct = 0.0
+        mock_stock_data.eps_beat_streak = 0
+        mock_stock_data.eps_estimate_revision_pct = None
+        mock_stock_data.earnings_growth_estimate = 0.0
+        mock_stock_data.sector = "Technology"
 
         engine.data_provider.get_stock_data_on_date.return_value = mock_stock_data
 
@@ -2838,18 +2845,27 @@ class TestBacktesterCScoreSync:
         # Now it should give turnaround credit (C=12)
         assert c_score >= 10, f"Turnaround stock should get C >= 10, got {c_score}"
 
-    def test_acceleration_uses_yoy_growth_rates(self):
-        """Acceleration bonus should compare YoY growth rates, not sequential EPS."""
-        # Read backtester source to verify it uses the correct acceleration metric
+    def test_c_score_delegates_to_canslim_scorer(self):
+        """C-score computation lives in canslim_scorer, not inline in the
+        backtester. Replaces the prior `current_q_growth in source` grep —
+        that test pinned the inline implementation, but we've since refactored
+        to delegate so the live scorer's behavior (YoY growth rate comparison
+        for acceleration) flows through automatically without source-level
+        duplication. The behavior contract is now pinned by
+        tests/test_canslim_scorer.py + tests/test_backtester_scorer_parity.py.
+        """
         import inspect
         from backend.backtester import BacktestEngine
 
         source = inspect.getsource(BacktestEngine._calculate_scores)
 
-        # Should reference YoY growth rate comparison, not q1 > q2 > q3
-        assert "current_q_growth" in source, "Should use YoY growth rate comparison"
-        assert "prev_q_growth" in source, "Should compare against prior quarter's YoY growth"
-        # Should NOT use the old simple sequential comparison
+        # C score should be obtained via the scorer instance, not inline.
+        assert "self._scorer._score_current_earnings" in source, (
+            "C-score computation must delegate to canslim_scorer to prevent "
+            "drift between live and backtest scoring (Approach 2 no-op bug)"
+        )
+        # Sequential EPS comparison must remain absent — that was the pre-Feb
+        # bug where backtester used q1>q2>q3 instead of YoY growth rates.
         assert "q1 > q2 > q3 > 0" not in source, "Should not use sequential EPS comparison"
 
     def test_sector_adjusted_thresholds(self):
@@ -2874,6 +2890,11 @@ class TestBacktesterCScoreSync:
         mock_stock_data.quarterly_earnings = [-0.10, -0.15, -0.20, -0.25, -0.50, -0.60, -0.70, -0.80]
         mock_stock_data.annual_earnings = [-0.70, -2.60, -3.00]
         mock_stock_data.quarterly_revenue = [100, 90, 80, 70]
+        mock_stock_data.earnings_surprise_pct = 0.0
+        mock_stock_data.eps_beat_streak = 0
+        mock_stock_data.eps_estimate_revision_pct = None
+        mock_stock_data.earnings_growth_estimate = 0.0
+        mock_stock_data.sector = "Healthcare"
 
         engine.data_provider.get_stock_data_on_date.return_value = mock_stock_data
 

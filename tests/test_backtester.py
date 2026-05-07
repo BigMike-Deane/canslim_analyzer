@@ -1280,6 +1280,12 @@ class TestInitialSeeding:
             institutional_holders=100,
             institutional_pct=45.0,
             market_cap=5e9,
+            # C-score bonus fields (canslim_scorer reads via getattr/.attr;
+            # MagicMock would otherwise return un-comparable Mock objects)
+            earnings_surprise_pct=0.0,
+            eps_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_growth_estimate=0.0,
         )
         engine.data_provider.detect_base_pattern.return_value = {
             "type": "flat", "weeks": 10, "depth_pct": 12, "pivot_price": 52.0
@@ -1327,6 +1333,10 @@ class TestInitialSeeding:
             institutional_holders=50,
             institutional_pct=30.0,
             market_cap=1e9,
+            earnings_surprise_pct=0.0,
+            eps_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_growth_estimate=0.0,
         )
         engine.data_provider.detect_base_pattern.return_value = {"type": "none"}
 
@@ -1445,6 +1455,10 @@ class TestConcentratedPortfolio:
             quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7],
             annual_earnings=[5.0, 3.5, 2.5],
             quarterly_revenue=[],
+            earnings_surprise_pct=0.0,
+            eps_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_growth_estimate=0.0,
         )
         engine.data_provider.get_vix_proxy.return_value = 18.0
         engine.data_provider.get_atr.return_value = 2.0
@@ -1554,6 +1568,10 @@ class TestConcentratedPortfolio:
             quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4],
             annual_earnings=[5.0, 3.5, 2.5],
             quarterly_revenue=[],
+            earnings_surprise_pct=0.0,
+            eps_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_growth_estimate=0.0,
         )
         engine.data_provider.detect_base_pattern.return_value = {
             "type": "flat", "weeks": 10, "depth_pct": 12, "pivot_price": 52.0
@@ -1612,6 +1630,10 @@ class TestDrawdownCircuitBreaker:
             quarterly_earnings=[1.5, 1.2, 1.0, 0.8, 0.7, 0.6, 0.5, 0.4],
             annual_earnings=[5.0, 3.5, 2.5],
             institutional_holders=100, institutional_pct=45.0, market_cap=5e9,
+            earnings_surprise_pct=0.0,
+            eps_beat_streak=0,
+            eps_estimate_revision_pct=None,
+            earnings_growth_estimate=0.0,
         )
 
     def test_drawdown_halt_blocks_buys(self):

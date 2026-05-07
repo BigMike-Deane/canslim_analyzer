@@ -53,6 +53,16 @@ class HistoricalStockData:
     analyst_target_price: float = 0.0
     num_analyst_opinions: int = 0
 
+    # C-score surprise/beat-streak/revision bonus inputs (May 6 — populated when
+    # the backtester routes through canslim_scorer._score_current_earnings).
+    # Kept on this dataclass rather than in a separate adapter so the scoring
+    # contract lives in one place.
+    earnings_surprise_pct: float = 0.0
+    eps_beat_streak: int = 0
+    earnings_beat_streak: int = 0
+    eps_estimate_revision_pct: Optional[float] = None
+    earnings_growth_estimate: float = 0.0
+
     # For growth mode
     quarterly_revenue: List[float] = field(default_factory=list)
     is_growth_stock: bool = False
@@ -728,6 +738,17 @@ class HistoricalDataProvider:
             data.roe = static_data.get("roe", 0.0)
             data.analyst_target_price = static_data.get("analyst_target_price", 0.0)
             data.num_analyst_opinions = static_data.get("num_analyst_opinions", 0)
+
+            # C-score surprise/beat-streak/revision inputs. The Stock model
+            # holds one beat-streak field (`earnings_beat_streak`) but
+            # canslim_scorer reads `eps_beat_streak` on the StockData object
+            # — production sets both to the same value, so mirror that here.
+            surprise = static_data.get("earnings_surprise_pct")
+            data.earnings_surprise_pct = float(surprise) if surprise is not None else 0.0
+            beat_streak = static_data.get("earnings_beat_streak", 0) or 0
+            data.eps_beat_streak = int(beat_streak)
+            data.earnings_beat_streak = int(beat_streak)
+            data.eps_estimate_revision_pct = static_data.get("eps_estimate_revision_pct")
 
             # Filter earnings to only include data available on as_of_date
             all_quarterly = static_data.get("quarterly_earnings", [])

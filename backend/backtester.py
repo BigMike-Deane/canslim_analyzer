@@ -57,7 +57,7 @@ from sqlalchemy import func
 from backend.historical_data import HistoricalDataProvider
 from backend.market_state import MarketStateManager, MarketState
 from backend.bear_base import compute_readiness_score
-from canslim_scorer import calculate_coiled_spring_score
+from canslim_scorer import CANSLIMScorer, calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,9 @@ def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
             annual_earnings=_json_or_none(getattr(s, 'annual_earnings', None)),
             quarterly_revenue=_json_or_none(getattr(s, 'quarterly_revenue', None)),
             score_details=_json_or_none(getattr(s, 'score_details', None)),
+            # C-score signal (May 6 — needed by canslim_scorer's surprise bonus
+            # path. Pulled from Stock to match the earnings_beat_streak source.)
+            earnings_surprise_pct=getattr(s, 'earnings_surprise_pct', None),
         ))
     db.bulk_save_objects(snapshots)
     db.commit()
@@ -235,6 +238,7 @@ def copy_backtest_static_snapshot(db: Session, source_backtest_id: int, target_b
             annual_earnings=src.annual_earnings,
             quarterly_revenue=src.quarterly_revenue,
             score_details=src.score_details,
+            earnings_surprise_pct=getattr(src, 'earnings_surprise_pct', None),
         ))
     db.bulk_save_objects(copies)
     db.commit()
@@ -269,6 +273,13 @@ class BacktestEngine:
 
         # Static data cache (sector, earnings, etc. from database)
         self.static_data: Dict[str, dict] = {}
+
+        # CANSLIM scorer for delegating score computation. Pass `None` for the
+        # data_fetcher because we only call _score_current_earnings here, which
+        # never accesses the fetcher (it operates purely on the StockData
+        # passed in). Other scoring paths (L, M) that DO use the fetcher are
+        # still computed inline by the backtester's day-loop.
+        self._scorer = CANSLIMScorer(None)
 
         # Bear-base watchlist: ticker -> {readiness, first_seen, last_seen}.
         # Mirrors live BearBaseCandidate behavior — entries persist after a
@@ -925,6 +936,9 @@ class BacktestEngine:
                 "earnings_beat_streak": _snap('earnings_beat_streak', getattr(stock, 'earnings_beat_streak', 0), 0) or 0,
                 "days_to_earnings": _snap('days_to_earnings', getattr(stock, 'days_to_earnings', None), None),
                 "eps_estimate_revision_pct": _snap('eps_estimate_revision_pct', getattr(stock, 'eps_estimate_revision_pct', None), None),
+                # C-score surprise bonus signal (May 6 — read by canslim_scorer
+                # via the StockData adapter built in _calculate_scores).
+                "earnings_surprise_pct": _snap('earnings_surprise_pct', getattr(stock, 'earnings_surprise_pct', None), None),
                 # ML v11: sector rank
                 "industry_group_rank": _snap('industry_group_rank', getattr(stock, 'industry_group_rank', 50), 50) or 50,
             }
@@ -2027,14 +2041,19 @@ class BacktestEngine:
             rs_3m = self.data_provider.get_relative_strength(ticker, current_date, 3)
 
             # ===== C SCORE (15 pts): Current Quarterly Earnings =====
-            # Synced with canslim_scorer.py: TTM growth + acceleration + turnaround handling
-            # Base (10 pts) + acceleration (3 pts) + surprise/revision (2 pts) = 15 max
-            c_score = 0
-            eps_growth = 0.0  # Track for projected_growth calculation
+            # Routed through canslim_scorer._score_current_earnings (May 6 —
+            # replaces inline duplicate that drifted from the live scorer.
+            # Critically, the inline path was missing the surprise / beat-streak
+            # / estimate-revision bonus block (`_apply_earnings_bonuses`), so
+            # backtests silently lost up to ~10pt of C-score signal that live
+            # trading uses. Approach 2's excellence-tier cap was a no-op partly
+            # for this reason — signal #4 (surprise≥10%) was unreachable.
             quarterly_earnings = [e for e in (stock_data.quarterly_earnings or [])
                                   if e is not None and not (isinstance(e, float) and math.isnan(e))]
 
-            # Get sector for threshold adjustment (synced with canslim_scorer)
+            # Sector thresholds — kept here because the A-score block below
+            # also references c_excellent / c_good (the A score reuses the
+            # same sector-adjusted thresholds).
             sector = static_data.get("sector", "default")
             sector_thresholds = {
                 'Technology': {'excellent': 30, 'good': 20},
@@ -2052,77 +2071,35 @@ class BacktestEngine:
             c_excellent = sector_thresholds['excellent']
             c_good = sector_thresholds['good']
 
+            c_score, _c_detail = self._scorer._score_current_earnings(stock_data)
+
+            # eps_growth — derived independently for projected_growth (a
+            # downstream trading-decision signal that ai_trader gates on).
+            # Mirrors the prior inline derivation so projected_growth stays
+            # numerically stable across this refactor.
+            eps_growth = 0.0
             if len(quarterly_earnings) >= 5:
-                # TTM comparison (sum of last 4 quarters vs prior 4)
                 if len(quarterly_earnings) >= 8:
                     current_ttm = sum(quarterly_earnings[0:4])
                     prior_ttm = sum(quarterly_earnings[4:8])
                 else:
-                    # Fallback: single quarter YoY
                     current_ttm = quarterly_earnings[0]
                     prior_ttm = quarterly_earnings[4]
 
-                # Handle turnaround: negative->positive earnings (synced with canslim_scorer)
                 if current_ttm > 0 and prior_ttm < 0:
-                    # Turnaround stock — give strong credit
                     eps_growth = ((current_ttm - prior_ttm) / abs(prior_ttm)) * 100
-                    c_score = 12  # 80% of max, same as canslim_scorer turnaround path
                 elif current_ttm < 0:
-                    if prior_ttm < 0 and current_ttm > prior_ttm:
-                        # Losses shrinking — partial credit
-                        c_score = 4
-                        eps_growth = 0
-                    else:
-                        c_score = 0
-                        eps_growth = 0
+                    eps_growth = 0
                 elif abs(prior_ttm) < 0.01:
-                    if current_ttm > 0:
-                        c_score = 10
-                        eps_growth = 100
-                    else:
-                        c_score = 0
-                        eps_growth = 0
+                    eps_growth = 100 if current_ttm > 0 else 0
                 else:
-                    # Normal case: both positive
                     eps_growth = ((current_ttm - prior_ttm) / abs(prior_ttm)) * 100
-                    # Sector-adjusted scoring (synced with canslim_scorer)
-                    if eps_growth >= c_excellent:
-                        c_score = 10  # base_max
-                    elif eps_growth >= c_good:
-                        range_pct = (eps_growth - c_good) / (c_excellent - c_good)
-                        c_score = round(10 * (0.6 + 0.4 * range_pct), 1)
-                    elif eps_growth >= 0:
-                        c_score = round((eps_growth / c_good) * 10 * 0.6, 1)
-                    else:
-                        c_score = round(max(0, (1 + eps_growth / 50) * 10 * 0.3), 1)
-
-                    # YoY acceleration bonus (up to 5 pts) — synced with canslim_scorer accel_max=5
-                    # Compare current quarter's YoY growth vs prior quarter's YoY growth
-                    if len(quarterly_earnings) >= 6:
-                        current_q = quarterly_earnings[0]
-                        year_ago_q = quarterly_earnings[4]
-                        prev_q = quarterly_earnings[1]
-                        prev_year_ago_q = quarterly_earnings[5]
-
-                        if year_ago_q > 0 and prev_year_ago_q > 0:
-                            current_q_growth = ((current_q - year_ago_q) / abs(year_ago_q)) * 100
-                            prev_q_growth = ((prev_q - prev_year_ago_q) / abs(prev_year_ago_q)) * 100
-                            if current_q_growth > prev_q_growth and current_q_growth > 0:
-                                c_score = min(15, c_score + 5)  # Full acceleration bonus (synced with canslim_scorer)
-                            elif current_q_growth > 0 and current_q_growth >= prev_q_growth * 0.9:
-                                c_score = min(15, c_score + 2)  # Maintaining growth
-
-                c_score = min(15, max(0, c_score))
-
             elif len(quarterly_earnings) >= 2:
-                # Limited data fallback: simple QoQ comparison
                 current_eps = quarterly_earnings[0]
                 prior_eps = quarterly_earnings[1]
                 if prior_eps > 0 and current_eps > 0:
                     eps_growth = ((current_eps - prior_eps) / abs(prior_eps)) * 100
-                    c_score = min(8, max(0, round((eps_growth / 25) * 8, 1)))  # Cap at 8 for limited data
                 elif current_eps > 0 and prior_eps <= 0:
-                    c_score = 6  # Turnaround with limited data
                     eps_growth = 50
 
             # ===== A SCORE (15 pts): Annual Earnings Growth =====
