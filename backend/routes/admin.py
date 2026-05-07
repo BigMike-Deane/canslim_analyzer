@@ -2,11 +2,12 @@
 operational diagnostics that are too sensitive for the public API."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from pydantic import BaseModel
 
 from backend.database import get_db, User, AIPortfolioTrade, AIPortfolioConfig
@@ -243,7 +244,6 @@ async def strategy_health_audit(
         # CRITICAL: NULL reasons must be PRESERVED (~reason.like(...) is NULL
         # for NULL reasons, which SQL treats as FALSE → row excluded). Wrap in
         # an OR with IS NULL to keep them.
-        from sqlalchemy import or_
         base = base.filter(
             ~AIPortfolioTrade.action.in_(['PYRAMID']),
             or_(
@@ -272,4 +272,376 @@ async def strategy_health_audit(
             'post_realized_sell_n': 7,
             'note': 'May 5 read had n=7 SELLs post-grad — too small for confidence. Re-run at 2-3 weeks for n=25-40.',
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Live A/B comparison framework (cutoff-based pre/post windows)
+#
+# Built for evaluating scoring-rule experiments shipped to live trading. The
+# backtest replay path cannot honestly evaluate scoring changes (snapshots
+# freeze today's point-in-time scalars), so this is the authoritative harness
+# for any live A/B. First consumer: Approach 2 (C-score excellence-tier cap)
+# shipped 2026-05-07 as commit ec73f83.
+# ---------------------------------------------------------------------------
+
+
+def _per_trade_returns(trades: list) -> list:
+    """Extract realized per-trade pct returns from SELL rows.
+    Mirrors the cost_total math in _summarize_trades."""
+    out = []
+    for t in trades:
+        if t.action != 'SELL':
+            continue
+        if t.realized_gain is None or not t.cost_basis or not t.shares:
+            continue
+        try:
+            cost_total = float(t.cost_basis) * float(t.shares)
+            if cost_total > 0:
+                out.append(float(t.realized_gain) / cost_total * 100)
+        except Exception:
+            pass
+    return out
+
+
+def _realized_max_drawdown_pct(trades: list, starting_value: float) -> Optional[float]:
+    """Walk SELL realized_gains chronologically, accumulate P&L, find the
+    largest peak-to-trough decline as % of (starting_value + peak).
+
+    A 'realized drawdown' — it doesn't see unrealized open-position swings,
+    but it's reproducible from the trade table alone and consistent across
+    pre/post windows. Returns None if fewer than 2 SELLs (no curve)."""
+    sells = [t for t in trades if t.action == 'SELL' and t.realized_gain is not None]
+    if len(sells) < 2:
+        return None
+    sells_sorted = sorted(sells, key=lambda t: t.executed_at)
+    cum = 0.0
+    peak = 0.0
+    max_dd_pct = 0.0
+    for t in sells_sorted:
+        try:
+            cum += float(t.realized_gain)
+        except Exception:
+            continue
+        if cum > peak:
+            peak = cum
+        denom = starting_value + peak
+        if denom > 0:
+            dd_pct = ((peak - cum) / denom) * 100
+            if dd_pct > max_dd_pct:
+                max_dd_pct = dd_pct
+    return round(max_dd_pct, 2)
+
+
+def _summarize_window(trades: list, days: int, starting_value: float) -> dict:
+    """Window-level stats: trade-level summary (via _summarize_trades) plus
+    portfolio-level metrics (total_return_pct, sharpe_per_trade, drawdown).
+
+    starting_value is used to express realized return + drawdown as
+    percentages of a reference capital base — typically the strategy's
+    starting_cash summed across users. Both windows must use the same
+    starting_value for comparison validity."""
+    base = _summarize_trades(trades, days)
+
+    per_trade = _per_trade_returns(trades)
+    total_realized_gain = 0.0
+    total_cost = 0.0
+    for t in trades:
+        if t.action != 'SELL':
+            continue
+        if t.realized_gain is None or not t.cost_basis or not t.shares:
+            continue
+        try:
+            cost_total = float(t.cost_basis) * float(t.shares)
+            if cost_total > 0:
+                total_realized_gain += float(t.realized_gain)
+                total_cost += cost_total
+        except Exception:
+            pass
+
+    # Capital-efficiency return: realized $ / cost basis $ across closed trades.
+    # NOT the same as portfolio total return — it ignores cash drag and
+    # unrealized P&L — but it's a clean, reproducible signal that responds to
+    # scoring-rule changes (which affect the trade-quality distribution).
+    capital_efficiency_pct = None
+    if total_cost > 0:
+        capital_efficiency_pct = round((total_realized_gain / total_cost) * 100, 2)
+
+    # Total return relative to the strategy's reference capital.
+    total_return_pct = None
+    if starting_value > 0:
+        total_return_pct = round((total_realized_gain / starting_value) * 100, 2)
+
+    # Per-trade Sharpe-ish: mean / std of per-trade pct returns. Not
+    # annualized — the trades aren't time-uniform, so an annualization factor
+    # would be misleading. As a within-framework comparison metric it's fine:
+    # both windows compute it the same way, and the delta is what drives the
+    # decision.
+    sharpe_per_trade = None
+    if len(per_trade) >= 2:
+        import statistics
+        mean_r = statistics.fmean(per_trade)
+        std_r = statistics.pstdev(per_trade)
+        if std_r > 0:
+            sharpe_per_trade = round(mean_r / std_r, 4)
+
+    base['total_realized_gain'] = round(total_realized_gain, 2)
+    base['total_cost_basis'] = round(total_cost, 2)
+    base['capital_efficiency_pct'] = capital_efficiency_pct
+    base['total_return_pct'] = total_return_pct
+    base['sharpe_per_trade'] = sharpe_per_trade
+    base['realized_max_drawdown_pct'] = _realized_max_drawdown_pct(trades, starting_value)
+    base['starting_value'] = round(starting_value, 2)
+    return base
+
+
+def _compute_delta(pre: dict, post: dict) -> dict:
+    """Post minus pre on the numeric metrics that drive decisions. Fields
+    that are None on either side become None in the delta — the comparator
+    will refuse to decide when a required metric is missing."""
+    def sub(a, b):
+        if a is None or b is None:
+            return None
+        return round(b - a, 4)
+
+    return {
+        'total_return_pct_delta': sub(pre.get('total_return_pct'), post.get('total_return_pct')),
+        'capital_efficiency_pct_delta': sub(pre.get('capital_efficiency_pct'), post.get('capital_efficiency_pct')),
+        'sharpe_per_trade_delta': sub(pre.get('sharpe_per_trade'), post.get('sharpe_per_trade')),
+        'realized_max_drawdown_pct_delta': sub(pre.get('realized_max_drawdown_pct'), post.get('realized_max_drawdown_pct')),
+        'entry_rate_per_day_delta': sub(pre.get('entry_rate_per_day'), post.get('entry_rate_per_day')),
+        'exit_rate_per_day_delta': sub(pre.get('exit_rate_per_day'), post.get('exit_rate_per_day')),
+    }
+
+
+def _decide(pre: dict, post: dict, delta: dict, criteria: dict) -> dict:
+    """Apply the brief's decision rule:
+      - keep if return_delta >= min_return_delta_pp AND sharpe_delta >= min_sharpe_delta
+      - revert if return_delta < min_return_delta_pp AND sharpe_delta < min_sharpe_delta
+      - marginal otherwise (one regressed, the other compensated)
+      - insufficient_data if either window has too few SELLs to compute Sharpe
+    """
+    min_return = criteria.get('min_return_delta_pp', -5.0)
+    min_sharpe = criteria.get('min_sharpe_delta', 0.0)
+    min_post_sells = criteria.get('min_post_sells', 5)
+
+    pre_sells = (pre.get('realized_sell_pct') or {}).get('n', 0)
+    post_sells = (post.get('realized_sell_pct') or {}).get('n', 0)
+    if post_sells < min_post_sells:
+        return {
+            'decision': 'insufficient_data',
+            'decision_reason': (
+                f'Post window has only {post_sells} closed SELLs; '
+                f'minimum {min_post_sells} required for a confident call. '
+                f'Re-run when more trades have exited.'
+            ),
+            'decision_criteria': {
+                'min_return_delta_pp': min_return,
+                'min_sharpe_delta': min_sharpe,
+                'min_post_sells': min_post_sells,
+            },
+        }
+
+    return_delta = delta.get('total_return_pct_delta')
+    sharpe_delta = delta.get('sharpe_per_trade_delta')
+    if return_delta is None or sharpe_delta is None:
+        return {
+            'decision': 'insufficient_data',
+            'decision_reason': (
+                f'Cannot compute decision — return_delta={return_delta}, '
+                f'sharpe_delta={sharpe_delta}. Pre window has '
+                f'{pre_sells} SELLs, post has {post_sells}.'
+            ),
+            'decision_criteria': {
+                'min_return_delta_pp': min_return,
+                'min_sharpe_delta': min_sharpe,
+                'min_post_sells': min_post_sells,
+            },
+        }
+
+    return_pass = return_delta >= min_return
+    sharpe_pass = sharpe_delta >= min_sharpe
+
+    if return_pass and sharpe_pass:
+        decision = 'keep'
+        reason = (
+            f'Return delta {return_delta:+.2f}pp >= {min_return}pp threshold AND '
+            f'Sharpe delta {sharpe_delta:+.4f} >= {min_sharpe} threshold. '
+            f'Experiment meets both bars — keep the change.'
+        )
+    elif not return_pass and not sharpe_pass:
+        decision = 'revert'
+        reason = (
+            f'Return delta {return_delta:+.2f}pp < {min_return}pp threshold AND '
+            f'Sharpe delta {sharpe_delta:+.4f} < {min_sharpe} threshold. '
+            f'Both metrics regressed — revert the change.'
+        )
+    else:
+        decision = 'marginal'
+        which_failed = 'return' if not return_pass else 'sharpe'
+        which_passed = 'sharpe' if not return_pass else 'return'
+        reason = (
+            f'{which_failed.capitalize()} regressed but {which_passed} compensated '
+            f'(return delta {return_delta:+.2f}pp, sharpe delta {sharpe_delta:+.4f}). '
+            f'Default to keep but re-run with a longer post window.'
+        )
+
+    return {
+        'decision': decision,
+        'decision_reason': reason,
+        'decision_criteria': {
+            'min_return_delta_pp': min_return,
+            'min_sharpe_delta': min_sharpe,
+            'min_post_sells': min_post_sells,
+        },
+    }
+
+
+def _build_warnings(pre_window: dict, post_window: dict, pre: dict, post: dict) -> list:
+    """Surface conditions that complicate interpretation. Doesn't fail
+    anything — just makes the operator aware."""
+    warnings = []
+    if post_window['days'] < 21:
+        warnings.append(
+            f"Post window has only {post_window['days']} days — minimum recommended "
+            f"is 21 for a confident read."
+        )
+    if pre_window['days'] < 21:
+        warnings.append(
+            f"Pre window has only {pre_window['days']} days — baseline may be noisy."
+        )
+    pre_sells = (pre.get('realized_sell_pct') or {}).get('n', 0)
+    post_sells = (post.get('realized_sell_pct') or {}).get('n', 0)
+    if pre_sells < 10:
+        warnings.append(f"Pre window has only {pre_sells} closed SELLs — baseline statistics unstable.")
+    if post_sells < 10:
+        warnings.append(f"Post window has only {post_sells} closed SELLs — post statistics unstable.")
+    if abs(pre_window['days'] - post_window['days']) > pre_window['days'] * 0.5:
+        warnings.append(
+            f"Pre window ({pre_window['days']}d) and post window ({post_window['days']}d) "
+            f"differ by >50% — comparison less direct."
+        )
+    return warnings
+
+
+@router.get("/strategy-ab-eval")
+async def run_strategy_ab_comparison(
+    strategy: str = Query(..., description="Strategy profile name, e.g. 'nostate_optimized'"),
+    cutoff_date: str = Query(..., description="ISO date marking experiment start, e.g. '2026-05-07'"),
+    pre_window_days: int = Query(default=30, ge=1, le=365, description="Days BEFORE cutoff for baseline"),
+    post_window_days: Optional[int] = Query(default=None, description="Days AFTER cutoff to evaluate; defaults to days-since-cutoff capped at 90"),
+    exclude_pyramids: bool = Query(default=True, description="Filter out pyramid rows (action='PYRAMID' OR reason LIKE 'PYRAMID:%')"),
+    min_return_delta_pp: float = Query(default=-5.0, description="Decision threshold: keep if return delta >= this"),
+    min_sharpe_delta: float = Query(default=0.0, description="Decision threshold: keep if sharpe delta >= this"),
+    min_post_sells: int = Query(default=5, ge=0, description="Minimum SELL count in post window for a confident decision"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Live A/B comparison: pre vs post-cutoff trade summary + decision.
+
+    Built for assessing scoring-rule experiments shipped to live trading.
+    The backtest replay path cannot honestly assess scoring changes
+    (snapshot scalars are frozen at today's values), so this endpoint is
+    the authoritative harness for any live A/B.
+
+    First consumer: Approach 2 (C-score excellence-tier cap, commit ec73f83
+    deployed 2026-05-07).
+
+    Example invocation:
+        GET /api/admin/strategy-ab-eval?strategy=nostate_optimized
+            &cutoff_date=2026-05-07&pre_window_days=30&post_window_days=14
+    """
+    # --- Validation ----------------------------------------------------------
+    try:
+        cutoff = datetime.fromisoformat(cutoff_date).replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"cutoff_date '{cutoff_date}' is not a valid ISO date")
+
+    now = datetime.now(timezone.utc)
+    if cutoff > now:
+        raise HTTPException(status_code=400, detail=f"cutoff_date {cutoff_date} is in the future")
+
+    days_since_cutoff = max((now - cutoff).days, 1)
+    if post_window_days is None:
+        post_window_days = min(days_since_cutoff, 90)
+    elif post_window_days > days_since_cutoff:
+        raise HTTPException(
+            status_code=400,
+            detail=f"post_window_days={post_window_days} exceeds days-since-cutoff={days_since_cutoff}",
+        )
+
+    pre_start = cutoff - timedelta(days=pre_window_days)
+    post_end = cutoff + timedelta(days=post_window_days)
+
+    # --- User scoping --------------------------------------------------------
+    user_rows = db.query(AIPortfolioConfig.user_id, AIPortfolioConfig.starting_cash).filter(
+        AIPortfolioConfig.strategy == strategy
+    ).all()
+    if not user_rows:
+        raise HTTPException(status_code=404, detail=f"No users currently on strategy '{strategy}'")
+
+    user_ids = [row.user_id for row in user_rows]
+    starting_value = sum((row.starting_cash or 25000.0) for row in user_rows)
+
+    # --- Trade query ---------------------------------------------------------
+    base = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id.in_(user_ids),
+        AIPortfolioTrade.executed_at >= pre_start,
+        AIPortfolioTrade.executed_at < post_end,
+    )
+    if exclude_pyramids:
+        # Same shape as strategy-health: filter both action='PYRAMID' rows
+        # AND action='BUY' + reason LIKE 'PYRAMID:%' rows (live-trader sync
+        # drift fixed in commit 5269dbf, but legacy rows linger).
+        # NULL reasons must be PRESERVED — wrap reason filter in an OR with
+        # IS NULL because (~col.like(...)) is NULL for NULL → SQL false.
+        base = base.filter(
+            ~AIPortfolioTrade.action.in_(['PYRAMID']),
+            or_(
+                AIPortfolioTrade.reason.is_(None),
+                ~AIPortfolioTrade.reason.like('PYRAMID:%'),
+            ),
+        )
+
+    pre_trades = base.filter(AIPortfolioTrade.executed_at < cutoff).order_by(AIPortfolioTrade.executed_at).all()
+    post_trades = base.filter(AIPortfolioTrade.executed_at >= cutoff).order_by(AIPortfolioTrade.executed_at).all()
+
+    # --- Summarize -----------------------------------------------------------
+    pre_summary = _summarize_window(pre_trades, pre_window_days, starting_value)
+    post_summary = _summarize_window(post_trades, post_window_days, starting_value)
+    delta = _compute_delta(pre_summary, post_summary)
+
+    criteria = {
+        'min_return_delta_pp': min_return_delta_pp,
+        'min_sharpe_delta': min_sharpe_delta,
+        'min_post_sells': min_post_sells,
+    }
+    decision = _decide(pre_summary, post_summary, delta, criteria)
+
+    pre_window = {
+        'start': pre_start.date().isoformat(),
+        'end': cutoff.date().isoformat(),
+        'days': pre_window_days,
+    }
+    post_window = {
+        'start': cutoff.date().isoformat(),
+        'end': post_end.date().isoformat(),
+        'days': post_window_days,
+    }
+
+    return {
+        'experiment': {
+            'strategy': strategy,
+            'cutoff_date': cutoff_date,
+            'pre_window': pre_window,
+            'post_window': post_window,
+            'starting_value_reference': round(starting_value, 2),
+            'user_ids': user_ids,
+            'exclude_pyramids': exclude_pyramids,
+        },
+        'summary': decision,
+        'pre': pre_summary,
+        'post': post_summary,
+        'delta': delta,
+        'warnings': _build_warnings(pre_window, post_window, pre_summary, post_summary),
     }

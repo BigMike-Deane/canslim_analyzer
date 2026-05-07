@@ -63,6 +63,10 @@ Key finding: 5-state market state machine HURTS over full cycles. NoState's bina
 - **Watchlist Alerts**: Email notifications on price/score targets
 - **Data Sources**: FMP (earnings, metrics), Yahoo Finance (prices, fallback), Finviz (institutional)
 
+## Admin Diagnostics
+- `GET /api/admin/strategy-health` — pre/post-graduation health audit for a strategy.
+- `GET /api/admin/strategy-ab-eval` — live A/B comparison framework: pre vs post-cutoff trade summary + decision (keep/revert/marginal/insufficient_data). Used to evaluate scoring-rule experiments shipped to live trading; backtest replay can't honestly evaluate scoring changes (snapshots freeze today's point-in-time scalars). First consumer: Approach 2 (commit `ec73f83`, deployed 2026-05-07).
+
 ## File Structure
 
 ### Root Directory
