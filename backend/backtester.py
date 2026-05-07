@@ -1978,6 +1978,38 @@ class BacktestEngine:
         (circuit breaker, sell eval, buy eval) don't recalculate from scratch.
         Cache is invalidated when the date changes.
 
+        ── 4-LAYER SCORE CACHE HIERARCHY (read order) ──────────────────────
+        Layer 1 — in-memory  : self._score_cache, per-day, cleared on date change.
+        Layer 2 — StockScore : frozen scanner snapshots from the live DB.
+                              Gated by `backtester.use_frozen_scores` config flag.
+                              Default false (May 6 2026): if a scanner snapshot
+                              exists for a (stock, date), the backtester serves
+                              that frozen score INSTEAD of computing fresh.
+        Layer 3 — SQLite     : /tmp/backtest_cache/scores_v{N}.db, persists
+                              ACROSS container restarts (volume mount). Once a
+                              score for (ticker, date) is written, never updates
+                              (INSERT OR IGNORE).
+        Layer 4 — fresh      : compute via self._scorer (canslim_scorer) +
+                              inline A/N/S/L/I/M blocks. THIS is the only path
+                              that reflects current canslim_scorer.py code.
+
+        ── INVALIDATION GOTCHA ─────────────────────────────────────────────
+        When canslim_scorer logic changes (e.g. a new bonus, a new cap), Layer 2
+        and Layer 3 do NOT auto-invalidate. They keep serving scores produced by
+        the old code until you explicitly bust them. Two mechanisms:
+          • Layer 2: re-run the live scanner (it overwrites StockScore rows
+            for new dates; old dates stay frozen at scan-time logic).
+          • Layer 3: bump SCORE_CACHE_VERSION to fork to a new file. Old cache
+            is orphaned (not deleted; reclaim disk manually if you care).
+
+        We learned this the hard way May 6 2026: the C-score refactor + Approach 2
+        excellence-tier cap shipped, deployed, and produced byte-identical
+        backtest metrics across 4 runs because Layer 2/3 served pre-refactor
+        scores. After bumping cache versions and disabling frozen scores,
+        Approach 2 finally moved metrics. See canslim_scorer-refactor-may6.md
+        memory note for full details.
+        ────────────────────────────────────────────────────────────────────
+
         Args:
             current_date: Date to calculate scores for
             tickers: Optional list of tickers to score. If None, scores all available.
