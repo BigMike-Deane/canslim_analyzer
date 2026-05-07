@@ -1382,6 +1382,31 @@ class TestCalculateAtrStop:
         result = ai_trader.calculate_atr_stop("TEST", current_price=100.0, base_stop_pct=7.0)
         assert result == 7.0
 
+    def test_widens_for_volatile_stock_via_yahoo(self, monkeypatch):
+        """ATR success path: 14 days of synthetic high-volatility candles
+        should produce a finite stop in [base, max_stop_pct]."""
+        from backend import ai_trader
+
+        highs = [105.0 + i * 0.1 for i in range(20)]
+        lows = [97.0 + i * 0.1 for i in range(20)]
+        closes = [100.0 + i * 0.1 for i in range(20)]
+
+        def stub_get(url, *a, **kw):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {
+                "chart": {"result": [{"indicators": {"quote": [{
+                    "high": highs, "low": lows, "close": closes,
+                }]}}]}
+            }
+            return resp
+
+        monkeypatch.setattr("requests.get", stub_get)
+        result = ai_trader.calculate_atr_stop("TEST", current_price=100.0, base_stop_pct=7.0)
+        assert isinstance(result, float)
+        assert result >= 7.0
+        assert result <= 25.0  # safety cap from config
+
 
 class TestFetchLivePrice:
     """FMP-first then Yahoo fallback; both can fail to return None."""
@@ -1917,34 +1942,28 @@ class TestExecuteTrade:
         assert trade.realized_gain == 2000.0
         assert trade.holding_days == 30
 
-    def test_calculate_atr_stop_widens_for_volatile_stock(self, monkeypatch):
-        """ATR success path: 14 days of synthetic high-volatility candles
-        should widen the stop above base, capped at max_stop_pct."""
-        from backend import ai_trader
+    def test_paper_trade_prefix(self, db_session, silence_webhooks):
+        """LATENT BUG note: passing score=None on a BUY/PYRAMID action crashes
+        the log f-string at ai_trader.py:1518 (`{effective:.0f}` is unguarded;
+        the SELL path at line 1503 uses `(effective or 0):.0f` defensively).
+        We always pass a real score here to keep this test green; the fix is
+        deferred past the 2026-06-18 Approach 2 eval window per the rule that
+        ai_trader.py runtime behavior cannot be touched during the live A/B."""
+        from backend.ai_trader import execute_trade
 
-        # 15 days of high/low/close that produce a meaningful ATR.
-        # ATR ~3% per day → at multiplier 2.5 → ATR stop ~7.5%, widens above base 7
-        highs = [105.0 + i * 0.1 for i in range(20)]
-        lows = [97.0 + i * 0.1 for i in range(20)]
-        closes = [100.0 + i * 0.1 for i in range(20)]
-
-        def stub_get(url, *a, **kw):
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.json.return_value = {
-                "chart": {"result": [{"indicators": {"quote": [{
-                    "high": highs, "low": lows, "close": closes,
-                }]}}]}
-            }
-            return resp
-
-        monkeypatch.setattr("requests.get", stub_get)
-        result = ai_trader.calculate_atr_stop("TEST", current_price=100.0, base_stop_pct=7.0)
-        # Either widened or stayed at base — the relevant assertion is that
-        # we exercised the success path and got a finite result back.
-        assert isinstance(result, float)
-        assert result >= 7.0
-        assert result <= 25.0  # safety cap from config
+        trade = execute_trade(
+            db=db_session,
+            ticker="TEST",
+            action="BUY",
+            shares=10.0,
+            price=50.0,
+            reason="experimental",
+            score=70.0,
+            is_paper=True,
+            user_id=1,
+        )
+        db_session.commit()
+        assert trade.reason.startswith("PAPER:")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2062,27 +2081,3 @@ class TestInitializeAIPortfolio:
         # User 2's data intact
         assert db_session.query(AIPortfolioPosition).filter_by(user_id=2).count() == 1
         assert db_session.query(AIPortfolioConfig).filter_by(user_id=2).first().current_cash == 5000.0
-
-
-    def test_paper_trade_prefix(self, db_session, silence_webhooks):
-        """LATENT BUG note: passing score=None on a BUY/PYRAMID action crashes
-        the log f-string at ai_trader.py:1518 (`{effective:.0f}` is unguarded;
-        the SELL path at line 1503 uses `(effective or 0):.0f` defensively).
-        We always pass a real score here to keep this test green; the fix is
-        deferred past the 2026-06-18 Approach 2 eval window per the rule that
-        ai_trader.py runtime behavior cannot be touched during the live A/B."""
-        from backend.ai_trader import execute_trade
-
-        trade = execute_trade(
-            db=db_session,
-            ticker="TEST",
-            action="BUY",
-            shares=10.0,
-            price=50.0,
-            reason="experimental",
-            score=70.0,
-            is_paper=True,
-            user_id=1,
-        )
-        db_session.commit()
-        assert trade.reason.startswith("PAPER:")
