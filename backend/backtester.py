@@ -61,12 +61,19 @@ from canslim_scorer import CANSLIMScorer, calculate_coiled_spring_score
 
 logger = logging.getLogger(__name__)
 
-# Bump this version when scoring logic changes to invalidate cached scores.
-# v1 (legacy): pre-C-score refactor; cached pre-refactor canslim_scorer outputs.
-# v3: post-C-score-refactor + use_frozen_scores=false. v2 is reserved for the
-# test/approach-2-on-refactor candidate branch so the two branches' caches
-# don't cross-contaminate during apples-to-apples evaluation.
-SCORE_CACHE_VERSION = 3
+# Bump this version when scoring logic changes AND you've ensured Layer 4
+# (fresh compute) is the desired source of truth. Be careful: this cache is
+# load-bearing. The backtester depends on it for the entire 2022-Mar 2026
+# replay window because StockScore (Layer 2) only retains the last ~30 days.
+# Bumping to a fresh version means falling through to Layer 4 for every
+# (ticker, date) the cache used to serve — and Layer 4 is semantically wrong
+# for historical replay (see _calculate_scores docstring).
+#
+# v1 = production-validated cache (~2 GB, accumulated from past backtests,
+#       served the +136.84% baseline). KEEP using this until BacktestStaticSnapshot
+#       is extended to capture historically-correct point-in-time scalars,
+#       at which point Layer 4 becomes valid and the cache can be retired.
+SCORE_CACHE_VERSION = 1
 SCORE_CACHE_DIR = "/tmp/backtest_cache"
 
 # Lazy import for graceful fallback when ML dependencies not installed
@@ -1981,33 +1988,54 @@ class BacktestEngine:
         ── 4-LAYER SCORE CACHE HIERARCHY (read order) ──────────────────────
         Layer 1 — in-memory  : self._score_cache, per-day, cleared on date change.
         Layer 2 — StockScore : frozen scanner snapshots from the live DB.
-                              Gated by `backtester.use_frozen_scores` config flag.
-                              Default false (May 6 2026): if a scanner snapshot
-                              exists for a (stock, date), the backtester serves
-                              that frozen score INSTEAD of computing fresh.
+                              Gated by `backtester.use_frozen_scores` (default
+                              true — KEEP IT TRUE; see "WHY LAYER 4 IS WRONG").
+                              When a scanner snapshot exists for (stock, date),
+                              the backtester serves it INSTEAD of computing.
         Layer 3 — SQLite     : /tmp/backtest_cache/scores_v{N}.db, persists
                               ACROSS container restarts (volume mount). Once a
                               score for (ticker, date) is written, never updates
                               (INSERT OR IGNORE).
         Layer 4 — fresh      : compute via self._scorer (canslim_scorer) +
-                              inline A/N/S/L/I/M blocks. THIS is the only path
-                              that reflects current canslim_scorer.py code.
+                              inline A/N/S/L/I/M blocks. ONLY runs when Layers
+                              1-3 all miss. This path is semantically broken
+                              for historical replay — see below.
 
-        ── INVALIDATION GOTCHA ─────────────────────────────────────────────
-        When canslim_scorer logic changes (e.g. a new bonus, a new cap), Layer 2
-        and Layer 3 do NOT auto-invalidate. They keep serving scores produced by
-        the old code until you explicitly bust them. Two mechanisms:
-          • Layer 2: re-run the live scanner (it overwrites StockScore rows
-            for new dates; old dates stay frozen at scan-time logic).
-          • Layer 3: bump SCORE_CACHE_VERSION to fork to a new file. Old cache
-            is orphaned (not deleted; reclaim disk manually if you care).
+        ── WHY LAYER 4 IS SEMANTICALLY WRONG FOR HISTORICAL REPLAY ─────────
+        BacktestStaticSnapshot freezes the live DB's POINT-IN-TIME SCALARS
+        (earnings_surprise_pct, eps_estimate_revision_pct, eps_beat_streak,
+        roe, institutional_holders_pct) at backtest-creation time and applies
+        them to every historical replay date. The earnings/revenue ARRAYS get
+        filtered to as_of_date by HistoricalDataProvider._filter_available_earnings,
+        so those are time-correct. The scalars are NOT filtered — Layer 4
+        scoring a 2022 trading day will read today's "latest surprise %",
+        today's "current beat streak", today's ROE.
 
-        We learned this the hard way May 6 2026: the C-score refactor + Approach 2
-        excellence-tier cap shipped, deployed, and produced byte-identical
-        backtest metrics across 4 runs because Layer 2/3 served pre-refactor
-        scores. After bumping cache versions and disabling frozen scores,
-        Approach 2 finally moved metrics. See canslim_scorer-refactor-may6.md
-        memory note for full details.
+        The frozen StockScore rows (Layer 2) are correct *because* the live
+        scanner wrote them at each scan date with then-current scalars. Layer
+        4 has no analog of that — without a per-date scalar history, fresh
+        compute is a category error for historical replay.
+
+        We learned this May 7 2026 testing Approach 2: flipping
+        use_frozen_scores=false dropped a known-good 4yr backtest from
+        +136.84% to -14.99%. The candidate (with cap) drifted to +111.95%
+        and looked superficially "better" only because both fresh-compute
+        runs were broken in different ways. Reverted to true in commit 6cf001e.
+
+        ── HOW TO EVALUATE A canslim_scorer CHANGE ─────────────────────────
+        Backtest replay can NOT validate a new scoring rule. The historical
+        StockScore rows are frozen output of the OLD scorer. To evaluate:
+          1. Deploy the new code.
+          2. Let the live scanner write fresh StockScore rows under the new
+             logic for going-forward dates.
+          3. Run a forward (out-of-sample) period to compare.
+        This is more expensive than backtesting, but it's the only honest
+        path. See canslim_scorer-refactor-may6.md memory note.
+
+        ── INVALIDATION (Layer 3 cache) ────────────────────────────────────
+        When canslim_scorer logic changes, Layer 3 caches stale fresh-compute
+        outputs. Bump SCORE_CACHE_VERSION to fork to a new SQLite file. Old
+        cache is orphaned (not deleted; reclaim disk manually if you care).
         ────────────────────────────────────────────────────────────────────
 
         Args:
