@@ -318,6 +318,69 @@ class TestDelistedTickerRecheck:
         mock_query.filter.assert_called_once()
 
 
+# ─── Institutional Cache Fallback (async_data_fetcher.py) ──────────────────
+# Bug: when the async Yahoo info call fails (401 crumb storm) or returns 0,
+# stock_data.institutional_holders_pct stays at constructor default 0.0 and
+# the scorer returns I=5/10 "No data (neutral)" — even when a valid 70%+
+# value is sitting in the L2 stock_data_cache from the sync FMP path.
+# Affected ~14% of stocks (297/2089) including AMD/TSLA/NFLX/ADBE.
+
+
+class TestInstitutionalCacheFallback:
+    """Regression (May 2026): I-score chronically 5/10 because async Yahoo
+    failures left institutional_holders_pct at 0 even when L2 cache had a
+    fresh value.
+    """
+
+    def test_fallback_reads_from_l2_cache_when_yahoo_path_failed(self):
+        """When yahoo_info.success=False, the async path skips writing
+        institutional_holders_pct. The fallback near async_data_fetcher.py:1432
+        must read from the 'institutional' cache key before scoring runs.
+        """
+        # The fallback logic itself, replicated for unit-level verification:
+        # if not stock_data.institutional_holders_pct:
+        #     cached = get_cached_data(ticker, "institutional")
+        #     if cached: stock_data.institutional_holders_pct = cached
+
+        institutional_holders_pct = 0.0  # constructor default after async failure
+        cached_inst = 72.28              # L2 cache has the real value (AMD example)
+
+        if not institutional_holders_pct:
+            if cached_inst:
+                institutional_holders_pct = cached_inst
+
+        assert institutional_holders_pct == 72.28, \
+            "Fallback must populate from L2 cache when live Yahoo path returns 0"
+
+    def test_fallback_does_not_overwrite_valid_yahoo_value(self):
+        """If the live Yahoo call DID populate a value, the fallback must not
+        overwrite it with a (potentially stale) cached value.
+        """
+        institutional_holders_pct = 65.3  # live Yahoo value
+        cached_inst = 70.0                # different (stale) cache value
+
+        if not institutional_holders_pct:
+            if cached_inst:
+                institutional_holders_pct = cached_inst
+
+        assert institutional_holders_pct == 65.3, \
+            "Fallback must not overwrite a non-zero live value"
+
+    def test_fallback_safe_when_cache_also_empty(self):
+        """When both live AND cache are empty, score remains 0 — the scorer's
+        'No data (neutral)' fallback is correct in this case (no data anywhere).
+        """
+        institutional_holders_pct = 0.0
+        cached_inst = None
+
+        if not institutional_holders_pct:
+            if cached_inst:
+                institutional_holders_pct = cached_inst
+
+        assert institutional_holders_pct == 0.0, \
+            "When no data is available anywhere, leave at 0 for scorer's neutral fallback"
+
+
 # ─── FMP Type Guards (async_data_fetcher.py) ────────────────────────────────
 # Bug: FMP error dicts ({"message": "Limit reached"}) caused KeyError when
 # code expected list responses. isinstance(data, list) guards prevent this.

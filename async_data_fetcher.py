@@ -1429,6 +1429,18 @@ async def get_stock_data_async(
         }, persist_to_db=True)
         mark_data_fetched(ticker, "analyst")
 
+    # Fallback: when the async Yahoo path didn't populate institutional_holders_pct
+    # (yahoo_info.success=False from a 401 crumb storm, or the field returned 0/None),
+    # read from the L2 stock_data_cache.institutional_holders_pct column. The sync
+    # FMP/Finviz path (data_fetcher.py:1875-1884) writes there on a 14-day cadence,
+    # so it's typically populated even when the async path's per-scan Yahoo call fails.
+    # Without this, ~14% of stocks (incl. AMD/TSLA/NFLX/ADBE) chronically score I=5/10
+    # "No data (neutral)" despite having a valid 70%+ institutional %.
+    if not stock_data.institutional_holders_pct:
+        cached_inst = get_cached_data(ticker, "institutional")
+        if cached_inst:
+            stock_data.institutional_holders_pct = cached_inst
+
     # Get price history from Yahoo chart API (fast, no rate limit)
     chart_data = fetch_price_from_chart_api(ticker)
     if chart_data.get("current_price"):
