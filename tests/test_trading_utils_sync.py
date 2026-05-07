@@ -14,6 +14,7 @@ import pytest
 
 from backend.trading_utils import (
     apply_sector_allocation_cap,
+    select_effective_stop_loss_pct,
     should_take_partial_on_trailing_stop,
     SECTOR_MIN_ROOM_FRACTION,
     MAX_SECTOR_ALLOCATION,
@@ -220,3 +221,168 @@ class TestSyncHelperConstants:
     def test_max_sector_allocation_loaded_from_config(self):
         # Sanity — should be a fraction in (0, 1).
         assert 0 < MAX_SECTOR_ALLOCATION < 1
+
+
+# ── Effective Stop-Loss Selection ─────────────────────────────────────────────
+# Used by:
+#   - ai_trader.check_stop_losses    (default = live portfolio config's stop_loss_pct)
+#   - ai_trader.evaluate_sells       (default = live portfolio config's stop_loss_pct)
+#   - backtester._evaluate_sells     (default = BacktestRun.stop_loss_pct)
+# All three sites pass identical semantics; only the `default_normal_pct`
+# source-of-truth differs, which is why the helper takes it as a parameter.
+
+
+class TestSelectEffectiveStopLossPct:
+    """Pins the bearish-gate + VIX-multiplier shape in one place. Boundary
+    cases mirror the historical inline blocks the helper replaces."""
+
+    YAML_STOPS = {
+        # Realistic YAML values; left at fallbacks elsewhere.
+        'normal_stop_loss_pct': 8.0,
+        'bearish_stop_loss_pct': 7.0,
+    }
+    YAML_VIX = {
+        'enabled': True,
+        'low_vix_threshold': 15,
+        'high_vix_threshold': 25,
+        'low_vix_stop_tighten': 0.80,
+        'high_vix_stop_widen': 1.20,
+    }
+
+    def test_bullish_market_uses_normal_stop(self):
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+        )
+        assert out == 8.0
+
+    def test_bearish_market_uses_bearish_stop(self):
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=True,
+        )
+        assert out == 7.0
+
+    def test_profile_override_beats_yaml(self):
+        # Strategy profile can override both normal + bearish via
+        # 'stop_loss_pct' / 'bearish_stop_loss_pct' keys.
+        out = select_effective_stop_loss_pct(
+            profile={'stop_loss_pct': 6.0, 'bearish_stop_loss_pct': 5.0},
+            stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+        )
+        assert out == 6.0
+        out_bear = select_effective_stop_loss_pct(
+            profile={'stop_loss_pct': 6.0, 'bearish_stop_loss_pct': 5.0},
+            stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=True,
+        )
+        assert out_bear == 5.0
+
+    def test_default_normal_used_when_yaml_silent(self):
+        # YAML missing normal_stop_loss_pct ⇒ caller's default kicks in.
+        # This is the key per-callsite divergence: live uses portfolio config,
+        # backtester uses backtest run config — both flow through this param.
+        out = select_effective_stop_loss_pct(
+            profile={},
+            stop_loss_config={},  # empty ⇒ no YAML defaults
+            default_normal_pct=9.5,  # caller's runtime default
+            is_bearish_market=False,
+        )
+        assert out == 9.5
+
+    def test_bearish_fallback_seven_percent_when_yaml_silent(self):
+        # Bearish has a hard-coded 7.0 fallback (consistent across all sites
+        # historically) — caller does NOT pass a default for bearish.
+        out = select_effective_stop_loss_pct(
+            profile={},
+            stop_loss_config={},  # no bearish_stop_loss_pct in yaml
+            default_normal_pct=8.0,
+            is_bearish_market=True,
+        )
+        assert out == 7.0
+
+    def test_vix_proxy_none_skips_multiplier(self):
+        # Caller fetched no VIX (provider unavailable or lookup failed).
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=None, vix_config=self.YAML_VIX,
+        )
+        assert out == 8.0
+
+    def test_vix_config_none_skips_multiplier(self):
+        # Caller didn't even read vix_config (e.g. legacy code path).
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=10.0, vix_config=None,
+        )
+        assert out == 8.0
+
+    def test_vix_disabled_skips_multiplier(self):
+        # Explicit kill-switch in YAML.
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=10.0,
+            vix_config={'enabled': False, 'low_vix_threshold': 15},
+        )
+        assert out == 8.0
+
+    def test_low_vix_tightens(self):
+        # vix_proxy=10 < low_threshold=15 ⇒ multiply by 0.80
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=10.0, vix_config=self.YAML_VIX,
+        )
+        assert out == pytest.approx(8.0 * 0.80)
+
+    def test_high_vix_widens(self):
+        # vix_proxy=30 > high_threshold=25 ⇒ multiply by 1.20
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=30.0, vix_config=self.YAML_VIX,
+        )
+        assert out == pytest.approx(8.0 * 1.20)
+
+    def test_vix_at_low_threshold_no_adjust(self):
+        # Boundary: vix_proxy == low_threshold ⇒ NOT < low ⇒ no tighten
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=15.0, vix_config=self.YAML_VIX,
+        )
+        assert out == 8.0
+
+    def test_vix_at_high_threshold_no_adjust(self):
+        # Boundary: vix_proxy == high_threshold ⇒ NOT > high ⇒ no widen
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=25.0, vix_config=self.YAML_VIX,
+        )
+        assert out == 8.0
+
+    def test_bearish_plus_high_vix_compounds(self):
+        # Realistic worst-case: bearish gate AND high VIX both active.
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=True,
+            vix_proxy=30.0, vix_config=self.YAML_VIX,
+        )
+        # Bearish picks 7.0, then VIX widens to 7.0 * 1.20 = 8.4
+        assert out == pytest.approx(7.0 * 1.20)
+
+    def test_nan_vix_proxy_no_adjust(self):
+        # NaN comparisons return False on both branches ⇒ no multiplier
+        # applied. Defensive but matches the inline behavior.
+        nan = float('nan')
+        out = select_effective_stop_loss_pct(
+            profile={}, stop_loss_config=self.YAML_STOPS,
+            default_normal_pct=8.0, is_bearish_market=False,
+            vix_proxy=nan, vix_config=self.YAML_VIX,
+        )
+        assert out == 8.0

@@ -32,6 +32,7 @@ from backend.trading_utils import (
     MAX_POSITION_ALLOCATION,
     should_take_partial_on_trailing_stop,
     apply_sector_allocation_cap,
+    select_effective_stop_loss_pct,
 )
 
 # Shared trading engine logic (also used by ai_trader.py)
@@ -2485,8 +2486,6 @@ class BacktestEngine:
 
         # Get stop loss config — strategy profile overrides YAML defaults
         stop_loss_config = config.get('ai_trader.stops', {})
-        normal_stop_loss_pct = self.profile.get('stop_loss_pct', stop_loss_config.get('normal_stop_loss_pct', self.backtest.stop_loss_pct))
-        bearish_stop_loss_pct = self.profile.get('bearish_stop_loss_pct', stop_loss_config.get('bearish_stop_loss_pct', 7.0))
         use_atr_stops = stop_loss_config.get('use_atr_stops', True)
         atr_multiplier = stop_loss_config.get('atr_multiplier', 2.5)
         atr_period = stop_loss_config.get('atr_period', 14)
@@ -2501,21 +2500,21 @@ class BacktestEngine:
         partial_min_score = partial_trailing_config.get('partial_min_score', 65)
         partial_sell_pct = partial_trailing_config.get('partial_sell_pct', 50)
 
-        # Use tighter stop loss in bearish market (7% vs 8% normal)
-        base_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
-
-        # VIX-regime stop adjustment
+        # VIX-regime stop adjustment (proxy fetched here; math via shared helper)
         vix_config = config.get('vix_stops', {})
-        if vix_config.get('enabled', True):
-            vix_proxy = self.data_provider.get_vix_proxy(current_date)
-            low_vix = vix_config.get('low_vix_threshold', 15)
-            high_vix = vix_config.get('high_vix_threshold', 25)
-            if vix_proxy < low_vix:
-                vix_multiplier = vix_config.get('low_vix_stop_tighten', 0.80)
-                base_stop_loss_pct *= vix_multiplier
-            elif vix_proxy > high_vix:
-                vix_multiplier = vix_config.get('high_vix_stop_widen', 1.20)
-                base_stop_loss_pct *= vix_multiplier
+        vix_proxy = (
+            self.data_provider.get_vix_proxy(current_date)
+            if vix_config.get('enabled', True) else None
+        )
+
+        base_stop_loss_pct = select_effective_stop_loss_pct(
+            profile=self.profile,
+            stop_loss_config=stop_loss_config,
+            default_normal_pct=self.backtest.stop_loss_pct,
+            is_bearish_market=is_bearish_market,
+            vix_proxy=vix_proxy,
+            vix_config=vix_config,
+        )
 
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)

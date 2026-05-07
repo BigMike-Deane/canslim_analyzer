@@ -173,3 +173,80 @@ def apply_sector_allocation_cap(
         return 0.0
 
     return remaining_room * portfolio_value
+
+
+def select_effective_stop_loss_pct(
+    profile: dict,
+    stop_loss_config: dict,
+    default_normal_pct: float,
+    is_bearish_market: bool,
+    vix_proxy: float | None = None,
+    vix_config: dict | None = None,
+) -> float:
+    """Resolve the effective stop-loss percentage for a position.
+
+    Combines the bearish-market gate (use bearish_stop_loss_pct when SPY is
+    below its 50-day MA) with the optional VIX-regime multiplier in a single
+    pure function. Three call sites previously inlined this same shape:
+
+      - backend/ai_trader.py::check_stop_losses (live, persisted-config default)
+      - backend/ai_trader.py::evaluate_sells   (live, persisted-config default)
+      - backend/backtester.py::Backtester._evaluate_sells (backtest-config default)
+
+    The fallback for `normal_stop_loss_pct` is intentionally a parameter:
+      - Live trader passes the user's `AIPortfolioConfig.stop_loss_pct`
+      - Backtester passes `BacktestRun.stop_loss_pct`
+    Same semantic role ("the runtime's configured normal stop"), different
+    concrete sources. Bearish fallback (7.0) is hard-coded — consistent across
+    all three sites historically.
+
+    VIX adjustment is opt-in: pass `vix_proxy=None` (the default) to skip,
+    e.g. when the data provider is unavailable or the lookup raised. The
+    helper does NOT fetch VIX — that I/O lives at each call site (lazy-loaded
+    HistoricalDataProvider in live, injected `data_provider` in backtester).
+
+    Resolution order for normal_pct (highest priority first):
+      1. profile['stop_loss_pct']
+      2. stop_loss_config['normal_stop_loss_pct']
+      3. default_normal_pct (caller-supplied)
+    Same chain for bearish_pct, with hard-coded fallback 7.0.
+
+    Pure function — no I/O, no globals.
+
+    Args:
+        profile: Strategy profile dict (may override stop_loss_pct + bearish).
+        stop_loss_config: YAML `ai_trader.stops` section.
+        default_normal_pct: Caller's runtime default (e.g. live portfolio's
+            stop_loss_pct or backtest run's stop_loss_pct).
+        is_bearish_market: True if SPY < 50MA — selects bearish stop.
+        vix_proxy: VIX-proxy reading for `current_date`. None ⇒ no VIX adjust.
+        vix_config: YAML `vix_stops` section. None or `{enabled: false}` ⇒
+            no VIX adjust even if vix_proxy is provided.
+
+    Returns:
+        Effective stop-loss percentage (e.g. 7.0 = 7%). NaN-safe in practice
+        because NaN comparisons short-circuit both vix branches → returns the
+        unmultiplied base.
+    """
+    normal_pct = profile.get(
+        'stop_loss_pct',
+        stop_loss_config.get('normal_stop_loss_pct', default_normal_pct),
+    )
+    bearish_pct = profile.get(
+        'bearish_stop_loss_pct',
+        stop_loss_config.get('bearish_stop_loss_pct', 7.0),
+    )
+    effective = bearish_pct if is_bearish_market else normal_pct
+
+    if vix_proxy is None or vix_config is None:
+        return effective
+    if not vix_config.get('enabled', True):
+        return effective
+
+    low_vix = vix_config.get('low_vix_threshold', 15)
+    high_vix = vix_config.get('high_vix_threshold', 25)
+    if vix_proxy < low_vix:
+        effective *= vix_config.get('low_vix_stop_tighten', 0.80)
+    elif vix_proxy > high_vix:
+        effective *= vix_config.get('high_vix_stop_widen', 1.20)
+    return effective

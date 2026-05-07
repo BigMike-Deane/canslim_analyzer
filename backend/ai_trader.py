@@ -31,6 +31,7 @@ from backend.trading_utils import (
     MAX_POSITION_ALLOCATION,
     should_take_partial_on_trailing_stop,
     apply_sector_allocation_cap,
+    select_effective_stop_loss_pct,
 )
 
 # Shared trading engine logic (also used by backtester.py)
@@ -1262,28 +1263,26 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     # Get stop loss config, with strategy profile override
     from config_loader import config as yaml_config
     stop_loss_config = yaml_config.get('ai_trader.stops', {})
-    normal_stop_loss_pct = profile.get('stop_loss_pct', stop_loss_config.get('normal_stop_loss_pct', config.stop_loss_pct))
-    bearish_stop_loss_pct = profile.get('bearish_stop_loss_pct', stop_loss_config.get('bearish_stop_loss_pct', 7.0))
-
-    # Use tighter stop loss in bearish market
-    effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
-
-    # VIX-regime stop adjustment (matches backtester)
     vix_config = yaml_config.get('vix_stops', {})
+
+    vix_proxy = None
     if vix_config.get('enabled', True) and HistoricalDataProvider:
         try:
             from backend.historical_data import HistoricalDataProvider as HDP
             provider = HDP([])
             provider.preload_data(date.today() - timedelta(days=30), date.today())
             vix_proxy = provider.get_vix_proxy(date.today())
-            low_vix = vix_config.get('low_vix_threshold', 15)
-            high_vix = vix_config.get('high_vix_threshold', 25)
-            if vix_proxy < low_vix:
-                effective_stop_loss_pct *= vix_config.get('low_vix_stop_tighten', 0.80)
-            elif vix_proxy > high_vix:
-                effective_stop_loss_pct *= vix_config.get('high_vix_stop_widen', 1.20)
         except Exception as e:
             logger.debug(f"VIX proxy calculation failed in stop check: {e}")
+
+    effective_stop_loss_pct = select_effective_stop_loss_pct(
+        profile=profile,
+        stop_loss_config=stop_loss_config,
+        default_normal_pct=config.stop_loss_pct,
+        is_bearish_market=is_bearish_market,
+        vix_proxy=vix_proxy,
+        vix_config=vix_config,
+    )
 
     # Partial trailing stop config (matches backtester)
     partial_trailing_config = yaml_config.get('ai_trader.trailing_stops', {})
@@ -1570,33 +1569,37 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
     # Get stop loss config from YAML, with strategy profile override
     from config_loader import config as yaml_config
     stop_loss_config = yaml_config.get('ai_trader.stops', {})
-    normal_stop_loss_pct = profile.get('stop_loss_pct', stop_loss_config.get('normal_stop_loss_pct', portfolio_config.stop_loss_pct))
-    bearish_stop_loss_pct = profile.get('bearish_stop_loss_pct', stop_loss_config.get('bearish_stop_loss_pct', 7.0))
+    vix_config = yaml_config.get('vix_stops', {})
 
-    # Partial profit config from YAML
     # Partial profit config is now handled by get_partial_profit_action() in trading_engine
 
-    # Use tighter stop loss in bearish market (7% vs 8% normal)
-    effective_stop_loss_pct = bearish_stop_loss_pct if is_bearish_market else normal_stop_loss_pct
-
-    # VIX-regime stop adjustment (matches backtester)
-    vix_config = yaml_config.get('vix_stops', {})
+    vix_proxy = None
     if vix_config.get('enabled', True) and HistoricalDataProvider:
         try:
             from backend.historical_data import HistoricalDataProvider as HDP
             provider = HDP([])
             provider.preload_data(date.today() - timedelta(days=30), date.today())
             vix_proxy = provider.get_vix_proxy(date.today())
-            low_vix = vix_config.get('low_vix_threshold', 15)
-            high_vix = vix_config.get('high_vix_threshold', 25)
-            if vix_proxy < low_vix:
-                effective_stop_loss_pct *= vix_config.get('low_vix_stop_tighten', 0.80)
-                logger.debug(f"VIX proxy {vix_proxy:.1f} < {low_vix}: tightening stops to {effective_stop_loss_pct:.1f}%")
-            elif vix_proxy > high_vix:
-                effective_stop_loss_pct *= vix_config.get('high_vix_stop_widen', 1.20)
-                logger.debug(f"VIX proxy {vix_proxy:.1f} > {high_vix}: widening stops to {effective_stop_loss_pct:.1f}%")
         except Exception as e:
             logger.debug(f"VIX proxy calculation failed: {e}")
+
+    effective_stop_loss_pct = select_effective_stop_loss_pct(
+        profile=profile,
+        stop_loss_config=stop_loss_config,
+        default_normal_pct=portfolio_config.stop_loss_pct,
+        is_bearish_market=is_bearish_market,
+        vix_proxy=vix_proxy,
+        vix_config=vix_config,
+    )
+
+    # Preserve historical debug-log breadcrumb for VIX-regime adjustments at this site.
+    if vix_proxy is not None and vix_config.get('enabled', True):
+        low_vix = vix_config.get('low_vix_threshold', 15)
+        high_vix = vix_config.get('high_vix_threshold', 25)
+        if vix_proxy < low_vix:
+            logger.debug(f"VIX proxy {vix_proxy:.1f} < {low_vix}: tightening stops to {effective_stop_loss_pct:.1f}%")
+        elif vix_proxy > high_vix:
+            logger.debug(f"VIX proxy {vix_proxy:.1f} > {high_vix}: widening stops to {effective_stop_loss_pct:.1f}%")
 
     for position in positions:
         # Use effective score based on stock type
