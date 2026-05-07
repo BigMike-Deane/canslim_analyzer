@@ -29,14 +29,19 @@ Triage:
     - get_cst_now: utc-naive shape (regression for trade-timestamp drift)
     - refresh_ai_portfolio: composes update_position_prices + snapshot
 
-  Tier 3 (intentionally NOT covered — see top of file):
-    - run_ai_trading_cycle: 580-line orchestration loop covering buy throttle
-      + circuit breaker + bear-base sweep + earnings briefing — exercised
-      end-to-end by integration runs, not unit-testable without a real DB
-      and a real market_data feed. Covered indirectly when stop-loss /
-      sells / buys are tested.
-    - take_portfolio_snapshot: pure ORM write of a single row, exercised
-      transitively by every test that runs through stop-loss or evaluate_sells.
+  Tier 3 — orchestration loop (added 2026-05-07, see TestRunAITradingCycle):
+    - run_ai_trading_cycle: 580-line orchestration loop covering lock contention,
+      sells loop (partial+full), drawdown circuit breaker, pyramid loop, dynamic
+      cash reserve, FTD/heat penalty plumbing, buy throttle, max-positions cap,
+      and the always-runs lock-release + snapshot tail. Tests pin shape and
+      seam-call counts, not numerical values, since this is orchestration.
+
+  Tier 3 (intentionally NOT covered):
+    - run_ai_trading_cycle bear-base sweep + morning briefing email branches:
+      these only fire on the SPY-just-flipped-bullish edge and at the
+      ~9:30 AM ET market-open instant. Both are background admin
+      side-effects, not part of the live trade decision; they are
+      monkeypatched away in TestRunAITradingCycle.
     - initialize_ai_portfolio: one-time setup helper.
     - check_position_correlation: yfinance.download integration — already
       covered by tests/test_correlation_guard.py.
@@ -2878,3 +2883,567 @@ class TestInitializeAIPortfolio:
         # User 2's data intact
         assert db_session.query(AIPortfolioPosition).filter_by(user_id=2).count() == 1
         assert db_session.query(AIPortfolioConfig).filter_by(user_id=2).first().current_cash == 5000.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tier 3 — run_ai_trading_cycle orchestration loop
+#
+# These pin the orchestrator's branch shape, NOT numerical values. The cycle
+# composes ~10 IO seams (update_position_prices, evaluate_sells/buys/pyramids,
+# fetch_live_price, get_market_regime, liquidate_spy_sweep/handle_spy_sweep,
+# take_portfolio_snapshot, plus the lazy email_utils webhook imports). Tests
+# stub all of them via the silence_cycle_seams fixture, then individual tests
+# override the one seam that drives the branch under test.
+#
+# AI Trader <> Backtester sync: run_ai_trading_cycle has no backtester
+# analogue (the backtester loops over historical dates instead), so no mirror
+# test is required.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def reset_cycle_state():
+    """Reset module-level _trading_cycle_started before & after each test.
+
+    The orchestrator stores the cycle's start time in a thread-local-ish
+    module global. Tests that mock the lock to simulate contention need to
+    seed this directly, and we MUST clean it up afterwards or a 'busy' state
+    leaks into every subsequent test that imports the module."""
+    import backend.ai_trader as ai_trader
+    ai_trader._set_cycle_started(None)
+    yield
+    ai_trader._set_cycle_started(None)
+
+
+@pytest.fixture
+def fast_sleep(monkeypatch):
+    """No-op time.sleep so the buy/pyramid 0.3s rate-limit delays don't slow tests."""
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *a, **kw: None)
+
+
+@pytest.fixture
+def silence_cycle_seams(monkeypatch, silence_webhooks, fast_sleep):
+    """Stub every IO seam run_ai_trading_cycle calls. Tests re-patch
+    individual seams to drive specific branches.
+
+    Default behavior: empty sells, empty buys, empty pyramids, bullish
+    market regime (signal=2.0 → strong-bull 5% reserve), live price = $100,
+    SPY sweep helpers no-op, snapshot no-op, all webhooks silenced.
+
+    Composes silence_webhooks + fast_sleep so a test only needs to add this
+    one fixture (plus reset_cycle_state, db_session)."""
+    import backend.ai_trader as ai_trader
+    monkeypatch.setattr(ai_trader, "update_position_prices", lambda *a, **kw: None)
+    monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+    monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: [])
+    monkeypatch.setattr(ai_trader, "evaluate_pyramids", lambda *a, **kw: [])
+    monkeypatch.setattr(ai_trader, "fetch_live_price", lambda ticker: 100.0)
+    monkeypatch.setattr(ai_trader, "liquidate_spy_sweep", lambda *a, **kw: None)
+    monkeypatch.setattr(ai_trader, "handle_spy_sweep", lambda *a, **kw: None)
+    monkeypatch.setattr(ai_trader, "take_portfolio_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(ai_trader, "get_market_regime",
+                        lambda *a, **kw: {"regime": "bullish"})
+    # FTD branch reads HistoricalDataProvider; force the gate closed.
+    monkeypatch.setattr(ai_trader, "HistoricalDataProvider", None)
+    # Stub get_cached_market_direction for the dynamic-cash-reserve branch
+    # (regime=bullish + signal>=2 → strong-bull 5% reserve).
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
+                        lambda: {"success": True, "weighted_signal": 2.0})
+    # Silence the lazy email_utils imports the cycle does at the tail.
+    import backend.email_utils as eu
+    monkeypatch.setattr(eu, "send_risk_alert_webhook", lambda *a, **kw: None)
+    monkeypatch.setattr(eu, "send_webhook_notification", lambda *a, **kw: None)
+
+
+class TestRunAITradingCycle:
+    """Tier 3: run_ai_trading_cycle orchestration loop.
+
+    Pins the loop's branch *shape* — return-status strings, seam call counts,
+    DB mutations — but NOT numerical values that depend on YAML weights.
+
+    Branches under test (one per method):
+      - lock contention → "busy"
+      - lock timeout (>300s) → force-acquire, body runs
+      - lock held with no start-time → force-acquire, body runs
+      - is_active=False → "inactive"
+      - 0 positions → update_position_prices NOT called
+      - >=1 position → update_position_prices called once
+      - full sell → position deleted, cash credited, results.sells_executed=1
+      - partial sell → shares reduced, partial_profit_taken updated
+      - partial sell with reset_peak → peak_price updated to current
+      - drawdown >= liquidate_threshold (25%) → all positions liquidated, early return
+      - drawdown >= halt_threshold (15%) → drawdown_halt=True, no buys/pyramids
+      - pyramid candidate → execute_trade called with action=PYRAMID
+      - cash below dynamic reserve → buys skipped (no execute_trade BUY)
+      - already at max_positions → evaluate_buys NOT called
+      - buy throttle limit reached mid-loop → loop breaks
+      - happy buy → position added, cash decremented
+      - exception in body → "error" status, lock released, _trading_cycle_started reset
+    """
+
+    # ── Lock & short-circuit branches ─────────────────────────────────────
+
+    def test_busy_lock_returns_busy(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: lock held, recent start time → status='busy', body skipped."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session)
+
+        # Seed a recent cycle-start time
+        ai_trader._set_cycle_started(ai_trader.get_cst_now())
+
+        # Replace lock with a MagicMock whose acquire(blocking=False) returns False
+        mock_lock = MagicMock()
+        mock_lock.acquire = MagicMock(return_value=False)
+        monkeypatch.setattr(ai_trader, "_trading_cycle_lock", mock_lock)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert result["status"] == "busy"
+        # Body did NOT run, so finally's release() was NOT called
+        mock_lock.release.assert_not_called()
+
+    def test_lock_timeout_force_acquires(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: lock held, elapsed >300s → blocking acquire, body runs.
+
+        Drives the body to short-circuit on is_active=False to keep the test
+        focused on the lock-recovery branch."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, is_active=False)
+
+        # Stale start time → 600s ago
+        ai_trader._set_cycle_started(
+            ai_trader.get_cst_now() - timedelta(seconds=600)
+        )
+
+        # First acquire(blocking=False) → False, then acquire(blocking=True) → True
+        mock_lock = MagicMock()
+        mock_lock.acquire = MagicMock(side_effect=[False, True])
+        monkeypatch.setattr(ai_trader, "_trading_cycle_lock", mock_lock)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert result["status"] == "inactive"
+        # Both calls happened: non-blocking (failed), then blocking force-acquire.
+        assert mock_lock.acquire.call_count == 2
+        # Finally block ran → lock released exactly once
+        mock_lock.release.assert_called_once()
+
+    def test_lock_held_no_start_time_force_acquires(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: lock held but no _trading_cycle_started → force-acquire."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, is_active=False)
+        ai_trader._set_cycle_started(None)  # no start time recorded
+
+        mock_lock = MagicMock()
+        mock_lock.acquire = MagicMock(side_effect=[False, True])
+        monkeypatch.setattr(ai_trader, "_trading_cycle_lock", mock_lock)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert result["status"] == "inactive"
+        assert mock_lock.acquire.call_count == 2
+        mock_lock.release.assert_called_once()
+
+    def test_inactive_config_short_circuits(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data,
+    ):
+        """Branch: config.is_active=False → status='inactive', no work done."""
+        from backend.ai_trader import run_ai_trading_cycle
+
+        _seed_config(db_session, is_active=False)
+        result = run_ai_trading_cycle(db_session, user_id=1)
+        assert result["status"] == "inactive"
+
+    # ── Position-update + sells loop branches ─────────────────────────────
+
+    def test_zero_positions_skips_price_update(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: position_count==0 → update_position_prices NOT called.
+
+        The 'fetch live prices for existing positions' block is gated on
+        position_count > 0 to save an FMP call when the portfolio is all-cash."""
+        import backend.ai_trader as ai_trader
+        calls = []
+        monkeypatch.setattr(ai_trader, "update_position_prices",
+                            lambda *a, **kw: calls.append(1))
+
+        _seed_config(db_session, current_cash=25000.0, peak_portfolio_value=25000.0)
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert calls == []
+        assert result["sells_considered"] == 0
+        assert result["buys_considered"] == 0
+
+    def test_position_present_triggers_price_update(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: position_count>0 → update_position_prices called once."""
+        import backend.ai_trader as ai_trader
+        calls = []
+        monkeypatch.setattr(ai_trader, "update_position_prices",
+                            lambda *a, **kw: calls.append(1))
+
+        _seed_config(db_session, current_cash=10000.0,
+                     peak_portfolio_value=15000.0, starting_cash=15000.0)
+        _seed_stock(db_session, "POS")
+        _seed_position(db_session, "POS")
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert calls == [1]
+
+    def test_full_sell_deletes_position_and_credits_cash(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: full-sell signal → position deleted, current_cash += value."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, current_cash=5000.0,
+                     peak_portfolio_value=20000.0, starting_cash=20000.0)
+        _seed_stock(db_session, "DEL")
+        pos = _seed_position(db_session, "DEL", current_value=8000.0,
+                             current_price=80.0, shares=100.0,
+                             cost_basis=70.0, gain_loss=1000.0)
+
+        # evaluate_sells returns one full-sell payload
+        def fake_sells(db, user_id=1):
+            p = db.query(AIPortfolioPosition).filter_by(user_id=user_id).first()
+            return [{"position": p, "reason": "STOP LOSS: -8%",
+                     "is_partial": False}]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", fake_sells)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        assert len(result["sells_executed"]) == 1
+        assert result["sells_executed"][0]["ticker"] == "DEL"
+        # Position gone
+        assert db_session.query(AIPortfolioPosition).filter_by(ticker="DEL").count() == 0
+        # Cash credited (5000 + 8000 = 13000)
+        cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        assert cfg.current_cash == pytest.approx(13000.0)
+
+    def test_partial_sell_reduces_shares_and_tracks_pct(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: is_partial=True → shares reduced by sell_pct,
+        partial_profit_taken accumulates, position kept."""
+        import backend.ai_trader as ai_trader
+
+        # Peak set to post-sell total (15k) so DD stays at 0 and the
+        # circuit breaker does not fire on the remaining position.
+        _seed_config(db_session, current_cash=5000.0,
+                     peak_portfolio_value=15000.0, starting_cash=15000.0)
+        _seed_stock(db_session, "PAR")
+        _seed_position(db_session, "PAR", current_value=10000.0,
+                       current_price=100.0, shares=100.0, cost_basis=80.0)
+
+        def fake_sells(db, user_id=1):
+            p = db.query(AIPortfolioPosition).filter_by(user_id=user_id).first()
+            return [{"position": p, "reason": "PARTIAL PROFIT: 25%",
+                     "is_partial": True, "sell_pct": 25}]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", fake_sells)
+
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        pos = db_session.query(AIPortfolioPosition).filter_by(ticker="PAR").first()
+        assert pos is not None  # not deleted
+        assert pos.shares == pytest.approx(75.0)
+        assert pos.partial_profit_taken == pytest.approx(25.0)
+
+    def test_partial_sell_reset_peak_updates_peak_price(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: partial sell with reset_peak=True → peak_price reset to
+        current_price (the partial-trailing-stop reset path)."""
+        import backend.ai_trader as ai_trader
+
+        # Peak matches post-sell total so the CB does not fire.
+        _seed_config(db_session, current_cash=5000.0,
+                     peak_portfolio_value=15000.0, starting_cash=15000.0)
+        _seed_stock(db_session, "RST")
+        _seed_position(db_session, "RST", current_value=10000.0,
+                       current_price=100.0, shares=100.0, cost_basis=80.0,
+                       peak_price=130.0)
+
+        def fake_sells(db, user_id=1):
+            p = db.query(AIPortfolioPosition).filter_by(user_id=user_id).first()
+            return [{"position": p, "reason": "TRAILING STOP",
+                     "is_partial": True, "sell_pct": 25, "reset_peak": True}]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", fake_sells)
+
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        pos = db_session.query(AIPortfolioPosition).filter_by(ticker="RST").first()
+        assert pos.peak_price == pytest.approx(100.0)
+
+    # ── Drawdown circuit breaker branches ─────────────────────────────────
+
+    def test_drawdown_liquidate_threshold_clears_all_positions(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data,
+    ):
+        """Branch: current_drawdown >= 25% → CIRCUIT BREAKER liquidates all
+        and returns early before pyramids/buys."""
+        from backend.ai_trader import run_ai_trading_cycle
+
+        # Peak=$25k, current=$10k cash + $5k positions = $15k → 40% DD
+        _seed_config(db_session, current_cash=10000.0,
+                     peak_portfolio_value=25000.0, starting_cash=25000.0)
+        _seed_stock(db_session, "DD1")
+        _seed_position(db_session, "DD1", current_value=5000.0,
+                       current_price=50.0, shares=100.0, cost_basis=80.0,
+                       gain_loss=-3000.0)
+
+        result = run_ai_trading_cycle(db_session, user_id=1)
+
+        # Position liquidated by the circuit breaker
+        assert db_session.query(AIPortfolioPosition).filter_by(user_id=1).count() == 0
+        # CB sells get appended to results.sells_executed
+        assert any("CIRCUIT BREAKER" in s["reason"]
+                   for s in result["sells_executed"])
+        # Early return → no buys_considered key was set after the CB return path
+        assert "buys_considered" not in result or result["buys_considered"] == 0
+
+    def test_drawdown_halt_threshold_skips_pyramids_and_buys(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: 15% <= DD < 25% → drawdown_halt=True, evaluate_pyramids
+        and evaluate_buys NOT called (loop falls through)."""
+        import backend.ai_trader as ai_trader
+        pyr_calls = []
+        buy_calls = []
+        monkeypatch.setattr(ai_trader, "evaluate_pyramids",
+                            lambda *a, **kw: pyr_calls.append(1) or [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys",
+                            lambda *a, **kw: buy_calls.append(1) or [])
+
+        # Peak=$25k, current ≈ $20k → 20% DD (between halt 15 and liquidate 25)
+        _seed_config(db_session, current_cash=15000.0,
+                     peak_portfolio_value=25000.0, starting_cash=25000.0)
+        _seed_stock(db_session, "DD2")
+        _seed_position(db_session, "DD2", current_value=5000.0,
+                       current_price=50.0, shares=100.0, cost_basis=80.0)
+
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        # drawdown_halt blocked both
+        assert pyr_calls == []
+        assert buy_calls == []
+
+    # ── Buys path branches ────────────────────────────────────────────────
+
+    def test_cash_below_dynamic_reserve_skips_buys(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: current_cash < total_value * dynamic_reserve_pct → buys
+        skipped without ever calling evaluate_buys."""
+        import backend.ai_trader as ai_trader
+        buy_calls = []
+        monkeypatch.setattr(ai_trader, "evaluate_buys",
+                            lambda *a, **kw: buy_calls.append(1) or [])
+
+        # Bullish strong → 5% reserve. total=$1000 → reserve=$50.
+        # Cash $40 is below the $50 reserve.
+        _seed_config(db_session, current_cash=40.0,
+                     peak_portfolio_value=2000.0, starting_cash=2000.0)
+        _seed_stock(db_session, "RES")
+        _seed_position(db_session, "RES", current_value=960.0,
+                       current_price=9.6, shares=100.0, cost_basis=10.0)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert buy_calls == []
+        assert result["buys_executed"] == []
+
+    def test_already_at_max_positions_skips_buys(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: position_count == max_positions → buys block skipped,
+        evaluate_buys never called."""
+        import backend.ai_trader as ai_trader
+        buy_calls = []
+        monkeypatch.setattr(ai_trader, "evaluate_buys",
+                            lambda *a, **kw: buy_calls.append(1) or [])
+
+        # nostate_optimized profile bakes max_positions=8 (overrides config),
+        # so we seed 8 positions to actually exercise the "at-max" branch.
+        _seed_config(db_session, current_cash=2000.0,
+                     peak_portfolio_value=82000.0, starting_cash=82000.0)
+        for i in range(8):
+            t = f"FULL{i}"
+            _seed_stock(db_session, t)
+            _seed_position(db_session, t, current_value=10000.0,
+                           current_price=100.0, shares=100.0, cost_basis=90.0)
+
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert buy_calls == []
+
+    def test_happy_buy_creates_position_and_decrements_cash(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: 1 buy candidate, slot open, cash above reserve → position
+        added, cash decremented, results.buys_executed populated."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, current_cash=20000.0,
+                     peak_portfolio_value=20000.0, starting_cash=20000.0)
+        new_stock = _seed_stock(db_session, "NEW",
+                                canslim_score=80.0, current_price=50.0)
+
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1):
+            s = db.query(Stock).filter_by(ticker="NEW").first()
+            return [{"stock": s, "reason": "Strong CANSLIM",
+                     "value": 5000.0, "shares": 100.0,
+                     "is_growth_stock": False, "signal_factors": {}}]
+        monkeypatch.setattr(ai_trader, "evaluate_buys", fake_buys)
+        monkeypatch.setattr(ai_trader, "fetch_live_price",
+                            lambda ticker: 50.0)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        assert len(result["buys_executed"]) == 1
+        assert result["buys_executed"][0]["ticker"] == "NEW"
+        # Position created
+        assert db_session.query(AIPortfolioPosition).filter_by(ticker="NEW").count() == 1
+        # Cash decremented (started 20k, bought $5k → 15k)
+        cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        assert cfg.current_cash == pytest.approx(15000.0)
+
+    def test_buy_throttle_zero_limit_blocks_all_buys(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: buy_throttle_limit=0 → loop hits the throttle check on
+        the very first candidate and breaks before any execute_trade BUY."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, current_cash=20000.0,
+                     peak_portfolio_value=20000.0, starting_cash=20000.0)
+        _seed_stock(db_session, "T1", canslim_score=80.0, current_price=50.0)
+
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1):
+            s = db.query(Stock).filter_by(ticker="T1").first()
+            return [{"stock": s, "reason": "x", "value": 5000.0,
+                     "shares": 100.0, "is_growth_stock": False,
+                     "signal_factors": {}}]
+        monkeypatch.setattr(ai_trader, "evaluate_buys", fake_buys)
+        monkeypatch.setattr(ai_trader, "get_buy_throttle_limit",
+                            lambda *a, **kw: 0)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert result["buys_considered"] == 1
+        assert result["buys_executed"] == []
+        # No position created
+        assert db_session.query(AIPortfolioPosition).filter_by(ticker="T1").count() == 0
+
+    def test_max_positions_breaks_buy_loop_mid_iteration(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: 7 positions, max=8, 3 candidates → first buy fills slot 8,
+        next iteration's max-positions check breaks the loop."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, current_cash=20000.0, max_positions=8,
+                     peak_portfolio_value=80000.0, starting_cash=80000.0)
+        # 7 existing positions
+        for i in range(7):
+            t = f"OLD{i}"
+            _seed_stock(db_session, t)
+            _seed_position(db_session, t, current_value=8000.0,
+                           current_price=80.0, shares=100.0, cost_basis=70.0)
+        for t in ("CAND1", "CAND2", "CAND3"):
+            _seed_stock(db_session, t, canslim_score=80.0, current_price=50.0)
+
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1):
+            return [
+                {"stock": db.query(Stock).filter_by(ticker=t).first(),
+                 "reason": "x", "value": 5000.0, "shares": 100.0,
+                 "is_growth_stock": False, "signal_factors": {}}
+                for t in ("CAND1", "CAND2", "CAND3")
+            ]
+        monkeypatch.setattr(ai_trader, "evaluate_buys", fake_buys)
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda ticker: 50.0)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        # Only 1 buy got through (slot 8); CAND2 and CAND3 blocked by max
+        assert len(result["buys_executed"]) == 1
+        assert result["buys_executed"][0]["ticker"] == "CAND1"
+
+    # ── Pyramid branch ────────────────────────────────────────────────────
+
+    def test_pyramid_executes_when_drawdown_safe(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: pyramid candidate, no circuit breaker → execute_trade
+        called with action='PYRAMID' and results.pyramids_executed populated."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, current_cash=20000.0,
+                     peak_portfolio_value=20000.0, starting_cash=20000.0)
+        _seed_stock(db_session, "PYR")
+        _seed_position(db_session, "PYR", current_value=8000.0,
+                       current_price=80.0, shares=100.0, cost_basis=70.0)
+
+        def fake_pyramids(db, user_id=1):
+            p = db.query(AIPortfolioPosition).filter_by(ticker="PYR").first()
+            return [{"position": p, "reason": "Strong continuation",
+                     "amount": 2000.0}]
+        monkeypatch.setattr(ai_trader, "evaluate_pyramids", fake_pyramids)
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda ticker: 80.0)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        assert len(result["pyramids_executed"]) == 1
+        assert result["pyramids_executed"][0]["ticker"] == "PYR"
+        # Trade row recorded with action=PYRAMID
+        pyramid_trades = db_session.query(AIPortfolioTrade).filter_by(
+            ticker="PYR", action="PYRAMID").all()
+        assert len(pyramid_trades) == 1
+
+    # ── Exception path ────────────────────────────────────────────────────
+
+    def test_exception_in_body_returns_error_and_releases_lock(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: any exception in the try block → caught, status='error',
+        finally block resets _trading_cycle_started + releases lock.
+
+        This test is the safety net: if the cycle ever crashes for any
+        reason, the lock is released so the next scheduled call can run.
+        Without this guard, a crash here strands the lock and freezes
+        live trading for the next 5 minutes (timeout) on every user."""
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session)
+
+        def boom(*a, **kw):
+            raise RuntimeError("sells exploded")
+        monkeypatch.setattr(ai_trader, "evaluate_sells", boom)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert result["status"] == "error"
+        assert "sells exploded" in result["message"]
+        # Cleanup ran: cycle-start cleared
+        assert ai_trader._get_cycle_started() is None
