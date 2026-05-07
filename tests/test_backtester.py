@@ -1284,6 +1284,7 @@ class TestInitialSeeding:
             # MagicMock would otherwise return un-comparable Mock objects)
             earnings_surprise_pct=0.0,
             eps_beat_streak=0,
+            earnings_beat_streak=0,
             eps_estimate_revision_pct=None,
             earnings_growth_estimate=0.0,
         )
@@ -1335,6 +1336,7 @@ class TestInitialSeeding:
             market_cap=1e9,
             earnings_surprise_pct=0.0,
             eps_beat_streak=0,
+            earnings_beat_streak=0,
             eps_estimate_revision_pct=None,
             earnings_growth_estimate=0.0,
         )
@@ -1457,6 +1459,7 @@ class TestConcentratedPortfolio:
             quarterly_revenue=[],
             earnings_surprise_pct=0.0,
             eps_beat_streak=0,
+            earnings_beat_streak=0,
             eps_estimate_revision_pct=None,
             earnings_growth_estimate=0.0,
         )
@@ -1570,6 +1573,7 @@ class TestConcentratedPortfolio:
             quarterly_revenue=[],
             earnings_surprise_pct=0.0,
             eps_beat_streak=0,
+            earnings_beat_streak=0,
             eps_estimate_revision_pct=None,
             earnings_growth_estimate=0.0,
         )
@@ -1632,6 +1636,7 @@ class TestDrawdownCircuitBreaker:
             institutional_holders=100, institutional_pct=45.0, market_cap=5e9,
             earnings_surprise_pct=0.0,
             eps_beat_streak=0,
+            earnings_beat_streak=0,
             eps_estimate_revision_pct=None,
             earnings_growth_estimate=0.0,
         )

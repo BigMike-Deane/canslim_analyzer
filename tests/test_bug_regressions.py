@@ -2817,6 +2817,7 @@ class TestBacktesterCScoreSync:
         # so MagicMock auto-attributes don't satisfy `>=` comparisons).
         mock_stock_data.earnings_surprise_pct = 0.0
         mock_stock_data.eps_beat_streak = 0
+        mock_stock_data.earnings_beat_streak = 0
         mock_stock_data.eps_estimate_revision_pct = None
         mock_stock_data.earnings_growth_estimate = 0.0
         mock_stock_data.sector = "Technology"
@@ -2892,6 +2893,7 @@ class TestBacktesterCScoreSync:
         mock_stock_data.quarterly_revenue = [100, 90, 80, 70]
         mock_stock_data.earnings_surprise_pct = 0.0
         mock_stock_data.eps_beat_streak = 0
+        mock_stock_data.earnings_beat_streak = 0
         mock_stock_data.eps_estimate_revision_pct = None
         mock_stock_data.earnings_growth_estimate = 0.0
         mock_stock_data.sector = "Healthcare"
