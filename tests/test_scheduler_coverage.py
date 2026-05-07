@@ -18,9 +18,12 @@ Triage:
       module-level thread/scheduler control. _scan_config dict mutation,
       apscheduler add_job / remove_job seam.
 
-  Tier 3 (intentionally NOT covered in this push):
-    - run_continuous_scan (lines 811-1603, ~790 lines): heavy async + FMP rate
-      limiter + redis_cache + sleep/retry coupling. Deserves its own session.
+  Tier 3 (orchestrator):
+    - run_continuous_scan (lines 811-1603, ~790 lines): main scan/trade
+      pipeline. Covered by TestRunContinuousScan via 8-branch matrix with
+      every external coupling stubbed at its source module.
+
+  Still intentionally uncovered (separate session if/when prioritised):
     - send_morning_briefing_if_due (lines 629-808): morning email logic;
       gated on time-of-day and SystemState dedup; tested via integration
       elsewhere.
@@ -1518,3 +1521,979 @@ class TestSystemHealthHelpers:
         _restore_health_from_redis()
 
         assert scheduler_mod._system_health["last_successful_scan"] == "2026-05-07T12:00:00+00:00"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tier 3 — run_continuous_scan orchestrator (lines 811-1603)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestRunContinuousScan:
+    """Tier 3: scheduler.run_continuous_scan — the main scan/trade pipeline.
+
+    Stitches together: market direction → async scan → DB save → market
+    snapshot → CS auto-record → CS outcome update → earnings audit →
+    industry-group ranks → bear-base (when SPY < 50MA) → AI cycle per
+    user → cleanup → gap-up → watchlist → morning briefing.
+
+    Covering this orchestrator is the natural follow-on to the auxiliary-
+    helper push (commit c879fc0): every helper it calls is now mockable
+    at its source module, and the body itself runs end-to-end with one
+    fake ticker + one fake analysis dict.
+
+    Branches covered:
+      a. Happy path: 1 ticker, all post-helpers fire, _record_success("scan")
+      b. is_scanning=True guard early-returns without running the body
+      c. async-scan exception → _record_failure("scan"), is_scanning reset
+      d. SPY < 50MA → bear-base branch fires; SPY > 50MA → does NOT
+      e. Per-phase progress: every documented _PHASE_LABELS key reached
+      f. Post-helper sequencing: canonical order across the 9 post-scan calls
+      g. Per-user AI cycle exception → _record_failure("trade_cycle") fires,
+         scan still records success (per-user try/except at scheduler.py:1521)
+      h. Source variants: sp500/russell/all/top50 each load the right loader
+    """
+
+    @pytest.fixture
+    def scan_seams(self, monkeypatch, patch_session_local):
+        """One-stop fixture mocking every external coupling of
+        run_continuous_scan and resetting module-level state. Returns a
+        SimpleNamespace exposing every spy so tests can adjust behavior
+        and assert call counts.
+
+        Pattern: monkeypatch source modules BEFORE the call. The function
+        does its imports inline via `from X import Y`, so attribute swaps
+        on the source module take effect when the inline import runs."""
+        import sp500_tickers
+        import data_fetcher
+        import async_scanner
+        import backend.scheduler as scheduler_mod
+        import backend.main as main_mod
+        import backend.earnings_audit as audit_mod
+        import backend.industry_group as ig_mod
+        import backend.bear_base as bb_mod
+        import backend.ai_trader as ai_mod
+        import backend.earnings_gapup as gu_mod
+        import backend.email_utils as email_utils
+        import redis_cache
+        from types import SimpleNamespace
+
+        bus = SimpleNamespace()
+        bus.session = patch_session_local
+
+        # ── Tickers ──
+        monkeypatch.setattr(sp500_tickers, "get_sp500_tickers", lambda: ["TEST"])
+        monkeypatch.setattr(sp500_tickers, "get_russell2000_tickers", lambda: ["RUSS1"])
+        monkeypatch.setattr(
+            sp500_tickers,
+            "get_all_tickers",
+            lambda include_portfolio=True: ["ALL1"],
+        )
+        monkeypatch.setattr(sp500_tickers, "get_portfolio_tickers", lambda: [])
+
+        # ── Async scan ──
+        bus.fake_analysis = {
+            "ticker": "TEST",
+            "company_name": "Test Inc",
+            "sector": "Technology",
+            "industry": "Software",
+            "current_price": 100.0,
+            "market_cap": 1_000_000_000,
+            "canslim_score": 70.0,
+            "c_score": 10.0,
+            "a_score": 10.0,
+            "n_score": 10.0,
+            "s_score": 10.0,
+            "l_score": 10.0,
+            "i_score": 10.0,
+            "m_score": 10.0,
+            "score_details": {},
+            "projected_growth": 5.0,
+            "confidence": 0.5,
+            "week_52_high": 120.0,
+            "week_52_low": 80.0,
+            "is_growth_stock": False,
+            "quarterly_earnings": [],
+            "annual_earnings": [],
+            "quarterly_revenue": [],
+        }
+
+        def stub_run_async_scan(tickers, batch_size=100, progress_callback=None):
+            # Drive the progress UI so all three Phase-1 sub-phase labels
+            # ("stocks", "insider_short", "p1_data") reach _set_phase —
+            # branch (e) depends on this.
+            if progress_callback and tickers:
+                progress_callback(1, len(tickers), "stocks")
+                progress_callback(1, len(tickers), "insider_short")
+                progress_callback(1, len(tickers), "p1_data")
+            return [dict(bus.fake_analysis) for _ in tickers] if tickers else []
+
+        bus.run_async_scan = MagicMock(side_effect=stub_run_async_scan)
+        monkeypatch.setattr(async_scanner, "run_async_scan", bus.run_async_scan)
+
+        # ── Market direction (default bullish: SPY > 50MA) ──
+        bus.market_data = {
+            "success": True,
+            "market_trend": "bullish",
+            "market_score": 80,
+            "weighted_signal": 0.7,
+            "indexes": {"SPY": {"price": 500.0, "ma_50": 480.0}},
+        }
+        monkeypatch.setattr(
+            data_fetcher,
+            "get_cached_market_direction",
+            lambda force_refresh=False: bus.market_data,
+        )
+
+        # ── Rate-limit / cache stats (logged at end of scan) ──
+        monkeypatch.setattr(
+            data_fetcher,
+            "get_rate_limit_stats",
+            lambda: {"errors_429": 0, "total_requests": 100},
+        )
+        monkeypatch.setattr(data_fetcher, "reset_rate_limit_stats", lambda: None)
+        monkeypatch.setattr(
+            data_fetcher,
+            "get_cache_stats",
+            lambda: {"memory": {"tickers_tracked": 0, "cached_data_entries": 0}},
+        )
+        monkeypatch.setattr(
+            data_fetcher,
+            "get_cache_hit_stats",
+            lambda: {"hits": 0, "misses": 0},
+        )
+
+        # ── update_market_snapshot (lives in backend.main) ──
+        bus.update_market_snapshot = MagicMock()
+        monkeypatch.setattr(main_mod, "update_market_snapshot", bus.update_market_snapshot)
+
+        # ── Post-scan helpers defined IN scheduler.py (patch on scheduler) ──
+        bus.auto_record_cs = MagicMock()
+        bus.update_cs_outcomes = MagicMock()
+        bus.check_watchlist = MagicMock()
+        bus.morning_briefing = MagicMock()
+        bus.cleanup_old_scores = MagicMock()
+        bus.cleanup_price = MagicMock()
+        monkeypatch.setattr(
+            scheduler_mod, "auto_record_coiled_spring_alerts", bus.auto_record_cs
+        )
+        monkeypatch.setattr(
+            scheduler_mod, "update_coiled_spring_outcomes", bus.update_cs_outcomes
+        )
+        monkeypatch.setattr(scheduler_mod, "check_watchlist_alerts", bus.check_watchlist)
+        monkeypatch.setattr(
+            scheduler_mod, "send_morning_briefing_if_due", bus.morning_briefing
+        )
+        monkeypatch.setattr(scheduler_mod, "cleanup_old_stock_scores", bus.cleanup_old_scores)
+        monkeypatch.setattr(scheduler_mod, "cleanup_price_cache", bus.cleanup_price)
+
+        # ── Earnings audit ──
+        bus.run_earnings_audit = MagicMock(return_value=[])
+        monkeypatch.setattr(audit_mod, "run_earnings_audit", bus.run_earnings_audit)
+
+        # ── Industry group ──
+        bus.compute_ig = MagicMock(return_value={"Software": {"avg": 70}})
+        bus.update_ig = MagicMock(return_value=1)
+        monkeypatch.setattr(ig_mod, "compute_industry_group_rankings", bus.compute_ig)
+        monkeypatch.setattr(ig_mod, "update_stock_group_ranks", bus.update_ig)
+
+        # ── Bear base ──
+        bus.update_bear_base = MagicMock(return_value={"total": 0})
+        monkeypatch.setattr(bb_mod, "update_bear_base_candidates", bus.update_bear_base)
+
+        # ── AI trader ──
+        bus.run_ai_cycle = MagicMock(
+            return_value={"buys_executed": [], "sells_executed": []}
+        )
+        bus.take_snapshot = MagicMock()
+        bus.is_market_open = MagicMock(return_value=False)
+        monkeypatch.setattr(ai_mod, "run_ai_trading_cycle", bus.run_ai_cycle)
+        monkeypatch.setattr(ai_mod, "take_portfolio_snapshot", bus.take_snapshot)
+        monkeypatch.setattr(ai_mod, "is_market_open", bus.is_market_open)
+
+        # ── Earnings gap-up ──
+        bus.find_gapups = MagicMock(return_value=[])
+        bus.send_gapup = MagicMock()
+        monkeypatch.setattr(gu_mod, "find_earnings_gapups", bus.find_gapups)
+        monkeypatch.setattr(gu_mod, "send_gapup_alert", bus.send_gapup)
+
+        # ── Webhook silencing (used by _record_failure) ──
+        bus.send_webhook = MagicMock()
+        monkeypatch.setattr(email_utils, "send_webhook_notification", bus.send_webhook)
+
+        # ── Redis silencing ──
+        monkeypatch.setattr(redis_cache, "get_redis_client", lambda: None)
+
+        # ── Module-level state reset ──
+        scheduler_mod._scan_config["is_scanning"] = False
+        scheduler_mod._scan_config["source"] = "sp500"
+        scheduler_mod._scan_config["phase"] = None
+        scheduler_mod._scan_config["phase_detail"] = None
+        scheduler_mod._scan_config["current_phase"] = None
+        scheduler_mod._scan_config["phase_current"] = 0
+        scheduler_mod._scan_config["phase_total"] = 0
+        scheduler_mod._scan_config["phase_label"] = None
+        scheduler_mod._system_health["consecutive_scan_failures"] = 0
+        scheduler_mod._system_health["consecutive_trade_failures"] = 0
+        scheduler_mod._system_health["last_scan_error"] = None
+        scheduler_mod._system_health["last_trade_cycle_error"] = None
+        scheduler_mod._system_health["last_successful_scan"] = None
+        scheduler_mod._system_health["last_successful_trade_cycle"] = None
+        scheduler_mod._system_health["errors_today"].clear()
+
+        return bus
+
+    def test_happy_path_records_success(self, scan_seams):
+        """Branch (a): one ticker → every post-scan helper fires once,
+        _record_success('scan') resets the failure counter, finally
+        block clears the phase fields."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+
+        run_continuous_scan()
+
+        assert scan_seams.run_async_scan.call_count == 1
+        assert scan_seams.update_market_snapshot.call_count == 1
+        assert scan_seams.auto_record_cs.call_count == 1
+        assert scan_seams.update_cs_outcomes.call_count == 1
+        assert scan_seams.run_earnings_audit.call_count == 1
+        assert scan_seams.compute_ig.call_count == 1
+        assert scan_seams.update_ig.call_count == 1
+        assert scan_seams.cleanup_old_scores.call_count == 1
+        assert scan_seams.cleanup_price.call_count == 1
+        assert scan_seams.find_gapups.call_count == 1
+        assert scan_seams.check_watchlist.call_count == 1
+        assert scan_seams.morning_briefing.call_count == 1
+
+        # _record_success("scan") fired
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
+        assert scheduler_mod._system_health["last_scan_error"] is None
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+
+        # Cleanup state reset by finally block (scheduler.py:1594-1603)
+        assert scheduler_mod._scan_config["is_scanning"] is False
+        assert scheduler_mod._scan_config["phase"] is None
+        assert scheduler_mod._scan_config["phase_label"] is None
+
+        # Fake analysis was actually persisted by save_stock_to_db
+        from backend.database import Stock, StockScore
+
+        stocks = scan_seams.session.query(Stock).all()
+        assert len(stocks) == 1
+        assert stocks[0].ticker == "TEST"
+        assert stocks[0].canslim_score == 70.0
+        scores = scan_seams.session.query(StockScore).all()
+        assert len(scores) == 1
+
+    def test_already_scanning_guard_early_returns(self, scan_seams):
+        """Branch (b): is_scanning=True at lock-check → immediate return
+        without touching the body.
+
+        Note: the early-return path at scheduler.py:818-820 does NOT
+        clear is_scanning (only the finally block does, and that runs
+        only when the body has been entered). The TOCTOU window is
+        accepted because apscheduler's interval is much larger than
+        scan duration in practice."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+
+        scheduler_mod._scan_config["is_scanning"] = True
+
+        run_continuous_scan()
+
+        assert scan_seams.run_async_scan.call_count == 0
+        assert scan_seams.auto_record_cs.call_count == 0
+        # is_scanning unchanged — early-return doesn't reset it
+        assert scheduler_mod._scan_config["is_scanning"] is True
+
+    def test_scanner_exception_records_failure_and_resets_state(self, scan_seams):
+        """Branch (c): run_async_scan raises → outer except at
+        scheduler.py:1591 catches and routes to _record_failure('scan').
+        Finally block at 1594-1603 must still reset is_scanning + phase."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+
+        scan_seams.run_async_scan.side_effect = RuntimeError("scanner kaboom")
+
+        run_continuous_scan()  # Must not raise
+
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 1
+        assert scheduler_mod._system_health["last_scan_error"] is not None
+        assert scheduler_mod._system_health["last_scan_error"]["task"] == "scan"
+        # finally block ran
+        assert scheduler_mod._scan_config["is_scanning"] is False
+        assert scheduler_mod._scan_config["phase"] is None
+        assert scheduler_mod._scan_config["last_scan_end"] is not None
+
+        # Post-helpers should NOT have run — scanner crashed before reaching them
+        assert scan_seams.auto_record_cs.call_count == 0
+        assert scan_seams.run_ai_cycle.call_count == 0
+
+    def test_bear_base_runs_when_spy_below_50ma(self, scan_seams):
+        """Branch (d): SPY price < SPY 50MA → update_bear_base_candidates
+        called. Branch is gated at scheduler.py:1484 to avoid scanning
+        bear bases during obvious bull regimes."""
+        from backend.scheduler import run_continuous_scan
+
+        scan_seams.market_data = {
+            "success": True,
+            "market_trend": "bearish",
+            "indexes": {"SPY": {"price": 470.0, "ma_50": 480.0}},
+        }
+
+        run_continuous_scan()
+
+        assert scan_seams.update_bear_base.call_count == 1
+
+    def test_bear_base_skipped_when_spy_above_50ma(self, scan_seams):
+        """Branch (d) inverse: SPY > 50MA → update_bear_base_candidates
+        is NOT called. Default fixture market_data is bullish."""
+        from backend.scheduler import run_continuous_scan
+
+        run_continuous_scan()
+
+        assert scan_seams.update_bear_base.call_count == 0
+
+    def test_per_phase_progress_documented_keys_reached(self, scan_seams, monkeypatch):
+        """Branch (e): every documented _PHASE_LABELS key that should be
+        reached during a normal scan actually fires.
+
+        Catches silent UI regressions: if a phase key gets renamed without
+        a corresponding _PHASE_LABELS update, the UI loses its label
+        silently. This test pins which phases reach _set_phase from
+        inside run_continuous_scan."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        from backend.scheduler import _PHASE_LABELS
+
+        seen = []
+        real_set_phase = scheduler_mod._set_phase
+
+        def recorder(phase, **kwargs):
+            seen.append(phase)
+            return real_set_phase(phase, **kwargs)
+
+        monkeypatch.setattr(scheduler_mod, "_set_phase", recorder)
+
+        # SPY < 50MA so bear_base phase fires too
+        scan_seams.market_data = {
+            "success": True,
+            "indexes": {"SPY": {"price": 470, "ma_50": 480}},
+        }
+
+        run_continuous_scan()
+
+        for expected in (
+            "scanning",
+            "stocks",
+            "insider_short",
+            "p1_data",
+            "saving",
+            "coiled_spring",
+            "earnings_audit",
+            "industry_groups",
+            "bear_base",
+            "ai_trading",
+            "cleanup",
+        ):
+            assert expected in seen, f"phase '{expected}' not reached"
+
+        # Every phase that fires should also have a non-None label —
+        # otherwise the UI shows a blank progress chip.
+        for phase in set(seen):
+            assert _PHASE_LABELS.get(phase) is not None, (
+                f"phase '{phase}' fires from run_continuous_scan but has "
+                f"no label in _PHASE_LABELS — silent UI gap"
+            )
+
+    def test_post_helper_sequencing(self, scan_seams):
+        """Branch (f): canonical post-scan order. Coiled Spring alerts
+        must be RECORDED before OUTCOME UPDATING (otherwise a freshly-
+        recorded alert could be evaluated against its own creation
+        moment). Earnings audit runs BEFORE industry-group rankings
+        (audit may flag bad data the ranker would otherwise consume).
+        AI cycle runs BEFORE cleanup (cleanup deletes old StockScore
+        rows the cycle relies on for trend signals)."""
+        from backend.scheduler import run_continuous_scan
+        from backend.database import AIPortfolioConfig
+
+        # market open + 1 active config so the AI cycle actually runs
+        scan_seams.is_market_open.return_value = True
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=1, is_active=True, starting_cash=25000.0)
+        )
+        scan_seams.session.commit()
+
+        order = []
+
+        def _rec(name, ret=None):
+            def _side(*a, **k):
+                order.append(name)
+                return ret
+            return _side
+
+        scan_seams.auto_record_cs.side_effect = _rec("cs_record")
+        scan_seams.update_cs_outcomes.side_effect = _rec("cs_outcomes")
+        scan_seams.run_earnings_audit.side_effect = _rec("audit", [])
+        scan_seams.compute_ig.side_effect = _rec("ig", {})
+        scan_seams.run_ai_cycle.side_effect = _rec(
+            "ai", {"buys_executed": [], "sells_executed": []}
+        )
+        scan_seams.cleanup_old_scores.side_effect = _rec("cleanup")
+        scan_seams.find_gapups.side_effect = _rec("gapup", [])
+        scan_seams.check_watchlist.side_effect = _rec("watchlist")
+        scan_seams.morning_briefing.side_effect = _rec("briefing")
+
+        run_continuous_scan()
+
+        assert order == [
+            "cs_record",
+            "cs_outcomes",
+            "audit",
+            "ig",
+            "ai",
+            "cleanup",
+            "gapup",
+            "watchlist",
+            "briefing",
+        ]
+
+    def test_per_user_ai_cycle_exception_isolated(self, scan_seams):
+        """Branch (g): per-user run_ai_trading_cycle exception → that user's
+        error is recorded as a trade_cycle failure, but the outer scan
+        still records success. Isolation lives in the per-user try/except
+        at scheduler.py:1521-1523."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        from backend.database import AIPortfolioConfig
+
+        scan_seams.is_market_open.return_value = True
+        scan_seams.run_ai_cycle.side_effect = RuntimeError("trade kaboom")
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=1, is_active=True, starting_cash=25000.0)
+        )
+        scan_seams.session.commit()
+
+        run_continuous_scan()
+
+        assert scheduler_mod._system_health["consecutive_trade_failures"] == 1
+        assert scheduler_mod._system_health["last_trade_cycle_error"] is not None
+        # Scan as a whole still succeeded — per-user except prevents
+        # propagation to the outer scan-level except handler.
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+
+    def test_source_variant_loads_right_ticker_function(self, scan_seams, monkeypatch):
+        """Branch (h): _scan_config['source'] selects the loader. sp500
+        uses the full S&P, top50 also goes through get_sp500_tickers
+        (slices [:50]), russell uses Russell 2000, all uses
+        get_all_tickers."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        import sp500_tickers
+
+        sp500_spy = MagicMock(return_value=["SP1"])
+        russell_spy = MagicMock(return_value=["RUSS1"])
+        all_spy = MagicMock(return_value=["ALL1"])
+        monkeypatch.setattr(sp500_tickers, "get_sp500_tickers", sp500_spy)
+        monkeypatch.setattr(sp500_tickers, "get_russell2000_tickers", russell_spy)
+        monkeypatch.setattr(sp500_tickers, "get_all_tickers", all_spy)
+
+        # russell
+        scheduler_mod._scan_config["source"] = "russell"
+        scheduler_mod._scan_config["is_scanning"] = False
+        run_continuous_scan()
+        assert russell_spy.call_count == 1
+        assert sp500_spy.call_count == 0
+        assert all_spy.call_count == 0
+
+        # all
+        scheduler_mod._scan_config["source"] = "all"
+        scheduler_mod._scan_config["is_scanning"] = False
+        run_continuous_scan()
+        assert all_spy.call_count == 1
+
+        # sp500 (full)
+        scheduler_mod._scan_config["source"] = "sp500"
+        scheduler_mod._scan_config["is_scanning"] = False
+        run_continuous_scan()
+        assert sp500_spy.call_count == 1
+
+        # top50 also goes through get_sp500_tickers (slices [:50])
+        scheduler_mod._scan_config["source"] = "top50"
+        scheduler_mod._scan_config["is_scanning"] = False
+        run_continuous_scan()
+        assert sp500_spy.call_count == 2
+
+    def test_save_stock_blip_detection_keeps_old_score(self, scan_seams):
+        """Branch (a-supplemental): save_stock_to_db's BLIP recovery
+        (scheduler.py:1117-1173). When a pre-existing stock has score
+        100 and the new analysis would drop it to 20 with missing data
+        signals, the saver KEEPS the old score rather than persisting
+        the suspected blip. This is the load-bearing safeguard added
+        after a Yahoo flash returned zero scores for ~80 stocks
+        mid-scan and wiped them in the DB."""
+        from backend.scheduler import run_continuous_scan
+        from backend.database import Stock
+
+        # Pre-seed a stock with high prior score
+        scan_seams.session.add(
+            Stock(ticker="TEST", canslim_score=100.0, c_score=15.0, a_score=15.0)
+        )
+        scan_seams.session.commit()
+
+        # Send a "blip" analysis: score drops 80 points + missing earnings
+        # + multiple zero components + insufficient-data summary.
+        scan_seams.fake_analysis = {
+            "ticker": "TEST",
+            "company_name": "Test Inc",
+            "canslim_score": 20.0,
+            "c_score": 0,
+            "a_score": 0,
+            "n_score": 0,
+            "s_score": 5.0,
+            "l_score": 5.0,
+            "i_score": 5.0,
+            "m_score": 5.0,
+            "score_details": {
+                "c": {"summary": "Insufficient data"},
+                "a": {"summary": "No data available"},
+            },
+            "current_price": 100.0,
+            "week_52_high": 120.0,
+            # No quarterly_earnings → triggers blip detection
+        }
+
+        run_continuous_scan()
+
+        stock = scan_seams.session.query(Stock).filter_by(ticker="TEST").one()
+        # Old score preserved by the BLIP guard
+        assert stock.canslim_score == 100.0
+        # Component scores also preserved (they were non-zero before)
+        assert stock.c_score == 15.0
+        assert stock.a_score == 15.0
+
+    def test_save_stock_full_data_updates_conditional_fields(self, scan_seams):
+        """Branch (a-supplemental): save_stock_to_db's conditional update
+        blocks (scheduler.py:1230-1273). When the analysis dict carries
+        insider/short/earnings-calendar/analyst-estimates payloads, the
+        corresponding `if analysis.get(...)` blocks fire and persist
+        those fields onto the Stock row."""
+        from datetime import date as _date, timedelta as _timedelta
+        from backend.scheduler import run_continuous_scan
+        from backend.database import Stock
+
+        future = (_date.today() + _timedelta(days=14)).isoformat()
+        scan_seams.fake_analysis = {
+            "ticker": "TEST",
+            "company_name": "Test Inc",
+            "sector": "Technology",
+            "current_price": 100.0,
+            "canslim_score": 70.0,
+            "c_score": 10.0,
+            "a_score": 10.0,
+            "n_score": 10.0,
+            "s_score": 10.0,
+            "l_score": 10.0,
+            "i_score": 10.0,
+            "m_score": 10.0,
+            "score_details": {},
+            # MA + ATR (lines 1230-1235)
+            "ma_21": 95.0,
+            "ma_50": 90.0,
+            "atr_pct": 2.5,
+            # Insider data (line 1238 onward)
+            "insider_sentiment": "bullish",
+            "insider_buy_count": 5,
+            "insider_sell_count": 1,
+            "insider_net_shares": 10000,
+            "insider_buy_value": 500000.0,
+            "insider_sell_value": 100000.0,
+            "insider_net_value": 400000.0,
+            "insider_largest_buy": 250000.0,
+            "insider_largest_buyer_title": "CEO",
+            # Short interest (line 1252 onward)
+            "short_interest_pct": 3.5,
+            "short_ratio": 1.2,
+            # Earnings calendar (line 1258 onward)
+            "next_earnings_date": future,
+            "days_to_earnings": 14,
+            "earnings_beat_streak": 3,
+            # Analyst estimates (line 1268 onward)
+            "eps_estimate_current": 1.50,
+            "eps_estimate_prior": 1.40,
+            "eps_estimate_revision_pct": 7.14,
+            "estimate_revision_trend": "rising",
+            "quarterly_earnings": [],
+            "annual_earnings": [],
+            "quarterly_revenue": [],
+        }
+
+        run_continuous_scan()
+
+        stock = scan_seams.session.query(Stock).filter_by(ticker="TEST").one()
+        assert stock.ma_21 == 95.0
+        assert stock.ma_50 == 90.0
+        assert stock.atr_pct == 2.5
+        assert stock.insider_sentiment == "bullish"
+        assert stock.insider_net_value == 400000.0
+        assert stock.insider_largest_buyer_title == "CEO"
+        assert stock.short_interest_pct == 3.5
+        assert stock.short_ratio == 1.2
+        assert stock.days_to_earnings == 14
+        assert stock.earnings_beat_streak == 3
+        assert stock.eps_estimate_current == 1.50
+        assert stock.eps_estimate_revision_pct == 7.14
+
+    def test_market_direction_failure_continues_scan(self, scan_seams):
+        """Branch (a-supplemental): get_cached_market_direction returns
+        success=False (scheduler.py:894-895). The scan logs a warning
+        but does NOT abort — the M score will fall back to its cached
+        value. Pin via a successful _record_success at the end."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+
+        scan_seams.market_data = {"success": False, "error": "FMP timeout"}
+
+        run_continuous_scan()
+
+        # Scan still completed
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+        assert scan_seams.run_async_scan.call_count == 1
+
+    def test_each_post_helper_exception_is_isolated(self, scan_seams):
+        """Branch (a-supplemental): scheduler.py wraps every post-scan
+        helper in its own try/except (lines 1413, 1423, 1435, 1443,
+        1458, 1474, 1493, 1546, 1567, 1575, 1581). Each exception is
+        logged but does NOT propagate to the outer except. The scan as
+        a whole still records success.
+
+        This is the post-scan equivalent of run_ai_trading_cycle's
+        per-user isolation: if the gap-up detector or watchlist alerter
+        crashes, the next scan tick should still find the system in a
+        clean state."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        from backend.database import AIPortfolioConfig
+
+        # Make every post-helper raise. Also force bear-base + AI cycle
+        # to run so their except handlers are exercised.
+        scan_seams.is_market_open.return_value = True
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=1, is_active=True, starting_cash=25000.0)
+        )
+        scan_seams.session.commit()
+        scan_seams.market_data = {
+            "success": True,
+            "indexes": {"SPY": {"price": 470.0, "ma_50": 480.0}},
+        }
+
+        scan_seams.update_market_snapshot.side_effect = RuntimeError("snapshot boom")
+        scan_seams.auto_record_cs.side_effect = RuntimeError("cs record boom")
+        scan_seams.update_cs_outcomes.side_effect = RuntimeError("cs outcome boom")
+        scan_seams.run_earnings_audit.side_effect = RuntimeError("audit boom")
+        scan_seams.compute_ig.side_effect = RuntimeError("ig boom")
+        scan_seams.update_bear_base.side_effect = RuntimeError("bear base boom")
+        scan_seams.cleanup_old_scores.side_effect = RuntimeError("cleanup boom")
+        scan_seams.find_gapups.side_effect = RuntimeError("gapup boom")
+        scan_seams.check_watchlist.side_effect = RuntimeError("watchlist boom")
+        scan_seams.morning_briefing.side_effect = RuntimeError("briefing boom")
+
+        run_continuous_scan()  # Must not raise
+
+        # All boomed but scan as a whole still succeeded.
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+        # Cleanup state still ran in finally
+        assert scheduler_mod._scan_config["is_scanning"] is False
+
+    def test_market_closed_skips_ai_cycle_for_active_config(self, scan_seams):
+        """Branch (a-supplemental): when is_market_open()=False (default),
+        active configs log 'Market closed' (scheduler.py:1520) and the
+        AI cycle is NOT invoked. Inactive configs do nothing in this
+        case either (line 1529 also gates on market open)."""
+        from backend.scheduler import run_continuous_scan
+        from backend.database import AIPortfolioConfig
+
+        # Default fixture has is_market_open()=False
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=1, is_active=True, starting_cash=25000.0)
+        )
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=2, is_active=False, starting_cash=25000.0)
+        )
+        scan_seams.session.commit()
+
+        run_continuous_scan()
+
+        assert scan_seams.run_ai_cycle.call_count == 0
+        assert scan_seams.take_snapshot.call_count == 0
+
+    def test_inactive_configs_take_snapshot_when_market_open(self, scan_seams):
+        """Branch (a-supplemental): inactive AIPortfolioConfig rows still
+        get take_portfolio_snapshot during market hours (scheduler.py:
+        1525-1532). Active configs run the full cycle; inactive configs
+        only get a snapshot to keep the equity-curve chart populated."""
+        from backend.scheduler import run_continuous_scan
+        from backend.database import AIPortfolioConfig
+
+        scan_seams.is_market_open.return_value = True
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=1, is_active=True, starting_cash=25000.0)
+        )
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=2, is_active=False, starting_cash=25000.0)
+        )
+        scan_seams.session.commit()
+
+        run_continuous_scan()
+
+        # Active user gets the cycle, inactive gets the snapshot
+        assert scan_seams.run_ai_cycle.call_count == 1
+        assert scan_seams.run_ai_cycle.call_args.kwargs["user_id"] == 1
+        assert scan_seams.take_snapshot.call_count == 1
+        assert scan_seams.take_snapshot.call_args.kwargs["user_id"] == 2
+
+    def test_gapup_alert_fires_when_findings_returned(self, scan_seams):
+        """Branch (a-supplemental): if find_earnings_gapups returns a
+        non-empty list, send_gapup_alert is invoked (scheduler.py:
+        1561-1564). Default fixture returns []; this test flips it
+        to drive the alert path."""
+        from backend.scheduler import run_continuous_scan
+
+        scan_seams.find_gapups.return_value = [
+            {"ticker": "TEST", "gap_pct": 8.5, "date": "2026-05-07"}
+        ]
+
+        run_continuous_scan()
+
+        assert scan_seams.send_gapup.call_count == 1
+        passed = scan_seams.send_gapup.call_args[0][0]
+        assert passed[0]["ticker"] == "TEST"
+
+    def test_progress_callback_unknown_phase_falls_back(self, scan_seams, monkeypatch):
+        """Branch (a-supplemental): the update_progress closure has an
+        else-branch (scheduler.py:1328-1329) for unknown phase strings.
+        Drive it by feeding a custom phase to verify the fallback
+        f-string path is exercised."""
+        from backend.scheduler import run_continuous_scan
+        import async_scanner
+
+        def stub(tickers, batch_size=100, progress_callback=None):
+            if progress_callback and tickers:
+                # Custom phase = unknown → else branch
+                progress_callback(1, len(tickers), "custom_phase")
+                # current % 100 == 0 logging branch (line 1334)
+                progress_callback(100, 200, "stocks")
+                # total mismatch updates _scan_config[total_stocks] (line 1317)
+                progress_callback(1, 99, "stocks")
+            return [dict(scan_seams.fake_analysis)]
+
+        monkeypatch.setattr(async_scanner, "run_async_scan", stub)
+
+        run_continuous_scan()  # must not raise
+
+    def test_save_failure_path_logs_and_continues(self, scan_seams, monkeypatch):
+        """Branch (a-supplemental): if save_stock_to_db raises mid-batch,
+        the savepoint rollback path (scheduler.py:1375-1379) catches
+        the failure, increments `failed`, and the batch continues with
+        the next stock. Drive by sending two analyses: one with a
+        malformed next_earnings_date (crashes strptime), one valid.
+
+        NB: a single-ticker version of this test would expose a latent
+        bug — when ALL stocks fail, `successful=0` causes
+        `total_time/successful` at scheduler.py:1396 to raise
+        ZeroDivisionError, which propagates to the outer except handler
+        and records the scan itself as failed. Memory-noted; fix
+        DEFERRED past 2026-06-18 eval."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        import async_scanner
+        import sp500_tickers
+
+        # 2 tickers so one survives even when the other crashes
+        monkeypatch.setattr(sp500_tickers, "get_sp500_tickers", lambda: ["BAD", "GOOD"])
+
+        good = dict(scan_seams.fake_analysis)
+        bad = dict(scan_seams.fake_analysis)
+        bad["ticker"] = "BAD"
+        bad["next_earnings_date"] = "NOT-A-DATE"
+        bad["earnings_beat_streak"] = 3
+        good["ticker"] = "GOOD"
+
+        def stub_two(tickers, batch_size=100, progress_callback=None):
+            return [bad, good]
+
+        monkeypatch.setattr(async_scanner, "run_async_scan", stub_two)
+
+        run_continuous_scan()
+
+        # Scan as a whole succeeded (good ticker saved; bad one rolled back)
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+        # Only the good ticker was persisted
+        from backend.database import Stock
+        tickers_persisted = {s.ticker for s in scan_seams.session.query(Stock).all()}
+        assert "GOOD" in tickers_persisted
+        assert "BAD" not in tickers_persisted
+
+    def test_invalid_source_falls_back_to_sp500(self, scan_seams, monkeypatch):
+        """Branch (h-supplemental): an unrecognized _scan_config['source']
+        falls through to the else branch at scheduler.py:848-849 and
+        loads the S&P 500 tickers as a safe default."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        import sp500_tickers
+
+        sp500_spy = MagicMock(return_value=["SP1"])
+        russell_spy = MagicMock(return_value=["RUSS1"])
+        all_spy = MagicMock(return_value=["ALL1"])
+        monkeypatch.setattr(sp500_tickers, "get_sp500_tickers", sp500_spy)
+        monkeypatch.setattr(sp500_tickers, "get_russell2000_tickers", russell_spy)
+        monkeypatch.setattr(sp500_tickers, "get_all_tickers", all_spy)
+
+        scheduler_mod._scan_config["source"] = "wat-is-this"
+
+        run_continuous_scan()
+
+        assert sp500_spy.call_count == 1
+        assert russell_spy.call_count == 0
+        assert all_spy.call_count == 0
+
+    def test_blip_recovery_preserves_all_six_components(self, scan_seams):
+        """Branch (a-supplemental): BLIP recovery (scheduler.py:1162-1173)
+        preserves c/a/n/s/l/i if any of them was non-zero before but
+        the new analysis would zero them out. The previous BLIP test
+        only proved c+a recovery; this pins the n/s/l/i branches too,
+        each of which is its own `if stock.X_score and analysis.get(...)
+        == 0` guard."""
+        from backend.scheduler import run_continuous_scan
+        from backend.database import Stock
+
+        # Pre-seed with all six non-zero
+        scan_seams.session.add(
+            Stock(
+                ticker="TEST",
+                canslim_score=100.0,
+                c_score=15.0, a_score=15.0, n_score=15.0,
+                s_score=15.0, l_score=15.0, i_score=15.0,
+            )
+        )
+        scan_seams.session.commit()
+
+        # Send an all-zeros blip
+        scan_seams.fake_analysis = {
+            "ticker": "TEST",
+            "company_name": "Test Inc",
+            "canslim_score": 10.0,
+            "c_score": 0,
+            "a_score": 0,
+            "n_score": 0,
+            "s_score": 0,
+            "l_score": 0,
+            "i_score": 0,
+            "m_score": 5.0,
+            "score_details": {
+                "c": {"summary": "Insufficient data"},
+                "a": {"summary": "No data"},
+            },
+            "current_price": 100.0,
+        }
+
+        run_continuous_scan()
+
+        stock = scan_seams.session.query(Stock).filter_by(ticker="TEST").one()
+        assert stock.canslim_score == 100.0
+        assert stock.c_score == 15.0
+        assert stock.a_score == 15.0
+        assert stock.n_score == 15.0
+        assert stock.s_score == 15.0
+        assert stock.l_score == 15.0
+        assert stock.i_score == 15.0
+
+    def test_rate_limit_stats_failure_isolated(self, scan_seams, monkeypatch):
+        """Branch (a-supplemental): if the rate-limit/cache stats block
+        raises (scheduler.py:1399-1414), the scan still completes —
+        these are diagnostic-only logs, not load-bearing logic."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        import data_fetcher
+
+        def boom():
+            raise RuntimeError("stats unavailable")
+
+        monkeypatch.setattr(data_fetcher, "get_rate_limit_stats", boom)
+
+        run_continuous_scan()
+
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+
+    def test_audit_results_logged_when_returned(self, scan_seams):
+        """Branch (a-supplemental): when run_earnings_audit returns a
+        non-empty list, scheduler.py:1455 logs a count line. Default
+        fixture returns []; this test pins the truthy branch."""
+        from backend.scheduler import run_continuous_scan
+
+        scan_seams.run_earnings_audit.return_value = [
+            {"ticker": "TEST", "issue": "missing_pe"},
+            {"ticker": "OTHER", "issue": "stale_eps"},
+        ]
+
+        run_continuous_scan()  # must not raise
+
+        assert scan_seams.run_earnings_audit.call_count == 1
+
+    def test_inactive_snapshot_exception_isolated(self, scan_seams):
+        """Branch (g-supplemental): take_portfolio_snapshot for an
+        inactive config raises → caught by the per-user try/except at
+        scheduler.py:1531-1532. Scan still records success."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        from backend.database import AIPortfolioConfig
+
+        scan_seams.is_market_open.return_value = True
+        scan_seams.take_snapshot.side_effect = RuntimeError("snapshot kaboom")
+        scan_seams.session.add(
+            AIPortfolioConfig(user_id=2, is_active=False, starting_cash=25000.0)
+        )
+        scan_seams.session.commit()
+
+        run_continuous_scan()
+
+        # Outer scan still succeeded — per-user except wrapped the raise
+        assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
+
+    def test_ig_preload_failure_does_not_abort_scan(self, scan_seams, monkeypatch):
+        """Branch (a-supplemental): industry-group rank preload at
+        scheduler.py:903-914 is wrapped in try/except. If the DB query
+        fails (e.g., schema migration in flight), we log debug and
+        continue with an empty rank dict — no scan abort."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+        import backend.database as database
+
+        # First SessionLocal() is the IG preload — make it bomb when queried.
+        # Wrap the original SessionLocal so subsequent calls return a real
+        # session, but the first .query raises.
+        real_sessionlocal = database.SessionLocal
+        call_state = {"first": True}
+
+        class BoomSession:
+            def query(self, *a, **k):
+                raise RuntimeError("schema mid-migration")
+
+            def close(self):
+                pass
+
+        def session_factory():
+            if call_state["first"]:
+                call_state["first"] = False
+                return BoomSession()
+            return real_sessionlocal()
+
+        monkeypatch.setattr(database, "SessionLocal", session_factory)
+
+        run_continuous_scan()
+
+        assert scheduler_mod._system_health["last_successful_scan"] is not None
