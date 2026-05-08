@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, memo } from 'react'
+import { useState, useEffect, useCallback, useMemo, memo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import Card, { SectionLabel } from '../components/Card'
@@ -139,17 +139,41 @@ function CoiledSpringSection({ cs }) {
   )
 }
 
-const PositionRow = memo(function PositionRow({ p }) {
+const PositionRow = memo(function PositionRow({ p, earningsDays }) {
+  const stopDist = p.stop_distance
+  const stopColor =
+    stopDist == null ? 'text-dark-600' :
+    stopDist <= 2 ? 'text-red-400' :
+    stopDist <= 5 ? 'text-amber-400' :
+    'text-dark-500'
   return (
     <Link
       to={`/stock/${p.ticker}`}
       className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
     >
-      <div className="flex items-center gap-2.5 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
         <span className="text-xs font-semibold text-primary-400 w-11 shrink-0 group-hover:text-primary-300">{p.ticker}</span>
-        <span className="text-[10px] font-data text-dark-500">{p.position_pct?.toFixed(0)}%</span>
+        <span className="text-[10px] font-data text-dark-500 w-7 shrink-0">{p.position_pct?.toFixed(0)}%</span>
+        {stopDist != null && (
+          <span
+            className={`text-[10px] font-data ${stopColor} shrink-0`}
+            title={`${stopDist.toFixed(1)}% from stop`}
+          >
+            stop {stopDist.toFixed(1)}%
+          </span>
+        )}
+        {earningsDays != null && earningsDays <= 14 && (
+          <span
+            className={`text-[10px] font-data px-1.5 py-0.5 rounded shrink-0 ${
+              earningsDays <= 7 ? 'bg-red-500/10 text-red-400' : 'bg-amber-500/10 text-amber-400'
+            }`}
+            title={`Earnings in ${earningsDays} day${earningsDays === 1 ? '' : 's'}`}
+          >
+            E:{earningsDays}d
+          </span>
+        )}
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 shrink-0">
         <ScoreBadge score={p.score} size="xs" />
         <span className={`font-data text-xs w-14 text-right ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
           {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct?.toFixed(1)}%
@@ -269,6 +293,16 @@ export default function CommandCenter() {
   const marketState = market?.market_state || market?.regime?.toUpperCase()
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
+
+  const earningsByTicker = useMemo(() => {
+    const m = {}
+    if (Array.isArray(earnings)) {
+      for (const e of earnings) {
+        if (e?.ticker != null) m[e.ticker] = e.days
+      }
+    }
+    return m
+  }, [earnings])
 
   return (
     <div className="p-4 md:p-6">
@@ -471,7 +505,13 @@ export default function CommandCenter() {
                 {(!positions || positions.length === 0) && (
                   <div className="text-dark-500 text-xs py-6 text-center">No active positions</div>
                 )}
-                {positions?.map(p => <PositionRow key={p.ticker} p={p} />)}
+                {positions?.map(p => (
+                  <PositionRow
+                    key={p.ticker}
+                    p={p}
+                    earningsDays={earningsByTicker[p.ticker]}
+                  />
+                ))}
               </div>
               {positions?.length > 0 && (
                 <Link to="/ai-portfolio" className="block text-center text-[10px] text-primary-400 hover:text-primary-300 mt-2 pt-2 border-t border-dark-700/30 transition-colors">

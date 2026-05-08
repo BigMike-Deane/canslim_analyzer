@@ -2236,6 +2236,48 @@ class TestCommandCenterRoute:
         d = r.json()
         assert d["coiled_spring"] is None
 
+    def test_position_row_pins_stop_distance_and_earnings_xref(self):
+        """Pins the API contract that CommandCenter PositionRow renders.
+
+        UI surfaces `stop_distance` color-coded per row + cross-references
+        `earnings[].days` by ticker for the in-trouble glance. If a future
+        refactor drops either field, this test fails before the UI silently
+        breaks. (handler: main.py:5395-5415, 5478-5487)
+        """
+        # Position with +10% gain: stop_distance = base_stop(8) + 10 = 18.0,
+        # safely "muted" tier in the UI (>5%).
+        _ensure_ai_position("STOP1", gain=10.0, current_value=3000.0)
+        # Position with -6% gain: stop_distance = 8 + (-6) = 2.0,
+        # "red" tier (<=2). Also surface near-term earnings to pin xref.
+        _ensure_ai_position("STOP2", gain=-6.0, current_value=2000.0)
+        db = _db()
+        try:
+            s = db.query(Stock).filter_by(ticker="STOP2").first()
+            s.days_to_earnings = 5
+            s.next_earnings_date = date.today() + timedelta(days=5)
+            s.earnings_beat_streak = 3
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+
+        by_tkr = {p["ticker"]: p for p in d["positions"]}
+        # Both positions ship stop_distance as a numeric field.
+        assert "stop_distance" in by_tkr["STOP1"]
+        assert "stop_distance" in by_tkr["STOP2"]
+        assert by_tkr["STOP1"]["stop_distance"] == pytest.approx(18.0, abs=0.5)
+        assert by_tkr["STOP2"]["stop_distance"] == pytest.approx(2.0, abs=0.5)
+
+        # The UI cross-references positions <-> earnings[] by ticker; pin
+        # that the held position with near-term earnings is in earnings[]
+        # AND that the days field matches what the row would render.
+        ern_by_tkr = {e["ticker"]: e for e in d["earnings"]}
+        assert "STOP2" in ern_by_tkr
+        assert ern_by_tkr["STOP2"]["days"] == 5
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 3: GET /api/stocks/{ticker} (line 1476-1648)
