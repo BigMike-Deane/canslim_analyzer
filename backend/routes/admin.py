@@ -832,3 +832,45 @@ async def run_strategy_ab_trades(
             'post': post_curve,
         },
     }
+
+
+class ABEvalEmailTestRequest(BaseModel):
+    strategy: str
+    cutoff_date: str
+    recipient_override: Optional[str] = None
+    pre_window_days: int = 30
+    post_window_days: Optional[int] = None
+    exclude_pyramids: bool = True
+
+
+@router.post("/strategy-ab-eval/email-test")
+async def trigger_ab_eval_snapshot_email(
+    payload: ABEvalEmailTestRequest,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Trigger an immediate A/B-eval snapshot email — same body as the weekly
+    cron, sent on demand. Useful for verifying the wiring before the first
+    Monday run, and for the 2026-06-18 real-eval routine which now triggers
+    this endpoint instead of logging the JSON.
+
+    Window-validation errors (HTTPException 400/404) propagate from
+    _resolve_ab_window verbatim — same wording as /strategy-ab-eval, so the
+    UI can surface a single error message regardless of which path failed."""
+    from backend.ab_eval_email import send_ab_eval_snapshot
+    result = send_ab_eval_snapshot(
+        payload.strategy,
+        payload.cutoff_date,
+        db,
+        recipient=payload.recipient_override,
+        pre_window_days=payload.pre_window_days,
+        post_window_days=payload.post_window_days,
+        exclude_pyramids=payload.exclude_pyramids,
+    )
+    return {
+        'sent': result['sent'],
+        'recipient': result['recipient'],
+        'subject': result['subject'],
+        'decision': result['decision'],
+        'post_sell_count': result['post_sell_count'],
+    }

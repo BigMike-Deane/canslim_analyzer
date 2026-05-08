@@ -1693,6 +1693,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start breakout monitor: {e}")
 
+    # Start weekly A/B eval snapshot email (Mon 9 AM UTC)
+    try:
+        start_ab_eval_email_job()
+    except Exception as e:
+        logger.warning(f"Failed to start A/B eval email job: {e}")
+
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
     # Run first scan immediately
@@ -2219,6 +2225,66 @@ def start_ml_backfill_job():
         scheduler.start()
 
     logger.info("ML backfill job scheduled (3 AM UTC)")
+
+
+def _run_weekly_ab_eval_email():
+    """Wrapper for APScheduler — owns its DB session, swallows errors so a
+    single failure doesn't kill the scheduler.
+
+    Targets the active scoring experiment (Approach 2, cutoff 2026-05-07,
+    nostate_optimized). When the experiment ends, update the cutoff_date
+    here or rip the job — but during the 2026-05-07 → 2026-06-18 window
+    this is the operator's primary read on whether to keep or revert.
+
+    Disabled when CANSLIM_ENV=test so the test suite doesn't try to send
+    real mail through smtp.gmail.com."""
+    if os.environ.get("CANSLIM_ENV") == "test":
+        logger.debug("Weekly A/B eval email skipped: CANSLIM_ENV=test")
+        return
+    try:
+        from backend.ab_eval_email import send_ab_eval_snapshot
+        from backend.database import SessionLocal
+        db = SessionLocal()
+        try:
+            result = send_ab_eval_snapshot(
+                strategy='nostate_optimized',
+                cutoff_date='2026-05-07',
+                db=db,
+            )
+            logger.info(
+                f"Weekly A/B eval email: sent={result['sent']} "
+                f"decision={result['decision']} post_sells={result['post_sell_count']}"
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Weekly A/B eval email failed: {e}", exc_info=True)
+
+
+def start_ab_eval_email_job():
+    """Schedule weekly A/B eval snapshot email — Monday 9 AM UTC.
+
+    Monday morning lands the email before US market open, so the operator
+    can react to a REVERT or MARGINAL verdict before the next session
+    accumulates more trades under the experiment."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "weekly_ab_eval_email"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_weekly_ab_eval_email,
+        CronTrigger(day_of_week='mon', hour=9, minute=0),
+        id=job_id,
+        name="Weekly A/B Eval Snapshot Email",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Weekly A/B eval email scheduled (Mon 9 AM UTC)")
 
 
 def start_breakout_monitor_job():

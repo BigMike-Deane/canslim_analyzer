@@ -7,6 +7,7 @@ import { api, cache } from '../api'
 import { useAuth } from '../auth'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
+import { useToast } from '../components/Toast'
 
 const REFRESH_OPTIONS = [
   { label: 'Off', seconds: 0 },
@@ -410,7 +411,9 @@ export default function ABEval() {
   const [tableOpen, setTableOpen] = useState(false)
   const [sortKey, setSortKey] = useState('executed_at')
   const [sortDir, setSortDir] = useState('desc')
+  const [emailSending, setEmailSending] = useState(false)
   const refreshTimer = useRef(null)
+  const toast = useToast()
 
   const fetchEval = useCallback(async (opts = {}) => {
     setLoading(true)
@@ -443,6 +446,31 @@ export default function ABEval() {
   }, [strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids])
 
   useEffect(() => { fetchEval() }, [fetchEval])
+
+  // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
+  // UTC cron. Disabled until at least one fetch has succeeded so we don't
+  // ask the backend to render a snapshot for a window that hasn't validated.
+  const handleSendTestEmail = useCallback(async () => {
+    setEmailSending(true)
+    try {
+      const res = await api.sendABEvalSnapshotEmail({
+        strategy,
+        cutoffDate,
+        preWindowDays,
+        postWindowDays: postWindowDays === '' ? null : Number(postWindowDays),
+        excludePyramids,
+      })
+      if (res?.sent) {
+        toast.success(`Snapshot emailed to ${res.recipient} — verdict: ${res.decision}`)
+      } else {
+        toast.error('Email send failed — check server logs')
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Email send failed')
+    } finally {
+      setEmailSending(false)
+    }
+  }, [strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, toast])
 
   // Auto-refresh: schedule next bypass-cache fetch when interval > 0
   useEffect(() => {
@@ -497,6 +525,14 @@ export default function ABEval() {
             className="px-3 py-1 rounded border border-dark-700 hover:border-dark-600 hover:text-dark-200 disabled:opacity-50"
           >
             {loading ? 'Loading…' : 'Refresh'}
+          </button>
+          <button
+            onClick={handleSendTestEmail}
+            disabled={emailSending || !lastFetched}
+            title={!lastFetched ? 'Run an evaluation first' : 'Send the same body the weekly Mon 9 AM UTC cron will deliver'}
+            className="px-3 py-1 rounded border border-primary-500/40 text-primary-300 hover:border-primary-500/70 hover:text-primary-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {emailSending ? 'Sending…' : 'Send test email'}
           </button>
         </div>
       </div>

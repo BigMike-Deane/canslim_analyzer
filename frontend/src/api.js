@@ -616,6 +616,24 @@ export const api = {
     if (excludePyramids != null) params.set('exclude_pyramids', String(excludePyramids))
     return request(`/api/admin/strategy-ab-eval-trades?${params}`)
   },
+
+  // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
+  // UTC cron, sent on demand. Used by the ABEval "Send test snapshot email"
+  // button so the operator can verify wiring without waiting a week.
+  sendABEvalSnapshotEmail: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, recipientOverride } = {}) => {
+    const body = {
+      strategy,
+      cutoff_date: cutoffDate,
+      pre_window_days: preWindowDays,
+      post_window_days: postWindowDays,
+      exclude_pyramids: excludePyramids,
+    }
+    if (recipientOverride) body.recipient_override = recipientOverride
+    return request('/api/admin/strategy-ab-eval/email-test', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
 }
 
 // Formatting utilities

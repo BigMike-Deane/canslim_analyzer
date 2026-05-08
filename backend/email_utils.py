@@ -35,21 +35,26 @@ GMAIL_APP_PASSWORD = os.environ.get('CANSLIM_APP_PASSWORD', 'your-app-password')
 RECIPIENT_EMAIL = os.environ.get('CANSLIM_RECIPIENT', GMAIL_ADDRESS)
 
 
-def send_email(subject: str, html_content: str, text_content: str) -> bool:
+def send_email(subject: str, html_content: str, text_content: str,
+               recipient: str = None) -> bool:
     """Send email via Gmail SMTP
 
     Args:
         subject: Email subject line
         html_content: HTML version of the email body
         text_content: Plain text version of the email body
+        recipient: Override RECIPIENT_EMAIL for one-off sends (e.g. admin
+            test-snapshot endpoint). When None, falls back to the module-level
+            default — preserves the contract for all pre-existing callers.
 
     Returns:
         True if email sent successfully, False otherwise
     """
+    to_addr = recipient or RECIPIENT_EMAIL
     msg = MIMEMultipart('alternative')
     msg['Subject'] = subject
     msg['From'] = GMAIL_ADDRESS
-    msg['To'] = RECIPIENT_EMAIL
+    msg['To'] = to_addr
 
     part1 = MIMEText(text_content, 'plain')
     part2 = MIMEText(html_content, 'html')
@@ -68,8 +73,8 @@ def send_email(subject: str, html_content: str, text_content: str) -> bool:
         with smtplib.SMTP('smtp.gmail.com', 587, timeout=30) as server:
             server.starttls(context=context)
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
-        logger.info(f"Email sent successfully to {RECIPIENT_EMAIL}")
+            server.sendmail(GMAIL_ADDRESS, to_addr, msg.as_string())
+        logger.info(f"Email sent successfully to {to_addr}")
         return True
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
