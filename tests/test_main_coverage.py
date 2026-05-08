@@ -2198,3 +2198,897 @@ class TestCommandCenterRoute:
         assert r.status_code == 200
         d = r.json()
         assert d["coiled_spring"] is None
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: GET /api/stocks/{ticker} (line 1476-1648)
+# ────────────────────────────────────────────────────────────────────
+
+class TestStocksByTickerRoute:
+    """Tier 3 — GET /api/stocks/{ticker} (line 1476).
+
+    Branches covered: invalid-ticker 400, MISS path 404 when analyze fails,
+    happy path with full payload + score_history, daily-vs-all resolution
+    split (1540-1557), empty score_history, growth_projection surfacing, and
+    the STALE+background-refresh path (1508-1526) that returns cached data
+    immediately while queueing analyze_stock + save_stock_to_db.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        # Wipe any prior StockScore rows for our test tickers — earlier tests
+        # in this module touch /api/stocks/{ticker}/refresh transitively via
+        # analyze_stock mocks but never seed StockScore directly.
+        db = _db()
+        try:
+            for t in ("STKD1", "STKD2", "STKD3", "STKD4",
+                      "STKD5", "STKD6", "STKD7"):
+                stk = db.query(Stock).filter_by(ticker=t).first()
+                if stk:
+                    db.query(StockScore).filter_by(stock_id=stk.id).delete()
+                    db.delete(stk)
+            db.commit()
+        finally:
+            db.close()
+
+    def _seed_fresh_stock(self, ticker, **overrides):
+        sid = _ensure_stock(ticker, **overrides)
+        db = _db()
+        try:
+            s = db.query(Stock).filter_by(id=sid).first()
+            s.last_updated = datetime.now(timezone.utc)
+            # Pin score_details so the institutional_pct extraction lights up.
+            s.score_details = {"i": {"institutional_pct": 64.5}}
+            db.commit()
+            return sid
+        finally:
+            db.close()
+
+    def _add_score(self, stock_id, when, total=80.0, price=100.0, growth=12.0):
+        db = _db()
+        try:
+            db.add(StockScore(
+                stock_id=stock_id,
+                timestamp=when,
+                date=when.date(),
+                total_score=total, c_score=12, a_score=11, n_score=10,
+                s_score=12, l_score=11, i_score=8, m_score=10,
+                projected_growth=growth, current_price=price,
+                week_52_high=price * 1.2,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_invalid_ticker_returns_400(self):
+        """validate_ticker_param rejects non [A-Z0-9.\\-] (line 84-89)."""
+        r = client.get("/api/stocks/!bad!")
+        assert r.status_code == 400
+
+    def test_404_when_unknown_ticker_and_analyze_returns_none(self):
+        """No cached row + analyze_stock None → MISS path raises 404. (line 1530-1532)"""
+        with patch("backend.main.analyze_stock", return_value=None):
+            r = client.get("/api/stocks/NOPE9")
+        assert r.status_code == 404
+
+    def test_happy_path_returns_full_payload(self):
+        """Fresh stock + 2 scores → 200 with all expected fields. (line 1559-1647)"""
+        sid = self._seed_fresh_stock("STKD1", current_price=180.0,
+                                     projected_growth=15.5,
+                                     growth_confidence="high")
+        now = datetime.now(timezone.utc)
+        self._add_score(sid, now - timedelta(days=2), total=78.0)
+        self._add_score(sid, now, total=82.0)
+
+        r = client.get("/api/stocks/STKD1")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["ticker"] == "STKD1"
+        # Score wrapper includes 7 components
+        assert set(d["scores"].keys()) == {"C", "A", "N", "S", "L", "I", "M"}
+        assert d["scores"]["I"]["max"] == 10  # I-score is 0-10, others 0-15
+        # Growth + projection
+        assert d["projected_growth"] == 15.5
+        assert d["growth_confidence"] == "high"
+        # institutional_pct extracted from score_details["i"]
+        assert d["institutional_holders_pct"] == 64.5
+        # data_freshness present + fresh
+        assert d["data_freshness"]["is_stale"] is False
+        # score_history populated
+        assert len(d["score_history"]) == 2
+        # daily resolution by default
+        assert d["score_history_resolution"] == "daily"
+
+    def test_resolution_all_keeps_every_scan(self):
+        """resolution=all returns every scan, no per-day dedup. (line 1540-1547)"""
+        sid = self._seed_fresh_stock("STKD2")
+        now = datetime.now(timezone.utc)
+        # 3 scans on the same calendar day — all 3 must surface
+        self._add_score(sid, now - timedelta(hours=3), total=70.0)
+        self._add_score(sid, now - timedelta(hours=2), total=72.0)
+        self._add_score(sid, now - timedelta(hours=1), total=74.0)
+
+        r = client.get("/api/stocks/STKD2?resolution=all")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["score_history_resolution"] == "all"
+        assert len(d["score_history"]) == 3
+
+    def test_resolution_daily_dedups_to_one_per_date(self):
+        """resolution=daily collapses multi-scan day to last scan. (line 1548-1557)"""
+        sid = self._seed_fresh_stock("STKD3")
+        now = datetime.now(timezone.utc)
+        # 3 scans same day — daily resolution should return only 1
+        self._add_score(sid, now - timedelta(hours=3), total=70.0)
+        self._add_score(sid, now - timedelta(hours=2), total=72.0)
+        self._add_score(sid, now - timedelta(hours=1), total=74.0)
+
+        r = client.get("/api/stocks/STKD3?resolution=daily")
+        assert r.status_code == 200
+        d = r.json()
+        # exactly one row for today
+        today_iso = now.date().isoformat()
+        today_rows = [h for h in d["score_history"] if h["date"] == today_iso]
+        assert len(today_rows) == 1
+
+    def test_score_history_empty_when_no_scores(self):
+        """Stock exists, zero StockScore rows → score_history=[]. (line 1549-1557)"""
+        self._seed_fresh_stock("STKD4")
+        r = client.get("/api/stocks/STKD4")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["score_history"] == []
+
+    def test_growth_projection_fields_surface(self):
+        """projected_growth / growth_confidence pulled straight off Stock. (line 1588-1589)"""
+        self._seed_fresh_stock("STKD5", projected_growth=42.5,
+                               growth_confidence="medium")
+        r = client.get("/api/stocks/STKD5")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["projected_growth"] == 42.5
+        assert d["growth_confidence"] == "medium"
+
+    def test_miss_path_fetches_then_returns_full_payload(self):
+        """No cached row + analyze_stock returns analysis → save + 200. (line 1530-1533)"""
+        # No prior Stock row for STKD7
+        analysis = {
+            "ticker": "STKD7", "name": "STKD7 Inc.",
+            "sector": "Technology", "industry": "Software",
+            "current_price": 99.0, "market_cap": 1_000_000_000,
+            "week_52_high": 110.0, "week_52_low": 80.0,
+            "canslim_score": 76.0,
+            "c_score": 12, "a_score": 11, "n_score": 10,
+            "s_score": 12, "l_score": 10, "i_score": 8, "m_score": 13,
+            "score_details": {"c": {}, "a": {}, "n": {}, "s": {},
+                              "l": {}, "i": {}, "m": {}},
+            "projected_growth": 14.0, "growth_confidence": "medium",
+            "growth_details": {},
+            "analyzed_at": datetime.now(timezone.utc).isoformat() + "Z",
+        }
+
+        # Use the real save_stock_to_db so the route's downstream `stock.id`
+        # access works against an actual ORM row.
+        with patch("backend.main.analyze_stock", return_value=analysis):
+            r = client.get("/api/stocks/STKD7")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["ticker"] == "STKD7"
+        assert d["canslim_score"] == 76.0
+        # Persisted to DB during the MISS path
+        db = _db()
+        try:
+            saved = db.query(Stock).filter_by(ticker="STKD7").first()
+            assert saved is not None
+        finally:
+            db.close()
+
+    def test_stale_cache_returns_immediately_and_queues_refresh(self):
+        """last_updated > SCORE_CACHE_HOURS → return cached + background refresh. (line 1508-1526)"""
+        sid = _ensure_stock("STKD6", current_price=120.0)
+        # Backdate last_updated past SCORE_CACHE_HOURS (4h default)
+        db = _db()
+        try:
+            s = db.query(Stock).filter_by(id=sid).first()
+            s.last_updated = datetime.now(timezone.utc) - timedelta(hours=12)
+            db.commit()
+        finally:
+            db.close()
+
+        # Background task must run without doing real IO
+        analysis = {"ticker": "STKD6", "name": "STKD6 Inc.",
+                    "canslim_score": 75.0, "current_price": 121.0}
+        with patch("backend.main.analyze_stock", return_value=analysis) as mk_an, \
+             patch("backend.main.save_stock_to_db") as mk_save:
+            r = client.get("/api/stocks/STKD6")
+
+        assert r.status_code == 200
+        d = r.json()
+        # Returned payload comes from the *cached* (stale) row, so price is 120
+        assert d["ticker"] == "STKD6"
+        assert d["data_freshness"]["is_stale"] is True
+        # Background refresh fired
+        mk_an.assert_called()
+        mk_save.assert_called()
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: analyze_stock orchestration helper (line 585-692)
+# ────────────────────────────────────────────────────────────────────
+
+class TestAnalyzeStockHelper:
+    """Tier 3 — analyze_stock(ticker) (line 585).
+
+    Pure helper: data_fetcher → canslim_scorer → growth_projector. We mock
+    each at the module-level singleton (backend.main.data_fetcher etc.) so
+    no live IO runs. Branches covered: happy path, invalid stock_data
+    (None / is_valid=False), score-failure short-circuit, growth_obj None
+    (growth_details={} fallback), empty earnings lists fall through to []
+    slicing fallbacks, and the outer except path.
+    """
+
+    def _mk_stock_data(self, **overrides):
+        """Build a MagicMock StockData with sensible defaults."""
+        sd = MagicMock()
+        sd.is_valid = True
+        sd.name = overrides.pop("name", "Mock Inc.")
+        sd.sector = overrides.pop("sector", "Technology")
+        sd.industry = overrides.pop("industry", "Software")
+        sd.current_price = overrides.pop("current_price", 100.0)
+        sd.market_cap = overrides.pop("market_cap", 50_000_000_000)
+        sd.shares_outstanding = overrides.pop("shares_outstanding", 500_000_000)
+        sd.high_52w = overrides.pop("high_52w", 120.0)
+        sd.low_52w = overrides.pop("low_52w", 70.0)
+        sd.quarterly_earnings = overrides.pop("quarterly_earnings",
+                                              [1.0, 1.1, 1.2, 1.3, 1.4])
+        sd.annual_earnings = overrides.pop("annual_earnings", [4.0, 4.5, 5.0])
+        sd.volume_ratio = overrides.pop("volume_ratio", 1.5)
+        sd.avg_volume_50d = overrides.pop("avg_volume_50d", 2_000_000)
+        sd.institutional_holders_pct = overrides.pop("institutional_holders_pct", 65.0)
+        sd.roe = overrides.pop("roe", 18.0)
+        sd.earnings_surprise_pct = overrides.pop("earnings_surprise_pct", 12.0)
+        for k, v in overrides.items():
+            setattr(sd, k, v)
+        return sd
+
+    def _mk_score(self, total=82.0):
+        sc = MagicMock()
+        sc.total_score = total
+        sc.c_score = 12; sc.c_detail = "c det"
+        sc.a_score = 11; sc.a_detail = "a det"
+        sc.n_score = 10; sc.n_detail = "n det"
+        sc.s_score = 12; sc.s_detail = "s det"
+        sc.l_score = 11; sc.l_detail = "l det"
+        sc.i_score = 8;  sc.i_detail = "i det"
+        sc.m_score = 10; sc.m_detail = "m det"
+        return sc
+
+    def _mk_growth(self, projected=14.5, confidence="high"):
+        g = MagicMock()
+        g.projected_growth_pct = projected
+        g.confidence = confidence
+        g.momentum_projection = 6.0
+        g.earnings_projection = 5.0
+        g.analyst_projection = 8.0
+        g.analyst_target = 150.0
+        g.analyst_upside = 20.0
+        return g
+
+    def test_happy_path_returns_full_dict(self):
+        """All three collaborators succeed → full analysis dict. (line 587-689)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        sd = self._mk_stock_data()
+        sc = self._mk_score(total=85.0)
+        gr = self._mk_growth(projected=18.0, confidence="high")
+        with patch.object(bm.data_fetcher, "get_stock_data", return_value=sd), \
+             patch.object(bm.canslim_scorer, "score_stock", return_value=sc), \
+             patch.object(bm.growth_projector, "project_growth", return_value=gr):
+            result = analyze_stock("FOOX")
+
+        assert result is not None
+        assert result["ticker"] == "FOOX"
+        assert result["canslim_score"] == 85.0
+        assert result["c_score"] == 12
+        assert result["i_score"] == 8
+        # score_details mirror score_result structure
+        assert result["score_details"]["c"]["earnings_surprise_pct"] == 12.0
+        assert result["score_details"]["a"]["roe"] == 18.0
+        # growth surfaced
+        assert result["projected_growth"] == 18.0
+        assert result["growth_confidence"] == "high"
+        assert result["growth_details"]["analyst_target"] == 150.0
+
+    def test_returns_none_when_stock_data_is_none(self):
+        """data_fetcher returns None → analyze_stock returns None. (line 590)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        with patch.object(bm.data_fetcher, "get_stock_data", return_value=None):
+            assert analyze_stock("ZZZ") is None
+
+    def test_returns_none_when_stock_data_invalid(self):
+        """is_valid=False → returns None. (line 590)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        sd = self._mk_stock_data()
+        sd.is_valid = False
+        with patch.object(bm.data_fetcher, "get_stock_data", return_value=sd):
+            assert analyze_stock("ZZZ") is None
+
+    def test_returns_none_when_score_obj_none(self):
+        """score_stock returns None → analyze_stock returns None. (line 595-596)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        sd = self._mk_stock_data()
+        with patch.object(bm.data_fetcher, "get_stock_data", return_value=sd), \
+             patch.object(bm.canslim_scorer, "score_stock", return_value=None):
+            assert analyze_stock("ZZZ") is None
+
+    def test_growth_obj_none_yields_empty_growth_details(self):
+        """growth_projector None → growth_details={} fallback. (line 678-686)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        sd = self._mk_stock_data()
+        sc = self._mk_score()
+        with patch.object(bm.data_fetcher, "get_stock_data", return_value=sd), \
+             patch.object(bm.canslim_scorer, "score_stock", return_value=sc), \
+             patch.object(bm.growth_projector, "project_growth", return_value=None):
+            result = analyze_stock("ZZZ")
+        assert result is not None
+        assert result["projected_growth"] == 0
+        assert result["growth_confidence"] == "low"
+        assert result["growth_details"] == {}
+
+    def test_empty_earnings_lists_fall_through(self):
+        """quarterly_earnings/annual_earnings empty → [] slice fallbacks. (line 607, 613)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        sd = self._mk_stock_data(quarterly_earnings=[], annual_earnings=[])
+        sc = self._mk_score()
+        gr = self._mk_growth()
+        with patch.object(bm.data_fetcher, "get_stock_data", return_value=sd), \
+             patch.object(bm.canslim_scorer, "score_stock", return_value=sc), \
+             patch.object(bm.growth_projector, "project_growth", return_value=gr):
+            result = analyze_stock("ZZZ")
+        assert result is not None
+        assert result["score_details"]["c"]["quarterly_eps"] == []
+        assert result["score_details"]["a"]["annual_eps"] == []
+
+    def test_outer_exception_swallowed_returns_none(self):
+        """data_fetcher raises → outer try/except returns None. (line 690-692)"""
+        from backend.main import analyze_stock
+        import backend.main as bm
+        with patch.object(bm.data_fetcher, "get_stock_data",
+                          side_effect=RuntimeError("fetch boom")):
+            assert analyze_stock("ZZZ") is None
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: save_stock_to_db helper (line 695-748)
+# ────────────────────────────────────────────────────────────────────
+
+class TestSaveStockToDbHelper:
+    """Tier 3 — save_stock_to_db(db, analysis) (line 695).
+
+    Pure DB-write helper invoked from /api/stocks/{ticker}/refresh,
+    /api/portfolio/refresh, and the get_stock MISS path. Branches: insert
+    new Stock, update existing Stock, write StockScore history row.
+    """
+
+    def _analysis(self, ticker, **overrides):
+        base = dict(
+            ticker=ticker, name=f"{ticker} Inc.",
+            sector="Technology", industry="Software",
+            market_cap=1_000_000_000,
+            current_price=100.0, week_52_high=120.0, week_52_low=70.0,
+            canslim_score=80.0,
+            c_score=12, a_score=11, n_score=10,
+            s_score=12, l_score=11, i_score=8, m_score=10,
+            projected_growth=15.0, growth_confidence="high",
+            score_details={"c": {"summary": "ok"}, "a": {}, "n": {},
+                           "s": {}, "l": {}, "i": {}, "m": {}},
+        )
+        base.update(overrides)
+        return base
+
+    def test_inserts_new_stock_when_ticker_unknown(self):
+        """No prior Stock row → INSERT path. (line 699-701)"""
+        from backend.main import save_stock_to_db
+        db = _db()
+        try:
+            # Make sure the ticker is fresh
+            db.query(Stock).filter_by(ticker="SVDB1").delete()
+            db.commit()
+        finally:
+            db.close()
+
+        db = _db()
+        try:
+            stock = save_stock_to_db(db, self._analysis("SVDB1"))
+            assert stock.id is not None
+            assert stock.ticker == "SVDB1"
+            assert stock.canslim_score == 80.0
+            assert stock.score_details["c"]["summary"] == "ok"
+            # StockScore history row inserted
+            history_n = db.query(StockScore).filter_by(stock_id=stock.id).count()
+            assert history_n == 1
+        finally:
+            db.close()
+
+    def test_updates_existing_stock_in_place(self):
+        """Stock row exists → UPDATE path. (line 697-698, 703-724)"""
+        from backend.main import save_stock_to_db
+        _ensure_stock("SVDB2", score=50.0, current_price=10.0)
+        db = _db()
+        try:
+            updated = save_stock_to_db(db, self._analysis(
+                "SVDB2", canslim_score=88.0, current_price=222.0,
+            ))
+            assert updated.canslim_score == 88.0
+            assert updated.current_price == 222.0
+            # only one Stock row for this ticker
+            n = db.query(Stock).filter_by(ticker="SVDB2").count()
+            assert n == 1
+        finally:
+            db.close()
+
+    def test_score_history_row_captures_breakdown(self):
+        """StockScore mirrors c/a/n/s/l/i/m + total + growth. (line 728-744)"""
+        from backend.main import save_stock_to_db
+        db = _db()
+        try:
+            db.query(Stock).filter_by(ticker="SVDB3").delete()
+            db.commit()
+        finally:
+            db.close()
+        db = _db()
+        try:
+            stock = save_stock_to_db(db, self._analysis(
+                "SVDB3", canslim_score=77.0, c_score=13, m_score=8,
+                projected_growth=22.5,
+            ))
+            score_row = db.query(StockScore).filter_by(stock_id=stock.id).first()
+            assert score_row.total_score == 77.0
+            assert score_row.c_score == 13
+            assert score_row.m_score == 8
+            assert score_row.projected_growth == 22.5
+            assert score_row.current_price == 100.0
+        finally:
+            db.close()
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: get_score_trend / get_score_trends_batch helpers
+# ────────────────────────────────────────────────────────────────────
+
+class TestScoreTrendHelpers:
+    """Tier 3 — get_score_trend (line 342) + get_score_trends_batch (line 399).
+
+    Pure helpers used to power the dashboard score-change indicators. Branches:
+    too-few rows, None-score guard, stable/improving/deteriorating thresholds,
+    and the consistency calculation across a 3+ day window.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        db = _db()
+        try:
+            for t in ("TRD1", "TRD2", "TRD3", "TRD4", "TRD5",
+                      "TRDN", "TRDB1", "TRDB2", "TRDB3", "TRDB4"):
+                stk = db.query(Stock).filter_by(ticker=t).first()
+                if stk:
+                    db.query(StockScore).filter_by(stock_id=stk.id).delete()
+                    db.delete(stk)
+            db.commit()
+        finally:
+            db.close()
+
+    def _stock_with_scores(self, ticker, scores):
+        """scores: list of (days_ago, total_score) tuples."""
+        sid = _ensure_stock(ticker, score=80.0)
+        db = _db()
+        try:
+            today = date.today()
+            for days_ago, total in scores:
+                db.add(StockScore(
+                    stock_id=sid,
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=days_ago),
+                    date=today - timedelta(days=days_ago),
+                    total_score=total, c_score=12, a_score=11,
+                    n_score=10, s_score=12, l_score=11,
+                    i_score=8, m_score=10,
+                    projected_growth=10.0, current_price=100.0,
+                    week_52_high=120.0,
+                ))
+            db.commit()
+        finally:
+            db.close()
+        return sid
+
+    def test_trend_too_few_rows_returns_none(self):
+        """<2 scores → trend=None, data_points reflects count. (line 355-356)"""
+        from backend.main import get_score_trend
+        sid = self._stock_with_scores("TRD1", [(1, 80.0)])
+        db = _db()
+        try:
+            r = get_score_trend(db, sid, days=7)
+            assert r["trend"] is None
+            assert r["data_points"] == 1
+        finally:
+            db.close()
+
+    def test_trend_none_score_guard(self):
+        """Edge score is None → returns None trend. (line 362-363)"""
+        from backend.main import get_score_trend
+        sid = self._stock_with_scores("TRDN", [(5, None), (1, 80.0)])
+        db = _db()
+        try:
+            r = get_score_trend(db, sid, days=7)
+            assert r["trend"] is None
+            assert r["data_points"] == 2
+        finally:
+            db.close()
+
+    def test_trend_stable_when_change_below_threshold(self):
+        """|change| < 3 → stable. (line 384-385)"""
+        from backend.main import get_score_trend
+        sid = self._stock_with_scores("TRD2", [(5, 80.0), (1, 81.5)])
+        db = _db()
+        try:
+            r = get_score_trend(db, sid, days=7)
+            assert r["trend"] == "stable"
+            assert r["change"] == 1.5
+        finally:
+            db.close()
+
+    def test_trend_improving_consistency_calculated(self):
+        """3+ rows monotonic up → improving + consistency=1.0. (line 369-389)"""
+        from backend.main import get_score_trend
+        sid = self._stock_with_scores("TRD3",
+            [(5, 70.0), (3, 75.0), (1, 82.0)])
+        db = _db()
+        try:
+            r = get_score_trend(db, sid, days=7)
+            assert r["trend"] == "improving"
+            assert r["change"] == 12.0
+            assert r["consistency"] == 1.0
+        finally:
+            db.close()
+
+    def test_trend_deteriorating_when_change_negative(self):
+        """change < -3 → deteriorating. (line 386-389)"""
+        from backend.main import get_score_trend
+        sid = self._stock_with_scores("TRD4",
+            [(5, 90.0), (3, 85.0), (1, 70.0)])
+        db = _db()
+        try:
+            r = get_score_trend(db, sid, days=7)
+            assert r["trend"] == "deteriorating"
+            assert r["change"] == -20.0
+        finally:
+            db.close()
+
+    def test_batch_empty_input_returns_empty(self):
+        """Empty stock_ids list → empty dict short-circuit. (line 406-407)"""
+        from backend.main import get_score_trends_batch
+        db = _db()
+        try:
+            r = get_score_trends_batch(db, [], days=7)
+            assert r == {}
+        finally:
+            db.close()
+
+    def test_batch_returns_per_stock_results(self):
+        """Multiple stock_ids → dict keyed by id with trends. (line 412-470)"""
+        from backend.main import get_score_trends_batch
+        sid_a = self._stock_with_scores("TRDB1",
+            [(5, 70.0), (3, 75.0), (1, 82.0)])
+        sid_b = self._stock_with_scores("TRDB2",
+            [(5, 90.0), (3, 85.0), (1, 70.0)])
+        # one stock with insufficient data
+        sid_c = self._stock_with_scores("TRD5", [(1, 80.0)])
+        db = _db()
+        try:
+            r = get_score_trends_batch(db, [sid_a, sid_b, sid_c], days=7)
+            assert r[sid_a]["trend"] == "improving"
+            assert r[sid_b]["trend"] == "deteriorating"
+            assert r[sid_c]["trend"] is None  # too few rows
+        finally:
+            db.close()
+
+    def test_batch_stable_change_under_threshold(self):
+        """Batch path: |change| < 3 → stable. (line 458-459)"""
+        from backend.main import get_score_trends_batch
+        sid = self._stock_with_scores("TRDB4",
+            [(5, 80.0), (3, 80.5), (1, 81.5)])
+        db = _db()
+        try:
+            r = get_score_trends_batch(db, [sid], days=7)
+            assert r[sid]["trend"] == "stable"
+            # consistency calculated for 3+ rows even if change is small
+            assert r[sid]["consistency"] is not None
+        finally:
+            db.close()
+
+    def test_batch_handles_none_oldest_or_newest_score(self):
+        """In-batch None-guard returns trend=None for that stock. (line 436-438)"""
+        from backend.main import get_score_trends_batch
+        db = _db()
+        try:
+            db.query(Stock).filter_by(ticker="TRDB3").delete()
+            db.commit()
+        finally:
+            db.close()
+        sid = _ensure_stock("TRDB3", score=80.0)
+        db = _db()
+        try:
+            today = date.today()
+            db.add(StockScore(
+                stock_id=sid,
+                timestamp=datetime.now(timezone.utc) - timedelta(days=5),
+                date=today - timedelta(days=5),
+                total_score=None, c_score=12, a_score=11,
+                n_score=10, s_score=12, l_score=11, i_score=8, m_score=10,
+                projected_growth=10.0, current_price=100.0,
+            ))
+            db.add(StockScore(
+                stock_id=sid,
+                timestamp=datetime.now(timezone.utc) - timedelta(days=1),
+                date=today - timedelta(days=1),
+                total_score=80.0, c_score=12, a_score=11,
+                n_score=10, s_score=12, l_score=11, i_score=8, m_score=10,
+                projected_growth=10.0, current_price=100.0,
+            ))
+            db.commit()
+            r = get_score_trends_batch(db, [sid], days=7)
+            assert r[sid]["trend"] is None
+        finally:
+            db.close()
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: POST /api/stocks/{ticker}/refresh (line 1651-1662)
+# ────────────────────────────────────────────────────────────────────
+
+class TestStockRefreshRoute:
+    """Tier 3 — POST /api/stocks/{ticker}/refresh (line 1651).
+
+    Forces a fresh analyze + save_stock_to_db for a single ticker. Branches:
+    invalid ticker, analyze_stock returns None (404), happy-path resave.
+    """
+
+    def test_invalid_ticker_returns_400(self):
+        """validate_ticker_param rejects bad input. (line 1654)"""
+        r = client.post("/api/stocks/!bad!/refresh")
+        assert r.status_code == 400
+
+    def test_404_when_analyze_returns_none(self):
+        """analyze_stock None → 404. (line 1656-1658)"""
+        with patch("backend.main.analyze_stock", return_value=None):
+            r = client.post("/api/stocks/REFR1/refresh")
+        assert r.status_code == 404
+
+    def test_happy_path_resaves_and_returns_score(self):
+        """analyze_stock dict → save_stock_to_db + returns canslim_score. (line 1656-1662)"""
+        analysis = {
+            "ticker": "REFR2", "name": "REFR2 Inc.",
+            "sector": "Technology", "industry": "Software",
+            "market_cap": 10_000_000_000,
+            "current_price": 88.0, "week_52_high": 100.0, "week_52_low": 60.0,
+            "canslim_score": 79.0,
+            "c_score": 12, "a_score": 11, "n_score": 10,
+            "s_score": 12, "l_score": 10, "i_score": 8, "m_score": 16,
+            "score_details": {"c": {}, "a": {}, "n": {}, "s": {},
+                              "l": {}, "i": {}, "m": {}},
+            "projected_growth": 11.0, "growth_confidence": "medium",
+        }
+        # Drop any leftover from prior runs so we land on the INSERT branch
+        db = _db()
+        try:
+            db.query(Stock).filter_by(ticker="REFR2").delete()
+            db.commit()
+        finally:
+            db.close()
+
+        with patch("backend.main.analyze_stock", return_value=analysis):
+            r = client.post("/api/stocks/REFR2/refresh")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["canslim_score"] == 79.0
+        assert "REFR2" in d["message"]
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: fetch_price_yahoo_chart (line 2026-2049)
+# ────────────────────────────────────────────────────────────────────
+
+class TestFetchPriceYahooChart:
+    """Tier 3 — fetch_price_yahoo_chart helper (line 2026).
+
+    Pure HTTP helper used by the portfolio refresh path. Branches: 200-OK
+    with regularMarketPrice, fallback to previousClose, non-200 status,
+    empty result list, request exception, missing price field.
+    """
+
+    def _resp(self, status=200, json_payload=None):
+        m = MagicMock()
+        m.status_code = status
+        m.json.return_value = json_payload or {}
+        return m
+
+    def test_returns_regular_market_price(self):
+        """meta.regularMarketPrice surfaces. (line 2042-2043)"""
+        from backend.main import fetch_price_yahoo_chart
+        payload = {"chart": {"result": [{"meta": {"regularMarketPrice": 123.45}}]}}
+        with patch("requests.get", return_value=self._resp(200, payload)):
+            assert fetch_price_yahoo_chart("AAPL") == 123.45
+
+    def test_falls_back_to_previous_close(self):
+        """No regularMarketPrice but previousClose set → returns prev close. (line 2042)"""
+        from backend.main import fetch_price_yahoo_chart
+        payload = {"chart": {"result": [{"meta": {"previousClose": 99.0}}]}}
+        with patch("requests.get", return_value=self._resp(200, payload)):
+            assert fetch_price_yahoo_chart("AAPL") == 99.0
+
+    def test_non_200_returns_none(self):
+        """status != 200 → logged, returns None. (line 2044-2045)"""
+        from backend.main import fetch_price_yahoo_chart
+        with patch("requests.get", return_value=self._resp(429)):
+            assert fetch_price_yahoo_chart("AAPL") is None
+
+    def test_empty_result_list_returns_none(self):
+        """chart.result=[] → falls through to None. (line 2040)"""
+        from backend.main import fetch_price_yahoo_chart
+        with patch("requests.get",
+                   return_value=self._resp(200, {"chart": {"result": []}})):
+            assert fetch_price_yahoo_chart("AAPL") is None
+
+    def test_missing_price_returns_none(self):
+        """Both regularMarketPrice and previousClose missing → None. (line 2042-2043)"""
+        from backend.main import fetch_price_yahoo_chart
+        payload = {"chart": {"result": [{"meta": {}}]}}
+        with patch("requests.get", return_value=self._resp(200, payload)):
+            assert fetch_price_yahoo_chart("AAPL") is None
+
+    def test_exception_swallowed_returns_none(self):
+        """requests.get raises → outer except returns None. (line 2046-2049)"""
+        from backend.main import fetch_price_yahoo_chart
+        with patch("requests.get", side_effect=ConnectionError("net boom")):
+            assert fetch_price_yahoo_chart("AAPL") is None
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: GET /api/ai-portfolio/correlation (line 4188-4259)
+# ────────────────────────────────────────────────────────────────────
+
+class TestPortfolioCorrelationRoute:
+    """Tier 3 — GET /api/ai-portfolio/correlation (line 4190).
+
+    Computes pairwise price correlation matrix across held positions.
+    yfinance is mocked. Branches: <2 positions short-circuit, empty
+    yf.download dataframe, single-ticker (<2 columns after dropna),
+    insufficient history (<10 returns rows), happy-path with multi-ticker
+    correlation matrix, generic exception fallback.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        # Wipe AIPortfolioPositions so each test sets its own count
+        db = _db()
+        try:
+            db.query(AIPortfolioPosition).filter_by(user_id=1).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    @staticmethod
+    def _make_yf_frame(prices_by_ticker, multi=True):
+        """Build a yfinance-like DataFrame.
+
+        prices_by_ticker: dict[ticker -> list[float]] of length N (rows).
+        multi=True returns a MultiIndex columns frame with a 'Close' level.
+        multi=False returns a single-index frame (the single-ticker branch).
+        """
+        import pandas as pd
+        rows = max(len(v) for v in prices_by_ticker.values())
+        if multi:
+            tuples = []
+            data = {}
+            for t, prices in prices_by_ticker.items():
+                tuples.append(("Close", t))
+                data[("Close", t)] = prices + [None] * (rows - len(prices))
+            df = pd.DataFrame(data)
+            df.columns = pd.MultiIndex.from_tuples(df.columns)
+        else:
+            t = next(iter(prices_by_ticker))
+            df = pd.DataFrame({"Close": prices_by_ticker[t]})
+        return df
+
+    def _seed_positions(self, tickers):
+        _ensure_user()
+        _ensure_ai_config()
+        # Seed Stock rows first using their own sessions (each commits).
+        for t in tickers:
+            _ensure_stock(t, score=80.0)
+        # Now open a single session for the AIPortfolioPosition writes.
+        db = _db()
+        try:
+            db.query(AIPortfolioPosition).filter_by(user_id=1).delete()
+            for t in tickers:
+                db.add(AIPortfolioPosition(
+                    user_id=1, ticker=t, shares=10.0,
+                    cost_basis=100.0, current_price=110.0,
+                    current_value=1100.0, gain_loss=100.0, gain_loss_pct=10.0,
+                    purchase_score=80.0, current_score=82.0,
+                    purchase_date=datetime.now(timezone.utc) - timedelta(days=30),
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_short_circuits_when_fewer_than_2_positions(self):
+        """<2 positions → friendly message, no yf.download. (line 4200-4201)"""
+        self._seed_positions(["CORR1"])
+        r = client.get("/api/ai-portfolio/correlation")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["matrix"] == []
+        assert "2+" in d["message"]
+
+    def test_empty_yfinance_frame_returns_message(self):
+        """yf.download empty → 'No price data available'. (line 4211-4212)"""
+        self._seed_positions(["CORR1", "CORR2"])
+        import pandas as pd
+        empty_df = pd.DataFrame()
+        with patch("yfinance.download", return_value=empty_df):
+            r = client.get("/api/ai-portfolio/correlation")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["matrix"] == []
+        assert "No price data" in d["message"]
+
+    def test_insufficient_history_returns_message(self):
+        """<10 return rows → 'Insufficient price history'. (line 4226-4227)"""
+        self._seed_positions(["CORR1", "CORR2"])
+        # 5 prices → 4 returns rows after pct_change.dropna → < 10
+        df = self._make_yf_frame({
+            "CORR1": [100.0, 101.0, 102.0, 103.0, 104.0],
+            "CORR2": [200.0, 199.0, 201.0, 200.0, 202.0],
+        }, multi=True)
+        with patch("yfinance.download", return_value=df):
+            r = client.get("/api/ai-portfolio/correlation")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["matrix"] == []
+        assert "Insufficient" in d["message"]
+
+    def test_happy_path_returns_matrix(self):
+        """Two-ticker frame with sufficient history → 2x2 matrix + max_pair. (line 4229-4257)"""
+        self._seed_positions(["CORR1", "CORR2"])
+        # 30 prices → 29 returns rows (well above 10)
+        df = self._make_yf_frame({
+            "CORR1": [100.0 + i * 0.5 for i in range(30)],
+            "CORR2": [200.0 + i * 0.4 for i in range(30)],
+        }, multi=True)
+        with patch("yfinance.download", return_value=df):
+            r = client.get("/api/ai-portfolio/correlation")
+        assert r.status_code == 200
+        d = r.json()
+        # 2x2 matrix
+        assert len(d["matrix"]) == 2
+        assert len(d["matrix"][0]) == 2
+        # Diagonal = 1.0
+        assert d["matrix"][0][0] == 1.0
+        # max_pair surfaced
+        assert d["max_pair"] is not None
+        assert d["positions_count"] == 2
+
+    def test_exception_returns_error_payload(self):
+        """yf.download raises → 'error' branch with empty matrix. (line 4258-4259)"""
+        self._seed_positions(["CORR1", "CORR2"])
+        with patch("yfinance.download", side_effect=RuntimeError("boom")):
+            r = client.get("/api/ai-portfolio/correlation")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["matrix"] == []
+        assert "error" in d
