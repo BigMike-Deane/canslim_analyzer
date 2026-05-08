@@ -302,7 +302,7 @@ export default function CommandCenter() {
     )
   }
 
-  const { market, portfolio, sparkline, positions, candidates, risk, trades, scanner, coiled_spring } = data || {}
+  const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner, coiled_spring } = data || {}
   const marketState = market?.market_state || market?.regime?.toUpperCase()
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
