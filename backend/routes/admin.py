@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from pydantic import BaseModel
 
-from backend.database import get_db, User, AIPortfolioTrade, AIPortfolioConfig
+from backend.database import (
+    get_db, User, AIPortfolioTrade, AIPortfolioConfig,
+    ShadowStrategy, ShadowTrade,
+)
 from backend.auth import get_admin_user, UserCreate, UserResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -524,6 +527,47 @@ def _build_warnings(pre_window: dict, post_window: dict, pre: dict, post: dict) 
     return warnings
 
 
+def _build_trade_query(db: Session, source: str, strategy: str):
+    """Resolve the trade-source for an A/B comparison.
+
+    Returns (base_query, starting_value, user_ids). For source='live' the
+    query targets AIPortfolioTrade scoped to users on `strategy`; for
+    source='shadow' it targets ShadowTrade scoped to the named ShadowStrategy.
+    Raises HTTPException(404) if the requested source is empty.
+
+    Both branches return a query that the rest of _resolve_ab_window can
+    extend with date filters and the optional pyramid exclusion. Trade rows
+    on either side share the duck-type contract used by _summarize_window
+    and _serialize_trade_row (.action, .realized_gain, .executed_at,
+    .cost_basis, .shares, etc.) — see ShadowTrade in backend/database.py."""
+    if source == "shadow":
+        ss = db.query(ShadowStrategy).filter(ShadowStrategy.name == strategy).first()
+        if ss is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Shadow strategy '{strategy}' not found",
+            )
+        if ss.archived_at is not None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Shadow strategy '{strategy}' is archived",
+            )
+        base = db.query(ShadowTrade).filter(ShadowTrade.shadow_strategy_id == ss.id)
+        return base, float(ss.starting_value or 25000.0), [ss.id]
+
+    # source == 'live' (default)
+    user_rows = db.query(AIPortfolioConfig.user_id, AIPortfolioConfig.starting_cash).filter(
+        AIPortfolioConfig.strategy == strategy
+    ).all()
+    if not user_rows:
+        raise HTTPException(status_code=404, detail=f"No users currently on strategy '{strategy}'")
+
+    user_ids = [row.user_id for row in user_rows]
+    starting_value = sum((row.starting_cash or 25000.0) for row in user_rows)
+    base = db.query(AIPortfolioTrade).filter(AIPortfolioTrade.user_id.in_(user_ids))
+    return base, starting_value, user_ids
+
+
 def _resolve_ab_window(
     strategy: str,
     cutoff_date: str,
@@ -531,13 +575,21 @@ def _resolve_ab_window(
     post_window_days: Optional[int],
     exclude_pyramids: bool,
     db: Session,
+    source: str = "live",
 ) -> dict:
     """Shared window/user/trade resolution for the live A/B endpoints.
 
     Returns a dict with the parsed cutoff, pre/post trade lists, window
-    descriptors, starting_value, and user_ids. Both /strategy-ab-eval and
-    /strategy-ab-eval-trades call this; keeping it shared prevents drift
-    between the aggregate dashboard and the per-trade attribution view.
+    descriptors, starting_value, and user_ids (or [shadow_strategy_id] when
+    source='shadow'). Both /strategy-ab-eval and /strategy-ab-eval-trades
+    call this; keeping it shared prevents drift between the aggregate
+    dashboard and the per-trade attribution view.
+
+    The trade-source is selected by `source`: 'live' (default) reads
+    AIPortfolioTrade rows for users on the strategy; 'shadow' reads
+    ShadowTrade rows for the named ShadowStrategy. The downstream
+    summarizer/serializer code paths are unchanged — both row types
+    expose the same duck-typed columns.
 
     Raises HTTPException(400/404) on invalid inputs — both endpoints rely
     on identical error wording, which is locked by the existing tests."""
@@ -562,19 +614,15 @@ def _resolve_ab_window(
     pre_start = cutoff - timedelta(days=pre_window_days)
     post_end = cutoff + timedelta(days=post_window_days)
 
-    user_rows = db.query(AIPortfolioConfig.user_id, AIPortfolioConfig.starting_cash).filter(
-        AIPortfolioConfig.strategy == strategy
-    ).all()
-    if not user_rows:
-        raise HTTPException(status_code=404, detail=f"No users currently on strategy '{strategy}'")
+    base, starting_value, user_ids = _build_trade_query(db, source, strategy)
 
-    user_ids = [row.user_id for row in user_rows]
-    starting_value = sum((row.starting_cash or 25000.0) for row in user_rows)
+    # Pick the trade model (AIPortfolioTrade or ShadowTrade) the helper
+    # already filtered against — both expose .executed_at, .action, .reason.
+    trade_model = ShadowTrade if source == "shadow" else AIPortfolioTrade
 
-    base = db.query(AIPortfolioTrade).filter(
-        AIPortfolioTrade.user_id.in_(user_ids),
-        AIPortfolioTrade.executed_at >= pre_start,
-        AIPortfolioTrade.executed_at < post_end,
+    base = base.filter(
+        trade_model.executed_at >= pre_start,
+        trade_model.executed_at < post_end,
     )
     if exclude_pyramids:
         # Same shape as strategy-health: filter both action='PYRAMID' rows
@@ -582,15 +630,15 @@ def _resolve_ab_window(
         # be preserved — (~col.like(...)) is NULL for NULL → SQL false, so
         # wrap in OR with IS NULL.
         base = base.filter(
-            ~AIPortfolioTrade.action.in_(['PYRAMID']),
+            ~trade_model.action.in_(['PYRAMID']),
             or_(
-                AIPortfolioTrade.reason.is_(None),
-                ~AIPortfolioTrade.reason.like('PYRAMID:%'),
+                trade_model.reason.is_(None),
+                ~trade_model.reason.like('PYRAMID:%'),
             ),
         )
 
-    pre_trades = base.filter(AIPortfolioTrade.executed_at < cutoff).order_by(AIPortfolioTrade.executed_at).all()
-    post_trades = base.filter(AIPortfolioTrade.executed_at >= cutoff).order_by(AIPortfolioTrade.executed_at).all()
+    pre_trades = base.filter(trade_model.executed_at < cutoff).order_by(trade_model.executed_at).all()
+    post_trades = base.filter(trade_model.executed_at >= cutoff).order_by(trade_model.executed_at).all()
 
     pre_window = {
         'start': pre_start.date().isoformat(),
@@ -615,6 +663,7 @@ def _resolve_ab_window(
         'post_trades': post_trades,
         'starting_value': starting_value,
         'user_ids': user_ids,
+        'source': source,
     }
 
 
@@ -628,6 +677,7 @@ async def run_strategy_ab_comparison(
     min_return_delta_pp: float = Query(default=-5.0, description="Decision threshold: keep if return delta >= this"),
     min_sharpe_delta: float = Query(default=0.0, description="Decision threshold: keep if sharpe delta >= this"),
     min_post_sells: int = Query(default=5, ge=0, description="Minimum SELL count in post window for a confident decision"),
+    source: str = Query(default="live", description="Trade source: 'live' (AIPortfolioTrade scoped to users on the strategy) or 'shadow' (ShadowTrade scoped to the named ShadowStrategy)"),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
@@ -645,9 +695,16 @@ async def run_strategy_ab_comparison(
         GET /api/admin/strategy-ab-eval?strategy=nostate_optimized
             &cutoff_date=2026-05-07&pre_window_days=30&post_window_days=14
     """
+    # When tests bypass FastAPI's dependency resolution, Query() defaults
+    # arrive as Query objects rather than their underlying values — same
+    # pattern documented in test_strategy_ab_eval._call. Coerce here so the
+    # endpoint behaves identically whether called via FastAPI or directly.
+    if not isinstance(source, str):
+        source = "live"
+
     win = _resolve_ab_window(
         strategy, cutoff_date, pre_window_days, post_window_days,
-        exclude_pyramids, db,
+        exclude_pyramids, db, source=source,
     )
     pre_trades = win['pre_trades']
     post_trades = win['post_trades']
@@ -666,16 +723,20 @@ async def run_strategy_ab_comparison(
     }
     decision = _decide(pre_summary, post_summary, delta, criteria)
 
+    experiment = {
+        'strategy': strategy,
+        'cutoff_date': cutoff_date,
+        'pre_window': pre_window,
+        'post_window': post_window,
+        'starting_value_reference': round(starting_value, 2),
+        'user_ids': win['user_ids'],
+        'exclude_pyramids': exclude_pyramids,
+    }
+    if source != "live":
+        experiment['source'] = source
+
     return {
-        'experiment': {
-            'strategy': strategy,
-            'cutoff_date': cutoff_date,
-            'pre_window': pre_window,
-            'post_window': post_window,
-            'starting_value_reference': round(starting_value, 2),
-            'user_ids': win['user_ids'],
-            'exclude_pyramids': exclude_pyramids,
-        },
+        'experiment': experiment,
         'summary': decision,
         'pre': pre_summary,
         'post': post_summary,
@@ -703,12 +764,21 @@ def _serialize_trade_row(t, prior_buys_by_ticker_user: dict) -> dict:
         except Exception:
             pass
 
+    # Scope key for the prior-BUY map. AIPortfolioTrade rows scope by
+    # (ticker, user_id); ShadowTrade rows scope by (ticker, shadow_strategy_id).
+    # Either way the scope ID is what disambiguates "the same ticker held by a
+    # different account" so a SELL doesn't accidentally pair with another
+    # account's BUY for hold_days math.
+    scope_id = getattr(t, 'user_id', None)
+    if scope_id is None:
+        scope_id = getattr(t, 'shadow_strategy_id', None)
+
     hold_days = None
     if t.action == 'SELL':
         if t.holding_days is not None:
             hold_days = int(t.holding_days)
         else:
-            key = (t.ticker, t.user_id)
+            key = (t.ticker, scope_id)
             prior = prior_buys_by_ticker_user.get(key)
             if prior is not None and t.executed_at and prior.executed_at:
                 hold_days = max((t.executed_at - prior.executed_at).days, 0)
@@ -725,7 +795,7 @@ def _serialize_trade_row(t, prior_buys_by_ticker_user: dict) -> dict:
         'realized_pct': realized_pct,
         'reason': t.reason,
         'hold_days': hold_days,
-        'user_id': t.user_id,
+        'user_id': scope_id,
     }
 
 
@@ -776,6 +846,7 @@ async def run_strategy_ab_trades(
     pre_window_days: int = Query(default=30, ge=1, le=365),
     post_window_days: Optional[int] = Query(default=None),
     exclude_pyramids: bool = Query(default=True),
+    source: str = Query(default="live", description="Trade source: 'live' or 'shadow'"),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
@@ -786,9 +857,14 @@ async def run_strategy_ab_trades(
     per window. Built for the ABEval dashboard chart + collapsible trade
     table: when the dashboard verdict is 'marginal', per-trade visibility
     turns "the average drifted" into "this specific trade moved it"."""
+    # See coercion note in run_strategy_ab_comparison — same Query() default
+    # passthrough behavior when tests bypass FastAPI dependency resolution.
+    if not isinstance(source, str):
+        source = "live"
+
     win = _resolve_ab_window(
         strategy, cutoff_date, pre_window_days, post_window_days,
-        exclude_pyramids, db,
+        exclude_pyramids, db, source=source,
     )
     pre_trades = win['pre_trades']
     post_trades = win['post_trades']
@@ -797,34 +873,43 @@ async def run_strategy_ab_trades(
     pre_start = win['pre_start']
     post_end = win['post_end']
 
-    # Build a (ticker, user_id) → most-recent-prior-BUY map for hold_days
-    # fallback. Walk ALL trades chronologically (pre + post) so a SELL in
-    # post can match a BUY that landed in pre.
+    # Build a (ticker, scope_id) → most-recent-prior-BUY map for hold_days
+    # fallback. scope_id = user_id for live, shadow_strategy_id for shadow.
+    # Walk ALL trades chronologically (pre + post) so a SELL in post can
+    # match a BUY that landed in pre.
+    def _scope_id(t):
+        sid = getattr(t, 'user_id', None)
+        return sid if sid is not None else getattr(t, 'shadow_strategy_id', None)
+
     prior_buy_map: dict = {}
     serialized_pre: list = []
     serialized_post: list = []
     for t in pre_trades:
         serialized_pre.append(_serialize_trade_row(t, prior_buy_map))
         if t.action == 'BUY':
-            prior_buy_map[(t.ticker, t.user_id)] = t
+            prior_buy_map[(t.ticker, _scope_id(t))] = t
     for t in post_trades:
         serialized_post.append(_serialize_trade_row(t, prior_buy_map))
         if t.action == 'BUY':
-            prior_buy_map[(t.ticker, t.user_id)] = t
+            prior_buy_map[(t.ticker, _scope_id(t))] = t
 
     pre_curve = _build_cumulative_curve(pre_trades, pre_start, cutoff, starting_value)
     post_curve = _build_cumulative_curve(post_trades, cutoff, post_end, starting_value)
 
+    experiment = {
+        'strategy': strategy,
+        'cutoff_date': cutoff_date,
+        'pre_window': win['pre_window'],
+        'post_window': win['post_window'],
+        'starting_value_reference': round(starting_value, 2),
+        'user_ids': win['user_ids'],
+        'exclude_pyramids': exclude_pyramids,
+    }
+    if source != "live":
+        experiment['source'] = source
+
     return {
-        'experiment': {
-            'strategy': strategy,
-            'cutoff_date': cutoff_date,
-            'pre_window': win['pre_window'],
-            'post_window': win['post_window'],
-            'starting_value_reference': round(starting_value, 2),
-            'user_ids': win['user_ids'],
-            'exclude_pyramids': exclude_pyramids,
-        },
+        'experiment': experiment,
         'pre_trades': serialized_pre,
         'post_trades': serialized_post,
         'cumulative_returns': {
@@ -874,3 +959,47 @@ async def trigger_ab_eval_snapshot_email(
         'decision': result['decision'],
         'post_sell_count': result['post_sell_count'],
     }
+
+
+# ---------------------------------------------------------------------------
+# Shadow paper-trading: listing route
+#
+# Step 3 of the design in docs/shadow-paper-trading-design.md. Lets the
+# operator (and the future ABEval frontend dropdown in Step 5) discover
+# which candidate scoring stacks are running alongside the live scanner.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/shadow-strategies")
+async def list_shadow_strategies(
+    archived: bool = Query(default=False, description="Include archived shadow strategies"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """List shadow strategies.
+
+    By default returns only active (non-archived) rows. Pass ?archived=true to
+    include archived stacks — useful for backfilling the ABEval dashboard
+    when re-running historical reads.
+
+    Powers the ABEval frontend dropdown shipping in Step 5; until then this
+    is the operator's primary surface for confirming a registered stack is
+    still active before invoking /strategy-ab-eval?source=shadow."""
+    q = db.query(ShadowStrategy)
+    if not archived:
+        q = q.filter(ShadowStrategy.archived_at.is_(None))
+    rows = q.order_by(ShadowStrategy.id).all()
+    return [
+        {
+            'id': r.id,
+            'name': r.name,
+            'parent_strategy': r.parent_strategy,
+            'scorer_overrides': r.scorer_overrides,
+            'starting_value': float(r.starting_value) if r.starting_value is not None else None,
+            'description': r.description,
+            'created_at': r.created_at.isoformat() if r.created_at else None,
+            'activated_at': r.activated_at.isoformat() if r.activated_at else None,
+            'archived_at': r.archived_at.isoformat() if r.archived_at else None,
+        }
+        for r in rows
+    ]
