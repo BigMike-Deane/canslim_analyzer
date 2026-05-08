@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useSearchParams, useLocation } from 'react-router-dom'
+import { useSearchParams, useLocation, Link } from 'react-router-dom'
 import { api, formatCurrency, APIError } from '../api'
+import { useAuth } from '../auth'
 import { Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, Area, AreaChart, ReferenceLine, ComposedChart } from 'recharts'
 import Card, { CardHeader } from '../components/Card'
 import { StatusBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge } from '../components/Badge'
@@ -688,6 +689,7 @@ function defaultTabFromPath(pathname) {
 
 export default function Backtest() {
   const location = useLocation()
+  const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
   const pathDefault = defaultTabFromPath(location.pathname)
@@ -820,6 +822,22 @@ export default function Backtest() {
         title="CANSLIM Backtesting"
         subtitle="Test the AI trading strategy against historical data to see how it would have performed."
       />
+
+      <Card variant="glass" className="mb-4" padding="p-3">
+        <div className="text-xs text-dark-300 leading-relaxed">
+          <span className="font-semibold text-dark-100">This evaluates trading-engine changes only.</span>{' '}
+          Scoring-rule changes (weights, quality filters) are rejected — historical
+          replay can't honestly score 2022-era stocks against today's fundamentals.
+          For scoring experiments use{' '}
+          {user?.is_admin ? (
+            <Link to="/admin/ab-eval" className="text-primary-400 hover:text-primary-300 underline">
+              Live A/B
+            </Link>
+          ) : (
+            <span className="text-dark-200">Live A/B (admin)</span>
+          )}.
+        </div>
+      </Card>
 
       <div className="flex gap-1 mb-4 border-b border-dark-700/50 overflow-x-auto">
         {TABS.map(tab => (

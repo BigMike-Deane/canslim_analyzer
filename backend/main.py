@@ -3512,6 +3512,23 @@ async def bulk_add_to_watchlist(data: WatchlistBulkImport, current_user: User = 
 
 # ============== Backtesting API ==============
 
+# Top-level keys in profile_overrides that affect SCORING composition.
+# These cannot be evaluated honestly via backtest replay because
+# BacktestStaticSnapshot freezes today's point-in-time scalars
+# (institutional ownership, analyst counts, sentiment, sector rank) —
+# replaying 2022 prices against 2026-frozen fundamentals is misleading
+# (May 6 Bundle 2 revert: -79pp/-64pp). Route scoring-rule experiments
+# through the live A/B harness instead: GET /api/admin/strategy-ab-eval.
+# See docs/shadow-paper-trading-design.md and canslim_scorer-refactor-may6.md.
+# Note: scope is top-level keys only — empty-dict passes are allowed and
+# deeper nesting (e.g. {"market_state": {"scoring_weights": ...}}) is not
+# checked.
+SCORING_OVERRIDE_KEYS = frozenset({
+    "scoring_weights",   # growth_projection, canslim_score, momentum, breakout, base_quality
+    "quality_filters",   # min_c_score, min_l_score — scoring-gate cutoffs
+})
+
+
 class BacktestCreate(BaseModel):
     """Request model for creating a backtest"""
     name: Optional[str] = Field(None, max_length=200)
@@ -3559,6 +3576,25 @@ async def create_backtest(
 
     if config.end_date > date.today():
         raise HTTPException(400, "end_date cannot be in the future")
+
+    # Phase 3 guard: reject scoring-rule overrides. BacktestStaticSnapshot
+    # freezes today's point-in-time scalars, so replaying historical prices
+    # against composition rules tuned today gives misleading numbers. Live
+    # A/B (/api/admin/strategy-ab-eval) is the honest harness for those.
+    if config.profile_overrides:
+        rejected = SCORING_OVERRIDE_KEYS & set(config.profile_overrides.keys())
+        if rejected:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"profile_overrides keys {sorted(rejected)} affect scoring "
+                    "composition and cannot be evaluated honestly via backtest "
+                    "(BacktestStaticSnapshot freezes today's point-in-time "
+                    "scalars). Route scoring-rule experiments through the live "
+                    "A/B harness: GET /api/admin/strategy-ab-eval. See "
+                    "docs/shadow-paper-trading-design.md."
+                ),
+            )
 
     # Read defaults from yaml config when not provided via API
     from config_loader import config as yaml_config

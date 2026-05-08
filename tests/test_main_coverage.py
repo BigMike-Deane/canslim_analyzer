@@ -3129,3 +3129,94 @@ class TestPortfolioCorrelationRoute:
         d = r.json()
         assert d["matrix"] == []
         assert "error" in d
+
+
+# ────────────────────────────────────────────────────────────────────
+# Phase 3 — backtester scope-down: reject scoring-rule overrides
+# ────────────────────────────────────────────────────────────────────
+
+class TestBacktestScoringOverrideGuard:
+    """Phase 3 guard (POST /api/backtests): reject profile_overrides keys
+    that affect scoring composition. Backtest replay can't honestly
+    evaluate scoring rules because BacktestStaticSnapshot freezes today's
+    point-in-time scalars — see canslim_scorer-refactor-may6.md and the
+    May 6 Bundle 2 revert (-79pp/-64pp). Trading-engine overrides
+    (stop_loss_pct, max_positions, trailing_stops, etc.) stay allowed."""
+
+    def test_scoring_weights_override_rejected(self):
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01",
+                "end_date": "2024-06-01",
+                "starting_cash": 25000.0,
+                "stock_universe": "all",
+                "strategy": "nostate_cs_bear",
+                "profile_overrides": {"scoring_weights": {"canslim_score": 0.40}},
+            })
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "scoring" in detail.lower()
+        assert "/api/admin/strategy-ab-eval" in detail
+        assert "scoring_weights" in detail
+
+    def test_quality_filters_override_rejected(self):
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01",
+                "end_date": "2024-06-01",
+                "starting_cash": 25000.0,
+                "stock_universe": "all",
+                "strategy": "nostate_cs_bear",
+                "profile_overrides": {"quality_filters": {"min_c_score": 12}},
+            })
+        assert r.status_code == 400
+        assert "quality_filters" in r.json()["detail"]
+
+    def test_trading_engine_override_allowed(self):
+        """Trading-engine changes (stop_loss_pct, max_positions, etc.)
+        stay allowed — only scoring-composition keys are blocked."""
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01",
+                "end_date": "2024-06-01",
+                "starting_cash": 25000.0,
+                "stock_universe": "all",
+                "strategy": "nostate_cs_bear",
+                "profile_overrides": {"stop_loss_pct": 6.0, "max_positions": 6},
+            })
+        assert r.status_code != 400, r.text
+
+    def test_no_overrides_allowed(self):
+        """Baseline: no profile_overrides at all → not blocked."""
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01",
+                "end_date": "2024-06-01",
+                "starting_cash": 25000.0,
+                "stock_universe": "all",
+                "strategy": "nostate_cs_bear",
+            })
+        assert r.status_code != 400, r.text
+
+    def test_mixed_scoring_and_trading_keys_rejected_naming_scoring_only(self):
+        """If both scoring AND trading-engine overrides are present, the
+        rejection message names ONLY the scoring keys. Telling the user
+        their stop_loss_pct was rejected would be misleading."""
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01",
+                "end_date": "2024-06-01",
+                "starting_cash": 25000.0,
+                "stock_universe": "all",
+                "strategy": "nostate_cs_bear",
+                "profile_overrides": {"stop_loss_pct": 6.0, "scoring_weights": {}},
+            })
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "scoring_weights" in detail
+        assert "stop_loss_pct" not in detail
