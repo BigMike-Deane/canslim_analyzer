@@ -1088,7 +1088,8 @@ async def sync_fidelity_to_portfolio(current_user: User = Depends(get_current_ac
 
     for fp in fid_positions:
         existing = db.query(PortfolioPosition).filter(
-            PortfolioPosition.ticker == fp.symbol
+            PortfolioPosition.ticker == fp.symbol,
+            PortfolioPosition.user_id == current_user.id,
         ).first()
 
         if existing:
@@ -1108,14 +1109,18 @@ async def sync_fidelity_to_portfolio(current_user: User = Depends(get_current_ac
                 current_value=fp.current_value,
                 gain_loss=fp.total_gain_loss,
                 gain_loss_pct=fp.total_gain_loss_pct,
+                user_id=current_user.id,
             ))
             added += 1
 
-    # Remove portfolio positions not in Fidelity snapshot
+    # Remove portfolio positions not in Fidelity snapshot — scoped to caller.
     fid_symbols = {fp.symbol for fp in fid_positions}
-    stale_positions = db.query(PortfolioPosition).filter(
-        ~PortfolioPosition.ticker.in_(fid_symbols) if fid_symbols else True
-    ).all()
+    stale_q = db.query(PortfolioPosition).filter(
+        PortfolioPosition.user_id == current_user.id,
+    )
+    if fid_symbols:
+        stale_q = stale_q.filter(~PortfolioPosition.ticker.in_(fid_symbols))
+    stale_positions = stale_q.all()
     removed = 0
     for sp in stale_positions:
         db.delete(sp)

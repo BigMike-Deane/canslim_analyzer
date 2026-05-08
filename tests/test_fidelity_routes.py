@@ -698,13 +698,16 @@ class TestFidelitySyncToPortfolio:
 
     def test_updates_existing_position(self):
         """Branch: existing PortfolioPosition with same ticker → updated."""
-        # Seed a stale PortfolioPosition
+        # Seed a stale PortfolioPosition. The sync route scopes by
+        # user_id == current_user.id (the IDOR fix), so seed under user_id=1
+        # to match the auth-bypassed _fake_user.
         db = _db()
         try:
             db.add(PortfolioPosition(
                 ticker="AAPL", shares=50, cost_basis=140.0,
                 current_price=170.0, current_value=8500.0,
                 gain_loss=1500.0, gain_loss_pct=21.4,
+                user_id=1,
             ))
             db.commit()
         finally:
@@ -730,12 +733,15 @@ class TestFidelitySyncToPortfolio:
             db.close()
 
     def test_removes_stale_positions(self):
-        """Branch: PortfolioPosition not in latest snapshot → removed."""
+        """Branch: PortfolioPosition not in latest snapshot → removed.
+        Seed under user_id=1 to match the auth-bypassed _fake_user (post-IDOR-fix
+        sync scopes deletes to current_user.id)."""
         db = _db()
         try:
             db.add(PortfolioPosition(
                 ticker="GONE", shares=10, cost_basis=50, current_price=55,
                 current_value=550, gain_loss=50, gain_loss_pct=10,
+                user_id=1,
             ))
             db.commit()
         finally:

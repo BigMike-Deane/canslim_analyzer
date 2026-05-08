@@ -1788,8 +1788,8 @@ async def start_scan(
 
 
 @app.get("/api/analyze/jobs/{job_id}")
-async def get_job_status(job_id: int, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    """Get status of an analysis job"""
+async def get_job_status(job_id: int, current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    """Get status of an analysis job. Admin-only — mirrors POST /api/analyze/scan, the only producer."""
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
