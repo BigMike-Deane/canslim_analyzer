@@ -16,6 +16,31 @@ const REFRESH_OPTIONS = [
   { label: '6h', seconds: 6 * 60 * 60 },
 ]
 
+// The first dropdown option always points at the live Approach 2 strategy —
+// that's what the weekly email job targets and what's actively trading. Shadow
+// stacks (Step 5+) append below this baseline.
+const LIVE_OPTION = {
+  source: 'live',
+  strategy: 'nostate_cs_bear',
+  label: 'Live: nostate_cs_bear (Approach 2)',
+}
+
+const SELECTED_STORAGE_KEY = 'abeval.selected'
+
+function loadStoredSelection() {
+  try {
+    const raw = localStorage.getItem(SELECTED_STORAGE_KEY)
+    if (!raw) return LIVE_OPTION
+    const parsed = JSON.parse(raw)
+    // Defensive: tolerate a stale shape from earlier code by requiring
+    // the two fields the API calls actually consume.
+    if (parsed && typeof parsed.strategy === 'string' && (parsed.source === 'live' || parsed.source === 'shadow')) {
+      return parsed
+    }
+  } catch {}
+  return LIVE_OPTION
+}
+
 const DECISION_STYLE = {
   keep: { bg: 'bg-emerald-500/10', border: 'border-emerald-500/40', text: 'text-emerald-300', label: 'KEEP' },
   revert: { bg: 'bg-red-500/10', border: 'border-red-500/40', text: 'text-red-300', label: 'REVERT' },
@@ -397,8 +422,8 @@ function DecisionBanner({ summary, post }) {
 
 export default function ABEval() {
   const { user } = useAuth()
-  const [strategy, setStrategy] = useState('nostate_cs_bear')
-  const [strategies, setStrategies] = useState([])
+  const [selected, setSelected] = useState(loadStoredSelection)
+  const [shadows, setShadows] = useState([])
   const [cutoffDate, setCutoffDate] = useState('2026-05-07')
   const [preWindowDays, setPreWindowDays] = useState(30)
   const [postWindowDays, setPostWindowDays] = useState('')  // empty → endpoint default
@@ -425,7 +450,8 @@ export default function ABEval() {
         cache.invalidate('/api/admin/strategy-ab-eval-trades')
       }
       const params = {
-        strategy,
+        strategy: selected.strategy,
+        source: selected.source,
         cutoffDate,
         preWindowDays,
         postWindowDays: postWindowDays === '' ? null : Number(postWindowDays),
@@ -444,25 +470,32 @@ export default function ABEval() {
     } finally {
       setLoading(false)
     }
-  }, [strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids])
+  }, [selected, cutoffDate, preWindowDays, postWindowDays, excludePyramids])
 
   useEffect(() => { fetchEval() }, [fetchEval])
 
-  // Load profile list once for the dropdown. include_hidden=true so research
-  // profiles (cz, hc) are reachable from the admin dashboard. Failure is
-  // silent — the select falls back to a curated 5-option list below.
+  // Load shadow strategy registry for the source selector. Failure is silent —
+  // the dropdown falls back to a single live option below.
   useEffect(() => {
-    api.getStrategies({ include_hidden: true }).then(setStrategies).catch(() => {})
+    api.getShadowStrategies({ archived: false }).then(setShadows).catch(() => {})
   }, [])
+
+  // Persist selection so a reload doesn't bounce shadow watchers back to live.
+  useEffect(() => {
+    try { localStorage.setItem(SELECTED_STORAGE_KEY, JSON.stringify(selected)) } catch {}
+  }, [selected])
 
   // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
   // UTC cron. Disabled until at least one fetch has succeeded so we don't
   // ask the backend to render a snapshot for a window that hasn't validated.
+  // Hidden entirely when shadow is selected: the cron job is hard-coded to
+  // nostate_cs_bear + Approach 2 cutoff, so a "test email" on shadow params
+  // would deliver a misleading body. Shadow email parametrization is Step 6.
   const handleSendTestEmail = useCallback(async () => {
     setEmailSending(true)
     try {
       const res = await api.sendABEvalSnapshotEmail({
-        strategy,
+        strategy: selected.strategy,
         cutoffDate,
         preWindowDays,
         postWindowDays: postWindowDays === '' ? null : Number(postWindowDays),
@@ -478,7 +511,28 @@ export default function ABEval() {
     } finally {
       setEmailSending(false)
     }
-  }, [strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, toast])
+  }, [selected, cutoffDate, preWindowDays, postWindowDays, excludePyramids, toast])
+
+  const isShadow = selected.source === 'shadow'
+
+  // Build the unified options list: one live + N shadow rows. Each option's
+  // value is `${source}:${strategy}` so the same strategy name across sources
+  // (unlikely but possible) doesn't collide.
+  const shadowOptions = useMemo(() => shadows.map(s => ({
+    source: 'shadow',
+    strategy: s.name,
+    label: `Shadow: ${s.name}${s.description ? ` — ${s.description}` : ''}`,
+    parentStrategy: s.parent_strategy,
+    description: s.description,
+  })), [shadows])
+
+  const allOptions = useMemo(() => [LIVE_OPTION, ...shadowOptions], [shadowOptions])
+  const selectedKey = `${selected.source}:${selected.strategy}`
+
+  const handleSelect = useCallback((nextKey) => {
+    const opt = allOptions.find(o => `${o.source}:${o.strategy}` === nextKey)
+    if (opt) setSelected(opt)
+  }, [allOptions])
 
   // Auto-refresh: schedule next bypass-cache fetch when interval > 0
   useEffect(() => {
@@ -534,14 +588,16 @@ export default function ABEval() {
           >
             {loading ? 'Loading…' : 'Refresh'}
           </button>
-          <button
-            onClick={handleSendTestEmail}
-            disabled={emailSending || !lastFetched}
-            title={!lastFetched ? 'Run an evaluation first' : 'Send the same body the weekly Mon 9 AM UTC cron will deliver'}
-            className="px-3 py-1 rounded border border-primary-500/40 text-primary-300 hover:border-primary-500/70 hover:text-primary-200 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {emailSending ? 'Sending…' : 'Send test email'}
-          </button>
+          {!isShadow && (
+            <button
+              onClick={handleSendTestEmail}
+              disabled={emailSending || !lastFetched}
+              title={!lastFetched ? 'Run an evaluation first' : 'Send the same body the weekly Mon 9 AM UTC cron will deliver'}
+              className="px-3 py-1 rounded border border-primary-500/40 text-primary-300 hover:border-primary-500/70 hover:text-primary-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {emailSending ? 'Sending…' : 'Send test email'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -550,29 +606,17 @@ export default function ABEval() {
         <SectionLabel>Experiment</SectionLabel>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
           <label className="block">
-            <span className="text-dark-400">Strategy</span>
+            <span className="text-dark-400">Source</span>
             <select
-              value={strategy}
-              onChange={(e) => setStrategy(e.target.value)}
+              value={selectedKey}
+              onChange={(e) => handleSelect(e.target.value)}
               className="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-dark-100 font-data"
             >
-              {strategies.length > 0 ? (
-                strategies.map(s => (
-                  <option key={s.name} value={s.name}>
-                    {s.label || s.name}{s.hidden ? ' (hidden)' : ''}
-                  </option>
-                ))
-              ) : (
-                // Fallback list mirrors the live + most-experimented profiles
-                // when the /api/strategies fetch hasn't returned yet (or failed).
-                <>
-                  <option value="nostate_cs_bear">Nostate Cs Bear</option>
-                  <option value="nostate_optimized">Nostate Optimized</option>
-                  <option value="nostate_correction_zone">Nostate Correction Zone</option>
-                  <option value="nostate_high_conviction">Nostate High Conviction</option>
-                  <option value="nostate_no_gate">Nostate No Gate</option>
-                </>
-              )}
+              {allOptions.map(opt => (
+                <option key={`${opt.source}:${opt.strategy}`} value={`${opt.source}:${opt.strategy}`}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
           </label>
           <label className="block">
@@ -628,6 +672,15 @@ export default function ABEval() {
           />
           Exclude PYRAMID rows
         </label>
+        {isShadow && (
+          // Shadow stacks share the parent's scoring code until Step 7 wires
+          // up scorer_overrides. Surface that explicitly so a parity readout
+          // isn't misread as "the candidate diverged".
+          <div className="mt-3 text-[11px] text-dark-400 bg-dark-800/40 border border-dark-700/60 rounded px-2 py-1.5">
+            scorer_overrides not yet applied — shadow stack scores identically
+            to {selected.parentStrategy || 'parent_strategy'} until Step 7.
+          </div>
+        )}
       </Card>
 
       {error && (
@@ -753,6 +806,7 @@ export default function ABEval() {
           {/* Experiment metadata */}
           <Card variant="flat" padding="p-3">
             <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-dark-500 font-data">
+              <span>Source: <span className="text-dark-300">{experiment?.source || 'live'}</span></span>
               <span>Strategy: <span className="text-dark-300">{experiment?.strategy}</span></span>
               <span>Users: <span className="text-dark-300">[{experiment?.user_ids?.join(', ')}]</span></span>
               <span>Reference capital: <span className="text-dark-300">${experiment?.starting_value_reference?.toLocaleString()}</span></span>

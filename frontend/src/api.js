@@ -30,6 +30,7 @@ const CACHE_TTL = {
   '/api/system-health': 30,            // 30 sec (monitoring)
   '/api/admin/strategy-ab-eval': 60,   // 1 min — experiment moves slowly, but operator may tweak window params
   '/api/admin/strategy-ab-eval-trades': 60,  // 1 min — per-trade sibling fetched alongside the aggregate
+  '/api/admin/shadow-strategies': 60,  // 1 min — registry only changes on YAML edits + boot
   '/api/notifications': 15,            // 15 sec — list + bell dropdown
   '/api/notifications/unread-count': 15,
 }
@@ -597,26 +598,35 @@ export const api = {
   getBackups: () => request('/api/system/backups'),
 
   // Admin — Live A/B evaluation (Approach 2 keep/revert dashboard)
-  getStrategyABEval: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids } = {}) => {
+  // `source` is optional — defaults to 'live' on the backend. Pass 'shadow'
+  // (with the shadow stack name in `strategy`) to read ShadowTrade rows.
+  getStrategyABEval: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, source } = {}) => {
     const params = new URLSearchParams()
     if (strategy) params.set('strategy', strategy)
     if (cutoffDate) params.set('cutoff_date', cutoffDate)
     if (preWindowDays != null) params.set('pre_window_days', preWindowDays)
     if (postWindowDays != null) params.set('post_window_days', postWindowDays)
     if (excludePyramids != null) params.set('exclude_pyramids', String(excludePyramids))
+    if (source) params.set('source', source)
     return request(`/api/admin/strategy-ab-eval?${params}`)
   },
 
   // Per-trade sibling: trade rows + cumulative-return curves for the chart + table.
-  getStrategyABEvalTrades: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids } = {}) => {
+  getStrategyABEvalTrades: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, source } = {}) => {
     const params = new URLSearchParams()
     if (strategy) params.set('strategy', strategy)
     if (cutoffDate) params.set('cutoff_date', cutoffDate)
     if (preWindowDays != null) params.set('pre_window_days', preWindowDays)
     if (postWindowDays != null) params.set('post_window_days', postWindowDays)
     if (excludePyramids != null) params.set('exclude_pyramids', String(excludePyramids))
+    if (source) params.set('source', source)
     return request(`/api/admin/strategy-ab-eval-trades?${params}`)
   },
+
+  // Shadow paper-trading registry — drives the ABEval source selector.
+  // archived=false (default) returns only active stacks.
+  getShadowStrategies: ({ archived = false } = {}) =>
+    request(`/api/admin/shadow-strategies${archived ? '?archived=true' : ''}`),
 
   // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
   // UTC cron, sent on demand. Used by the ABEval "Send test snapshot email"

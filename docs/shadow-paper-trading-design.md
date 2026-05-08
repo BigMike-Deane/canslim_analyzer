@@ -322,3 +322,37 @@ refactor). Until then, every registered shadow stack effectively scores
 identically to its `parent_strategy`, which is fine for the parity-check
 use case (`shadow_baseline`) but means non-baseline candidates can't yet
 be meaningfully evaluated.
+
+## Step 5 — UI selector (shipped)
+
+Wires the AB-eval dashboard to the shadow registry so operators can read
+shadow verdicts without hand-editing query strings.
+
+- The `Strategy` dropdown on `/admin/ab-eval` is replaced by a `Source`
+  dropdown. First option is fixed: `Live: nostate_cs_bear (Approach 2)`.
+  Subsequent options are pulled from
+  `GET /api/admin/shadow-strategies?archived=false` and rendered as
+  `Shadow: <name> — <description>`.
+- Selecting a shadow option swaps `source=shadow&strategy=<name>` on
+  both `/api/admin/strategy-ab-eval` and
+  `/api/admin/strategy-ab-eval-trades` calls in parallel. Window math,
+  pyramid filter, and pre/post params are unchanged.
+- Selection is persisted to `localStorage["abeval.selected"]` so a page
+  reload mid-watch doesn't bounce the operator back to live.
+- The "Send test email" button is hidden when shadow is selected. The
+  weekly cron (`backend.scheduler._run_weekly_ab_eval_email`) is still
+  hard-coded to `nostate_cs_bear` + the Approach 2 cutoff, so a
+  test-email on shadow params would deliver a misleading body. Email
+  parametrization for shadow stacks is Step 6.
+- A caption renders under the controls when shadow is active:
+  *"scorer_overrides not yet applied — shadow stack scores identically
+  to {parent_strategy} until Step 7."* Sets correct operator
+  expectations during the dogfood window where the only registered
+  stack is the parity-check `shadow_baseline`.
+
+Why ship this before Step 7's real candidate: by the time the first real
+candidate stack lands post-2026-06-18, we want to read its verdict on a
+trusted dashboard, not debug the harness under decision pressure. The
+`shadow_baseline` parity readout against live `nostate_cs_bear` is the
+acceptance test — they should converge to identical SELL counts and
+decision verdicts.
