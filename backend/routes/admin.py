@@ -524,6 +524,100 @@ def _build_warnings(pre_window: dict, post_window: dict, pre: dict, post: dict) 
     return warnings
 
 
+def _resolve_ab_window(
+    strategy: str,
+    cutoff_date: str,
+    pre_window_days: int,
+    post_window_days: Optional[int],
+    exclude_pyramids: bool,
+    db: Session,
+) -> dict:
+    """Shared window/user/trade resolution for the live A/B endpoints.
+
+    Returns a dict with the parsed cutoff, pre/post trade lists, window
+    descriptors, starting_value, and user_ids. Both /strategy-ab-eval and
+    /strategy-ab-eval-trades call this; keeping it shared prevents drift
+    between the aggregate dashboard and the per-trade attribution view.
+
+    Raises HTTPException(400/404) on invalid inputs — both endpoints rely
+    on identical error wording, which is locked by the existing tests."""
+    try:
+        cutoff = datetime.fromisoformat(cutoff_date).replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"cutoff_date '{cutoff_date}' is not a valid ISO date")
+
+    now = datetime.now(timezone.utc)
+    if cutoff > now:
+        raise HTTPException(status_code=400, detail=f"cutoff_date {cutoff_date} is in the future")
+
+    days_since_cutoff = max((now - cutoff).days, 1)
+    if post_window_days is None:
+        post_window_days = min(days_since_cutoff, 90)
+    elif post_window_days > days_since_cutoff:
+        raise HTTPException(
+            status_code=400,
+            detail=f"post_window_days={post_window_days} exceeds days-since-cutoff={days_since_cutoff}",
+        )
+
+    pre_start = cutoff - timedelta(days=pre_window_days)
+    post_end = cutoff + timedelta(days=post_window_days)
+
+    user_rows = db.query(AIPortfolioConfig.user_id, AIPortfolioConfig.starting_cash).filter(
+        AIPortfolioConfig.strategy == strategy
+    ).all()
+    if not user_rows:
+        raise HTTPException(status_code=404, detail=f"No users currently on strategy '{strategy}'")
+
+    user_ids = [row.user_id for row in user_rows]
+    starting_value = sum((row.starting_cash or 25000.0) for row in user_rows)
+
+    base = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id.in_(user_ids),
+        AIPortfolioTrade.executed_at >= pre_start,
+        AIPortfolioTrade.executed_at < post_end,
+    )
+    if exclude_pyramids:
+        # Same shape as strategy-health: filter both action='PYRAMID' rows
+        # AND action='BUY' + reason LIKE 'PYRAMID:%' rows. NULL reasons MUST
+        # be preserved — (~col.like(...)) is NULL for NULL → SQL false, so
+        # wrap in OR with IS NULL.
+        base = base.filter(
+            ~AIPortfolioTrade.action.in_(['PYRAMID']),
+            or_(
+                AIPortfolioTrade.reason.is_(None),
+                ~AIPortfolioTrade.reason.like('PYRAMID:%'),
+            ),
+        )
+
+    pre_trades = base.filter(AIPortfolioTrade.executed_at < cutoff).order_by(AIPortfolioTrade.executed_at).all()
+    post_trades = base.filter(AIPortfolioTrade.executed_at >= cutoff).order_by(AIPortfolioTrade.executed_at).all()
+
+    pre_window = {
+        'start': pre_start.date().isoformat(),
+        'end': cutoff.date().isoformat(),
+        'days': pre_window_days,
+    }
+    post_window = {
+        'start': cutoff.date().isoformat(),
+        'end': post_end.date().isoformat(),
+        'days': post_window_days,
+    }
+
+    return {
+        'cutoff': cutoff,
+        'pre_start': pre_start,
+        'post_end': post_end,
+        'pre_window': pre_window,
+        'post_window': post_window,
+        'pre_window_days': pre_window_days,
+        'post_window_days': post_window_days,
+        'pre_trades': pre_trades,
+        'post_trades': post_trades,
+        'starting_value': starting_value,
+        'user_ids': user_ids,
+    }
+
+
 @router.get("/strategy-ab-eval")
 async def run_strategy_ab_comparison(
     strategy: str = Query(..., description="Strategy profile name, e.g. 'nostate_optimized'"),
@@ -551,64 +645,18 @@ async def run_strategy_ab_comparison(
         GET /api/admin/strategy-ab-eval?strategy=nostate_optimized
             &cutoff_date=2026-05-07&pre_window_days=30&post_window_days=14
     """
-    # --- Validation ----------------------------------------------------------
-    try:
-        cutoff = datetime.fromisoformat(cutoff_date).replace(tzinfo=timezone.utc)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"cutoff_date '{cutoff_date}' is not a valid ISO date")
-
-    now = datetime.now(timezone.utc)
-    if cutoff > now:
-        raise HTTPException(status_code=400, detail=f"cutoff_date {cutoff_date} is in the future")
-
-    days_since_cutoff = max((now - cutoff).days, 1)
-    if post_window_days is None:
-        post_window_days = min(days_since_cutoff, 90)
-    elif post_window_days > days_since_cutoff:
-        raise HTTPException(
-            status_code=400,
-            detail=f"post_window_days={post_window_days} exceeds days-since-cutoff={days_since_cutoff}",
-        )
-
-    pre_start = cutoff - timedelta(days=pre_window_days)
-    post_end = cutoff + timedelta(days=post_window_days)
-
-    # --- User scoping --------------------------------------------------------
-    user_rows = db.query(AIPortfolioConfig.user_id, AIPortfolioConfig.starting_cash).filter(
-        AIPortfolioConfig.strategy == strategy
-    ).all()
-    if not user_rows:
-        raise HTTPException(status_code=404, detail=f"No users currently on strategy '{strategy}'")
-
-    user_ids = [row.user_id for row in user_rows]
-    starting_value = sum((row.starting_cash or 25000.0) for row in user_rows)
-
-    # --- Trade query ---------------------------------------------------------
-    base = db.query(AIPortfolioTrade).filter(
-        AIPortfolioTrade.user_id.in_(user_ids),
-        AIPortfolioTrade.executed_at >= pre_start,
-        AIPortfolioTrade.executed_at < post_end,
+    win = _resolve_ab_window(
+        strategy, cutoff_date, pre_window_days, post_window_days,
+        exclude_pyramids, db,
     )
-    if exclude_pyramids:
-        # Same shape as strategy-health: filter both action='PYRAMID' rows
-        # AND action='BUY' + reason LIKE 'PYRAMID:%' rows (live-trader sync
-        # drift fixed in commit 5269dbf, but legacy rows linger).
-        # NULL reasons must be PRESERVED — wrap reason filter in an OR with
-        # IS NULL because (~col.like(...)) is NULL for NULL → SQL false.
-        base = base.filter(
-            ~AIPortfolioTrade.action.in_(['PYRAMID']),
-            or_(
-                AIPortfolioTrade.reason.is_(None),
-                ~AIPortfolioTrade.reason.like('PYRAMID:%'),
-            ),
-        )
+    pre_trades = win['pre_trades']
+    post_trades = win['post_trades']
+    starting_value = win['starting_value']
+    pre_window = win['pre_window']
+    post_window = win['post_window']
 
-    pre_trades = base.filter(AIPortfolioTrade.executed_at < cutoff).order_by(AIPortfolioTrade.executed_at).all()
-    post_trades = base.filter(AIPortfolioTrade.executed_at >= cutoff).order_by(AIPortfolioTrade.executed_at).all()
-
-    # --- Summarize -----------------------------------------------------------
-    pre_summary = _summarize_window(pre_trades, pre_window_days, starting_value)
-    post_summary = _summarize_window(post_trades, post_window_days, starting_value)
+    pre_summary = _summarize_window(pre_trades, win['pre_window_days'], starting_value)
+    post_summary = _summarize_window(post_trades, win['post_window_days'], starting_value)
     delta = _compute_delta(pre_summary, post_summary)
 
     criteria = {
@@ -618,17 +666,6 @@ async def run_strategy_ab_comparison(
     }
     decision = _decide(pre_summary, post_summary, delta, criteria)
 
-    pre_window = {
-        'start': pre_start.date().isoformat(),
-        'end': cutoff.date().isoformat(),
-        'days': pre_window_days,
-    }
-    post_window = {
-        'start': cutoff.date().isoformat(),
-        'end': post_end.date().isoformat(),
-        'days': post_window_days,
-    }
-
     return {
         'experiment': {
             'strategy': strategy,
@@ -636,7 +673,7 @@ async def run_strategy_ab_comparison(
             'pre_window': pre_window,
             'post_window': post_window,
             'starting_value_reference': round(starting_value, 2),
-            'user_ids': user_ids,
+            'user_ids': win['user_ids'],
             'exclude_pyramids': exclude_pyramids,
         },
         'summary': decision,
@@ -644,4 +681,154 @@ async def run_strategy_ab_comparison(
         'post': post_summary,
         'delta': delta,
         'warnings': _build_warnings(pre_window, post_window, pre_summary, post_summary),
+    }
+
+
+def _serialize_trade_row(t, prior_buys_by_ticker_user: dict) -> dict:
+    """Shape one AIPortfolioTrade row for the per-trade endpoint.
+
+    realized_pct uses the same cost_total = cost_basis * shares formula as
+    _per_trade_returns; null when cost_basis is missing.
+
+    hold_days for SELLs prefers the persisted holding_days column (set by
+    ai_trader on close), falling back to a (executed_at - prior_buy.executed_at)
+    diff if a prior BUY for the same (ticker, user) is in our window.
+    None on BUY/PYRAMID rows by design — there's nothing to hold yet."""
+    realized_pct = None
+    if t.action == 'SELL' and t.realized_gain is not None and t.cost_basis and t.shares:
+        try:
+            cost_total = float(t.cost_basis) * float(t.shares)
+            if cost_total > 0:
+                realized_pct = round(float(t.realized_gain) / cost_total * 100, 2)
+        except Exception:
+            pass
+
+    hold_days = None
+    if t.action == 'SELL':
+        if t.holding_days is not None:
+            hold_days = int(t.holding_days)
+        else:
+            key = (t.ticker, t.user_id)
+            prior = prior_buys_by_ticker_user.get(key)
+            if prior is not None and t.executed_at and prior.executed_at:
+                hold_days = max((t.executed_at - prior.executed_at).days, 0)
+
+    return {
+        'id': t.id,
+        'ticker': t.ticker,
+        'action': t.action,
+        'executed_at': t.executed_at.isoformat() if t.executed_at else None,
+        'shares': float(t.shares) if t.shares is not None else None,
+        'price': float(t.price) if t.price is not None else None,
+        'cost_basis': float(t.cost_basis) if t.cost_basis is not None else None,
+        'realized_gain': float(t.realized_gain) if t.realized_gain is not None else None,
+        'realized_pct': realized_pct,
+        'reason': t.reason,
+        'hold_days': hold_days,
+        'user_id': t.user_id,
+    }
+
+
+def _build_cumulative_curve(trades: list, anchor_date, end_date, starting_value: float) -> list:
+    """Build a stepped cumulative-return curve over [anchor_date, end_date].
+
+    Walks SELL rows chronologically and accumulates realized_gain /
+    starting_value * 100. Anchored at 0% on anchor_date and emits a row
+    each time cum_pct changes plus one terminal row at end_date so the
+    chart line extends across the full window even after the final SELL.
+
+    BUY/PYRAMID rows do not affect the curve — only realized P&L moves it."""
+    out = [{'date': anchor_date.date().isoformat(), 'cum_pct': 0.0}]
+    if starting_value <= 0:
+        out.append({'date': end_date.date().isoformat(), 'cum_pct': 0.0})
+        return out
+
+    sells = sorted(
+        [t for t in trades if t.action == 'SELL' and t.realized_gain is not None],
+        key=lambda x: x.executed_at,
+    )
+    cum_gain = 0.0
+    for t in sells:
+        try:
+            cum_gain += float(t.realized_gain)
+        except Exception:
+            continue
+        cum_pct = round((cum_gain / starting_value) * 100, 4)
+        date_iso = t.executed_at.date().isoformat() if t.executed_at else anchor_date.date().isoformat()
+        # If multiple SELLs land on the same day, overwrite the prior same-day
+        # entry rather than emitting duplicates — chart libs render either
+        # interpretation but a single row per day is cleaner.
+        if out and out[-1]['date'] == date_iso:
+            out[-1]['cum_pct'] = cum_pct
+        else:
+            out.append({'date': date_iso, 'cum_pct': cum_pct})
+
+    terminal_iso = end_date.date().isoformat()
+    if out[-1]['date'] != terminal_iso:
+        out.append({'date': terminal_iso, 'cum_pct': out[-1]['cum_pct']})
+    return out
+
+
+@router.get("/strategy-ab-eval-trades")
+async def run_strategy_ab_trades(
+    strategy: str = Query(..., description="Strategy profile name, e.g. 'nostate_optimized'"),
+    cutoff_date: str = Query(..., description="ISO date marking experiment start"),
+    pre_window_days: int = Query(default=30, ge=1, le=365),
+    post_window_days: Optional[int] = Query(default=None),
+    exclude_pyramids: bool = Query(default=True),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Per-trade attribution sibling of /strategy-ab-eval.
+
+    Same window math, same user scope, same pyramid filter — but instead of
+    aggregate stats it returns the row list and a cumulative-return curve
+    per window. Built for the ABEval dashboard chart + collapsible trade
+    table: when the dashboard verdict is 'marginal', per-trade visibility
+    turns "the average drifted" into "this specific trade moved it"."""
+    win = _resolve_ab_window(
+        strategy, cutoff_date, pre_window_days, post_window_days,
+        exclude_pyramids, db,
+    )
+    pre_trades = win['pre_trades']
+    post_trades = win['post_trades']
+    starting_value = win['starting_value']
+    cutoff = win['cutoff']
+    pre_start = win['pre_start']
+    post_end = win['post_end']
+
+    # Build a (ticker, user_id) → most-recent-prior-BUY map for hold_days
+    # fallback. Walk ALL trades chronologically (pre + post) so a SELL in
+    # post can match a BUY that landed in pre.
+    prior_buy_map: dict = {}
+    serialized_pre: list = []
+    serialized_post: list = []
+    for t in pre_trades:
+        serialized_pre.append(_serialize_trade_row(t, prior_buy_map))
+        if t.action == 'BUY':
+            prior_buy_map[(t.ticker, t.user_id)] = t
+    for t in post_trades:
+        serialized_post.append(_serialize_trade_row(t, prior_buy_map))
+        if t.action == 'BUY':
+            prior_buy_map[(t.ticker, t.user_id)] = t
+
+    pre_curve = _build_cumulative_curve(pre_trades, pre_start, cutoff, starting_value)
+    post_curve = _build_cumulative_curve(post_trades, cutoff, post_end, starting_value)
+
+    return {
+        'experiment': {
+            'strategy': strategy,
+            'cutoff_date': cutoff_date,
+            'pre_window': win['pre_window'],
+            'post_window': win['post_window'],
+            'starting_value_reference': round(starting_value, 2),
+            'user_ids': win['user_ids'],
+            'exclude_pyramids': exclude_pyramids,
+        },
+        'pre_trades': serialized_pre,
+        'post_trades': serialized_post,
+        'cumulative_returns': {
+            'pre': pre_curve,
+            'post': post_curve,
+        },
     }

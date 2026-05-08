@@ -1,7 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import {
+  ComposedChart, Line, XAxis, YAxis, ResponsiveContainer,
+  Tooltip, Legend, ReferenceLine,
+} from 'recharts'
 import { api, cache } from '../api'
 import { useAuth } from '../auth'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
+import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 
 const REFRESH_OPTIONS = [
   { label: 'Off', seconds: 0 },
@@ -115,6 +120,254 @@ function WindowSummary({ title, subtitle, summary, accent }) {
   )
 }
 
+// Decision color drives both the post-window summary card accent AND the
+// post line on the cumulative-return chart, so the visual identity of
+// "post window" stays consistent across the page.
+function decisionAccent(decision) {
+  if (decision === 'revert') return chartColors.pnlDown
+  if (decision === 'keep') return chartColors.pnlUp
+  return chartColors.brand // marginal / insufficient_data → amber
+}
+
+// Merge pre + post curves into a single data array for Recharts. Each
+// row carries either pre_pct or post_pct (or both, when timestamps
+// align), letting one chart render both lines on a shared X axis. The
+// cutoff date is the only point both lines share — pre ends at 0% there,
+// post begins at 0% there, producing the visual "fork" at the experiment
+// boundary.
+function mergeCurves(curves) {
+  if (!curves) return []
+  const map = new Map()
+  for (const p of curves.pre || []) {
+    if (!p) continue
+    const row = map.get(p.date) || { date: p.date }
+    row.pre_pct = p.cum_pct
+    map.set(p.date, row)
+  }
+  for (const p of curves.post || []) {
+    if (!p) continue
+    const row = map.get(p.date) || { date: p.date }
+    row.post_pct = p.cum_pct
+    map.set(p.date, row)
+  }
+  return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date))
+}
+
+function CumulativeReturnChart({ trades, cutoffDate, decision }) {
+  const merged = useMemo(() => mergeCurves(trades?.cumulative_returns), [trades])
+  const postSells = (trades?.post_trades || []).filter(
+    (t) => t.action === 'SELL' && t.realized_gain != null
+  ).length
+  if (!merged.length) return null
+
+  const postColor = decisionAccent(decision)
+  return (
+    <Card>
+      <CardHeader
+        title="Cumulative realized return"
+        subtitle="Each line anchored at 0% on its window start. Post-cutoff line forks at the experiment boundary."
+      />
+      {postSells === 0 && (
+        <div className="mb-3 text-[11px] text-amber-300/90 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1.5">
+          No post-cutoff SELLs yet — chart anchors at 0%. Re-check as trades close.
+        </div>
+      )}
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={merged} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+          <XAxis
+            dataKey="date"
+            tick={{ fill: chartAxis.tick, fontSize: 10 }}
+            axisLine={{ stroke: chartAxis.axisLine }}
+            tickLine={{ stroke: chartAxis.axisLine }}
+            minTickGap={24}
+          />
+          <YAxis
+            tick={{ fill: chartAxis.tick, fontSize: 10 }}
+            axisLine={{ stroke: chartAxis.axisLine }}
+            tickLine={{ stroke: chartAxis.axisLine }}
+            tickFormatter={(v) => `${Number(v).toFixed(1)}%`}
+            width={50}
+          />
+          <Tooltip
+            contentStyle={tooltipStyle}
+            labelStyle={tooltipLabelStyle}
+            formatter={(v, name) => [`${Number(v).toFixed(2)}%`, name]}
+          />
+          <Legend
+            wrapperStyle={{ fontSize: 11, color: chartAxis.tick }}
+            iconType="line"
+            // Hide on small screens — chart legend is non-essential there
+            // and the axis already implies the colors.
+            content={({ payload }) => (
+              <div className="hidden sm:flex justify-center gap-4 text-[11px] mt-1">
+                {payload?.map((entry) => (
+                  <span key={entry.value} style={{ color: entry.color }}>
+                    {entry.value}
+                  </span>
+                ))}
+              </div>
+            )}
+          />
+          <ReferenceLine
+            x={cutoffDate}
+            stroke={chartAxis.reference}
+            strokeDasharray="3 3"
+            label={{ value: 'cutoff', fill: chartAxis.tick, fontSize: 10, position: 'top' }}
+          />
+          <Line
+            type="monotone"
+            dataKey="pre_pct"
+            name="Pre-cutoff"
+            stroke={chartColors.spy}
+            strokeWidth={2}
+            dot={false}
+            connectNulls
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="post_pct"
+            name="Post-cutoff"
+            stroke={postColor}
+            strokeWidth={2}
+            dot={false}
+            connectNulls
+            isAnimationActive={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </Card>
+  )
+}
+
+const TABLE_COLUMNS = [
+  { key: 'executed_at', label: 'Date' },
+  { key: 'ticker', label: 'Ticker' },
+  { key: 'action', label: 'Action' },
+  { key: 'price', label: 'Entry/Exit' },
+  { key: 'cost_basis', label: 'Cost basis' },
+  { key: 'realized_pct', label: 'Return %' },
+  { key: 'hold_days', label: 'Hold (d)' },
+  { key: 'reason', label: 'Reason' },
+]
+
+function compareValues(a, b, dir) {
+  // Nulls always sort last regardless of direction so missing data
+  // doesn't crowd the top of the table.
+  if (a == null && b == null) return 0
+  if (a == null) return 1
+  if (b == null) return -1
+  if (typeof a === 'number' && typeof b === 'number') {
+    return dir === 'asc' ? a - b : b - a
+  }
+  const av = String(a), bv = String(b)
+  return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
+}
+
+function PostTradesTable({ rows, open, onToggle, sortKey, sortDir, onSort }) {
+  const sorted = useMemo(() => {
+    const arr = [...(rows || [])]
+    arr.sort((a, b) => compareValues(a[sortKey], b[sortKey], sortDir))
+    return arr
+  }, [rows, sortKey, sortDir])
+
+  const fmt = (col, val) => {
+    if (val == null) return '–'
+    if (col === 'executed_at') return val.slice(0, 10)
+    if (col === 'realized_pct') return `${val > 0 ? '+' : ''}${Number(val).toFixed(2)}%`
+    if (col === 'price' || col === 'cost_basis') return `$${Number(val).toFixed(2)}`
+    return String(val)
+  }
+
+  return (
+    <Card>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-baseline justify-between text-left"
+        type="button"
+      >
+        <CardHeader
+          title={`Post-cutoff trades (${rows?.length ?? 0})`}
+          subtitle="Per-trade attribution. Sort by clicking column headers."
+        />
+        <span className="text-xs text-dark-400 ml-3 whitespace-nowrap">
+          {open ? 'Hide ▲' : 'Show ▼'}
+        </span>
+      </button>
+      {open && (
+        <>
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto mt-2">
+            <table className="w-full text-xs font-data">
+              <thead>
+                <tr className="text-dark-400 border-b border-dark-700/60">
+                  {TABLE_COLUMNS.map((col) => (
+                    <th
+                      key={col.key}
+                      onClick={() => onSort(col.key)}
+                      className="text-left py-1.5 px-2 cursor-pointer hover:text-dark-200 select-none"
+                    >
+                      {col.label}
+                      {sortKey === col.key && (
+                        <span className="ml-1 text-primary-400">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.length === 0 && (
+                  <tr>
+                    <td colSpan={TABLE_COLUMNS.length} className="py-3 text-center text-dark-500 italic">
+                      No post-cutoff trades in this window.
+                    </td>
+                  </tr>
+                )}
+                {sorted.map((row) => (
+                  <tr key={row.id} className="border-b border-dark-800/60 hover:bg-dark-800/40">
+                    {TABLE_COLUMNS.map((col) => {
+                      const isReturn = col.key === 'realized_pct'
+                      const cls = isReturn ? deltaClass(row.realized_pct) : 'text-dark-200'
+                      return (
+                        <td key={col.key} className={`py-1.5 px-2 ${cls}`}>
+                          {fmt(col.key, row[col.key])}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* Mobile condensed list */}
+          <div className="sm:hidden mt-2 space-y-2">
+            {sorted.length === 0 && (
+              <div className="text-xs text-dark-500 italic">No post-cutoff trades in this window.</div>
+            )}
+            {sorted.map((row) => (
+              <div key={row.id} className="border border-dark-700/60 rounded p-2">
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="font-bold text-dark-100">{row.ticker}</span>
+                  <span className={`font-data ${deltaClass(row.realized_pct)}`}>
+                    {fmt('realized_pct', row.realized_pct)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between text-[11px] text-dark-400 mt-1">
+                  <span>{row.action} · {fmt('executed_at', row.executed_at)}</span>
+                  <span>{row.hold_days != null ? `${row.hold_days}d` : ''}</span>
+                </div>
+                {row.reason && (
+                  <div className="text-[11px] text-dark-500 mt-1 truncate">{row.reason}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Card>
+  )
+}
+
 function DecisionBanner({ summary, post }) {
   const decision = summary?.decision || 'insufficient_data'
   const style = DECISION_STYLE[decision] || DECISION_STYLE.insufficient_data
@@ -150,24 +403,37 @@ export default function ABEval() {
   const [excludePyramids, setExcludePyramids] = useState(true)
   const [refreshSeconds, setRefreshSeconds] = useState(6 * 60 * 60)
   const [data, setData] = useState(null)
+  const [trades, setTrades] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [lastFetched, setLastFetched] = useState(null)
+  const [tableOpen, setTableOpen] = useState(false)
+  const [sortKey, setSortKey] = useState('executed_at')
+  const [sortDir, setSortDir] = useState('desc')
   const refreshTimer = useRef(null)
 
   const fetchEval = useCallback(async (opts = {}) => {
     setLoading(true)
     setError('')
     try {
-      if (opts.bypassCache) cache.invalidate('/api/admin/strategy-ab-eval')
-      const result = await api.getStrategyABEval({
+      if (opts.bypassCache) {
+        cache.invalidate('/api/admin/strategy-ab-eval')
+        cache.invalidate('/api/admin/strategy-ab-eval-trades')
+      }
+      const params = {
         strategy,
         cutoffDate,
         preWindowDays,
         postWindowDays: postWindowDays === '' ? null : Number(postWindowDays),
         excludePyramids,
-      })
-      setData(result)
+      }
+      // Fetch both endpoints in parallel — same window math, complementary data.
+      const [aggregate, perTrade] = await Promise.all([
+        api.getStrategyABEval(params),
+        api.getStrategyABEvalTrades(params),
+      ])
+      setData(aggregate)
+      setTrades(perTrade)
       setLastFetched(new Date())
     } catch (e) {
       setError(e.message || 'Fetch failed')
@@ -335,6 +601,13 @@ export default function ABEval() {
             />
           </div>
 
+          {/* Cumulative-return chart */}
+          <CumulativeReturnChart
+            trades={trades}
+            cutoffDate={experiment?.post_window?.start}
+            decision={summary?.decision}
+          />
+
           {/* Delta panel with thresholds */}
           <Card>
             <CardHeader
@@ -402,6 +675,19 @@ export default function ABEval() {
               </ul>
             </Card>
           )}
+
+          {/* Post-cutoff trade table */}
+          <PostTradesTable
+            rows={trades?.post_trades}
+            open={tableOpen}
+            onToggle={() => setTableOpen((v) => !v)}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={(k) => {
+              if (k === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+              else { setSortKey(k); setSortDir('desc') }
+            }}
+          />
 
           {/* Experiment metadata */}
           <Card variant="flat" padding="p-3">
