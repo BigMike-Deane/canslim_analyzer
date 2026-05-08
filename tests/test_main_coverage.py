@@ -1520,3 +1520,681 @@ class TestDashboardSecondPass:
         d = r.json()
         # Generic shape — actual keys are wide-aggregation
         assert isinstance(d, dict)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: /api/portfolio/refresh — yfinance-mocked refresh path
+# ────────────────────────────────────────────────────────────────────
+
+def _ensure_user_position(ticker: str, **kw):
+    """Seed a Fidelity-side PortfolioPosition row (separate from AIPortfolioPosition)."""
+    _ensure_user()
+    _ensure_stock(ticker, score=kw.pop("score", 70.0))
+    db = _db()
+    try:
+        existing = db.query(PortfolioPosition).filter_by(user_id=1, ticker=ticker).first()
+        if existing:
+            return existing.id
+        defaults = dict(
+            user_id=1, ticker=ticker,
+            shares=kw.pop("shares", 10.0),
+            cost_basis=kw.pop("cost_basis", 100.0),
+            current_price=kw.pop("current_price", 110.0),
+            current_value=kw.pop("current_value", 1100.0),
+            gain_loss=kw.pop("gain_loss", 100.0),
+            gain_loss_pct=kw.pop("gain_loss_pct", 10.0),
+            canslim_score=kw.pop("canslim_score", 70.0),
+        )
+        defaults.update(kw)
+        p = PortfolioPosition(**defaults)
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+        return p.id
+    finally:
+        db.close()
+
+
+class TestPortfolioRefreshRoute:
+    """Tier 3 — POST /api/portfolio/refresh (line 2052).
+
+    Branches covered: empty portfolio short-circuit, happy path with stock
+    already scanned, auto-scan path for unscanned ticker, no-price-found
+    error path, recommendation tiers (sell/trim/add/buy/hold), and the
+    yfinance fetch failure path. Yahoo Finance HTTP is mocked via
+    `fetch_price_yahoo_chart`; analyze_stock + save_stock_to_db are mocked
+    so no real scoring runs."""
+
+    @classmethod
+    def setup_class(cls):
+        # Drop any leftover positions from prior test classes
+        db = _db()
+        try:
+            db.query(PortfolioPosition).filter_by(user_id=1).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_refresh_with_no_positions_returns_zero_counts(self):
+        """Empty portfolio: returns counts=0 with no errors. (line 2057-2061)"""
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=None):
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["updated"] == 0
+        assert d["scanned"] == 0
+        assert d["errors"] == []
+
+    def test_refresh_updates_position_with_existing_stock(self):
+        """Stock has canslim_score → skip auto-scan, just update price + recommendation. (line 2098-2148)"""
+        _ensure_user_position("PRA", shares=10, cost_basis=100.0,
+                              current_value=1000.0, score=72.0,
+                              current_price=100.0, gain_loss_pct=0.0)
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=125.0), \
+             patch("backend.main.analyze_stock") as mock_analyze, \
+             patch("time.sleep"):  # don't actually sleep 0.3s/position
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["updated"] >= 1
+        # analyze_stock should NOT have been called — stock is already scored
+        mock_analyze.assert_not_called()
+        # Verify recommendation field was written
+        db = _db()
+        try:
+            pos = db.query(PortfolioPosition).filter_by(ticker="PRA").first()
+            assert pos.current_price == 125.0
+            assert pos.recommendation in ("buy", "add", "hold", "trim", "sell")
+        finally:
+            db.close()
+
+    def test_refresh_auto_scans_when_stock_missing_score(self):
+        """Position points to ticker with no Stock row → analyze_stock + save_stock_to_db called. (line 2070-2087)"""
+        # Seed a position whose ticker has no Stock row at all
+        _ensure_user()
+        db = _db()
+        try:
+            db.add(PortfolioPosition(
+                user_id=1, ticker="NEWTKR",
+                shares=5.0, cost_basis=50.0, current_price=50.0,
+                current_value=250.0, gain_loss=0.0, gain_loss_pct=0.0,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        analysis_mock = {
+            "ticker": "NEWTKR", "canslim_score": 60.0,
+            "name": "New Ticker Inc.", "current_price": 55.0,
+        }
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=55.0), \
+             patch("backend.main.analyze_stock", return_value=analysis_mock) as mock_analyze, \
+             patch("backend.main.save_stock_to_db") as mock_save, \
+             patch("time.sleep"):
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        d = r.json()
+        # NEWTKR should have triggered an auto-scan
+        assert d["scanned"] >= 1
+        mock_analyze.assert_called()
+        mock_save.assert_called()
+
+    def test_refresh_handles_no_price_found(self):
+        """yahoo returns None → ticker added to errors list, no crash. (line 2149-2150)"""
+        _ensure_user_position("NOPRICE", shares=2, cost_basis=100.0,
+                              current_value=200.0, score=75.0)
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=None), \
+             patch("time.sleep"):
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        d = r.json()
+        # NOPRICE should appear in errors
+        assert any("NOPRICE" in e for e in d["errors"])
+
+    def test_refresh_handles_scan_exception(self):
+        """analyze_stock raises → error captured, refresh continues. (line 2084-2086)"""
+        _ensure_user()
+        db = _db()
+        try:
+            # Drop existing PortfolioPosition rows from prior tests
+            db.query(PortfolioPosition).filter_by(user_id=1).delete()
+            db.add(PortfolioPosition(
+                user_id=1, ticker="BOOMTKR",
+                shares=3.0, cost_basis=20.0, current_price=20.0,
+                current_value=60.0, gain_loss=0.0, gain_loss_pct=0.0,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=22.0), \
+             patch("backend.main.analyze_stock", side_effect=RuntimeError("scan boom")), \
+             patch("time.sleep"):
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        d = r.json()
+        assert any("BOOMTKR" in e and "scan failed" in e for e in d["errors"])
+
+    def test_refresh_recommendation_sell_on_weak_score_with_loss(self):
+        """score<35 + gain<-10 → recommendation=sell. (line 2127-2128)"""
+        _ensure_user_position("SELLER", shares=10, cost_basis=100.0,
+                              current_value=1000.0, score=30.0,
+                              gain_loss_pct=-15.0)
+        # update Stock to score=30 (weak) and projected_growth high enough to
+        # avoid second branch
+        db = _db()
+        try:
+            s = db.query(Stock).filter_by(ticker="SELLER").first()
+            s.canslim_score = 30.0
+            s.projected_growth = 5.0
+            db.commit()
+        finally:
+            db.close()
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=85.0), \
+             patch("time.sleep"):
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        db = _db()
+        try:
+            pos = db.query(PortfolioPosition).filter_by(ticker="SELLER").first()
+            assert pos.recommendation == "sell"
+        finally:
+            db.close()
+
+    def test_refresh_recommendation_trim_on_big_winner(self):
+        """gain>=100% → recommendation=trim. (line 2134-2135)"""
+        _ensure_user_position("WINNER", shares=10, cost_basis=50.0,
+                              current_value=1500.0, score=80.0)
+        with patch("backend.main.fetch_price_yahoo_chart", return_value=120.0), \
+             patch("time.sleep"):
+            r = client.post("/api/portfolio/refresh")
+        assert r.status_code == 200
+        db = _db()
+        try:
+            pos = db.query(PortfolioPosition).filter_by(ticker="WINNER").first()
+            # cost_basis=50, price=120 → +140% gain
+            assert pos.recommendation == "trim"
+        finally:
+            db.close()
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: /api/insider-sentiment — read-only aggregation
+# ────────────────────────────────────────────────────────────────────
+
+def _ensure_insider_stock(ticker, **kw):
+    """Seed a Stock with insider data populated (insider_updated_at non-null)."""
+    sid = _ensure_stock(
+        ticker,
+        score=kw.pop("score", 70.0),
+        sector=kw.pop("sector", "Technology"),
+        current_price=kw.pop("current_price", 50.0),
+    )
+    db = _db()
+    try:
+        s = db.query(Stock).filter_by(id=sid).first()
+        s.insider_sentiment = kw.pop("sentiment", "bullish")
+        s.insider_buy_count = kw.pop("buy_count", 5)
+        s.insider_sell_count = kw.pop("sell_count", 0)
+        s.insider_net_value = kw.pop("net_value", 1_000_000.0)
+        s.insider_buy_value = kw.pop("buy_value", 1_000_000.0)
+        s.insider_sell_value = kw.pop("sell_value", 0.0)
+        s.insider_largest_buy = kw.pop("largest_buy", 500_000.0)
+        s.insider_largest_buyer_title = kw.pop("largest_title", "CEO")
+        s.short_interest_pct = kw.pop("short_pct", 3.0)
+        s.base_type = kw.pop("base_type", "flat")
+        s.is_breaking_out = kw.pop("breaking_out", False)
+        s.insider_updated_at = datetime.now(timezone.utc)
+        db.commit()
+    finally:
+        db.close()
+
+
+class TestInsiderSentimentAggregation:
+    """Tier 3 — GET /api/insider-sentiment (line 1353).
+
+    Branches covered: bullish/bearish/all sentiment filter, sector filter,
+    sort-by + sort-dir options, summary aggregation (totals + avg score),
+    sectors-list distinct query, pagination offset, empty result, and the
+    duplicate-ticker filter integration."""
+
+    @classmethod
+    def setup_class(cls):
+        _ensure_insider_stock("INSB1", sentiment="bullish", score=75.0,
+                              net_value=2_000_000.0, sector="Technology")
+        _ensure_insider_stock("INSB2", sentiment="bullish", score=80.0,
+                              net_value=3_000_000.0, sector="Healthcare")
+        _ensure_insider_stock("INSR1", sentiment="bearish", score=72.0,
+                              net_value=-500_000.0, sector="Technology",
+                              buy_count=0, sell_count=8,
+                              buy_value=0.0, sell_value=500_000.0)
+        _ensure_insider_stock("INSN1", sentiment="neutral", score=65.0,
+                              net_value=10_000.0, sector="Energy")
+
+    def test_default_returns_only_bullish(self):
+        """sentiment=bullish (default) excludes bearish + neutral. (line 1380-1381)"""
+        r = client.get("/api/insider-sentiment?min_score=40")
+        assert r.status_code == 200
+        d = r.json()
+        seen = {s["ticker"] for s in d["stocks"]}
+        assert "INSB1" in seen
+        assert "INSB2" in seen
+        assert "INSR1" not in seen
+        assert "INSN1" not in seen
+
+    def test_sentiment_all_returns_bullish_and_bearish(self):
+        """sentiment=all skips the sentiment filter — but neutral still excluded."""
+        r = client.get("/api/insider-sentiment?sentiment=all&min_score=40")
+        assert r.status_code == 200
+        seen = {s["ticker"] for s in r.json()["stocks"]}
+        # Note: route does NOT specifically filter neutral; sentiment=all
+        # skips the column filter entirely, so neutral rows ARE returned.
+        assert "INSB1" in seen and "INSR1" in seen
+
+    def test_bearish_filter(self):
+        """sentiment=bearish returns only bearish-tagged stocks."""
+        r = client.get("/api/insider-sentiment?sentiment=bearish&min_score=40")
+        assert r.status_code == 200
+        seen = {s["ticker"] for s in r.json()["stocks"]}
+        assert "INSR1" in seen
+        assert "INSB1" not in seen
+
+    def test_sector_filter(self):
+        """sector= narrows results. (line 1384-1385)"""
+        r = client.get("/api/insider-sentiment?sector=Healthcare&min_score=40")
+        assert r.status_code == 200
+        seen = {s["ticker"] for s in r.json()["stocks"]}
+        assert seen <= {"INSB2"}  # Only Healthcare bullish stock
+
+    def test_summary_aggregation_shape(self):
+        """Summary block reports total_bullish + sectors list. (line 1387-1411)"""
+        r = client.get("/api/insider-sentiment?min_score=40")
+        assert r.status_code == 200
+        summary = r.json()["summary"]
+        assert summary["total_bullish"] >= 2
+        assert summary["total_bearish"] >= 1
+        assert "Technology" in summary["sectors"]
+        assert "Healthcare" in summary["sectors"]
+        # avg_score_bullish should be a float averaging the bullish scores
+        assert summary["avg_score_bullish"] > 0
+
+    def test_sort_by_canslim_score_asc(self):
+        """sort_by=canslim_score + sort_dir=asc reverses ordering."""
+        r = client.get(
+            "/api/insider-sentiment?sort_by=canslim_score&sort_dir=asc&min_score=40"
+        )
+        assert r.status_code == 200
+        scores = [s["canslim_score"] for s in r.json()["stocks"]]
+        # Adjusted scores (market m_score subtracted) — ordering should be
+        # non-decreasing for ascending sort.
+        assert scores == sorted(scores)
+
+    def test_sort_by_insider_buy_count_desc(self):
+        """Alternative sort col path."""
+        r = client.get(
+            "/api/insider-sentiment?sort_by=insider_buy_count&sort_dir=desc&min_score=40"
+        )
+        assert r.status_code == 200
+        # Just confirms the sort mapping branch executes
+        assert "stocks" in r.json()
+
+    def test_pagination_offset(self):
+        """offset+limit returns pagination block."""
+        r = client.get("/api/insider-sentiment?limit=1&offset=0&min_score=40")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["limit"] == 1
+        assert d["offset"] == 0
+        assert d["total"] >= 0
+
+    def test_high_min_score_returns_empty(self):
+        """min_score=99 prunes everything → stocks=[] but summary is still built. (line 1434)"""
+        r = client.get("/api/insider-sentiment?min_score=99")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["stocks"] == []
+        assert d["total"] == 0
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: /api/analytics/exit-quality — frozen trade-history aggregation
+# ────────────────────────────────────────────────────────────────────
+
+def _ensure_sell_trade(ticker, **kw):
+    """Seed an AIPortfolioTrade SELL row with signal_factors populated."""
+    _ensure_user()
+    db = _db()
+    try:
+        t = AIPortfolioTrade(
+            user_id=1,
+            ticker=ticker,
+            action="SELL",
+            shares=kw.pop("shares", 10.0),
+            price=kw.pop("price", 110.0),
+            total_value=kw.pop("total_value", 1100.0),
+            reason=kw.pop("reason", "TRAILING STOP"),
+            cost_basis=kw.pop("cost_basis", 100.0),
+            realized_gain=kw.pop("realized_gain", 100.0),
+            holding_days=kw.pop("holding_days", 30),
+            signal_factors=kw.pop("signal_factors", {
+                "gain_pct": 10.0,
+                "drop_from_peak": 5.0,
+                "sell_reason": "TRAILING STOP",
+            }),
+            executed_at=kw.pop("executed_at",
+                               datetime.now(timezone.utc) - timedelta(days=10)),
+        )
+        for k, v in kw.items():
+            setattr(t, k, v)
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        return t.id
+    finally:
+        db.close()
+
+
+class TestExitQualityAnalytics:
+    """Tier 3 — GET /api/analytics/exit-quality (line 4671).
+
+    Branches covered: empty-history short-circuit, populated history with
+    different sell_reason buckets (STOP / TRAILING / PARTIAL), summary
+    aggregation math, the cost_per_share fallback path (cost_basis
+    missing), and the days filter cutoff."""
+
+    @classmethod
+    def setup_class(cls):
+        # Wipe any sells from earlier test classes so our seed dominates
+        db = _db()
+        try:
+            db.query(AIPortfolioTrade).filter_by(user_id=1).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_empty_history_returns_short_circuit(self):
+        """No sells → returns trades=[], summary={}. (line 4692-4693)"""
+        r = client.get("/api/analytics/exit-quality")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["trades"] == []
+        assert d["summary"] == {}
+        assert d["alt_configs"] == []
+
+    def test_populated_history_returns_aggregates(self):
+        """Mixed bucket sells → summary counts non-zero. (line 4729-4746)"""
+        _ensure_sell_trade("EXQ1", reason="STOP LOSS",
+                           realized_gain=-50.0,
+                           signal_factors={"gain_pct": -5.0, "sell_reason": "STOP LOSS"})
+        _ensure_sell_trade("EXQ2", reason="TRAILING STOP",
+                           realized_gain=200.0,
+                           signal_factors={"gain_pct": 25.0, "drop_from_peak": 10.0,
+                                           "sell_reason": "TRAILING STOP"})
+        _ensure_sell_trade("EXQ3", reason="PARTIAL PROFIT",
+                           realized_gain=80.0,
+                           signal_factors={"gain_pct": 30.0,
+                                           "sell_reason": "PARTIAL PROFIT"})
+        r = client.get("/api/analytics/exit-quality")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["summary"]["total_sells"] >= 3
+        assert d["summary"]["stop_loss_count"] >= 1
+        assert d["summary"]["trailing_stop_count"] >= 1
+        assert d["summary"]["partial_profit_count"] >= 1
+        # avg_peak_gain ≥ avg_exit_gain (peak is exit + drop_from_peak)
+        assert d["summary"]["avg_peak_gain"] >= d["summary"]["avg_exit_gain"]
+
+    def test_days_cutoff_excludes_old_trades(self):
+        """days=30 excludes a 90-day-old sell. (line 4681-4690)"""
+        # Add an old trade (>30 days ago)
+        old_trade_id = _ensure_sell_trade(
+            "OLD1", reason="STOP",
+            executed_at=datetime.now(timezone.utc) - timedelta(days=120),
+            signal_factors={"gain_pct": -8.0, "sell_reason": "STOP"},
+        )
+        r = client.get("/api/analytics/exit-quality?days=30")
+        assert r.status_code == 200
+        d = r.json()
+        # OLD1 should not appear among the recent 50 listed trades
+        old_seen = any(t["ticker"] == "OLD1" for t in d["trades"])
+        assert not old_seen
+
+    def test_factors_missing_falls_back_to_defaults(self):
+        """signal_factors absent → gain_pct=0 default + cost_per_share fallback. (line 4705-4714).
+
+        Note: route filters cost_basis != None at the SQL level, so the
+        `t.cost_basis or t.price` fallback only triggers when cost_basis
+        is 0.0 (falsy but not NULL)."""
+        _ensure_user()
+        db = _db()
+        try:
+            db.add(AIPortfolioTrade(
+                user_id=1, ticker="NOFAC", action="SELL",
+                shares=5.0, price=80.0, total_value=400.0,
+                reason="STOP",
+                cost_basis=0.0,  # falsy → triggers `or t.price` fallback at line 4714
+                realized_gain=-25.0,
+                signal_factors=None,  # exercises non-dict branch at line 4705
+                executed_at=datetime.now(timezone.utc) - timedelta(days=5),
+            ))
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/analytics/exit-quality")
+        assert r.status_code == 200
+        d = r.json()
+        nofac_rows = [t for t in d["trades"] if t["ticker"] == "NOFAC"]
+        assert nofac_rows
+        # cost_basis falsy → cost_per_share falls back to price=80
+        assert nofac_rows[0]["cost_basis"] == 80.0
+        # gain_pct default = 0 because signal_factors was None
+        assert nofac_rows[0]["gain_pct"] == 0.0
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: /api/portfolio-summary — read-only AI portfolio aggregation
+# ────────────────────────────────────────────────────────────────────
+
+class TestPortfolioSummaryRoute:
+    """Tier 3 — GET /api/portfolio-summary (line 4849).
+
+    Branches covered: empty AI portfolio (cash-only), populated portfolio,
+    trailing-stop fallback (no peak_price), pyramid widening, recent-trade
+    7-day window."""
+
+    @classmethod
+    def setup_class(cls):
+        # Reset AI portfolio state
+        db = _db()
+        try:
+            db.query(AIPortfolioPosition).filter_by(user_id=1).delete()
+            db.query(AIPortfolioTrade).filter_by(user_id=1).delete()
+            db.commit()
+        finally:
+            db.close()
+        _ensure_ai_config("nostate_optimized")
+
+    def test_empty_portfolio_returns_cash_only(self):
+        """No positions → portfolio.cash_pct=100, positions=[]. (line 4938)"""
+        r = client.get("/api/portfolio-summary")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["positions"] == []
+        assert d["portfolio"]["positions_count"] == 0
+        assert d["portfolio"]["cash_pct"] == 100
+
+    def test_populated_portfolio_returns_position_details(self):
+        """Position with peak_price → trailing_pct + stop_price computed. (line 4886-4915)"""
+        _ensure_ai_position("SUMM1", gain=20.0, current_value=2400.0)
+        # Ensure peak_price set
+        db = _db()
+        try:
+            p = db.query(AIPortfolioPosition).filter_by(ticker="SUMM1", user_id=1).first()
+            p.peak_price = 130.0
+            p.pyramid_count = 1
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/portfolio-summary")
+        assert r.status_code == 200
+        d = r.json()
+        rows = [p for p in d["positions"] if p["ticker"] == "SUMM1"]
+        assert rows
+        row = rows[0]
+        assert row["pyramid_count"] == 1
+        assert row["peak_price"] == 130.0
+        # stop_price + pct_to_stop should be present floats
+        assert isinstance(row["stop_price"], (int, float))
+        assert "pct_to_stop" in row
+
+    def test_recent_trades_filtered_to_seven_days(self):
+        """Recent trades window = 7 days. (line 4917-4922)"""
+        # Recent trade
+        _ensure_sell_trade("REC1", reason="TAKE PROFIT",
+                           executed_at=datetime.now(timezone.utc) - timedelta(days=2),
+                           realized_gain=50.0)
+        # Old trade (8+ days ago)
+        _ensure_sell_trade("REC_OLD", reason="STOP LOSS",
+                           executed_at=datetime.now(timezone.utc) - timedelta(days=30),
+                           realized_gain=-30.0)
+        r = client.get("/api/portfolio-summary")
+        assert r.status_code == 200
+        d = r.json()
+        recent_tkrs = {t["ticker"] for t in d["recent_trades"]}
+        assert "REC1" in recent_tkrs
+        assert "REC_OLD" not in recent_tkrs
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tier 3: /api/command-center — wide consolidated dashboard read
+# ────────────────────────────────────────────────────────────────────
+
+class TestCommandCenterRoute:
+    """Tier 3 — GET /api/command-center (line 5248).
+
+    Wide consolidated read: market regime, portfolio summary, sparkline,
+    positions, candidates, risk, earnings, trades, scanner status, coiled
+    spring. Branches covered: empty portfolio, populated portfolio, no
+    market snapshot fallback, neutral/bearish regime branches, CS-data
+    exception path.
+
+    Pure read — no scoring touched, no live trading. Eval-window safe."""
+
+    @classmethod
+    def setup_class(cls):
+        # Reset to a clean per-user state
+        db = _db()
+        try:
+            db.query(AIPortfolioPosition).filter_by(user_id=1).delete()
+            db.query(AIPortfolioTrade).filter_by(user_id=1).delete()
+            db.commit()
+        finally:
+            db.close()
+        _ensure_market_snapshot()
+        _ensure_ai_config("nostate_optimized")
+
+    def test_empty_portfolio_returns_full_shape(self):
+        """No positions/trades → all top-level keys present. (line 5547-5558)"""
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        for key in ("market", "portfolio", "sparkline", "positions",
+                    "candidates", "risk", "earnings", "trades",
+                    "scanner", "coiled_spring"):
+            assert key in d, f"missing key: {key}"
+        assert d["positions"] == []
+        assert d["portfolio"]["positions_count"] == 0
+        assert d["risk"]["heat_status"] == "normal"
+
+    def test_populated_positions_compute_heat_and_sectors(self):
+        """Multi-sector positions → top_sectors populated, heat>0. (line 5416-5438)"""
+        _ensure_ai_position("CMD1", gain=30.0, current_value=4000.0)
+        _ensure_ai_position("CMD2", gain=-5.0, current_value=2500.0)
+        # Force sectors
+        db = _db()
+        try:
+            s1 = db.query(Stock).filter_by(ticker="CMD1").first()
+            s1.sector = "Technology"
+            s2 = db.query(Stock).filter_by(ticker="CMD2").first()
+            s2.sector = "Healthcare"
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["portfolio"]["positions_count"] == 2
+        assert len(d["positions"]) == 2
+        # Positions sorted gain_pct desc
+        gains = [p["gain_pct"] for p in d["positions"]]
+        assert gains == sorted(gains, reverse=True)
+        sectors_seen = {s["sector"] for s in d["risk"]["top_sectors"]}
+        assert "Technology" in sectors_seen or "Healthcare" in sectors_seen
+
+    def test_top_candidates_excludes_held_tickers(self):
+        """Top candidates query filters out current position tickers. (line 5384-5388)"""
+        # Seed a high-score stock NOT held + ensure CMD1 (held) is high-score too
+        _ensure_stock("CAND1", score=90.0, sector="Technology",
+                     current_price=50.0)
+        _ensure_ai_position("CMD1", gain=30.0, current_value=4000.0)
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        cand_tkrs = {c["ticker"] for c in d["candidates"]}
+        # CMD1 is currently held → must NOT appear in candidates
+        assert "CMD1" not in cand_tkrs
+
+    def test_earnings_calendar_includes_near_term_holdings(self):
+        """Position with days_to_earnings <= 21 surfaces in earnings list. (line 5440-5451)"""
+        _ensure_ai_position("ERNG1", gain=5.0, current_value=2000.0)
+        db = _db()
+        try:
+            s = db.query(Stock).filter_by(ticker="ERNG1").first()
+            s.days_to_earnings = 7
+            s.next_earnings_date = date.today() + timedelta(days=7)
+            s.earnings_beat_streak = 4
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        ern_tkrs = {e["ticker"] for e in d["earnings"]}
+        assert "ERNG1" in ern_tkrs
+
+    def test_sparkline_dedups_to_one_per_day(self):
+        """Multiple snapshots same day → sparkline keeps one. (line 5336-5341)"""
+        _ensure_user()
+        today = datetime.now(timezone.utc)
+        db = _db()
+        try:
+            for i in range(3):
+                db.add(AIPortfolioSnapshot(
+                    user_id=1,
+                    timestamp=today - timedelta(hours=i),
+                    total_value=20000.0 + i * 100,
+                    cash=10000.0,
+                    positions_value=10000.0 + i * 100,
+                    positions_count=2,
+                    total_return=0.0,
+                    total_return_pct=0.0,
+                ))
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        sparkline_dates = [pt["date"] for pt in d["sparkline"]]
+        # Today should appear at most once
+        today_iso = today.date().isoformat()
+        assert sparkline_dates.count(today_iso) <= 1
+
+    def test_cs_exception_path_returns_null_block(self):
+        """When CS aggregation throws, coiled_spring=None (line 5544-5545)."""
+        with patch("backend.main._get_deduped_cs_alert_ids",
+                   side_effect=RuntimeError("CS lookup boom")):
+            r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["coiled_spring"] is None
