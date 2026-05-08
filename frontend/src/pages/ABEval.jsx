@@ -398,6 +398,7 @@ function DecisionBanner({ summary, post }) {
 export default function ABEval() {
   const { user } = useAuth()
   const [strategy, setStrategy] = useState('nostate_cs_bear')
+  const [strategies, setStrategies] = useState([])
   const [cutoffDate, setCutoffDate] = useState('2026-05-07')
   const [preWindowDays, setPreWindowDays] = useState(30)
   const [postWindowDays, setPostWindowDays] = useState('')  // empty → endpoint default
@@ -446,6 +447,13 @@ export default function ABEval() {
   }, [strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids])
 
   useEffect(() => { fetchEval() }, [fetchEval])
+
+  // Load profile list once for the dropdown. include_hidden=true so research
+  // profiles (cz, hc) are reachable from the admin dashboard. Failure is
+  // silent — the select falls back to a curated 5-option list below.
+  useEffect(() => {
+    api.getStrategies({ include_hidden: true }).then(setStrategies).catch(() => {})
+  }, [])
 
   // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
   // UTC cron. Disabled until at least one fetch has succeeded so we don't
@@ -543,12 +551,29 @@ export default function ABEval() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
           <label className="block">
             <span className="text-dark-400">Strategy</span>
-            <input
-              type="text"
+            <select
               value={strategy}
               onChange={(e) => setStrategy(e.target.value)}
               className="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-dark-100 font-data"
-            />
+            >
+              {strategies.length > 0 ? (
+                strategies.map(s => (
+                  <option key={s.name} value={s.name}>
+                    {s.label || s.name}{s.hidden ? ' (hidden)' : ''}
+                  </option>
+                ))
+              ) : (
+                // Fallback list mirrors the live + most-experimented profiles
+                // when the /api/strategies fetch hasn't returned yet (or failed).
+                <>
+                  <option value="nostate_cs_bear">Nostate Cs Bear</option>
+                  <option value="nostate_optimized">Nostate Optimized</option>
+                  <option value="nostate_correction_zone">Nostate Correction Zone</option>
+                  <option value="nostate_high_conviction">Nostate High Conviction</option>
+                  <option value="nostate_no_gate">Nostate No Gate</option>
+                </>
+              )}
+            </select>
           </label>
           <label className="block">
             <span className="text-dark-400">Cutoff date</span>

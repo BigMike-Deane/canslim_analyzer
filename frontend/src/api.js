@@ -462,7 +462,8 @@ export const api = {
   getEarningsAudit: (ticker) => request(`/api/earnings-audit/${ticker}`),
 
   // Strategy Profiles
-  getStrategies: () => request('/api/strategies'),
+  getStrategies: ({ include_hidden = false } = {}) =>
+    request(`/api/strategies${include_hidden ? '?include_hidden=true' : ''}`),
 
   // Insider Sentiment
   getInsiderSentiment: (params = {}) => {
