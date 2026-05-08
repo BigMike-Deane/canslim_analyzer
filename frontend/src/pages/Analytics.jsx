@@ -427,8 +427,8 @@ export default function Analytics() {
             },
             {
               label: 'Profit Factor',
-              value: summary.profit_factor === Infinity ? 'N/A' : summary.profit_factor.toFixed(2),
-              color: summary.profit_factor >= 1.5 ? 'text-emerald-400' : summary.profit_factor >= 1 ? 'text-amber-400' : 'text-red-400',
+              value: summary.profit_factor == null ? 'N/A' : summary.profit_factor.toFixed(2),
+              color: summary.profit_factor == null ? 'text-emerald-400' : summary.profit_factor >= 1.5 ? 'text-emerald-400' : summary.profit_factor >= 1 ? 'text-amber-400' : 'text-red-400',
             },
             {
               label: 'Total Realized',

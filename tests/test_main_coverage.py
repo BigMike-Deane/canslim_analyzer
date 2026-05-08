@@ -1257,6 +1257,14 @@ class TestAnalyticsTrades:
         finally:
             db.close()
 
+    def teardown_method(self, _method):
+        db = _db()
+        try:
+            db.query(AIPortfolioTrade).filter_by(user_id=1).delete()
+            db.commit()
+        finally:
+            db.close()
+
     def test_no_trades_returns_empty_aggregates(self):
         r = client.get("/api/analytics/trades?days=90")
         assert r.status_code == 200
@@ -1267,18 +1275,14 @@ class TestAnalyticsTrades:
             assert key in d
 
     def test_with_trades_returns_aggregates(self):
-        """Latent bug: main.py:4475 sets profit_factor to float('inf') when
-        there are wins but zero losses, which json.dumps cannot serialize
-        (Starlette's default JSONResponse uses standard json). Seed at
-        least one loss so the all-wins branch isn't taken. Bug captured
-        in memory note for post-eval fix."""
+        """Both wins and losses → profit_factor is a finite ratio."""
         db = _db()
         try:
             for i, (tk, action, gain) in enumerate([
                 ("AAPL", "BUY", None),
                 ("AAPL", "SELL", 50.0),    # win
                 ("PG", "BUY", None),
-                ("PG", "SELL", -25.0),     # loss — required to avoid inf bug
+                ("PG", "SELL", -25.0),     # loss
             ]):
                 db.add(AIPortfolioTrade(
                     user_id=1, ticker=tk, action=action,
@@ -1299,8 +1303,41 @@ class TestAnalyticsTrades:
         assert r.status_code == 200, r.text
         d = r.json()
         assert "summary" in d
-        # profit_factor must be finite when both wins and losses exist
-        assert d["summary"]["profit_factor"] != float('inf')
+        pf = d["summary"]["profit_factor"]
+        assert pf is not None and pf > 0
+
+    def test_all_wins_emits_null_profit_factor(self):
+        """Regression: pre-fix main.py:4475 emitted float('inf') in the
+        all-wins/zero-losses branch, which json.dumps could not serialize
+        (endpoint returned 500). Post-fix the branch emits None → null in
+        JSON, and the frontend renders 'N/A'."""
+        db = _db()
+        try:
+            for i, (tk, action, gain) in enumerate([
+                ("MSFT", "BUY", None),
+                ("MSFT", "SELL", 75.0),   # win
+                ("GOOG", "BUY", None),
+                ("GOOG", "SELL", 30.0),   # win
+            ]):
+                db.add(AIPortfolioTrade(
+                    user_id=1, ticker=tk, action=action,
+                    shares=10.0, price=100.0 + i * 5,
+                    total_value=1000.0 + i * 50,
+                    reason="entry" if action == "BUY" else "trailing-stop",
+                    canslim_score=80.0,
+                    cost_basis=100.0 if action == "SELL" else None,
+                    realized_gain=gain,
+                    signal_factors={"entry_type": "pre-breakout",
+                                     "sell_reason": "trailing-stop"},
+                    executed_at=datetime.now(timezone.utc) - timedelta(days=10 - i),
+                ))
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/analytics/trades?days=90")
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["summary"]["profit_factor"] is None
 
 
 class TestMarketBreadth:

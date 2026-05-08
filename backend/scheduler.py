@@ -2232,9 +2232,10 @@ def _run_weekly_ab_eval_email():
     single failure doesn't kill the scheduler.
 
     Targets the active scoring experiment (Approach 2, cutoff 2026-05-07,
-    nostate_optimized). When the experiment ends, update the cutoff_date
-    here or rip the job — but during the 2026-05-07 → 2026-06-18 window
-    this is the operator's primary read on whether to keep or revert.
+    nostate_cs_bear — the live trading strategy for both users). When the
+    experiment ends, update the cutoff_date here or rip the job — but
+    during the 2026-05-07 → 2026-06-18 window this is the operator's
+    primary read on whether to keep or revert.
 
     Disabled when CANSLIM_ENV=test so the test suite doesn't try to send
     real mail through smtp.gmail.com."""
@@ -2247,7 +2248,7 @@ def _run_weekly_ab_eval_email():
         db = SessionLocal()
         try:
             result = send_ab_eval_snapshot(
-                strategy='nostate_optimized',
+                strategy='nostate_cs_bear',
                 cutoff_date='2026-05-07',
                 db=db,
             )

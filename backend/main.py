@@ -4472,7 +4472,7 @@ async def get_trade_analytics(
         "win_rate": (len(wins) / len(sells) * 100) if sells else 0,
         "avg_gain_pct": sum(((t.price / t.cost_basis - 1) * 100) if t.cost_basis and t.cost_basis > 0 else 0 for t in wins) / max(1, len(wins)),
         "avg_loss_pct": sum(((t.price / t.cost_basis - 1) * 100) if t.cost_basis and t.cost_basis > 0 else 0 for t in losses) / max(1, len(losses)),
-        "profit_factor": (total_gains / total_losses) if total_losses > 0 else float('inf') if total_gains > 0 else 0,
+        "profit_factor": (total_gains / total_losses) if total_losses > 0 else (None if total_gains > 0 else 0),
         "total_realized": sum(t.realized_gain or 0 for t in sells),
     }
 
