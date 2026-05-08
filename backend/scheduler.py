@@ -1536,6 +1536,28 @@ def run_continuous_scan():
             if ai_db:
                 ai_db.close()
 
+        # Phase 3.5: Shadow paper-trading
+        # Forward-only telemetry collection for candidate scoring stacks.
+        # Wrapped so a shadow failure cannot break the live save path; sandbox
+        # rolls back any incidental writes (only ShadowTrade rows survive).
+        # See backend/shadow_trader.py + docs/shadow-paper-trading-design.md.
+        shadow_db = None
+        try:
+            from backend.shadow_trader import run_shadow_strategies
+            shadow_db = SessionLocal()
+            shadow_summary = run_shadow_strategies(shadow_db, analysis_results)
+            if shadow_summary.get("strategies_run"):
+                logger.info(
+                    f"Shadow paper-trading: {shadow_summary['strategies_run']} stack(s), "
+                    f"{shadow_summary['total_shadow_trades']} virtual trade(s), "
+                    f"{shadow_summary['errors']} error(s)"
+                )
+        except Exception as e:
+            logger.error(f"Shadow paper-trading failed: {e}", exc_info=True)
+        finally:
+            if shadow_db:
+                shadow_db.close()
+
         # Phase 4: Cleanup old StockScore records
         _set_phase("cleanup", detail="Cleaning up old score records...")
 
