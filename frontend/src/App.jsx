@@ -25,6 +25,7 @@ import BearBase from './pages/BearBase'
 import CorrelationMatrix from './pages/CorrelationMatrix'
 import SectorRotation from './pages/SectorRotation'
 import SystemHealth from './pages/SystemHealth'
+import ABEval from './pages/ABEval'
 import Settings from './pages/Settings'
 import Notifications from './pages/Notifications'
 
@@ -78,6 +79,7 @@ function AppContent() {
             <Route path="/sector-rotation" element={<SectorRotation />} />
             <Route path="/portfolio-summary" element={<AIPortfolio />} />
             <Route path="/system-health" element={<SystemHealth />} />
+            <Route path="/admin/ab-eval" element={<ABEval />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/admin" element={<Admin />} />

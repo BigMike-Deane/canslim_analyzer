@@ -28,6 +28,7 @@ const CACHE_TTL = {
   '/api/trade-journal': 120,          // 2 min
   '/api/bear-base': 300,               // 5 min
   '/api/system-health': 30,            // 30 sec (monitoring)
+  '/api/admin/strategy-ab-eval': 60,   // 1 min — experiment moves slowly, but operator may tweak window params
   '/api/notifications': 15,            // 15 sec — list + bell dropdown
   '/api/notifications/unread-count': 15,
 }
@@ -592,6 +593,17 @@ export const api = {
   getSystemHealth: () => request('/api/system-health'),
   triggerBackup: () => request('/api/system/backup', { method: 'POST' }),
   getBackups: () => request('/api/system/backups'),
+
+  // Admin — Live A/B evaluation (Approach 2 keep/revert dashboard)
+  getStrategyABEval: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids } = {}) => {
+    const params = new URLSearchParams()
+    if (strategy) params.set('strategy', strategy)
+    if (cutoffDate) params.set('cutoff_date', cutoffDate)
+    if (preWindowDays != null) params.set('pre_window_days', preWindowDays)
+    if (postWindowDays != null) params.set('post_window_days', postWindowDays)
+    if (excludePyramids != null) params.set('exclude_pyramids', String(excludePyramids))
+    return request(`/api/admin/strategy-ab-eval?${params}`)
+  },
 }
 
 // Formatting utilities

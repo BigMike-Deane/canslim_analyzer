@@ -53,6 +53,7 @@ function getNavGroups(isAdmin) {
       items: [
         { to: '/admin', icon: 'settings', label: 'Users' },
         { to: '/system-health', icon: 'activity', label: 'System Health' },
+        { to: '/admin/ab-eval', icon: 'chart', label: 'A/B Eval' },
       ],
     },
   ]
