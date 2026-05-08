@@ -397,7 +397,7 @@ function DecisionBanner({ summary, post }) {
 
 export default function ABEval() {
   const { user } = useAuth()
-  const [strategy, setStrategy] = useState('nostate_optimized')
+  const [strategy, setStrategy] = useState('nostate_cs_bear')
   const [cutoffDate, setCutoffDate] = useState('2026-05-07')
   const [preWindowDays, setPreWindowDays] = useState(30)
   const [postWindowDays, setPostWindowDays] = useState('')  // empty → endpoint default
