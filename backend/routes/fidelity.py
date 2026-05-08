@@ -1,5 +1,6 @@
 """Fidelity portfolio sync routes."""
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -18,7 +19,46 @@ from backend.auth import get_current_active_user
 # has already defined these two names (lines 244 and 296).
 from backend.main import expand_tickers_with_duplicates, DUPLICATE_TICKERS
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/fidelity", tags=["fidelity"])
+
+# 10 MB cap. Real Fidelity exports are ~10-50 KB; 10 MB is ~1000x headroom
+# while still bounding worst-case memory.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+async def _read_capped(file: UploadFile) -> bytes:
+    """Read an UploadFile into memory, refusing payloads over MAX_UPLOAD_BYTES.
+
+    Streams in 64 KB chunks so an attacker can't allocate 10 GB before we
+    notice the size.
+    """
+    size = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await file.read(64 * 1024)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _decode_csv(content: bytes) -> str:
+    """utf-8 → latin-1 fallback. Empty bytes → 400."""
+    if not content:
+        raise HTTPException(status_code=400, detail="File is empty")
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        # latin-1 maps every byte 0x00-0xFF, so this can't fail.
+        return content.decode("latin-1")
 
 @router.post("/upload-positions")
 async def upload_fidelity_positions(file: UploadFile = File(...), current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
@@ -28,16 +68,21 @@ async def upload_fidelity_positions(file: UploadFile = File(...), current_user: 
     """
     from backend.fidelity_sync import parse_positions_csv
 
-    if not file.filename.endswith('.csv'):
+    if not (file.filename or "").endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
 
-    content = await file.read()
-    try:
-        csv_text = content.decode('utf-8')
-    except UnicodeDecodeError:
-        csv_text = content.decode('latin-1')
+    content = await _read_capped(file)
+    csv_text = _decode_csv(content)
 
-    result = parse_positions_csv(csv_text)
+    try:
+        result = parse_positions_csv(csv_text)
+    except ValueError as e:
+        # Header-spoof / malformed-CSV guards in the parser surface here.
+        raise HTTPException(status_code=400, detail=f"Could not parse positions CSV: {str(e)[:200]}")
+    except Exception:
+        # Unknown parser failure — log full trace, return sanitized message.
+        logger.exception("Unexpected error parsing positions CSV")
+        raise HTTPException(status_code=400, detail="Could not parse positions CSV")
 
     if not result["positions"]:
         raise HTTPException(status_code=400, detail="No positions found for account the configured Fidelity account")
@@ -93,16 +138,19 @@ async def upload_fidelity_activity(file: UploadFile = File(...), current_user: U
 
     from backend.fidelity_sync import parse_activity_csv
 
-    if not file.filename.endswith('.csv'):
+    if not (file.filename or "").endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
 
-    content = await file.read()
-    try:
-        csv_text = content.decode('utf-8')
-    except UnicodeDecodeError:
-        csv_text = content.decode('latin-1')
+    content = await _read_capped(file)
+    csv_text = _decode_csv(content)
 
-    result = parse_activity_csv(csv_text)
+    try:
+        result = parse_activity_csv(csv_text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse activity CSV: {str(e)[:200]}")
+    except Exception:
+        logger.exception("Unexpected error parsing activity CSV")
+        raise HTTPException(status_code=400, detail="Could not parse activity CSV")
 
     # Deduplicate: skip trades that already exist
     new_count = 0

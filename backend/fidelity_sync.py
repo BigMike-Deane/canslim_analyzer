@@ -8,6 +8,7 @@ AI portfolio recommendations.
 
 import csv
 import io
+import math
 import os
 import re
 import logging
@@ -19,6 +20,31 @@ logger = logging.getLogger(__name__)
 # Only process this Fidelity account (set via env var or auto-detected from CSV)
 TARGET_ACCOUNT = os.environ.get("FIDELITY_ACCOUNT", "")
 
+# Hardening caps — truncate untrusted strings before they reach the DB / logs.
+MAX_SYMBOL_LEN = 32
+MAX_DESCRIPTION_LEN = 512
+MAX_ACTION_LEN = 256
+
+# Required CSV headers — used to reject misaligned/spoofed exports up-front.
+REQUIRED_POSITION_HEADERS = ("Symbol", "Quantity")
+REQUIRED_ACTIVITY_HEADERS = ("Run Date", "Action", "Symbol")
+
+
+def _safe_str(value, max_len: int) -> str:
+    """Strip + truncate an untrusted string field (None-safe)."""
+    if not value:
+        return ""
+    return str(value).strip()[:max_len]
+
+
+def _finite(n: Optional[float]) -> Optional[float]:
+    """Reject NaN / +Inf / -Inf so they never reach storage or JSON encoding."""
+    if n is None:
+        return None
+    if not math.isfinite(n):
+        return None
+    return n
+
 
 def _clean_dollar(value: str) -> Optional[float]:
     """Parse Fidelity dollar values like '+$1,234.56' or '-$73.00' or '$6534.41'."""
@@ -26,7 +52,7 @@ def _clean_dollar(value: str) -> Optional[float]:
         return None
     cleaned = value.strip().replace('$', '').replace(',', '').replace('+', '')
     try:
-        return float(cleaned)
+        return _finite(float(cleaned))
     except (ValueError, TypeError):
         return None
 
@@ -37,7 +63,7 @@ def _clean_percent(value: str) -> Optional[float]:
         return None
     cleaned = value.strip().replace('%', '').replace('+', '').replace(',', '')
     try:
-        return float(cleaned)
+        return _finite(float(cleaned))
     except (ValueError, TypeError):
         return None
 
@@ -48,7 +74,7 @@ def _clean_float(value: str) -> Optional[float]:
         return None
     cleaned = value.strip().replace(',', '').replace('+', '')
     try:
-        return float(cleaned)
+        return _finite(float(cleaned))
     except (ValueError, TypeError):
         return None
 
@@ -101,14 +127,26 @@ def parse_positions_csv(csv_content: str) -> dict:
     parse_errors = []
     snapshot_date = None
 
-    # Strip BOM if present (Fidelity exports UTF-8 with BOM)
+    # Strip BOM + trailing nulls (Fidelity exports UTF-8 with BOM; some
+    # editors append \x00 padding).
     if csv_content.startswith('\ufeff'):
         csv_content = csv_content[1:]
+    csv_content = csv_content.replace('\x00', '')
 
-    reader = csv.DictReader(io.StringIO(csv_content))
+    try:
+        reader = csv.DictReader(io.StringIO(csv_content))
+        # Validate required headers \u2014 reject misaligned / spoofed exports.
+        fieldnames = set(reader.fieldnames or [])
+        missing = [h for h in REQUIRED_POSITION_HEADERS if h not in fieldnames]
+        if missing:
+            raise ValueError(f"missing required column(s): {', '.join(missing)}")
+        rows = list(reader)
+    except csv.Error as e:
+        raise ValueError(f"malformed CSV: {e}")
+
     detected_account = TARGET_ACCOUNT
 
-    for row in reader:
+    for row in rows:
         # Skip rows not from target account (auto-detect first account if not configured)
         account = (row.get('Account Number') or '').strip()
         if not detected_account and account:
@@ -116,7 +154,7 @@ def parse_positions_csv(csv_content: str) -> dict:
         if detected_account and account != detected_account:
             continue
 
-        symbol = (row.get('Symbol') or '').strip()
+        symbol = _safe_str(row.get('Symbol'), MAX_SYMBOL_LEN)
         if not symbol:
             continue
 
@@ -147,7 +185,7 @@ def parse_positions_csv(csv_content: str) -> dict:
             cost_basis_total = _clean_dollar(row.get('Cost Basis Total'))
             avg_cost_basis = _clean_dollar(row.get('Average Cost Basis'))
             pct_of_account = _clean_percent(row.get('Percent Of Account'))
-            pos_type = (row.get('Type') or '').strip().rstrip(',')
+            pos_type = _safe_str(row.get('Type'), MAX_ACTION_LEN).rstrip(',')
 
             if quantity is None or quantity <= 0:
                 parse_errors.append(f"Skipped {symbol}: invalid quantity")
@@ -155,7 +193,7 @@ def parse_positions_csv(csv_content: str) -> dict:
 
             positions.append({
                 "symbol": symbol,
-                "description": (row.get('Description') or '').strip(),
+                "description": _safe_str(row.get('Description'), MAX_DESCRIPTION_LEN),
                 "quantity": quantity,
                 "last_price": last_price,
                 "current_value": current_value,
@@ -164,7 +202,7 @@ def parse_positions_csv(csv_content: str) -> dict:
                 "cost_basis_total": cost_basis_total,
                 "average_cost_basis": avg_cost_basis,
                 "percent_of_account": pct_of_account,
-                "type": pos_type,
+                "type": _safe_str(pos_type, MAX_ACTION_LEN),
             })
 
             if current_value is not None:
@@ -227,9 +265,10 @@ def parse_activity_csv(csv_content: str) -> dict:
     other = []
     parse_errors = []
 
-    # Strip BOM if present (Fidelity exports UTF-8 with BOM)
+    # Strip BOM + trailing nulls (Fidelity exports UTF-8 with BOM).
     if csv_content.startswith('\ufeff'):
         csv_content = csv_content[1:]
+    csv_content = csv_content.replace('\x00', '')
 
     # Activity CSV has blank lines at top — skip them
     lines = csv_content.splitlines()
@@ -248,10 +287,19 @@ def parse_activity_csv(csv_content: str) -> dict:
 
     # Re-parse from the header line onward
     csv_body = '\n'.join(lines[header_idx:])
-    reader = csv.DictReader(io.StringIO(csv_body))
+    try:
+        reader = csv.DictReader(io.StringIO(csv_body))
+        fieldnames = set(reader.fieldnames or [])
+        missing = [h for h in REQUIRED_ACTIVITY_HEADERS if h not in fieldnames]
+        if missing:
+            raise ValueError(f"missing required column(s): {', '.join(missing)}")
+        rows = list(reader)
+    except csv.Error as e:
+        raise ValueError(f"malformed CSV: {e}")
+
     detected_account = TARGET_ACCOUNT
 
-    for row in reader:
+    for row in rows:
         # Skip rows not from target account (auto-detect first account if not configured)
         account_num = (row.get('Account Number') or '').strip()
         if not detected_account and account_num:
@@ -259,8 +307,8 @@ def parse_activity_csv(csv_content: str) -> dict:
         if detected_account and account_num != detected_account:
             continue
 
-        raw_action = (row.get('Action') or '').strip()
-        symbol = (row.get('Symbol') or '').strip()
+        raw_action = _safe_str(row.get('Action'), MAX_ACTION_LEN)
+        symbol = _safe_str(row.get('Symbol'), MAX_SYMBOL_LEN)
         run_date_str = (row.get('Run Date') or '').strip()
 
         # Skip empty rows / disclaimer text
@@ -300,7 +348,7 @@ def parse_activity_csv(csv_content: str) -> dict:
             dividends.append({
                 "run_date": run_date,
                 "symbol": symbol,
-                "description": (row.get('Description') or '').strip(),
+                "description": _safe_str(row.get('Description'), MAX_DESCRIPTION_LEN),
                 "amount": amount,
                 "raw_action": raw_action,
             })
@@ -337,7 +385,7 @@ def parse_activity_csv(csv_content: str) -> dict:
             "run_date": run_date,
             "action": action,
             "symbol": symbol,
-            "description": (row.get('Description') or '').strip(),
+            "description": _safe_str(row.get('Description'), MAX_DESCRIPTION_LEN),
             "price": price,
             "quantity": abs_quantity,
             "amount": amount,
