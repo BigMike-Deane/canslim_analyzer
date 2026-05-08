@@ -235,6 +235,19 @@ export default function CommandCenter() {
   useEffect(() => { fetchData() }, [fetchData])
   useMarketRefresh(fetchData)
 
+  // Hooks must run before any early return. Reads data?.earnings so it
+  // tolerates the loading state without changing hook count between renders.
+  const earningsByTicker = useMemo(() => {
+    const m = {}
+    const earnings = data?.earnings
+    if (Array.isArray(earnings)) {
+      for (const e of earnings) {
+        if (e?.ticker != null) m[e.ticker] = e.days
+      }
+    }
+    return m
+  }, [data?.earnings])
+
   const handleAction = async (action) => {
     setRunningAction(action)
     try {
@@ -289,20 +302,10 @@ export default function CommandCenter() {
     )
   }
 
-  const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner, coiled_spring } = data || {}
+  const { market, portfolio, sparkline, positions, candidates, risk, trades, scanner, coiled_spring } = data || {}
   const marketState = market?.market_state || market?.regime?.toUpperCase()
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
-
-  const earningsByTicker = useMemo(() => {
-    const m = {}
-    if (Array.isArray(earnings)) {
-      for (const e of earnings) {
-        if (e?.ticker != null) m[e.ticker] = e.days
-      }
-    }
-    return m
-  }, [earnings])
 
   return (
     <div className="p-4 md:p-6">
