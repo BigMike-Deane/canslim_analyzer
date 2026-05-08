@@ -1484,3 +1484,31 @@ strategy_profiles:
         correction: 0.00     # Full crash protection (same as balanced)
         recovery: 0.50       # Balanced 0.30 — faster re-deployment after FTD
         confirmed: 0.65      # Balanced 0.55, lean 0.70 — faster capital deployment
+
+# Shadow Paper-Trading Stacks
+# Forward-only candidate scoring stacks evaluated against the live baseline.
+# See docs/shadow-paper-trading-design.md for the full design.
+#
+# Provisioning model (Step 4 of the harness):
+#   - Edit this section, push, and on next scheduler boot the entries here are
+#     reconciled against the shadow_strategies table:
+#       * names not in DB are INSERTED (config_snapshot frozen from current YAML)
+#       * names in DB get mutable fields (description, scorer_overrides,
+#         starting_value) updated; config_snapshot/parent_strategy are immutable
+#       * names removed from YAML are SOFT-ARCHIVED (archived_at = now); their
+#         shadow_trades rows are preserved for backfill reads
+#       * removed-then-re-added names get a fresh ShadowStrategy row (new id);
+#         the previously-archived row stays around for historical reads
+#
+# Constraints:
+#   - parent_strategy MUST match a key in strategy_profiles: above (validated
+#     at sync time; bad parent raises ValueError, sync rolls back)
+#   - scorer_overrides is recorded for forward compatibility but NOT applied
+#     during shadow scan in Step 4 — that lands in Step 7 post-eval after the
+#     CANSLIMScorer config refactor.
+shadow_strategy_profiles:
+  shadow_baseline:
+    parent_strategy: nostate_cs_bear
+    starting_value: 25000
+    description: "Forward-only parity check against live cs_bear baseline"
+    scorer_overrides: {}

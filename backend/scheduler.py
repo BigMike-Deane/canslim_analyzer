@@ -1651,9 +1651,40 @@ def _refresh_portfolio_prices():
         logger.error(f"Portfolio price refresh error: {e}")
 
 
+def _sync_shadow_strategies_at_boot():
+    """Reconcile shadow_strategy_profiles YAML → shadow_strategies table.
+
+    Wraps the helper with logging + error containment so a malformed YAML
+    entry (e.g. unknown parent_strategy) never kills the scheduler boot —
+    the live scanner must still come up. Failures are logged loud; the
+    rest of the harness reads the live DB state regardless.
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.shadow_strategy_sync import sync_shadow_strategies_from_yaml
+        logger.info("Syncing shadow_strategy_profiles...")
+        db = SessionLocal()
+        try:
+            result = sync_shadow_strategies_from_yaml(db)
+            logger.info(
+                "shadow_strategy_profiles sync complete: "
+                f"inserted={result['inserted']} updated={result['updated']} "
+                f"archived={result['archived']} skipped={result['skipped']}"
+            )
+        finally:
+            db.close()
+    except ValueError as ve:
+        # Bad YAML (e.g. unknown parent_strategy). Log + skip; existing rows
+        # in the DB keep working, scheduler boot continues.
+        logger.error(f"shadow_strategy_profiles sync rejected: {ve}")
+    except Exception as e:
+        logger.error(f"shadow_strategy_profiles sync failed: {e}", exc_info=True)
+
+
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):
     """Start continuous scanning with specified interval"""
     _restore_health_from_redis()
+    _sync_shadow_strategies_at_boot()
     with _state_lock:
         _scan_config["enabled"] = True
         _scan_config["source"] = source

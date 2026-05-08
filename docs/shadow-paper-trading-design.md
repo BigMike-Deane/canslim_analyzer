@@ -269,3 +269,56 @@ If the user approves this design, suggested order:
 8. **First real candidate stack** (post-2026-06-18): register the next scoring experiment as a shadow stack, publish 4-6 week verdict timeline.
 
 Total active-engineering: ~4 days. Total wait time before first real verdict: ~6-8 weeks from go.
+
+## Provisioning shadow stacks (Step 4 — shipped)
+
+Operator workflow once Step 4 is deployed:
+
+1. Edit `config/default.yaml` — add or remove an entry under
+   `shadow_strategy_profiles:`:
+   ```yaml
+   shadow_strategy_profiles:
+     shadow_baseline:
+       parent_strategy: nostate_cs_bear
+       starting_value: 25000
+       description: "Forward-only parity check against live cs_bear baseline"
+       scorer_overrides: {}
+   ```
+2. Push + deploy. On scheduler boot, `backend.shadow_strategy_sync.
+   sync_shadow_strategies_from_yaml(db)` reconciles the YAML against the
+   `shadow_strategies` table. The boot log shows
+   `shadow_strategy_profiles sync complete: inserted=[...] updated=[...]
+   archived=[...] skipped=[...]`.
+3. The stack lights up in `/admin/shadow-strategies` and starts emitting
+   virtual trades on the next scan tick.
+
+Reconcile semantics:
+
+- **YAML name not in DB** → INSERT (config_snapshot frozen from current YAML
+  parent profile).
+- **YAML name in active DB row** → UPDATE mutable fields only
+  (`description`, `scorer_overrides`, `starting_value`).
+  `config_snapshot` and `parent_strategy` are immutable: changing them
+  mid-stream would silently invalidate forward-only telemetry. YAML drift
+  is logged as a WARNING but not applied.
+- **YAML name in archived DB row** → REACTIVATE in place (`archived_at` =
+  None, `activated_at` = now, mutable fields refreshed). Existing
+  `shadow_trades` rows stay attached via FK to id. Reactivate-in-place
+  rather than insert-fresh because the schema enforces UNIQUE(name) and
+  admin readers do name-based lookups. Operators wanting a clean
+  forward-only window after a long archive should rename the stack.
+- **DB name not in YAML and currently active** → SOFT-ARCHIVE
+  (`archived_at` = now). `shadow_trades` rows are preserved.
+
+Validation: `parent_strategy` must resolve in the running
+`strategy_profiles:` config. Bad parents raise `ValueError` and the entire
+reconcile transaction rolls back — partial inserts are never persisted.
+Boot continues unimpaired (logged at ERROR; the live scanner doesn't depend
+on shadow stacks).
+
+Limitation: `scorer_overrides` is recorded but NOT applied during shadow
+scan. That lands in Step 7 (post-eval, requires CANSLIMScorer config
+refactor). Until then, every registered shadow stack effectively scores
+identically to its `parent_strategy`, which is fine for the parity-check
+use case (`shadow_baseline`) but means non-baseline candidates can't yet
+be meaningfully evaluated.
