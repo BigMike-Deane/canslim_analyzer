@@ -1558,6 +1558,63 @@ class Notification(Base):
     )
 
 
+# ── Shadow paper-trading models ───────────────────────────────────────────────
+# Forward-only scoring evaluation: alternative scoring stacks run alongside
+# the live scanner and emit virtual BUY/SELL decisions. The /admin/strategy-
+# ab-eval framework reads from these tables when invoked with source=shadow,
+# letting us evaluate scoring changes WITHOUT committing capital. See
+# docs/shadow-paper-trading-design.md for the full design.
+
+class ShadowStrategy(Base):
+    """A candidate scoring stack that runs in parallel with the live scanner.
+
+    config_snapshot freezes the YAML profile at registration time so a
+    long-running shadow comparison cannot drift if the YAML is later edited
+    (same defensive pattern as BacktestRun.profile_overrides).
+    """
+    __tablename__ = "shadow_strategies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True, index=True)
+    parent_strategy = Column(String, nullable=False)
+    config_snapshot = Column(JSON, nullable=False)
+    scorer_overrides = Column(JSON, nullable=False, default=dict)
+    description = Column(String)
+    starting_value = Column(Float, nullable=False, default=25000.0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    activated_at = Column(DateTime)
+    archived_at = Column(DateTime, index=True)
+
+
+class ShadowTrade(Base):
+    """A virtual BUY or SELL emitted by a shadow strategy.
+
+    Columns mirror AIPortfolioTrade so the existing _summarize_window /
+    _decide helpers in routes/admin.py work without per-source code paths.
+    No user_id column — shadow trades belong to a strategy, not a user.
+    """
+    __tablename__ = "shadow_trades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shadow_strategy_id = Column(Integer, ForeignKey("shadow_strategies.id"), nullable=False, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)
+    shares = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    total_value = Column(Float, nullable=False)
+    reason = Column(String)
+    canslim_score = Column(Float)
+    cost_basis = Column(Float)
+    realized_gain = Column(Float)
+    holding_days = Column(Integer)
+    signal_factors = Column(JSON)
+    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    __table_args__ = (
+        Index('ix_shadow_trades_strategy_executed', 'shadow_strategy_id', 'executed_at'),
+    )
+
+
 # ── SystemState helpers ───────────────────────────────────────────────────────
 # Tiny accessors that hide the ORM boilerplate at every call site. Both the
 # SPY-flip detector (ai_trader) and the morning-briefing dedup (scheduler)
