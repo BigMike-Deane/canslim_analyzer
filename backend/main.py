@@ -12,6 +12,11 @@ from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from backend.rate_limiter import limiter
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text, case
 from datetime import datetime, date, timedelta, timezone
@@ -219,6 +224,36 @@ app = FastAPI(
     version=settings.VERSION,
     lifespan=lifespan
 )
+
+# Rate limiting (slowapi). The Limiter lives in backend.rate_limiter so
+# route modules can import it without circular-import on backend.main.
+# Default 60/min/IP across all routes; tighter per-route policies live
+# alongside the affected handlers (auth, /health, admin AB-eval).
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+class TrustForwardedFor(BaseHTTPMiddleware):
+    """Re-key request.client.host to the real client IP behind Caddy.
+
+    Why: slowapi's get_remote_address reads request.client.host, which is
+    the loopback IP of the reverse proxy. Without this, every request looks
+    like it came from one IP and the limiter buckets the entire internet
+    together. Caddy sets X-Forwarded-For automatically.
+    """
+
+    async def dispatch(self, request, call_next):
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            request.scope["client"] = (xff.split(",")[0].strip(), 0)
+        return await call_next(request)
+
+
+app.add_middleware(SlowAPIMiddleware)
+# TrustForwardedFor MUST be added AFTER SlowAPIMiddleware so it runs FIRST
+# (Starlette stack is LIFO). Without that, slowapi sees Caddy's loopback
+# instead of the real client IP and the limits would be effectively global.
+app.add_middleware(TrustForwardedFor)
 
 # CORS
 app.add_middleware(
@@ -751,7 +786,8 @@ def save_stock_to_db(db: Session, analysis: dict):
 # ============== Health Check ==============
 
 @app.get("/health")
-async def health_check(db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+async def health_check(request: Request = None, db: Session = Depends(get_db)):
     """Health check endpoint"""
     try:
         db.execute(text("SELECT 1"))

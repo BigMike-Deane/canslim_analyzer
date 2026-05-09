@@ -1,6 +1,6 @@
 """Authentication routes: Google Sign-In, token refresh, user profile."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -11,6 +11,7 @@ from backend.auth import (
     get_current_active_user, SECRET_KEY, ALGORITHM,
     GOOGLE_CLIENT_ID
 )
+from backend.rate_limiter import limiter
 from jose import JWTError, jwt
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -21,7 +22,8 @@ class GoogleLoginRequest(BaseModel):
 
 
 @router.post("/google", response_model=Token)
-async def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+async def google_login(req: GoogleLoginRequest, request: Request = None, db: Session = Depends(get_db)):
     """Authenticate via Google Sign-In and return JWT tokens."""
     # Verify the Google ID token
     google_payload = verify_google_token(req.credential)
@@ -56,7 +58,8 @@ class RefreshRequest(BaseModel):
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(req: RefreshRequest, db: Session = Depends(get_db)):
+@limiter.limit("20/minute")
+async def refresh_token(req: RefreshRequest, request: Request = None, db: Session = Depends(get_db)):
     """Exchange a refresh token for new access + refresh tokens."""
     try:
         payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])

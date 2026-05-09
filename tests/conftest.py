@@ -11,6 +11,27 @@ parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _disable_slowapi_in_tests():
+    """Globally disable slowapi for the test session.
+
+    Why: many existing tests call decorated handlers (admin AB-eval,
+    auth/google, auth/refresh) directly as plain async functions via
+    `asyncio.run(handler(...))`. slowapi's @limiter.limit decorator
+    requires a real `starlette.requests.Request` in kwargs and raises
+    when one isn't present.
+
+    test_rate_limits.py re-enables the limiter inside its own fixtures
+    so the per-route policies are still verified end-to-end.
+    """
+    try:
+        from backend.rate_limiter import limiter
+        limiter.enabled = False
+    except Exception:
+        pass
+    yield
+
+
 @pytest.fixture
 def mock_stock_data():
     """Create mock StockData for testing"""

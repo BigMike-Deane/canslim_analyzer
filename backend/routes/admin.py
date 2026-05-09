@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from backend.database import (
     ShadowStrategy, ShadowTrade,
 )
 from backend.auth import get_admin_user, UserCreate, UserResponse
+from backend.rate_limiter import limiter
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -668,6 +669,7 @@ def _resolve_ab_window(
 
 
 @router.get("/strategy-ab-eval")
+@limiter.limit("30/minute")
 async def run_strategy_ab_comparison(
     strategy: str = Query(..., description="Strategy profile name, e.g. 'nostate_optimized'"),
     cutoff_date: str = Query(..., description="ISO date marking experiment start, e.g. '2026-05-07'"),
@@ -680,6 +682,7 @@ async def run_strategy_ab_comparison(
     source: str = Query(default="live", description="Trade source: 'live' (AIPortfolioTrade scoped to users on the strategy) or 'shadow' (ShadowTrade scoped to the named ShadowStrategy)"),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     """Live A/B comparison: pre vs post-cutoff trade summary + decision.
 
@@ -840,6 +843,7 @@ def _build_cumulative_curve(trades: list, anchor_date, end_date, starting_value:
 
 
 @router.get("/strategy-ab-eval-trades")
+@limiter.limit("30/minute")
 async def run_strategy_ab_trades(
     strategy: str = Query(..., description="Strategy profile name, e.g. 'nostate_optimized'"),
     cutoff_date: str = Query(..., description="ISO date marking experiment start"),
@@ -849,6 +853,7 @@ async def run_strategy_ab_trades(
     source: str = Query(default="live", description="Trade source: 'live' or 'shadow'"),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     """Per-trade attribution sibling of /strategy-ab-eval.
 
