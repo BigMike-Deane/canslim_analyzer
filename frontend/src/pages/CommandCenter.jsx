@@ -226,6 +226,21 @@ function CandidateRow({ c }) {
     conf >= 70 ? { label: 'H', cls: 'bg-emerald-500/10 text-emerald-400' } :
     conf >= 40 ? { label: 'M', cls: 'bg-amber-500/10 text-amber-400' } :
     { label: 'L', cls: 'bg-dark-700/40 text-dark-500' }
+  // Distance from pivot using the natural CLAUDE.md convention:
+  //   pct < 0      → price below pivot → pre-breakout zone (primary buy)
+  //   0 ≤ pct ≤ 5  → active breakout (just broken out, still actionable)
+  //   pct > 5      → extended (chasing, scoring-penalized)
+  // Null when no base/pivot has been detected for this candidate yet.
+  const pivot = c.pivot_price
+  const pivotPct = (pivot != null && pivot > 0 && price != null)
+    ? ((price - pivot) / pivot) * 100
+    : null
+  const pivotTier =
+    pivotPct == null ? null :
+    pivotPct >= -3 && pivotPct <= 0 ? { label: `${pivotPct.toFixed(1)}%`,  cls: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' } :
+    pivotPct > 0 && pivotPct <= 5   ? { label: `+${pivotPct.toFixed(1)}%`, cls: 'bg-amber-500/15 text-amber-300 border border-amber-500/30' } :
+    pivotPct > 5                    ? { label: `+${pivotPct.toFixed(1)}%`, cls: 'bg-red-500/15 text-red-300 border border-red-500/30' } :
+    null  // pivotPct < -3 → too far below pivot to matter today, suppress
   return (
     <Link
       to={`/stock/${c.ticker}`}
@@ -256,6 +271,18 @@ function CandidateRow({ c }) {
             title={`Audit confidence: ${conf.toFixed(0)}`}
           >
             {confTier.label}
+          </span>
+        )}
+        {pivotTier && (
+          <span
+            className={`text-[9px] font-data px-1.5 py-0.5 rounded shrink-0 ${pivotTier.cls}`}
+            title={
+              pivotPct < 0  ? `Pre-breakout — ${Math.abs(pivotPct).toFixed(1)}% below pivot $${pivot.toFixed(2)}` :
+              pivotPct <= 5 ? `Active breakout — ${pivotPct.toFixed(1)}% above pivot $${pivot.toFixed(2)}` :
+                              `Extended — ${pivotPct.toFixed(1)}% above pivot $${pivot.toFixed(2)} (chasing)`
+            }
+          >
+            {pivotTier.label}
           </span>
         )}
       </div>

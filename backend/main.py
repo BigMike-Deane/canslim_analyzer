@@ -5480,6 +5480,7 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
             "name": s.name,
             "score": s.canslim_score,
             "price": s.current_price,
+            "pivot_price": s.pivot_price,
             "projected_growth": s.projected_growth,
             "audit_confidence": audit.fundamental_confidence if audit else None,
             "sector": s.sector,

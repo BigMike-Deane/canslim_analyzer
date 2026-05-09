@@ -2343,6 +2343,65 @@ class TestCommandCenterRoute:
         # Fixture seeds spy_price=520.0, spy_50_ma=510.0 → BUY DAY branch.
         assert spy["price"] > spy["ma50"]
 
+    def test_candidate_row_pins_pivot_price_when_set(self):
+        """Pins the API contract that CandidateRow's pre-breakout chip reads.
+
+        The chip surfaces breakout proximity using `(price - pivot_price) /
+        pivot_price` against the CLAUDE.md zones:
+          pre-breakout (-3% to 0%) / active (0% to +5%) / extended (>+5%).
+        A future refactor that dropped `pivot_price` from the candidate
+        dict would silently disable the chip. (handler: main.py:5478-5487)
+        """
+        # _ensure_stock is idempotent (early-returns on existing) so we delete
+        # any prior PIVT1 row first to guarantee a fresh seed with score=95.
+        # That score keeps PIVT1 in the top-8 cut over CAND1 (90) etc.
+        db = _db()
+        try:
+            db.query(Stock).filter_by(ticker="PIVT1").delete()
+            db.commit()
+        finally:
+            db.close()
+        _ensure_stock("PIVT1", score=95.0, sector="Technology",
+                      current_price=23.50, pivot_price=24.00)
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        by_tkr = {c["ticker"]: c for c in d["candidates"]}
+        assert "PIVT1" in by_tkr, f"PIVT1 missing; got {list(by_tkr.keys())}"
+        cand = by_tkr["PIVT1"]
+        assert "pivot_price" in cand
+        assert cand["pivot_price"] == pytest.approx(24.00, abs=0.01)
+        # Pre-breakout zone — load-bearing for the chip's emerald branch.
+        pivot_pct = ((cand["price"] - cand["pivot_price"]) / cand["pivot_price"]) * 100
+        assert -3 <= pivot_pct <= 0
+
+    def test_candidate_row_pivot_price_null_when_unset(self):
+        """A candidate without a detected base ships pivot_price=None — the
+        frontend chip suppresses on null and the row stays clean.
+
+        Most live candidates won't have pivot_price; this test pins that
+        the API serializes the null explicitly (not by omission), since the
+        frontend uses `!= null` truthiness rather than `in candidate`.
+        """
+        # Same idempotency dance as the prior test — delete any stale NOPV1
+        # row so score=94 actually takes effect on insert.
+        db = _db()
+        try:
+            db.query(Stock).filter_by(ticker="NOPV1").delete()
+            db.commit()
+        finally:
+            db.close()
+        _ensure_stock("NOPV1", score=94.0, sector="Technology",
+                      current_price=15.00, pivot_price=None)
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        by_tkr = {c["ticker"]: c for c in d["candidates"]}
+        assert "NOPV1" in by_tkr
+        cand = by_tkr["NOPV1"]
+        assert "pivot_price" in cand           # field present (not omitted)
+        assert cand["pivot_price"] is None     # value is null
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 3: GET /api/stocks/{ticker} (line 1476-1648)
