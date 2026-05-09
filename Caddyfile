@@ -7,11 +7,9 @@ canslim.duckdns.org {
 
 		# CSP: locked-down baseline.
 		#
-		# script-src: 'unsafe-inline' is here for the service-worker
-		#   registration block in frontend/index.html and for Tailwind's
-		#   runtime style insertion. Tightening this via a SHA-256 hash
-		#   on the SW block (or moving it into the Vite bundle) is a
-		#   follow-up — see canslim memory.
+		# script-src: 'self' only — no inline scripts. SW registration
+		#   lives in frontend/src/sw-register.js (imported from main.jsx)
+		#   so it ships through the Vite bundle as a same-origin script.
 		# style-src: Tailwind injects inline <style>; 'unsafe-inline'
 		#   is the only viable allowance until the build extracts CSS.
 		# img-src https: keeps logos/charts working.
@@ -21,7 +19,7 @@ canslim.duckdns.org {
 		# frame-src https://accounts.google.com — Google Sign-In popup.
 		# frame-ancestors 'none' duplicates X-Frame-Options DENY but is
 		#   the modern primitive recognised by all current browsers.
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://accounts.google.com; frame-src 'self' https://accounts.google.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://accounts.google.com; frame-src 'self' https://accounts.google.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 		# Disable browser APIs the app doesn't use. If a future feature
 		# needs one, add it explicitly to the allowlist instead of
