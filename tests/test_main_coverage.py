@@ -2321,6 +2321,28 @@ class TestCommandCenterRoute:
         assert cand["price"] < 25
         assert cand["audit_confidence"] == pytest.approx(78.0, abs=0.01)
 
+    def test_market_spy_ships_price_and_ma50_for_buy_defense_pill(self):
+        """Pins the API contract that CommandCenter BuyDayPill renders.
+
+        UI derives BUY DAY / DEFENSE DAY from `market.spy.price > market.spy.ma50`.
+        The winner profile (`nostate_optimized` / live `nostate_cs_bear`)
+        gates buys on this single binary signal, so a refactor that
+        renamed or dropped either nested field would silently misread
+        the daily offense/defense decision. (handler: main.py:5362-5367)
+        """
+        _ensure_market_snapshot()
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+        spy = d["market"]["spy"]
+        assert "price" in spy
+        assert "ma50" in spy
+        # Both numeric — the JSX comparison short-circuits on null.
+        assert spy["price"] is not None
+        assert spy["ma50"] is not None
+        # Fixture seeds spy_price=520.0, spy_50_ma=510.0 → BUY DAY branch.
+        assert spy["price"] > spy["ma50"]
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 3: GET /api/stocks/{ticker} (line 1476-1648)

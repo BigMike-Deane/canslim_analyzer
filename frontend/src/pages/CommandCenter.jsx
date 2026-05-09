@@ -47,6 +47,31 @@ function MarketStateBadge({ state }) {
   )
 }
 
+// Binary SPY-vs-50MA gate. The winning strategy (`nostate_optimized` /
+// live `nostate_cs_bear`) disables the 5-state machine and gates buys on
+// this single signal, so it deserves the dominant header pill.
+function BuyDayPill({ active }) {
+  if (active === null || active === undefined) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border bg-dark-800 border-dark-700 text-dark-500">
+        <span className="w-1.5 h-1.5 rounded-full bg-dark-500" />
+        ---
+      </span>
+    )
+  }
+  return active ? (
+    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border bg-emerald-500/15 border-emerald-500/40 text-emerald-300">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+      BUY DAY
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border bg-red-500/15 border-red-500/40 text-red-300">
+      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+      DEFENSE DAY
+    </span>
+  )
+}
+
 function IndexRow({ label, data }) {
   if (!data || !data.price) return null
   const aboveMa = data.ma50 ? data.price > data.ma50 : null
@@ -337,6 +362,10 @@ export default function CommandCenter() {
 
   const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner, coiled_spring } = data || {}
   const marketState = market?.market_state || market?.regime?.toUpperCase()
+  const spy = market?.spy
+  const buyDayActive = (spy?.price != null && spy?.ma50 != null)
+    ? spy.price > spy.ma50
+    : null
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
 
@@ -348,7 +377,10 @@ export default function CommandCenter() {
           <h1 className="text-base md:text-lg font-bold text-dark-50 shrink-0">Command Center</h1>
           <div className="flex items-center gap-2">
             {portfolio?.paper_mode && <TagBadge color="amber">PAPER</TagBadge>}
-            <MarketStateBadge state={marketState} />
+            <BuyDayPill active={buyDayActive} />
+            <span className="hidden md:inline-flex">
+              <MarketStateBadge state={marketState} />
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2 md:gap-3 shrink-0">
