@@ -488,9 +488,8 @@ export default function ABEval() {
   // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
   // UTC cron. Disabled until at least one fetch has succeeded so we don't
   // ask the backend to render a snapshot for a window that hasn't validated.
-  // Hidden entirely when shadow is selected: the cron job is hard-coded to
-  // nostate_cs_bear + Approach 2 cutoff, so a "test email" on shadow params
-  // would deliver a misleading body. Shadow email parametrization is Step 6.
+  // Step 6: shadow source is now plumbed through, so the same button delivers
+  // a [Shadow]-prefixed snapshot when a shadow stack is selected.
   const handleSendTestEmail = useCallback(async () => {
     setEmailSending(true)
     try {
@@ -500,6 +499,7 @@ export default function ABEval() {
         preWindowDays,
         postWindowDays: postWindowDays === '' ? null : Number(postWindowDays),
         excludePyramids,
+        source: selected.source,
       })
       if (res?.sent) {
         toast.success(`Snapshot emailed to ${res.recipient} — verdict: ${res.decision}`)
@@ -588,16 +588,14 @@ export default function ABEval() {
           >
             {loading ? 'Loading…' : 'Refresh'}
           </button>
-          {!isShadow && (
-            <button
-              onClick={handleSendTestEmail}
-              disabled={emailSending || !lastFetched}
-              title={!lastFetched ? 'Run an evaluation first' : 'Send the same body the weekly Mon 9 AM UTC cron will deliver'}
-              className="px-3 py-1 rounded border border-primary-500/40 text-primary-300 hover:border-primary-500/70 hover:text-primary-200 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {emailSending ? 'Sending…' : 'Send test email'}
-            </button>
-          )}
+          <button
+            onClick={handleSendTestEmail}
+            disabled={emailSending || !lastFetched}
+            title={!lastFetched ? 'Run an evaluation first' : 'Send the same body the weekly Mon 9 AM UTC cron will deliver'}
+            className="px-3 py-1 rounded border border-primary-500/40 text-primary-300 hover:border-primary-500/70 hover:text-primary-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {emailSending ? 'Sending…' : isShadow ? 'Send shadow test email' : 'Send test email'}
+          </button>
         </div>
       </div>
 

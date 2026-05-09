@@ -931,6 +931,7 @@ class ABEvalEmailTestRequest(BaseModel):
     pre_window_days: int = 30
     post_window_days: Optional[int] = None
     exclude_pyramids: bool = True
+    source: str = "live"
 
 
 @router.post("/strategy-ab-eval/email-test")
@@ -944,6 +945,10 @@ async def trigger_ab_eval_snapshot_email(
     Monday run, and for the 2026-06-18 real-eval routine which now triggers
     this endpoint instead of logging the JSON.
 
+    `source` selects live vs shadow delivery. The shadow path is the same
+    fan-out the Mon 9 AM UTC cron uses for active ShadowStrategy rows —
+    operators can preview a single shadow snapshot before the next Monday.
+
     Window-validation errors (HTTPException 400/404) propagate from
     _resolve_ab_window verbatim — same wording as /strategy-ab-eval, so the
     UI can surface a single error message regardless of which path failed."""
@@ -956,6 +961,7 @@ async def trigger_ab_eval_snapshot_email(
         pre_window_days=payload.pre_window_days,
         post_window_days=payload.post_window_days,
         exclude_pyramids=payload.exclude_pyramids,
+        source=payload.source,
     )
     return {
         'sent': result['sent'],
@@ -963,6 +969,7 @@ async def trigger_ab_eval_snapshot_email(
         'subject': result['subject'],
         'decision': result['decision'],
         'post_sell_count': result['post_sell_count'],
+        'source': result['source'],
     }
 
 

@@ -356,3 +356,41 @@ trusted dashboard, not debug the harness under decision pressure. The
 `shadow_baseline` parity readout against live `nostate_cs_bear` is the
 acceptance test — they should converge to identical SELL counts and
 decision verdicts.
+
+## Step 6 — Weekly email parametrization (shipped)
+
+Closes the operator-visibility loop on shadow verdicts during the dogfood
+window. Step 5 made shadow stacks visible on the dashboard, but the
+operator's habit is to read the Monday email and act — until shadow stacks
+are in that email loop, parity drift gets discovered late.
+
+- `backend.scheduler._run_weekly_ab_eval_email` now fans out one delivery
+  per active shadow stack alongside the live `nostate_cs_bear` job. Live
+  always runs first (it's the verdict-driver for the June 18 read);
+  shadow stacks iterate in `ShadowStrategy.id` order.
+- Each delivery is independently failure-isolated. A single shadow
+  snapshot blowing up cannot kill the live email or other shadows. The
+  outer `try` is preserved so any DB-session failure can't escape into
+  APScheduler and crash the scheduler thread.
+- Archived shadows (`archived_at IS NOT NULL`) are skipped — same filter
+  the listing route uses by default.
+- Cutoff is hard-coded to the live Approach 2 cutoff (`2026-05-07`) for
+  both live and shadow during the eval window, so parity reads stay
+  directly comparable. Per-stack cutoffs are deferred to Step 7 once
+  real candidate stacks land.
+- `backend/ab_eval_email.py:build_ab_eval_snapshot_html` and
+  `send_ab_eval_snapshot` accept a `source` kwarg. When `source='shadow'`,
+  the subject and plain-text bodies get a `[Shadow] ` prefix and the
+  HTML header strip renders a small purple `Shadow` chip — visual
+  disambiguation in the operator's inbox at a glance.
+- `POST /api/admin/strategy-ab-eval/email-test` accepts an optional
+  `source: 'live' | 'shadow'` field, defaulting to `'live'`. The ABEval
+  frontend's "Send test email" button is now visible on shadow rows too
+  (renders as "Send shadow test email") and plumbs `selected.source`
+  through the API client.
+- Tests in `tests/test_ab_eval_email.py:TestShadowSourceSnapshot` lock
+  the `[Shadow]` prefix and HTML badge contracts; live snapshots have a
+  regression guard that fails if shadow markers ever leak in.
+- Tests in `tests/test_scheduler_ab_eval_email.py` lock the cron
+  contracts: live-first ordering, per-shadow failure isolation,
+  archived-skip, and outer-DB-failure containment.

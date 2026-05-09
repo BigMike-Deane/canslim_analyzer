@@ -2280,15 +2280,24 @@ def start_ml_backfill_job():
     logger.info("ML backfill job scheduled (3 AM UTC)")
 
 
+_AB_EVAL_LIVE_STRATEGY = 'nostate_cs_bear'
+_AB_EVAL_CUTOFF_DATE = '2026-05-07'
+
+
 def _run_weekly_ab_eval_email():
     """Wrapper for APScheduler — owns its DB session, swallows errors so a
     single failure doesn't kill the scheduler.
 
-    Targets the active scoring experiment (Approach 2, cutoff 2026-05-07,
-    nostate_cs_bear — the live trading strategy for both users). When the
-    experiment ends, update the cutoff_date here or rip the job — but
-    during the 2026-05-07 → 2026-06-18 window this is the operator's
-    primary read on whether to keep or revert.
+    Fans out one email per delivery target: first the live experiment
+    (Approach 2, cutoff 2026-05-07, nostate_cs_bear — the live trading
+    strategy for both users), then one per active ShadowStrategy. Shadow
+    fan-out is failure-isolated — a single shadow snapshot blowing up
+    must not kill the live email or the other shadows.
+
+    Cutoff is hard-coded to the live Approach 2 cutoff for both live and
+    shadow during the 2026-05-07 → 2026-06-18 evaluation window; this
+    keeps shadow verdicts directly comparable to the live verdict. Step 7
+    revisits per-stack cutoffs once real candidate stacks land.
 
     Disabled when CANSLIM_ENV=test so the test suite doesn't try to send
     real mail through smtp.gmail.com."""
@@ -2297,22 +2306,49 @@ def _run_weekly_ab_eval_email():
         return
     try:
         from backend.ab_eval_email import send_ab_eval_snapshot
-        from backend.database import SessionLocal
+        from backend.database import SessionLocal, ShadowStrategy
         db = SessionLocal()
         try:
-            result = send_ab_eval_snapshot(
-                strategy='nostate_cs_bear',
-                cutoff_date='2026-05-07',
-                db=db,
-            )
-            logger.info(
-                f"Weekly A/B eval email: sent={result['sent']} "
-                f"decision={result['decision']} post_sells={result['post_sell_count']}"
-            )
+            # Live first — this is the verdict-driver for the June 18 read.
+            try:
+                result = send_ab_eval_snapshot(
+                    strategy=_AB_EVAL_LIVE_STRATEGY,
+                    cutoff_date=_AB_EVAL_CUTOFF_DATE,
+                    db=db,
+                )
+                logger.info(
+                    f"Weekly A/B eval email (live): sent={result['sent']} "
+                    f"decision={result['decision']} post_sells={result['post_sell_count']}"
+                )
+            except Exception as e:
+                logger.error(f"Live A/B eval email failed: {e}", exc_info=True)
+
+            # Shadow fan-out — one email per active stack, failure-isolated.
+            shadows = db.query(ShadowStrategy).filter(
+                ShadowStrategy.archived_at.is_(None)
+            ).order_by(ShadowStrategy.id).all()
+            for shadow in shadows:
+                try:
+                    result = send_ab_eval_snapshot(
+                        strategy=shadow.name,
+                        cutoff_date=_AB_EVAL_CUTOFF_DATE,
+                        db=db,
+                        source='shadow',
+                    )
+                    logger.info(
+                        f"Weekly A/B eval email (shadow {shadow.name}): "
+                        f"sent={result['sent']} decision={result['decision']} "
+                        f"post_sells={result['post_sell_count']}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Shadow A/B eval email failed for '{shadow.name}': {e}",
+                        exc_info=True,
+                    )
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"Weekly A/B eval email failed: {e}", exc_info=True)
+        logger.error(f"Weekly A/B eval email outer failure: {e}", exc_info=True)
 
 
 def start_ab_eval_email_job():

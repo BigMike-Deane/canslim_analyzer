@@ -124,6 +124,7 @@ def build_ab_eval_snapshot_html(
     pre_window_days: int = 30,
     post_window_days: Optional[int] = None,
     exclude_pyramids: bool = True,
+    source: str = "live",
 ) -> dict:
     """Build the snapshot subject + HTML + plain-text bodies.
 
@@ -131,10 +132,16 @@ def build_ab_eval_snapshot_html(
     starting_value_reference. The decision/sell-count fields are surfaced so
     callers (the test endpoint, the scheduler, and tests) can assert on the
     state without re-parsing the HTML.
+
+    `source` is passed through to `_resolve_ab_window`: 'live' (default) reads
+    AIPortfolioTrade rows; 'shadow' reads ShadowTrade rows for the named
+    ShadowStrategy. The subject and body get a `[Shadow]` prefix/badge when
+    source != 'live' so the operator can tell at a glance which delivery was
+    the live verdict and which were shadow stacks.
     """
     win = _resolve_ab_window(
         strategy, cutoff_date, pre_window_days, post_window_days,
-        exclude_pyramids, db,
+        exclude_pyramids, db, source=source,
     )
     pre_trades = win['pre_trades']
     post_trades = win['post_trades']
@@ -203,6 +210,15 @@ def build_ab_eval_snapshot_html(
 
     strategy_safe = html.escape(strategy)
     cutoff_safe = html.escape(cutoff_date)
+    is_shadow = source == "shadow"
+    source_badge_html = ''
+    if is_shadow:
+        source_badge_html = (
+            '<span style="display:inline-block;margin-left:8px;padding:2px 8px;'
+            'background:#7c3aed;color:#fff;border-radius:4px;font-size:11px;'
+            'font-weight:600;letter-spacing:0.05em;text-transform:uppercase;">'
+            'Shadow</span>'
+        )
 
     html_body = f'''<!DOCTYPE html>
 <html>
@@ -212,7 +228,7 @@ def build_ab_eval_snapshot_html(
 
     <div style="background:#fff;border-radius:8px;padding:20px;margin-bottom:16px;border:1px solid #e5e7eb;">
       <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">A/B Evaluation Snapshot</div>
-      <h1 style="margin:0;font-size:18px;color:#111827;">{strategy_safe} · cutoff {cutoff_safe}</h1>
+      <h1 style="margin:0;font-size:18px;color:#111827;">{strategy_safe} · cutoff {cutoff_safe}{source_badge_html}</h1>
       <p style="margin:4px 0 0 0;font-size:12px;color:#6b7280;">Pre {pre_range} · Post {post_range}</p>
     </div>
 
@@ -256,8 +272,9 @@ def build_ab_eval_snapshot_html(
 
     return_delta = delta.get('total_return_pct_delta')
     sharpe_delta = delta.get('sharpe_per_trade_delta')
+    source_text_label = "[Shadow] " if is_shadow else ""
     text_body = (
-        f"A/B Evaluation Snapshot — {strategy} · cutoff {cutoff_date}\n"
+        f"{source_text_label}A/B Evaluation Snapshot — {strategy} · cutoff {cutoff_date}\n"
         f"Decision: {decision_label}\n"
         f"  {decision['decision_reason']}\n\n"
         f"Pre window:  {pre_range} ({pre_sells} SELLs)\n"
@@ -267,7 +284,8 @@ def build_ab_eval_snapshot_html(
         f"Sharpe per-trade delta: {_fmt_num(sharpe_delta)}\n"
     )
 
-    subject = f"CANSLIM A/B [{decision_label}] {strategy} · cutoff {cutoff_date}"
+    subject_prefix = "[Shadow] " if is_shadow else ""
+    subject = f"{subject_prefix}CANSLIM A/B [{decision_label}] {strategy} · cutoff {cutoff_date}"
 
     return {
         'subject': subject,
@@ -279,6 +297,7 @@ def build_ab_eval_snapshot_html(
         'starting_value_reference': round(starting_value, 2),
         'return_delta': return_delta,
         'sharpe_delta': sharpe_delta,
+        'source': source,
     }
 
 
@@ -290,6 +309,7 @@ def send_ab_eval_snapshot(
     pre_window_days: int = 30,
     post_window_days: Optional[int] = None,
     exclude_pyramids: bool = True,
+    source: str = "live",
 ) -> dict:
     """Build the snapshot and send via email_utils.send_email.
 
@@ -302,6 +322,7 @@ def send_ab_eval_snapshot(
         pre_window_days=pre_window_days,
         post_window_days=post_window_days,
         exclude_pyramids=exclude_pyramids,
+        source=source,
     )
     sent = send_email(
         snapshot['subject'],
@@ -320,4 +341,5 @@ def send_ab_eval_snapshot(
         'subject': snapshot['subject'],
         'decision': snapshot['decision'],
         'post_sell_count': snapshot['post_sell_count'],
+        'source': source,
     }

@@ -631,7 +631,7 @@ export const api = {
   // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
   // UTC cron, sent on demand. Used by the ABEval "Send test snapshot email"
   // button so the operator can verify wiring without waiting a week.
-  sendABEvalSnapshotEmail: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, recipientOverride } = {}) => {
+  sendABEvalSnapshotEmail: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, recipientOverride, source } = {}) => {
     const body = {
       strategy,
       cutoff_date: cutoffDate,
@@ -640,6 +640,7 @@ export const api = {
       exclude_pyramids: excludePyramids,
     }
     if (recipientOverride) body.recipient_override = recipientOverride
+    if (source && source !== 'live') body.source = source
     return request('/api/admin/strategy-ab-eval/email-test', {
       method: 'POST',
       body: JSON.stringify(body),

@@ -342,3 +342,196 @@ class TestEmailTestEndpoint:
         assert result['recipient'] == "ops@example.com"
         assert result['decision'] == 'keep'
         assert "KEEP" in result['subject']
+
+
+# ============================================================================
+# Step 6: source='shadow' plumbing through the snapshot builder + endpoint
+# ============================================================================
+class TestShadowSourceSnapshot:
+    """Shadow source must flow strategy + cutoff through _resolve_ab_window
+    and surface a [Shadow] prefix everywhere the operator can scan visually
+    (subject, plain-text body, HTML badge). Reuses the helpers from
+    test_strategy_ab_eval_shadow so the email path stays aligned with the
+    dashboard path — divergence here would email a body computed off a
+    different fixture than the dashboard renders."""
+
+    def _seed_active_shadow_with_post_winners(self, db, name="shadow_baseline"):
+        from backend.database import ShadowStrategy, ShadowTrade
+        from tests.test_strategy_ab_eval_shadow import (
+            _make_shadow_strategy, _make_shadow_trade,
+        )
+        ss = _make_shadow_strategy(name=name, starting_value=25000.0)
+        db.add(ss)
+        db.commit()
+        db.refresh(ss)
+        # 6 pre-cutoff modest mixed SELLs
+        pre_gains = [5.0, -3.0, 4.0, 6.0, -2.0, 3.0]
+        for i, g in enumerate(pre_gains):
+            db.add(_make_shadow_trade(
+                strategy_id=ss.id, action="SELL", shares=10.0, cost_basis=10.0,
+                realized_gain=g, ticker=f"PRE{i}",
+                executed_at=datetime(2026, 4, 1 + i, tzinfo=timezone.utc),
+            ))
+        # 6 post-cutoff strong winners
+        post_gains = [25.0, 30.0, -5.0, 20.0, 18.0, 22.0]
+        for i, g in enumerate(post_gains):
+            db.add(_make_shadow_trade(
+                strategy_id=ss.id, action="SELL", shares=10.0, cost_basis=10.0,
+                realized_gain=g, ticker=f"POST{i}",
+                executed_at=datetime(2026, 4, 16 + i, tzinfo=timezone.utc),
+                reason="Take profit (40% trail)",
+            ))
+        db.commit()
+        return ss
+
+    def _shadow_db_session(self):
+        from backend.database import (
+            init_db, SessionLocal, AIPortfolioTrade, AIPortfolioConfig,
+            ShadowStrategy, ShadowTrade,
+        )
+        init_db()
+        db = SessionLocal()
+        db.query(ShadowTrade).delete()
+        db.query(ShadowStrategy).delete()
+        db.query(AIPortfolioTrade).delete()
+        db.query(AIPortfolioConfig).delete()
+        db.commit()
+        return db
+
+    def test_subject_carries_shadow_prefix(self):
+        db = self._shadow_db_session()
+        try:
+            self._seed_active_shadow_with_post_winners(db)
+            from backend.ab_eval_email import build_ab_eval_snapshot_html
+            snap = build_ab_eval_snapshot_html(
+                "shadow_baseline", "2026-04-15", db,
+                pre_window_days=14, post_window_days=14, source="shadow",
+            )
+            assert snap['subject'].startswith("[Shadow] ")
+            assert "shadow_baseline" in snap['subject']
+            assert snap['source'] == 'shadow'
+        finally:
+            db.close()
+
+    def test_html_body_renders_shadow_badge(self):
+        db = self._shadow_db_session()
+        try:
+            self._seed_active_shadow_with_post_winners(db)
+            from backend.ab_eval_email import build_ab_eval_snapshot_html
+            snap = build_ab_eval_snapshot_html(
+                "shadow_baseline", "2026-04-15", db,
+                pre_window_days=14, post_window_days=14, source="shadow",
+            )
+            # The header strip surfaces a Shadow chip so the operator can
+            # tell at a glance which delivery is the live verdict.
+            assert ">Shadow</span>" in snap['html']
+        finally:
+            db.close()
+
+    def test_text_body_carries_shadow_prefix(self):
+        db = self._shadow_db_session()
+        try:
+            self._seed_active_shadow_with_post_winners(db)
+            from backend.ab_eval_email import build_ab_eval_snapshot_html
+            snap = build_ab_eval_snapshot_html(
+                "shadow_baseline", "2026-04-15", db,
+                pre_window_days=14, post_window_days=14, source="shadow",
+            )
+            assert snap['text'].startswith("[Shadow] ")
+        finally:
+            db.close()
+
+    def test_live_source_does_not_render_shadow_markers(self, db_session):
+        """Regression guard: live emails must never carry shadow visual
+        markers. Tightens the contract that shadow markers fire only when
+        explicitly opted in."""
+        _seed_keep_scenario(db_session)
+        from backend.ab_eval_email import build_ab_eval_snapshot_html
+        snap = build_ab_eval_snapshot_html(
+            "nostate_optimized", "2026-04-15", db_session,
+            pre_window_days=14, post_window_days=14,
+            # source defaults to 'live'
+        )
+        assert "[Shadow]" not in snap['subject']
+        assert "[Shadow] " not in snap['text']
+        assert ">Shadow</span>" not in snap['html']
+        assert snap['source'] == 'live'
+
+    def test_send_wrapper_passes_source_through(self):
+        db = self._shadow_db_session()
+        try:
+            self._seed_active_shadow_with_post_winners(db)
+            from backend import ab_eval_email
+            with patch.object(ab_eval_email, 'send_email', return_value=True) as mock_send:
+                result = ab_eval_email.send_ab_eval_snapshot(
+                    strategy="shadow_baseline",
+                    cutoff_date="2026-04-15",
+                    db=db,
+                    pre_window_days=14,
+                    post_window_days=14,
+                    source="shadow",
+                )
+            args, _ = mock_send.call_args
+            assert args[0].startswith("[Shadow] ")
+            assert result['source'] == 'shadow'
+            assert result['decision'] == 'keep'
+        finally:
+            db.close()
+
+    def test_endpoint_accepts_source_shadow(self):
+        db = self._shadow_db_session()
+        try:
+            self._seed_active_shadow_with_post_winners(db)
+            from backend.routes.admin import (
+                trigger_ab_eval_snapshot_email,
+                ABEvalEmailTestRequest,
+            )
+            from backend import ab_eval_email
+            payload = ABEvalEmailTestRequest(
+                strategy="shadow_baseline",
+                cutoff_date="2026-04-15",
+                pre_window_days=14,
+                post_window_days=14,
+                source="shadow",
+            )
+            mock_admin = MagicMock(spec=User)
+            mock_admin.id = 1
+            mock_admin.is_admin = True
+            mock_admin.is_active = True
+            with patch.object(ab_eval_email, 'send_email', return_value=True):
+                result = asyncio.run(trigger_ab_eval_snapshot_email(
+                    payload=payload, current_user=mock_admin, db=db,
+                ))
+            assert result['sent'] is True
+            assert result['source'] == 'shadow'
+            assert result['subject'].startswith("[Shadow] ")
+        finally:
+            db.close()
+
+    def test_endpoint_unknown_shadow_404(self):
+        """Unknown shadow name propagates verbatim from _build_trade_query."""
+        db = self._shadow_db_session()
+        try:
+            from backend.routes.admin import (
+                trigger_ab_eval_snapshot_email,
+                ABEvalEmailTestRequest,
+            )
+            payload = ABEvalEmailTestRequest(
+                strategy="does_not_exist",
+                cutoff_date="2026-04-15",
+                pre_window_days=14,
+                post_window_days=14,
+                source="shadow",
+            )
+            mock_admin = MagicMock(spec=User)
+            mock_admin.id = 1
+            mock_admin.is_admin = True
+            mock_admin.is_active = True
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(trigger_ab_eval_snapshot_email(
+                    payload=payload, current_user=mock_admin, db=db,
+                ))
+            assert exc.value.status_code == 404
+            assert "Shadow strategy 'does_not_exist' not found" in exc.value.detail
+        finally:
+            db.close()
