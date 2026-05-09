@@ -217,3 +217,32 @@ def test_rate_limit_handler_records_event(client):
     e = rate_events[-1]
     assert e["route"] == "/health"
     assert e["source_ip"]  # populated, not empty
+
+
+def test_rate_limit_records_real_ip_via_xff(client):
+    """Behind Caddy, the real client IP arrives in X-Forwarded-For.
+
+    The TrustForwardedFor middleware rewrites request.scope["client"] from
+    the first XFF value, so the rate-limit handler records the real client
+    IP rather than the reverse-proxy loopback. Closes the smoke gap from
+    the CSO #6 ship: prod smoke saw the Docker bridge IP because the test
+    request bypassed Caddy.
+    """
+    real_ip = "203.0.113.42"  # TEST-NET-3 (RFC 5737), safe to hard-code
+
+    prev_enabled = limiter.enabled
+    limiter.enabled = True
+    limiter.reset()
+    try:
+        codes = [
+            client.get("/health", headers={"X-Forwarded-For": real_ip}).status_code
+            for _ in range(31)
+        ]
+        assert codes[-1] == 429
+    finally:
+        limiter.reset()
+        limiter.enabled = prev_enabled
+
+    rate_events = [e for e in recent_events() if e["kind"] == "rate_limit"]
+    assert rate_events, "Rate-limit handler did not record an audit event"
+    assert rate_events[-1]["source_ip"] == real_ip
