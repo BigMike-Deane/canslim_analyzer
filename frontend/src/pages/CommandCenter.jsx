@@ -88,6 +88,57 @@ function IndexRow({ label, data }) {
   )
 }
 
+function DefensePriorityCard({ positions }) {
+  if (!positions || positions.length === 0) return null
+  return (
+    <Card variant="accent" accent="red" className="bg-red-500/[0.04] mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-red-300">Defensive Priority</span>
+          <TagBadge color="red">DEFENSE DAY</TagBadge>
+        </div>
+        <span className="text-[10px] text-dark-500">closest to stop</span>
+      </div>
+      <div>
+        {positions.map((p, idx) => {
+          const stopCls =
+            p.stop_distance <= 2 ? 'text-red-400' :
+            p.stop_distance <= 5 ? 'text-amber-400' :
+            'text-dark-500'
+          return (
+            <Link
+              key={p.ticker}
+              to={`/stock/${p.ticker}`}
+              className="flex items-center justify-between py-1.5 border-b border-dark-700/30 last:border-0 hover:bg-red-500/5 -mx-1 px-1 rounded transition-colors"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-[10px] text-dark-500 font-data w-3">{idx + 1}</span>
+                <span className="font-medium text-red-300 text-xs w-12">{p.ticker}</span>
+                <span className={`text-[10px] font-data shrink-0 ${stopCls}`} title={`${p.stop_distance.toFixed(1)}% from stop`}>
+                  stop {p.stop_distance.toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={`text-[10px] font-data ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct.toFixed(1)}%
+                </span>
+                {p.trail_from_peak != null && p.trail_from_peak > 5 && (
+                  <span className="text-[10px] font-data text-amber-400" title="Down from peak">
+                    ↓{p.trail_from_peak.toFixed(0)}%
+                  </span>
+                )}
+              </div>
+            </Link>
+          )
+        })}
+      </div>
+      <div className="mt-2 pt-2 border-t border-dark-700/30 text-[10px] text-dark-500">
+        Tap a row to review. Defensive moves: tighten stop, trim, or exit.
+      </div>
+    </Card>
+  )
+}
+
 function CoiledSpringSection({ cs }) {
   if (!cs) return null
   const { candidates, stats, recent_results } = cs
@@ -393,6 +444,17 @@ export default function CommandCenter() {
   const buyDayActive = (spy?.price != null && spy?.ma50 != null)
     ? spy.price > spy.ma50
     : null
+  // Defense Day playbook — when the binary gate flips to defense, rank
+  // positions by ascending stop_distance (closest-to-stop first), top 3.
+  // Filter stop_distance <= 0 (already past stop, should be sold).
+  // Strict `=== false` check keeps the panel suppressed on data-missing
+  // renders (where buyDayActive is null).
+  const defensivePositions = (buyDayActive === false && Array.isArray(positions))
+    ? positions
+        .filter(p => p.stop_distance != null && p.stop_distance > 0)
+        .sort((a, b) => a.stop_distance - b.stop_distance)
+        .slice(0, 3)
+    : []
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
 
@@ -496,6 +558,8 @@ export default function CommandCenter() {
           {runningAction === 'scan' ? 'Starting...' : 'Start Scan'}
         </button>
       </div>
+
+      <DefensePriorityCard positions={defensivePositions} />
 
       {/* ═══════════════════════════════════════════
           DESKTOP LAYOUT: 3-column grid

@@ -2402,6 +2402,64 @@ class TestCommandCenterRoute:
         assert "pivot_price" in cand           # field present (not omitted)
         assert cand["pivot_price"] is None     # value is null
 
+    def test_position_dict_ships_fields_for_defense_day_panel(self):
+        """Pins the API contract that DefensePriorityCard reads.
+
+        The panel ranks by ascending `stop_distance` and surfaces
+        `gain_pct` + `trail_from_peak` per row. A refactor that dropped
+        any of these fields would silently break the defense-day playbook.
+        (handler: main.py:5440-5451)
+        """
+        db = _db()
+        try:
+            for tk in ("DEFP1", "DEFP2"):
+                db.query(AIPortfolioPosition).filter_by(ticker=tk, user_id=1).delete()
+                db.query(Stock).filter_by(ticker=tk).delete()
+            db.commit()
+        finally:
+            db.close()
+        _ensure_ai_position("DEFP1", gain=10.0, current_value=3000.0)
+        _ensure_ai_position("DEFP2", gain=-6.0, current_value=2000.0)
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        by_tkr = {p["ticker"]: p for p in r.json()["positions"]}
+        for tk in ("DEFP1", "DEFP2"):
+            assert tk in by_tkr, f"{tk} missing from positions"
+            for f in ("stop_distance", "gain_pct", "position_pct", "trail_from_peak"):
+                assert f in by_tkr[tk], f"{tk} missing field {f}"
+            assert by_tkr[tk]["stop_distance"] is not None
+        # Verify formula: stop_distance = base_stop(8.0) + gain_pct.
+        assert by_tkr["DEFP1"]["stop_distance"] == pytest.approx(18.0, abs=0.5)
+        assert by_tkr["DEFP2"]["stop_distance"] == pytest.approx(2.0, abs=0.5)
+
+    def test_positions_carry_stop_distance_for_defense_day_sort(self):
+        """The DefensePriorityCard sorts by stop_distance ASC client-side.
+        The API sorts by gain_pct DESC (main.py:5453); the panel re-sorts.
+        Pin both: API order ≠ panel order, but stop_distance is present
+        and accurate for every position so the client can re-sort.
+        """
+        db = _db()
+        try:
+            for tk in ("DEFA1", "DEFA2", "DEFA3"):
+                db.query(AIPortfolioPosition).filter_by(ticker=tk, user_id=1).delete()
+                db.query(Stock).filter_by(ticker=tk).delete()
+            db.commit()
+        finally:
+            db.close()
+        _ensure_ai_position("DEFA1", gain=-6.0, current_value=2000.0)   # stop=2
+        _ensure_ai_position("DEFA2", gain=-3.0, current_value=2000.0)   # stop=5
+        _ensure_ai_position("DEFA3", gain=5.0,  current_value=2000.0)   # stop=13
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        positions = r.json()["positions"]
+        by_tkr = {p["ticker"]: p["stop_distance"] for p in positions}
+        for tk in ("DEFA1", "DEFA2", "DEFA3"):
+            assert tk in by_tkr, f"{tk} missing"
+        assert by_tkr["DEFA1"] < by_tkr["DEFA2"] < by_tkr["DEFA3"]
+        # API order is gain_pct DESC: DEFA3 (gain=5) first.
+        api_order = [p["ticker"] for p in positions if p["ticker"].startswith("DEFA")]
+        assert api_order.index("DEFA3") < api_order.index("DEFA1")
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 3: GET /api/stocks/{ticker} (line 1476-1648)
