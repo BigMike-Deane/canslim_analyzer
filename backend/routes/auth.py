@@ -11,10 +11,31 @@ from backend.auth import (
     get_current_active_user, SECRET_KEY, ALGORITHM,
     GOOGLE_CLIENT_ID
 )
+from backend.audit_log import record_event
 from backend.rate_limiter import limiter
 from jose import JWTError, jwt
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _client_ip(request: Request | None) -> str:
+    if request is None or request.client is None:
+        return "unknown"
+    return request.client.host or "unknown"
+
+
+def _record_auth_fail(request: Request | None, reason: str) -> None:
+    """PII-free audit: record only the failure reason, never the email/token."""
+    try:
+        record_event(
+            "auth_fail",
+            source_ip=_client_ip(request),
+            route="/api/auth/google",
+            detail=reason,
+        )
+    except Exception:
+        # Audit-log must never mask the auth response.
+        pass
 
 
 class GoogleLoginRequest(BaseModel):
@@ -26,19 +47,26 @@ class GoogleLoginRequest(BaseModel):
 async def google_login(req: GoogleLoginRequest, request: Request = None, db: Session = Depends(get_db)):
     """Authenticate via Google Sign-In and return JWT tokens."""
     # Verify the Google ID token
-    google_payload = verify_google_token(req.credential)
+    try:
+        google_payload = verify_google_token(req.credential)
+    except HTTPException:
+        _record_auth_fail(request, "invalid_token")
+        raise
     email = google_payload.get("email", "").lower()
     if not email:
+        _record_auth_fail(request, "missing_email")
         raise HTTPException(status_code=401, detail="No email in Google token")
 
     # Look up user by email (invite-only: must already exist)
     user = db.query(User).filter(User.email == email).first()
     if not user:
+        _record_auth_fail(request, "unknown_user")
         raise HTTPException(
             status_code=403,
             detail="No account found for this email. Contact the admin for an invite.",
         )
     if not user.is_active:
+        _record_auth_fail(request, "account_disabled")
         raise HTTPException(status_code=403, detail="Account is disabled")
 
     # Update display name from Google if not set

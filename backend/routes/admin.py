@@ -1008,3 +1008,26 @@ async def list_shadow_strategies(
         }
         for r in rows
     ]
+
+
+@router.get("/audit-log")
+async def get_audit_log(
+    limit: int = Query(100, ge=1, le=500),
+    kind: Optional[str] = Query(None, pattern="^(rate_limit|auth_fail)$"),
+    current_user: User = Depends(get_admin_user),
+):
+    """Recent security-relevant rejections (rate-limit hits + auth failures).
+
+    In-memory ring buffer; resets on container restart. Use to verify that
+    CSO #4 (slowapi limits) and Google auth are catching real attempts.
+    No PII is recorded — only failure reasons (e.g. "invalid_token").
+    """
+    from backend.audit_log import recent_events, buffer_size
+    events = recent_events(limit=limit)
+    if kind:
+        events = [e for e in events if e["kind"] == kind]
+    return {
+        "events": events,
+        "total": len(events),
+        "buffer_size": buffer_size(),
+    }

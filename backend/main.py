@@ -230,7 +230,30 @@ app = FastAPI(
 # Default 60/min/IP across all routes; tighter per-route policies live
 # alongside the affected handlers (auth, /health, admin AB-eval).
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+def _audit_logged_rate_limit_handler(request, exc):
+    """Record the rejection in the audit-log ring buffer, then delegate to slowapi.
+
+    Wrapping the default handler (rather than reimplementing) keeps slowapi's
+    Retry-After + 429 response semantics intact while giving us visibility.
+    """
+    try:
+        from backend.audit_log import record_event
+        client_host = request.client.host if request.client else "unknown"
+        record_event(
+            "rate_limit",
+            source_ip=client_host,
+            route=request.url.path,
+            detail=str(getattr(exc, "detail", exc)),
+        )
+    except Exception:
+        # Never let audit-log failure mask a rate-limit response.
+        pass
+    return _rate_limit_exceeded_handler(request, exc)
+
+
+app.add_exception_handler(RateLimitExceeded, _audit_logged_rate_limit_handler)
 
 
 class TrustForwardedFor(BaseHTTPMiddleware):
