@@ -251,6 +251,11 @@ def run_migrations():
         # cheap pre-flight before the slow eval-backtest gate. Cached on the
         # incumbent so candidates can be compared without re-scoring v12 each run.
         ("ml_models", "eval_decile_wr", "FLOAT"),
+        # Pre-excellence-cap C value (Shadow Step 7, May 2026 — Approach 2 /
+        # ec73f83 verdict requires a parallel-regime control arm). Persisted
+        # forward-only; existing 1.6M rows stay NULL and are ignored by the
+        # shadow override path until they age out of the eval window.
+        ("stock_scores", "c_score_uncapped", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -608,6 +613,12 @@ class StockScore(Base):
     # CANSLIM breakdown
     total_score = Column(Float)
     c_score = Column(Float)
+    # Pre-excellence-cap C value (Approach 2 / ec73f83). Equals c_score when
+    # no cap was applied. Persisted forward-only so shadow strategies
+    # (Step 7) can reconstruct an un-capped canslim_score for parallel-regime
+    # A/B against the capped baseline. Nullable for backfill safety on the
+    # ~1.6M historical rows written before this column existed.
+    c_score_uncapped = Column(Float, nullable=True)
     a_score = Column(Float)
     n_score = Column(Float)
     s_score = Column(Float)

@@ -1280,6 +1280,7 @@ def run_continuous_scan():
             date=today,
             total_score=new_score,
             c_score=analysis.get("c_score"),
+            c_score_uncapped=analysis.get("c_score_uncapped"),
             a_score=analysis.get("a_score"),
             n_score=analysis.get("n_score"),
             s_score=analysis.get("s_score"),

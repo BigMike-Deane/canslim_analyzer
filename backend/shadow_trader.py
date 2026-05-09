@@ -658,6 +658,72 @@ class ShadowSession:
         return out
 
 
+# ── Scorer overrides (Step 7) ─────────────────────────────────────────────────
+# When a ShadowStrategy carries `scorer_overrides`, we mutate both the
+# analysis_results (which feed _derive_synthetic_positions → current_score on
+# synthetic positions → evaluate_sells thresholds) AND the sandbox Stock ORM
+# rows (which evaluate_buys reads for the buy-side score). The sandbox rolls
+# back at the end of _run_one_strategy, so live data is untouched.
+#
+# Currently supported override:
+#   disable_excellence_cap (bool) — substitute c_score_uncapped for c_score
+#     and adjust canslim_score by the cap delta. Built for the Approach 2
+#     parallel-regime A/B (June 18 verdict). Rows that pre-date the
+#     c_score_uncapped column write (NULL value) pass through unchanged.
+
+
+def _apply_disable_excellence_cap(analysis_results: List[dict]) -> List[dict]:
+    """Return analysis_results with c_score → c_score_uncapped and
+    canslim_score / total_score adjusted by the cap delta."""
+    out: List[dict] = []
+    for a in (analysis_results or []):
+        if not isinstance(a, dict):
+            out.append(a)
+            continue
+        uncapped = a.get("c_score_uncapped")
+        capped = a.get("c_score")
+        if uncapped is None or capped is None or uncapped == capped:
+            out.append(a)
+            continue
+        delta = uncapped - capped
+        new_a = dict(a)
+        new_a["c_score"] = uncapped
+        if new_a.get("canslim_score") is not None:
+            new_a["canslim_score"] = new_a["canslim_score"] + delta
+        if new_a.get("total_score") is not None:
+            new_a["total_score"] = new_a["total_score"] + delta
+        out.append(new_a)
+    return out
+
+
+def _patch_sandbox_stocks_disable_cap(sandbox: Session, analysis_results: List[dict]) -> int:
+    """Mutate Stock ORM rows in the sandbox session so evaluate_buys reads
+    pre-cap scores. The caller's `finally` rolls the sandbox back."""
+    from backend.database import Stock
+
+    deltas: dict = {}
+    for a in (analysis_results or []):
+        ticker = a.get("ticker") if isinstance(a, dict) else getattr(a, "ticker", None)
+        uncapped = a.get("c_score_uncapped") if isinstance(a, dict) else getattr(a, "c_score_uncapped", None)
+        capped = a.get("c_score") if isinstance(a, dict) else getattr(a, "c_score", None)
+        if ticker and uncapped is not None and capped is not None and uncapped != capped:
+            deltas[ticker] = (uncapped, uncapped - capped)
+    if not deltas:
+        return 0
+    rows = sandbox.query(Stock).filter(Stock.ticker.in_(list(deltas.keys()))).all()
+    n = 0
+    for stock in rows:
+        entry = deltas.get(stock.ticker)
+        if not entry:
+            continue
+        new_c, delta = entry
+        stock.c_score = new_c
+        if stock.canslim_score is not None:
+            stock.canslim_score = stock.canslim_score + delta
+        n += 1
+    return n
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
 
@@ -722,7 +788,20 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         if strategy.archived_at is not None:
             return 0
 
-        shadow_session = ShadowSession(sandbox, strategy, analysis_results or [])
+        # Apply scorer_overrides to BOTH halves of the read path:
+        # analysis_results (feeds synthetic positions' current_score for the
+        # SELL evaluator) and sandbox Stock rows (evaluate_buys reads these).
+        ar_for_session = analysis_results or []
+        overrides = strategy.scorer_overrides or {}
+        if overrides.get("disable_excellence_cap"):
+            ar_for_session = _apply_disable_excellence_cap(ar_for_session)
+            n_patched = _patch_sandbox_stocks_disable_cap(sandbox, ar_for_session)
+            logger.info(
+                f"shadow[{strategy.name}]: disable_excellence_cap active "
+                f"(patched {n_patched} sandbox Stock row(s))"
+            )
+
+        shadow_session = ShadowSession(sandbox, strategy, ar_for_session)
 
         # Lazy import to dodge circular dependency at module load time.
         from backend.ai_trader import evaluate_buys, evaluate_sells

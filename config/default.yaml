@@ -1503,12 +1503,21 @@ strategy_profiles:
 # Constraints:
 #   - parent_strategy MUST match a key in strategy_profiles: above (validated
 #     at sync time; bad parent raises ValueError, sync rolls back)
-#   - scorer_overrides is recorded for forward compatibility but NOT applied
-#     during shadow scan in Step 4 — that lands in Step 7 post-eval after the
-#     CANSLIMScorer config refactor.
+#   - scorer_overrides is consumed by shadow_trader as of Shadow Step 7
+#     (May 2026) — see backend/shadow_trader.py _apply_disable_excellence_cap.
+#     `disable_excellence_cap: true` substitutes c_score_uncapped for c_score
+#     and adjusts canslim_score by the cap delta, giving the shadow run a
+#     pre-Approach-2 view. NULL c_score_uncapped (rows scored before Step 7
+#     landed) passes through unchanged.
 shadow_strategy_profiles:
   shadow_baseline:
     parent_strategy: nostate_cs_bear
     starting_value: 25000
     description: "Forward-only parity check against live cs_bear baseline"
     scorer_overrides: {}
+  shadow_no_excellence_cap:
+    parent_strategy: nostate_cs_bear
+    starting_value: 25000
+    description: "Approach-2 control arm: pre-cap C scoring (Shadow Step 7)"
+    scorer_overrides:
+      disable_excellence_cap: true

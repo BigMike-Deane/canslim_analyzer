@@ -343,6 +343,9 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
                 "market_cap": stock_data.market_cap,
                 "canslim_score": canslim_result.total_score,
                 "c_score": canslim_result.c_score,
+                # Pre-excellence-cap C — required for the Shadow Step 7
+                # un-capped reconstruction (Approach 2 parallel-regime A/B).
+                "c_score_uncapped": canslim_result.c_score_uncapped,
                 "a_score": canslim_result.a_score,
                 "n_score": canslim_result.n_score,
                 "s_score": canslim_result.s_score,

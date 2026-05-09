@@ -790,6 +790,7 @@ def save_stock_to_db(db: Session, analysis: dict):
         date=date.today(),
         total_score=analysis["canslim_score"],
         c_score=analysis["c_score"],
+        c_score_uncapped=analysis.get("c_score_uncapped"),
         a_score=analysis["a_score"],
         n_score=analysis["n_score"],
         s_score=analysis["s_score"],

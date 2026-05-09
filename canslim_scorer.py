@@ -22,7 +22,12 @@ class CANSLIMScore:
     total_score: float = 0.0
 
     # Individual scores (max points in parentheses)
-    c_score: float = 0.0  # Current Quarterly Earnings (15)
+    c_score: float = 0.0  # Current Quarterly Earnings (15) — post-excellence-cap
+    # The pre-cap C score (Approach 2 / ec73f83). Mirrors c_score when no cap
+    # was applied (low scores, early-return paths). Persisted alongside c_score
+    # so shadow strategies can reconstruct an un-capped canslim_score for the
+    # June 18 verdict's parallel-regime A/B (Shadow Step 7).
+    c_score_uncapped: float = 0.0
     a_score: float = 0.0  # Annual Earnings Growth (15)
     n_score: float = 0.0  # New Highs (15)
     s_score: float = 0.0  # Supply & Demand (15)
@@ -106,8 +111,15 @@ class CANSLIMScorer:
         if not stock_data.is_valid:
             return score
 
-        # Calculate each criterion
-        score.c_score, score.c_detail = self._score_current_earnings(stock_data)
+        # Calculate each criterion. The dict-out-param pattern lets
+        # _score_current_earnings stash the pre-cap C value without breaking
+        # any of its 6 early-return paths (insufficient data, losses, etc.)
+        # which never reach the cap call sites.
+        c_meta: dict = {}
+        score.c_score, score.c_detail = self._score_current_earnings(
+            stock_data, _score_metadata=c_meta
+        )
+        score.c_score_uncapped = c_meta.get("c_score_uncapped", score.c_score)
         score.a_score, score.a_detail = self._score_annual_earnings(stock_data)
         score.n_score, score.n_detail = self._score_new_highs(stock_data)
         score.s_score, score.s_detail = self._score_supply_demand(stock_data)
@@ -133,13 +145,21 @@ class CANSLIMScorer:
 
         return score
 
-    def _score_current_earnings(self, data: StockData) -> tuple[float, str]:
+    def _score_current_earnings(
+        self, data: StockData, _score_metadata: dict | None = None
+    ) -> tuple[float, str]:
         """
         C - Current Quarterly Earnings (15 pts max)
         REFINED: Uses TTM comparison + bonuses for acceleration and earnings surprise.
         - Base: TTM EPS growth vs prior year (up to 10 pts)
         - Bonus: EPS acceleration (current Q growth > prior Q growth) (up to 3 pts)
         - Bonus: Earnings surprise (beat estimates by 5%+) (up to 2 pts)
+
+        `_score_metadata` is an optional out-dict the caller can pass in to
+        receive the pre-excellence-cap value as `c_score_uncapped`. None of
+        the early-return paths populate it; the metadata's absence on the
+        out-dict means uncapped == capped (no cap was ever applied), so
+        callers should default missing values to the returned capped score.
         """
         max_score = self.MAX_SCORES['C']
         base_max = 10  # Base score for TTM growth
@@ -153,7 +173,9 @@ class CANSLIMScorer:
         if len(earnings) < 8:
             # Fallback to simpler comparison with anomaly filtering
             if len(earnings) >= 4:
-                return self._score_earnings_with_anomaly_filter(data, max_score)
+                return self._score_earnings_with_anomaly_filter(
+                    data, max_score, _score_metadata=_score_metadata
+                )
             return 0, "Insufficient data"
 
         # Calculate TTM (sum of last 4 quarters)
@@ -250,6 +272,8 @@ class CANSLIMScorer:
             data, path="primary", ttm_growth=ttm_growth
         )
         capped = self._apply_excellence_cap(total_score, signals)
+        if _score_metadata is not None:
+            _score_metadata["c_score_uncapped"] = round(total_score, 1)
         cap_detail = ""
         if capped < total_score:
             cap_detail = f" (excellence:{signals}/4, cap:{capped:.1f})"
@@ -407,7 +431,9 @@ class CANSLIMScorer:
         detail = f"{surprise_detail}{beat_streak_detail}{revision_detail}"
         return delta, detail
 
-    def _score_earnings_with_anomaly_filter(self, data: StockData, max_score: float) -> tuple[float, str]:
+    def _score_earnings_with_anomaly_filter(
+        self, data: StockData, max_score: float, _score_metadata: dict | None = None
+    ) -> tuple[float, str]:
         """
         Fallback scoring with anomaly filtering for stocks with limited data.
         Filters out extreme QoQ swings that are likely one-time items / restatements.
@@ -416,6 +442,9 @@ class CANSLIMScorer:
         Applies the same analyst-revision / surprise / beat-streak bonuses as the
         primary 8-quarter TTM path so a stock with strong forward signals doesn't
         silently lose those bonuses just because its EPS history is short.
+
+        `_score_metadata` mirrors the primary-path semantics: when populated,
+        carries the pre-cap score as `c_score_uncapped`.
         """
         # Filter out None and NaN values
         earnings = _clean_earnings(data.quarterly_earnings[:4])
@@ -441,6 +470,8 @@ class CANSLIMScorer:
                     raw = max(0.0, min(max_score, base + bonus))
                     signals = self._count_excellence_signals(data, path="fallback")
                     capped = self._apply_excellence_cap(raw, signals)
+                    if _score_metadata is not None:
+                        _score_metadata["c_score_uncapped"] = round(raw, 1)
                     cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
                     return round(capped, 1), f"Losses near zero{bonus_detail}{cap_detail}"
                 improvement = ((earnings[0] - earnings[1]) / abs(earnings[1])) * 100
@@ -450,6 +481,8 @@ class CANSLIMScorer:
                 raw = max(0.0, min(max_score, base + bonus))
                 signals = self._count_excellence_signals(data, path="fallback")
                 capped = self._apply_excellence_cap(raw, signals)
+                if _score_metadata is not None:
+                    _score_metadata["c_score_uncapped"] = round(raw, 1)
                 cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
                 return round(capped, 1), f"Losses shrinking ({improvement:+.0f}%){bonus_detail}{cap_detail}"
 
@@ -477,6 +510,8 @@ class CANSLIMScorer:
                 # No measured growth path here (estimate-only), so signal 1 can't fire.
                 signals = self._count_excellence_signals(data, path="fallback")
                 capped = self._apply_excellence_cap(raw, signals)
+                if _score_metadata is not None:
+                    _score_metadata["c_score_uncapped"] = round(raw, 1)
                 cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
                 return round(capped, 1), f"Est: {est_growth:+.0f}%{bonus_detail}{cap_detail}"
             return 0, "Data anomaly"
@@ -502,6 +537,8 @@ class CANSLIMScorer:
             data, path="fallback", avg_qoq_growth=avg_growth
         )
         capped = self._apply_excellence_cap(raw, signals)
+        if _score_metadata is not None:
+            _score_metadata["c_score_uncapped"] = round(raw, 1)
         cap_detail = f" (excellence:{signals}/4{', cap:' + format(capped, '.1f') if capped < raw else ''})"
         return round(capped, 1), f"Avg QoQ: {avg_growth:+.0f}%{bonus_detail}{cap_detail}"
 
