@@ -2278,6 +2278,49 @@ class TestCommandCenterRoute:
         assert "STOP2" in ern_by_tkr
         assert ern_by_tkr["STOP2"]["days"] == 5
 
+    def test_candidate_row_pins_price_and_audit_confidence(self):
+        """Pins the API contract that CommandCenter CandidateRow renders.
+
+        UI surfaces `price` color-coded against the owner's <$25 filter
+        (CLAUDE.md) and `audit_confidence` as a tiered chip
+        (>=70 high / 40-69 medium / <40 low). If a future refactor drops
+        either field, this test fails before the UI silently breaks.
+        (handler: main.py:5440-5450)
+        """
+        # Under-$25 candidate seeds the emerald-tier price signal.
+        _ensure_stock("LOWP1", score=88.0, sector="Technology",
+                      current_price=18.50)
+        db = _db()
+        try:
+            # Recent audit (within 48h) → audit_confidence non-null in the
+            # response; 78.0 lands the high-tier ('H') chip.
+            if not db.query(EarningsAudit).filter_by(ticker="LOWP1").first():
+                db.add(EarningsAudit(
+                    ticker="LOWP1", fundamental_confidence=78.0,
+                    confidence_breakdown={"score": 78},
+                    audited_at=datetime.now(timezone.utc),
+                ))
+                db.commit()
+        finally:
+            db.close()
+
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        d = r.json()
+
+        by_tkr = {c["ticker"]: c for c in d["candidates"]}
+        assert "LOWP1" in by_tkr, f"LOWP1 missing from candidates; got {list(by_tkr.keys())}"
+        cand = by_tkr["LOWP1"]
+        # Both fields ship — drop here would silently break the UI.
+        assert "price" in cand
+        assert "audit_confidence" in cand
+        assert cand["price"] == pytest.approx(18.50, abs=0.01)
+        # Load-bearing: the <$25 filter is the visual cue the row
+        # color-codes on, so a regression that pushed seed price >=25
+        # would mask other test failures.
+        assert cand["price"] < 25
+        assert cand["audit_confidence"] == pytest.approx(78.0, abs=0.01)
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 3: GET /api/stocks/{ticker} (line 1476-1648)

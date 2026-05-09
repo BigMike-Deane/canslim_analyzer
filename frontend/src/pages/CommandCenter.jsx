@@ -184,20 +184,53 @@ const PositionRow = memo(function PositionRow({ p, earningsDays }) {
 })
 
 function CandidateRow({ c }) {
+  // Owner's CLAUDE.md filter is "stocks under $25 that fit CANSLIM" — surface
+  // that as a visual signal so the home screen does the filter pass without
+  // requiring a tap into StockDetail. >=$25 stays visible but muted.
+  const price = c.price
+  const priceColor =
+    price == null ? 'text-dark-600' :
+    price < 25 ? 'text-emerald-400' :
+    'text-dark-400'
+  // EarningsAudit fundamental_confidence is 0-100; bucket into tiers that
+  // mirror the score-band convention used elsewhere (>=70 strong, 40-69
+  // mixed, <40 weak). Single-letter chip keeps the row tight at 390px.
+  const conf = c.audit_confidence
+  const confTier =
+    conf == null ? null :
+    conf >= 70 ? { label: 'H', cls: 'bg-emerald-500/10 text-emerald-400' } :
+    conf >= 40 ? { label: 'M', cls: 'bg-amber-500/10 text-amber-400' } :
+    { label: 'L', cls: 'bg-dark-700/40 text-dark-500' }
   return (
     <Link
       to={`/stock/${c.ticker}`}
       className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
     >
-      <div className="flex items-center gap-2.5 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
         <span className="text-xs font-semibold text-primary-400 w-11 shrink-0 group-hover:text-primary-300">{c.ticker}</span>
-        <span className="text-[10px] text-dark-500 truncate max-w-[80px]">{c.sector?.split(' ')[0]}</span>
+        <span className="text-[10px] text-dark-500 truncate max-w-[60px] shrink-0">{c.sector?.split(' ')[0]}</span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         <ScoreBadge score={c.score} size="xs" />
         {c.projected_growth > 0 && (
-          <span className="text-emerald-400 text-[10px] font-data">
+          <span className="text-emerald-400 text-[10px] font-data shrink-0">
             +{c.projected_growth?.toFixed(0)}%
+          </span>
+        )}
+        {price != null && (
+          <span
+            className={`text-[10px] font-data shrink-0 ${priceColor}`}
+            title={price < 25 ? 'Under $25 — matches owner filter' : `$${price.toFixed(2)}`}
+          >
+            ${price.toFixed(2)}
+          </span>
+        )}
+        {confTier && (
+          <span
+            className={`text-[9px] font-data px-1.5 py-0.5 rounded shrink-0 ${confTier.cls}`}
+            title={`Audit confidence: ${conf.toFixed(0)}`}
+          >
+            {confTier.label}
           </span>
         )}
       </div>
