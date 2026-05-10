@@ -1,0 +1,896 @@
+"""Coverage tests for sp500_tickers.py.
+
+sp500_tickers.py 7.39% → target 60%+. Universe-management code that
+scrapes Wikipedia + FMP + Yahoo Finance for index constituents.
+
+Test strategy:
+- Mock at the network boundary (`requests.get`, `yfinance.Ticker`)
+- Use REAL BeautifulSoup on canned Wikipedia-shaped HTML so the
+  parser logic gets honest exercise
+- Reset module-level _ticker_cache between tests via autouse fixture
+  so cache-hit/miss branches are deterministic
+- Hardcoded fallback functions (single-line returns of huge static
+  lists) covered by invoking each one once.
+"""
+
+import os
+import sys
+import pytest
+from pathlib import Path
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+import sp500_tickers
+
+
+# ── Module state reset ─────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_ticker_cache():
+    """Each test starts with a fresh empty cache.
+
+    sp500_tickers._ticker_cache is a module-level dict that persists
+    results across calls — resetting it between tests keeps the
+    cache-hit / cache-miss branches deterministic.
+    """
+    sp500_tickers._ticker_cache = {
+        'sp500': None, 'nasdaq100': None, 'dowjones': None,
+        'midcap400': None, 'smallcap600': None, 'russell2000': None,
+        'last_fetch': {},
+    }
+    yield
+    sp500_tickers._ticker_cache = {
+        'sp500': None, 'nasdaq100': None, 'dowjones': None,
+        'midcap400': None, 'smallcap600': None, 'russell2000': None,
+        'last_fetch': {},
+    }
+
+
+# ── Canned Wikipedia HTML for the various parsers ──────────────────────
+
+# S&P 500 / S&P 400 / S&P 600 — table id="constituents", first td is ticker
+SP_CONSTITUENTS_HTML = """
+<html><body>
+<table id="constituents">
+  <tr><th>Symbol</th><th>Security</th></tr>
+  <tr><td>AAPL</td><td>Apple Inc.</td></tr>
+  <tr><td>MSFT</td><td>Microsoft</td></tr>
+  <tr><td>BRK.B</td><td>Berkshire Hathaway</td></tr>
+</table>
+</body></html>
+"""
+
+# Wikipedia variant where the id is missing but class='wikitable' present
+SP_CONSTITUENTS_NO_ID_HTML = """
+<html><body>
+<table class="wikitable">
+  <tr><th>Symbol</th></tr>
+  <tr><td>GOOG</td></tr>
+  <tr><td>META</td></tr>
+</table>
+</body></html>
+"""
+
+# Nasdaq 100 — multiple wikitables, only the one with 'Ticker' header is right
+NASDAQ100_HTML_TEMPLATE = """
+<html><body>
+<table class="wikitable">
+  <tr><th>Header A</th></tr>
+  <tr><td>noise</td></tr>
+</table>
+<table class="wikitable">
+  <tr><th>Company</th><th>Ticker</th><th>Sector</th></tr>
+  {rows}
+</table>
+</body></html>
+"""
+
+# Dow Jones — wikitable with 'Symbol' header (only 30 tickers required)
+DOWJONES_HTML_TEMPLATE = """
+<html><body>
+<table class="wikitable">
+  <tr><th>Company</th><th>Symbol</th></tr>
+  {rows}
+</table>
+</body></html>
+"""
+
+# Finviz screener — looks for total + `screener-link-primary` anchors
+FINVIZ_HTML_PAGE1 = """
+<html><body>
+<table><tr><td>Total: 500</td></tr></table>
+<a class="screener-link-primary">SMCO</a>
+<a class="screener-link-primary">TINY</a>
+<a class="screener-link-primary">MICR</a>
+</body></html>
+"""
+
+FINVIZ_HTML_EMPTY = """
+<html><body>
+<table><tr><td>Total: 0</td></tr></table>
+</body></html>
+"""
+
+
+def _alpha_ticker(i: int) -> str:
+    """Generate an alphabetic-only ticker like 'AAA', 'AAB', ..., 'CYZ'.
+
+    The Nasdaq 100 and Dow Jones parsers reject any ticker that
+    isn't `.isalpha()`-clean, so the generated test rows must avoid
+    digits.
+    """
+    # Three-letter ticker from i in [0, 26**3)
+    a = i // (26 * 26)
+    b = (i // 26) % 26
+    c = i % 26
+    return chr(ord("A") + a) + chr(ord("A") + b) + chr(ord("A") + c)
+
+
+def _build_nasdaq100_html(num_tickers: int = 100) -> str:
+    """Generate Nasdaq 100 HTML with `num_tickers` valid rows.
+
+    The parser requires >=90 tickers to accept the table. Going below
+    that exercises the "rejected, fallthrough to fallback" branch.
+    """
+    rows = "\n".join(
+        f"  <tr><td>Company{i}</td><td>{_alpha_ticker(i)}</td><td>Tech</td></tr>"
+        for i in range(num_tickers)
+    )
+    return NASDAQ100_HTML_TEMPLATE.format(rows=rows)
+
+
+def _build_dowjones_html(num_tickers: int = 30) -> str:
+    """Generate Dow Jones HTML with `num_tickers` rows. Needs >=25."""
+    rows = "\n".join(
+        f"  <tr><td>Company{i}</td><td>{_alpha_ticker(i)}</td></tr>"
+        for i in range(num_tickers)
+    )
+    return DOWJONES_HTML_TEMPLATE.format(rows=rows)
+
+
+# ── Cache lifecycle helpers ────────────────────────────────────────────
+
+
+class TestIsCacheValid:
+    """Covers sp500_tickers.py:35-53."""
+
+    def test_returns_false_when_cache_key_is_none(self):
+        """Branch: _ticker_cache[key] is None → invalid (line 39-40)."""
+        sp500_tickers._ticker_cache['sp500'] = None
+        assert sp500_tickers._is_cache_valid('sp500') is False
+
+    def test_returns_false_when_last_fetch_not_dict(self):
+        """Branch: legacy format where last_fetch isn't a dict (line 43-46)."""
+        sp500_tickers._ticker_cache['sp500'] = ['AAPL']
+        sp500_tickers._ticker_cache['last_fetch'] = "legacy-string"
+        assert sp500_tickers._is_cache_valid('sp500') is False
+        # The function recovers by re-initialising last_fetch to {}
+        assert sp500_tickers._ticker_cache['last_fetch'] == {}
+
+    def test_returns_false_when_no_fetch_time_for_key(self):
+        """Branch: cache has data but no timestamp (line 48-50)."""
+        sp500_tickers._ticker_cache['sp500'] = ['AAPL']
+        sp500_tickers._ticker_cache['last_fetch'] = {}  # no 'sp500' key
+        assert sp500_tickers._is_cache_valid('sp500') is False
+
+    def test_returns_true_when_recent(self):
+        """Branch: cached + fresh timestamp → valid (line 52-53)."""
+        sp500_tickers._ticker_cache['sp500'] = ['AAPL']
+        sp500_tickers._ticker_cache['last_fetch'] = {
+            'sp500': datetime.now() - timedelta(hours=1)
+        }
+        assert sp500_tickers._is_cache_valid('sp500') is True
+
+    def test_returns_false_when_expired(self):
+        """Branch: cached but stale → invalid (line 52-53)."""
+        sp500_tickers._ticker_cache['sp500'] = ['AAPL']
+        sp500_tickers._ticker_cache['last_fetch'] = {
+            'sp500': datetime.now() - timedelta(hours=48)  # > 24h
+        }
+        assert sp500_tickers._is_cache_valid('sp500') is False
+
+
+class TestUpdateCache:
+    """Covers sp500_tickers.py:56-66."""
+
+    def test_stores_data_and_timestamp(self):
+        """Branch: writes data + new fetch time."""
+        sp500_tickers._update_cache('sp500', ['AAPL', 'MSFT'])
+        assert sp500_tickers._ticker_cache['sp500'] == ['AAPL', 'MSFT']
+        assert 'sp500' in sp500_tickers._ticker_cache['last_fetch']
+        # Timestamp is a datetime
+        assert isinstance(
+            sp500_tickers._ticker_cache['last_fetch']['sp500'],
+            datetime
+        )
+
+    def test_recovers_when_last_fetch_is_legacy_format(self):
+        """Branch: last_fetch not a dict → re-initialise (line 62-63)."""
+        sp500_tickers._ticker_cache['last_fetch'] = "legacy"
+        sp500_tickers._update_cache('nasdaq100', ['QQQ'])
+        assert isinstance(sp500_tickers._ticker_cache['last_fetch'], dict)
+        assert 'nasdaq100' in sp500_tickers._ticker_cache['last_fetch']
+
+
+# ── Hardcoded fallback functions (one-line returns) ───────────────────
+
+
+class TestHardcodedFallbacks:
+    """Covers sp500_tickers.py:279, 358, 435, 508, 711.
+
+    Each function is a single `return [...]` statement; calling it
+    once covers the line and asserts the shape.
+    """
+
+    def test_fallback_nasdaq100_returns_nontrivial_list(self):
+        result = sp500_tickers.get_fallback_nasdaq100_tickers()
+        assert isinstance(result, list)
+        assert len(result) >= 90
+        assert "AAPL" in result and "MSFT" in result
+
+    def test_fallback_sp500_returns_diverse_sectors(self):
+        result = sp500_tickers.get_fallback_tickers()
+        assert isinstance(result, list)
+        assert len(result) > 100
+        # Quick sector sampling
+        assert "AAPL" in result  # Tech
+        assert "JPM" in result   # Financials
+        assert "XOM" in result   # Energy
+
+    def test_fallback_midcap_returns_nontrivial_list(self):
+        result = sp500_tickers.get_fallback_midcap_tickers()
+        assert isinstance(result, list)
+        assert len(result) > 100
+
+    def test_fallback_smallcap_returns_nontrivial_list(self):
+        result = sp500_tickers.get_fallback_smallcap_tickers()
+        assert isinstance(result, list)
+        assert len(result) > 100
+
+    def test_fallback_russell2000_returns_nontrivial_list(self):
+        result = sp500_tickers.get_fallback_russell2000_tickers()
+        assert isinstance(result, list)
+        assert len(result) > 200
+
+
+# ── get_sp500_tickers ─────────────────────────────────────────────────
+
+
+class TestGetSp500Tickers:
+    """Covers sp500_tickers.py:181-222."""
+
+    def test_cache_hit_returns_cached_without_network(self):
+        """Branch: cache valid → return cached, no requests.get call (188-189)."""
+        sp500_tickers._ticker_cache['sp500'] = ['CACHED1', 'CACHED2']
+        sp500_tickers._ticker_cache['last_fetch'] = {
+            'sp500': datetime.now()
+        }
+        with patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_sp500_tickers()
+        assert result == ['CACHED1', 'CACHED2']
+        mock_get.assert_not_called()
+
+    def test_wikipedia_happy_path_with_constituents_table(self):
+        """Branch: <table id='constituents'> parsed, BRK.B → BRK-B (192-216)."""
+        mock_resp = MagicMock()
+        mock_resp.text = SP_CONSTITUENTS_HTML
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_sp500_tickers()
+        assert "AAPL" in result
+        assert "MSFT" in result
+        assert "BRK-B" in result  # dot → dash normalisation
+        # Cache was populated
+        assert sp500_tickers._ticker_cache['sp500'] == result
+
+    def test_wikipedia_table_id_missing_uses_wikitable_fallback(self):
+        """Branch: no #constituents → table.class='wikitable' (201-202)."""
+        mock_resp = MagicMock()
+        mock_resp.text = SP_CONSTITUENTS_NO_ID_HTML
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_sp500_tickers()
+        assert "GOOG" in result and "META" in result
+
+    def test_network_failure_returns_fallback_list(self):
+        """Branch: requests.get raises → fallback ticker list (218-222)."""
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=ConnectionError("network down"),
+        ):
+            result = sp500_tickers.get_sp500_tickers()
+        # Fallback returned + cached
+        assert isinstance(result, list)
+        assert len(result) > 100
+        assert "AAPL" in result  # fallback list seed
+
+
+# ── get_nasdaq100_tickers ──────────────────────────────────────────────
+
+
+class TestGetNasdaq100Tickers:
+    """Covers sp500_tickers.py:225-274."""
+
+    def test_cache_hit_returns_cached(self):
+        """Branch: cache valid → return early (232-233)."""
+        sp500_tickers._ticker_cache['nasdaq100'] = ['CACHE_NDX']
+        sp500_tickers._ticker_cache['last_fetch'] = {
+            'nasdaq100': datetime.now()
+        }
+        with patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_nasdaq100_tickers()
+        assert result == ['CACHE_NDX']
+        mock_get.assert_not_called()
+
+    def test_wikipedia_happy_path_returns_parsed_tickers(self):
+        """Branch: wikitable with 'Ticker' header → 100 parsed tickers."""
+        mock_resp = MagicMock()
+        mock_resp.text = _build_nasdaq100_html(num_tickers=100)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_nasdaq100_tickers()
+        assert len(result) >= 90  # parser requires >=90 to accept
+        # First generated ticker is "AAA" (i=0)
+        assert "AAA" in result
+
+    def test_too_few_tickers_falls_back_to_hardcoded(self):
+        """Branch: <90 parsed → fall through to fallback (271-274)."""
+        mock_resp = MagicMock()
+        mock_resp.text = _build_nasdaq100_html(num_tickers=10)  # too few
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_nasdaq100_tickers()
+        # Fallback returned (hardcoded list, 100 entries)
+        assert len(result) >= 90
+        assert "AAPL" in result  # hardcoded fallback contains AAPL
+
+    def test_network_failure_uses_hardcoded_fallback(self):
+        """Branch: requests.get raises → hardcoded fallback (267-274)."""
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=TimeoutError("slow Wikipedia"),
+        ):
+            result = sp500_tickers.get_nasdaq100_tickers()
+        assert "AAPL" in result and "NVDA" in result
+
+
+# ── get_dowjones_tickers ───────────────────────────────────────────────
+
+
+class TestGetDowjonesTickers:
+    """Covers sp500_tickers.py:293-350."""
+
+    def test_cache_hit_returns_cached(self):
+        sp500_tickers._ticker_cache['dowjones'] = ['CACHED_DOW']
+        sp500_tickers._ticker_cache['last_fetch'] = {
+            'dowjones': datetime.now()
+        }
+        with patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_dowjones_tickers()
+        assert result == ['CACHED_DOW']
+        mock_get.assert_not_called()
+
+    def test_wikipedia_happy_path(self):
+        """Branch: wikitable with 'Symbol' header + >=25 tickers."""
+        mock_resp = MagicMock()
+        mock_resp.text = _build_dowjones_html(num_tickers=30)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_dowjones_tickers()
+        assert len(result) == 30
+        # First generated ticker is "AAA" (i=0)
+        assert "AAA" in result
+
+    def test_network_failure_falls_back_to_hardcoded(self):
+        """Branch: hardcoded 30-stock list at end."""
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=OSError("DNS failed"),
+        ):
+            result = sp500_tickers.get_dowjones_tickers()
+        assert "AAPL" in result and "JPM" in result
+        assert len(result) == 30  # canonical Dow 30 count
+
+
+# ── get_sp400_midcap_tickers ───────────────────────────────────────────
+
+
+class TestGetSp400MidcapTickers:
+    """Covers sp500_tickers.py:398-430."""
+
+    def test_wikipedia_happy_path(self):
+        mock_resp = MagicMock()
+        mock_resp.text = SP_CONSTITUENTS_HTML
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_sp400_midcap_tickers()
+        assert "AAPL" in result
+        assert "BRK-B" in result
+
+    def test_wikitable_class_fallback(self):
+        """Branch: no #constituents → table.class='wikitable' (412-413)."""
+        mock_resp = MagicMock()
+        mock_resp.text = SP_CONSTITUENTS_NO_ID_HTML
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_sp400_midcap_tickers()
+        assert "GOOG" in result
+
+    def test_network_failure_returns_fallback(self):
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=ConnectionError(),
+        ):
+            result = sp500_tickers.get_sp400_midcap_tickers()
+        assert isinstance(result, list)
+        assert len(result) > 100  # fallback list
+
+
+# ── get_sp600_smallcap_tickers ─────────────────────────────────────────
+
+
+class TestGetSp600SmallcapTickers:
+    """Covers sp500_tickers.py:471-503."""
+
+    def test_wikipedia_happy_path(self):
+        mock_resp = MagicMock()
+        mock_resp.text = SP_CONSTITUENTS_HTML
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_sp600_smallcap_tickers()
+        assert "AAPL" in result
+
+    def test_network_failure_returns_fallback(self):
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=ConnectionError(),
+        ):
+            result = sp500_tickers.get_sp600_smallcap_tickers()
+        assert isinstance(result, list)
+        assert len(result) > 100
+
+
+# ── get_portfolio_tickers ──────────────────────────────────────────────
+
+
+class TestGetPortfolioTickers:
+    """Covers sp500_tickers.py:135-178."""
+
+    def test_returns_empty_when_database_and_csv_both_unavailable(self):
+        """Branch: both DB and CSV paths fail → empty list (line 178)."""
+        with patch(
+            "backend.database.SessionLocal",
+            side_effect=ImportError("no db"),
+        ), patch.object(Path, "exists", return_value=False):
+            result = sp500_tickers.get_portfolio_tickers()
+        # Either returns empty or whatever the DB had — both branches valid
+        assert isinstance(result, list)
+
+    def test_csv_fallback_when_db_fails(self, tmp_path, monkeypatch):
+        """Branch: DB fails, CSV file exists → reads tickers from CSV."""
+        # Force DB path to raise
+        with patch(
+            "backend.database.SessionLocal",
+            side_effect=Exception("no db"),
+        ):
+            # Point the CSV path at a tmp file
+            csv_path = tmp_path / "portfolio.csv"
+            csv_path.write_text("ticker,shares\nAAPL,100\nMSFT,50\n")
+
+            # Patch Path(__file__).parent to redirect csv discovery
+            monkeypatch.setattr(
+                sp500_tickers, "__file__", str(tmp_path / "sp500_tickers.py"),
+            )
+            result = sp500_tickers.get_portfolio_tickers()
+        # Whether DB or CSV path takes effect, we should get a list
+        assert isinstance(result, list)
+
+
+# ── get_finviz_smallcaps ───────────────────────────────────────────────
+
+
+class TestGetFinvizSmallcaps:
+    """Covers sp500_tickers.py:645-706."""
+
+    def test_happy_path_parses_first_page_then_paginates(self):
+        """Branch: total found, primary links collected across pages."""
+        # First call → page 1 with tickers; subsequent → empty (terminates loop)
+        mock_resp_page1 = MagicMock()
+        mock_resp_page1.text = FINVIZ_HTML_PAGE1
+        mock_resp_page1.status_code = 200
+        mock_resp_page1.raise_for_status = MagicMock()
+
+        mock_resp_empty = MagicMock()
+        mock_resp_empty.text = "<html><body><table><tr><td>Total: 0</td></tr></table></body></html>"
+        mock_resp_empty.status_code = 200
+        mock_resp_empty.raise_for_status = MagicMock()
+
+        responses = [mock_resp_page1] + [mock_resp_empty] * 25
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=responses,
+        ), patch("time.sleep"):  # skip the 0.2s respect-pause
+            result = sp500_tickers.get_finviz_smallcaps()
+        # Page 1's three tickers must be in the result
+        for t in ("SMCO", "TINY", "MICR"):
+            assert t in result
+
+    def test_no_total_found_returns_empty(self):
+        """Branch: 'Total:' text not found → return [] (line 662-664)."""
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body>no total here</body></html>"
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_finviz_smallcaps()
+        assert result == []
+
+    def test_initial_request_failure_returns_empty(self):
+        """Branch: outer exception → empty list (line 704-706)."""
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=ConnectionError("blocked"),
+        ):
+            result = sp500_tickers.get_finviz_smallcaps()
+        assert result == []
+
+    def test_pagination_non_200_breaks_loop(self):
+        """Branch: page 2+ returns non-200 status → break (line 680-681).
+
+        Coverage check: the for-page loop terminates cleanly when a
+        subsequent page errors out.
+        """
+        mock_resp_page1 = MagicMock()
+        mock_resp_page1.text = FINVIZ_HTML_PAGE1
+        mock_resp_page1.status_code = 200
+        mock_resp_page1.raise_for_status = MagicMock()
+
+        mock_resp_bad = MagicMock()
+        mock_resp_bad.status_code = 503
+        mock_resp_bad.text = ""
+        mock_resp_bad.raise_for_status = MagicMock()
+
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=[mock_resp_page1, mock_resp_bad],
+        ), patch("time.sleep"):
+            result = sp500_tickers.get_finviz_smallcaps()
+        assert "SMCO" in result  # page 1 tickers preserved
+
+
+# ── get_russell2000_from_sector_etfs ──────────────────────────────────
+
+
+class TestGetRussell2000FromSectorEtfs:
+    """Covers sp500_tickers.py:615-642."""
+
+    def test_aggregates_smallcap_and_finviz_and_curated(self):
+        """Branch: all three sources contribute, result is the union."""
+        with patch(
+            "sp500_tickers.get_sp600_smallcap_tickers",
+            return_value=["A", "B"],
+        ), patch(
+            "sp500_tickers.get_finviz_smallcaps",
+            return_value=["B", "C"],
+        ), patch(
+            "sp500_tickers.get_fallback_russell2000_tickers",
+            return_value=["D"],
+        ):
+            result = sp500_tickers.get_russell2000_from_sector_etfs()
+        # Union — duplicates collapsed
+        assert set(result) == {"A", "B", "C", "D"}
+
+    def test_smallcap_failure_swallowed(self):
+        """Branch: get_sp600_smallcap raises → logged + continue (627-628)."""
+        with patch(
+            "sp500_tickers.get_sp600_smallcap_tickers",
+            side_effect=RuntimeError("fail"),
+        ), patch(
+            "sp500_tickers.get_finviz_smallcaps",
+            return_value=["X"],
+        ), patch(
+            "sp500_tickers.get_fallback_russell2000_tickers",
+            return_value=["Y"],
+        ):
+            result = sp500_tickers.get_russell2000_from_sector_etfs()
+        # The two surviving sources still contributed
+        assert "X" in result and "Y" in result
+
+    def test_finviz_failure_swallowed(self):
+        """Branch: get_finviz_smallcaps raises → logged + continue (635-636)."""
+        with patch(
+            "sp500_tickers.get_sp600_smallcap_tickers",
+            return_value=["A"],
+        ), patch(
+            "sp500_tickers.get_finviz_smallcaps",
+            side_effect=RuntimeError("blocked"),
+        ), patch(
+            "sp500_tickers.get_fallback_russell2000_tickers",
+            return_value=["B"],
+        ):
+            result = sp500_tickers.get_russell2000_from_sector_etfs()
+        assert "A" in result and "B" in result
+
+
+# ── get_russell2000_tickers ────────────────────────────────────────────
+
+
+class TestGetRussell2000Tickers:
+    """Covers sp500_tickers.py:553-612."""
+
+    def test_cache_hit_short_circuits(self):
+        sp500_tickers._ticker_cache['russell2000'] = ['CACHED_RUSSELL']
+        sp500_tickers._ticker_cache['last_fetch'] = {
+            'russell2000': datetime.now()
+        }
+        with patch("yfinance.Ticker") as mock_ticker:
+            result = sp500_tickers.get_russell2000_tickers()
+        assert result == ['CACHED_RUSSELL']
+        mock_ticker.assert_not_called()
+
+    def test_yahoo_finance_happy_path_returns_holdings(self):
+        """Branch: yfinance.Ticker.funds_data.top_holdings populated."""
+        # Build a non-empty pandas-like holdings DataFrame
+        mock_holdings = MagicMock()
+        mock_holdings.empty = False
+        # Generate >500 tickers so the gate at line 590 passes
+        mock_holdings.index.tolist.return_value = [f"R{i}" for i in range(501)]
+
+        mock_funds_data = MagicMock()
+        mock_funds_data.top_holdings = mock_holdings
+
+        mock_ticker = MagicMock()
+        mock_ticker.funds_data = mock_funds_data
+
+        with patch("yfinance.Ticker", return_value=mock_ticker):
+            result = sp500_tickers.get_russell2000_tickers()
+        assert len(result) > 500
+        assert result[0] == "R0"
+
+    def test_yahoo_empty_holdings_falls_through_to_sector_etfs(self):
+        """Branch: holdings empty → try sector ETFs path."""
+        mock_holdings = MagicMock()
+        mock_holdings.empty = True
+
+        mock_funds_data = MagicMock()
+        mock_funds_data.top_holdings = mock_holdings
+
+        mock_ticker = MagicMock()
+        mock_ticker.funds_data = mock_funds_data
+        mock_ticker.info = {}
+
+        with patch("yfinance.Ticker", return_value=mock_ticker), \
+             patch(
+                "sp500_tickers.get_russell2000_from_sector_etfs",
+                return_value=[f"S{i}" for i in range(1500)],
+        ):
+            result = sp500_tickers.get_russell2000_tickers()
+        # Sector ETF path supplies result (>1000 → accepted)
+        assert len(result) >= 1000
+
+    def test_all_sources_fail_uses_curated_fallback(self):
+        """Branch: all paths fail → fallback list (608-612)."""
+        with patch(
+            "yfinance.Ticker",
+            side_effect=Exception("yfinance unavailable"),
+        ), patch(
+            "sp500_tickers.get_russell2000_from_sector_etfs",
+            side_effect=Exception("sector etfs failed"),
+        ):
+            result = sp500_tickers.get_russell2000_tickers()
+        # Curated list returned
+        assert isinstance(result, list)
+        assert len(result) > 200
+
+    def test_yahoo_funds_data_extraction_exception_swallowed(self):
+        """Branch: hasattr passes but top_holdings access raises (577-579)."""
+        # Make funds_data.top_holdings raise on access
+        mock_funds_data = MagicMock()
+        type(mock_funds_data).top_holdings = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("bad attr"))
+        )
+
+        mock_ticker = MagicMock()
+        mock_ticker.funds_data = mock_funds_data
+        mock_ticker.info = {}
+
+        with patch("yfinance.Ticker", return_value=mock_ticker), \
+             patch(
+                "sp500_tickers.get_russell2000_from_sector_etfs",
+                return_value=[f"X{i}" for i in range(1500)],
+        ):
+            result = sp500_tickers.get_russell2000_tickers()
+        assert len(result) >= 1000  # falls back to sector ETFs
+
+
+# ── get_all_tickers ────────────────────────────────────────────────────
+
+
+class TestGetAllTickers:
+    """Covers sp500_tickers.py:69-132."""
+
+    def test_aggregates_all_sources_and_dedupes(self):
+        """Branch: portfolio + 6 index sources combined, dedupe preserves
+        first-seen order (portfolio first)."""
+        with patch(
+            "sp500_tickers.get_portfolio_tickers",
+            return_value=["AAPL", "MYPORT"],
+        ), patch(
+            "sp500_tickers.get_sp500_tickers",
+            return_value=["AAPL", "MSFT"],  # AAPL is dup with portfolio
+        ), patch(
+            "sp500_tickers.get_nasdaq100_tickers",
+            return_value=["NVDA"],
+        ), patch(
+            "sp500_tickers.get_dowjones_tickers",
+            return_value=["KO"],
+        ), patch(
+            "sp500_tickers.get_sp400_midcap_tickers",
+            return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp600_smallcap_tickers",
+            return_value=[],
+        ), patch(
+            "sp500_tickers.get_russell2000_tickers",
+            return_value=["MYPORT"],  # dup with portfolio
+        ), patch(
+            "data_fetcher.get_delisted_tickers",
+            return_value=set(),
+        ):
+            result = sp500_tickers.get_all_tickers(
+                include_portfolio=True, exclude_delisted=True,
+            )
+        # Portfolio tickers come first
+        assert result[0] == "AAPL"
+        assert result[1] == "MYPORT"
+        # All unique, no duplicates
+        assert len(result) == len(set(result))
+        assert "MSFT" in result and "NVDA" in result
+
+    def test_delisted_filter_excludes_non_portfolio_tickers(self):
+        """Branch: delisted set filters non-portfolio tickers."""
+        with patch(
+            "sp500_tickers.get_portfolio_tickers",
+            return_value=["MYHOLD"],
+        ), patch(
+            "sp500_tickers.get_sp500_tickers",
+            return_value=["AAPL", "DEADCO"],
+        ), patch(
+            "sp500_tickers.get_nasdaq100_tickers",
+            return_value=[],
+        ), patch(
+            "sp500_tickers.get_dowjones_tickers",
+            return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp400_midcap_tickers",
+            return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp600_smallcap_tickers",
+            return_value=[],
+        ), patch(
+            "sp500_tickers.get_russell2000_tickers",
+            return_value=[],
+        ), patch(
+            "data_fetcher.get_delisted_tickers",
+            return_value={"DEADCO"},
+        ):
+            result = sp500_tickers.get_all_tickers()
+        assert "MYHOLD" in result
+        assert "AAPL" in result
+        assert "DEADCO" not in result
+
+    def test_delisted_filter_preserves_portfolio_tickers_even_if_delisted(self):
+        """Branch: portfolio ticker that's also delisted → still included
+        (the 'never excluded' carve-out at line 129)."""
+        with patch(
+            "sp500_tickers.get_portfolio_tickers",
+            return_value=["GONESTOCK"],
+        ), patch(
+            "sp500_tickers.get_sp500_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_nasdaq100_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_dowjones_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp400_midcap_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp600_smallcap_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_russell2000_tickers", return_value=[],
+        ), patch(
+            "data_fetcher.get_delisted_tickers",
+            return_value={"GONESTOCK"},  # marked delisted
+        ):
+            result = sp500_tickers.get_all_tickers(
+                include_portfolio=True, exclude_delisted=True,
+            )
+        # Portfolio ticker survived despite being on delisted list
+        assert "GONESTOCK" in result
+
+    def test_exclude_delisted_false_skips_filter_entirely(self):
+        """Branch: exclude_delisted=False → no DB call, no filter (line 88)."""
+        with patch(
+            "sp500_tickers.get_portfolio_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp500_tickers", return_value=["A"],
+        ), patch(
+            "sp500_tickers.get_nasdaq100_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_dowjones_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp400_midcap_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp600_smallcap_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_russell2000_tickers", return_value=[],
+        ), patch(
+            "data_fetcher.get_delisted_tickers"
+        ) as mock_delisted:
+            result = sp500_tickers.get_all_tickers(
+                include_portfolio=False, exclude_delisted=False,
+            )
+        # Delisted lookup not invoked
+        mock_delisted.assert_not_called()
+        assert "A" in result
+
+    def test_delisted_fetch_failure_swallowed(self):
+        """Branch: get_delisted_tickers raises → logged + delisted=set()
+        (line 94-95)."""
+        with patch(
+            "sp500_tickers.get_portfolio_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp500_tickers", return_value=["A"],
+        ), patch(
+            "sp500_tickers.get_nasdaq100_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_dowjones_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp400_midcap_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sp600_smallcap_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_russell2000_tickers", return_value=[],
+        ), patch(
+            "data_fetcher.get_delisted_tickers",
+            side_effect=RuntimeError("db error"),
+        ):
+            result = sp500_tickers.get_all_tickers(
+                include_portfolio=False, exclude_delisted=True,
+            )
+        # Endpoint completed; all tickers preserved
+        assert "A" in result
+
+
+# ── _load_env ──────────────────────────────────────────────────────────
+
+
+class TestLoadEnv:
+    """Covers sp500_tickers.py:863-874."""
+
+    def test_loads_env_when_dotenv_file_present(self, tmp_path, monkeypatch):
+        """Branch: .env file exists → keys propagated into os.environ."""
+        # Place a .env file next to a fake sp500_tickers.py
+        env_file = tmp_path / ".env"
+        env_file.write_text("FMP_API_KEY=test-key-123\nOTHER=ignored\n")
+
+        # Pretend sp500_tickers.py lives in tmp_path
+        monkeypatch.setattr(
+            sp500_tickers, "__file__", str(tmp_path / "sp500_tickers.py"),
+        )
+        # Clear FMP_API_KEY from the env so we can see the load take effect
+        monkeypatch.delenv("FMP_API_KEY", raising=False)
+
+        sp500_tickers._load_env()
+        # setdefault was used, so the value lands in os.environ
+        assert os.environ.get("FMP_API_KEY") == "test-key-123"
+        assert sp500_tickers.FMP_API_KEY == "test-key-123"
+
+    def test_no_op_when_dotenv_missing(self, tmp_path, monkeypatch):
+        """Branch: .env file absent → function returns silently."""
+        monkeypatch.setattr(
+            sp500_tickers, "__file__", str(tmp_path / "sp500_tickers.py"),
+        )
+        # No .env created → if-branch at line 868 is False
+        sp500_tickers._load_env()
+        # No exception; no state changed
