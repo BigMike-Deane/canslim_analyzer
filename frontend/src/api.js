@@ -628,6 +628,19 @@ export const api = {
   getShadowStrategies: ({ archived = false } = {}) =>
     request(`/api/admin/shadow-strategies${archived ? '?archived=true' : ''}`),
 
+  // Cap-Delta Diagnostics — population view of c_score vs c_score_uncapped over
+  // a rolling window. Only meaningful when a shadow stack with
+  // scorer_overrides.disable_excellence_cap === true is registered; the ABEval
+  // page hides the card otherwise.
+  getCapDeltaDiagnostics: ({ days = 1, minDelta = 0.5, strategy, buyThreshold } = {}) => {
+    const params = new URLSearchParams()
+    params.set('days', String(days))
+    params.set('min_delta', String(minDelta))
+    if (strategy) params.set('strategy', strategy)
+    if (buyThreshold != null) params.set('buy_threshold', String(buyThreshold))
+    return request(`/api/admin/cap-delta-diagnostics?${params}`)
+  },
+
   // Trigger an immediate snapshot email — same body as the weekly Mon 9 AM
   // UTC cron, sent on demand. Used by the ABEval "Send test snapshot email"
   // button so the operator can verify wiring without waiting a week.

@@ -420,6 +420,212 @@ function DecisionBanner({ summary, post }) {
   )
 }
 
+// ── Cap-Delta Diagnostics card ────────────────────────────────────────────
+//
+// Visible only when the selected shadow stack has
+// `scorer_overrides.disable_excellence_cap === true`. Renders a population-
+// level read of c_score vs c_score_uncapped over a rolling window: headline
+// percentage, four-bucket histogram, and the top divergent tickers. The
+// goal is to answer the verdict-day question "is the no-cap arm even
+// receiving divergent inputs, or is it a silent no-op?" without an SQL
+// spelunking session under decision pressure.
+const CAP_DELTA_DAYS_KEY = 'abeval.capDelta.days'
+const CAP_DELTA_DAY_CHIPS = [1, 3, 7, 14]
+
+function loadStoredCapDeltaDays() {
+  try {
+    const raw = localStorage.getItem(CAP_DELTA_DAYS_KEY)
+    const n = raw == null ? null : Number(raw)
+    if (CAP_DELTA_DAY_CHIPS.includes(n)) return n
+  } catch {}
+  return 1
+}
+
+function CapDeltaBucketBar({ buckets }) {
+  // Stacked horizontal bar across the four delta_buckets. Width is
+  // proportional to bucket pct; tooltips on hover for exact counts.
+  const total = buckets.reduce((acc, b) => acc + (b.n || 0), 0)
+  if (!total) return <div className="text-xs text-dark-500 italic">No rows in window.</div>
+  const palette = {
+    '0':       'bg-dark-700',
+    '0.5-1.5': 'bg-amber-500/70',
+    '1.5-3.0': 'bg-orange-500/80',
+    '3.0+':    'bg-red-500/80',
+  }
+  return (
+    <div>
+      <div className="flex h-6 rounded overflow-hidden border border-dark-700/60">
+        {buckets.map(b => (
+          <div
+            key={b.bucket}
+            className={`${palette[b.bucket] || 'bg-dark-600'} flex items-center justify-center text-[10px] text-dark-100`}
+            style={{ width: `${b.pct}%` }}
+            title={`Δ ${b.bucket}: ${b.n.toLocaleString()} rows (${b.pct}%)`}
+          >
+            {b.pct >= 6 ? `${b.pct}%` : ''}
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between mt-1 text-[10px] text-dark-500">
+        {buckets.map(b => (
+          <span key={b.bucket}>Δ {b.bucket} <span className="text-dark-300 font-data">({b.n.toLocaleString()})</span></span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function CapDeltaCard({ selected, refreshSeconds }) {
+  const enabled = selected?.scorerOverrides?.disable_excellence_cap === true
+  const [days, setDays] = useState(loadStoredCapDeltaDays)
+  const [body, setBody] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(true)
+  const timer = useRef(null)
+
+  useEffect(() => {
+    try { localStorage.setItem(CAP_DELTA_DAYS_KEY, String(days)) } catch {}
+  }, [days])
+
+  const fetchOnce = useCallback(async () => {
+    if (!enabled) return
+    setLoading(true)
+    setError('')
+    try {
+      const res = await api.getCapDeltaDiagnostics({
+        days,
+        strategy: selected.parentStrategy || undefined,
+      })
+      setBody(res)
+    } catch (e) {
+      setError(e?.message || 'Fetch failed')
+    } finally {
+      setLoading(false)
+    }
+  }, [enabled, days, selected])
+
+  useEffect(() => { fetchOnce() }, [fetchOnce])
+
+  // Mirror the parent ABEval auto-refresh cadence — same interval, same
+  // bypass-cache semantics. Off when refreshSeconds === 0.
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current)
+    if (!enabled) return undefined
+    if (refreshSeconds > 0) {
+      timer.current = setTimeout(fetchOnce, refreshSeconds * 1000)
+    }
+    return () => { if (timer.current) clearTimeout(timer.current) }
+  }, [refreshSeconds, fetchOnce, enabled])
+
+  if (!enabled) return null
+
+  const pop = body?.population
+  const xings = body?.threshold_crossings
+  const tickers = body?.top_divergent_tickers || []
+
+  return (
+    <Card>
+      <div className="flex items-baseline justify-between gap-3">
+        <CardHeader
+          title="Cap-Delta Diagnostics"
+          subtitle="Population view — what would scoring look like without the excellence cap?"
+        />
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="text-xs text-dark-400 hover:text-dark-200 px-2 py-1 rounded border border-dark-700"
+        >
+          {open ? 'Hide' : 'Show'}
+        </button>
+      </div>
+      {open && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 mt-1 mb-3">
+            <span className="text-[11px] text-dark-500">Window:</span>
+            {CAP_DELTA_DAY_CHIPS.map(n => (
+              <button
+                key={n}
+                onClick={() => setDays(n)}
+                className={`text-[11px] px-2 py-0.5 rounded border ${
+                  days === n
+                    ? 'border-primary-500/60 text-primary-200 bg-primary-500/10'
+                    : 'border-dark-700 text-dark-400 hover:border-dark-600 hover:text-dark-200'
+                }`}
+              >
+                {n}d
+              </button>
+            ))}
+            {loading && <span className="text-[11px] text-dark-500">Loading…</span>}
+          </div>
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs px-3 py-2 rounded mb-3">
+              {error}
+            </div>
+          )}
+          {pop && (
+            <>
+              <div className="text-sm text-dark-200 mb-3">
+                <span className="font-data text-emerald-300">{pop.rows_with_delta_pct}%</span> of scored
+                stocks would score differently without the excellence cap
+                {' '}
+                (<span className="font-data">{pop.rows_with_delta.toLocaleString()}</span> of{' '}
+                <span className="font-data">{pop.rows_total.toLocaleString()}</span> rows in the last {days} day{days === 1 ? '' : 's'}).
+                {pop.rows_with_delta > 0 && (
+                  <span className="text-dark-400"> Avg Δ when present: <span className="font-data text-dark-200">{pop.avg_delta_when_present}</span>; max Δ: <span className="font-data text-dark-200">{pop.max_delta}</span>.</span>
+                )}
+              </div>
+              <CapDeltaBucketBar buckets={pop.delta_buckets} />
+              {xings && (
+                <div className="mt-3 text-xs text-dark-400">
+                  Threshold crossings (buy_threshold = <span className="font-data text-dark-200">{xings.buy_threshold}</span>):{' '}
+                  <span className="font-data text-emerald-300">{xings.rows_baseline_below_threshold_uncapped_above}</span>
+                  {' '}rows would qualify without the cap.
+                </div>
+              )}
+            </>
+          )}
+          {tickers.length > 0 && (
+            <div className="mt-4">
+              <SectionLabel>Top divergent tickers</SectionLabel>
+              <table className="w-full text-xs text-dark-200 mt-2">
+                <thead className="text-dark-500 text-[10px] uppercase tracking-wide">
+                  <tr>
+                    <th className="text-left py-1.5">Ticker</th>
+                    <th className="text-right">Max Δ</th>
+                    <th className="text-right">Capped</th>
+                    <th className="text-right">Uncapped</th>
+                    <th className="text-right">Rows</th>
+                    <th className="text-right">Crossed?</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tickers.slice(0, 10).map(t => (
+                    <tr key={t.ticker} className="border-t border-dark-700/40">
+                      <td className="py-1.5 font-data">
+                        <a href={`/stock/${t.ticker}`} className="text-primary-300 hover:underline">{t.ticker}</a>
+                      </td>
+                      <td className="text-right font-data">{t.max_delta}</td>
+                      <td className="text-right font-data text-dark-300">{t.max_capped_score ?? '–'}</td>
+                      <td className="text-right font-data">{t.max_uncapped_score ?? '–'}</td>
+                      <td className="text-right font-data text-dark-400">{t.n_rows}</td>
+                      <td className="text-right">
+                        {t.crossed_buy_threshold_at_least_once
+                          ? <span className="text-emerald-400">✓</span>
+                          : <span className="text-dark-500">·</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  )
+}
+
+
 export default function ABEval() {
   const { user } = useAuth()
   const [selected, setSelected] = useState(loadStoredSelection)
@@ -524,6 +730,7 @@ export default function ABEval() {
     label: `Shadow: ${s.name}${s.description ? ` — ${s.description}` : ''}`,
     parentStrategy: s.parent_strategy,
     description: s.description,
+    scorerOverrides: s.scorer_overrides || null,
   })), [shadows])
 
   const allOptions = useMemo(() => [LIVE_OPTION, ...shadowOptions], [shadowOptions])
@@ -787,6 +994,10 @@ export default function ABEval() {
               </ul>
             </Card>
           )}
+
+          {/* Cap-Delta Diagnostics — only renders when the selected shadow stack
+              has scorer_overrides.disable_excellence_cap === true. */}
+          <CapDeltaCard selected={selected} refreshSeconds={refreshSeconds} />
 
           {/* Post-cutoff trade table */}
           <PostTradesTable

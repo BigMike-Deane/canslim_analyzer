@@ -12,10 +12,11 @@ from pydantic import BaseModel
 
 from backend.database import (
     get_db, User, AIPortfolioTrade, AIPortfolioConfig,
-    ShadowStrategy, ShadowTrade,
+    ShadowStrategy, ShadowTrade, Stock, StockScore,
 )
 from backend.auth import get_admin_user, UserCreate, UserResponse
 from backend.rate_limiter import limiter
+from backend.trading_utils import get_strategy_profile
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -971,6 +972,244 @@ async def trigger_ab_eval_snapshot_email(
         'post_sell_count': result['post_sell_count'],
         'source': result['source'],
     }
+
+
+# ---------------------------------------------------------------------------
+# Cap-Delta Diagnostics
+#
+# Population-level read of c_score vs c_score_uncapped over a rolling window.
+# Closes the Scenario C.3 blind spot from the Shadow Step 7 verification:
+# a shadow_no_excellence_cap arm that emits byte-identical trades to the
+# baseline because today's buy-eligible universe happens to be all 4-of-4
+# excellence stocks (cap doesn't bite) is invisible from trade counts alone.
+# This endpoint surfaces the population view so verdict-day reads (Approach 2
+# real eval ending 2026-06-18, and any future shadow stack) are
+# pre-instrumented.
+#
+# 100% read-only: queries stock_scores + stocks, no scorer invocation, no
+# scheduler hooks, no writes.
+# ---------------------------------------------------------------------------
+
+# Iteration buckets for the divergent population (delta >= min_delta). The
+# "0" bucket is filled via the early-continue paths in the helper — it
+# represents "row was in the window but was not divergent" (uncapped null,
+# or delta below min_delta). Keeping it out of this tuple prevents the
+# matching loop from accidentally claiming divergent rows for "0".
+_DIVERGENT_BUCKETS = (
+    ("0.5-1.5", 0.0, 1.5),
+    ("1.5-3.0", 1.5, 3.0),
+    ("3.0+",    3.0, None),
+)
+_BUCKET_LABELS = ("0", "0.5-1.5", "1.5-3.0", "3.0+")
+_TOP_DIVERGENT_LIMIT = 25
+
+
+def compute_cap_delta_diagnostics(
+    db: Session,
+    days: int,
+    min_delta: float,
+    buy_threshold: float,
+) -> dict:
+    """Population-level cap-delta diagnostics over a rolling stock_scores window.
+
+    Pure function over a SQLAlchemy Session — endpoint is a thin wrapper.
+    Reads StockScore.timestamp + Stock.ticker via a single join; no scorer
+    code paths invoked.
+
+    `delta` is `c_score_uncapped - c_score`. Because c_score_uncapped is the
+    pre-excellence-cap C subscore and the rest of the canslim breakdown is
+    untouched, delta on the C subscore equals delta on the total score.
+    Threshold-crossing math therefore compares total_score vs total_score+delta
+    against the buy_threshold.
+
+    Returns the response shape consumed by GET /api/admin/cap-delta-diagnostics.
+    Returns 200-shape with zeroed fields on empty windows; the endpoint never
+    404s on no data.
+    """
+    now_utc = datetime.now(timezone.utc)
+    start_utc = now_utc - timedelta(days=days)
+
+    rows = (
+        db.query(
+            StockScore.id,
+            StockScore.stock_id,
+            StockScore.timestamp,
+            StockScore.total_score,
+            StockScore.c_score,
+            StockScore.c_score_uncapped,
+            Stock.ticker,
+        )
+        .join(Stock, Stock.id == StockScore.stock_id)
+        .filter(
+            StockScore.timestamp >= start_utc,
+            StockScore.timestamp <= now_utc,
+        )
+        .all()
+    )
+
+    rows_total = len(rows)
+    rows_with_uncapped = sum(1 for r in rows if r.c_score_uncapped is not None)
+    distinct_stocks = len({r.stock_id for r in rows})
+
+    bucket_counts = {label: 0 for label in _BUCKET_LABELS}
+    deltas_present = []
+    rows_with_delta = 0
+
+    cross_uncapped_above = 0
+    cross_capped_above = 0
+
+    per_ticker = {}
+
+    for r in rows:
+        if r.c_score is None or r.c_score_uncapped is None:
+            bucket_counts["0"] += 1
+            continue
+        delta = r.c_score_uncapped - r.c_score
+        # Floating noise / under-min_delta rows count toward the zero-bucket.
+        if delta < min_delta:
+            bucket_counts["0"] += 1
+            continue
+
+        rows_with_delta += 1
+        deltas_present.append(delta)
+        # Half-open buckets [lo, hi); "3.0+" is unbounded above.
+        for label, lo, hi in _DIVERGENT_BUCKETS:
+            if hi is None:
+                if delta >= lo:
+                    bucket_counts[label] += 1
+                    break
+            elif lo <= delta < hi:
+                bucket_counts[label] += 1
+                break
+
+        # Threshold-crossing: total_score is the persisted total. uncapped
+        # total = total_score + delta (other subscores untouched by the cap).
+        total = r.total_score
+        if total is not None:
+            uncapped_total = total + delta
+            if total < buy_threshold <= uncapped_total:
+                cross_uncapped_above += 1
+            # Defensive — should never happen since uncapped >= capped, but
+            # surface it if a data anomaly creates one.
+            if uncapped_total < buy_threshold <= total:
+                cross_capped_above += 1
+
+        slot = per_ticker.setdefault(
+            r.ticker,
+            {
+                "n_rows": 0,
+                "max_delta": 0.0,
+                "max_uncapped_score": None,
+                "max_capped_score": None,
+                "crossed_buy_threshold_at_least_once": False,
+            },
+        )
+        slot["n_rows"] += 1
+        if delta > slot["max_delta"]:
+            slot["max_delta"] = delta
+            if total is not None:
+                slot["max_capped_score"] = round(total, 2)
+                slot["max_uncapped_score"] = round(total + delta, 2)
+        if total is not None and total < buy_threshold <= total + delta:
+            slot["crossed_buy_threshold_at_least_once"] = True
+
+    avg_delta = round(sum(deltas_present) / len(deltas_present), 2) if deltas_present else 0.0
+    max_delta = round(max(deltas_present), 2) if deltas_present else 0.0
+
+    delta_buckets = []
+    if rows_total > 0:
+        for label in _BUCKET_LABELS:
+            n = bucket_counts[label]
+            delta_buckets.append({
+                "bucket": label,
+                "n": n,
+                "pct": round(n / rows_total * 100, 1),
+            })
+
+    rows_with_delta_pct = round(rows_with_delta / rows_total * 100, 1) if rows_total else 0.0
+
+    # Stable ordering: max_delta desc, then ticker asc (idempotency for callers).
+    top_tickers = sorted(
+        (
+            {"ticker": tkr, **stats, "max_delta": round(stats["max_delta"], 2)}
+            for tkr, stats in per_ticker.items()
+        ),
+        key=lambda x: (-x["max_delta"], x["ticker"]),
+    )[:_TOP_DIVERGENT_LIMIT]
+
+    return {
+        "window": {
+            "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
+            "end_utc": now_utc.isoformat().replace("+00:00", "Z"),
+            "days": days,
+            "n_score_writes": rows_total,
+            "n_distinct_stocks": distinct_stocks,
+        },
+        "population": {
+            "rows_total": rows_total,
+            "rows_with_uncapped": rows_with_uncapped,
+            "rows_with_delta": rows_with_delta,
+            "rows_with_delta_pct": rows_with_delta_pct,
+            "delta_buckets": delta_buckets,
+            "avg_delta_when_present": avg_delta,
+            "max_delta": max_delta,
+        },
+        "threshold_crossings": {
+            "buy_threshold": round(buy_threshold, 2),
+            "rows_baseline_below_threshold_uncapped_above": cross_uncapped_above,
+            "rows_baseline_above_threshold_uncapped_below": cross_capped_above,
+        },
+        "top_divergent_tickers": top_tickers,
+    }
+
+
+@router.get("/cap-delta-diagnostics")
+@limiter.limit("30/minute")
+async def cap_delta_diagnostics_endpoint(
+    days: int = Query(default=1, ge=1, le=14, description="Rolling window size in days, from now-UTC"),
+    min_delta: float = Query(default=0.5, ge=0.0, le=15.0, description="Rows with c_score_uncapped - c_score below this don't count as divergent"),
+    strategy: str = Query(default="nostate_cs_bear", description="Strategy profile to source the buy threshold from (default = current live profile)"),
+    buy_threshold: Optional[float] = Query(default=None, ge=0.0, le=100.0, description="Override the threshold. If None, sourced from strategy_profiles.<strategy>.min_score"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Cap-Delta Diagnostics — population view of c_score vs c_score_uncapped.
+
+    Built to close the Scenario C.3 blind spot identified in the Shadow Step 7
+    verification: a shadow_no_excellence_cap arm that silently emits trades
+    byte-identical to the baseline because today's universe happens to be
+    all 4-of-4 excellence stocks. Trade counts can't tell you that; this can.
+
+    Eval-safe: 100% read-only against stock_scores. No scorer invocation, no
+    scheduler hooks, no writes. Same admin auth + rate limits as
+    /strategy-ab-eval.
+
+    Example:
+        GET /api/admin/cap-delta-diagnostics?days=7&min_delta=0.5
+    """
+    # Bypass for direct (non-FastAPI) invocation — see _call pattern in
+    # tests/test_strategy_ab_eval.py. Query() defaults arrive as Query objects
+    # outside FastAPI's resolver, which breaks the numeric comparisons below.
+    if not isinstance(days, int):
+        days = 1
+    if not isinstance(min_delta, (int, float)):
+        min_delta = 0.5
+    if not isinstance(strategy, str):
+        strategy = "nostate_cs_bear"
+    if buy_threshold is not None and not isinstance(buy_threshold, (int, float)):
+        buy_threshold = None
+
+    if buy_threshold is None:
+        profile = get_strategy_profile(strategy)
+        buy_threshold = float(profile.get("min_score", 72))
+
+    return compute_cap_delta_diagnostics(
+        db=db,
+        days=int(days),
+        min_delta=float(min_delta),
+        buy_threshold=float(buy_threshold),
+    )
 
 
 # ---------------------------------------------------------------------------
