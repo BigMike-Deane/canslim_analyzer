@@ -16,9 +16,10 @@ don't accidentally hit a real PriceHistoryCache singleton or write to
 disk. No scoring touch, no live trading touch, no async.
 
 Scope: Tier 1 read-only helpers — pure math, cache-key lookups, date
-arithmetic, branch coverage on guard clauses. The yfinance fetcher,
-ThreadPoolExecutor preload, and disk-cache integration paths are
-deliberately deferred to Tier 2/3.
+arithmetic, branch coverage on guard clauses. Tier 2 (appended after
+the Tier 1 block, e52f281) adds: HTTP fetcher with mocked requests,
+disk-cache integration, ThreadPoolExecutor preload, FTD state-machine
+deep paths, and is_breaking_out happy paths.
 """
 
 import os
@@ -1076,3 +1077,696 @@ class TestCacheStats:
 
         provider._disk_cache = _FakeCache()
         assert provider.get_cache_stats() is sentinel
+
+
+# ============================================================================
+# ============================================================================
+# TIER 2 (appended after e52f281): HTTP fetcher, disk-cache integration,
+# preload threadpool, _init_disk_cache fallbacks, FTD deep paths,
+# is_breaking_out happy paths.
+# ============================================================================
+# ============================================================================
+
+
+class _MockYahooResponse:
+    """Mock for `requests.get(...)` return value. Mirrors the subset of
+    the requests.Response API the fetcher exercises: status_code + json()."""
+
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+def _yahoo_payload(timestamps, closes, opens=None, highs=None, lows=None,
+                   volumes=None, adjcloses=None):
+    """Build a Yahoo chart-API response shape. Defaults derive OHLV from
+    closes if not specified — handy for happy-path tests where the only
+    thing that matters is that the parser produces a non-empty df."""
+    n = len(closes)
+    if opens is None:
+        opens = [c - 0.5 for c in closes]
+    if highs is None:
+        highs = [c + 1.0 for c in closes]
+    if lows is None:
+        lows = [c - 1.0 for c in closes]
+    if volumes is None:
+        volumes = [1_000_000 + i * 1000 for i in range(n)]
+    payload = {
+        "chart": {
+            "result": [{
+                "timestamp": timestamps,
+                "indicators": {
+                    "quote": [{
+                        "open": opens, "high": highs, "low": lows,
+                        "close": closes, "volume": volumes,
+                    }],
+                    "adjclose": [{"adjclose": adjcloses}] if adjcloses else [{}],
+                },
+            }],
+        },
+    }
+    return payload
+
+
+# ============================================================================
+# _fetch_price_history (Yahoo chart API parser)
+# ============================================================================
+class TestFetchPriceHistoryHttp:
+    def setup_method(self):
+        self.provider = _make_provider()
+        # Use a small fixed window so the parser's NaN-drop path is
+        # easy to trigger without 252-day setups.
+        self.start = date(2025, 1, 1)
+        self.end = date(2025, 1, 10)
+
+    def _ts_range(self, n=5):
+        # Unix timestamps for n consecutive UTC days starting 2025-01-01
+        from datetime import datetime, timezone
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        return [int((base + timedelta(days=i)).timestamp()) for i in range(n)]
+
+    def test_returns_none_for_non_200_response(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(status_code=503),
+        )
+        assert self.provider._fetch_price_history(
+            "AAPL", self.start, self.end
+        ) is None
+
+    def test_returns_none_when_chart_result_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(
+                payload={"chart": {"result": []}}
+            ),
+        )
+        assert self.provider._fetch_price_history(
+            "AAPL", self.start, self.end
+        ) is None
+
+    def test_returns_none_when_no_timestamps(self, monkeypatch):
+        # Empty timestamps list short-circuits before df construction
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=[], closes=[]
+            )),
+        )
+        assert self.provider._fetch_price_history(
+            "AAPL", self.start, self.end
+        ) is None
+
+    def test_returns_none_when_request_raises(self, monkeypatch):
+        # Exception swallowed by the outer try/except → returns None
+        def _boom(*a, **kw):
+            raise RuntimeError("network down")
+        monkeypatch.setattr("backend.historical_data.requests.get", _boom)
+        assert self.provider._fetch_price_history(
+            "AAPL", self.start, self.end
+        ) is None
+
+    def test_parses_happy_path_without_adjclose(self, monkeypatch):
+        ts = self._ts_range(5)
+        closes = [100.0, 101.0, 102.0, 103.0, 104.0]
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=ts, closes=closes
+            )),
+        )
+        df = self.provider._fetch_price_history("AAPL", self.start, self.end)
+        assert df is not None
+        assert len(df) == 5
+        assert list(df["close"]) == closes
+        # When no adjclose is present, raw OHLV pass through unchanged
+        assert list(df["open"]) == [c - 0.5 for c in closes]
+
+    def test_applies_split_adjustment_when_adjclose_present(self, monkeypatch):
+        # adjclose = raw_close / 2 simulates a 2:1 split adjustment
+        ts = self._ts_range(3)
+        raw_closes = [100.0, 102.0, 104.0]
+        adj_closes = [50.0, 51.0, 52.0]  # half of raw → factor 0.5
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=ts, closes=raw_closes, adjcloses=adj_closes
+            )),
+        )
+        df = self.provider._fetch_price_history("AAPL", self.start, self.end)
+        assert df is not None
+        # Close is adjusted, OHLV scaled by factor=0.5
+        assert list(df["close"]) == adj_closes
+        # raw_open[0] = 99.5 → adj = 99.5 * 0.5 = 49.75
+        assert df.iloc[0]["open"] == pytest.approx(49.75, abs=1e-9)
+
+    def test_drops_rows_with_none_in_essential_fields(self, monkeypatch):
+        ts = self._ts_range(4)
+        # One row has None close → should be dropped via dropna()
+        closes = [100.0, None, 102.0, 103.0]
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=ts, closes=closes,
+                opens=[99.5, None, 101.5, 102.5],
+                highs=[101, None, 103, 104],
+                lows=[99, None, 101, 102],
+                volumes=[1_000_000, None, 1_002_000, 1_003_000],
+            )),
+        )
+        df = self.provider._fetch_price_history("AAPL", self.start, self.end)
+        assert df is not None
+        assert len(df) == 3  # row with None dropped
+
+
+# ============================================================================
+# _fetch_price_history_cached (disk-cache integration)
+# ============================================================================
+class TestFetchPriceHistoryCached:
+    def setup_method(self):
+        self.provider = _make_provider()
+        self.df = _make_price_df(days=5)
+
+    def _make_fake_cache(self, hit_value=None):
+        """Build a fake disk cache that records get/set calls."""
+        class _FakeCache:
+            def __init__(self_inner):
+                self_inner.get_calls = []
+                self_inner.set_calls = []
+                self_inner.hit = hit_value
+
+            def get(self_inner, ticker, start, end):
+                self_inner.get_calls.append((ticker, start, end))
+                return self_inner.hit
+
+            def set(self_inner, ticker, start, end, df):
+                self_inner.set_calls.append((ticker, start, end, df))
+
+        return _FakeCache()
+
+    def test_disk_cache_hit_short_circuits_fetcher(self, monkeypatch):
+        cache = self._make_fake_cache(hit_value=self.df)
+        self.provider._disk_cache = cache
+        self.provider._disk_cache_enabled = True
+        # Sentinel that fails if called
+        called = []
+        monkeypatch.setattr(
+            self.provider, "_fetch_price_history",
+            lambda *a, **kw: called.append(a) or None,
+        )
+        result = self.provider._fetch_price_history_cached(
+            "AAPL", date(2025, 1, 1), date(2025, 1, 5)
+        )
+        assert result is self.df
+        assert len(called) == 0  # fetcher never called
+        assert len(cache.get_calls) == 1
+
+    def test_disk_cache_miss_calls_fetcher_and_stores(self, monkeypatch):
+        cache = self._make_fake_cache(hit_value=None)
+        self.provider._disk_cache = cache
+        self.provider._disk_cache_enabled = True
+        monkeypatch.setattr(
+            self.provider, "_fetch_price_history", lambda *a, **kw: self.df
+        )
+        result = self.provider._fetch_price_history_cached(
+            "AAPL", date(2025, 1, 1), date(2025, 1, 5)
+        )
+        assert result is self.df
+        assert len(cache.set_calls) == 1
+        assert cache.set_calls[0][0] == "AAPL"
+
+    def test_does_not_store_when_fetcher_returns_none(self, monkeypatch):
+        cache = self._make_fake_cache(hit_value=None)
+        self.provider._disk_cache = cache
+        self.provider._disk_cache_enabled = True
+        monkeypatch.setattr(
+            self.provider, "_fetch_price_history", lambda *a, **kw: None
+        )
+        result = self.provider._fetch_price_history_cached(
+            "AAPL", date(2025, 1, 1), date(2025, 1, 5)
+        )
+        assert result is None
+        assert len(cache.set_calls) == 0
+
+    def test_does_not_store_when_fetcher_returns_empty(self, monkeypatch):
+        cache = self._make_fake_cache(hit_value=None)
+        self.provider._disk_cache = cache
+        self.provider._disk_cache_enabled = True
+        empty = pd.DataFrame(columns=["date", "open", "high", "low",
+                                       "close", "volume"])
+        monkeypatch.setattr(
+            self.provider, "_fetch_price_history", lambda *a, **kw: empty
+        )
+        result = self.provider._fetch_price_history_cached(
+            "AAPL", date(2025, 1, 1), date(2025, 1, 5)
+        )
+        assert result is empty
+        assert len(cache.set_calls) == 0
+
+    def test_skips_cache_when_disabled(self, monkeypatch):
+        # Cache disabled flag → skip disk lookup AND skip storage
+        cache = self._make_fake_cache(hit_value=self.df)
+        self.provider._disk_cache = cache
+        self.provider._disk_cache_enabled = False
+        monkeypatch.setattr(
+            self.provider, "_fetch_price_history", lambda *a, **kw: self.df
+        )
+        result = self.provider._fetch_price_history_cached(
+            "AAPL", date(2025, 1, 1), date(2025, 1, 5)
+        )
+        assert result is self.df
+        assert cache.get_calls == []  # disk never consulted
+        assert cache.set_calls == []  # nothing stored
+
+
+# ============================================================================
+# preload_data (ThreadPoolExecutor + progress callback)
+# ============================================================================
+class TestPreloadData:
+    def test_populates_caches_and_trading_days(self, monkeypatch):
+        provider = _make_provider(tickers=["AAPL", "MSFT"])
+
+        # Build distinct dfs per ticker so we can verify per-cache routing.
+        # SPY date range covers the requested backtest window so
+        # _trading_days populates from the SPY mask.
+        start = date(2025, 1, 1)
+        end = date(2025, 1, 31)
+
+        def fake_cached(ticker, lookback_start, end_date):
+            if ticker == "SPY":
+                return _make_price_df(start=start, days=31)
+            if ticker in ("QQQ", "DIA"):
+                return _make_price_df(start=start, days=31)
+            if ticker == "AAPL":
+                return _make_price_df(start=start, days=31, base=150)
+            if ticker == "MSFT":
+                return _make_price_df(start=start, days=31, base=300)
+            return None
+
+        monkeypatch.setattr(
+            provider, "_fetch_price_history_cached", fake_cached
+        )
+
+        progress_calls = []
+
+        def progress(pct):
+            progress_calls.append(pct)
+
+        ok = provider.preload_data(start, end, progress_callback=progress)
+        assert ok is True
+        assert provider._is_loaded is True
+        # Indexes loaded
+        for idx in ("SPY", "QQQ", "DIA"):
+            assert idx in provider._index_cache
+        # Stocks loaded
+        assert set(provider._price_cache) == {"AAPL", "MSFT"}
+        # Trading days derived from SPY (31 days within range)
+        assert len(provider._trading_days) == 31
+        assert provider._trading_days == sorted(provider._trading_days)
+        # Progress callback fired for every loaded ticker (3 indexes + 2 stocks)
+        assert len(progress_calls) == 5
+        assert progress_calls[-1] == pytest.approx(100.0, abs=1e-6)
+
+    def test_returns_false_when_no_stocks_loaded(self, monkeypatch):
+        provider = _make_provider(tickers=["BAD1", "BAD2"])
+        # All fetches return None → empty _price_cache → preload returns False
+        monkeypatch.setattr(
+            provider, "_fetch_price_history_cached",
+            lambda *a, **kw: None,
+        )
+        ok = provider.preload_data(date(2025, 1, 1), date(2025, 1, 31))
+        assert ok is False
+        assert provider._price_cache == {}
+
+    def test_swallows_per_ticker_fetch_exception(self, monkeypatch):
+        provider = _make_provider(tickers=["AAPL", "EXPLODES"])
+
+        def fake_cached(ticker, lookback_start, end_date):
+            if ticker == "EXPLODES":
+                raise RuntimeError("simulated fetch failure")
+            if ticker in ("SPY", "QQQ", "DIA", "AAPL"):
+                return _make_price_df(days=31)
+            return None
+
+        monkeypatch.setattr(
+            provider, "_fetch_price_history_cached", fake_cached
+        )
+        ok = provider.preload_data(date(2025, 1, 1), date(2025, 1, 31))
+        # AAPL succeeded; EXPLODES swallowed; preload still returns True
+        assert ok is True
+        assert "AAPL" in provider._price_cache
+        assert "EXPLODES" not in provider._price_cache
+
+
+# ============================================================================
+# _init_disk_cache fallback paths
+# ============================================================================
+class TestInitDiskCacheFallbacks:
+    def test_falls_back_to_direct_construction_when_config_missing(
+        self, monkeypatch
+    ):
+        # Force `from config_loader import config` to ImportError so the
+        # outer try fails. The except branch then imports
+        # backend.price_cache.PriceHistoryCache directly.
+        import sys
+        monkeypatch.setitem(sys.modules, "config_loader", None)
+
+        constructed = []
+
+        class _FakeCache:
+            def __init__(self_inner):
+                constructed.append(True)
+
+            def get_stats(self_inner):
+                return {}
+
+        # Patch PriceHistoryCache so we don't actually create a sqlite file
+        monkeypatch.setattr(
+            "backend.price_cache.PriceHistoryCache", _FakeCache
+        )
+        provider = HistoricalDataProvider(
+            ["AAPL"], data_reference_date=date(2026, 5, 9)
+        )
+        assert len(constructed) == 1
+        assert isinstance(provider._disk_cache, _FakeCache)
+
+    def test_disables_cache_when_both_imports_fail(self, monkeypatch):
+        import sys
+        # config_loader → ImportError
+        monkeypatch.setitem(sys.modules, "config_loader", None)
+        # backend.price_cache → ImportError too
+        monkeypatch.setitem(sys.modules, "backend.price_cache", None)
+        provider = HistoricalDataProvider(
+            ["AAPL"], data_reference_date=date(2026, 5, 9)
+        )
+        assert provider._disk_cache_enabled is False
+
+
+# ============================================================================
+# get_follow_through_day_status — deep state-machine paths
+# ============================================================================
+class TestFollowThroughDayDeepPaths:
+    def _build_correction_spy(self, ftd_at_rally_day=None, ftd_gain_pct=2.0):
+        """Build a 60-day SPY df where:
+        - bars 0..39 sit at 450 (uptrend baseline → drives ma_50 high
+          enough that even a partially-rallied final close stays below
+          ma_50*0.98 → correction stays triggered)
+        - bar 40 drops to 380 (correction low)
+        - bars 41..59 rally slowly; if `ftd_at_rally_day` is set, that
+          rally bar gets a 1.5%+ gain on higher volume.
+        """
+        rows = []
+        for i in range(40):
+            close = 450.0
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 0.5, "low": close - 0.5,
+                "close": close, "volume": 50_000_000,
+            })
+        rows.append({
+            "date": date(2025, 1, 1) + timedelta(days=40),
+            "open": 450.0, "high": 451.0, "low": 380.0, "close": 380.0,
+            "volume": 50_000_000,
+        })
+        prev_close = 380.0
+        prev_vol = 50_000_000
+        for i in range(1, 20):
+            idx = 40 + i
+            if ftd_at_rally_day is not None and i == ftd_at_rally_day:
+                close = prev_close * (1 + ftd_gain_pct / 100.0)
+                vol = prev_vol * 1.5
+            else:
+                close = prev_close * 1.001
+                vol = prev_vol * 0.95
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=idx),
+                "open": prev_close,
+                "high": max(prev_close, close) + 0.5,
+                "low": min(prev_close, close) - 0.5,
+                "close": close, "volume": vol,
+            })
+            prev_close = close
+            prev_vol = vol
+        return pd.DataFrame(rows)
+
+    def test_market_in_correction_with_no_rally_yet(self):
+        # ftd_at_rally_day = None → no FTD; rally_days >= 3 → RALLY_ATTEMPT
+        # (correction triggered by price below ma_50*0.98)
+        provider = _make_provider()
+        provider._index_cache["SPY"] = self._build_correction_spy()
+        result = provider.get_follow_through_day_status(
+            date(2025, 1, 1) + timedelta(days=59)
+        )
+        # 19 rally days post-low, no FTD criteria hit → RALLY_ATTEMPT
+        assert result["state"] == "RALLY_ATTEMPT"
+        assert result["can_buy"] is False
+        assert result["last_ftd_date"] is None
+        assert result["rally_day_count"] >= 3
+
+    def test_confirmed_uptrend_when_ftd_detected(self):
+        # FTD on rally day 4 (i=4, day_num=3): qualifies as FTD
+        provider = _make_provider()
+        provider._index_cache["SPY"] = self._build_correction_spy(
+            ftd_at_rally_day=4, ftd_gain_pct=2.0
+        )
+        result = provider.get_follow_through_day_status(
+            date(2025, 1, 1) + timedelta(days=59)
+        )
+        assert result["state"] == "CONFIRMED_UPTREND"
+        assert result["can_buy"] is True
+        assert result["last_ftd_date"] is not None
+
+    def test_uptrend_under_pressure_with_4_distribution_days(self):
+        # Build a SPY df above 50MA but with 4 distribution days in the
+        # last 25-day lookback window. Need price > ma_50*0.98 and
+        # dist_days < 5 to skip the correction branch.
+        rows = []
+        prev = 400.0
+        prev_vol = 50_000_000
+        # Lead-in: 35 quiet up days establishing ma_50
+        for i in range(35):
+            close = prev * 1.002  # gentle uptrend
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": prev, "high": max(prev, close) + 0.2,
+                "low": min(prev, close) - 0.2,
+                "close": close, "volume": prev_vol * 0.95,
+            })
+            prev = close
+            prev_vol = prev_vol * 0.95
+        # Final 25 bars: 4 distribution days (-0.5% on higher vol),
+        # other bars trend gently up on lower volume.
+        dist_days_indexes = {37, 41, 45, 49}
+        for i in range(35, 60):
+            if i in dist_days_indexes:
+                close = prev * 0.995
+                vol = prev_vol * 1.5
+            else:
+                close = prev * 1.001
+                vol = prev_vol * 0.9
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": prev, "high": max(prev, close) + 0.2,
+                "low": min(prev, close) - 0.2,
+                "close": close, "volume": vol,
+            })
+            prev = close
+            prev_vol = vol
+
+        provider = _make_provider()
+        provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = provider.get_follow_through_day_status(
+            date(2025, 1, 1) + timedelta(days=59)
+        )
+        # If correction didn't trigger (price > ma_50*0.98) and 4 dist
+        # days landed → UPTREND_UNDER_PRESSURE
+        assert result["state"] == "UPTREND_UNDER_PRESSURE"
+        assert result["can_buy"] is True
+
+
+# ============================================================================
+# is_breaking_out happy paths (base-pattern match + 52w-near-high)
+# ============================================================================
+class TestIsBreakingOutHappyPaths:
+    def setup_method(self):
+        self.provider = _make_provider()
+        # Synthetic 100-day df. We'll override detect_base_pattern below
+        # to drive specific breakout branches without coercing the
+        # base-detector with hand-shaped weekly bars.
+        self.df = _make_price_df(
+            start=date(2025, 1, 1), days=100, base=100, slope=0.0,
+            vol_base=1_000_000, vol_step=0,
+        )
+        self.provider._price_cache["AAPL"] = self.df
+
+    def test_breakout_at_pivot_with_strong_volume(self, monkeypatch):
+        # Pivot at 99 → current price 100 → 1% above pivot (within 0-5%).
+        # Volume ratio ~2.0 (current 2M vs avg 1M) → effective_vol_score ≥ 75.
+        df = self.df.copy()
+        df.loc[df.index[-1], "volume"] = 2_000_000
+        self.provider._price_cache["AAPL"] = df
+        monkeypatch.setattr(
+            self.provider, "detect_base_pattern",
+            lambda t, d: {"type": "flat", "weeks": 8, "pivot_price": 99.0},
+        )
+        is_bo, vol_ratio, pattern = self.provider.is_breaking_out(
+            "AAPL", df.iloc[-1]["date"]
+        )
+        assert is_bo is True
+        assert vol_ratio > 1.5
+        assert pattern["type"] == "flat"
+
+    def test_no_breakout_when_extended_above_pivot(self, monkeypatch):
+        # Pivot at 90 → 100 is ~11% above pivot → extended → False
+        monkeypatch.setattr(
+            self.provider, "detect_base_pattern",
+            lambda t, d: {"type": "flat", "weeks": 8, "pivot_price": 90.0},
+        )
+        is_bo, _, _ = self.provider.is_breaking_out(
+            "AAPL", self.df.iloc[-1]["date"]
+        )
+        assert is_bo is False
+
+    def test_no_breakout_at_pivot_with_weak_volume(self, monkeypatch):
+        # Pivot at 99, current price 100 (~1% above), but volume flat
+        # (ratio = 1.0 → effective score = 50 < 75 threshold).
+        monkeypatch.setattr(
+            self.provider, "detect_base_pattern",
+            lambda t, d: {"type": "flat", "weeks": 8, "pivot_price": 99.0},
+        )
+        is_bo, _, _ = self.provider.is_breaking_out(
+            "AAPL", self.df.iloc[-1]["date"]
+        )
+        assert is_bo is False
+
+    def test_breakout_near_52w_high_with_exceptional_volume(self, monkeypatch):
+        # No base pattern → falls through to the 52w-high branch.
+        # Need: within 2% of 52w high AND volume ratio >= 3.0.
+        # Build a df where today's close is right at the 52w high and
+        # today's volume is 3.5x the 50-day average.
+        df = self.df.copy()
+        df.loc[df.index[-1], "volume"] = 3_500_000  # 3.5x baseline 1M
+        self.provider._price_cache["AAPL"] = df
+        monkeypatch.setattr(
+            self.provider, "detect_base_pattern",
+            lambda t, d: {"type": "none", "weeks": 0, "pivot_price": 0.0},
+        )
+        is_bo, vol_ratio, _ = self.provider.is_breaking_out(
+            "AAPL", df.iloc[-1]["date"]
+        )
+        assert is_bo is True
+        assert vol_ratio >= 3.0
+
+    def test_no_breakout_near_52w_high_with_normal_volume(self, monkeypatch):
+        # At 52w high but only 1.2x volume → not a confirmed breakout
+        df = self.df.copy()
+        df.loc[df.index[-1], "volume"] = 1_200_000
+        self.provider._price_cache["AAPL"] = df
+        monkeypatch.setattr(
+            self.provider, "detect_base_pattern",
+            lambda t, d: {"type": "none", "weeks": 0, "pivot_price": 0.0},
+        )
+        is_bo, _, _ = self.provider.is_breaking_out(
+            "AAPL", df.iloc[-1]["date"]
+        )
+        assert is_bo is False
+
+
+# ============================================================================
+# Small Tier 2 branch pickups (each closes 1-3 missing lines)
+# ============================================================================
+class TestSmallBranchPickups:
+    def setup_method(self):
+        self.provider = _make_provider()
+
+    def test_atr_zero_when_current_price_zero(self):
+        # Build df where the last close is exactly 0 → ATR returns 0
+        rows = []
+        for i in range(20):
+            close = 100.0 if i < 19 else 0.0
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        self.provider._price_cache["ZERO"] = pd.DataFrame(rows)
+        atr = self.provider.get_atr(
+            "ZERO", date(2025, 1, 1) + timedelta(days=19), period=14
+        )
+        assert atr == 0.0
+
+    def test_filter_available_earnings_skips_strings(self):
+        # Strings aren't numeric and don't match the dict-with-eps shape
+        # → numeric_values stays empty → return []
+        out = self.provider._filter_available_earnings(
+            ["bad", "data"], date(2025, 1, 1), quarterly=True
+        )
+        assert out == []
+
+    def test_get_relative_strength_floor_for_nonpositive_start(self):
+        # When stock_start <= 0, the RS calc returns the 1.0 default.
+        # Build a df where the first bar (in the lookback window) has
+        # close = 0.
+        rows = []
+        for i in range(150):
+            close = 100.0 if i > 0 else 0.0
+            rows.append({
+                "date": date(2024, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        self.provider._price_cache["ZERO_START"] = pd.DataFrame(rows)
+        self.provider._index_cache["SPY"] = _make_price_df(
+            start=date(2024, 1, 1), days=150, base=400, slope=0.1
+        )
+        rs = self.provider.get_relative_strength(
+            "ZERO_START", date(2024, 5, 1), period_months=6
+        )
+        assert rs == 1.0
+
+    def test_accumulation_distribution_days_no_movement(self):
+        # Flat SPY with steady volume → 0 dist + 0 accumulation days
+        rows = [{"date": date(2025, 1, 1) + timedelta(days=i),
+                 "open": 400, "high": 400.5, "low": 399.5,
+                 "close": 400, "volume": 50_000_000}
+                for i in range(30)]
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution_days(
+            date(2025, 1, 30)
+        )
+        assert result["distribution_days"] == 0
+        assert result["accumulation_days"] == 0
+        assert result["net_ad"] == 0
+
+    def test_get_days_since_spy_pullback_with_short_history(self):
+        # < 2 bars in window → returns default 30
+        self.provider._index_cache["SPY"] = _make_price_df(days=1)
+        assert self.provider.get_days_since_spy_pullback(
+            date(2025, 1, 1)
+        ) == 30
+
+    def test_vix_proxy_returns_default_when_returns_empty(self):
+        # All closes <= 0 → daily_returns stays empty → return 18.0
+        rows = [{"date": date(2025, 1, 1) + timedelta(days=i),
+                 "open": 0, "high": 0, "low": 0, "close": 0,
+                 "volume": 1_000_000} for i in range(30)]
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        assert self.provider.get_vix_proxy(date(2025, 1, 30)) == 18.0
+
+    def test_correlation_zero_when_too_few_common_returns(self):
+        # Two dfs with no overlapping dates → 0.0 (less than 15 common)
+        df1_rows = [{"date": date(2025, 1, 1) + timedelta(days=i),
+                     "open": 100, "high": 101, "low": 99, "close": 100,
+                     "volume": 1_000_000} for i in range(20)]
+        df2_rows = [{"date": date(2026, 1, 1) + timedelta(days=i),
+                     "open": 100, "high": 101, "low": 99, "close": 100,
+                     "volume": 1_000_000} for i in range(20)]
+        self.provider._price_cache["A"] = pd.DataFrame(df1_rows)
+        self.provider._price_cache["B"] = pd.DataFrame(df2_rows)
+        result = self.provider.get_stock_correlation(
+            "A", "B", date(2026, 1, 20)
+        )
+        assert result == 0.0
