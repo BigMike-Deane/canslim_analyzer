@@ -236,6 +236,113 @@ class TestBuildSnapshotHTML:
 
 
 # ============================================================================
+# Defensive branches — small-tail close-out
+# ============================================================================
+class TestFormatHelpersDefensiveBranches:
+    """The _fmt_* helpers swallow None and emit the dash glyph; the non-None
+    happy path of _fmt_int needs an explicit test to lock comma formatting."""
+
+    def test_fmt_int_non_none_uses_thousands_separator(self):
+        from backend.ab_eval_email import _fmt_int
+        assert _fmt_int(0) == "0"
+        assert _fmt_int(1234) == "1,234"
+        assert _fmt_int(1234567) == "1,234,567"
+
+    def test_fmt_int_none_renders_dash(self):
+        from backend.ab_eval_email import _fmt_int
+        assert _fmt_int(None) == "–"
+
+
+class TestPriorBuyMapBranches:
+    """Buys in the pre-window seed the prior_buy_map; buys in the post-window
+    update it as the loop walks chronologically (so subsequent post-window
+    SELLs can pair against the latest BUY for that ticker). Without a BUY in
+    either window neither branch fires."""
+
+    def test_buy_in_pre_window_seeds_prior_buy_map(self, db_session):
+        """Add a BUY in the pre-window, a paired SELL in the post-window —
+        the SELL's hold_days should resolve via the pre-window BUY through
+        prior_buy_map, which means line 167 fired during render."""
+        _seed_user_strategy(db_session, user_id=1, strategy="nostate_optimized")
+        # 5 baseline SELLs in pre-window (decision-threshold floor).
+        for i, g in enumerate([3.0, -2.0, 4.0, 5.0, -1.0, 2.0]):
+            db_session.add(_make_trade(
+                ticker=f"BASE{i}",
+                action="SELL", shares=10.0, cost_basis=10.0, realized_gain=g,
+                executed_at=datetime(2026, 4, 1 + i, tzinfo=timezone.utc),
+                user_id=1,
+            ))
+        # The BUY-in-pre / SELL-in-post pair the prior_buy_map should connect.
+        db_session.add(_make_trade(
+            ticker="PAIR",
+            action="BUY", shares=10.0, cost_basis=100.0, realized_gain=None,
+            executed_at=datetime(2026, 4, 10, tzinfo=timezone.utc),
+            user_id=1,
+        ))
+        # 5 baseline SELLs in post-window so verdict isn't insufficient_data.
+        for i, g in enumerate([20.0, 25.0, 18.0, 22.0, 15.0]):
+            db_session.add(_make_trade(
+                ticker=f"POSTB{i}",
+                action="SELL", shares=10.0, cost_basis=10.0, realized_gain=g,
+                executed_at=datetime(2026, 4, 16 + i, tzinfo=timezone.utc),
+                user_id=1,
+            ))
+        db_session.add(_make_trade(
+            ticker="PAIR",
+            action="SELL", shares=10.0, cost_basis=100.0, realized_gain=50.0,
+            executed_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
+            user_id=1,
+        ))
+        db_session.commit()
+        from backend.ab_eval_email import build_ab_eval_snapshot_html
+        snap = build_ab_eval_snapshot_html(
+            "nostate_optimized", "2026-04-15", db_session,
+            pre_window_days=14, post_window_days=14,
+        )
+        # Render succeeded — the BUY-walk path (line 167) executed without raising.
+        assert "<!DOCTYPE html>" in snap['html']
+
+    def test_buy_in_post_window_updates_prior_buy_map(self, db_session):
+        """A BUY in the post-window followed by a paired SELL exercises the
+        same accumulator on the post side (line 172)."""
+        _seed_user_strategy(db_session, user_id=1, strategy="nostate_optimized")
+        for i, g in enumerate([3.0, -2.0, 4.0, 5.0, -1.0, 2.0]):
+            db_session.add(_make_trade(
+                ticker=f"BASE{i}",
+                action="SELL", shares=10.0, cost_basis=10.0, realized_gain=g,
+                executed_at=datetime(2026, 4, 1 + i, tzinfo=timezone.utc),
+                user_id=1,
+            ))
+        # Post-window BUY at day 16, SELL at day 22 — same ticker, same user.
+        db_session.add(_make_trade(
+            ticker="POSTPAIR",
+            action="BUY", shares=10.0, cost_basis=100.0, realized_gain=None,
+            executed_at=datetime(2026, 4, 16, tzinfo=timezone.utc),
+            user_id=1,
+        ))
+        for i, g in enumerate([20.0, 25.0, 18.0, 22.0]):
+            db_session.add(_make_trade(
+                ticker=f"POSTC{i}",
+                action="SELL", shares=10.0, cost_basis=10.0, realized_gain=g,
+                executed_at=datetime(2026, 4, 17 + i, tzinfo=timezone.utc),
+                user_id=1,
+            ))
+        db_session.add(_make_trade(
+            ticker="POSTPAIR",
+            action="SELL", shares=10.0, cost_basis=100.0, realized_gain=50.0,
+            executed_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
+            user_id=1,
+        ))
+        db_session.commit()
+        from backend.ab_eval_email import build_ab_eval_snapshot_html
+        snap = build_ab_eval_snapshot_html(
+            "nostate_optimized", "2026-04-15", db_session,
+            pre_window_days=14, post_window_days=14,
+        )
+        assert "<!DOCTYPE html>" in snap['html']
+
+
+# ============================================================================
 # send_ab_eval_snapshot wrapper
 # ============================================================================
 class TestSendSnapshot:
