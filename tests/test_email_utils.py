@@ -378,6 +378,42 @@ class TestSendWebPushToSubscriptions:
             count = email_utils._send_web_push_to_subscriptions([sub], "T", "B")
         assert count == 0
 
+    def test_prune_failure_is_swallowed_and_count_preserved(self):
+        """If the post-410 prune-delete raises (DB hiccup), the helper must
+        log + swallow at email_utils.py:359-360 and still return the count
+        of successful sends. The send-loop result is the canonical signal;
+        a failed prune just means we'll retry pruning on the next push.
+        """
+        from backend import email_utils
+        sub_alive = MagicMock(id=1, endpoint="https://e1", p256dh_key="k", auth_key="a")
+        sub_dead = MagicMock(id=2, endpoint="https://e2", p256dh_key="k", auth_key="a")
+
+        WebPushExc = type("WebPushException", (Exception,), {})
+        gone_exc = WebPushExc("gone")
+        gone_exc.response = MagicMock(status_code=410)
+
+        def _push(subscription_info, **kwargs):
+            if subscription_info["endpoint"] == "https://e2":
+                raise gone_exc
+            return None
+
+        fake_pywebpush = MagicMock()
+        fake_pywebpush.webpush = MagicMock(side_effect=_push)
+        fake_pywebpush.WebPushException = WebPushExc
+
+        fake_db = MagicMock()
+        fake_db.query.side_effect = RuntimeError("DB connection dropped")
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "k"}), \
+             patch.dict(sys.modules, {"pywebpush": fake_pywebpush}), \
+             patch("backend.database.SessionLocal", return_value=fake_db):
+            count = email_utils._send_web_push_to_subscriptions(
+                [sub_alive, sub_dead], "T", "B"
+            )
+        # 1 successful send despite the prune blowing up.
+        assert count == 1
+        # db.close() still runs via the finally block.
+        assert fake_db.close.called
+
 
 # ============================================================================
 # send_web_push_to_user / send_web_push_broadcast
