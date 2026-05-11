@@ -386,3 +386,52 @@ class TestSelectEffectiveStopLossPct:
             vix_proxy=nan, vix_config=self.YAML_VIX,
         )
         assert out == 8.0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _nan_safe — closes the 96.55% → 100% tail (lines 27-28).
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestNanSafe:
+    """Covers backend/trading_utils.py _nan_safe helper, in particular
+    the bare-except path that catches TypeError/ValueError from the
+    NaN comparison fallback."""
+
+    def test_none_returns_default(self):
+        from backend.trading_utils import _nan_safe
+        assert _nan_safe(None) == 0
+        assert _nan_safe(None, default=42) == 42
+
+    def test_nan_returns_default(self):
+        from backend.trading_utils import _nan_safe
+        assert _nan_safe(float("nan")) == 0
+        assert _nan_safe(float("nan"), default=-1) == -1
+
+    def test_normal_number_returned_as_is(self):
+        from backend.trading_utils import _nan_safe
+        assert _nan_safe(3.14) == 3.14
+        assert _nan_safe(0) == 0
+        assert _nan_safe(-1.5) == -1.5
+
+    def test_swallows_type_error_in_self_compare(self):
+        """Lines 27-28: `val != val` raising TypeError → bare-except
+        swallows, returns val unchanged."""
+        from backend.trading_utils import _nan_safe
+
+        class WeirdNeq:
+            def __ne__(self, other):
+                raise TypeError("comparison not supported")
+        weird = WeirdNeq()
+        assert _nan_safe(weird) is weird
+
+    def test_swallows_value_error_in_self_compare(self):
+        """Lines 27-28: ValueError (e.g., numpy array truth-value
+        ambiguity) also caught."""
+        from backend.trading_utils import _nan_safe
+
+        class ValueErrorNeq:
+            def __ne__(self, other):
+                raise ValueError("array truth value ambiguous")
+        weird = ValueErrorNeq()
+        assert _nan_safe(weird) is weird
