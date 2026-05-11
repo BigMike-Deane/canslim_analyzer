@@ -7,6 +7,7 @@ import { ScoreBadge, ActionBadge, TagBadge, MLConfidenceBadge } from '../compone
 import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import CollapsibleSection from '../components/CollapsibleSection'
+import Sparkline from '../components/Sparkline'
 import { tooltipStyle } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
@@ -510,14 +511,22 @@ function TradeDetailModal({ trade, onClose }) {
 // ── Position Detail Modal ───────────────────────────────────────────
 function PositionDetailModal({ position, onClose }) {
   const [trades, setTrades] = useState(null)
+  const [scoreHistory, setScoreHistory] = useState(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!position) { setTrades(null); return }
+    if (!position) { setTrades(null); setScoreHistory(null); return }
     setLoading(true)
-    api.getAIPortfolioTrades(200, position.ticker)
-      .then(t => setTrades(Array.isArray(t) ? t : []))
-      .catch(() => setTrades([]))
+    // Fetch trades + stock (for score_history) in parallel — both keyed on ticker.
+    Promise.all([
+      api.getAIPortfolioTrades(200, position.ticker)
+        .then(t => Array.isArray(t) ? t : [])
+        .catch(() => []),
+      api.getStock(position.ticker)
+        .then(s => s?.score_history || null)
+        .catch(() => null),
+    ])
+      .then(([t, sh]) => { setTrades(t); setScoreHistory(sh) })
       .finally(() => setLoading(false))
   }, [position?.id, position?.ticker])
 
@@ -611,6 +620,28 @@ function PositionDetailModal({ position, onClose }) {
             <StatRow label="Partial Profit" value={<span className="font-data">{position.partial_profit_taken.toFixed(0)}% sold</span>} />
           )}
         </div>
+
+        {/* Score history sparkline */}
+        {scoreHistory && scoreHistory.length >= 2 && (
+          <div className="bg-dark-850 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Score Trajectory</span>
+              <span className="text-[10px] font-data text-dark-500">{scoreHistory.length} pts</span>
+            </div>
+            <Sparkline
+              data={scoreHistory.map(h => h.total_score).filter(v => v != null)}
+              width={320}
+              height={48}
+              strokeWidth={1.75}
+              gradient
+              className="w-full"
+            />
+            <div className="flex justify-between mt-1 text-[10px] text-dark-500 font-data">
+              <span>{scoreHistory[0]?.total_score?.toFixed(1) ?? '—'}</span>
+              <span>{scoreHistory[scoreHistory.length - 1]?.total_score?.toFixed(1) ?? '—'}</span>
+            </div>
+          </div>
+        )}
 
         {/* Trade history */}
         <div>
