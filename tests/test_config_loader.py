@@ -129,3 +129,53 @@ class TestConfigLoader:
         assert isinstance(config.ai_trader, dict)
         assert isinstance(config.technical, dict)
         assert isinstance(config.api, dict)
+
+    def test_database_property_returns_dict(self):
+        """database property mirrors the other section accessors — it must
+        return a dict regardless of whether the database section exists
+        in YAML (covers config_loader.py line 113)."""
+        from config_loader import config
+
+        result = config.database
+        assert isinstance(result, dict), "database property must return a dict"
+
+    def test_reload_happy_path_reloads_config(self):
+        """reload() should re-read YAML from disk and restore the singleton's
+        _config to a fully-populated dict (covers config_loader.py lines 74-77)."""
+        from config_loader import config
+
+        # Take a snapshot of a known-good value before reload.
+        scanner_workers_before = config.get('scanner.workers')
+        assert scanner_workers_before is not None
+
+        # Mutate the in-memory config to prove reload() actually re-reads.
+        config._config['scanner']['workers'] = 99999
+        assert config.get('scanner.workers') == 99999
+
+        config.reload()
+
+        # After reload, the in-memory mutation should be gone.
+        assert config.get('scanner.workers') == scanner_workers_before
+
+    def test_reload_failure_rolls_back_to_old_config(self):
+        """If _load_config raises mid-reload, the old config must be restored
+        verbatim — never leave the singleton with a half-loaded or empty
+        config (covers config_loader.py lines 78-80, the atomic-swap path)."""
+        from config_loader import config
+        from unittest.mock import patch
+
+        # Snapshot the live config so we can verify byte-identical rollback.
+        before = config._config
+        assert before, "Config must be populated before this test runs"
+        sentinel_workers = before.get('scanner', {}).get('workers')
+
+        # Force the second _load_config call (the one inside reload) to raise.
+        with patch.object(config, '_load_config', side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                config.reload()
+
+        # The singleton's _config must be the EXACT same object as before —
+        # the except block does `self._config = old_config` (not a copy),
+        # so identity holds.
+        assert config._config is before
+        assert config.get('scanner.workers') == sentinel_workers
