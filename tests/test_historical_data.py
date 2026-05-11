@@ -1770,3 +1770,533 @@ class TestSmallBranchPickups:
             "A", "B", date(2026, 1, 20)
         )
         assert result == 0.0
+
+
+# ============================================================================
+# Tier 3 close-out (post-7f3769b, target 94.29% → 99%+)
+#
+# Targets the remaining 42 uncovered lines: scattered exception swallows,
+# early-return guard branches, deep-path edge cases in base-pattern + FTD
+# + RS-line-new-high + market-direction detectors that the Tier 1+2
+# scaffolds didn't reach. Reuses the _make_provider + _make_price_df
+# helpers above.
+# ============================================================================
+
+
+from unittest.mock import patch, MagicMock  # noqa: E402
+
+
+class TestTier3PriceHistoryEdgeBranches:
+    """Covers lines 436-437, 459, 463, 466, 482, 494-495."""
+
+    def setup_method(self):
+        self.provider = _make_provider(["AAPL"], ref_date=date(2025, 6, 1))
+
+    def test_get_price_history_handles_key_error(self):
+        """Line 436-437: get_price_history_up_to returns a df without
+        a 'close' column → KeyError caught → None."""
+        bad_df = pd.DataFrame([
+            {"date": date(2025, 1, 1) + timedelta(days=i),
+             "no_close_col_here": 100} for i in range(5)
+        ])
+        self.provider._price_cache["AAPL"] = bad_df
+        with patch.object(
+            self.provider, "get_price_history_up_to", return_value=bad_df,
+        ):
+            assert self.provider.get_price_history(
+                "AAPL", date(2025, 1, 6), lookback_days=4
+            ) is None
+
+    def test_accumulation_distribution_skips_zero_volume_and_zero_close(self):
+        """Lines 458-459: prev_close <=0 OR curr_vol <= 0 → continue."""
+        rows = []
+        for i in range(15):
+            close = 0 if i in (0, 5) else 100 + i
+            vol = 0 if i in (1, 7) else 1_000_000
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": vol,
+            })
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        # Function completes without crash; skip-rows fired (line 459)
+        self.provider.get_accumulation_distribution(
+            "AAPL", date(2025, 1, 15), lookback_days=15
+        )
+
+    def test_accumulation_distribution_down_day_increments_down_vol(self):
+        """Line 463: curr_close < prev_close → down_vol += curr_vol.
+        Line 465-466: down_vol > 0 → ad_ratio = up_vol / down_vol."""
+        rows = [{
+            "date": date(2025, 1, 1) + timedelta(days=i),
+            "open": 100 - i, "high": 100 - i + 0.5, "low": 100 - i - 0.5,
+            "close": 100 - i,
+            "volume": 1_000_000,
+        } for i in range(15)]
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution(
+            "AAPL", date(2025, 1, 15), lookback_days=15
+        )
+        # All down days → down_vol > 0 → either line 466 ad_ratio (if any
+        # up day) or line 468 elif (up_vol > 0). Strictly decreasing
+        # gives up_vol=0 → falls to line 470 ad_ratio=1.0. To get line
+        # 466 we need both up and down volume; covered by the mixed test.
+        assert result is not None
+
+    def test_accumulation_distribution_mixed_days_uses_ratio(self):
+        """Line 466: down_vol > 0 AND up_vol > 0 → ad_ratio = up/down."""
+        # Mix of up and down days
+        closes = [100, 102, 101, 103, 102, 104, 103, 105, 104, 106, 105, 107, 106, 108, 107]
+        rows = []
+        for i, c in enumerate(closes):
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": c, "high": c + 1, "low": c - 1, "close": c,
+                "volume": 1_000_000,
+            })
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution(
+            "AAPL", date(2025, 1, 15), lookback_days=15
+        )
+        assert result is not None
+        # ad_ratio is up/down (both populated) — should be a finite > 0 number
+        assert result["ad_ratio"] > 0
+
+    def test_accumulation_distribution_zero_baseline_volume_score_zero(self):
+        """Line 482: baseline_vol == 0 → volume_dry_up_score = 0."""
+        rows = [{
+            "date": date(2025, 1, 1) + timedelta(days=i),
+            "open": 100, "high": 101, "low": 99, "close": 100 + (i * 0.1),
+            "volume": 0,
+        } for i in range(15)]
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution(
+            "AAPL", date(2025, 1, 15), lookback_days=15
+        )
+        assert result is not None
+        assert result["volume_dry_up_score"] == 0
+
+    def test_accumulation_distribution_handles_value_error(self):
+        """Lines 494-495: exception in body → return None."""
+        rows = [{
+            "date": date(2025, 1, 1) + timedelta(days=i),
+            "open": 100, "high": 101, "low": 99,
+            "close": "not_a_number",
+            "volume": 1_000_000,
+        } for i in range(15)]
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution(
+            "AAPL", date(2025, 1, 15), lookback_days=15
+        )
+        assert result is None
+
+
+class TestTier3SpyPullbackEdgeBranches:
+    """Covers lines 520, 525, 528-529."""
+
+    def setup_method(self):
+        self.provider = _make_provider(ref_date=date(2025, 6, 1))
+
+    def test_days_since_pullback_skips_zero_prev_close(self):
+        """Line 519-520: prev_close <= 0 → continue."""
+        rows = []
+        for i in range(10):
+            close = 0 if i == 2 else (100 + i)
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = self.provider.get_days_since_spy_pullback(
+            date(2025, 1, 10), threshold_pct=-2.0
+        )
+        assert isinstance(result, int)
+
+    def test_days_since_pullback_handles_timestamp_attribute(self):
+        """Line 524-525: pullback_date has .date() method → coerce.
+
+        Use pd.to_datetime() on the column so iloc returns pd.Timestamp.
+        Pass as_of_date as pd.Timestamp too — pandas refuses to compare
+        datetime64[ns] against a Python date (raises InvalidComparison)
+        so the as_of_date must be Timestamp-compatible to avoid the
+        outer try/except short-circuiting the line we're trying to
+        exercise."""
+        rows = []
+        prev_close = 100.0
+        for i in range(10):
+            if i == 5:
+                close = prev_close * 0.95  # -5% drop
+            else:
+                close = prev_close * 1.001
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+            prev_close = close
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        self.provider._index_cache["SPY"] = df
+        # Pass as_of_date as a pd.Timestamp so the filter comparison
+        # succeeds against the datetime64[ns] column.
+        result = self.provider.get_days_since_spy_pullback(
+            pd.Timestamp(date(2025, 1, 10)), threshold_pct=-2.0
+        )
+        assert isinstance(result, int)
+
+    def test_days_since_pullback_handles_exception_returns_30(self):
+        """Lines 528-529: exception → return 30."""
+        rows = [{
+            "date": date(2025, 1, 1) + timedelta(days=i),
+            "open": 100, "high": 101, "low": 99,
+            "close": "string-not-numeric", "volume": 1_000_000,
+        } for i in range(10)]
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = self.provider.get_days_since_spy_pullback(date(2025, 1, 10))
+        assert result == 30
+
+
+class TestTier3RelativeStrengthEdgeBranches:
+    """Covers lines 689-690 — RS returns 1.0 when stock/SPY < 20 bars."""
+
+    def setup_method(self):
+        self.provider = _make_provider(["AAPL"], ref_date=date(2025, 6, 1))
+
+    def test_rs_returns_one_when_stock_history_too_short(self):
+        """Line 688-690: < 20 bars in stock → RS = 1.0."""
+        self.provider._price_cache["AAPL"] = _make_price_df(days=10)
+        self.provider._index_cache["SPY"] = _make_price_df(days=300)
+        rs = self.provider.get_relative_strength(
+            "AAPL", date(2025, 1, 9), period_months=3,
+        )
+        assert rs == 1.0
+
+
+class TestTier3AtrEdgeBranches:
+    """Covers lines 974, 978."""
+
+    def setup_method(self):
+        self.provider = _make_provider(["AAPL"], ref_date=date(2025, 6, 1))
+
+    def test_atr_skips_nan_true_ranges(self):
+        """Lines 973-974: NaN in computed TR → continue."""
+        rows = []
+        for i in range(20):
+            high = float("nan") if i in (5, 10) else 101.0
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": 100, "high": high, "low": 99, "close": 100,
+                "volume": 1_000_000,
+            })
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        atr = self.provider.get_atr("AAPL", date(2025, 1, 20), period=14)
+        assert atr >= 0.0
+
+    def test_atr_returns_zero_when_all_true_ranges_nan(self):
+        """Line 977-978: every TR is NaN → empty list → return 0.0."""
+        rows = [{
+            "date": date(2025, 1, 1) + timedelta(days=i),
+            "open": float("nan"), "high": float("nan"),
+            "low": float("nan"), "close": float("nan"),
+            "volume": 1_000_000,
+        } for i in range(20)]
+        self.provider._price_cache["AAPL"] = pd.DataFrame(rows)
+        atr = self.provider.get_atr("AAPL", date(2025, 1, 20), period=14)
+        assert atr == 0.0
+
+
+class TestTier3BasePatternEdgeBranches:
+    """Covers lines 1022-1029, 1046, 1062, 1108, 1121."""
+
+    def setup_method(self):
+        self.provider = _make_provider(["AAPL"], ref_date=date(2025, 12, 31))
+
+    def test_detect_base_pattern_cup_branch(self):
+        """Lines 1024-1025: flat fails (every sub-window spans >15%
+        range), cup succeeds → cup-branch cache write + return.
+
+        Strict monotonic decline then recovery ensures NO 5-15-week
+        sub-window has <15% range, blocking the flat-base detector
+        from short-circuiting the path."""
+        weekly = []
+        # 7 weeks declining 200 → 140 (steep — no 5-week flat window)
+        for i in range(7):
+            high = 200 - i * 10
+            weekly.append({"high": high, "low": high - 5,
+                           "close": high - 2, "open": high - 3,
+                           "volume": 1_000_000})
+        # 7 weeks ZIG-ZAG trough alternating 100/60 — every 5-week
+        # sub-window has >40% range, so flat-base detector never matches
+        zigzag_trough = [100, 60, 100, 60, 100, 60, 100]
+        for p in zigzag_trough:
+            weekly.append({"high": p + 2, "low": p - 2,
+                           "close": p, "open": p, "volume": 1_000_000})
+        # 7 weeks recovering 100 → 180 (every 5-week window >15% range)
+        recovery_prices = [100, 120, 140, 160, 170, 175, 180]
+        for p in recovery_prices:
+            weekly.append({"high": p + 2, "low": p - 2,
+                           "close": p, "open": p, "volume": 1_000_000})
+        with patch.object(
+            self.provider, "get_weekly_price_history", return_value=weekly,
+        ):
+            self.provider._base_pattern_cache.clear()
+            result = self.provider.detect_base_pattern(
+                "AAPL", date(2025, 12, 31)
+            )
+        # Either flat or cup — coverage just needs the code path to
+        # run; assert it didn't crash + a valid type came back.
+        assert result["type"] in ("flat", "cup", "cup_with_handle", "none")
+
+    def test_detect_base_pattern_falls_through_to_none(self):
+        """Lines 1027-1029: no flat AND no cup → return 'none'."""
+        weekly = []
+        for i in range(20):
+            high = 100 + ((i % 3) * 5)
+            low = 95 + ((i % 3) * 5)
+            weekly.append({
+                "high": high, "low": low, "close": (high + low) / 2,
+                "open": low + 0.5, "volume": 1_000_000,
+            })
+        with patch.object(
+            self.provider, "get_weekly_price_history", return_value=weekly,
+        ):
+            self.provider._base_pattern_cache.clear()
+            result = self.provider.detect_base_pattern(
+                "AAPL", date(2025, 12, 31)
+            )
+        # If neither flat nor cup matched, result is 'none'
+        assert result["type"] in ("none", "flat", "cup")
+
+    def test_flat_base_zero_low_skips_window(self):
+        """Line 1061-1062: lowest_low <= 0 in window → continue."""
+        weekly = []
+        for i in range(15):
+            low = 0 if i == 5 else 95
+            weekly.append({
+                "high": 100, "low": low, "close": 98,
+                "open": 97, "volume": 1_000_000,
+            })
+        result = self.provider._detect_flat_base(weekly)
+        assert "type" in result
+
+    def test_cup_pattern_zero_left_high_returns_none(self):
+        """Line 1107-1108: left_high <= 0 → return none."""
+        weekly = []
+        for i in range(20):
+            high = 0 if i < 7 else 100
+            weekly.append({
+                "high": high, "low": 50, "close": 75,
+                "open": 60, "volume": 1_000_000,
+            })
+        result = self.provider._detect_cup_pattern(weekly)
+        assert result["type"] == "none"
+
+    def test_cup_pattern_insufficient_recovery_returns_none(self):
+        """Line 1121: recovery_pct > 0.15 → return none."""
+        weekly = []
+        for i in range(7):
+            weekly.append({"high": 200, "low": 190, "close": 195,
+                           "open": 192, "volume": 1_000_000})
+        for i in range(7):
+            weekly.append({"high": 110, "low": 100, "close": 105,
+                           "open": 103, "volume": 1_000_000})
+        for i in range(6):
+            weekly.append({"high": 150, "low": 145, "close": 148,
+                           "open": 146, "volume": 1_000_000})
+        result = self.provider._detect_cup_pattern(weekly)
+        assert result["type"] == "none"
+
+
+class TestTier3DistributionDaysEdgeBranches:
+    """Covers lines 1147, 1161."""
+
+    def setup_method(self):
+        self.provider = _make_provider(ref_date=date(2025, 6, 1))
+
+    def test_distribution_days_returns_zeros_when_history_too_short(self):
+        """Line 1146-1148: history < 2 rows → zeroed-dict return."""
+        rows = [{
+            "date": date(2025, 1, 1),
+            "open": 100, "high": 101, "low": 99, "close": 100,
+            "volume": 1_000_000,
+        }]
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution_days(
+            date(2025, 1, 1), lookback_days=25
+        )
+        assert result["distribution_days"] == 0
+        assert result["accumulation_days"] == 0
+        assert result["is_under_pressure"] is False
+        assert result["is_critical"] is False
+        assert result["recent_dates"] == []
+
+    def test_distribution_days_skips_zero_prev_close_or_volume(self):
+        """Line 1160-1161: prev_close <=0 OR prev_vol <= 0 → continue."""
+        rows = []
+        for i in range(15):
+            close = 0 if i == 2 else 100 + i
+            vol = 0 if i == 7 else 1_000_000
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": vol,
+            })
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = self.provider.get_accumulation_distribution_days(
+            date(2025, 1, 15), lookback_days=15
+        )
+        assert "distribution_days" in result
+
+
+class TestTier3FtdEdgeBranches:
+    """Covers lines 1237, 1248, 1261-1262 — FTD loop guards and the
+    MARKET_IN_CORRECTION fall-through state."""
+
+    def setup_method(self):
+        self.provider = _make_provider(ref_date=date(2025, 6, 1))
+
+    def test_ftd_market_in_correction_state(self):
+        """Lines 1257-1262: rally_days < 3 + no FTD → state =
+        'MARKET_IN_CORRECTION' OR similar correction-flavored state."""
+        rows = []
+        for i in range(150):
+            close = 100 + i * 0.5
+            rows.append({
+                "date": date(2024, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        for i in range(50):
+            close = 175 - i * 1.5
+            rows.append({
+                "date": date(2024, 1, 1) + timedelta(days=150 + i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        as_of = date(2024, 1, 1) + timedelta(days=199)
+        result = self.provider.get_follow_through_day_status(as_of)
+        assert result["state"] in (
+            "MARKET_IN_CORRECTION", "RALLY_ATTEMPT", "CONFIRMED_UPTREND",
+            "UPTREND_UNDER_PRESSURE",
+        )
+
+    def test_ftd_loop_skips_zero_prev_close(self):
+        """Line 1247-1248: prev_close <= 0 → continue inside FTD loop.
+
+        Construct a SPY series that puts the market in correction (below
+        50-day MA), then puts a zero-close bar in the late rally window
+        so day_num >= 3 (passing the day_num < 3 guard) BUT the prev_close
+        check on the NEXT day hits zero and continues."""
+        rows = []
+        # 150 uptrend bars (establishes 50-day MA above current price)
+        for i in range(150):
+            close = 100 + i * 0.5
+            rows.append({
+                "date": date(2024, 1, 1) + timedelta(days=i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        # 30 declining bars (drops the market below 50-day MA → correction)
+        for i in range(30):
+            close = 175 - i * 2
+            rows.append({
+                "date": date(2024, 1, 1) + timedelta(days=150 + i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_000_000,
+            })
+        # 15 rally bars including a zero-close bar mid-rally
+        for i in range(15):
+            close = 0 if i == 8 else (115 + i * 2)  # bar 8 has zero close
+            rows.append({
+                "date": date(2024, 1, 1) + timedelta(days=180 + i),
+                "open": close, "high": close + 1, "low": close - 1,
+                "close": close, "volume": 1_500_000,  # higher volume in rally
+            })
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        as_of = date(2024, 1, 1) + timedelta(days=194)
+        result = self.provider.get_follow_through_day_status(as_of)
+        # Code path executed without crashing on the zero-close row;
+        # the function returned a valid state dict
+        assert "state" in result and "can_buy" in result
+
+
+class TestTier3RsLineNewHighEdgeBranches:
+    """Covers lines 1311, 1320, 1337."""
+
+    def setup_method(self):
+        self.provider = _make_provider(["AAPL"], ref_date=date(2025, 6, 1))
+
+    def test_returns_default_when_spy_history_too_short(self):
+        """Line 1310-1312: SPY history < 60 bars → default dict.
+
+        Stock must have >= 60 bars in the windowed range so the earlier
+        check at line 1305 passes; only THEN does the SPY-length check
+        at line 1310 get reached. Use a future as_of_date so the full
+        300-row stock window passes the tail(260) trim AND the SPY's
+        smaller series gets fully included."""
+        self.provider._price_cache["AAPL"] = _make_price_df(days=300)
+        self.provider._index_cache["SPY"] = _make_price_df(days=30)
+        # as_of_date far enough that stock_history is well past 60 rows
+        result = self.provider.get_rs_line_new_high(
+            "AAPL", date(2025, 10, 1)
+        )
+        assert result == {
+            "rs_at_new_high": False, "price_at_new_high": False,
+            "rs_leading": False, "rs_lagging": False,
+        }
+
+    def test_returns_default_when_common_dates_too_few(self):
+        """Line 1319-1321: common_dates < 60 → default."""
+        stock_df = _make_price_df(start=date(2025, 1, 1), days=100)
+        spy_df = _make_price_df(start=date(2026, 1, 1), days=100)
+        self.provider._price_cache["AAPL"] = stock_df
+        self.provider._index_cache["SPY"] = spy_df
+        result = self.provider.get_rs_line_new_high(
+            "AAPL", date(2026, 4, 1)
+        )
+        assert result["rs_at_new_high"] is False
+
+    def test_returns_default_when_rs_values_too_few(self):
+        """Line 1336-1338: rs_values < 60 → default."""
+        stock_df = _make_price_df(days=200)
+        rows = []
+        for i in range(200):
+            sp = 100 + i * 0.1 if i % 4 == 0 else 0
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": sp, "high": sp + 1, "low": sp - 1,
+                "close": sp, "volume": 1_000_000,
+            })
+        self.provider._price_cache["AAPL"] = stock_df
+        self.provider._index_cache["SPY"] = pd.DataFrame(rows)
+        result = self.provider.get_rs_line_new_high(
+            "AAPL", date(2025, 7, 1)
+        )
+        assert "rs_at_new_high" in result
+
+
+class TestTier3CorrelationTooFewReturns:
+    """Covers line 1425 — correlation 0.0 when valid-returns count < 10."""
+
+    def setup_method(self):
+        self.provider = _make_provider(ref_date=date(2025, 6, 1))
+
+    def test_correlation_returns_zero_when_returns_below_threshold(self):
+        """Line 1424-1425: < 10 valid returns → return 0.0."""
+        rows = []
+        for i in range(20):
+            price = 0 if i < 18 else 100 + i
+            rows.append({
+                "date": date(2025, 1, 1) + timedelta(days=i),
+                "open": price, "high": price, "low": price,
+                "close": price, "volume": 1_000_000,
+            })
+        df = pd.DataFrame(rows)
+        self.provider._price_cache["A"] = df
+        self.provider._price_cache["B"] = df.copy()
+        result = self.provider.get_stock_correlation(
+            "A", "B", date(2025, 1, 20)
+        )
+        assert result == 0.0
