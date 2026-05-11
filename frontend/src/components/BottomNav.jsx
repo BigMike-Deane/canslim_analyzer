@@ -1,6 +1,40 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Icon from './Icon'
+import { api } from '../api'
+
+const UNREAD_POLL_MS = 30_000
+
+// Poll the unread-notification count so mobile users see a badge without
+// having to drill into More → Notifications. Mirrors NotificationBell's
+// 30s cadence; both are independent components.
+function useUnreadCount() {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    async function tick() {
+      try {
+        const data = await api.getUnreadNotificationCount()
+        if (!cancelled) setCount(data.count || 0)
+      } catch {
+        // silently ignore — non-critical UI
+      }
+    }
+    tick()
+    const id = setInterval(tick, UNREAD_POLL_MS)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return count
+}
+
+function UnreadBadge({ count }) {
+  if (!count) return null
+  return (
+    <span className="absolute -top-0.5 -right-1.5 min-w-[14px] h-[14px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center leading-none">
+      {count > 99 ? '99+' : count}
+    </span>
+  )
+}
 
 const moreItems = [
   { to: '/notifications', label: 'Notifications', icon: 'bell' },
@@ -20,6 +54,7 @@ const moreItems = [
 export default function BottomNav() {
   const [moreOpen, setMoreOpen] = useState(false)
   const navigate = useNavigate()
+  const unreadCount = useUnreadCount()
 
   const mainTabs = [
     { to: '/', icon: 'terminal', label: 'CMD', end: true },
@@ -61,7 +96,10 @@ export default function BottomNav() {
                   }}
                   className="flex flex-col items-center gap-1.5 py-3 px-1 rounded-lg text-dark-300 hover:text-dark-100 hover:bg-dark-700/50 transition-colors"
                 >
-                  <Icon name={item.icon} />
+                  <span className="relative inline-flex">
+                    <Icon name={item.icon} />
+                    {item.to === '/notifications' && <UnreadBadge count={unreadCount} />}
+                  </span>
                   <span className="text-[10px]">{item.label}</span>
                 </button>
               ))}
@@ -112,7 +150,10 @@ export default function BottomNav() {
               moreOpen ? 'text-primary-400' : 'text-dark-500'
             }`}
           >
-            <Icon name="more" size={20} />
+            <span className="relative inline-flex">
+              <Icon name="more" size={20} />
+              <UnreadBadge count={unreadCount} />
+            </span>
             <span className="text-[10px] font-medium">More</span>
           </button>
         </div>
