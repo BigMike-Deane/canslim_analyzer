@@ -44,99 +44,41 @@ function ScoreCard({ letter, title, maxPoints, description, factors, color }) {
   )
 }
 
-/* ─── Weight Slider ───────────────────────────────────────────────── */
-
-function WeightSlider({ label, value, onChange, description }) {
-  return (
-    <div className="mb-4">
-      <div className="flex justify-between items-center mb-1">
-        <span className="text-sm font-medium text-dark-200">{label}</span>
-        <span className="text-sm font-data text-primary-400">{value}%</span>
-      </div>
-      <input
-        type="range"
-        min="0"
-        max="40"
-        value={value}
-        onChange={(e) => onChange(parseInt(e.target.value))}
-        className="w-full h-2 bg-dark-700 rounded-lg appearance-none cursor-pointer slider"
-      />
-      <p className="text-[10px] text-dark-400 mt-1">{description}</p>
-    </div>
-  )
-}
-
 /* ─── Growth Projection Section ───────────────────────────────────── */
 
+const GROWTH_PROJECTION_WEIGHTS = [
+  { label: 'Momentum',        weight: 20, description: 'Price trend extrapolation using 6-month linear regression' },
+  { label: 'Earnings',        weight: 15, description: 'Earnings trajectory from forward estimates or historical growth' },
+  { label: 'Analyst Targets', weight: 25, description: 'Consensus price target upside, discounted for 6-month horizon' },
+  { label: 'Valuation',       weight: 15, description: 'PEG ratio analysis — rewards low P/E relative to growth' },
+  { label: 'CANSLIM Score',   weight: 15, description: 'Higher CANSLIM scores correlate with better performance' },
+  { label: 'Sector Momentum', weight: 10, description: 'Stocks in leading sectors get a boost' },
+]
+
 function GrowthProjectionSection() {
-  const [weights, setWeights] = useState({
-    momentum: 20,
-    earnings: 15,
-    analyst: 25,
-    valuation: 15,
-    canslim: 15,
-    sector: 10,
-  })
-
-  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0)
-  const isValid = totalWeight === 100
-
-  const updateWeight = (key, value) => {
-    setWeights(prev => ({ ...prev, [key]: value }))
-  }
-
   return (
     <Card variant="glass" className="mb-4">
       <CardHeader title="Growth Projection Weights" />
       <p className="text-dark-400 text-xs mb-4">
-        The 6-month growth projection combines multiple factors. Adjust weights below to see how different
-        emphasis affects the model. (Note: Changes here are for visualization only - actual scoring uses default weights.)
+        The 6-month growth projection combines six factors at the weights below.
       </p>
 
-      <WeightSlider
-        label="Momentum"
-        value={weights.momentum}
-        onChange={(v) => updateWeight('momentum', v)}
-        description="Price trend extrapolation using 6-month linear regression"
-      />
-      <WeightSlider
-        label="Earnings"
-        value={weights.earnings}
-        onChange={(v) => updateWeight('earnings', v)}
-        description="Earnings trajectory from forward estimates or historical growth"
-      />
-      <WeightSlider
-        label="Analyst Targets"
-        value={weights.analyst}
-        onChange={(v) => updateWeight('analyst', v)}
-        description="Consensus price target upside, discounted for 6-month horizon"
-      />
-      <WeightSlider
-        label="Valuation"
-        value={weights.valuation}
-        onChange={(v) => updateWeight('valuation', v)}
-        description="PEG ratio analysis - rewards low P/E relative to growth"
-      />
-      <WeightSlider
-        label="CANSLIM Score"
-        value={weights.canslim}
-        onChange={(v) => updateWeight('canslim', v)}
-        description="Higher CANSLIM scores correlate with better performance"
-      />
-      <WeightSlider
-        label="Sector Momentum"
-        value={weights.sector}
-        onChange={(v) => updateWeight('sector', v)}
-        description="Stocks in leading sectors get a boost"
-      />
-
-      <div className={`mt-4 pt-4 border-t border-dark-700/50 flex justify-between items-center ${isValid ? 'text-emerald-400' : 'text-red-400'}`}>
-        <span className="font-medium text-sm">Total Weight</span>
-        <span className="text-lg font-bold font-data">{totalWeight}%</span>
+      <div className="space-y-3">
+        {GROWTH_PROJECTION_WEIGHTS.map((w) => (
+          <div key={w.label}>
+            <div className="flex justify-between items-center mb-0.5">
+              <span className="text-sm font-medium text-dark-200">{w.label}</span>
+              <span className="text-sm font-data text-primary-400">{w.weight}%</span>
+            </div>
+            <p className="text-[10px] text-dark-400">{w.description}</p>
+          </div>
+        ))}
       </div>
-      {!isValid && (
-        <p className="text-red-400 text-[10px] mt-1">Weights should sum to 100%</p>
-      )}
+
+      <div className="mt-4 pt-4 border-t border-dark-700/50 flex justify-between items-center text-emerald-400">
+        <span className="font-medium text-sm">Total</span>
+        <span className="text-lg font-bold font-data">100%</span>
+      </div>
     </Card>
   )
 }
