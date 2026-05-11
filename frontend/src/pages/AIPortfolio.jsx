@@ -244,6 +244,164 @@ function PositionsList({ positions }) {
   )
 }
 
+// ── Buy Signal Factors (BUY-trade transparency) ─────────────────────
+// Backend writes ~15-25 structured keys per BUY into trade.signal_factors;
+// this surfaces them grouped so the user can answer "why did the bot buy?"
+// without leaving the modal. Conditional bonuses only render when present.
+
+const ENTRY_TYPE_LABEL = {
+  'breakout':     { label: 'Breakout',     color: 'emerald' },
+  'pre-breakout': { label: 'Pre-breakout', color: 'amber' },
+  'standard':     { label: 'Standard',     color: 'default' },
+}
+const REGIME_LABEL = {
+  'bullish':    { label: 'Bullish regime',    color: 'emerald' },
+  'neutral':    { label: 'Neutral regime',    color: 'default' },
+  'bearish':    { label: 'Bearish regime',    color: 'red' },
+  'correction': { label: 'Correction',        color: 'red' },
+}
+
+function Chip({ color = 'default', children, title }) {
+  // Mirror TagBadge color palette but with tighter sizing for chip grids.
+  const palette = {
+    default: 'bg-dark-700/40 text-dark-300 border-dark-600',
+    emerald: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+    amber:   'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    red:     'bg-red-500/10 text-red-400 border-red-500/30',
+    teal:    'bg-teal-500/10 text-teal-400 border-teal-500/30',
+    blue:    'bg-blue-500/10 text-blue-400 border-blue-500/30',
+    purple:  'bg-purple-500/10 text-purple-400 border-purple-500/30',
+  }
+  return (
+    <span title={title} className={`text-[10px] font-data px-1.5 py-0.5 rounded border ${palette[color] || palette.default}`}>
+      {children}
+    </span>
+  )
+}
+
+function BuySignalFactors({ factors }) {
+  if (!factors) return null
+
+  const entry = ENTRY_TYPE_LABEL[factors.entry_type]
+  const regime = REGIME_LABEL[factors.market_regime]
+  const composite = factors.composite_score
+
+  // CANSLIM components — only render if at least one is present.
+  const canslimKeys = ['c_score', 'a_score', 'n_score', 's_score', 'l_score', 'i_score']
+  const hasCanslim = canslimKeys.some(k => factors[k] != null)
+
+  // Price-action features
+  const paKeys = [
+    ['relative_volume', 'RelVol', (v) => `${v.toFixed(1)}x`],
+    ['pct_from_21ma',   '21MA',   (v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`],
+    ['pct_from_50ma',   '50MA',   (v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`],
+    ['atr_pct',         'ATR',    (v) => `${v.toFixed(1)}%`],
+    ['sector_rs_rank',  'Sec RS', (v) => `${v.toFixed(0)}`],
+  ]
+  const hasPa = paKeys.some(([k]) => factors[k] != null)
+
+  // Bonus signals — only render the ones that fired
+  const bonusKeys = [
+    ['rs_line_bonus',          'RS line',            'teal'],
+    ['earnings_drift_bonus',   'Earnings drift',     'emerald'],
+    ['estimate_revision_bonus','Est revision',       'emerald'],
+    ['bear_base_bonus',        'Bear base',          'amber'],
+  ]
+  const bonusChips = bonusKeys
+    .filter(([k]) => factors[k] != null && factors[k] !== 0)
+    .map(([k, label, color]) => ({ key: k, label, color, value: factors[k] }))
+
+  // Flag-style signals
+  const flagChips = []
+  if (factors.volume_dry_up) flagChips.push({ key: 'vdu', label: 'Volume dry-up', color: 'teal' })
+  if (factors.coiled_spring) flagChips.push({ key: 'cs', label: 'Coiled Spring', color: 'teal' })
+  if (factors.correction_zone_entry) flagChips.push({ key: 'cz', label: 'Correction zone', color: 'amber' })
+  if (factors.soft_zone) flagChips.push({ key: 'sz', label: 'Soft zone', color: 'amber' })
+  if (factors.deterministic_boost) flagChips.push({ key: 'db', label: `Det boost +${factors.deterministic_boost}`, color: 'purple' })
+
+  // Coiled-spring detail (only if coiled_spring fired AND cs_* keys present)
+  const csDetail = factors.coiled_spring && factors.cs_bonus != null ? {
+    bonus: factors.cs_bonus,
+    weeks: factors.cs_weeks_in_base,
+    streak: factors.cs_beat_streak,
+    days: factors.cs_days_to_earnings,
+    inst: factors.cs_institutional_pct,
+    rank: factors.cs_quality_rank,
+    conf: factors.cs_confidence,
+  } : null
+
+  return (
+    <div className="pt-3 space-y-3">
+      <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Buy Signal</span>
+
+      {/* Header chips: entry_type + regime + composite */}
+      <div className="flex flex-wrap gap-1.5 items-center">
+        {entry && <Chip color={entry.color} title={`Entry type: ${factors.entry_type}`}>{entry.label}</Chip>}
+        {regime && <Chip color={regime.color} title={`Market regime when bought: ${factors.market_regime}`}>{regime.label}</Chip>}
+        {composite != null && <Chip color="blue" title="Composite score (CANSLIM + bonuses + market context)">Composite {composite.toFixed(1)}</Chip>}
+      </div>
+
+      {/* CANSLIM letter scores */}
+      {hasCanslim && (
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-dark-500 mb-1">CANSLIM components</div>
+          <div className="flex flex-wrap gap-1">
+            {canslimKeys.map(k => {
+              if (factors[k] == null) return null
+              const letter = k[0].toUpperCase()
+              return <Chip key={k} title={`${letter} score`}>{letter}: {factors[k].toFixed(1)}</Chip>
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Price action */}
+      {hasPa && (
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-dark-500 mb-1">Price action</div>
+          <div className="flex flex-wrap gap-1">
+            {paKeys.map(([k, label, fmt]) => {
+              if (factors[k] == null) return null
+              return <Chip key={k} title={label}>{label}: {fmt(factors[k])}</Chip>
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Bonuses + flags */}
+      {(bonusChips.length > 0 || flagChips.length > 0) && (
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-dark-500 mb-1">Bonus signals</div>
+          <div className="flex flex-wrap gap-1">
+            {bonusChips.map(b => (
+              <Chip key={b.key} color={b.color} title={`${b.label} bonus`}>
+                {b.label} +{typeof b.value === 'number' ? b.value.toFixed(1) : b.value}
+              </Chip>
+            ))}
+            {flagChips.map(f => <Chip key={f.key} color={f.color}>{f.label}</Chip>)}
+          </div>
+        </div>
+      )}
+
+      {/* Coiled Spring detail */}
+      {csDetail && (
+        <div className="bg-teal-500/[0.04] border border-teal-500/20 rounded-lg p-2.5">
+          <div className="text-[10px] text-teal-300 font-semibold mb-1.5">Coiled Spring detail</div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-dark-300 font-data">
+            {csDetail.bonus != null && <div>Bonus: <span className="text-teal-400">+{csDetail.bonus.toFixed(1)}</span></div>}
+            {csDetail.weeks != null && <div>Base: {csDetail.weeks}w</div>}
+            {csDetail.streak != null && <div>Beat streak: {csDetail.streak}x</div>}
+            {csDetail.days != null && <div>Earnings: {csDetail.days}d</div>}
+            {csDetail.inst != null && <div>Inst: {csDetail.inst.toFixed(1)}%</div>}
+            {csDetail.rank != null && <div>Quality rank: {csDetail.rank}</div>}
+            {csDetail.conf != null && <div>Confidence: {csDetail.conf.toFixed(2)}</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Trade Detail Modal ──────────────────────────────────────────────
 function TradeDetailModal({ trade, onClose }) {
   if (!trade) return null
@@ -330,6 +488,11 @@ function TradeDetailModal({ trade, onClose }) {
               } />
             )}
           </>
+        )}
+
+        {/* Buy Signal Factors — only for BUY trades with structured factors */}
+        {trade.action === 'BUY' && trade.signal_factors && (
+          <BuySignalFactors factors={trade.signal_factors} />
         )}
 
         {/* Reason Section */}
