@@ -247,6 +247,44 @@ def get_user_webhook_url(user_id: int) -> str:
         return ""
 
 
+def _should_deliver(user, kind: str, priority: str) -> bool:
+    """Apply the user's mute_kinds + quiet_hours filters to OUTBOUND delivery.
+
+    Urgent items always pass — stop losses + circuit breakers are non-mutable
+    by design. Returns True if the kind is permitted at the current time.
+    """
+    if priority == "urgent":
+        return True
+    if not user:
+        return True  # be permissive on missing user row
+
+    mute = user.mute_kinds or []
+    if isinstance(mute, list) and kind in mute:
+        return False
+
+    qs, qe = user.quiet_hours_start, user.quiet_hours_end
+    if qs is not None and qe is not None and qs != qe:
+        # Quiet hours stored as America/Chicago local hour (single-owner app
+        # with documented Chicago tz preference — see CommandCenter market
+        # hours logic).
+        try:
+            from datetime import datetime as _dt
+            try:
+                from zoneinfo import ZoneInfo
+                hour = _dt.now(ZoneInfo("America/Chicago")).hour
+            except Exception:
+                hour = _dt.utcnow().hour
+            if qs < qe:
+                in_quiet = qs <= hour < qe
+            else:
+                in_quiet = hour >= qs or hour < qe  # window crosses midnight
+            if in_quiet:
+                return False
+        except Exception:
+            pass  # never block delivery on a clock error
+    return True
+
+
 def create_notification(user_id: int, kind: str, title: str, body: str,
                         priority: str = "default", tags: list = None,
                         data: dict = None) -> bool:
@@ -254,12 +292,17 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
     every device they've registered. Fail-soft on every step — a DB error
     or push failure never blocks the trade pipeline or the parallel ntfy
     POST. Returns True on DB insert success.
+
+    In-app DB rows are ALWAYS written so the bell + Notifications page show
+    full history; only outbound push (and ntfy) are gated by the user's
+    mute_kinds / quiet_hours preferences. Urgent items bypass the gate.
     """
     if not user_id:
         return False
     inserted = False
+    user = None
     try:
-        from backend.database import SessionLocal, Notification
+        from backend.database import SessionLocal, Notification, User
         db = SessionLocal()
         try:
             note = Notification(
@@ -274,10 +317,14 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
             db.add(note)
             db.commit()
             inserted = True
+            user = db.query(User).filter(User.id == user_id).first()
         finally:
             db.close()
     except Exception as e:
         logger.warning(f"Failed to create notification for user {user_id} ({kind}): {e}")
+
+    if not _should_deliver(user, kind, priority):
+        return inserted
 
     # Push delivery is independent — fire even if DB insert failed; that way
     # users still get phone alerts during a degraded-DB window.

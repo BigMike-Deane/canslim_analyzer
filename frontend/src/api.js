@@ -156,6 +156,11 @@ export const api = {
 
   testMyWebhook: () => request('/api/auth/me/webhook/test', { method: 'POST' }),
 
+  updateNotificationPrefs: (prefs) => request('/api/auth/me/notification-prefs', {
+    method: 'PATCH',
+    body: JSON.stringify(prefs),
+  }),
+
   // Web Push (per-device, native browser notifications)
   getVapidPublicKey: () => request('/api/push/vapid-public-key'),
   subscribePush: (subscription) => request('/api/push/subscribe', {

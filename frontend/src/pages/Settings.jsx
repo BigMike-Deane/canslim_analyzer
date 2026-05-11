@@ -2,6 +2,41 @@ import { useState, useEffect, useCallback } from 'react'
 import { api, formatRelativeTime } from '../api'
 import { useAuth } from '../auth'
 
+// Notification kinds the user can mute. Matches backend _VALID_KINDS in
+// routes/auth.py and frontend KIND_META in pages/Notifications.jsx.
+// Urgent-priority items (stop losses, circuit breakers) bypass mute by
+// design — they're not in this list.
+const MUTABLE_KINDS = [
+  { key: 'trade',              label: 'Trade executed' },
+  { key: 'breakout',           label: 'Breakout alerts' },
+  { key: 'coiled_spring',      label: 'Coiled Spring' },
+  { key: 'score_crash',        label: 'Score drops' },
+  { key: 'risk_alert',         label: 'Risk alerts' },
+  { key: 'spy_gate_change',    label: 'SPY gate flips' },
+  { key: 'market_turn',        label: 'Market turns' },
+  { key: 'bear_base_update',   label: 'Bear bases update' },
+  { key: 'bear_market_report', label: 'Bear market report' },
+  { key: 'morning_briefing',   label: 'Morning briefing' },
+]
+
+function HourSelect({ value, onChange, disabled }) {
+  return (
+    <select
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value === '' ? null : parseInt(e.target.value))}
+      disabled={disabled}
+      className="px-2 py-1 bg-dark-800 border border-dark-600 rounded text-white text-sm font-data disabled:opacity-50"
+    >
+      <option value="">--</option>
+      {Array.from({ length: 24 }, (_, h) => (
+        <option key={h} value={h}>
+          {h.toString().padStart(2, '0')}:00
+        </option>
+      ))}
+    </select>
+  )
+}
+
 // Convert a Base64URL VAPID public key to the Uint8Array the browser wants.
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4)
@@ -31,11 +66,24 @@ export default function Settings() {
   const [pushSubs, setPushSubs] = useState([])
   const [pushMessage, setPushMessage] = useState(null)
 
+  // Notification preferences (per-kind mute + quiet hours)
+  const [mutedKinds, setMutedKinds] = useState(new Set())
+  const [quietStart, setQuietStart] = useState(null)
+  const [quietEnd, setQuietEnd] = useState(null)
+  const [originalPrefs, setOriginalPrefs] = useState({ muted: [], qs: null, qe: null })
+  const [prefsBusy, setPrefsBusy] = useState(false)
+  const [prefsMessage, setPrefsMessage] = useState(null)
+
   useEffect(() => {
     api.getMe().then(me => {
       const url = me.webhook_url || ''
       setWebhookUrl(url)
       setOriginalUrl(url)
+      const muted = me.mute_kinds || []
+      setMutedKinds(new Set(muted))
+      setQuietStart(me.quiet_hours_start ?? null)
+      setQuietEnd(me.quiet_hours_end ?? null)
+      setOriginalPrefs({ muted, qs: me.quiet_hours_start ?? null, qe: me.quiet_hours_end ?? null })
     }).catch(() => {})
   }, [])
 
@@ -149,9 +197,125 @@ export default function Settings() {
     }
   }
 
+  const prefsDirty = (() => {
+    const curMuted = [...mutedKinds].sort().join(',')
+    const origMuted = [...originalPrefs.muted].sort().join(',')
+    return curMuted !== origMuted || quietStart !== originalPrefs.qs || quietEnd !== originalPrefs.qe
+  })()
+
+  function toggleMute(kind) {
+    setMutedKinds(prev => {
+      const next = new Set(prev)
+      if (next.has(kind)) next.delete(kind); else next.add(kind)
+      return next
+    })
+  }
+
+  async function handleSavePrefs() {
+    setPrefsBusy(true)
+    setPrefsMessage(null)
+    try {
+      const body = { mute_kinds: [...mutedKinds] }
+      if (quietStart == null && quietEnd == null) {
+        body.clear_quiet_hours = true
+      } else {
+        body.quiet_hours_start = quietStart
+        body.quiet_hours_end = quietEnd
+      }
+      const updated = await api.updateNotificationPrefs(body)
+      setOriginalPrefs({
+        muted: updated.mute_kinds || [],
+        qs: updated.quiet_hours_start ?? null,
+        qe: updated.quiet_hours_end ?? null,
+      })
+      setPrefsMessage({ kind: 'success', text: 'Preferences saved.' })
+    } catch (err) {
+      setPrefsMessage({ kind: 'error', text: err.message || 'Save failed' })
+    } finally {
+      setPrefsBusy(false)
+    }
+  }
+
   return (
     <div className="p-6 max-w-2xl">
       <h1 className="text-2xl font-semibold text-white mb-6">Settings</h1>
+
+      {/* Notification preferences (per-kind mute + quiet hours) */}
+      <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
+        <h2 className="text-lg font-medium text-white mb-1">Notification preferences</h2>
+        <p className="text-sm text-dark-400 mb-4">
+          Mute specific kinds and silence push during quiet hours.{' '}
+          <span className="text-amber-400">Urgent alerts</span>{' '}
+          (stop losses, circuit breakers) always come through. In-app
+          notifications are always recorded — only push delivery is gated.
+        </p>
+
+        <div className="mb-4">
+          <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">MUTE KINDS</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+            {MUTABLE_KINDS.map(({ key, label }) => {
+              const muted = mutedKinds.has(key)
+              return (
+                <label
+                  key={key}
+                  className={`flex items-center gap-2 px-2.5 py-1.5 rounded border cursor-pointer transition-colors ${
+                    muted ? 'bg-dark-800 border-dark-700 text-dark-500'
+                          : 'bg-dark-850 border-dark-700/60 text-dark-200 hover:border-dark-600'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={muted}
+                    onChange={() => toggleMute(key)}
+                    className="accent-primary-500"
+                  />
+                  <span className="text-sm">{label}</span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">QUIET HOURS (CHICAGO TIME)</div>
+          <div className="flex items-center gap-2 text-sm text-dark-300">
+            <span>From</span>
+            <HourSelect value={quietStart} onChange={setQuietStart} />
+            <span>to</span>
+            <HourSelect value={quietEnd} onChange={setQuietEnd} />
+            {(quietStart != null || quietEnd != null) && (
+              <button
+                type="button"
+                onClick={() => { setQuietStart(null); setQuietEnd(null) }}
+                className="ml-2 text-xs text-dark-500 hover:text-dark-300 underline"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {quietStart != null && quietEnd != null && quietStart !== quietEnd && (
+            <p className="text-[11px] text-dark-500 mt-1.5">
+              {quietStart < quietEnd
+                ? `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`
+                : `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – next day ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`}
+            </p>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={handleSavePrefs}
+          disabled={!prefsDirty || prefsBusy}
+          className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm rounded"
+        >
+          {prefsBusy ? 'Saving…' : 'Save preferences'}
+        </button>
+        {prefsMessage && (
+          <div className={`mt-3 text-sm ${prefsMessage.kind === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+            {prefsMessage.text}
+          </div>
+        )}
+      </section>
 
       {/* Web Push (per-device) */}
       <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">

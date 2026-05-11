@@ -1,5 +1,7 @@
 """Authentication routes: Google Sign-In, token refresh, user profile."""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -117,6 +119,9 @@ async def get_me(current_user=Depends(get_current_active_user)):
         is_admin=current_user.is_admin,
         is_active=current_user.is_active,
         webhook_url=current_user.webhook_url,
+        mute_kinds=current_user.mute_kinds or [],
+        quiet_hours_start=current_user.quiet_hours_start,
+        quiet_hours_end=current_user.quiet_hours_end,
     )
 
 
@@ -149,6 +154,9 @@ async def update_my_webhook(
         is_admin=current_user.is_admin,
         is_active=current_user.is_active,
         webhook_url=current_user.webhook_url,
+        mute_kinds=current_user.mute_kinds or [],
+        quiet_hours_start=current_user.quiet_hours_start,
+        quiet_hours_end=current_user.quiet_hours_end,
     )
 
 
@@ -168,6 +176,72 @@ async def test_my_webhook(current_user=Depends(get_current_active_user)):
         url=url,
     )
     return {"sent": sent, "url_configured": True}
+
+
+class NotificationPrefsRequest(BaseModel):
+    # Pass any subset; unset fields are left untouched. Pass [] to mute_kinds
+    # to clear the mute list; pass null to quiet_hours_* to disable.
+    mute_kinds: Optional[list[str]] = None
+    quiet_hours_start: Optional[int] = None
+    quiet_hours_end: Optional[int] = None
+    clear_quiet_hours: bool = False
+
+
+# Whitelist of valid notification kinds for mute_kinds. Matches frontend
+# KIND_META in pages/Notifications.jsx. Reject unknown kinds so a typo
+# doesn't silently mute everything.
+_VALID_KINDS = {
+    "trade", "stop_loss", "score_crash", "breakout", "coiled_spring",
+    "risk_alert", "spy_gate_change", "market_turn",
+    "bear_base_update", "bear_market_report", "morning_briefing",
+}
+
+
+@router.patch("/me/notification-prefs", response_model=UserResponse)
+async def update_notification_prefs(
+    req: NotificationPrefsRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Update the authenticated user's per-kind mute list and quiet hours.
+
+    Quiet hours are interpreted in America/Chicago local time (single-owner
+    app convention). Passing clear_quiet_hours=true sets both bounds to null.
+    Urgent-priority notifications (stop losses, circuit breakers) always
+    bypass these filters by design — see _should_deliver in email_utils.
+    """
+    if req.mute_kinds is not None:
+        bad = [k for k in req.mute_kinds if k not in _VALID_KINDS]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"Unknown kinds: {bad}")
+        current_user.mute_kinds = list(req.mute_kinds)
+
+    if req.clear_quiet_hours:
+        current_user.quiet_hours_start = None
+        current_user.quiet_hours_end = None
+    else:
+        if req.quiet_hours_start is not None:
+            if not 0 <= req.quiet_hours_start <= 23:
+                raise HTTPException(status_code=400, detail="quiet_hours_start must be 0-23")
+            current_user.quiet_hours_start = req.quiet_hours_start
+        if req.quiet_hours_end is not None:
+            if not 0 <= req.quiet_hours_end <= 23:
+                raise HTTPException(status_code=400, detail="quiet_hours_end must be 0-23")
+            current_user.quiet_hours_end = req.quiet_hours_end
+
+    db.commit()
+    db.refresh(current_user)
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        display_name=current_user.display_name,
+        is_admin=current_user.is_admin,
+        is_active=current_user.is_active,
+        webhook_url=current_user.webhook_url,
+        mute_kinds=current_user.mute_kinds or [],
+        quiet_hours_start=current_user.quiet_hours_start,
+        quiet_hours_end=current_user.quiet_hours_end,
+    )
 
 
 @router.get("/config")

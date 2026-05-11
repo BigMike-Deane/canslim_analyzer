@@ -224,6 +224,10 @@ def run_migrations():
         ("stocks", "volume_dry_up_score", "INTEGER DEFAULT 0"),
         # Per-user notification webhook (Apr 2026)
         ("users", "webhook_url", "VARCHAR"),
+        # Per-user notification preferences (May 2026): per-kind mute + quiet hours
+        ("users", "mute_kinds", "TEXT"),
+        ("users", "quiet_hours_start", "INTEGER"),
+        ("users", "quiet_hours_end", "INTEGER"),
         # cs_bear/correction_zone overlay firing counters (May 2026)
         ("backtest_runs", "overlay_stats", "TEXT"),
         # Per-backtest static snapshot extended fields (May 2026 second pass —
@@ -479,6 +483,15 @@ class User(Base):
     is_admin = Column(Boolean, default=False)
     # Per-user notification webhook (e.g. ntfy topic URL). Null = silent.
     webhook_url = Column(String, nullable=True)
+    # Per-kind notification mute list. JSON array of `kind` strings the user
+    # never wants delivered (push + ntfy). In-app DB row is always written;
+    # only OUTBOUND delivery is suppressed so the bell still shows context.
+    mute_kinds = Column(JSON, nullable=True)
+    # Quiet hours window in America/Chicago local hours, [start, end). If
+    # start == end the window is empty (effectively disabled). Crossing
+    # midnight is allowed (e.g. start=22, end=7).
+    quiet_hours_start = Column(Integer, nullable=True)
+    quiet_hours_end = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
