@@ -264,16 +264,15 @@ def _should_deliver(user, kind: str, priority: str) -> bool:
 
     qs, qe = user.quiet_hours_start, user.quiet_hours_end
     if qs is not None and qe is not None and qs != qe:
-        # Quiet hours stored as America/Chicago local hour (single-owner app
-        # with documented Chicago tz preference — see CommandCenter market
-        # hours logic).
+        # Quiet hours stored as America/Chicago local hour. If ZoneInfo isn't
+        # available (older runtimes, stripped images), fail OPEN — skip the
+        # gate rather than apply a wrong window. UTC-hour fallback would
+        # silently shift quiet hours by 5-6 hours and suppress alerts during
+        # the wrong part of the day.
         try:
             from datetime import datetime as _dt
-            try:
-                from zoneinfo import ZoneInfo
-                hour = _dt.now(ZoneInfo("America/Chicago")).hour
-            except Exception:
-                hour = _dt.utcnow().hour
+            from zoneinfo import ZoneInfo
+            hour = _dt.now(ZoneInfo("America/Chicago")).hour
             if qs < qe:
                 in_quiet = qs <= hour < qe
             else:
@@ -281,7 +280,7 @@ def _should_deliver(user, kind: str, priority: str) -> bool:
             if in_quiet:
                 return False
         except Exception:
-            pass  # never block delivery on a clock error
+            pass  # tz unavailable / clock error — skip the gate (fail-open)
     return True
 
 
