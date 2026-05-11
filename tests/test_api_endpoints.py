@@ -11,12 +11,19 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.database import init_db, User
 from backend.auth import get_current_active_user
+from tests.conftest import override_dependency
 
 # Create a fake user that bypasses all auth
 _fake_user = User(id=1, email="test@test.com", display_name="Test",
                   is_active=True, is_admin=True, hashed_password="")
 
-app.dependency_overrides[get_current_active_user] = lambda: _fake_user
+
+@pytest.fixture(autouse=True, scope="module")
+def _auth_override():
+    """Scoped auth bypass — see tests/conftest.py:override_dependency."""
+    with override_dependency(get_current_active_user, _fake_user):
+        yield
+
 
 init_db()
 client = TestClient(app)

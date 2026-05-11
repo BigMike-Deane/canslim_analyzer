@@ -45,7 +45,8 @@ def _override_admin():
     return _fake_admin
 
 
-app.dependency_overrides[get_admin_user] = _override_admin
+# Module-level override removed; the per-test `_seed_admin_and_clean_users`
+# fixture below applies + restores the override with proper isolation.
 init_db()
 client = TestClient(app)
 

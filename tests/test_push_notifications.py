@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.database import init_db, SessionLocal, User, PushSubscription
 from backend.auth import get_current_active_user
+from tests.conftest import override_dependency
 
 USER_A_ID = 7001
 USER_B_ID = 7002
@@ -34,8 +35,6 @@ _user_a = User(id=USER_A_ID, email="a@push.test", display_name="A",
 _user_b = User(id=USER_B_ID, email="b@push.test", display_name="B",
                is_active=True, is_admin=False, hashed_password="")
 
-app.dependency_overrides[get_current_active_user] = lambda: _user_a
-
 init_db()
 client = TestClient(app)
 
@@ -43,10 +42,17 @@ client = TestClient(app)
 def _ensure_users():
     db = SessionLocal()
     try:
+        # Delete-by-email-or-id first to survive stale rows from earlier
+        # runs that may have used a different id for the same email.
+        emails = [u.email for u in (_user_a, _user_b)]
+        ids = [u.id for u in (_user_a, _user_b)]
+        db.query(User).filter(
+            (User.email.in_(emails)) | (User.id.in_(ids))
+        ).delete(synchronize_session=False)
+        db.commit()
         for u in (_user_a, _user_b):
-            if not db.query(User).filter_by(id=u.id).first():
-                db.add(User(id=u.id, email=u.email, display_name=u.display_name,
-                            is_active=True, is_admin=False, hashed_password=""))
+            db.add(User(id=u.id, email=u.email, display_name=u.display_name,
+                        is_active=True, is_admin=False, hashed_password=""))
         db.commit()
     finally:
         db.close()
@@ -65,8 +71,8 @@ def _wipe_subs():
 def _setup_each():
     _ensure_users()
     _wipe_subs()
-    app.dependency_overrides[get_current_active_user] = lambda: _user_a
-    yield
+    with override_dependency(get_current_active_user, lambda: _user_a):
+        yield
     _wipe_subs()
 
 

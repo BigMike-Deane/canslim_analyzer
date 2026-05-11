@@ -28,6 +28,7 @@ from backend.database import (
     MLPrediction,
 )
 from backend.auth import get_current_active_user, get_admin_user
+from tests.conftest import override_dependency
 
 
 # ── Auth bypass ──────────────────────────────────────────────────────
@@ -37,8 +38,19 @@ _fake_user = User(
     is_active=True, is_admin=True, hashed_password="",
 )
 
-app.dependency_overrides[get_current_active_user] = lambda: _fake_user
-app.dependency_overrides[get_admin_user] = lambda: _fake_user
+
+@pytest.fixture(autouse=True, scope="module")
+def _auth_override():
+    """Install this file's auth bypass for the duration of the module
+    only, restoring whatever was there before. Replaces the older
+    module-level `app.dependency_overrides[...] = lambda: _fake_user`
+    pattern, which silently stomped overrides from other test files
+    because pytest collection imports every test file before any test
+    runs (last-loaded wins for the session). See tests/conftest.py."""
+    with override_dependency(get_current_active_user, _fake_user), \
+         override_dependency(get_admin_user, _fake_user):
+        yield
+
 
 init_db()
 client = TestClient(app)

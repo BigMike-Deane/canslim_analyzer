@@ -25,20 +25,18 @@ from backend.email_utils import (
     send_stop_loss_webhook,
     send_score_crash_warning_push,
 )
+from tests.conftest import TEST_USER_A_ID, TEST_USER_B_ID, override_dependency
 
 
 # ── Setup ────────────────────────────────────────────────────────────
 
-USER_A_ID = 9001
-USER_B_ID = 9002
+USER_A_ID = TEST_USER_A_ID
+USER_B_ID = TEST_USER_B_ID
 
 _user_a = User(id=USER_A_ID, email="a@test.com", display_name="A",
                is_active=True, is_admin=False, hashed_password="")
 _user_b = User(id=USER_B_ID, email="b@test.com", display_name="B",
                is_active=True, is_admin=False, hashed_password="")
-
-# Default override: act as user A. Individual tests swap to B as needed.
-app.dependency_overrides[get_current_active_user] = lambda: _user_a
 
 init_db()
 client = TestClient(app)
@@ -47,10 +45,17 @@ client = TestClient(app)
 def _ensure_users():
     db = SessionLocal()
     try:
+        # Delete-by-email-or-id first to survive stale rows left by older
+        # test runs that used different ID constants for the same emails.
+        emails = [u.email for u in (_user_a, _user_b)]
+        ids = [u.id for u in (_user_a, _user_b)]
+        db.query(User).filter(
+            (User.email.in_(emails)) | (User.id.in_(ids))
+        ).delete(synchronize_session=False)
+        db.commit()
         for u in (_user_a, _user_b):
-            if not db.query(User).filter_by(id=u.id).first():
-                db.add(User(id=u.id, email=u.email, display_name=u.display_name,
-                            is_active=True, is_admin=False, hashed_password=""))
+            db.add(User(id=u.id, email=u.email, display_name=u.display_name,
+                        is_active=True, is_admin=False, hashed_password=""))
         db.commit()
     finally:
         db.close()
@@ -72,8 +77,8 @@ def _wipe_notifications():
 def _setup_each():
     _ensure_users()
     _wipe_notifications()
-    app.dependency_overrides[get_current_active_user] = lambda: _user_a
-    yield
+    with override_dependency(get_current_active_user, lambda: _user_a):
+        yield
     _wipe_notifications()
 
 
@@ -205,14 +210,20 @@ class TestBroadcastNotification:
 
     def test_broadcast_skips_inactive_users(self):
         # Add a third user marked inactive — they must NOT receive a row.
+        # Delete-then-insert (rather than the older "if not exists" guard)
+        # so an existing row from another test file with the same id but
+        # is_active=True can't poison this test's assertion.
         db = SessionLocal()
         try:
             inactive_id = USER_B_ID + 1
-            if not db.query(User).filter_by(id=inactive_id).first():
-                db.add(User(id=inactive_id, email="off@test.com",
-                            display_name="Off", is_active=False, is_admin=False,
-                            hashed_password=""))
-                db.commit()
+            db.query(Notification).filter_by(user_id=inactive_id).delete()
+            db.query(User).filter(
+                (User.id == inactive_id) | (User.email == "off@test.com")
+            ).delete(synchronize_session=False)
+            db.add(User(id=inactive_id, email="off@test.com",
+                        display_name="Off", is_active=False, is_admin=False,
+                        hashed_password=""))
+            db.commit()
         finally:
             db.close()
         active_before = self._active_count()

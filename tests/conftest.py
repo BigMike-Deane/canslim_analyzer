@@ -4,11 +4,61 @@ Pytest configuration and fixtures
 
 import pytest
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 # Add parent directory to path so we can import modules
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
+
+
+# ── Canonical test user IDs ────────────────────────────────────────────
+# High range (99001+) avoids colliding with any production-seeded rows or
+# with each other across test files. Several files previously used id=9001
+# for DIFFERENT users (audit_log's admin vs notifications' user A), causing
+# the second file's "if not exists" seed guard to silently reuse the wrong
+# row from the shared SessionLocal. Migrating every test file to these
+# constants eliminates the collision class.
+
+TEST_ADMIN_ID = 99001
+TEST_USER_A_ID = 99002
+TEST_USER_B_ID = 99003
+TEST_NONADMIN_ID = 99004
+
+
+@contextmanager
+def override_dependency(dep, value):
+    """Per-test/per-module FastAPI dependency override with prev/restore.
+
+    Why this exists: pytest collection imports ALL test files before any
+    test runs, so module-level `app.dependency_overrides[dep] = ...`
+    lines silently stomp each other — last-loaded wins for the whole
+    session. Wrapping each override in this context manager snapshots
+    whatever override existed before, installs the test's override, and
+    on teardown restores the prior value (or pops the key entirely).
+
+    Usage inside a pytest fixture:
+
+        @pytest.fixture(autouse=True, scope="module")
+        def _setup_auth_override():
+            with override_dependency(get_current_active_user, _fake_user):
+                yield
+
+    `value` may be a User instance (auto-wrapped in a no-arg lambda) or
+    a callable that accepts the FastAPI request/dependency args directly.
+    """
+    from backend.main import app
+
+    factory = value if callable(value) else (lambda: value)
+    prev = app.dependency_overrides.get(dep)
+    app.dependency_overrides[dep] = factory
+    try:
+        yield
+    finally:
+        if prev is not None:
+            app.dependency_overrides[dep] = prev
+        else:
+            app.dependency_overrides.pop(dep, None)
 
 
 @pytest.fixture(autouse=True, scope="session")

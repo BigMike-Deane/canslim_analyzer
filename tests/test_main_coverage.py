@@ -48,6 +48,7 @@ from backend.database import (
     CoiledSpringAlert, EarningsAudit,
 )
 from backend.auth import get_current_active_user, get_admin_user
+from tests.conftest import override_dependency
 
 
 # ── Auth bypass ──────────────────────────────────────────────────────
@@ -57,8 +58,14 @@ _fake_user = User(
     is_active=True, is_admin=True, hashed_password="",
 )
 
-app.dependency_overrides[get_current_active_user] = lambda: _fake_user
-app.dependency_overrides[get_admin_user] = lambda: _fake_user
+
+@pytest.fixture(autouse=True, scope="module")
+def _auth_override():
+    """Scoped auth bypass — see tests/conftest.py:override_dependency."""
+    with override_dependency(get_current_active_user, _fake_user), \
+         override_dependency(get_admin_user, _fake_user):
+        yield
+
 
 init_db()
 client = TestClient(app)

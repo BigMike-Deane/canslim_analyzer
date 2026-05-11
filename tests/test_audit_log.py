@@ -24,10 +24,11 @@ from backend.database import init_db, SessionLocal, User
 from backend.auth import get_current_active_user, get_admin_user
 from backend.audit_log import record_event, recent_events, buffer_size, _reset_for_tests
 from backend.rate_limiter import limiter
+from tests.conftest import TEST_ADMIN_ID, TEST_NONADMIN_ID
 
 
-ADMIN_ID = 9001
-NONADMIN_ID = 9002
+ADMIN_ID = TEST_ADMIN_ID
+NONADMIN_ID = TEST_NONADMIN_ID
 
 
 def _admin_for_request(request: Request):
@@ -55,15 +56,25 @@ def _setup_users_and_overrides():
     init_db()
     db = SessionLocal()
     try:
-        for uid, email, is_admin in (
+        # Delete any prior rows matching this file's test emails or IDs
+        # before re-seeding. Without this, a prior run that used the old
+        # id=9001/9002 constants leaves rows with the same UNIQUE email,
+        # and the new id=99001/99004 inserts fail with IntegrityError.
+        seeds = (
             (ADMIN_ID, "audit-admin@test.com", True),
             (NONADMIN_ID, "audit-user@test.com", False),
-        ):
-            if not db.query(User).filter(User.id == uid).first():
-                db.add(User(
-                    id=uid, email=email, display_name=email,
-                    is_active=True, is_admin=is_admin, hashed_password="",
-                ))
+        )
+        emails = [e for _, e, _ in seeds]
+        ids = [i for i, _, _ in seeds]
+        db.query(User).filter(
+            (User.email.in_(emails)) | (User.id.in_(ids))
+        ).delete(synchronize_session=False)
+        db.commit()
+        for uid, email, is_admin in seeds:
+            db.add(User(
+                id=uid, email=email, display_name=email,
+                is_active=True, is_admin=is_admin, hashed_password="",
+            ))
         db.commit()
     finally:
         db.close()
