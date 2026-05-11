@@ -3271,7 +3271,13 @@ async def get_ai_portfolio_history(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Get AI Portfolio performance history for charts - includes all snapshots from scans"""
+    """Get AI Portfolio performance history for charts - includes all snapshots from scans.
+
+    Each row also carries a normalized `spy_value` benchmark: the value the
+    user's starting cash would have if it had been invested in SPY on the
+    date of the first snapshot. Sourced from the daily MarketSnapshot table
+    (NOT historical_data.py, which is on the eval-window blocklist).
+    """
     from datetime import timedelta, datetime as dt, timezone
     from sqlalchemy import or_
 
@@ -3300,10 +3306,52 @@ async def get_ai_portfolio_history(
 
     snapshots = sorted(snapshots, key=sort_key)
 
+    # Build a date → spy_price lookup from MarketSnapshot for the window.
+    # MarketSnapshot.date is unique, so this is a one-row-per-day map.
+    spy_by_date = {}
+    if snapshots:
+        market_snaps = db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= start_date_only,
+            MarketSnapshot.spy_price.isnot(None),
+        ).all()
+        for ms in market_snaps:
+            spy_by_date[ms.date] = ms.spy_price
+
+    # Pick the SPY anchor price from the first snapshot's date (or nearest
+    # earlier MarketSnapshot if exact-day is missing — weekend snapshots etc).
+    spy_anchor = None
+    base_value = None
+    if snapshots and spy_by_date:
+        first_day = snapshots[0].date or (snapshots[0].timestamp.date() if snapshots[0].timestamp else None)
+        if first_day:
+            spy_anchor = spy_by_date.get(first_day)
+            if spy_anchor is None:
+                # Fall back to nearest earlier date in the lookup
+                earlier = [d for d in spy_by_date if d <= first_day]
+                if earlier:
+                    spy_anchor = spy_by_date[max(earlier)]
+        base_value = snapshots[0].total_value
+
+    def _spy_value_for(snap):
+        if not spy_anchor or not base_value:
+            return None
+        snap_day = snap.date or (snap.timestamp.date() if snap.timestamp else None)
+        if not snap_day:
+            return None
+        price = spy_by_date.get(snap_day)
+        if price is None:
+            # Carry-forward last-known SPY price for weekends/gaps
+            earlier = [d for d in spy_by_date if d <= snap_day]
+            if not earlier:
+                return None
+            price = spy_by_date[max(earlier)]
+        return round(base_value * (price / spy_anchor), 2)
+
     return [{
         "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else None,
         "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
         "total_value": s.total_value,
+        "spy_value": _spy_value_for(s),
         "cash": s.cash,
         "positions_value": s.positions_value,
         "positions_count": s.positions_count,

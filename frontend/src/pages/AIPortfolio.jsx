@@ -112,6 +112,21 @@ function PerformanceChart({ history, startingCash }) {
                 <stop offset="100%" stopColor={lineColor} stopOpacity={0.0} />
               </linearGradient>
             </defs>
+            {/* SPY benchmark overlay — normalized to starting value of the
+                window so the two lines compare apples-to-apples. Sourced
+                from the backend's MarketSnapshot table, not historical_data. */}
+            <Area
+              type="monotone"
+              dataKey="spy_value"
+              stroke="#8c7479"
+              strokeWidth={1.25}
+              strokeDasharray="4 3"
+              fill="none"
+              dot={false}
+              activeDot={{ r: 3, fill: '#8c7479' }}
+              isAnimationActive={false}
+              connectNulls
+            />
             <Area
               type="monotone"
               dataKey="total_value"
@@ -130,7 +145,11 @@ function PerformanceChart({ history, startingCash }) {
             <Tooltip
               contentStyle={tooltipStyle}
               labelStyle={{ color: '#8c7479' }}
-              formatter={(value) => [formatCurrency(value), 'Value']}
+              formatter={(value, name) => {
+                if (value == null) return [null, null]
+                const label = name === 'spy_value' ? 'SPY' : 'Portfolio'
+                return [formatCurrency(value), label]
+              }}
               labelFormatter={(_, payload) => {
                 if (payload && payload[0]) {
                   return formatTimestamp(payload[0].payload.timestamp || payload[0].payload.date)
@@ -142,6 +161,17 @@ function PerformanceChart({ history, startingCash }) {
             <YAxis hide domain={['dataMin - 500', 'dataMax + 500']} />
           </AreaChart>
         </ResponsiveContainer>
+      </div>
+      {/* Legend */}
+      <div className="flex items-center justify-center gap-4 mt-1 text-[10px] text-dark-500">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block w-3 h-0.5" style={{ backgroundColor: lineColor }} />
+          Portfolio
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block w-3 border-t border-dashed border-dark-400" />
+          SPY (normalized)
+        </span>
       </div>
     </Card>
   )
