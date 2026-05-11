@@ -39,6 +39,20 @@ def _make_test_model(feature_cols=None, save_path=None):
     return path, feature_cols
 
 
+class _StubModelNoFeatureNames:
+    """Bare predict_proba stub with NO feature_names_in_ attribute. Defined
+    at module scope so joblib can serialize it (function-local classes
+    don't survive joblib.dump). Used by TestEvaluateModelFeatureColumnFallback
+    to force the payload['feature_columns'] fallback branch at
+    oos_eval.py:87."""
+    def predict_proba(self, X):
+        n = len(X)
+        # Deterministic gradient ensures AUC > 0.5 and avoids the single-
+        # class guard at oos_eval.py:99-104.
+        col1 = np.linspace(0.1, 0.9, n)
+        return np.column_stack([1 - col1, col1])
+
+
 def _make_holdout_df(feature_cols, n=50, gain_split=0.5, seed=7):
     """Synthetic holdout DataFrame with feature columns + gain_pct + win label."""
     rng = np.random.RandomState(seed)
@@ -279,3 +293,240 @@ class TestCompareModels:
         assert r1["roc_auc"] == r2["roc_auc"]
         assert r1["brier_score"] == r2["brier_score"]
         assert r1["n_trades"] == r2["n_trades"]
+
+
+# =============== Coverage close-out: remaining branches ===============
+
+
+class TestLoadModelPayloadValidation:
+    """Covers ml/oos_eval.py line 54 — malformed-payload guard."""
+
+    def test_payload_missing_model_key_raises_value_error(self):
+        """A joblib file that doesn't contain a 'model' key must raise
+        ValueError eagerly. Without this guard, callers would silently
+        crash inside model.predict_proba with a confusing AttributeError."""
+        from ml.oos_eval import _load_model_payload
+
+        bad_path = Path(tempfile.mktemp(suffix=".joblib"))
+        joblib.dump({"feature_columns": ["a", "b"], "metadata": {}}, bad_path)
+
+        with pytest.raises(ValueError, match="missing 'model' key"):
+            _load_model_payload(bad_path)
+
+
+class TestEvaluateModelFeatureColumnFallback:
+    """Covers ml/oos_eval.py line 87 — payload['feature_columns'] / global
+    FEATURE_COLUMNS fallback when the model has no feature_names_in_."""
+
+    def test_falls_back_to_payload_feature_columns_when_model_lacks_names(self):
+        """If a model lacks feature_names_in_ (e.g. trained via raw xgboost
+        API or older sklearn), evaluate_model_on_trades should resolve the
+        feature order from payload['feature_columns']. Uses the module-level
+        _StubModelNoFeatureNames because xgboost re-derives feature_names_in_
+        on joblib roundtrip, making `del payload['model'].feature_names_in_`
+        ineffective."""
+        from ml.oos_eval import evaluate_model_on_trades
+
+        cols = ["a", "b", "c"]
+        path = Path(tempfile.mktemp(suffix=".joblib"))
+        joblib.dump({
+            "model": _StubModelNoFeatureNames(),
+            "feature_columns": cols,
+            "metadata": {"strategy": "test", "version": 0},
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }, path)
+
+        df = _make_holdout_df(cols)
+        result = evaluate_model_on_trades(path, df, min_gain_pct=0.0)
+        # No error → the fallback path successfully resolved feature_cols
+        # from payload["feature_columns"].
+        assert "error" not in result
+        assert result["model_feature_count"] == 3
+
+
+class TestGetHoldoutTradesEdgeCases:
+    """Covers ml/oos_eval.py lines 223 and 227 — before-cutoff branch +
+    empty-run_ids short-circuit."""
+
+    def _fresh_session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from backend.database import Base
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        return sessionmaker(bind=engine)()
+
+    def test_after_false_filters_to_pre_cutoff_runs(self):
+        """after=False is the TRAINING-pool selector — line 223. Verifies
+        the before-cutoff branch by seeding two runs on either side of the
+        cutoff and confirming the function emits an empty df (no trades
+        seeded) but with no SQL error — meaning the before-cutoff filter
+        executed."""
+        from ml.oos_eval import get_holdout_trades
+        from backend.database import BacktestRun
+
+        db = self._fresh_session()
+        cutoff = datetime(2026, 5, 1)
+        for i, ts in enumerate([datetime(2026, 4, 15), datetime(2026, 5, 3)]):
+            db.add(BacktestRun(
+                id=i + 1,
+                name=f"r{i}",
+                start_date=datetime(2022, 1, 1).date(),
+                end_date=datetime(2026, 4, 28).date(),
+                starting_cash=25000.0,
+                stock_universe="all",
+                strategy="nostate_optimized",
+                status="completed",
+                created_at=ts,
+            ))
+        db.commit()
+
+        result = get_holdout_trades(db, "nostate_optimized", cutoff, after=False)
+        # No trades seeded, but the function must execute the before-cutoff
+        # branch without raising — empty df is the expected output shape.
+        assert result.empty
+
+    def test_no_matching_runs_returns_empty_df_without_calling_extractor(
+        self, monkeypatch,
+    ):
+        """If the strategy/cutoff filter matches zero BacktestRun rows,
+        get_holdout_trades must short-circuit and return an empty DataFrame
+        WITHOUT calling extract_training_data (line 227). Without the
+        short-circuit, extract_training_data would receive an empty
+        backtest_ids list and return its own empty df — the explicit
+        short-circuit keeps the contract obvious."""
+        from ml.oos_eval import get_holdout_trades
+        import ml.oos_eval as oos_mod
+
+        # Spy on extract_training_data to verify it's NOT called
+        called = {"n": 0}
+
+        def _spy(*a, **kw):
+            called["n"] += 1
+            return pd.DataFrame(), {}
+
+        monkeypatch.setattr(oos_mod, "extract_training_data", _spy)
+
+        db = self._fresh_session()  # empty DB → no runs match anything
+        result = get_holdout_trades(
+            db, "nonexistent_strategy", datetime(2026, 5, 1), after=True,
+        )
+        assert result.empty
+        assert called["n"] == 0, "extract_training_data should not be called"
+
+
+class TestEvaluateOos:
+    """Covers ml/oos_eval.py lines 250-263 — the evaluate_oos convenience
+    wrapper. Mocks get_holdout_trades so we don't need full DB seeding."""
+
+    def test_empty_holdout_returns_error_dict(self, monkeypatch):
+        """When no trades exist after cutoff, evaluate_oos returns a
+        structured error rather than calling evaluate_model_on_trades."""
+        from ml.oos_eval import evaluate_oos
+        import ml.oos_eval as oos_mod
+
+        monkeypatch.setattr(
+            oos_mod, "get_holdout_trades", lambda *a, **kw: pd.DataFrame(),
+        )
+
+        path, _ = _make_test_model()
+        cutoff = datetime(2026, 5, 1)
+        result = evaluate_oos(
+            db=None, model_path=path, strategy="nostate_optimized", cutoff=cutoff,
+        )
+        assert "error" in result
+        assert "No holdout trades" in result["error"]
+        assert result["cutoff"] == cutoff.isoformat()
+        assert result["strategy"] == "nostate_optimized"
+
+    def test_happy_path_returns_metrics_with_holdout_metadata(self, monkeypatch):
+        """Happy path: get_holdout_trades returns a non-empty df, then
+        evaluate_model_on_trades runs, and the result is augmented with
+        holdout_backtest_count + holdout_backtest_ids + cutoff."""
+        from ml.oos_eval import evaluate_oos
+        import ml.oos_eval as oos_mod
+
+        path, cols = _make_test_model()
+        df = _make_holdout_df(cols, n=40)
+        # backtest_id column is set by _make_holdout_df: 1000, 1001, 1002, 1003
+        expected_ids = sorted(set(df["backtest_id"].tolist()))
+
+        monkeypatch.setattr(oos_mod, "get_holdout_trades", lambda *a, **kw: df)
+
+        cutoff = datetime(2026, 5, 1)
+        result = evaluate_oos(
+            db=None, model_path=path, strategy="test_strategy",
+            cutoff=cutoff, min_gain_pct=0.0,
+        )
+
+        assert "error" not in result
+        assert result["n_trades"] == 40
+        assert result["holdout_backtest_count"] == len(expected_ids)
+        assert result["holdout_backtest_ids"] == expected_ids
+        assert result["cutoff"] == cutoff.isoformat()
+        assert 0.0 <= result["roc_auc"] <= 1.0
+
+
+class TestCompareModelsOos:
+    """Covers ml/oos_eval.py lines 278-292 — the multi-model comparison
+    orchestrator."""
+
+    def test_empty_holdout_returns_error_dict(self, monkeypatch):
+        """When the holdout is empty, compare_models_oos returns an error
+        dict and does NOT try to score any model."""
+        from ml.oos_eval import compare_models_oos
+        import ml.oos_eval as oos_mod
+
+        monkeypatch.setattr(
+            oos_mod, "get_holdout_trades", lambda *a, **kw: pd.DataFrame(),
+        )
+
+        path, _ = _make_test_model()
+        cutoff = datetime(2026, 5, 1)
+        result = compare_models_oos(
+            db=None, model_paths={"v_a": path},
+            strategy="nostate_optimized", cutoff=cutoff,
+        )
+        assert "error" in result
+        assert "No holdout trades" in result["error"]
+        # No model labels should appear in the result
+        assert "v_a" not in result
+
+    def test_multi_model_comparison_returns_metrics_per_label_plus_summary(
+        self, monkeypatch,
+    ):
+        """Each model label gets a metrics dict; a special `_holdout` key
+        carries the cohort summary (n_trades, n_backtests, cutoff, strategy)."""
+        from ml.oos_eval import compare_models_oos
+        import ml.oos_eval as oos_mod
+
+        path_a, cols = _make_test_model(seed=10) if False else _make_test_model()
+        path_b, _ = _make_test_model()  # second model, same cols
+        df = _make_holdout_df(cols, n=30)
+        expected_backtests = len(set(df["backtest_id"].tolist()))
+
+        monkeypatch.setattr(oos_mod, "get_holdout_trades", lambda *a, **kw: df)
+
+        cutoff = datetime(2026, 5, 1)
+        result = compare_models_oos(
+            db=None,
+            model_paths={"v_a": path_a, "v_b": path_b},
+            strategy="nostate_optimized",
+            cutoff=cutoff,
+            min_gain_pct=0.0,
+        )
+
+        # Per-model metrics
+        assert "v_a" in result and "v_b" in result
+        for label in ("v_a", "v_b"):
+            assert "error" not in result[label]
+            assert result[label]["n_trades"] == 30
+            assert 0.0 <= result[label]["roc_auc"] <= 1.0
+
+        # Holdout summary section
+        assert "_holdout" in result
+        h = result["_holdout"]
+        assert h["n_trades"] == 30
+        assert h["n_backtests"] == expected_backtests
+        assert h["cutoff"] == cutoff.isoformat()
+        assert h["strategy"] == "nostate_optimized"
