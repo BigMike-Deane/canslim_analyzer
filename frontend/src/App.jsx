@@ -28,6 +28,7 @@ import SystemHealth from './pages/SystemHealth'
 import ABEval from './pages/ABEval'
 import Settings from './pages/Settings'
 import Notifications from './pages/Notifications'
+import DecisionLog from './pages/DecisionLog'
 
 function AppContent() {
   const { user, loading } = useAuth()
@@ -82,6 +83,7 @@ function AppContent() {
             <Route path="/admin/ab-eval" element={<ABEval />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/notifications" element={<Notifications />} />
+            <Route path="/decision-log" element={<DecisionLog />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </div>

@@ -10,6 +10,7 @@ const navGroups = [
     items: [
       { to: '/', icon: 'terminal', label: 'Command Center', end: true },
       { to: '/ai-portfolio', icon: 'brain', label: 'AI Portfolio' },
+      { to: '/decision-log', icon: 'book', label: 'Decision Log' },
       { to: '/analytics', icon: 'chart', label: 'Analytics' },
       { to: '/trade-journal', icon: 'book', label: 'Trade Journal' },
       { to: '/correlation', icon: 'activity', label: 'Correlation' },

@@ -38,6 +38,7 @@ function UnreadBadge({ count }) {
 
 const moreItems = [
   { to: '/notifications', label: 'Notifications', icon: 'bell' },
+  { to: '/decision-log', label: 'Decision Log', icon: 'book' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
   { to: '/screener', label: 'Screener', icon: 'filter' },
   { to: '/breakouts', label: 'Breakouts', icon: 'trending' },
