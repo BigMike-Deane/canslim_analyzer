@@ -338,3 +338,117 @@ class TestRunFullDiagnostic:
         )
         assert len(result["rank_correlations"]) == 3
         assert len(result["disagreement"]) == 3
+
+
+# =============== Coverage close-out: defensive branches ===============
+
+
+class TestDefensiveBranches:
+    """Close-out tests for the last few uncovered branches in
+    ml/diagnostics.py: feature-column fallback, NaN-result returns, and
+    shape/empty-input ValueErrors. These guarantee the module degrades
+    gracefully on malformed or edge-case inputs."""
+
+    def test_resolve_feature_columns_falls_back_to_global(self):
+        """When the model has no feature_names_in_ AND the payload has no
+        feature_columns, _resolve_feature_columns must fall back to the
+        global FEATURE_COLUMNS list (covers diagnostics.py line 64)."""
+        from ml.diagnostics import _resolve_feature_columns
+        from ml.feature_extractor import FEATURE_COLUMNS
+
+        class _BareModel:
+            """Model object with no feature_names_in_ attribute."""
+            pass
+
+        payload = {"model": _BareModel()}  # no feature_columns key either
+        result = _resolve_feature_columns(payload)
+        assert result == list(FEATURE_COLUMNS)
+
+    def test_resolve_feature_columns_with_empty_feature_names_in(self):
+        """An empty feature_names_in_ (len==0) should also fall through
+        to feature_columns / global (the `len(fn) > 0` guard at line 62)."""
+        from ml.diagnostics import _resolve_feature_columns
+
+        class _ModelEmptyNames:
+            feature_names_in_ = np.array([])  # len 0
+
+        payload = {
+            "model": _ModelEmptyNames(),
+            "feature_columns": ["x", "y", "z"],
+        }
+        result = _resolve_feature_columns(payload)
+        assert result == ["x", "y", "z"]
+
+    def test_spearman_rank_correlation_returns_nan_on_constant_input(self):
+        """If either input is a constant vector, scipy's spearmanr returns
+        NaN (no rank variance). The wrapper must surface that as float('nan')
+        rather than propagate None (covers diagnostics.py line 156)."""
+        import math
+        from ml.diagnostics import pairwise_rank_correlation
+
+        # Constant b → no rank variance → spearmanr returns NaN
+        a = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        b = np.array([0.7, 0.7, 0.7, 0.7, 0.7])
+        rho = pairwise_rank_correlation(a, b)
+        assert math.isnan(rho)
+
+    def test_disagreement_at_threshold_shape_mismatch_raises(self):
+        """Length mismatch across a/b/y must raise ValueError eagerly
+        rather than produce silently-wrong partitions (covers lines 182-184)."""
+        from ml.diagnostics import disagreement_at_threshold
+
+        with pytest.raises(ValueError, match="Length mismatch"):
+            disagreement_at_threshold(
+                np.array([0.1, 0.2, 0.3]),
+                np.array([0.1, 0.2]),  # shorter
+                np.array([0, 1, 0]),
+            )
+
+    def test_decile_wr_shape_mismatch_raises(self):
+        """probs vs y length mismatch must raise ValueError
+        (covers diagnostics.py line 230)."""
+        from ml.diagnostics import decile_wr
+
+        with pytest.raises(ValueError, match="Length mismatch"):
+            decile_wr(
+                np.array([0.1, 0.2, 0.3, 0.4]),
+                np.array([0, 1, 0]),  # shorter
+                decile=0.5,
+            )
+
+    def test_decile_wr_empty_input_returns_zero_n(self):
+        """Empty probs vector must return a well-formed empty result
+        with n=0 and None for mean_proba/wr (covers diagnostics.py line 232)."""
+        from ml.diagnostics import decile_wr
+
+        result = decile_wr(np.array([]), np.array([]), decile=0.10, top=True)
+        assert result["n"] == 0
+        assert result["mean_proba"] is None
+        assert result["wr"] is None
+        assert result["decile"] == 0.10
+        assert result["top"] is True
+
+    def test_run_full_diagnostic_returns_error_when_no_models_score(
+        self, monkeypatch
+    ):
+        """If every model fails feature-extraction (score_holdout_with_models
+        returns empty), run_full_diagnostic must surface a structured error
+        dict that still carries the holdout summary stats (covers line 277)."""
+        import ml.diagnostics as diag_mod
+        from ml.diagnostics import run_full_diagnostic
+
+        # Stub score_holdout_with_models to mimic feature-mismatch on every
+        # model — returning an empty dict triggers the `if not scored:` branch.
+        monkeypatch.setattr(diag_mod, "score_holdout_with_models", lambda *a, **kw: {})
+
+        path_a, cols = _make_test_model(seed=11)
+        df = _make_holdout_df(cols, n=30)
+
+        result = run_full_diagnostic({"v_a": path_a}, df, min_gain_pct=0.0)
+
+        assert "error" in result
+        assert "feature mismatches" in result["error"]
+        assert result["models"] == ["v_a"]
+        # holdout summary still computed (line 280-284)
+        assert result["holdout"]["n_trades"] == 30
+        assert 0.0 <= result["holdout"]["win_rate"] <= 1.0
