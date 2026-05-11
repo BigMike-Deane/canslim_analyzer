@@ -761,6 +761,13 @@ def _serialize_trade_row(t, prior_buys_by_ticker_user: dict) -> dict:
     None on BUY/PYRAMID rows by design — there's nothing to hold yet."""
     realized_pct = None
     if t.action == 'SELL' and t.realized_gain is not None and t.cost_basis and t.shares:
+        # Defensive try/except, practically unreachable in isolation: the
+        # return dict at lines 795-799 calls float() unguarded on the
+        # same fields (shares/price/cost_basis/realized_gain), so any
+        # trade row crafted to trigger an exception here also crashes
+        # the unguarded float()s downstream. The except branch covers
+        # us if a future refactor guards those return-dict float() calls.
+        # See canslim-may10-routes-admin-coverage-shipped.md.
         try:
             cost_total = float(t.cost_basis) * float(t.shares)
             if cost_total > 0:

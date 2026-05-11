@@ -1009,6 +1009,20 @@ async def get_fidelity_gameplan(current_user: User = Depends(get_current_active_
                 })
 
     # ==================== WATCH LIST ====================
+    #
+    # KNOWN-BROKEN (DEFERRED past 2026-06-18, see
+    # canslim-may10-routes-fidelity-coverage-shipped.md): the line below
+    # reads `top_stocks` from the function-local scope, but no earlier
+    # block assigns it — the BUY logic uses top_canslim_stocks and
+    # top_growth_stocks. dir() always returns the surrounding names
+    # without `top_stocks`, so the `not in dir()` check is always True
+    # → top_stocks = [], and the for-loop at line 1021 never iterates.
+    # The WATCH LIST feature has been silently emitting zero actions in
+    # production since this file was extracted from main.py.
+    #
+    # Fix shape (DEFERRED — touches live notification surface, would
+    # confound Approach 2 A/B if shipped during eval window):
+    #     top_stocks = top_canslim_stocks + top_growth_stocks
 
     if not buy_blocked_reason:
         watch_actions = []

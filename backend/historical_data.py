@@ -1233,6 +1233,11 @@ class HistoricalDataProvider:
             # Check for FTD: day 4+, up 1.5%+, higher volume
             last_ftd_date = None
             for i in range(max(0, len(recent) - rally_days), len(recent)):
+                # Defensive: `rally_days` is bounded by len(recent) - 1
+                # because the correction low itself is excluded from
+                # `recent["date"] > low_date`, so the loop start is
+                # always >= 1 in normal inputs. Branch retained for
+                # malformed data robustness.
                 if i < 1:
                     continue
                 day_num = i - (len(recent) - rally_days)
@@ -1244,6 +1249,10 @@ class HistoricalDataProvider:
                 prev_vol = float(recent.iloc[i - 1]["volume"])
                 curr_vol = float(recent.iloc[i]["volume"])
 
+                # Defensive: zero/negative closes are caught upstream as
+                # the correction low (idxmin reroutes them out of the
+                # rally window). Branch is practically unreachable
+                # through normal yfinance-sourced SPY data.
                 if prev_close <= 0:
                     continue
 
