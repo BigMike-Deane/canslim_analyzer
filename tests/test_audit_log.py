@@ -230,6 +230,21 @@ def test_rate_limit_handler_records_event(client):
     assert e["source_ip"]  # populated, not empty
 
 
+# ── Defensive branches ─────────────────────────────────────────────────
+
+
+class TestRecentEventsDefensiveBranches:
+    """Exercise the non-positive-limit guard in recent_events()."""
+
+    def test_recent_events_limit_zero_returns_empty(self):
+        record_event("auth_fail", source_ip="1.1.1.1", route="/x", detail="seed")
+        assert recent_events(limit=0) == []
+
+    def test_recent_events_negative_limit_returns_empty(self):
+        record_event("auth_fail", source_ip="1.1.1.1", route="/x", detail="seed")
+        assert recent_events(limit=-5) == []
+
+
 def test_rate_limit_records_real_ip_via_xff(client):
     """Behind Caddy, the real client IP arrives in X-Forwarded-For.
 
