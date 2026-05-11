@@ -104,3 +104,101 @@ class TestDryRun:
         script.main()
         headers = post.call_args_list[0].kwargs["headers"]
         assert headers["Authorization"] == "Bearer secret123"
+
+
+class TestExecuteFailureHandling:
+    """Cover the failure branches at lines 169-185: HTTPError, generic
+    RequestException, and the post-loop "Failures (re-run later):"
+    report block (which only fires when failed[] is non-empty)."""
+
+    def test_http_error_collects_and_returns_rc_1(
+        self, script, capsys, monkeypatch
+    ):
+        """A 4xx/5xx response from /api/backtests should be caught,
+        labeled with the HTTP status code + truncated body, and
+        contribute to the rc=1 exit."""
+        import requests as _requests
+
+        err_resp = MagicMock()
+        err_resp.status_code = 503
+        err_resp.text = "Service Unavailable" * 30  # >200 chars on purpose
+        http_err = _requests.HTTPError(response=err_resp)
+
+        bad_resp = MagicMock()
+        bad_resp.raise_for_status.side_effect = http_err
+
+        post = MagicMock(return_value=bad_resp)
+        monkeypatch.setattr(script.requests, "post", post)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["grow_training_pool.py", "--execute", "--api-base", "http://test.local"],
+        )
+
+        rc = script.main()
+        out = capsys.readouterr().out
+
+        # Every entry in SWEEP raises -> every entry is a failure
+        assert rc == 1
+        assert post.call_count == len(script.SWEEP)
+        assert "FAILED" in out
+        # Failure-report block fired
+        assert "Failures (re-run later):" in out
+        # HTTP status code + truncated body landed in the failure line
+        assert "HTTP 503:" in out or "503" in out
+
+    def test_request_exception_collects_and_returns_rc_1(
+        self, script, capsys, monkeypatch
+    ):
+        """Non-HTTP transport errors (ConnectionError, Timeout, etc.)
+        hit the generic RequestException branch at line 172."""
+        import requests as _requests
+
+        def _boom(*a, **kw):
+            raise _requests.ConnectionError("connection refused")
+
+        monkeypatch.setattr(script.requests, "post", _boom)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["grow_training_pool.py", "--execute"],
+        )
+
+        rc = script.main()
+        out = capsys.readouterr().out
+
+        assert rc == 1
+        assert "FAILED" in out
+        assert "connection refused" in out
+        assert "Failures (re-run later):" in out
+
+    def test_partial_failure_still_returns_rc_1(
+        self, script, capsys, monkeypatch
+    ):
+        """Mixed success+failure: even one failure returns rc=1 so the
+        operator notices and can re-run the failing label."""
+        import requests as _requests
+
+        ok_resp = MagicMock()
+        ok_resp.raise_for_status.return_value = None
+        ok_resp.json.return_value = {"id": 42}
+
+        err_resp = MagicMock()
+        err_resp.status_code = 500
+        err_resp.text = "internal"
+        bad_resp = MagicMock()
+        bad_resp.raise_for_status.side_effect = _requests.HTTPError(response=err_resp)
+
+        # First call succeeds, all subsequent fail
+        responses = [ok_resp] + [bad_resp] * (len(script.SWEEP) - 1)
+        post = MagicMock(side_effect=responses)
+        monkeypatch.setattr(script.requests, "post", post)
+        monkeypatch.setattr(
+            sys, "argv", ["grow_training_pool.py", "--execute"],
+        )
+
+        rc = script.main()
+        out = capsys.readouterr().out
+
+        assert rc == 1
+        # Should have logged at least one queued bt + at least one FAILED
+        assert "queued bt=42" in out
+        assert "FAILED" in out
