@@ -170,6 +170,277 @@ class TestBackupModule:
         finally:
             shutil.rmtree(tmpdir)
 
+    # --- perform_backup() ------------------------------------------------
+    # Covers backend/backup.py lines 38-120 — the entire pre-existing gap.
+    # The function's externals are mocked at four boundaries: subprocess.run
+    # (pg_dump), datetime.now (controls the Sunday→weekly rename branch),
+    # send_webhook_notification (success + failure tags), and cleanup_old_backups
+    # (avoids touching real filesystem retention). BACKUP_DIR is redirected
+    # to a tempdir so the touch-then-getsize flow exercises the real
+    # os.makedirs / os.path.getsize / os.rename code paths.
+
+    @staticmethod
+    def _fake_datetime_for(weekday_anchor):
+        """Build a `datetime` class stand-in whose .now() always returns the
+        anchor. weekday_anchor must already be tz-aware so isoformat() and
+        strftime("%A") both behave like a real datetime.
+        """
+
+        class _FakeDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                return weekday_anchor
+
+        return _FakeDateTime
+
+    def _run_perform_backup(self, tmpdir, pg_dump_result, weekday_anchor):
+        """Common scaffold for perform_backup() tests.
+
+        - tmpdir is BACKUP_DIR (real os.makedirs runs against it)
+        - pg_dump_result is the MagicMock returned by subprocess.run
+          (must expose .returncode and .stderr)
+        - weekday_anchor controls datetime.now() output
+
+        Returns (result_dict, mock_webhook, mock_cleanup, mock_subprocess).
+        """
+        from backend import backup as backup_mod
+
+        # subprocess.run is mocked to "create" the dump file if it would
+        # succeed, so os.path.getsize has something real to measure.
+        original_run = pg_dump_result
+
+        def _fake_run(cmd, env=None, capture_output=None, text=None, timeout=None):
+            if isinstance(original_run, Exception):
+                raise original_run
+            if original_run.returncode == 0:
+                # Find the "-f filepath" arg and create the file
+                if "-f" in cmd:
+                    filepath = cmd[cmd.index("-f") + 1]
+                    with open(filepath, "wb") as f:
+                        f.write(b"FAKE_PG_DUMP_CONTENT")
+            return original_run
+
+        with patch.object(backup_mod, "BACKUP_DIR", tmpdir), \
+             patch.object(backup_mod, "datetime",
+                          self._fake_datetime_for(weekday_anchor)), \
+             patch.object(backup_mod, "subprocess") as mock_sub, \
+             patch.object(backup_mod, "cleanup_old_backups") as mock_cleanup, \
+             patch("backend.email_utils.send_webhook_notification") as mock_webhook, \
+             patch.dict(os.environ, {"DATABASE_URL": "postgresql://u:p@h:5432/d"}):
+            mock_sub.run.side_effect = _fake_run
+            from backend.backup import perform_backup
+            result = perform_backup()
+        return result, mock_webhook, mock_cleanup, mock_sub
+
+    def test_perform_backup_success_returns_status_dict(self):
+        """Happy path on a weekday: success dict, cleanup called, low-priority webhook."""
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        assert friday.strftime("%A") == "Friday"  # pin the anchor
+
+        pg_ok = MagicMock(returncode=0, stderr="")
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result, mock_webhook, mock_cleanup, _ = self._run_perform_backup(
+                tmpdir, pg_ok, friday,
+            )
+            assert result["status"] == "success"
+            assert result["filename"].startswith("canslim_")
+            assert result["filename"].endswith(".dump")
+            assert "weekly" not in result["filename"]
+            # size_mb is round(bytes / 1MB, 1); the fake payload is tiny
+            # so it rounds to 0.0 — assert it's a real numeric reading, not
+            # that the file was large.
+            assert isinstance(result["size_mb"], (int, float))
+            assert result["size_mb"] >= 0
+            mock_cleanup.assert_called_once()
+            # Low-priority on success
+            mock_webhook.assert_called_once()
+            assert mock_webhook.call_args.kwargs["priority"] == "low"
+            assert mock_webhook.call_args.kwargs["title"] == "DB Backup Complete"
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_renames_to_weekly_on_sunday(self):
+        """Sunday runs are tagged weekly_* so cleanup keeps them on a separate retention."""
+        sunday = datetime(2026, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
+        assert sunday.strftime("%A") == "Sunday"  # pin the anchor
+
+        pg_ok = MagicMock(returncode=0, stderr="")
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result, _, _, _ = self._run_perform_backup(tmpdir, pg_ok, sunday)
+            assert result["status"] == "success"
+            assert result["filename"].startswith("canslim_weekly_")
+            # The renamed file is what landed in BACKUP_DIR
+            on_disk = os.listdir(tmpdir)
+            assert any(f.startswith("canslim_weekly_") for f in on_disk)
+            # The original non-weekly name was renamed away
+            assert not any(
+                f.startswith("canslim_") and "weekly" not in f
+                for f in on_disk
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_pg_dump_nonzero_returncode_returns_failed(self):
+        """Non-zero returncode raises RuntimeError → except path → failed dict."""
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        pg_fail = MagicMock(returncode=1, stderr="pg_dump: connection refused")
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result, mock_webhook, _, _ = self._run_perform_backup(
+                tmpdir, pg_fail, friday,
+            )
+            assert result["status"] == "failed"
+            assert "pg_dump: connection refused" in result["error"]
+            # Urgent webhook on failure
+            mock_webhook.assert_called_once()
+            assert mock_webhook.call_args.kwargs["priority"] == "urgent"
+            assert mock_webhook.call_args.kwargs["title"] == "DB Backup FAILED"
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_subprocess_raising_is_caught(self):
+        """An OSError from subprocess.run (e.g. pg_dump binary missing)
+        is caught by the broad except and returns failed status."""
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result, mock_webhook, _, _ = self._run_perform_backup(
+                tmpdir, FileNotFoundError("pg_dump not found"), friday,
+            )
+            assert result["status"] == "failed"
+            assert "pg_dump not found" in result["error"]
+            assert mock_webhook.call_args.kwargs["priority"] == "urgent"
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_removes_partial_file_on_failure(self):
+        """If pg_dump partially wrote a file before failing, the except
+        block deletes it so we don't leak a half-baked dump."""
+        from backend import backup as backup_mod
+
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            # subprocess.run "writes a partial file, then reports failure"
+            def _partial_then_fail(cmd, **kwargs):
+                if "-f" in cmd:
+                    filepath = cmd[cmd.index("-f") + 1]
+                    with open(filepath, "wb") as f:
+                        f.write(b"PARTIAL")
+                return MagicMock(returncode=2, stderr="aborted mid-dump")
+
+            with patch.object(backup_mod, "BACKUP_DIR", tmpdir), \
+                 patch.object(backup_mod, "datetime",
+                              self._fake_datetime_for(friday)), \
+                 patch.object(backup_mod, "subprocess") as mock_sub, \
+                 patch.object(backup_mod, "cleanup_old_backups"), \
+                 patch("backend.email_utils.send_webhook_notification"), \
+                 patch.dict(os.environ, {"DATABASE_URL": "postgresql://u:p@h:5432/d"}):
+                mock_sub.run.side_effect = _partial_then_fail
+                from backend.backup import perform_backup
+                result = perform_backup()
+
+            assert result["status"] == "failed"
+            # Partial file removed — nothing left behind in BACKUP_DIR
+            assert os.listdir(tmpdir) == []
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_swallows_oserror_during_partial_cleanup(self):
+        """The inner try/except around os.remove must swallow OSError so the
+        original failure path still returns its failed-status dict.
+        Without it, a remove failure would bubble out and mask the real error.
+        """
+        from backend import backup as backup_mod
+
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            def _partial_then_fail(cmd, **kwargs):
+                if "-f" in cmd:
+                    filepath = cmd[cmd.index("-f") + 1]
+                    with open(filepath, "wb") as f:
+                        f.write(b"PARTIAL")
+                return MagicMock(returncode=2, stderr="boom")
+
+            with patch.object(backup_mod, "BACKUP_DIR", tmpdir), \
+                 patch.object(backup_mod, "datetime",
+                              self._fake_datetime_for(friday)), \
+                 patch.object(backup_mod, "subprocess") as mock_sub, \
+                 patch.object(backup_mod, "cleanup_old_backups"), \
+                 patch.object(backup_mod, "os") as mock_os, \
+                 patch("backend.email_utils.send_webhook_notification"):
+                # Re-export the os attrs we still want to use
+                mock_os.path = os.path
+                mock_os.environ = {"DATABASE_URL": "postgresql://u:p@h:5432/d"}
+                mock_os.makedirs = os.makedirs
+                mock_os.rename = os.rename
+                # The partial file is "detected" then os.remove raises
+                mock_os.path.exists = MagicMock(return_value=True)
+                mock_os.remove = MagicMock(side_effect=OSError("permission denied"))
+
+                mock_sub.run.side_effect = _partial_then_fail
+                from backend.backup import perform_backup
+                result = perform_backup()  # Must NOT raise
+
+            assert result["status"] == "failed"
+            assert "boom" in result["error"]
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_failure_skips_cleanup_call(self):
+        """cleanup_old_backups runs only on the success path (line 91), not
+        in the except block. Pin that contract so a future refactor doesn't
+        accidentally invoke retention pruning after a failed dump.
+        """
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        pg_fail = MagicMock(returncode=1, stderr="failure")
+        tmpdir = tempfile.mkdtemp()
+        try:
+            _, _, mock_cleanup, _ = self._run_perform_backup(
+                tmpdir, pg_fail, friday,
+            )
+            mock_cleanup.assert_not_called()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_perform_backup_passes_pgpassword_to_subprocess(self):
+        """The pg_dump invocation must inherit PGPASSWORD from _parse_database_url,
+        not from the ambient environment. Guards against credential drift if
+        someone refactors the env-copy line.
+        """
+        from backend import backup as backup_mod
+
+        friday = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        pg_ok = MagicMock(returncode=0, stderr="")
+        tmpdir = tempfile.mkdtemp()
+        captured_env = {}
+
+        def _capture_env(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            if "-f" in cmd:
+                with open(cmd[cmd.index("-f") + 1], "wb") as f:
+                    f.write(b"OK")
+            return pg_ok
+
+        try:
+            with patch.object(backup_mod, "BACKUP_DIR", tmpdir), \
+                 patch.object(backup_mod, "datetime",
+                              self._fake_datetime_for(friday)), \
+                 patch.object(backup_mod, "subprocess") as mock_sub, \
+                 patch.object(backup_mod, "cleanup_old_backups"), \
+                 patch("backend.email_utils.send_webhook_notification"), \
+                 patch.dict(os.environ, {"DATABASE_URL": "postgresql://alice:s3cret@db:5432/canslim"}):
+                mock_sub.run.side_effect = _capture_env
+                from backend.backup import perform_backup
+                result = perform_backup()
+            assert result["status"] == "success"
+            assert captured_env.get("PGPASSWORD") == "s3cret"
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 # ============== Breakout Monitor ==============
 
