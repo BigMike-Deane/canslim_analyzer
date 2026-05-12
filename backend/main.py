@@ -3308,10 +3308,13 @@ async def get_ai_portfolio_history(
 
     # Build a date → spy_price lookup from MarketSnapshot for the window.
     # MarketSnapshot.date is unique, so this is a one-row-per-day map.
+    # Lookback widened by 7 days so the first-snapshot anchor can fall back
+    # to a slightly earlier MarketSnapshot when the exact first-day row is
+    # missing (weekend, scanner gap, or first_day == start_date_only edge).
     spy_by_date = {}
     if snapshots:
         market_snaps = db.query(MarketSnapshot).filter(
-            MarketSnapshot.date >= start_date_only,
+            MarketSnapshot.date >= start_date_only - timedelta(days=7),
             MarketSnapshot.spy_price.isnot(None),
         ).all()
         for ms in market_snaps:
