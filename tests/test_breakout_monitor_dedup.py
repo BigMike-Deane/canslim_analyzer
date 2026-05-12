@@ -457,3 +457,292 @@ class TestMorningBriefingDedup:
         last_sent = get_system_state(db_session, LAST_BRIEFING_DATE_KEY)
         today_iso = date.today().isoformat()
         assert last_sent != today_iso  # → would proceed to send today
+
+
+# ── _get_daily_cap fallbacks ──────────────────────────────────────────────────
+
+
+class TestGetDailyCapFallbacks:
+    """Covers backend/breakout_monitor.py:43-47.
+
+    The config-cap reader has two non-default exits: an explicit None guard
+    against malformed YAML, and a broad except that catches any other error
+    (missing config, bad type, IO). Both must fall back to DEFAULT_DAILY_CAP.
+    """
+
+    def test_falls_back_when_config_returns_none(self, monkeypatch):
+        """A malformed YAML can yield None — must NOT propagate as the cap."""
+        from backend import breakout_monitor as bm
+        from config_loader import config
+
+        monkeypatch.setattr(config, "get", lambda key, default=None: None)
+        assert bm._get_daily_cap() == bm.DEFAULT_DAILY_CAP
+
+    def test_falls_back_when_config_raises(self, monkeypatch):
+        """Any exception inside the config lookup must be swallowed."""
+        from backend import breakout_monitor as bm
+        from config_loader import config
+
+        def _boom(key, default=None):
+            raise RuntimeError("config file missing")
+
+        monkeypatch.setattr(config, "get", _boom)
+        assert bm._get_daily_cap() == bm.DEFAULT_DAILY_CAP
+
+
+# ── check_intraday_breakouts edge cases ───────────────────────────────────────
+
+
+class TestCheckIntradayBreakoutsEdges:
+    """Covers the short-circuits and the elif-branch alert in
+    check_intraday_breakouts that the cooldown/cap tests don't reach."""
+
+    def test_no_candidates_near_pivot_short_circuits(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes
+    ):
+        """A stock 10% below pivot is outside the [-3, 5] near-pivot band —
+        the loop never builds a fresh-quote request and returns early
+        (line 134)."""
+        from backend.breakout_monitor import check_intraday_breakouts
+        # current_price=90 with pivot=100 → pct=+10, OUTSIDE the band
+        _make_breaking_stock(
+            db_session, "FAR", pivot_price=100.0, current_price=90.0,
+        )
+        check_intraday_breakouts()
+        # No alerts emitted, no fresh-quote dict populated
+        assert db_session.query(BreakoutAlert).count() == 0
+        assert silence_notifications == []
+
+    def test_empty_fresh_prices_short_circuits(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes
+    ):
+        """yfinance returning {} (e.g., off-hours or API outage) exits the
+        function before any alert dispatch (line 141)."""
+        from backend.breakout_monitor import check_intraday_breakouts
+        _make_breaking_stock(
+            db_session, "AAPL", pivot_price=100.0, current_price=99.0,
+        )
+        # Do NOT populate yf_quotes — stays {}
+        check_intraday_breakouts()
+        assert db_session.query(BreakoutAlert).count() == 0
+        assert silence_notifications == []
+
+    def test_zero_price_quote_is_skipped(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes
+    ):
+        """A 0 (or negative) quote can come from yfinance during halts. Must
+        not divide-by-zero or write a meaningless alert (line 148)."""
+        from backend.breakout_monitor import check_intraday_breakouts
+        _make_breaking_stock(
+            db_session, "AAPL", pivot_price=100.0, current_price=99.0,
+        )
+        yf_quotes["AAPL"] = 0.0
+        check_intraday_breakouts()
+        assert db_session.query(BreakoutAlert).count() == 0
+
+    def test_already_above_pivot_with_volume_emits_breakout_plus_volume(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes
+    ):
+        """Stock entered the cycle already past pivot (old_pct <= 0) — the
+        first branch doesn't fire (no 'just crossed'). The elif branch
+        (line 171-174) emits BREAKOUT + VOLUME only if vol_ratio > 1.5.
+        """
+        from backend.breakout_monitor import check_intraday_breakouts
+        # current_price=101 (above pivot=100) → old_pct = (100-101)/100*100 = -1
+        # Quote=100.5 → pct_from_pivot=-0.5. old_pct=-1 NOT > 0, so first
+        # branch skipped. -3 < -0.5 <= 0 satisfies the elif. vol_ratio>1.5.
+        _make_breaking_stock(
+            db_session, "AAPL", pivot_price=100.0, current_price=101.0,
+            volume_ratio=2.5,
+        )
+        yf_quotes["AAPL"] = 100.5
+        check_intraday_breakouts()
+        assert db_session.query(BreakoutAlert).count() == 1
+        row = db_session.query(BreakoutAlert).first()
+        assert row.label == "BREAKOUT + VOLUME"
+
+    def test_already_above_pivot_without_volume_emits_no_alert(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes
+    ):
+        """Same setup as above but vol_ratio<=1.5 — elif branch enters but
+        the inner volume gate refuses to alert. Pins the volume-confirmation
+        contract for the 'already above' subbranch."""
+        from backend.breakout_monitor import check_intraday_breakouts
+        _make_breaking_stock(
+            db_session, "AAPL", pivot_price=100.0, current_price=101.0,
+            volume_ratio=1.0,  # below threshold
+        )
+        yf_quotes["AAPL"] = 100.5
+        check_intraday_breakouts()
+        assert db_session.query(BreakoutAlert).count() == 0
+        # current_price still updated even without an alert (line 206)
+        refreshed = db_session.query(Stock).filter(Stock.ticker == "AAPL").first()
+        assert refreshed.current_price == 100.5
+
+    def test_just_crossed_pivot_without_volume_emits_plain_breakout(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes
+    ):
+        """Stock crosses pivot during the cycle (old_pct > 0, new <= 0).
+        The first branch fires regardless of volume; without vol_ratio > 1.5
+        the alert label is plain BREAKOUT (line 170), not BREAKOUT + VOLUME.
+        """
+        from backend.breakout_monitor import check_intraday_breakouts
+        # current_price=99 below pivot=100 → old_pct=+1 (>0 — qualifies as
+        # 'was below, now crossing'). vol_ratio=1.0 fails the volume gate.
+        _make_breaking_stock(
+            db_session, "AAPL", pivot_price=100.0, current_price=99.0,
+            volume_ratio=1.0,
+        )
+        yf_quotes["AAPL"] = 101.0  # crosses pivot
+        check_intraday_breakouts()
+        rows = db_session.query(BreakoutAlert).all()
+        assert len(rows) == 1
+        assert rows[0].label == "BREAKOUT"  # not "BREAKOUT + VOLUME"
+
+    def test_daily_cap_hit_mid_cycle_stops_loop(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes,
+        monkeypatch,
+    ):
+        """Pre-existing alerts of (cap - 1) leave room for exactly one more
+        firing this cycle. Two candidates near pivot — the second iteration
+        must hit the inline cap check (line 158) and break (line 160).
+        """
+        from backend.breakout_monitor import check_intraday_breakouts, DEFAULT_DAILY_CAP
+
+        # Use a small cap to keep the seed cheap; force the production code
+        # to read this override via _get_daily_cap.
+        SMALL_CAP = 2
+        monkeypatch.setattr(
+            "backend.breakout_monitor._get_daily_cap", lambda: SMALL_CAP
+        )
+
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        # Seed (cap - 1) prior alerts on yesterday's tickers so the pre-loop
+        # check passes (1 < 2) but the first new alert will tip us over.
+        db_session.add(BreakoutAlert(
+            ticker="OLD", alert_date=today,
+            created_at=now - timedelta(minutes=5),
+            pivot_price=50.0, current_price=51.0, vol_ratio=1.5,
+            label="BREAKOUT",
+        ))
+        db_session.commit()
+
+        # Two fresh candidates near pivot
+        _make_breaking_stock(
+            db_session, "AAA", pivot_price=100.0, current_price=99.0,
+        )
+        _make_breaking_stock(
+            db_session, "BBB", pivot_price=200.0, current_price=199.0,
+        )
+        yf_quotes["AAA"] = 100.5  # crosses → first breakout
+        yf_quotes["BBB"] = 200.5  # would cross, but cap stops us
+
+        check_intraday_breakouts()
+        # Total alerts now: 1 (seed) + 1 (AAA) = 2. BBB must NOT have alerted.
+        rows = db_session.query(BreakoutAlert).order_by(BreakoutAlert.id).all()
+        tickers_alerted = [r.ticker for r in rows]
+        assert tickers_alerted == ["OLD", "AAA"]
+        # BBB's current_price was NOT updated either — the loop broke before
+        # reaching the second iteration's update.
+        bbb = db_session.query(Stock).filter(Stock.ticker == "BBB").first()
+        assert bbb.current_price == 199.0
+
+    def test_exception_inside_loop_triggers_rollback(
+        self, db_session, stub_market_open, silence_notifications, yf_quotes,
+        monkeypatch,
+    ):
+        """If something raises mid-loop (e.g. a transient DB error from a
+        helper), the broad except runs db.rollback() and the function
+        returns cleanly instead of bubbling the exception out (line 215-217).
+        """
+        from backend import breakout_monitor as bm
+        _make_breaking_stock(
+            db_session, "AAPL", pivot_price=100.0, current_price=99.0,
+        )
+        yf_quotes["AAPL"] = 101.0
+
+        # Force the inner helper to blow up just before we'd record the alert.
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated DB hiccup")
+
+        monkeypatch.setattr(bm, "_record_alert", _boom)
+        # Must NOT raise out of check_intraday_breakouts.
+        bm.check_intraday_breakouts()
+        # No alert was committed (rollback pulled it out of the session).
+        assert db_session.query(BreakoutAlert).count() == 0
+
+
+# ── _fetch_quick_quotes ───────────────────────────────────────────────────────
+
+
+class TestFetchQuickQuotes:
+    """Covers backend/breakout_monitor.py:222-242 — the yfinance batch quote
+    fetcher. Single-ticker vs multi-ticker have different DataFrame layouts
+    in yfinance, and the exception path must return {} so the caller can
+    short-circuit gracefully.
+    """
+
+    def test_single_ticker_returns_last_close(self, monkeypatch):
+        """len(tickers) == 1 → yfinance returns a flat DataFrame; we read
+        the last non-NaN Close value."""
+        from backend import breakout_monitor as bm
+        import pandas as pd
+
+        df = pd.DataFrame({"Close": [99.0, 100.5, 101.0]})
+
+        def _fake_download(tickers, period, interval, progress, group_by):
+            return df
+
+        monkeypatch.setattr("yfinance.download", _fake_download)
+        result = bm._fetch_quick_quotes(["AAPL"])
+        assert result == {"AAPL": 101.0}
+
+    def test_multi_ticker_returns_per_ticker_close(self, monkeypatch):
+        """len(tickers) > 1 → yfinance returns a grouped DataFrame keyed by
+        ticker; we iterate and extract each Close column's last value."""
+        from backend import breakout_monitor as bm
+        import pandas as pd
+
+        df = pd.DataFrame({
+            ("AAPL", "Close"): [200.0, 201.0],
+            ("MSFT", "Close"): [400.0, 401.5],
+        })
+
+        def _fake_download(tickers, period, interval, progress, group_by):
+            return df
+
+        monkeypatch.setattr("yfinance.download", _fake_download)
+        result = bm._fetch_quick_quotes(["AAPL", "MSFT"])
+        assert result == {"AAPL": 201.0, "MSFT": 401.5}
+
+    def test_yfinance_exception_returns_empty_dict(self, monkeypatch):
+        """A network failure or yfinance bug must not bubble out — the
+        caller relies on {} to short-circuit the rest of the cycle."""
+        from backend import breakout_monitor as bm
+
+        def _boom(*args, **kwargs):
+            raise ConnectionError("yfinance offline")
+
+        monkeypatch.setattr("yfinance.download", _boom)
+        assert bm._fetch_quick_quotes(["AAPL", "MSFT"]) == {}
+
+    def test_multi_ticker_missing_column_is_silently_skipped(self, monkeypatch):
+        """If yfinance returns a frame missing one of the requested tickers,
+        the KeyError-handling inner try keeps the loop going (the line 237
+        `except (KeyError, IndexError): pass`)."""
+        from backend import breakout_monitor as bm
+        import pandas as pd
+
+        df = pd.DataFrame({
+            ("AAPL", "Close"): [200.0, 201.0],
+            # MSFT column intentionally missing
+        })
+
+        def _fake_download(tickers, period, interval, progress, group_by):
+            return df
+
+        monkeypatch.setattr("yfinance.download", _fake_download)
+        result = bm._fetch_quick_quotes(["AAPL", "MSFT"])
+        # AAPL still came through; MSFT silently dropped
+        assert result == {"AAPL": 201.0}
