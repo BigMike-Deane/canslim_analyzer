@@ -390,6 +390,145 @@ class TestBacktestRead:
         r = client.get(f"/api/backtests/compare?ids={ids}")
         assert r.status_code == 400
 
+    def test_compare_spy_return_sourced_from_first_backtest_snapshots(self):
+        """Pin: chart_data[i]['spy_return'] is read from the FIRST compare-id's
+        snapshot.spy_return_pct, not the second. Guards against the N+1 fix
+        (replacing per-date .first() with an in-memory map) drifting toward
+        reading SPY from the wrong backtest.
+        """
+        db = _db()
+        try:
+            bt_first = BacktestRun(
+                name="cmp-spy-first", status="completed",
+                start_date=date(2024, 3, 1), end_date=date(2024, 3, 5),
+                starting_cash=25000.0, total_return_pct=10.0,
+                spy_return_pct=5.0, max_drawdown_pct=-5.0,
+                sharpe_ratio=1.0, win_rate=50.0, total_trades=5, user_id=1,
+            )
+            bt_second = BacktestRun(
+                name="cmp-spy-second", status="completed",
+                start_date=date(2024, 3, 1), end_date=date(2024, 3, 5),
+                starting_cash=25000.0, total_return_pct=15.0,
+                spy_return_pct=7.0, max_drawdown_pct=-3.0,
+                sharpe_ratio=1.2, win_rate=55.0, total_trades=7, user_id=1,
+            )
+            db.add_all([bt_first, bt_second])
+            db.commit()
+            db.refresh(bt_first)
+            db.refresh(bt_second)
+            bt_first_id = bt_first.id
+            bt_second_id = bt_second.id
+
+            # First backtest carries the distinctive SPY series we expect to
+            # see surface in chart_data. Second backtest has a sentinel value
+            # (99.0) — if it ever shows up in the response, the wrong row was
+            # picked.
+            expected_spy = [-1.0, -0.5, 0.0, 0.5, 1.0]
+            for i in range(5):
+                d = date(2024, 3, 1) + timedelta(days=i)
+                db.add(BacktestSnapshot(
+                    backtest_id=bt_first_id, date=d,
+                    total_value=25000 + i * 100,
+                    cumulative_return_pct=i * 1.0,
+                    spy_value=25000 + i * 50,
+                    spy_return_pct=expected_spy[i],
+                ))
+                db.add(BacktestSnapshot(
+                    backtest_id=bt_second_id, date=d,
+                    total_value=25000 + i * 150,
+                    cumulative_return_pct=i * 1.5,
+                    spy_value=25000 + i * 70,
+                    spy_return_pct=99.0,
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get(f"/api/backtests/compare?ids={bt_first_id},{bt_second_id}")
+        assert r.status_code == 200
+        chart = r.json()["chart_data"]
+        # cumulative_return_pct for date i=0 is 0.0 — falsy but not None;
+        # the gate `is not None` lets it through, so spy_return is emitted.
+        actual_spy = [pt.get("spy_return") for pt in chart]
+        assert actual_spy == expected_spy, (
+            f"chart_data spy_return drifted: expected {expected_spy}, got {actual_spy}"
+        )
+
+    def test_compare_does_not_refetch_spy_per_date(self):
+        """Pin the N+1 fix: chart-data should reuse the first-backtest
+        snapshots already in memory, not refetch with one `.first()` per date.
+
+        Before fix: 2 backtest_snapshots SELECTs (one per backtest) plus N
+        more (one per date) — for a 4-yr compare with ~1000 trading days,
+        that was ~1000 extra round-trips. After fix: exactly 2.
+
+        SQLAlchemy's `before_cursor_execute` event lets us count the
+        statements issued during the request. Filtering on the table name
+        scopes the assertion to the read path under test.
+        """
+        from sqlalchemy import event
+        from backend.database import engine
+
+        db = _db()
+        try:
+            bt_a = BacktestRun(
+                name="cmp-n1-a", status="completed",
+                start_date=date(2024, 5, 1), end_date=date(2024, 5, 20),
+                starting_cash=25000.0, total_return_pct=8.0,
+                spy_return_pct=4.0, max_drawdown_pct=-2.0,
+                sharpe_ratio=0.9, win_rate=45.0, total_trades=3, user_id=1,
+            )
+            bt_b = BacktestRun(
+                name="cmp-n1-b", status="completed",
+                start_date=date(2024, 5, 1), end_date=date(2024, 5, 20),
+                starting_cash=25000.0, total_return_pct=12.0,
+                spy_return_pct=6.0, max_drawdown_pct=-1.0,
+                sharpe_ratio=1.1, win_rate=50.0, total_trades=4, user_id=1,
+            )
+            db.add_all([bt_a, bt_b])
+            db.commit()
+            db.refresh(bt_a)
+            db.refresh(bt_b)
+            bt_a_id = bt_a.id
+            bt_b_id = bt_b.id
+
+            # 15 unique dates — enough that the pre-fix N+1 would dominate.
+            for i in range(15):
+                d = date(2024, 5, 1) + timedelta(days=i)
+                db.add(BacktestSnapshot(
+                    backtest_id=bt_a_id, date=d,
+                    total_value=25000 + i * 50, cumulative_return_pct=i * 0.5,
+                    spy_value=25000 + i * 30, spy_return_pct=i * 0.3,
+                ))
+                db.add(BacktestSnapshot(
+                    backtest_id=bt_b_id, date=d,
+                    total_value=25000 + i * 60, cumulative_return_pct=i * 0.6,
+                    spy_value=25000 + i * 40, spy_return_pct=i * 0.4,
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+        captured = []
+
+        def _capture(conn, cursor, statement, params, context, executemany):
+            if "backtest_snapshots" in statement.lower():
+                captured.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _capture)
+        try:
+            r = client.get(f"/api/backtests/compare?ids={bt_a_id},{bt_b_id}")
+        finally:
+            event.remove(engine, "before_cursor_execute", _capture)
+
+        assert r.status_code == 200
+        selects = [s for s in captured if s.strip().lower().startswith("select")]
+        # Pre-fix this would be 2 + 15 (= 17). Post-fix it must be 2.
+        assert len(selects) == 2, (
+            f"expected 2 backtest_snapshots SELECTs, got {len(selects)}; "
+            f"per-date refetch likely regressed:\n" + "\n".join(selects)
+        )
+
 
 class TestBacktestMutations:
     """Tier 1 — DELETE / cancel / rerun / multi / batch."""

@@ -3834,6 +3834,11 @@ async def compare_backtests(
 
     backtests_data = []
     all_dates = set()
+    # SPY benchmark series from the first valid backtest. Captured inline
+    # below from the snapshot rows we already loaded — the chart-data loop
+    # previously refetched this with one `.first()` per date, which is
+    # O(date_count) extra queries (~1000 on a 4-yr compare).
+    spy_returns_by_date: dict[str, float | None] = {}
 
     for bt_id in bt_ids:
         bt = db.query(BacktestRun).filter(BacktestRun.id == bt_id, BacktestRun.user_id == current_user.id).first()
@@ -3858,6 +3863,11 @@ async def compare_backtests(
         bt_info["snapshots"] = {s.date.isoformat(): s.cumulative_return_pct for s in snapshots}
         backtests_data.append(bt_info)
 
+        # Materialize SPY series from the first successfully-loaded backtest
+        # (the one that becomes backtests_data[0] — the benchmark reference).
+        if len(backtests_data) == 1:
+            spy_returns_by_date = {s.date.isoformat(): s.spy_return_pct for s in snapshots}
+
         for s in snapshots:
             all_dates.add(s.date.isoformat())
 
@@ -3871,14 +3881,10 @@ async def compare_backtests(
         point = {"date": d}
         for bt in backtests_data:
             point[f"bt_{bt['id']}_return"] = bt["snapshots"].get(d)
-        # Use SPY from first backtest
+        # SPY from the first backtest — gate matches the original behavior
+        # (only emit when the benchmark backtest has a value at this date).
         if backtests_data[0]["snapshots"].get(d) is not None:
-            first_bt_id = backtests_data[0]["id"]
-            first_snaps = db.query(BacktestSnapshot).filter(
-                BacktestSnapshot.backtest_id == first_bt_id,
-                BacktestSnapshot.date == d
-            ).first()
-            point["spy_return"] = first_snaps.spy_return_pct if first_snaps else None
+            point["spy_return"] = spy_returns_by_date.get(d)
         chart_data.append(point)
 
     stat_keys = ["total_return_pct", "spy_return_pct", "max_drawdown_pct", "sharpe_ratio", "win_rate", "total_trades"]
