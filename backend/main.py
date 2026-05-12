@@ -3332,7 +3332,20 @@ async def get_ai_portfolio_history(
                 # Fall back to nearest earlier date in the lookup
                 earlier = [d for d in spy_by_date if d <= first_day]
                 if earlier:
-                    spy_anchor = spy_by_date[max(earlier)]
+                    anchor_date = max(earlier)
+                    spy_anchor = spy_by_date[anchor_date]
+                    if anchor_date < start_date_only:
+                        # Anchor was sourced from the 7-day pre-window buffer
+                        # (fa8e235). Logging so we can spot trends in scanner
+                        # gaps over time — not a problem, but worth tracking.
+                        logger.info(
+                            "ai-portfolio/history: SPY anchor fell back to "
+                            "pre-window date %s (start_date_only=%s, "
+                            "first_snapshot_day=%s)",
+                            anchor_date.isoformat(),
+                            start_date_only.isoformat(),
+                            first_day.isoformat(),
+                        )
         base_value = snapshots[0].total_value
 
     def _spy_value_for(snap):
@@ -4634,7 +4647,7 @@ async def get_trade_analytics(
     sector_data = {}
     for t in sells:
         stock = stocks_by_ticker.get(t.ticker)
-        sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
+        sector = (stock.sector if stock and stock.sector else 'Unknown')
         if sector not in sector_data:
             sector_data[sector] = {"trades": 0, "wins": 0, "pnl": 0}
         sector_data[sector]["trades"] += 1
@@ -5191,7 +5204,7 @@ async def get_portfolio_risk(current_user: User = Depends(get_current_active_use
     sector_data = {}
     for pos in positions:
         stock = risk_stocks_map.get(pos.ticker)
-        sector = getattr(stock, 'sector', 'Unknown') or 'Unknown' if stock else 'Unknown'
+        sector = (stock.sector if stock and stock.sector else 'Unknown')
         if sector not in sector_data:
             sector_data[sector] = {"count": 0, "value": 0}
         sector_data[sector]["count"] += 1
