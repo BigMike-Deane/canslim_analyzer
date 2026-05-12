@@ -31,7 +31,9 @@ from backend.routes.auth import (
     _client_ip, _record_auth_fail,
     google_login, refresh_token,
     get_me, update_my_webhook, get_auth_config,
+    update_notification_prefs,
     GoogleLoginRequest, RefreshRequest, WebhookUpdateRequest,
+    NotificationPrefsRequest,
 )
 # Aliased on import: the route handler's literal name starts with `test_`,
 # which pytest's collector would pick up as a top-level test and execute
@@ -430,6 +432,219 @@ class TestTestMyWebhook:
         ):
             result = _run(send_test_webhook(current_user=user))
         assert result == {"sent": False, "url_configured": True}
+
+
+# ── PATCH /api/auth/me/notification-prefs ──────────────────────────────
+
+
+class TestUpdateNotificationPrefs:
+    """Covers backend/routes/auth.py:200-244 — per-kind mute list + quiet hours.
+
+    The handler has two independent branch clusters:
+      1. mute_kinds: None (skip) | [] (clear) | [valid...] (set) | [bad...] (400)
+      2. quiet_hours: clear flag short-circuits; otherwise start/end each go
+         through the 0..23 range check.
+
+    Boundary tests (0, 23 accepted; -1, 24 rejected) pin the inclusive range
+    contract — off-by-one here would silently mute the user at hour 0 or
+    leak alerts at hour 23.
+    """
+
+    @staticmethod
+    def _user_with_prefs(
+        mute_kinds=None,
+        quiet_hours_start=None,
+        quiet_hours_end=None,
+    ):
+        """Like _make_user but with explicit notification-pref attrs.
+
+        UserResponse declares these as Optional[list[str]] / Optional[int];
+        leaving them as auto-MagicMock would still pass Pydantic in this
+        suite (see TestGetMe), but the assertions here read these attrs
+        back so we set them explicitly.
+        """
+        u = _make_user()
+        u.mute_kinds = mute_kinds
+        u.quiet_hours_start = quiet_hours_start
+        u.quiet_hours_end = quiet_hours_end
+        return u
+
+    # --- mute_kinds branch ----------------------------------------------
+
+    def test_unknown_kind_returns_400_and_does_not_commit(self):
+        user = self._user_with_prefs(mute_kinds=["trade"])
+        db = _make_db()
+        body = NotificationPrefsRequest(mute_kinds=["trade", "bogus_kind"])
+        with pytest.raises(HTTPException) as exc:
+            _run(update_notification_prefs(body, current_user=user, db=db))
+        assert exc.value.status_code == 400
+        assert "Unknown kinds" in exc.value.detail
+        assert "bogus_kind" in exc.value.detail
+        # Pre-existing mute list untouched; db.commit not reached
+        assert user.mute_kinds == ["trade"]
+        db.commit.assert_not_called()
+
+    def test_all_valid_kinds_persists_as_list(self):
+        user = self._user_with_prefs(mute_kinds=None)
+        db = _make_db()
+        body = NotificationPrefsRequest(mute_kinds=["trade", "stop_loss", "breakout"])
+        resp = _run(update_notification_prefs(body, current_user=user, db=db))
+        assert user.mute_kinds == ["trade", "stop_loss", "breakout"]
+        assert resp.mute_kinds == ["trade", "stop_loss", "breakout"]
+        db.commit.assert_called_once()
+        db.refresh.assert_called_once_with(user)
+
+    def test_empty_list_clears_mute(self):
+        """Passing [] is the documented way to clear the mute list."""
+        user = self._user_with_prefs(mute_kinds=["trade", "stop_loss"])
+        db = _make_db()
+        body = NotificationPrefsRequest(mute_kinds=[])
+        resp = _run(update_notification_prefs(body, current_user=user, db=db))
+        assert user.mute_kinds == []
+        # `or []` fallback in the response means `mute_kinds=[]` round-trips as []
+        assert resp.mute_kinds == []
+        db.commit.assert_called_once()
+
+    def test_mute_kinds_none_leaves_user_attr_untouched(self):
+        """Unset field must NOT overwrite the existing mute list."""
+        user = self._user_with_prefs(mute_kinds=["trade"])
+        db = _make_db()
+        body = NotificationPrefsRequest()  # all fields default
+        _run(update_notification_prefs(body, current_user=user, db=db))
+        assert user.mute_kinds == ["trade"]
+
+    def test_bad_kinds_listed_in_error_detail(self):
+        """Both bogus kinds should appear in the 400 detail, not just the first."""
+        user = self._user_with_prefs()
+        body = NotificationPrefsRequest(mute_kinds=["nope1", "trade", "nope2"])
+        with pytest.raises(HTTPException) as exc:
+            _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert "nope1" in exc.value.detail
+        assert "nope2" in exc.value.detail
+
+    # --- quiet_hours: clear flag ----------------------------------------
+
+    def test_clear_quiet_hours_true_nulls_both_bounds(self):
+        user = self._user_with_prefs(quiet_hours_start=22, quiet_hours_end=6)
+        db = _make_db()
+        body = NotificationPrefsRequest(clear_quiet_hours=True)
+        resp = _run(update_notification_prefs(body, current_user=user, db=db))
+        assert user.quiet_hours_start is None
+        assert user.quiet_hours_end is None
+        assert resp.quiet_hours_start is None
+        assert resp.quiet_hours_end is None
+
+    def test_clear_flag_short_circuits_start_end_assignment(self):
+        """clear_quiet_hours=True wins even if start/end are also provided."""
+        user = self._user_with_prefs(quiet_hours_start=22, quiet_hours_end=6)
+        body = NotificationPrefsRequest(
+            clear_quiet_hours=True,
+            quiet_hours_start=10,
+            quiet_hours_end=18,
+        )
+        _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        # Bounds nulled; the 10/18 inputs ignored because clear branch ran.
+        assert user.quiet_hours_start is None
+        assert user.quiet_hours_end is None
+
+    # --- quiet_hours: range checks --------------------------------------
+
+    def test_quiet_hours_start_above_range_returns_400(self):
+        user = self._user_with_prefs(quiet_hours_start=20)
+        db = _make_db()
+        body = NotificationPrefsRequest(quiet_hours_start=24)
+        with pytest.raises(HTTPException) as exc:
+            _run(update_notification_prefs(body, current_user=user, db=db))
+        assert exc.value.status_code == 400
+        assert "quiet_hours_start" in exc.value.detail
+        assert "0-23" in exc.value.detail
+        # Pre-existing value untouched
+        assert user.quiet_hours_start == 20
+        db.commit.assert_not_called()
+
+    def test_quiet_hours_start_below_range_returns_400(self):
+        user = self._user_with_prefs()
+        body = NotificationPrefsRequest(quiet_hours_start=-1)
+        with pytest.raises(HTTPException) as exc:
+            _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert exc.value.status_code == 400
+
+    def test_quiet_hours_start_zero_accepted(self):
+        """0 is the inclusive lower bound — must be accepted, not rejected."""
+        user = self._user_with_prefs()
+        body = NotificationPrefsRequest(quiet_hours_start=0)
+        resp = _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert user.quiet_hours_start == 0
+        assert resp.quiet_hours_start == 0
+
+    def test_quiet_hours_start_twenty_three_accepted(self):
+        """23 is the inclusive upper bound — must be accepted."""
+        user = self._user_with_prefs()
+        body = NotificationPrefsRequest(quiet_hours_start=23)
+        _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert user.quiet_hours_start == 23
+
+    def test_quiet_hours_end_above_range_returns_400(self):
+        user = self._user_with_prefs()
+        body = NotificationPrefsRequest(quiet_hours_end=99)
+        with pytest.raises(HTTPException) as exc:
+            _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert exc.value.status_code == 400
+        assert "quiet_hours_end" in exc.value.detail
+
+    def test_quiet_hours_end_below_range_returns_400(self):
+        user = self._user_with_prefs()
+        body = NotificationPrefsRequest(quiet_hours_end=-1)
+        with pytest.raises(HTTPException) as exc:
+            _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert exc.value.status_code == 400
+
+    def test_quiet_hours_end_boundary_values_accepted(self):
+        """Both ends of the inclusive range round-trip cleanly."""
+        for hour in (0, 23):
+            user = self._user_with_prefs()
+            body = NotificationPrefsRequest(quiet_hours_end=hour)
+            _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+            assert user.quiet_hours_end == hour
+
+    def test_only_end_set_leaves_start_untouched(self):
+        """Each field is independently optional — start should not be overwritten."""
+        user = self._user_with_prefs(quiet_hours_start=22, quiet_hours_end=None)
+        body = NotificationPrefsRequest(quiet_hours_end=6)
+        _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert user.quiet_hours_start == 22  # unchanged
+        assert user.quiet_hours_end == 6
+
+    def test_all_fields_unset_still_commits_and_returns_current_state(self):
+        """An empty body is a valid no-op write that echoes back the user."""
+        user = self._user_with_prefs(
+            mute_kinds=["breakout"],
+            quiet_hours_start=21,
+            quiet_hours_end=7,
+        )
+        db = _make_db()
+        body = NotificationPrefsRequest()
+        resp = _run(update_notification_prefs(body, current_user=user, db=db))
+        # State unchanged
+        assert user.mute_kinds == ["breakout"]
+        assert user.quiet_hours_start == 21
+        assert user.quiet_hours_end == 7
+        # Response echoes that state
+        assert resp.mute_kinds == ["breakout"]
+        assert resp.quiet_hours_start == 21
+        assert resp.quiet_hours_end == 7
+        # Commit + refresh still fire — endpoint contract is "PATCH always writes"
+        db.commit.assert_called_once()
+        db.refresh.assert_called_once_with(user)
+
+    # --- response shape -------------------------------------------------
+
+    def test_response_falls_back_to_empty_list_when_mute_kinds_is_none(self):
+        """The `current_user.mute_kinds or []` fallback hides None from clients."""
+        user = self._user_with_prefs(mute_kinds=None)
+        body = NotificationPrefsRequest(quiet_hours_start=10)
+        resp = _run(update_notification_prefs(body, current_user=user, db=_make_db()))
+        assert resp.mute_kinds == []
 
 
 # ── GET /api/auth/config ───────────────────────────────────────────────
