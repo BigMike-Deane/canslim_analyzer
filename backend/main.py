@@ -2469,7 +2469,7 @@ async def get_portfolio_gameplan(current_user: User = Depends(get_current_active
 
     # === ADD TO WINNERS ===
     for p in positions:
-        stock = db.query(Stock).filter(Stock.ticker == p.ticker).first()
+        stock = stocks_by_ticker.get(p.ticker)
         if not stock:
             continue
 

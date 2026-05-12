@@ -3459,3 +3459,57 @@ class TestBacktestScoringOverrideGuard:
         detail = r.json()["detail"]
         assert "scoring_weights" in detail
         assert "stop_loss_pct" not in detail
+
+
+class TestPortfolioGameplan:
+    """Tier 1 pin — /api/portfolio/gameplan response shape.
+
+    Endpoint was Tier-3 uncovered (test_main_coverage:16) until iteration
+    #4 touched it to fix an N+1 (one extra db.query(Stock) per position
+    in the ADD-TO-WINNERS loop, despite stocks_by_ticker already being
+    batch-fetched a few lines above). This class pins the response
+    contract the dashboard depends on so the optimization can't silently
+    regress shape.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        # Two positions on stocks with varying score / gain profiles so
+        # the function exercises both the SELL and ADD-TO-WINNERS loops.
+        _ensure_user_position(
+            "NVDA", shares=10.0, cost_basis=100.0,
+            current_price=110.0, current_value=1100.0,
+            gain_loss=100.0, gain_loss_pct=10.0,
+            canslim_score=70.0,
+        )
+        _ensure_user_position(
+            "AMD", shares=20.0, cost_basis=50.0,
+            current_price=48.0, current_value=960.0,
+            gain_loss=-40.0, gain_loss_pct=-4.0,
+            canslim_score=60.0,
+        )
+        # Top-CANSLIM candidate so BUY actions can populate
+        _ensure_stock("AVGO", score=85.0, projected_growth=15.0)
+
+    def test_gameplan_returns_top_level_shape(self):
+        r = client.get("/api/portfolio/gameplan")
+        assert r.status_code == 200, r.text
+        d = r.json()
+        for key in ("gameplan", "summary"):
+            assert key in d
+        assert isinstance(d["gameplan"], list)
+
+    def test_gameplan_summary_keys_pinned(self):
+        d = client.get("/api/portfolio/gameplan").json()
+        for key in ("total_actions", "sell_count", "trim_count",
+                    "buy_count", "add_count", "watch_count",
+                    "portfolio_value"):
+            assert key in d["summary"]
+
+    def test_gameplan_actions_have_required_keys(self):
+        d = client.get("/api/portfolio/gameplan").json()
+        # If any action emitted, it must carry the dashboard's expected keys.
+        for a in d["gameplan"]:
+            for key in ("action", "priority", "ticker", "reason", "details"):
+                assert key in a, f"missing {key} in {a}"
+            assert a["action"] in {"SELL", "TRIM", "BUY", "ADD", "WATCH"}
