@@ -20,10 +20,81 @@ export default function Admin() {
   const [mlValidation, setMlValidation] = useState(null)
   const [mlMode, setMlMode] = useState('regression')
 
+  // Scanner control state
+  const [scanner, setScanner] = useState(null)
+  const [scanSource, setScanSource] = useState('all')
+  const [scanInterval, setScanInterval] = useState(35)
+  const [scannerBusy, setScannerBusy] = useState(false)
+  const [scannerMessage, setScannerMessage] = useState(null)
+
   useEffect(() => {
     loadUsers()
     loadMLStatus()
+    loadScanner()
   }, [])
+
+  // Poll scanner status; fast when actively scanning, slow otherwise.
+  useEffect(() => {
+    const pollMs = scanner?.is_scanning ? 3000 : 15000
+    const t = setInterval(loadScanner, pollMs)
+    return () => clearInterval(t)
+  }, [scanner?.is_scanning])
+
+  async function loadScanner() {
+    try {
+      const s = await api.getScannerStatus()
+      setScanner(s)
+      // Only sync form controls from server when user hasn't been editing.
+      if (!scannerBusy) {
+        if (s.source) setScanSource(s.source)
+        if (s.interval_minutes) setScanInterval(s.interval_minutes)
+      }
+    } catch {}
+  }
+
+  async function handleScannerSave() {
+    setScannerBusy(true)
+    setScannerMessage(null)
+    try {
+      // PATCH updates config + reschedules without forcing an immediate scan.
+      await api.updateScannerConfig(scanSource, scanInterval)
+      setScannerMessage({ kind: 'success', text: `Scanner: ${scanSource} every ${scanInterval} min` })
+      await loadScanner()
+    } catch (err) {
+      setScannerMessage({ kind: 'error', text: err.message || 'Update failed' })
+    } finally {
+      setScannerBusy(false)
+    }
+  }
+
+  async function handleScannerRunNow() {
+    setScannerBusy(true)
+    setScannerMessage(null)
+    try {
+      await api.startScanner(scanSource, scanInterval)
+      setScannerMessage({ kind: 'success', text: 'Scan started' })
+      await loadScanner()
+    } catch (err) {
+      setScannerMessage({ kind: 'error', text: err.message || 'Start failed' })
+    } finally {
+      setScannerBusy(false)
+    }
+  }
+
+  async function handleScannerStop() {
+    if (!confirm('Stop the continuous scanner? Scheduled scans will halt until restarted.')) return
+    setScannerBusy(true)
+    setScannerMessage(null)
+    try {
+      await api.stopScanner()
+      setScannerMessage({ kind: 'success', text: 'Scanner stopped' })
+      await loadScanner()
+    } catch (err) {
+      setScannerMessage({ kind: 'error', text: err.message || 'Stop failed' })
+    } finally {
+      setScannerBusy(false)
+    }
+  }
 
   async function loadMLStatus() {
     try {
@@ -120,6 +191,155 @@ export default function Admin() {
 
   return (
     <div className="p-4 md:p-6 space-y-4">
+      {/* Scanner Control */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-dark-100">Scanner</h2>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+            scanner?.is_scanning
+              ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+              : scanner?.enabled
+                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                : 'bg-dark-700 text-dark-400 border border-dark-600'
+          }`}>
+            {scanner?.is_scanning ? 'SCANNING' : scanner?.enabled ? 'IDLE · ARMED' : 'STOPPED'}
+          </span>
+        </div>
+
+        <div className="card space-y-4">
+          <p className="text-[11px] text-dark-500 leading-relaxed">
+            Global scan cadence — affects every user. Changes take effect immediately and persist until the next restart.
+            <br />
+            <span className="text-dark-400">Per-user notification preferences live on the </span>
+            <a href="/settings" className="text-primary-400 hover:underline">Settings</a>
+            <span className="text-dark-400"> page.</span>
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="text-[10px] text-dark-500 uppercase tracking-wider">Source</label>
+              <select
+                value={scanSource}
+                onChange={e => setScanSource(e.target.value)}
+                disabled={scannerBusy}
+                className="mt-1 w-full px-2 py-1.5 bg-dark-800 border border-dark-600 rounded-lg text-sm text-dark-100 focus:outline-none focus:border-primary-500/50"
+              >
+                <option value="sp500">S&amp;P 500</option>
+                <option value="top50">Top 50</option>
+                <option value="russell">Russell</option>
+                <option value="all">All Stocks (~2000)</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-dark-500 uppercase tracking-wider">
+                Interval (min) <span className="text-dark-600">· 5–120</span>
+              </label>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="range"
+                  min="5"
+                  max="120"
+                  step="5"
+                  value={scanInterval}
+                  onChange={e => setScanInterval(parseInt(e.target.value))}
+                  disabled={scannerBusy}
+                  className="flex-1 accent-primary-500"
+                />
+                <input
+                  type="number"
+                  min="5"
+                  max="120"
+                  value={scanInterval}
+                  onChange={e => {
+                    const v = parseInt(e.target.value) || 5
+                    setScanInterval(Math.max(5, Math.min(120, v)))
+                  }}
+                  disabled={scannerBusy}
+                  className="w-16 px-2 py-1 bg-dark-800 border border-dark-600 rounded text-sm text-dark-100 font-data text-right focus:outline-none focus:border-primary-500/50"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] text-dark-500 uppercase tracking-wider">Next run</label>
+              <div className="mt-1 px-2 py-1.5 bg-dark-800/50 border border-dark-700 rounded-lg text-sm text-dark-200 font-data">
+                {scanner?.next_run
+                  ? new Date(scanner.next_run).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : '—'}
+              </div>
+            </div>
+          </div>
+
+          {scanner?.is_scanning && (
+            <div className="rounded-lg bg-dark-800/40 border border-dark-700/60 px-3 py-2 space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-dark-300">
+                  {scanner.phase_label || scanner.current_phase || scanner.phase || 'scanning'}
+                </span>
+                <span className="text-dark-400 font-data">
+                  {scanner.phase_total > 0
+                    ? `${scanner.phase_current || 0}/${scanner.phase_total}`
+                    : scanner.total_stocks > 0
+                      ? `${scanner.stocks_scanned || 0}/${scanner.total_stocks}`
+                      : '...'}
+                </span>
+              </div>
+              <div className="h-1 bg-dark-700/50 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-amber-500/80 transition-all"
+                  style={{
+                    width: `${
+                      scanner.phase_total > 0
+                        ? Math.min(100, ((scanner.phase_current || 0) / scanner.phase_total) * 100)
+                        : scanner.total_stocks > 0
+                          ? Math.min(100, ((scanner.stocks_scanned || 0) / scanner.total_stocks) * 100)
+                          : 0
+                    }%`,
+                  }}
+                />
+              </div>
+              {scanner.phase_detail && (
+                <div className="text-[10px] text-dark-500">{scanner.phase_detail}</div>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={handleScannerSave}
+              disabled={scannerBusy}
+              className="px-3 py-1.5 bg-primary-600 hover:bg-primary-500 disabled:bg-primary-600/40 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              Save cadence
+            </button>
+            <button
+              onClick={handleScannerRunNow}
+              disabled={scannerBusy || scanner?.is_scanning}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:bg-amber-600/30 disabled:text-amber-300/60 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              Run scan now
+            </button>
+            <button
+              onClick={handleScannerStop}
+              disabled={scannerBusy || !scanner?.enabled}
+              className="px-3 py-1.5 bg-dark-700 hover:bg-red-600/80 disabled:opacity-40 text-dark-100 text-xs font-medium rounded-lg transition-colors"
+            >
+              Stop scanner
+            </button>
+            {scanner?.last_scan_end && !scanner?.is_scanning && (
+              <span className="ml-auto text-[10px] text-dark-500">
+                Last scan: {new Date(scanner.last_scan_end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
+
+          {scannerMessage && (
+            <div className={`text-xs ${scannerMessage.kind === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
+              {scannerMessage.text}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold text-dark-100">User Management</h1>
         <button
