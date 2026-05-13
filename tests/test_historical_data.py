@@ -1241,6 +1241,30 @@ class TestFetchPriceHistoryHttp:
         assert df is not None
         assert len(df) == 3  # row with None dropped
 
+    def test_adj_close_with_none_entry_falls_back_to_factor_one(self, monkeypatch):
+        """When the adjclose array has a None or zero entry alongside valid
+        raw_close, the per-day factor defaults to 1.0 instead of crashing on
+        a divide-by-None. Pins the line-268 graceful-fallback contract."""
+        ts = self._ts_range(3)
+        raw_closes = [100.0, 102.0, 104.0]
+        # Middle entry is None — factor for that day falls back to 1.0,
+        # meaning OHLV for index 1 is NOT scaled.
+        adj_closes = [50.0, None, 52.0]
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=ts, closes=raw_closes, adjcloses=adj_closes,
+                opens=[99.5, 101.5, 103.5],
+            )),
+        )
+        df = self.provider._fetch_price_history("AAPL", self.start, self.end)
+        # Row with None adj_close is dropped by dropna(subset=["close"]).
+        # The fallback factor=1.0 path executes for that index before the drop.
+        assert df is not None
+        assert len(df) == 2
+        # The surviving rows use real adjustment factors (0.5).
+        assert df.iloc[0]["open"] == pytest.approx(49.75, abs=1e-9)
+
 
 # ============================================================================
 # _fetch_price_history_cached (disk-cache integration)
