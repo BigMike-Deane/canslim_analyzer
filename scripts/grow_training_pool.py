@@ -131,12 +131,23 @@ def build_sweep(api_base: str, token: Optional[str], max_per_strategy: int) -> l
 
 
 def build_payload(entry: dict, starting_cash: float, stock_universe: str) -> dict:
+    # CRITICAL: disable the ML signal for these backtests.
+    #
+    # The trainer's _is_ml_contaminated filter excludes any run where
+    # overlay_stats.ml_was_active is True. The flag is set to:
+    #   bool(ml_cfg.enabled) AND NOT bool(ml_cfg.log_only)
+    # so passing `enabled=False` cleanly marks the run as eligible for the
+    # training pool. Without this override the entire sweep is wasted —
+    # 2026-05-13 lesson: a 13hr sweep yielded 0 new training samples
+    # because every run inherited the YAML default ml_signal.enabled=True
+    # and was rejected by the contamination filter.
     return {
         "start_date": entry["start_date"],
         "end_date": entry["end_date"],
         "starting_cash": starting_cash,
         "stock_universe": stock_universe,
         "strategy": entry["strategy"],
+        "profile_overrides": {"ml_signal": {"enabled": False}},
     }
 
 

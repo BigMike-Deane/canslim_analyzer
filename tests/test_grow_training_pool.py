@@ -158,7 +158,18 @@ class TestBuildPayload:
             "starting_cash": 25000.0,
             "stock_universe": "all",
             "strategy": "nostate_optimized",
+            "profile_overrides": {"ml_signal": {"enabled": False}},
         }
+
+    def test_payload_always_disables_ml_signal(self, script):
+        """Non-negotiable: every payload built by this script must override
+        ml_signal.enabled to False so the resulting backtest is eligible for
+        the ML training pool. Pinning this contract pins the lesson from
+        the 2026-05-13 sweep that yielded 0 new training samples."""
+        entry = {"start_date": "2019-04-01", "end_date": "2022-04-01", "strategy": "nostate_cs_bear"}
+        payload = script.build_payload(entry, 10000.0, "sp500")
+        assert "profile_overrides" in payload
+        assert payload["profile_overrides"] == {"ml_signal": {"enabled": False}}
 
 
 class TestDryRun:
