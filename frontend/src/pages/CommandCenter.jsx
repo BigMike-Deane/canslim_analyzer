@@ -392,7 +392,7 @@ export default function CommandCenter() {
         toast.success('Trading cycle complete')
       }
       if (action === 'scan') {
-        await api.startScanner('all', 90)
+        await api.startScanner('all', 35)
         toast.info('Scan started')
       }
       fetchData()
