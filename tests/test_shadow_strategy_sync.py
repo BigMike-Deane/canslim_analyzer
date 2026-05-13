@@ -338,3 +338,53 @@ class TestValidation:
         with pytest.raises(ValueError, match="ghost_strategy"):
             sss.sync_shadow_strategies_from_yaml(db_session)
         assert db_session.query(ShadowStrategy).count() == 0
+
+    def test_already_archived_row_skipped_on_subsequent_sync(self, db_session, patch_yaml):
+        """Idempotency: when a name has been dropped from YAML and the matching
+        row is already archived, a subsequent sync must NOT bump archived_at.
+        Pins the line-181 continue branch — once-archived stays archived with
+        its original timestamp."""
+        # Seed two entries, drop one, archive it.
+        yaml = _baseline_yaml()
+        yaml["candidate_a"] = {
+            "parent_strategy": "nostate_optimized",
+            "starting_value": 25000,
+            "scorer_overrides": {},
+        }
+        patch_yaml(yaml)
+        sss.sync_shadow_strategies_from_yaml(db_session)
+        patch_yaml(_baseline_yaml())  # drop candidate_a
+        first_result = sss.sync_shadow_strategies_from_yaml(db_session)
+        assert first_result["archived"] == ["candidate_a"]
+        archived_row = db_session.query(ShadowStrategy).filter_by(name="candidate_a").one()
+        original_archived_at = archived_row.archived_at
+        assert original_archived_at is not None
+
+        # Run sync AGAIN with the same dropped YAML. The already-archived row
+        # must hit the early-continue at line 181 and NOT be re-archived.
+        second_result = sss.sync_shadow_strategies_from_yaml(db_session)
+        assert second_result["archived"] == []
+        db_session.refresh(archived_row)
+        assert archived_row.archived_at == original_archived_at
+
+    def test_commit_failure_rolls_back_and_reraises(self, db_session, patch_yaml, monkeypatch):
+        """When `db.commit()` raises mid-sync, the except branch rolls back
+        and re-raises. Pins the lines-186-188 rollback contract — any
+        inserts/mutations in the current transaction must not persist."""
+        patch_yaml(_baseline_yaml())
+        rollback_called = {"count": 0}
+        original_rollback = db_session.rollback
+
+        def tracking_rollback():
+            rollback_called["count"] += 1
+            return original_rollback()
+
+        monkeypatch.setattr(db_session, "rollback", tracking_rollback)
+        monkeypatch.setattr(db_session, "commit",
+                            lambda: (_ for _ in ()).throw(RuntimeError("commit boom")))
+
+        with pytest.raises(RuntimeError, match="commit boom"):
+            sss.sync_shadow_strategies_from_yaml(db_session)
+        assert rollback_called["count"] >= 1
+        # Pre-flight INSERTs were rolled back — no rows persisted.
+        assert db_session.query(ShadowStrategy).count() == 0
