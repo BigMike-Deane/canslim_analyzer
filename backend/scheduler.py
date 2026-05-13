@@ -1682,6 +1682,44 @@ def _sync_shadow_strategies_at_boot():
         logger.error(f"shadow_strategy_profiles sync failed: {e}", exc_info=True)
 
 
+_SCANNER_SETTING_KEY = "scanner.config"
+
+
+def load_persisted_scanner_config(default_source: str = "all",
+                                  default_interval: int = 35) -> tuple[str, int]:
+    """Return (source, interval_minutes) from the DB-persisted scanner config.
+
+    Falls back to the supplied defaults when no row exists or the row is
+    malformed. Boot path uses this to honor whatever the admin last saved
+    via the Scanner panel instead of always starting at the hardcoded
+    default.
+    """
+    from backend.database import get_system_setting
+    cfg = get_system_setting(_SCANNER_SETTING_KEY) or {}
+    src = cfg.get("source") if isinstance(cfg, dict) else None
+    intv = cfg.get("interval_minutes") if isinstance(cfg, dict) else None
+    if src not in ("sp500", "top50", "russell", "all"):
+        src = default_source
+    try:
+        intv = int(intv)
+        if not 5 <= intv <= 120:
+            raise ValueError
+    except (TypeError, ValueError):
+        intv = default_interval
+    return src, intv
+
+
+def _persist_scanner_config(source: str, interval_minutes: int) -> None:
+    """Save the active scanner cadence so it survives container restarts.
+    Fail-soft — persistence failure never blocks the in-memory update.
+    """
+    from backend.database import set_system_setting
+    set_system_setting(_SCANNER_SETTING_KEY, {
+        "source": source,
+        "interval_minutes": interval_minutes,
+    })
+
+
 def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15):
     """Start continuous scanning with specified interval"""
     _restore_health_from_redis()
@@ -1690,6 +1728,7 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
         _scan_config["enabled"] = True
         _scan_config["source"] = source
         _scan_config["interval_minutes"] = interval_minutes
+    _persist_scanner_config(source, interval_minutes)
 
     # Remove existing jobs if any
     if scheduler.get_job("continuous_scan"):
@@ -1787,10 +1826,13 @@ def update_scan_config(source: str = None, interval_minutes: int = None):
         current_source = _scan_config["source"]
         current_interval = _scan_config["interval_minutes"]
 
-    # If enabled, restart with new config
+    # If enabled, restart with new config (which also persists).
     if enabled:
         return start_continuous_scanning(current_source, current_interval)
 
+    # Disabled path: still persist so the next start_continuous_scanning
+    # (at boot or via Run-now) honors the saved cadence.
+    _persist_scanner_config(current_source, current_interval)
     return get_scan_status()
 
 

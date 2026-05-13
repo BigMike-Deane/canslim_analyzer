@@ -504,6 +504,66 @@ class User(Base):
                         onupdate=lambda: datetime.now(timezone.utc))
 
 
+class SystemSetting(Base):
+    """Generic key/JSON-value store for global settings that need to survive
+    container restarts. Use sparingly — per-user prefs belong on User, and
+    per-strategy config belongs on its own model. This table is for *global*
+    knobs the admin can change at runtime (scanner cadence, etc).
+    """
+    __tablename__ = "system_settings"
+
+    key = Column(String, primary_key=True)
+    # JSON-encoded value. Decoded by get_system_setting / encoded by
+    # set_system_setting — callers see native Python types.
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+
+def get_system_setting(key: str, default=None):
+    """Read a system setting by key. Returns `default` if absent or unparseable.
+
+    Fail-soft on DB errors — a degraded DB shouldn't break boot. Callers
+    using this in boot paths should always pass a sensible default.
+    """
+    import json
+    try:
+        db = SessionLocal()
+        try:
+            row = db.query(SystemSetting).filter_by(key=key).first()
+            if row is None:
+                return default
+            return json.loads(row.value)
+        finally:
+            db.close()
+    except Exception:
+        return default
+
+
+def set_system_setting(key: str, value) -> bool:
+    """Upsert a system setting. Returns True on success, False on failure.
+
+    Fail-soft on DB errors — persistence failure should never block the
+    runtime operation that triggered the save.
+    """
+    import json
+    try:
+        db = SessionLocal()
+        try:
+            encoded = json.dumps(value)
+            row = db.query(SystemSetting).filter_by(key=key).first()
+            if row is None:
+                db.add(SystemSetting(key=key, value=encoded))
+            else:
+                row.value = encoded
+            db.commit()
+            return True
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
 class Stock(Base):
     """Cached stock information"""
     __tablename__ = "stocks"
