@@ -94,6 +94,7 @@ class UserResponse(BaseModel):
     mute_kinds: Optional[list[str]] = None
     quiet_hours_start: Optional[int] = None
     quiet_hours_end: Optional[int] = None
+    score_alert_threshold: Optional[int] = None
 
 
 # --- FastAPI Dependencies ---

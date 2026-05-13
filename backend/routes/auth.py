@@ -122,6 +122,7 @@ async def get_me(current_user=Depends(get_current_active_user)):
         mute_kinds=current_user.mute_kinds or [],
         quiet_hours_start=current_user.quiet_hours_start,
         quiet_hours_end=current_user.quiet_hours_end,
+        score_alert_threshold=current_user.score_alert_threshold,
     )
 
 
@@ -157,6 +158,7 @@ async def update_my_webhook(
         mute_kinds=current_user.mute_kinds or [],
         quiet_hours_start=current_user.quiet_hours_start,
         quiet_hours_end=current_user.quiet_hours_end,
+        score_alert_threshold=current_user.score_alert_threshold,
     )
 
 
@@ -185,6 +187,10 @@ class NotificationPrefsRequest(BaseModel):
     quiet_hours_start: Optional[int] = None
     quiet_hours_end: Optional[int] = None
     clear_quiet_hours: bool = False
+    # Min CANSLIM score for score-bearing alerts. None = no change. Pass 0
+    # alongside clear_score_alert_threshold=true to disable the gate.
+    score_alert_threshold: Optional[int] = None
+    clear_score_alert_threshold: bool = False
 
 
 # Whitelist of valid notification kinds for mute_kinds. Matches frontend
@@ -229,6 +235,13 @@ async def update_notification_prefs(
                 raise HTTPException(status_code=400, detail="quiet_hours_end must be 0-23")
             current_user.quiet_hours_end = req.quiet_hours_end
 
+    if req.clear_score_alert_threshold:
+        current_user.score_alert_threshold = None
+    elif req.score_alert_threshold is not None:
+        if not 0 <= req.score_alert_threshold <= 100:
+            raise HTTPException(status_code=400, detail="score_alert_threshold must be 0-100")
+        current_user.score_alert_threshold = req.score_alert_threshold
+
     db.commit()
     db.refresh(current_user)
     return UserResponse(
@@ -241,6 +254,7 @@ async def update_notification_prefs(
         mute_kinds=current_user.mute_kinds or [],
         quiet_hours_start=current_user.quiet_hours_start,
         quiet_hours_end=current_user.quiet_hours_end,
+        score_alert_threshold=current_user.score_alert_threshold,
     )
 
 

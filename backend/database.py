@@ -228,6 +228,8 @@ def run_migrations():
         ("users", "mute_kinds", "TEXT"),
         ("users", "quiet_hours_start", "INTEGER"),
         ("users", "quiet_hours_end", "INTEGER"),
+        # Per-user min-score gate for score-bearing alerts (May 2026)
+        ("users", "score_alert_threshold", "INTEGER"),
         # cs_bear/correction_zone overlay firing counters (May 2026)
         ("backtest_runs", "overlay_stats", "TEXT"),
         # Per-backtest static snapshot extended fields (May 2026 second pass —
@@ -492,6 +494,11 @@ class User(Base):
     # midnight is allowed (e.g. start=22, end=7).
     quiet_hours_start = Column(Integer, nullable=True)
     quiet_hours_end = Column(Integer, nullable=True)
+    # Minimum CANSLIM score required for score-bearing notifications
+    # (breakout, coiled_spring, etc) to be delivered. Null = no threshold,
+    # all alerts pass. Urgent priority alerts (stop_loss, circuit breakers)
+    # always bypass — same gating model as mute_kinds and quiet_hours.
+    score_alert_threshold = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

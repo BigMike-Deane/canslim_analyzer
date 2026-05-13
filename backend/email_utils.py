@@ -247,11 +247,17 @@ def get_user_webhook_url(user_id: int) -> str:
         return ""
 
 
-def _should_deliver(user, kind: str, priority: str) -> bool:
-    """Apply the user's mute_kinds + quiet_hours filters to OUTBOUND delivery.
+def _should_deliver(user, kind: str, priority: str, data: dict = None) -> bool:
+    """Apply the user's mute_kinds + quiet_hours + score-threshold filters
+    to OUTBOUND delivery.
 
     Urgent items always pass — stop losses + circuit breakers are non-mutable
     by design. Returns True if the kind is permitted at the current time.
+
+    If the data payload includes a 'score' field AND the user has set
+    score_alert_threshold, alerts with score < threshold are suppressed.
+    Alerts without a score field are unaffected — the threshold is a
+    per-stock filter, not a global mute.
     """
     if priority == "urgent":
         return True
@@ -281,6 +287,14 @@ def _should_deliver(user, kind: str, priority: str) -> bool:
                 return False
         except Exception:
             pass  # tz unavailable / clock error — skip the gate (fail-open)
+
+    threshold = getattr(user, "score_alert_threshold", None)
+    if threshold is not None and data and "score" in data:
+        try:
+            if float(data["score"]) < float(threshold):
+                return False
+        except (TypeError, ValueError):
+            pass  # malformed score field — don't suppress
     return True
 
 
@@ -322,7 +336,7 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
     except Exception as e:
         logger.warning(f"Failed to create notification for user {user_id} ({kind}): {e}")
 
-    if not _should_deliver(user, kind, priority):
+    if not _should_deliver(user, kind, priority, data):
         return inserted
 
     # Push delivery is independent — fire even if DB insert failed; that way

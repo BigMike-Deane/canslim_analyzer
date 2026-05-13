@@ -66,11 +66,12 @@ export default function Settings() {
   const [pushSubs, setPushSubs] = useState([])
   const [pushMessage, setPushMessage] = useState(null)
 
-  // Notification preferences (per-kind mute + quiet hours)
+  // Notification preferences (per-kind mute + quiet hours + score threshold)
   const [mutedKinds, setMutedKinds] = useState(new Set())
   const [quietStart, setQuietStart] = useState(null)
   const [quietEnd, setQuietEnd] = useState(null)
-  const [originalPrefs, setOriginalPrefs] = useState({ muted: [], qs: null, qe: null })
+  const [scoreThreshold, setScoreThreshold] = useState(null)
+  const [originalPrefs, setOriginalPrefs] = useState({ muted: [], qs: null, qe: null, st: null })
   const [prefsBusy, setPrefsBusy] = useState(false)
   const [prefsMessage, setPrefsMessage] = useState(null)
 
@@ -83,7 +84,13 @@ export default function Settings() {
       setMutedKinds(new Set(muted))
       setQuietStart(me.quiet_hours_start ?? null)
       setQuietEnd(me.quiet_hours_end ?? null)
-      setOriginalPrefs({ muted, qs: me.quiet_hours_start ?? null, qe: me.quiet_hours_end ?? null })
+      setScoreThreshold(me.score_alert_threshold ?? null)
+      setOriginalPrefs({
+        muted,
+        qs: me.quiet_hours_start ?? null,
+        qe: me.quiet_hours_end ?? null,
+        st: me.score_alert_threshold ?? null,
+      })
     }).catch(() => {})
   }, [])
 
@@ -200,7 +207,10 @@ export default function Settings() {
   const prefsDirty = (() => {
     const curMuted = [...mutedKinds].sort().join(',')
     const origMuted = [...originalPrefs.muted].sort().join(',')
-    return curMuted !== origMuted || quietStart !== originalPrefs.qs || quietEnd !== originalPrefs.qe
+    return curMuted !== origMuted
+      || quietStart !== originalPrefs.qs
+      || quietEnd !== originalPrefs.qe
+      || scoreThreshold !== originalPrefs.st
   })()
 
   function toggleMute(kind) {
@@ -222,11 +232,17 @@ export default function Settings() {
         body.quiet_hours_start = quietStart
         body.quiet_hours_end = quietEnd
       }
+      if (scoreThreshold == null) {
+        body.clear_score_alert_threshold = true
+      } else {
+        body.score_alert_threshold = scoreThreshold
+      }
       const updated = await api.updateNotificationPrefs(body)
       setOriginalPrefs({
         muted: updated.mute_kinds || [],
         qs: updated.quiet_hours_start ?? null,
         qe: updated.quiet_hours_end ?? null,
+        st: updated.score_alert_threshold ?? null,
       })
       setPrefsMessage({ kind: 'success', text: 'Preferences saved.' })
     } catch (err) {
@@ -300,6 +316,55 @@ export default function Settings() {
                 : `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – next day ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`}
             </p>
           )}
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">MINIMUM SCORE FOR ALERTS</div>
+          <p className="text-[11px] text-dark-500 mb-2">
+            Per-stock alerts (breakouts, coiled springs, trade signals) with a CANSLIM score below this threshold won't ping you.
+            System-wide alerts (SPY gate, market turns) are unaffected.
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={scoreThreshold ?? 0}
+              onChange={(e) => setScoreThreshold(parseInt(e.target.value))}
+              disabled={prefsBusy}
+              className="flex-1 accent-primary-500 disabled:opacity-50"
+            />
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={scoreThreshold ?? ''}
+              placeholder="—"
+              onChange={(e) => {
+                const v = e.target.value
+                if (v === '') return setScoreThreshold(null)
+                const n = parseInt(v)
+                setScoreThreshold(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null)
+              }}
+              disabled={prefsBusy}
+              className="w-16 px-2 py-1 bg-dark-800 border border-dark-600 rounded text-sm text-dark-100 font-data text-right focus:outline-none focus:border-primary-500/50 disabled:opacity-50"
+            />
+            {scoreThreshold != null && (
+              <button
+                type="button"
+                onClick={() => setScoreThreshold(null)}
+                className="text-xs text-dark-500 hover:text-dark-300 underline"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-dark-500 mt-1.5">
+            {scoreThreshold == null
+              ? 'No threshold — every alert passes through.'
+              : `Suppressing alerts with score < ${scoreThreshold}.`}
+          </p>
         </div>
 
         <button

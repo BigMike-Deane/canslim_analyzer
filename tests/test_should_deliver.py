@@ -15,11 +15,12 @@ from unittest.mock import MagicMock, patch
 from backend.email_utils import _should_deliver
 
 
-def _user(mute=None, qs=None, qe=None):
+def _user(mute=None, qs=None, qe=None, score_threshold=None):
     u = MagicMock()
     u.mute_kinds = mute
     u.quiet_hours_start = qs
     u.quiet_hours_end = qe
+    u.score_alert_threshold = score_threshold
     return u
 
 
@@ -140,3 +141,59 @@ class TestFailOpenOnTzError:
         with patch("datetime.datetime") as MockDT:
             MockDT.now.side_effect = OSError("clock failed")
             assert _should_deliver(_user(qs=9, qe=17), "trade", "high") is True
+
+
+class TestScoreAlertThreshold:
+    """Per-user min-score gate: when a user sets a threshold and an alert
+    carries a 'score' field, scores below the threshold are suppressed.
+    Alerts without a score field are unaffected.
+    """
+
+    def test_none_threshold_passes_low_score(self):
+        u = _user(score_threshold=None)
+        assert _should_deliver(u, "breakout", "high", {"score": 30}) is True
+
+    def test_score_below_threshold_blocks(self):
+        u = _user(score_threshold=80)
+        assert _should_deliver(u, "breakout", "high", {"score": 72}) is False
+
+    def test_score_at_threshold_passes(self):
+        # >= threshold passes (inclusive). 80 should not be considered "below 80".
+        u = _user(score_threshold=80)
+        assert _should_deliver(u, "breakout", "high", {"score": 80}) is True
+
+    def test_score_above_threshold_passes(self):
+        u = _user(score_threshold=80)
+        assert _should_deliver(u, "breakout", "high", {"score": 85}) is True
+
+    def test_alert_without_score_field_passes(self):
+        # System-wide alerts (e.g. spy_gate_change, morning_briefing) don't
+        # carry a 'score' — the threshold must not affect them.
+        u = _user(score_threshold=99)
+        assert _should_deliver(u, "spy_gate_change", "high", {"ticker": "SPY"}) is True
+
+    def test_alert_with_no_data_passes(self):
+        u = _user(score_threshold=99)
+        assert _should_deliver(u, "trade", "high", None) is True
+
+    def test_urgent_bypasses_threshold(self):
+        u = _user(score_threshold=99)
+        assert _should_deliver(u, "trade", "urgent", {"score": 10}) is True
+
+    def test_malformed_score_doesnt_suppress(self):
+        # Fail-safe: if score is unparseable, deliver rather than swallow.
+        u = _user(score_threshold=80)
+        assert _should_deliver(u, "breakout", "high", {"score": "n/a"}) is True
+
+    def test_string_numeric_score_works(self):
+        # Some emit sites stringify numbers; float() conversion handles it.
+        u = _user(score_threshold=80)
+        assert _should_deliver(u, "breakout", "high", {"score": "72"}) is False
+        assert _should_deliver(u, "breakout", "high", {"score": "85"}) is True
+
+    def test_threshold_zero_blocks_negative_scores_only(self):
+        # Threshold of 0 means "no threshold" in practice — every realistic
+        # score is >= 0. Pin this so we don't accidentally treat 0 as falsy.
+        u = _user(score_threshold=0)
+        assert _should_deliver(u, "breakout", "high", {"score": 0}) is True
+        assert _should_deliver(u, "breakout", "high", {"score": 50}) is True
