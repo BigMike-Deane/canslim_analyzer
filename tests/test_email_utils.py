@@ -284,6 +284,24 @@ class TestCreateNotification:
             email_utils.create_notification(1, "stop_loss", "T", "B", priority="urgent")
         assert mock_push.call_args.kwargs["urgency"] == "high"
 
+    def test_should_deliver_false_skips_push_but_returns_inserted_true(self):
+        """When the user has muted the kind, _should_deliver returns False and
+        create_notification short-circuits before the push branch — but the DB
+        insert already happened, so the return value reflects that."""
+        from types import SimpleNamespace
+        from backend import email_utils
+        muted_user = SimpleNamespace(
+            id=1, mute_kinds=["trade"],
+            quiet_hours_start=None, quiet_hours_end=None, tz="UTC",
+        )
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.first.return_value = muted_user
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user") as mock_push:
+            ok = email_utils.create_notification(1, "trade", "T", "B", priority="high")
+        assert ok is True
+        mock_push.assert_not_called()
+
 
 # ============================================================================
 # _send_web_push_to_subscriptions — ImportError, expired, generic exception
