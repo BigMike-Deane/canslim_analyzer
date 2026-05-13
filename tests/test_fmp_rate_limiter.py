@@ -260,6 +260,74 @@ class TestModuleLevelFunctions:
         breaker.record_success()
         breaker.reconfigure(failure_threshold=original_threshold, base_cooldown=30, max_cooldown=300)
 
+    def test_get_metrics_returns_global_singleton(self):
+        """Module-level get_metrics() returns the same FMPMetrics instance
+        across calls — the global singleton accumulates state."""
+        m1 = fmp_rate_limiter.get_metrics()
+        m2 = fmp_rate_limiter.get_metrics()
+        assert m1 is m2
+        assert isinstance(m1, FMPMetrics)
+
+    @pytest.mark.asyncio
+    async def test_acquire_async_raises_when_breaker_open(self):
+        """Async mirror of the sync circuit-breaker-open test — async path
+        also records the rejection metric before raising."""
+        breaker = fmp_rate_limiter.get_circuit_breaker()
+        metrics = fmp_rate_limiter.get_metrics()
+        original_threshold = breaker.failure_threshold
+        breaker.reconfigure(failure_threshold=1, base_cooldown=60, max_cooldown=300)
+        breaker.consecutive_failures = 0
+        breaker.state = CircuitBreaker.CLOSED
+        breaker.record_failure()  # Trip
+
+        before = metrics.circuit_breaker_rejections
+        with pytest.raises(CircuitBreakerOpen):
+            await fmp_rate_limiter.acquire_async()
+        assert metrics.circuit_breaker_rejections == before + 1
+
+        # Reset
+        breaker.record_success()
+        breaker.reconfigure(failure_threshold=original_threshold, base_cooldown=30, max_cooldown=300)
+
+
+class TestAdditionalCoverage:
+    """Targeted tests closing the last 9 missing lines."""
+
+    @pytest.mark.asyncio
+    async def test_acquire_async_waits_when_bucket_exhausted(self):
+        """When the token bucket has < 1 token, acquire_async sleeps for
+        (1 - tokens) / refill_rate and accumulates waited time. Forces the
+        loop body to take the wait branch at least once."""
+        gov = RateGovernor(max_per_minute=6000, burst_size=1)
+        # Drain the bucket immediately.
+        await gov.acquire_async()
+        # Second call must wait; with 100 tokens/sec refill rate the wait
+        # is ~10ms — fast enough to keep the test snappy but real.
+        waited = await gov.acquire_async()
+        assert waited > 0
+
+    def test_can_proceed_returns_true_when_already_half_open(self):
+        """When state is already HALF_OPEN at the start of can_proceed (i.e.
+        a prior call transitioned out of OPEN), the bare `return True` at
+        line 182 fires without re-checking cooldown timestamps."""
+        cb = CircuitBreaker(failure_threshold=2, base_cooldown=30, max_cooldown=300)
+        cb.state = CircuitBreaker.HALF_OPEN
+        # Setting cooldown_until to None ensures the OPEN branch wouldn't
+        # have fired anyway — proves we took the line-182 path, not 178.
+        cb._cooldown_until = None
+        assert cb.can_proceed() is True
+        assert cb.state == CircuitBreaker.HALF_OPEN
+
+    def test_record_cache_fallback_increments_counter(self):
+        """FMPMetrics.record_cache_fallback bumps the cache_fallbacks counter
+        under lock — used by callers that serve stale data when the breaker
+        is open."""
+        m = FMPMetrics()
+        assert m.cache_fallbacks == 0
+        m.record_cache_fallback()
+        m.record_cache_fallback()
+        assert m.cache_fallbacks == 2
+
 
 class TestMLPredictionCache:
     """Tests for the ML prediction cache in ml/model.py."""
