@@ -27,7 +27,8 @@ os.environ.setdefault("DISABLE_SCHEDULER", "true")
 from fastapi.testclient import TestClient
 
 from backend.main import app
-from backend.database import init_db, SessionLocal, User, StockScore, Stock
+from backend.database import init_db, SessionLocal, User, StockScore, Stock, BacktestRun
+from datetime import date as _date
 from backend.auth import get_admin_user
 from backend.routes import admin as admin_routes
 
@@ -746,3 +747,74 @@ class TestCapDeltaDefensiveBranch:
             buy_threshold=72.0,
         )
         assert result['threshold_crossings']['rows_baseline_above_threshold_uncapped_below'] == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+# GET /api/admin/backtest-pairs — distinct (start, end, strategy) triples
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestBacktestPairs:
+    """Covers backend/routes/admin.py:get_backtest_pairs.
+
+    Used by scripts/grow_training_pool.py to pre-filter the candidate grid
+    so we don't waste compute on date ranges that just replace existing
+    runs (zero net training-pool growth).
+    """
+
+    @pytest.fixture
+    def seed_backtests(self):
+        """Insert 5 BacktestRun rows covering completed+other statuses and
+        duplicate triples to verify DISTINCT collapse."""
+        db = _db()
+        try:
+            db.query(BacktestRun).filter(BacktestRun.name.like('admin-pairs-test-%')).delete()
+            db.commit()
+            rows = [
+                # Two identical (2020-01-01, 2024-01-01, nostate_optimized) — should dedup to 1
+                BacktestRun(name='admin-pairs-test-1', start_date=_date(2020,1,1), end_date=_date(2024,1,1),
+                            starting_cash=25000, stock_universe='all', strategy='nostate_optimized', status='completed', user_id=99001),
+                BacktestRun(name='admin-pairs-test-2', start_date=_date(2020,1,1), end_date=_date(2024,1,1),
+                            starting_cash=25000, stock_universe='all', strategy='nostate_optimized', status='completed', user_id=99001),
+                # Different strategy on same dates — distinct
+                BacktestRun(name='admin-pairs-test-3', start_date=_date(2020,1,1), end_date=_date(2024,1,1),
+                            starting_cash=25000, stock_universe='all', strategy='nostate_cs_bear', status='completed', user_id=99001),
+                # Different dates, completed
+                BacktestRun(name='admin-pairs-test-4', start_date=_date(2021,1,1), end_date=_date(2025,1,1),
+                            starting_cash=25000, stock_universe='all', strategy='nostate_optimized', status='completed', user_id=99001),
+                # Pending (not completed) — should be excluded
+                BacktestRun(name='admin-pairs-test-5', start_date=_date(2019,1,1), end_date=_date(2023,1,1),
+                            starting_cash=25000, stock_universe='all', strategy='nostate_optimized', status='pending', user_id=99001),
+            ]
+            for r in rows:
+                db.add(r)
+            db.commit()
+            yield
+        finally:
+            db.query(BacktestRun).filter(BacktestRun.name.like('admin-pairs-test-%')).delete()
+            db.commit()
+            db.close()
+
+    def test_returns_distinct_completed_triples(self, seed_backtests):
+        r = client.get("/api/admin/backtest-pairs")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        triples = {(p['start_date'], p['end_date'], p['strategy']) for p in body['pairs']}
+        # Our seeded distinct triples must appear
+        assert ('2020-01-01', '2024-01-01', 'nostate_optimized') in triples
+        assert ('2020-01-01', '2024-01-01', 'nostate_cs_bear') in triples
+        assert ('2021-01-01', '2025-01-01', 'nostate_optimized') in triples
+        # Pending row must NOT appear
+        assert ('2019-01-01', '2023-01-01', 'nostate_optimized') not in triples
+        assert body['total'] == len(body['pairs'])
+
+    def test_strategy_filter(self, seed_backtests):
+        r = client.get("/api/admin/backtest-pairs?strategy=nostate_cs_bear")
+        assert r.status_code == 200
+        body = r.json()
+        # Every returned row must match the filter
+        assert all(p['strategy'] == 'nostate_cs_bear' for p in body['pairs'])
+        # Our seeded cs_bear row appears, the nostate_optimized ones don't
+        triples = {(p['start_date'], p['end_date'], p['strategy']) for p in body['pairs']}
+        assert ('2020-01-01', '2024-01-01', 'nostate_cs_bear') in triples
+        assert ('2020-01-01', '2024-01-01', 'nostate_optimized') not in triples

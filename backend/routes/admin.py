@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from backend.database import (
     get_db, User, AIPortfolioTrade, AIPortfolioConfig,
-    ShadowStrategy, ShadowTrade, Stock, StockScore,
+    ShadowStrategy, ShadowTrade, Stock, StockScore, BacktestRun,
 )
 from backend.auth import get_admin_user, UserCreate, UserResponse
 from backend.rate_limiter import limiter
@@ -1261,6 +1261,37 @@ async def list_shadow_strategies(
         }
         for r in rows
     ]
+
+
+@router.get("/backtest-pairs")
+async def get_backtest_pairs(
+    strategy: Optional[str] = Query(None, description="Filter to one strategy. Omit for all."),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Return the set of (start_date, end_date) pairs in the completed-backtest
+    pool, optionally filtered by strategy.
+
+    Used by scripts/grow_training_pool.py to skip date ranges already in the
+    pool — the trainer dedups by (start_date, end_date), so re-running a
+    duplicate yields zero new training samples.
+    """
+    q = db.query(BacktestRun.start_date, BacktestRun.end_date, BacktestRun.strategy)\
+          .filter(BacktestRun.status == "completed")
+    if strategy:
+        q = q.filter(BacktestRun.strategy == strategy)
+    rows = q.distinct().all()
+    return {
+        "pairs": [
+            {
+                "start_date": r.start_date.isoformat() if r.start_date else None,
+                "end_date": r.end_date.isoformat() if r.end_date else None,
+                "strategy": r.strategy,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
 
 
 @router.get("/audit-log")

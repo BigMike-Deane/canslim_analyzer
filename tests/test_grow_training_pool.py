@@ -1,13 +1,18 @@
-"""Smoke tests for scripts/grow_training_pool.py.
+"""Tests for scripts/grow_training_pool.py.
 
-The script is a thin CLI over POST /api/backtests. We verify:
-  - dry-run mode prints the plan and makes NO network calls
-  - --execute path posts to the right URL with the right payload shape
-  - sweep is non-empty and well-formed (catches accidental list edits)
+The script is a thin CLI over POST /api/backtests with pre-flight filtering
+against /api/admin/backtest-pairs. We verify:
+  - the candidate grid generates well-formed (start < end, end <= today) entries
+  - filter_fresh drops collisions with the existing pool
+  - fetch_existing_pairs handles the API response shape
+  - dry-run mode makes no POSTs, only the GET for existing pairs
+  - --execute path POSTs the filtered sweep with the right payload
+  - failure paths produce rc=1 and log helpfully
 """
 
 import importlib.util
 import sys
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,19 +35,117 @@ def script():
     return _load_script()
 
 
-class TestSweep:
-    def test_sweep_non_empty(self, script):
-        assert len(script.SWEEP) >= 5, "sweep shouldn't be silently emptied"
+@pytest.fixture
+def mock_empty_pool(monkeypatch, script):
+    """Mock fetch_existing_pairs to return no existing pairs.
+    Lets the full candidate grid pass through filter_fresh."""
+    get = MagicMock()
+    get.return_value.json.return_value = {"pairs": [], "total": 0}
+    get.return_value.raise_for_status.return_value = None
+    monkeypatch.setattr(script.requests, "get", get)
+    return get
 
-    def test_sweep_entries_well_formed(self, script):
-        for entry in script.SWEEP:
-            assert set(entry.keys()) >= {"start_date", "end_date", "strategy"}
+
+class TestCandidateGrid:
+    def test_grid_is_non_empty(self, script):
+        grid = script.generate_candidate_grid()
+        assert len(grid) > 0
+
+    def test_grid_entries_well_formed(self, script):
+        grid = script.generate_candidate_grid()
+        for entry in grid:
+            assert set(entry.keys()) == {"start_date", "end_date", "strategy"}
             assert entry["start_date"] < entry["end_date"]
+            # No future windows.
+            assert date.fromisoformat(entry["end_date"]) <= date.today()
 
-    def test_sweep_covers_both_live_strategies(self, script):
-        strategies = {e["strategy"] for e in script.SWEEP}
+    def test_grid_covers_both_strategies(self, script):
+        grid = script.generate_candidate_grid()
+        strategies = {e["strategy"] for e in grid}
         assert "nostate_optimized" in strategies
         assert "nostate_cs_bear" in strategies
+
+    def test_grid_explicit_strategies_filter(self, script):
+        grid = script.generate_candidate_grid(strategies=["nostate_optimized"])
+        assert all(e["strategy"] == "nostate_optimized" for e in grid)
+
+    def test_window_lengths_cover_3yr_and_4yr(self, script):
+        grid = script.generate_candidate_grid()
+        diffs = set()
+        for e in grid:
+            sd = date.fromisoformat(e["start_date"])
+            ed = date.fromisoformat(e["end_date"])
+            diffs.add(ed.year - sd.year)
+        # Should include both 3 and 4 year windows.
+        assert 3 in diffs
+        assert 4 in diffs
+
+
+class TestFilterFresh:
+    def test_no_existing_returns_all(self, script):
+        candidates = [
+            {"start_date": "2020-01-01", "end_date": "2024-01-01", "strategy": "x"},
+            {"start_date": "2021-01-01", "end_date": "2025-01-01", "strategy": "x"},
+        ]
+        assert script.filter_fresh(candidates, set()) == candidates
+
+    def test_drops_exact_collision(self, script):
+        candidates = [
+            {"start_date": "2020-01-01", "end_date": "2024-01-01", "strategy": "x"},
+            {"start_date": "2021-01-01", "end_date": "2025-01-01", "strategy": "x"},
+        ]
+        existing = {("2020-01-01", "2024-01-01", "x")}
+        fresh = script.filter_fresh(candidates, existing)
+        assert len(fresh) == 1
+        assert fresh[0]["start_date"] == "2021-01-01"
+
+    def test_strategy_distinguishes_pairs(self, script):
+        """Same (start, end) but different strategy is NOT a collision."""
+        candidates = [
+            {"start_date": "2020-01-01", "end_date": "2024-01-01", "strategy": "a"},
+            {"start_date": "2020-01-01", "end_date": "2024-01-01", "strategy": "b"},
+        ]
+        existing = {("2020-01-01", "2024-01-01", "a")}
+        fresh = script.filter_fresh(candidates, existing)
+        assert len(fresh) == 1
+        assert fresh[0]["strategy"] == "b"
+
+
+class TestFetchExistingPairs:
+    def test_parses_response_shape(self, script, monkeypatch):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {
+            "pairs": [
+                {"start_date": "2020-01-01", "end_date": "2024-01-01", "strategy": "nostate_optimized"},
+                {"start_date": "2021-01-01", "end_date": "2025-01-01", "strategy": "nostate_cs_bear"},
+            ],
+            "total": 2,
+        }
+        monkeypatch.setattr(script.requests, "get", MagicMock(return_value=resp))
+        pairs = script.fetch_existing_pairs("http://test.local", token="tok")
+        assert pairs == {
+            ("2020-01-01", "2024-01-01", "nostate_optimized"),
+            ("2021-01-01", "2025-01-01", "nostate_cs_bear"),
+        }
+
+    def test_sends_auth_header(self, script, monkeypatch):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"pairs": [], "total": 0}
+        get = MagicMock(return_value=resp)
+        monkeypatch.setattr(script.requests, "get", get)
+        script.fetch_existing_pairs("http://test.local", token="secret123")
+        assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer secret123"
+
+    def test_no_token_no_auth_header(self, script, monkeypatch):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"pairs": [], "total": 0}
+        get = MagicMock(return_value=resp)
+        monkeypatch.setattr(script.requests, "get", get)
+        script.fetch_existing_pairs("http://test.local")
+        assert "Authorization" not in get.call_args.kwargs.get("headers", {})
 
 
 class TestBuildPayload:
@@ -59,9 +162,7 @@ class TestBuildPayload:
 
 
 class TestDryRun:
-    def test_dry_run_makes_no_network_calls(self, script, capsys, monkeypatch):
-        # If the dry-run path ever issues a real request, requests.post should
-        # blow up loudly here rather than silently hit the production API.
+    def test_dry_run_makes_no_post_calls(self, script, capsys, monkeypatch, mock_empty_pool):
         def _explode(*a, **kw):
             raise AssertionError("dry-run must not call requests.post")
         monkeypatch.setattr(script.requests, "post", _explode)
@@ -72,7 +173,28 @@ class TestDryRun:
         assert "Planned sweep" in out
         assert "--execute" in out
 
-    def test_execute_posts_to_api(self, script, capsys, monkeypatch):
+    def test_dry_run_empty_sweep_message(self, script, capsys, monkeypatch):
+        """If every candidate is already in the pool, dry-run should say
+        no fresh ranges left rather than printing an empty table."""
+        # Mock the existing-pairs API to return EVERY candidate in the grid.
+        candidates = script.generate_candidate_grid()
+        all_existing = [
+            {"start_date": c["start_date"], "end_date": c["end_date"], "strategy": c["strategy"]}
+            for c in candidates
+        ]
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"pairs": all_existing, "total": len(all_existing)}
+        monkeypatch.setattr(script.requests, "get", MagicMock(return_value=resp))
+        monkeypatch.setattr(sys, "argv", ["grow_training_pool.py"])
+        rc = script.main()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "No fresh date ranges" in out
+
+
+class TestExecute:
+    def test_execute_posts_filtered_sweep(self, script, capsys, monkeypatch, mock_empty_pool):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"id": 999}
         mock_resp.raise_for_status.return_value = None
@@ -80,18 +202,19 @@ class TestDryRun:
         monkeypatch.setattr(script.requests, "post", post)
         monkeypatch.setattr(
             sys, "argv",
-            ["grow_training_pool.py", "--execute", "--api-base", "http://test.local"],
+            ["grow_training_pool.py", "--execute", "--api-base", "http://test.local",
+             "--max-per-strategy", "2"],
         )
         rc = script.main()
         assert rc == 0
-        assert post.call_count == len(script.SWEEP)
-        # Verify the URL and payload shape on the first call
+        # 2 per strategy * 2 strategies = 4 POSTs
+        assert post.call_count == 4
         first_call = post.call_args_list[0]
         assert first_call.args[0] == "http://test.local/api/backtests"
         payload = first_call.kwargs["json"]
         assert "start_date" in payload and "strategy" in payload
 
-    def test_execute_with_token_sets_auth_header(self, script, monkeypatch):
+    def test_execute_with_token_sets_auth_header(self, script, monkeypatch, mock_empty_pool):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"id": 1}
         mock_resp.raise_for_status.return_value = None
@@ -99,29 +222,57 @@ class TestDryRun:
         monkeypatch.setattr(script.requests, "post", post)
         monkeypatch.setattr(
             sys, "argv",
-            ["grow_training_pool.py", "--execute", "--token", "secret123"],
+            ["grow_training_pool.py", "--execute", "--token", "secret123",
+             "--max-per-strategy", "1"],
         )
         script.main()
         headers = post.call_args_list[0].kwargs["headers"]
         assert headers["Authorization"] == "Bearer secret123"
 
+    def test_execute_empty_sweep_skips_posts(self, script, capsys, monkeypatch):
+        """When the pool already covers every candidate, --execute should
+        log the no-op and return 0 without issuing any POST."""
+        candidates = script.generate_candidate_grid()
+        all_existing = [
+            {"start_date": c["start_date"], "end_date": c["end_date"], "strategy": c["strategy"]}
+            for c in candidates
+        ]
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"pairs": all_existing, "total": len(all_existing)}
+        monkeypatch.setattr(script.requests, "get", MagicMock(return_value=resp))
+
+        post = MagicMock()
+        monkeypatch.setattr(script.requests, "post", post)
+        monkeypatch.setattr(sys, "argv", ["grow_training_pool.py", "--execute"])
+        rc = script.main()
+        assert rc == 0
+        assert post.call_count == 0
+
 
 class TestExecuteFailureHandling:
-    """Cover the failure branches at lines 169-185: HTTPError, generic
-    RequestException, and the post-loop "Failures (re-run later):"
-    report block (which only fires when failed[] is non-empty)."""
+    """Cover failure branches: API-pairs fetch failure, per-backtest HTTPError,
+    generic RequestException, and the post-loop failure report."""
 
-    def test_http_error_collects_and_returns_rc_1(
-        self, script, capsys, monkeypatch
-    ):
-        """A 4xx/5xx response from /api/backtests should be caught,
-        labeled with the HTTP status code + truncated body, and
-        contribute to the rc=1 exit."""
+    def test_pairs_fetch_failure_returns_rc_1(self, script, capsys, monkeypatch):
+        import requests as _requests
+
+        def _boom(*a, **kw):
+            raise _requests.ConnectionError("pairs endpoint down")
+
+        monkeypatch.setattr(script.requests, "get", _boom)
+        monkeypatch.setattr(sys, "argv", ["grow_training_pool.py", "--execute"])
+        rc = script.main()
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "Failed to fetch existing pairs" in err
+
+    def test_http_error_collects_and_returns_rc_1(self, script, capsys, monkeypatch, mock_empty_pool):
         import requests as _requests
 
         err_resp = MagicMock()
         err_resp.status_code = 503
-        err_resp.text = "Service Unavailable" * 30  # >200 chars on purpose
+        err_resp.text = "Service Unavailable" * 30
         http_err = _requests.HTTPError(response=err_resp)
 
         bad_resp = MagicMock()
@@ -131,26 +282,17 @@ class TestExecuteFailureHandling:
         monkeypatch.setattr(script.requests, "post", post)
         monkeypatch.setattr(
             sys, "argv",
-            ["grow_training_pool.py", "--execute", "--api-base", "http://test.local"],
+            ["grow_training_pool.py", "--execute", "--max-per-strategy", "1"],
         )
 
         rc = script.main()
         out = capsys.readouterr().out
-
-        # Every entry in SWEEP raises -> every entry is a failure
         assert rc == 1
-        assert post.call_count == len(script.SWEEP)
         assert "FAILED" in out
-        # Failure-report block fired
         assert "Failures (re-run later):" in out
-        # HTTP status code + truncated body landed in the failure line
         assert "HTTP 503:" in out or "503" in out
 
-    def test_request_exception_collects_and_returns_rc_1(
-        self, script, capsys, monkeypatch
-    ):
-        """Non-HTTP transport errors (ConnectionError, Timeout, etc.)
-        hit the generic RequestException branch at line 172."""
+    def test_request_exception_collects_and_returns_rc_1(self, script, capsys, monkeypatch, mock_empty_pool):
         import requests as _requests
 
         def _boom(*a, **kw):
@@ -159,22 +301,16 @@ class TestExecuteFailureHandling:
         monkeypatch.setattr(script.requests, "post", _boom)
         monkeypatch.setattr(
             sys, "argv",
-            ["grow_training_pool.py", "--execute"],
+            ["grow_training_pool.py", "--execute", "--max-per-strategy", "1"],
         )
-
         rc = script.main()
         out = capsys.readouterr().out
-
         assert rc == 1
         assert "FAILED" in out
         assert "connection refused" in out
         assert "Failures (re-run later):" in out
 
-    def test_partial_failure_still_returns_rc_1(
-        self, script, capsys, monkeypatch
-    ):
-        """Mixed success+failure: even one failure returns rc=1 so the
-        operator notices and can re-run the failing label."""
+    def test_partial_failure_still_returns_rc_1(self, script, capsys, monkeypatch, mock_empty_pool):
         import requests as _requests
 
         ok_resp = MagicMock()
@@ -187,18 +323,26 @@ class TestExecuteFailureHandling:
         bad_resp = MagicMock()
         bad_resp.raise_for_status.side_effect = _requests.HTTPError(response=err_resp)
 
-        # First call succeeds, all subsequent fail
-        responses = [ok_resp] + [bad_resp] * (len(script.SWEEP) - 1)
+        # First call succeeds, the rest fail.
+        responses = [ok_resp, bad_resp, bad_resp, bad_resp]
         post = MagicMock(side_effect=responses)
         monkeypatch.setattr(script.requests, "post", post)
         monkeypatch.setattr(
-            sys, "argv", ["grow_training_pool.py", "--execute"],
+            sys, "argv",
+            ["grow_training_pool.py", "--execute", "--max-per-strategy", "2"],
         )
-
         rc = script.main()
         out = capsys.readouterr().out
-
         assert rc == 1
-        # Should have logged at least one queued bt + at least one FAILED
         assert "queued bt=42" in out
         assert "FAILED" in out
+
+
+class TestAddYears:
+    """Date helper edge case: Feb 29 + N years where N moves to non-leap year."""
+
+    def test_normal_add(self, script):
+        assert script._add_years(date(2020, 1, 1), 4) == date(2024, 1, 1)
+
+    def test_leap_to_non_leap_caps_at_28(self, script):
+        assert script._add_years(date(2020, 2, 29), 1) == date(2021, 2, 28)
