@@ -864,21 +864,38 @@ export default function CommandCenter() {
               <div className="flex items-center gap-2.5">
                 <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">ML Model</span>
                 {mlStatus?.active_model ? (
-                  <span className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                  <span
+                    className="flex items-center gap-1.5 text-[10px] text-emerald-400"
+                    title={`${mlStatus.active_model.model_type === 'regression' ? 'Regression' : 'Classifier'} model influences candidate scoring.${mlStatus.active_model.activated_at ? ' Activated ' + new Date(mlStatus.active_model.activated_at).toLocaleDateString() : ''}`}
+                  >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     v{mlStatus.active_model.version}
                   </span>
                 ) : mlStatus?.latest_training?.status === 'training' ? (
-                  <span className="flex items-center gap-1.5 text-[10px] text-primary-400">
+                  <span
+                    className="flex items-center gap-1.5 text-[10px] text-primary-400"
+                    title="Walk-forward CV in progress. Will activate if eval-gate passes."
+                  >
                     <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse-dot" />
                     training
                   </span>
                 ) : (
-                  <span className="text-[10px] text-dark-500">NOT TRAINED</span>
+                  <a
+                    href="/admin#ml-signal-layer"
+                    className="text-[10px] text-dark-500 hover:text-primary-400 underline-offset-2 hover:underline"
+                    title="No active model — scoring runs without ML signal. Click to train."
+                  >
+                    no active model
+                  </a>
                 )}
               </div>
               {mlStatus?.active_model && (
-                <span className="text-[10px] font-data text-dark-400">
+                <span
+                  className="text-[10px] font-data text-dark-400"
+                  title={mlStatus.active_model.model_type === 'regression'
+                    ? 'Spearman rank correlation. Gate: ≥ 0.15. Healthy: ≥ 0.30.'
+                    : 'ROC AUC on held-out folds. Gate: ≥ 0.54. Healthy: ≥ 0.60.'}
+                >
                   {mlStatus.active_model.model_type === 'regression'
                     ? `Sp ${(mlStatus.active_model.spearman || 0).toFixed(3)}`
                     : `AUC ${(mlStatus.active_model.roc_auc || 0).toFixed(3)}`
@@ -903,12 +920,20 @@ export default function CommandCenter() {
               </div>
             )}
             {mlStatus?.latest_training?.status === 'failed' && (
-              <div className="mt-1.5 text-[10px] text-red-400 truncate">
+              <div
+                className="mt-1.5 text-[10px] text-red-400 truncate"
+                title={mlStatus.latest_training.error_message || 'Training failed'}
+              >
                 {mlStatus.latest_training.error_message || 'Training failed'}
               </div>
             )}
             {!mlStatus?.config?.enabled && mlStatus?.active_model && (
-              <div className="mt-1 text-[10px] text-dark-600">log-only mode</div>
+              <div
+                className="mt-1 text-[10px] text-amber-500/80"
+                title="ml_signal.enabled=false. Predictions are logged but do NOT influence buy scoring."
+              >
+                log-only · not influencing trades
+              </div>
             )}
           </Card>
         </div>
