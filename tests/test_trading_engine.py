@@ -424,3 +424,171 @@ class TestEvaluateScoreCrashEdgeCases:
         assert result["should_sell"] is True
         assert "SCORE CRASH" in result["reason"]
         assert "2-of-3" in result["reason"]
+
+
+# ── Coverage Gaps ─────────────────────────────────────────────────────────────
+
+class TestCalculateEntrySignalsCoverage:
+    """Branches inside calculate_entry_signals that the scenario tests miss:
+    week_52_high guard, weeks_in_base bonus, moderately-extended pivot path,
+    and the four no-base pct_from_high tiers."""
+
+    def test_returns_zeros_when_week_52_high_is_zero(self):
+        # Line 290-297: guard against missing 52-week-high data.
+        result = calculate_entry_signals(
+            current_price=50, week_52_high=0, pivot_price=0,
+            base_type="cup", weeks_in_base=8,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        assert result["momentum_score"] == 0
+        assert result["breakout_bonus"] == 0
+        assert result["pre_breakout_bonus"] == 0
+        assert result["extended_penalty"] == 0
+        assert result["entry_type"] == "standard"
+        assert result["pct_from_pivot"] == 0
+
+    def test_pre_breakout_with_long_base_adds_extra_bonus(self):
+        # Line 311: weeks_in_base >= 10 adds +5 to pre_breakout_bonus.
+        # Setup: 10% below pivot (in 5-15 zone), volume below 1.3 so the
+        # other bonus doesn't fire.
+        short_base = calculate_entry_signals(
+            current_price=90, week_52_high=120, pivot_price=100,
+            base_type="cup", weeks_in_base=6,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        long_base = calculate_entry_signals(
+            current_price=90, week_52_high=120, pivot_price=100,
+            base_type="cup", weeks_in_base=12,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        assert long_base["pre_breakout_bonus"] == short_base["pre_breakout_bonus"] + 5
+
+    def test_moderately_extended_penalty(self):
+        # Lines 333-334: pct_from_pivot in (-10, -5) -> -10 penalty, momentum 10.
+        # current=107, pivot=100 -> pct_from_pivot = -7
+        result = calculate_entry_signals(
+            current_price=107, week_52_high=120, pivot_price=100,
+            base_type="cup", weeks_in_base=8,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        assert result["extended_penalty"] == -10
+        assert result["momentum_score"] == 10
+
+    def test_no_base_near_high_low_score_penalized(self):
+        # Lines 339-341: no base + within 2% of 52w high + score < 85
+        # -> extended_penalty=-15, momentum=5.
+        result = calculate_entry_signals(
+            current_price=99, week_52_high=100, pivot_price=0,
+            base_type="none", weeks_in_base=0,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        assert result["extended_penalty"] == -15
+        assert result["momentum_score"] == 5
+
+    def test_no_base_near_high_high_score_no_penalty(self):
+        # Lines 342-343: no base + within 2% of 52w high + score >= 85
+        # -> no extended penalty, momentum=12.
+        result = calculate_entry_signals(
+            current_price=99, week_52_high=100, pivot_price=0,
+            base_type="none", weeks_in_base=0,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=90,
+        )
+        assert result["extended_penalty"] == 0
+        assert result["momentum_score"] == 12
+
+    def test_no_base_mid_distance_from_high(self):
+        # Lines 348-349: no base + 10-25% off 52w high -> momentum=8.
+        result = calculate_entry_signals(
+            current_price=80, week_52_high=100, pivot_price=0,
+            base_type="none", weeks_in_base=0,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        assert result["momentum_score"] == 8
+
+    def test_no_base_far_from_high_penalized(self):
+        # Lines 350-351: no base + > 25% off 52w high -> momentum=-5.
+        result = calculate_entry_signals(
+            current_price=70, week_52_high=100, pivot_price=0,
+            base_type="none", weeks_in_base=0,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            volume_ratio=1.0, effective_score=70,
+        )
+        assert result["momentum_score"] == -5
+
+
+class TestDefaultArgumentFallbacks:
+    """Lines 395-396, 438-439, 482-483: each function defaults its config / profile
+    arg to a sensible value when None is passed. These guards exist so the
+    functions can be called from contexts that don't have a profile yet
+    (e.g. unit tests, ad-hoc scoring)."""
+
+    def test_composite_score_with_profile_none(self):
+        # Line 396: profile=None -> profile={} default
+        score = calculate_composite_score(
+            growth_projection=80, effective_score=75,
+            momentum_score=30, breakout_bonus=10,
+            pre_breakout_bonus=0, base_quality_bonus=8,
+            extended_penalty=0, profile=None,
+        )
+        expected = 80 * 0.25 + 75 * 0.25 + 30 * 0.20 + 10 * 0.20 + 8 * 0.10
+        assert abs(score - expected) < 0.01
+
+    def test_position_size_pct_with_yaml_config_none(self):
+        # Line 439: yaml_config=None -> falls back to module-level config.
+        # We only need the line to execute; the returned size depends on
+        # real config but must be a positive float.
+        result = calculate_position_size_pct(
+            composite_score=60, max_positions=8, profile={}, regime_max_pct=12.0,
+            yaml_config=None,
+        )
+        assert isinstance(result, float)
+        assert result > 0
+
+    def test_apply_multipliers_with_yaml_config_none(self):
+        # Line 483: yaml_config=None -> falls back to module-level config.
+        # No coiled-spring / pre-breakout multipliers active, so size unchanged.
+        result = apply_position_size_multipliers(
+            position_pct=12.0, pre_breakout_bonus=0, has_base=False,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            is_coiled_spring=False, in_soft_zone=False, soft_zone_mult=1.0,
+            is_correction_zone=False, cz_position_mult=1.0,
+            heat_penalty_active=False, market_state_multiplier=1.0,
+            profile={}, yaml_config=None,
+        )
+        assert abs(result - 12.0) < 0.01
+
+
+class TestApplyPositionSizeMultipliersCoverage:
+    def _base(self, **overrides):
+        defaults = dict(
+            position_pct=12.0, pre_breakout_bonus=0, has_base=False,
+            is_breaking_out=False, breakout_volume_ratio=0,
+            is_coiled_spring=False, in_soft_zone=False, soft_zone_mult=1.0,
+            is_correction_zone=False, cz_position_mult=1.0,
+            heat_penalty_active=False, market_state_multiplier=1.0,
+            profile={}, yaml_config=MagicMock(get=lambda *a, **k: {}),
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_market_state_multiplier_applied(self):
+        # Line 491: any market_state_multiplier != 1.0 scales position size.
+        result = apply_position_size_multipliers(**self._base(
+            market_state_multiplier=0.50,
+        ))
+        assert abs(result - 6.0) < 0.01
+
+    def test_pre_breakout_moderate_uses_reduced_multiplier(self):
+        # Line 498: pre_breakout_bonus in [25, 35) with has_base -> mult * 0.93
+        # Default pre_breakout_multiplier=1.40, so 12 * (1.40 * 0.93) = 15.624
+        result = apply_position_size_multipliers(**self._base(
+            pre_breakout_bonus=30, has_base=True,
+        ))
+        assert abs(result - 12.0 * 1.40 * 0.93) < 0.01
