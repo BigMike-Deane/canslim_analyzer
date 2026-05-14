@@ -150,3 +150,17 @@ class TestPersistedConfigIntegration:
         scheduler.update_scan_config(source="top50", interval_minutes=20)
         cfg = get_system_setting("scanner.config")
         assert cfg == {"source": "top50", "interval_minutes": 20}
+
+
+class TestSetSystemSettingFailSoft:
+    """The fail-soft contract on set_system_setting: a DB error must return
+    False rather than raise. Callers in boot paths rely on this so a
+    degraded DB doesn't crash the runtime save."""
+
+    def test_returns_false_when_session_raises(self):
+        from unittest.mock import patch
+        with patch(
+            "backend.database.SessionLocal",
+            side_effect=RuntimeError("DB down"),
+        ):
+            assert set_system_setting("any.key", {"x": 1}) is False

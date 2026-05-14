@@ -357,3 +357,80 @@ class TestAddYears:
 
     def test_leap_to_non_leap_caps_at_28(self, script):
         assert script._add_years(date(2020, 2, 29), 1) == date(2021, 2, 28)
+
+
+class TestBuildSweep:
+    """build_sweep wraps fetch_existing_pairs + generate_candidate_grid +
+    filter_fresh + per-strategy top-N. Not exercised by the dry-run or
+    --execute tests, which use mock_empty_pool + grid directly."""
+
+    def test_picks_per_strategy_with_cap(self, script, monkeypatch):
+        get = MagicMock()
+        get.return_value.json.return_value = {"pairs": [], "total": 0}
+        get.return_value.raise_for_status.return_value = None
+        monkeypatch.setattr(script.requests, "get", get)
+
+        sweep = script.build_sweep(
+            api_base="http://example.test",
+            token=None,
+            max_per_strategy=2,
+        )
+        # Per-strategy cap honored: at most 2 of each strategy in STRATEGIES.
+        for strategy in script.STRATEGIES:
+            count = sum(1 for c in sweep if c["strategy"] == strategy)
+            assert count <= 2
+
+    def test_skips_collisions_against_existing_pool(self, script, monkeypatch):
+        # Pre-load the "existing" pool with a couple of grid entries so they
+        # are filtered out by build_sweep.
+        grid = script.generate_candidate_grid()
+        first_two = grid[:2]
+        pairs = [
+            {"start_date": c["start_date"], "end_date": c["end_date"],
+             "strategy": c["strategy"]}
+            for c in first_two
+        ]
+        get = MagicMock()
+        get.return_value.json.return_value = {"pairs": pairs, "total": 2}
+        get.return_value.raise_for_status.return_value = None
+        monkeypatch.setattr(script.requests, "get", get)
+
+        sweep = script.build_sweep(
+            api_base="http://example.test",
+            token=None,
+            max_per_strategy=99,  # high cap so we just measure exclusion
+        )
+        # None of the pre-existing entries should appear in the sweep.
+        for c in first_two:
+            triple = (c["start_date"], c["end_date"], c["strategy"])
+            assert (triple[0], triple[1], triple[2]) not in [
+                (s["start_date"], s["end_date"], s["strategy"]) for s in sweep
+            ]
+
+
+class TestMainHttpErrorPath:
+    """fetch_existing_pairs raising requests.HTTPError surfaces as rc=1 with
+    a status-code-prefixed stderr message (lines 233-235)."""
+
+    def test_returns_1_on_http_error_with_status(
+        self, script, monkeypatch, capsys,
+    ):
+        import requests as _requests
+        err_resp = MagicMock()
+        err_resp.status_code = 403
+        err_resp.text = "Forbidden: admin required"
+        http_err = _requests.HTTPError(response=err_resp)
+
+        def _raise(*a, **k):
+            raise http_err
+
+        monkeypatch.setattr(script, "fetch_existing_pairs", _raise)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["grow_training_pool.py", "--max-per-strategy", "1"],
+        )
+        rc = script.main()
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "403" in err
+        assert "Forbidden" in err
