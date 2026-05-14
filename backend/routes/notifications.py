@@ -5,7 +5,7 @@ to the Notification table via email_utils.create_notification() so users can
 read recent activity inside the app even when their phone push fails.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -122,6 +122,60 @@ async def mark_all_read(
                .update({Notification.read_at: now}, synchronize_session=False))
     db.commit()
     return {"updated": updated}
+
+
+class ThresholdPreviewOut(BaseModel):
+    """Sample of recent per-stock alert scores so the Settings page can show
+    "would surface X of N alerts at this threshold" without re-querying the
+    backend on every slider tick. Frontend filters the array client-side.
+    """
+    lookback_days: int
+    total_with_score: int
+    scores: list[float]
+    current_threshold: Optional[float] = None
+
+
+@router.get("/threshold-preview", response_model=ThresholdPreviewOut)
+async def threshold_preview(
+    lookback_days: int = Query(7, ge=1, le=30),
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Return recent per-stock alert scores for the current user — supports
+    the Settings page's score-threshold preview UI.
+
+    Only alerts where `data['score']` is a finite number are returned. System-
+    wide alerts (SPY gate, market turns, morning briefing) carry no score and
+    are excluded here because the threshold gate ignores them anyway.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    rows = (db.query(Notification)
+            .filter(Notification.user_id == current_user.id,
+                    Notification.created_at >= cutoff,
+                    Notification.data.isnot(None))
+            .all())
+    scores: list[float] = []
+    for n in rows:
+        if not isinstance(n.data, dict):
+            continue
+        raw = n.data.get("score")
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        # Guard against NaN / inf so the frontend filter math stays sane
+        if val != val or val in (float("inf"), float("-inf")):
+            continue
+        scores.append(val)
+
+    return ThresholdPreviewOut(
+        lookback_days=lookback_days,
+        total_with_score=len(scores),
+        scores=scores,
+        current_threshold=getattr(current_user, "score_alert_threshold", None),
+    )
 
 
 @router.delete("/{notification_id}")

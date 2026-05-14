@@ -183,6 +183,11 @@ export const api = {
 
   getUnreadNotificationCount: () => request('/api/notifications/unread-count'),
 
+  // Sample of recent per-stock alert scores so Settings can show
+  // "would surface X of N alerts" preview without re-querying per slider tick.
+  getNotificationThresholdPreview: (lookbackDays = 7) =>
+    request(`/api/notifications/threshold-preview?lookback_days=${lookbackDays}`),
+
   markNotificationRead: async (id) => {
     const result = await request(`/api/notifications/${id}/read`, { method: 'POST' })
     cache.invalidate('/api/notifications')

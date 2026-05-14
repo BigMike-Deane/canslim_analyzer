@@ -112,6 +112,16 @@ export default function Settings() {
   const [prefsBusy, setPrefsBusy] = useState(false)
   const [prefsMessage, setPrefsMessage] = useState(null)
 
+  // Recent per-stock alert scores (7-day window) so we can show
+  // "would surface X of N" beside the threshold without re-querying on every
+  // slider tick. Filtering happens client-side.
+  const [thresholdPreview, setThresholdPreview] = useState(null)
+  useEffect(() => {
+    api.getNotificationThresholdPreview(7)
+      .then(setThresholdPreview)
+      .catch(() => setThresholdPreview({ scores: [], total_with_score: 0, lookback_days: 7 }))
+  }, [])
+
   useEffect(() => {
     api.getMe().then(me => {
       const url = me.webhook_url || ''
@@ -420,6 +430,30 @@ export default function Settings() {
               ? 'No threshold — every alert passes through.'
               : `Suppressing alerts with score < ${scoreThreshold}.`}
           </p>
+          {(() => {
+            // Live preview against the user's last 7 days of per-stock alerts.
+            // null = still loading; empty array = no alerts to evaluate.
+            if (thresholdPreview == null) return null
+            const total = thresholdPreview.total_with_score ?? 0
+            if (total === 0) {
+              return (
+                <p className="text-[11px] text-dark-600 mt-1 italic">
+                  No per-stock alerts in the last {thresholdPreview.lookback_days || 7} days
+                  to preview against yet.
+                </p>
+              )
+            }
+            const t = scoreThreshold ?? 0
+            const wouldPass = (thresholdPreview.scores || [])
+              .filter(s => s >= t).length
+            const pct = Math.round((wouldPass / total) * 100)
+            return (
+              <p className="text-[11px] text-primary-400 mt-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary-400 mr-1.5 align-middle"></span>
+                Last {thresholdPreview.lookback_days || 7} days: <span className="font-data text-primary-300">{wouldPass} of {total}</span> alerts ({pct}%) would pass this threshold.
+              </p>
+            )
+          })()}
         </div>
 
         <button

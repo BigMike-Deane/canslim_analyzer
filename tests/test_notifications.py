@@ -425,3 +425,90 @@ class TestMutations:
     def test_read_nonexistent_returns_404(self):
         r = client.post("/api/notifications/999999/read")
         assert r.status_code == 404
+
+
+# ── Threshold preview ────────────────────────────────────────────────
+
+
+class TestThresholdPreview:
+    """GET /api/notifications/threshold-preview powers the Settings page
+    "would surface X of N" pill. Returns the user's recent per-stock alert
+    scores; frontend filters client-side per slider tick.
+    """
+
+    def _seed(self, user_id, kind, data, *, days_ago=0):
+        from datetime import datetime, timedelta, timezone
+        db = SessionLocal()
+        try:
+            n = Notification(
+                user_id=user_id, kind=kind, title="t", body="b",
+                priority="default", data=data,
+            )
+            n.created_at = datetime.now(timezone.utc) - timedelta(days=days_ago)
+            db.add(n)
+            db.commit()
+            db.refresh(n)
+            return n.id
+        finally:
+            db.close()
+
+    def test_returns_only_scoreable_alerts(self):
+        # Scored: should appear. No-score: excluded. Malformed: excluded.
+        self._seed(USER_A_ID, "breakout", {"ticker": "AAA", "score": 85})
+        self._seed(USER_A_ID, "trade", {"ticker": "BBB", "score": 72})
+        self._seed(USER_A_ID, "spy_gate_change", {"ticker": "SPY"})
+        self._seed(USER_A_ID, "breakout", {"ticker": "CCC", "score": "n/a"})
+        self._seed(USER_A_ID, "breakout", {"ticker": "DDD"})
+
+        r = client.get("/api/notifications/threshold-preview")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total_with_score"] == 2
+        assert sorted(body["scores"]) == [72.0, 85.0]
+
+    def test_excludes_old_alerts_outside_lookback(self):
+        self._seed(USER_A_ID, "breakout", {"score": 80}, days_ago=1)
+        self._seed(USER_A_ID, "breakout", {"score": 60}, days_ago=20)
+
+        r = client.get("/api/notifications/threshold-preview?lookback_days=7")
+        body = r.json()
+        assert body["total_with_score"] == 1
+        assert body["scores"] == [80.0]
+        assert body["lookback_days"] == 7
+
+    def test_user_scoped(self):
+        # User B's alert must not leak into User A's preview.
+        self._seed(USER_A_ID, "breakout", {"score": 85})
+        self._seed(USER_B_ID, "breakout", {"score": 99})
+
+        r = client.get("/api/notifications/threshold-preview")
+        body = r.json()
+        assert body["scores"] == [85.0]
+        assert body["total_with_score"] == 1
+
+    def test_lookback_validation(self):
+        # Out-of-range lookback_days returns 422 (FastAPI Query validation)
+        r = client.get("/api/notifications/threshold-preview?lookback_days=0")
+        assert r.status_code == 422
+        r = client.get("/api/notifications/threshold-preview?lookback_days=100")
+        assert r.status_code == 422
+
+    def test_empty_when_no_alerts(self):
+        r = client.get("/api/notifications/threshold-preview")
+        body = r.json()
+        assert body["total_with_score"] == 0
+        assert body["scores"] == []
+
+    def test_filters_nan_and_inf(self):
+        # math.nan and math.inf both serialize through SQLAlchemy JSON if
+        # someone wrote them. _should_deliver-side guard prevents them
+        # propagating into the preview array.
+        self._seed(USER_A_ID, "breakout", {"score": float("nan")})
+        self._seed(USER_A_ID, "breakout", {"score": float("inf")})
+        self._seed(USER_A_ID, "breakout", {"score": 50})
+
+        r = client.get("/api/notifications/threshold-preview")
+        body = r.json()
+        # JSON doesn't carry NaN/inf in standard mode, but if they got through
+        # we'd see >1. Pinning the contract here.
+        assert body["scores"] == [50.0]
