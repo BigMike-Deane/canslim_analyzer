@@ -656,3 +656,134 @@ class TestStateSummary:
         assert "distribution_days" in summary
         assert summary["state"] == "trending"
         assert summary["max_exposure_pct"] == 1.0
+
+
+class TestCoverageGaps:
+    """Targeted coverage for branches the scenario tests don't reach:
+    v-bottom early-returns, distribution-day guard against zero prev close,
+    explicit state-transition checks (TRENDING→PRESSURE on 21EMA streak,
+    PRESSURE→CORRECTION, rally-low undercut restart, RECOVERY fast-track,
+    CONFIRMED→PRESSURE), and the empty-history short-circuit on
+    last_transition_was_fast_track.
+    """
+
+    def test_v_bottom_rejected_when_rally_too_small(self):
+        # Drop is large enough (20%) but rally from low is only 5% (< 8% min).
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CORRECTION
+        mgr.spy_52w_high = 500
+        mgr.correction_low = 400
+        mgr.correction_low_date = date(2024, 1, 1)
+        assert mgr._check_v_bottom(date(2024, 1, 10), spy_close=420) is False
+
+    def test_v_bottom_rejected_when_rally_too_slow(self):
+        # Rally is 10% (passes 8% threshold) but happens 20 days after the low.
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CORRECTION
+        mgr.spy_52w_high = 500
+        mgr.correction_low = 400
+        mgr.correction_low_date = date(2024, 1, 1)
+        assert mgr._check_v_bottom(date(2024, 1, 21), spy_close=440) is False
+
+    def test_distribution_day_skipped_when_prev_close_zero(self):
+        # Guards against bad SPY data (first-bar fixture with prev=0).
+        mgr = MarketStateManager()
+        mgr._update_distribution_days(
+            current_date=date(2024, 1, 5),
+            spy_close=480,
+            spy_prev_close=0,
+            spy_volume=1_000_000,
+            spy_prev_volume=900_000,
+        )
+        assert mgr.distribution_days == []
+
+    def test_trending_to_pressure_on_21ema_streak_below_50ma(self):
+        # 3 days below 21EMA + close below 50MA (but < 3% — too shallow for
+        # direct CORRECTION) trips the secondary PRESSURE transition.
+        mgr = MarketStateManager()
+        mgr.consecutive_below_21ema = 3
+        mgr.consecutive_above_21ema = 0
+        mgr._check_trending_exit(
+            current_date=date(2024, 6, 1),
+            spy_close=485,
+            spy_ma50=490,
+            spy_ema21=487,
+            dist_count=0,
+        )
+        assert mgr.state == MarketState.PRESSURE
+
+    def test_pressure_to_correction_on_close_below_50ma(self):
+        # PRESSURE breaks the 50MA -> CORRECTION + rally tracking initialized.
+        mgr = MarketStateManager()
+        mgr.state = MarketState.PRESSURE
+        mgr._check_pressure_transitions(
+            current_date=date(2024, 6, 1),
+            spy_close=480,
+            spy_ma50=490,
+            spy_ema21=485,
+            dist_count=0,
+        )
+        assert mgr.state == MarketState.CORRECTION
+        assert mgr.rally_attempt_day == 0
+        assert mgr.rally_attempt_low == 480
+        assert mgr.rally_attempt_start_date == date(2024, 6, 1)
+
+    def test_correction_undercut_restarts_rally_tracking(self):
+        # In CORRECTION with a rally-low set, a down day below that low resets
+        # rally tracking to the new low (elif branch at line 447-449).
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CORRECTION
+        mgr.rally_attempt_day = 2
+        mgr.rally_attempt_low = 470
+        mgr.rally_attempt_start_date = date(2024, 6, 1)
+        mgr._check_correction_exit(
+            current_date=date(2024, 6, 5),
+            spy_close=460,
+            spy_prev_close=475,
+            spy_volume=1_000_000,
+            spy_prev_volume=900_000,
+            spy_ma50=490,
+            spy_ema21=485,
+        )
+        assert mgr.rally_attempt_day == 0
+        assert mgr.rally_attempt_low == 460
+        assert mgr.rally_attempt_start_date == date(2024, 6, 5)
+
+    def test_recovery_fast_tracks_to_trending(self):
+        # Above both 50MA and 21EMA with 3-day 21EMA streak -> direct TRENDING
+        # without going through CONFIRMED.
+        mgr = MarketStateManager()
+        mgr.state = MarketState.RECOVERY
+        mgr.consecutive_above_21ema = 3
+        mgr.rally_attempt_low = None
+        mgr._check_recovery_transitions(
+            current_date=date(2024, 6, 1),
+            spy_close=500,
+            spy_ma50=490,
+            spy_ema21=495,
+            dist_count=0,
+        )
+        assert mgr.state == MarketState.TRENDING
+
+    def test_confirmed_to_pressure_on_distribution_buildup(self):
+        # CONFIRMED with 5 distribution days falls back to PRESSURE (close is
+        # above 50MA and 21EMA streak too short for TRENDING).
+        mgr = MarketStateManager()
+        mgr.state = MarketState.CONFIRMED
+        mgr.state_days_count = 10
+        mgr.consecutive_above_21ema = 0
+        mgr._check_confirmed_transitions(
+            current_date=date(2024, 6, 1),
+            spy_close=495,
+            spy_ma50=490,
+            spy_ema21=498,
+            dist_count=5,
+        )
+        assert mgr.state == MarketState.PRESSURE
+
+    def test_last_transition_was_fast_track_empty_history(self):
+        # Fresh manager has no state history; property must short-circuit
+        # rather than IndexError on state_history[-1].
+        mgr = MarketStateManager()
+        assert mgr.state_history == []
+        assert mgr.last_transition_was_fast_track is False
