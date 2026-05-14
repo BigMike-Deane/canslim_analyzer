@@ -1,5 +1,19 @@
 import { useState, useEffect } from 'react'
-import { api, formatDate, formatDateTime } from '../api'
+import { api, formatDate, formatDateTime, formatRelativeTime } from '../api'
+
+// "4m 22s" / "1h 04m" / "23s" — duration between two ISO timestamps.
+function _formatScanDuration(startIso, endIso) {
+  if (!startIso || !endIso) return null
+  const ms = new Date(endIso) - new Date(startIso)
+  if (!isFinite(ms) || ms < 0) return null
+  const totalSec = Math.round(ms / 1000)
+  const hrs = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const secs = totalSec % 60
+  if (hrs > 0) return `${hrs}h ${mins.toString().padStart(2, '0')}m`
+  if (mins > 0) return `${mins}m ${secs.toString().padStart(2, '0')}s`
+  return `${secs}s`
+}
 import { useAuth } from '../auth'
 
 export default function Admin() {
@@ -189,8 +203,51 @@ export default function Admin() {
     )
   }
 
+  // Compact at-a-glance ML metrics so ops doesn't have to scroll past the
+  // Scanner + Users sections to know whether the active model is healthy.
+  // Full details (per-regime AUC, CV folds, retrain controls) live below in
+  // the ML Signal Layer section.
+  const mlRibbon = (() => {
+    const m = mlStatus?.active_model
+    if (!m) return null
+    const isRegression = m.model_type === 'regression'
+    const primary = isRegression
+      ? { label: 'Spearman', value: m.spearman, fmt: v => v?.toFixed(4) ?? '-',
+          ok: v => (v ?? 0) >= 0.30, warn: v => (v ?? 0) >= 0.15 }
+      : { label: 'ROC AUC', value: m.roc_auc, fmt: v => v?.toFixed(4) ?? '-',
+          ok: v => (v ?? 0) >= 0.60, warn: v => (v ?? 0) >= 0.55 }
+    const color = primary.ok(primary.value)
+      ? 'text-emerald-400' : primary.warn(primary.value)
+      ? 'text-amber-400' : 'text-red-400'
+    return (
+      <a
+        href="#ml-signal-layer"
+        className="card flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 hover:border-primary-500/30 transition-colors"
+      >
+        <span className="text-[10px] uppercase tracking-wider text-dark-500">ML Active</span>
+        <span className="text-sm font-data text-dark-100">v{m.version}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-md ${isRegression ? 'bg-accent-500/15 text-accent-400' : 'bg-primary-500/15 text-primary-400'}`}>
+          {isRegression ? 'regression' : 'classifier'}
+        </span>
+        <span className="text-[10px] text-dark-500">{primary.label}</span>
+        <span className={`text-sm font-data ${color}`}>{primary.fmt(primary.value)}</span>
+        {m.training_samples != null && (
+          <span className="text-[10px] text-dark-500">
+            · {m.training_samples} samples
+          </span>
+        )}
+        {m.activated_at && (
+          <span className="text-[10px] text-dark-500 ml-auto">
+            Activated {formatRelativeTime(m.activated_at)}
+          </span>
+        )}
+      </a>
+    )
+  })()
+
   return (
     <div className="p-4 md:p-6 space-y-4">
+      {mlRibbon}
       {/* Scanner Control */}
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -327,7 +384,11 @@ export default function Admin() {
             </button>
             {scanner?.last_scan_end && !scanner?.is_scanning && (
               <span className="ml-auto text-[10px] text-dark-500">
-                Last scan: {new Date(scanner.last_scan_end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                Last scan: {formatRelativeTime(scanner.last_scan_end)}
+                {(() => {
+                  const dur = _formatScanDuration(scanner.last_scan_start, scanner.last_scan_end)
+                  return dur ? ` · took ${dur}` : ''
+                })()}
               </span>
             )}
           </div>
@@ -450,7 +511,7 @@ export default function Admin() {
       )}
 
       {/* ML Signal Layer */}
-      <div className="mt-8">
+      <div className="mt-8" id="ml-signal-layer">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-dark-100">ML Signal Layer</h2>
           <div className="flex items-center gap-2">
