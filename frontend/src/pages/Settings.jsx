@@ -19,6 +19,33 @@ const MUTABLE_KINDS = [
   { key: 'morning_briefing',   label: 'Morning briefing' },
 ]
 
+// Hour 0-23 in America/Chicago, matching the timezone backend/email_utils.py
+// uses for quiet-hours gating. Intl.DateTimeFormat handles DST correctly.
+function _currentChicagoHour() {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: '2-digit',
+      hour12: false,
+    })
+    return parseInt(fmt.format(new Date()), 10)
+  } catch {
+    return new Date().getUTCHours() // fallback if tz lookup fails
+  }
+}
+
+// Mirrors backend _should_deliver: in_quiet iff qs <= hour < qe (qs < qe)
+// OR hour >= qs OR hour < qe (qs > qe, window crosses midnight).
+function _quietHoursStatus(hour, qs, qe) {
+  if (qs == null || qe == null || qs === qe) return null
+  const inQuiet = qs < qe ? (qs <= hour && hour < qe) : (hour >= qs || hour < qe)
+  // Whole hours until window edge — coarse but matches backend's hour-level gate
+  const hoursUntil = (target) => ((target - hour + 24) % 24)
+  return inQuiet
+    ? { active: true, hoursUntil: hoursUntil(qe), edge: qe }
+    : { active: false, hoursUntil: hoursUntil(qs), edge: qs }
+}
+
 function HourSelect({ value, onChange, disabled }) {
   return (
     <select
@@ -65,6 +92,16 @@ export default function Settings() {
   const [pushBusy, setPushBusy] = useState(false)
   const [pushSubs, setPushSubs] = useState([])
   const [pushMessage, setPushMessage] = useState(null)
+
+  // Current Chicago-local hour (matches backend's _should_deliver tz).
+  // Polls every minute so the active-now indicator under quiet hours stays
+  // honest without forcing a save.
+  const [chicagoHour, setChicagoHour] = useState(() => _currentChicagoHour())
+  useEffect(() => {
+    const tick = () => setChicagoHour(_currentChicagoHour())
+    const id = setInterval(tick, 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   // Notification preferences (per-kind mute + quiet hours + score threshold)
   const [mutedKinds, setMutedKinds] = useState(new Set())
@@ -310,11 +347,29 @@ export default function Settings() {
             )}
           </div>
           {quietStart != null && quietEnd != null && quietStart !== quietEnd && (
-            <p className="text-[11px] text-dark-500 mt-1.5">
-              {quietStart < quietEnd
-                ? `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`
-                : `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – next day ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`}
-            </p>
+            <>
+              <p className="text-[11px] text-dark-500 mt-1.5">
+                {quietStart < quietEnd
+                  ? `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`
+                  : `Push silenced ${quietStart.toString().padStart(2, '0')}:00 – next day ${quietEnd.toString().padStart(2, '0')}:00 (Chicago)`}
+              </p>
+              {(() => {
+                const status = _quietHoursStatus(chicagoHour, quietStart, quietEnd)
+                if (!status) return null
+                const edge = status.edge.toString().padStart(2, '0') + ':00'
+                return status.active ? (
+                  <p className="text-[11px] text-amber-400 mt-1 font-medium">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 mr-1.5 align-middle"></span>
+                    Quiet hours ACTIVE · ends at {edge} Chicago ({status.hoursUntil}h)
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-emerald-400 mt-1">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 align-middle"></span>
+                    Quiet hours not active · next active at {edge} Chicago ({status.hoursUntil}h)
+                  </p>
+                )
+              })()}
+            </>
           )}
         </div>
 
