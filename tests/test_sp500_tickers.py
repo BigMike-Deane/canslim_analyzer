@@ -894,3 +894,94 @@ class TestLoadEnv:
         # No .env created → if-branch at line 868 is False
         sp500_tickers._load_env()
         # No exception; no state changed
+
+
+# ── Coverage Gaps ──────────────────────────────────────────────────────
+
+
+class TestCoverageGaps:
+    """Branches the existing scenario suites don't reach: portfolio DB-fail
+    cascading to CSV read, SmallCap 600 wikitable fallback, and the Finviz
+    page-2+ parsing loop body + inner exception handler."""
+
+    def test_portfolio_db_exception_falls_through_to_csv(self, tmp_path, monkeypatch):
+        # Force the function's `from database import SessionLocal` to resolve
+        # to a stub whose SessionLocal() raises. The function does a sys.path
+        # insert + import inside its try block, so we plant the stub in
+        # sys.modules under the short name "database" — that's the cache key
+        # the import will consult.
+        fake_db = MagicMock()
+        fake_db.SessionLocal = MagicMock(side_effect=RuntimeError("DB down"))
+        monkeypatch.setitem(sys.modules, "database", fake_db)
+
+        # CSV in tmp_path; redirect sp500_tickers.__file__ so the function
+        # resolves portfolio.csv next to it.
+        csv_path = tmp_path / "portfolio.csv"
+        csv_path.write_text("ticker,shares\nAAPL,100\nMSFT,50\n")
+        monkeypatch.setattr(
+            sp500_tickers, "__file__", str(tmp_path / "sp500_tickers.py"),
+        )
+
+        result = sp500_tickers.get_portfolio_tickers()
+        assert "AAPL" in result
+        assert "MSFT" in result
+
+    def test_portfolio_db_exception_and_csv_read_error(self, tmp_path, monkeypatch):
+        # DB raises (hits line 162-163) AND the CSV open raises (hits 175-176).
+        # End result: empty list returned at line 178.
+        fake_db = MagicMock()
+        fake_db.SessionLocal = MagicMock(side_effect=RuntimeError("DB down"))
+        monkeypatch.setitem(sys.modules, "database", fake_db)
+
+        # Create a directory at the path where portfolio.csv is expected so
+        # csv_path.exists() is True but open() raises IsADirectoryError.
+        (tmp_path / "portfolio.csv").mkdir()
+        monkeypatch.setattr(
+            sp500_tickers, "__file__", str(tmp_path / "sp500_tickers.py"),
+        )
+
+        result = sp500_tickers.get_portfolio_tickers()
+        assert result == []
+
+    def test_smallcap_wikitable_fallback_when_constituents_id_missing(self):
+        # Wikipedia variant: no id="constituents" table, but a class="wikitable"
+        # one (line 486 fallback path).
+        mock_resp = MagicMock()
+        mock_resp.text = SP_CONSTITUENTS_NO_ID_HTML
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_sp600_smallcap_tickers()
+        assert "GOOG" in result
+        assert "META" in result
+
+    def test_finviz_pagination_collects_page2_then_inner_exception_breaks(self):
+        # Page 1: tickers via the primary loop (already covered).
+        mock_p1 = MagicMock()
+        mock_p1.text = FINVIZ_HTML_PAGE1
+        mock_p1.status_code = 200
+        mock_p1.raise_for_status = MagicMock()
+
+        # Page 2: more tickers — covers lines 689-696 (inner for-loop body
+        # + import time + time.sleep).
+        page2_html = """<html><body>
+        <a class="screener-link-primary">PAGE</a>
+        <a class="screener-link-primary">TWO</a>
+        </body></html>"""
+        mock_p2 = MagicMock()
+        mock_p2.text = page2_html
+        mock_p2.status_code = 200
+        mock_p2.raise_for_status = MagicMock()
+
+        # Page 3: requests.get raises — covers lines 698-700 (inner except + break).
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=[mock_p1, mock_p2, ConnectionError("page 3 fail")],
+        ), patch("time.sleep"):
+            result = sp500_tickers.get_finviz_smallcaps()
+
+        # Page 1 tickers preserved
+        assert "SMCO" in result
+        # Page 2 tickers added via the loop body (line 689-692)
+        assert "PAGE" in result
+        assert "TWO" in result
