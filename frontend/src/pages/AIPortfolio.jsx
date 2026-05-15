@@ -433,6 +433,64 @@ function BuySignalFactors({ factors }) {
   )
 }
 
+// Renders the structured SELL signal_factors that ai_trader.py writes for
+// every exit: which rule triggered (STOP LOSS / TRAILING STOP / PARTIAL
+// TRAILING / SCORE CRASH / TAKE PROFIT / CIRCUIT BREAKER / ...), the gain
+// at exit, and the rule-specific context (stop_pct, drop_from_peak,
+// sell_pct, drawdown_pct). Mirrors the BUY-side BuySignalFactors layout
+// so the modal looks consistent across action types.
+const SELL_REASON_COLOR = {
+  'STOP LOSS':         'red',
+  'CIRCUIT BREAKER':   'red',
+  'SCORE CRASH':       'red',
+  'WEAK POSITION':     'amber',
+  'PROTECT GAINS':     'amber',
+  'PRE-EARNINGS':      'amber',
+  'TRAILING STOP':     'amber',
+  'PARTIAL TRAILING':  'amber',
+  'TAKE PROFIT':       'emerald',
+  'PARTIAL PROFIT':    'emerald',
+}
+
+function SellSignalFactors({ factors }) {
+  if (!factors) return null
+  const reason = factors.sell_reason
+  if (!reason) return null
+
+  const color = SELL_REASON_COLOR[reason] || 'default'
+  // Order matters: context chips read left-to-right as the trade story.
+  const contextChips = []
+  if (factors.gain_pct != null) {
+    const v = factors.gain_pct
+    const c = v >= 0 ? 'emerald' : 'red'
+    contextChips.push({ key: 'gain', label: `Gain ${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, color: c, title: 'Realized gain at exit' })
+  }
+  if (factors.stop_pct != null) {
+    contextChips.push({ key: 'stop', label: `Stop ${factors.stop_pct.toFixed(1)}%`, color: 'default', title: 'Position stop-loss level' })
+  }
+  if (factors.drop_from_peak != null) {
+    contextChips.push({ key: 'dfp', label: `−${factors.drop_from_peak.toFixed(1)}% from peak`, color: 'default', title: 'How far the price fell from its peak before triggering' })
+  }
+  if (factors.sell_pct != null) {
+    contextChips.push({ key: 'pct', label: `Sold ${factors.sell_pct}%`, color: 'default', title: 'Fraction of position sold' })
+  }
+  if (factors.drawdown_pct != null) {
+    contextChips.push({ key: 'dd', label: `DD ${factors.drawdown_pct.toFixed(1)}%`, color: 'red', title: 'Portfolio drawdown that triggered the circuit breaker' })
+  }
+
+  return (
+    <div className="pt-3 space-y-2">
+      <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Sell Signal</span>
+      <div className="flex flex-wrap gap-1.5 items-center">
+        <Chip color={color} title="Rule that triggered the exit">{reason}</Chip>
+        {contextChips.map(c => (
+          <Chip key={c.key} color={c.color} title={c.title}>{c.label}</Chip>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Trade Detail Modal ──────────────────────────────────────────────
 function TradeDetailModal({ trade, onClose }) {
   if (!trade) return null
@@ -524,6 +582,11 @@ function TradeDetailModal({ trade, onClose }) {
         {/* Buy Signal Factors — only for BUY trades with structured factors */}
         {trade.action === 'BUY' && trade.signal_factors && (
           <BuySignalFactors factors={trade.signal_factors} />
+        )}
+
+        {/* Sell Signal Factors — only for SELL trades with structured factors */}
+        {trade.action === 'SELL' && trade.signal_factors?.sell_reason && (
+          <SellSignalFactors factors={trade.signal_factors} />
         )}
 
         {/* Reason Section */}
