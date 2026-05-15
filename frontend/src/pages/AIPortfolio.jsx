@@ -164,7 +164,7 @@ const WINDOW_LABELS = {
   'all': 'Since Inception',
 }
 
-function SummaryCard({ summary, config, windowReturns, timeRange }) {
+function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, loading }) {
   if (!summary) return null
 
   const winRet = windowReturns?.portfolio
@@ -176,7 +176,35 @@ function SummaryCard({ summary, config, windowReturns, timeRange }) {
 
   return (
     <Card variant="glass" className="mb-4">
-      <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">AI Portfolio Value</span>
+      {/* Compact pill row sits inside the card header so the controls and
+          the windowed return number are visually adjacent — no chance of
+          scrolling past it. */}
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">
+          AI Portfolio Value
+        </span>
+        <div className="flex items-center gap-2">
+          {loading && (
+            <span className="text-[10px] text-dark-500 font-data" aria-live="polite">…</span>
+          )}
+          <div className="flex bg-dark-850 rounded-lg p-0.5">
+            {WINDOW_PILLS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setTimeRange?.(value)}
+                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                  timeRange === value
+                    ? 'bg-primary-500 text-white'
+                    : 'text-dark-400 hover:text-white'
+                }`}
+                aria-pressed={timeRange === value}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       <div className="text-3xl font-bold font-data mt-1 mb-1">
         {formatCurrency(summary.total_value)}
       </div>
@@ -200,57 +228,15 @@ function SummaryCard({ summary, config, windowReturns, timeRange }) {
   )
 }
 
-// ── Window Returns Bar (global time-range selector) ─────────────────
-// Owns the page-level `timeRange` selection. Affects:
-//   - SummaryCard return number
-//   - PositionsList per-position return column
-//   - PerformanceChart filter window
+// Pill values shared by SummaryCard's inline selector.
+// Drives SummaryCard return number + PositionsList per-row return +
+// PerformanceChart filter window.
 const WINDOW_PILLS = [
   { value: '1d', label: '1D' },
   { value: '7d', label: '7D' },
   { value: '30d', label: '30D' },
   { value: 'all', label: 'All' },
 ]
-
-function WindowReturnsBar({ timeRange, setTimeRange, loading }) {
-  return (
-    <Card variant="glass" className="mb-4" padding="p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">
-            Returns Window
-          </div>
-          <div className="text-[10px] text-dark-500 mt-0.5">
-            Applies to portfolio value, positions, and chart
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {loading && (
-            <span className="text-[10px] text-dark-500 font-data" aria-live="polite">
-              Loading…
-            </span>
-          )}
-          <div className="flex bg-dark-850 rounded-lg p-0.5">
-            {WINDOW_PILLS.map(({ value, label }) => (
-              <button
-                key={value}
-                onClick={() => setTimeRange(value)}
-                className={`px-2.5 py-1 sm:px-3 sm:py-1 text-xs rounded transition-colors ${
-                  timeRange === value
-                    ? 'bg-primary-500 text-white'
-                    : 'text-dark-400 hover:text-white'
-                }`}
-                aria-pressed={timeRange === value}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </Card>
-  )
-}
 
 // ── Positions List ──────────────────────────────────────────────────
 // Window-aware: when `windowReturns` is supplied, the per-position return %
@@ -1755,7 +1741,12 @@ export default function AIPortfolio() {
 
       {activeTab === 'overview' && (
         <>
-          <WindowReturnsBar
+          {/* SummaryCard hoisted to top so the time-range pills (embedded
+              in its header) are visible immediately — no scrolling. */}
+          <SummaryCard
+            summary={portfolio?.summary}
+            config={portfolio?.config}
+            windowReturns={windowReturns}
             timeRange={timeRange}
             setTimeRange={setTimeRange}
             loading={windowReturnsLoading}
@@ -1772,13 +1763,6 @@ export default function AIPortfolio() {
             cashPct={portfolio?.summary?.total_value > 0
               ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
               : 0}
-          />
-
-          <SummaryCard
-            summary={portfolio?.summary}
-            config={portfolio?.config}
-            windowReturns={windowReturns}
-            timeRange={timeRange}
           />
 
           <ConfigPanel
