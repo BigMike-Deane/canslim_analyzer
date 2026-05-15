@@ -131,3 +131,90 @@ class TestRecordMLPrediction:
             _record_ml_prediction(db_session, 999_999_999, "AAPL", 0.5, {"c_score": 10.0})
         except Exception as e:
             pytest.fail(f"_record_ml_prediction must not raise: {e}")
+
+
+# ── /api/ml/status response shape ────────────────────────────────────────
+
+
+class TestMLStatusEvalFieldsSurfaced:
+    """Regression: /api/ml/status active_model must include the eval_*
+    graduation-gate metrics. Shipped 2026-05-14 to power the Admin ribbon —
+    if these get dropped, the ribbon silently goes blank.
+    """
+
+    def test_active_model_response_includes_eval_fields(self, db_session):
+        # Seed an active model with realistic eval-backtest outcomes
+        m = MLModel(
+            version=99,
+            strategy="nostate_optimized",
+            model_type="classifier",
+            status="active",
+            feature_count=19,
+            training_samples=786,
+            roc_auc=0.5811,
+            accuracy=0.62,
+            f1=0.58,
+            eval_return_pct=12.3,
+            eval_sharpe=1.04,
+            eval_max_drawdown_pct=14.2,
+            eval_decile_wr=0.584,
+            model_path="/tmp/fake.joblib",
+            activated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(m)
+        db_session.commit()
+
+        # Call the route function directly — no auth, no TestClient overhead
+        import asyncio
+        from backend.routes.ml import get_ml_status
+        from backend.database import User
+        fake_user = User(id=1, email="admin@test", is_active=True, is_admin=True,
+                         hashed_password="")
+        result = asyncio.run(get_ml_status(
+            strategy="nostate_optimized",
+            current_user=fake_user,
+            db=db_session,
+        ))
+
+        active = result["active_model"]
+        assert active is not None
+        assert active["version"] == 99
+        assert active["roc_auc"] == pytest.approx(0.5811)
+        # The 4 new fields shipped 2026-05-14 must surface
+        assert active["eval_return_pct"] == pytest.approx(12.3)
+        assert active["eval_sharpe"] == pytest.approx(1.04)
+        assert active["eval_max_drawdown_pct"] == pytest.approx(14.2)
+        assert active["eval_decile_wr"] == pytest.approx(0.584)
+
+    def test_legacy_rows_without_eval_return_nulls(self, db_session):
+        # Legacy active models pre-dating the eval pipeline have null eval_*
+        # columns. The response must include the keys with null values rather
+        # than dropping them, so the frontend can branch on null cleanly.
+        m = MLModel(
+            version=1, strategy="nostate_optimized", model_type="classifier",
+            status="active", feature_count=24, roc_auc=0.55,
+            eval_return_pct=None, eval_sharpe=None,
+            eval_max_drawdown_pct=None, eval_decile_wr=None,
+            model_path="/tmp/fake.joblib",
+            activated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(m)
+        db_session.commit()
+
+        import asyncio
+        from backend.routes.ml import get_ml_status
+        from backend.database import User
+        fake_user = User(id=1, email="admin@test", is_active=True, is_admin=True,
+                         hashed_password="")
+        result = asyncio.run(get_ml_status(
+            strategy="nostate_optimized",
+            current_user=fake_user, db=db_session,
+        ))
+
+        active = result["active_model"]
+        for key in ("eval_return_pct", "eval_sharpe",
+                    "eval_max_drawdown_pct", "eval_decile_wr"):
+            assert key in active, f"{key} must be in response even when null"
+            assert active[key] is None

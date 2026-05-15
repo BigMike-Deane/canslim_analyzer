@@ -499,6 +499,31 @@ class TestThresholdPreview:
         assert body["total_with_score"] == 0
         assert body["scores"] == []
 
+    def test_excludes_urgent_priority_alerts(self):
+        # Urgent alerts bypass _should_deliver's threshold gate (line 262),
+        # so they must not appear in the preview pool — including them
+        # would misleadingly inflate "would pass" counts. Pinning the
+        # exclusion contract here so a future regression that drops the
+        # priority filter shows up immediately.
+        self._seed(USER_A_ID, "stop_loss", {"score": 95}, days_ago=0)
+        # Manually mark the seeded row urgent (default is "default")
+        db = SessionLocal()
+        try:
+            from datetime import timezone
+            (db.query(Notification)
+             .filter(Notification.user_id == USER_A_ID)
+             .update({Notification.priority: "urgent"}, synchronize_session=False))
+            db.commit()
+        finally:
+            db.close()
+        # Non-urgent scored alert that SHOULD appear
+        self._seed(USER_A_ID, "breakout", {"score": 80}, days_ago=0)
+
+        r = client.get("/api/notifications/threshold-preview")
+        body = r.json()
+        assert body["scores"] == [80.0]
+        assert body["total_with_score"] == 1
+
     def test_filters_nan_and_inf(self):
         # math.nan and math.inf both serialize through SQLAlchemy JSON if
         # someone wrote them. _should_deliver-side guard prevents them

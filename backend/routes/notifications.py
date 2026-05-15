@@ -146,13 +146,20 @@ async def threshold_preview(
 
     Only alerts where `data['score']` is a finite number are returned. System-
     wide alerts (SPY gate, market turns, morning briefing) carry no score and
-    are excluded here because the threshold gate ignores them anyway.
+    are excluded here because the threshold gate ignores them anyway. Urgent-
+    priority alerts (stop losses, circuit breakers) are also excluded because
+    `_should_deliver` bypasses the threshold for them — including them would
+    misleadingly inflate the "would pass" count.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     rows = (db.query(Notification)
             .filter(Notification.user_id == current_user.id,
                     Notification.created_at >= cutoff,
-                    Notification.data.isnot(None))
+                    Notification.data.isnot(None),
+                    # Mirror _should_deliver's urgent bypass — urgent alerts
+                    # always pass regardless of threshold, so don't pollute
+                    # the preview pool.
+                    Notification.priority != "urgent")
             .all())
     scores: list[float] = []
     for n in rows:

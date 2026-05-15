@@ -3643,8 +3643,8 @@ class BacktestEngine:
                     _ml_features["market_regime"] = REGIME_MAP_ML.get(signal_factors.get("market_regime", "neutral"), 1)
                     _ml_features["total_score"] = effective_score
                     _ml_features["coiled_spring"] = 1 if coiled_spring_bonus > 0 else 0
-                    _ml_features["soft_zone"] = 1 if score_data.get("_in_soft_zone") else 0
-                    _ml_features["volume_dry_up"] = 1 if signal_factors.get("volume_dry_up") else 0
+                    # Pruned 2026-05-14: soft_zone + volume_dry_up no longer in
+                    # FEATURE_COLUMNS, so the predictor ignores these kwargs.
                     if self._eval_model_payload is not None:
                         from ml.model import get_ml_prediction_with_model
                         ml_confidence = get_ml_prediction_with_model(

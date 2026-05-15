@@ -2970,8 +2970,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 _ml_features["market_regime"] = REGIME_MAP_ML.get(buy_signal_factors.get("market_regime", "neutral"), 1)
                 _ml_features["total_score"] = effective_score
                 _ml_features["coiled_spring"] = 1 if coiled_spring_bonus > 0 else 0
-                _ml_features["soft_zone"] = 1 if in_soft_zone else 0
-                _ml_features["volume_dry_up"] = 1 if buy_signal_factors.get("volume_dry_up") else 0
+                # Pruned 2026-05-14: soft_zone + volume_dry_up no longer in
+                # FEATURE_COLUMNS, so the predictor ignores these kwargs.
                 ml_confidence = get_ml_prediction(**_ml_features)
                 if ml_confidence is not None and ml_confidence == ml_confidence and not ml_config.get('log_only', True):
                     ml_weight = ml_config.get('weight', 20)
