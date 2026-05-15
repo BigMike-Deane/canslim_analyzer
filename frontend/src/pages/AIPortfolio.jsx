@@ -241,7 +241,9 @@ const WINDOW_PILLS = [
 // ── Positions List ──────────────────────────────────────────────────
 // Window-aware: when `windowReturns` is supplied, the per-position return %
 // reflects the selected window. Otherwise falls back to lifetime gain_loss_pct.
-function PositionsList({ positions, windowReturns, timeRange }) {
+// Mirrors SummaryCard's inline pill row so the user can flip windows while
+// scanning the list without scrolling back to the summary at the top.
+function PositionsList({ positions, windowReturns, timeRange, setTimeRange, loading }) {
   const [selectedPosition, setSelectedPosition] = useState(null)
 
   if (!positions || positions.length === 0) {
@@ -263,7 +265,32 @@ function PositionsList({ positions, windowReturns, timeRange }) {
 
   return (
     <Card variant="glass" className="mb-4">
-      <CardHeader title={`Positions (${positions.length})`} />
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <span className="text-sm font-semibold text-dark-100">
+          Positions <span className="text-dark-400 font-normal">({positions.length})</span>
+        </span>
+        <div className="flex items-center gap-2">
+          {loading && (
+            <span className="text-[10px] text-dark-500 font-data" aria-live="polite">…</span>
+          )}
+          <div className="flex bg-dark-850 rounded-lg p-0.5">
+            {WINDOW_PILLS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setTimeRange?.(value)}
+                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                  timeRange === value
+                    ? 'bg-primary-500 text-white'
+                    : 'text-dark-400 hover:text-white'
+                }`}
+                aria-pressed={timeRange === value}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       <div className="text-[10px] text-dark-500 mb-2 -mt-1 font-data">
         Return shown: <span className="text-dark-300">{windowLabel}</span>
       </div>
@@ -1778,6 +1805,8 @@ export default function AIPortfolio() {
             positions={portfolio?.positions}
             windowReturns={windowReturns}
             timeRange={timeRange}
+            setTimeRange={setTimeRange}
+            loading={windowReturnsLoading}
           />
 
           <TradeHistory trades={trades} />
