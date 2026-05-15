@@ -3386,6 +3386,189 @@ async def get_ai_portfolio_history(
     } for s in snapshots]
 
 
+_WINDOW_TO_DAYS = {"1d": 1, "7d": 7, "30d": 30}
+
+
+@app.get("/api/ai-portfolio/window-returns")
+async def get_ai_portfolio_window_returns(
+    window: str = Query("all", pattern="^(1d|7d|30d|all)$"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Compute portfolio + per-position return for a time window.
+
+    Windows: ``1d`` / ``7d`` / ``30d`` / ``all`` (default).
+
+    - Portfolio: derived from ``AIPortfolioSnapshot`` history. For 1d/7d/30d,
+      anchors to the latest snapshot strictly *before* the window-start date
+      (so the window measures change since end-of-prior-day). For ``all``,
+      uses the earliest snapshot (or starting cash if none exist yet).
+    - Per-position: window-start price comes from
+      ``HistoricalDataProvider.get_price_on_date`` (which carries back to the
+      most recent prior trading day for weekends/holidays). Falls back to
+      ``cost_basis`` when the position was opened *after* the window-start
+      or when historical data is unavailable. ``all`` uses ``cost_basis``
+      directly — equivalent to the existing lifetime ``gain_loss_pct``.
+    """
+    from datetime import timedelta, datetime as dt
+    from sqlalchemy import or_
+
+    config = get_or_create_config(db, user_id=current_user.id)
+    summary = get_portfolio_value(db, user_id=current_user.id)
+    positions = db.query(AIPortfolioPosition).filter(
+        AIPortfolioPosition.user_id == current_user.id
+    ).all()
+
+    today = date.today()
+    window_days = _WINDOW_TO_DAYS.get(window)  # None for "all"
+    window_start_date = today - timedelta(days=window_days) if window_days is not None else None
+
+    # ─── Portfolio anchor ────────────────────────────────────────────
+    anchor_snapshot = None
+    if window == "all":
+        anchor_snapshot = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.user_id == current_user.id,
+        ).order_by(
+            AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
+            AIPortfolioSnapshot.date.asc(),
+        ).first()
+    else:
+        # Latest snapshot strictly *before* window_start_date — measures
+        # change since end-of-prior-period. Handles same-day positions
+        # correctly (1d = since previous trading day's close).
+        window_start_dt = dt.combine(
+            window_start_date, dt.min.time()
+        ).replace(tzinfo=timezone.utc)
+        anchor_snapshot = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.user_id == current_user.id,
+            or_(
+                AIPortfolioSnapshot.timestamp < window_start_dt,
+                AIPortfolioSnapshot.date < window_start_date,
+            ),
+        ).order_by(
+            AIPortfolioSnapshot.timestamp.desc().nullslast(),
+            AIPortfolioSnapshot.date.desc(),
+        ).first()
+        if anchor_snapshot is None:
+            # Window predates portfolio inception — fall back to earliest snap
+            # (degrades gracefully to "since inception" for short histories)
+            anchor_snapshot = db.query(AIPortfolioSnapshot).filter(
+                AIPortfolioSnapshot.user_id == current_user.id,
+            ).order_by(
+                AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
+                AIPortfolioSnapshot.date.asc(),
+            ).first()
+
+    portfolio_current_value = summary["total_value"]
+    if anchor_snapshot is not None:
+        portfolio_start_value = anchor_snapshot.total_value
+        portfolio_start_date = anchor_snapshot.date or (
+            anchor_snapshot.timestamp.date() if anchor_snapshot.timestamp else None
+        )
+    else:
+        portfolio_start_value = config.starting_cash
+        portfolio_start_date = today
+
+    portfolio_return = None
+    portfolio_return_pct = None
+    if portfolio_start_value is not None:
+        portfolio_return = portfolio_current_value - portfolio_start_value
+        if portfolio_start_value > 0:
+            portfolio_return_pct = (portfolio_return / portfolio_start_value) * 100
+
+    # ─── Per-position window-start prices ────────────────────────────
+    historical = None
+    if window_days is not None and positions:
+        try:
+            from backend.historical_data import HistoricalDataProvider
+            historical = HistoricalDataProvider(
+                [p.ticker for p in positions], data_reference_date=today
+            )
+            # Preload a tight window so weekend/holiday carry-back has data.
+            # 400-day lookback is baked into preload_data() for indexes/MAs.
+            historical.preload_data(window_start_date, today)
+        except Exception as e:
+            logger.warning(
+                "window-returns: historical provider init failed (%s); "
+                "falling back to cost_basis for per-position returns", e
+            )
+            historical = None
+
+    position_returns = []
+    for p in positions:
+        notes = []
+        source = "cost_basis"
+        start_price = p.cost_basis
+
+        if window != "all":
+            purchase_day = p.purchase_date.date() if p.purchase_date else None
+            opened_mid_window = (
+                purchase_day is not None and purchase_day > window_start_date
+            )
+            if opened_mid_window:
+                notes.append("opened mid-window")
+            elif historical is not None:
+                fetched = historical.get_price_on_date(p.ticker, window_start_date)
+                if fetched is not None and fetched > 0:
+                    start_price = fetched
+                    source = "historical"
+                else:
+                    notes.append("no historical data")
+            else:
+                notes.append("no historical data")
+
+        current = p.current_price
+        return_pct = None
+        return_dollar = None
+        if (
+            start_price is not None
+            and start_price > 0
+            and current is not None
+        ):
+            return_pct = ((current - start_price) / start_price) * 100
+            if p.shares:
+                return_dollar = (current - start_price) * p.shares
+
+        position_returns.append({
+            "ticker": p.ticker,
+            "start_price": round(start_price, 4) if start_price is not None else None,
+            "current_price": round(current, 4) if current is not None else None,
+            "return_pct": round(return_pct, 2) if return_pct is not None else None,
+            "return": round(return_dollar, 2) if return_dollar is not None else None,
+            "source": source,
+            "notes": notes or None,
+        })
+
+    return {
+        "window": window,
+        "window_start_date": (
+            window_start_date.isoformat() if window_start_date else None
+        ),
+        "portfolio": {
+            "start_value": (
+                round(portfolio_start_value, 2)
+                if portfolio_start_value is not None else None
+            ),
+            "current_value": (
+                round(portfolio_current_value, 2)
+                if portfolio_current_value is not None else None
+            ),
+            "start_date": (
+                portfolio_start_date.isoformat() if portfolio_start_date else None
+            ),
+            "return": (
+                round(portfolio_return, 2)
+                if portfolio_return is not None else None
+            ),
+            "return_pct": (
+                round(portfolio_return_pct, 2)
+                if portfolio_return_pct is not None else None
+            ),
+        },
+        "positions": position_returns,
+    }
+
+
 @app.post("/api/ai-portfolio/refresh")
 async def refresh_ai_portfolio_endpoint(background_tasks: BackgroundTasks, current_user: User = Depends(get_current_active_user), check_stops: bool = True):
     """Refresh position prices and check stop losses (runs in background)"""

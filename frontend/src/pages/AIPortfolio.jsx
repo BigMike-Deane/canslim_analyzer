@@ -14,9 +14,9 @@ import Modal from '../components/Modal'
 import PortfolioDetailView from '../components/PortfolioDetailView'
 
 // ── Performance Chart ───────────────────────────────────────────────
-function PerformanceChart({ history, startingCash }) {
-  const [timeRange, setTimeRange] = useState('all')
-
+// `timeRange` is now controlled by the page-level WindowReturnsBar so the
+// chart, header summary, and per-position returns all reflect the same window.
+function PerformanceChart({ history, startingCash, timeRange }) {
   if (!history || history.length < 2) {
     return (
       <Card variant="glass" className="mb-4 h-48 flex items-center justify-center text-dark-400">
@@ -27,7 +27,7 @@ function PerformanceChart({ history, startingCash }) {
 
   // Filter history based on selected time range
   // For multi-day views (7d, 30d, all), keep latest snapshot per day for clean chart
-  // For 24h view, show all intraday snapshots for granularity
+  // For 1d view, show all intraday snapshots for granularity
   const filterHistory = (data, range) => {
     let filtered = data.filter(d => d.timestamp || d.date)
     filtered.sort((a, b) => new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date))
@@ -35,7 +35,7 @@ function PerformanceChart({ history, startingCash }) {
     if (range !== 'all') {
       const now = new Date()
       const cutoff = new Date()
-      if (range === '24h') cutoff.setHours(now.getHours() - 24)
+      if (range === '1d') cutoff.setHours(now.getHours() - 24)
       else if (range === '7d') cutoff.setDate(now.getDate() - 7)
       else if (range === '30d') cutoff.setDate(now.getDate() - 30)
       filtered = filtered.filter(d => new Date(d.timestamp || d.date) >= cutoff)
@@ -43,7 +43,7 @@ function PerformanceChart({ history, startingCash }) {
 
     // For longer views with many data points, dedupe to latest per day
     // But only if there are enough unique days to make a readable chart (7+)
-    if (range !== '24h' && filtered.length > 60) {
+    if (range !== '1d' && filtered.length > 60) {
       const uniqueDays = new Set(filtered.map(d => new Date(d.timestamp || d.date).toISOString().slice(0, 10)))
       if (uniqueDays.size >= 7) {
         const byDay = {}
@@ -70,13 +70,6 @@ function PerformanceChart({ history, startingCash }) {
   // Format timestamp for tooltip - uses centralized CST formatter
   const formatTimestamp = (ts) => ts ? formatDateTime(ts) : ''
 
-  const timeRanges = [
-    { value: '24h', label: '24H' },
-    { value: '7d', label: '7D' },
-    { value: '30d', label: '30D' },
-    { value: 'all', label: 'All' },
-  ]
-
   const lineColor = isPositive ? '#10b981' : '#ef4444'
   const gradientId = isPositive ? 'perfGradientGreen' : 'perfGradientRed'
 
@@ -84,24 +77,7 @@ function PerformanceChart({ history, startingCash }) {
     <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-2">
         <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Performance</span>
-        <div className="flex items-center gap-2">
-          <div className="flex bg-dark-850 rounded-lg p-0.5">
-            {timeRanges.map(({ value, label }) => (
-              <button
-                key={value}
-                onClick={() => setTimeRange(value)}
-                className={`px-2.5 py-1 sm:px-2 sm:py-0.5 text-xs rounded transition-colors ${
-                  timeRange === value
-                    ? 'bg-primary-500 text-white'
-                    : 'text-dark-400 hover:text-white'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <span className="text-dark-500 text-[10px] font-data">{filteredHistory.length} pts</span>
-        </div>
+        <span className="text-dark-500 text-[10px] font-data">{filteredHistory.length} pts</span>
       </div>
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
@@ -178,10 +154,25 @@ function PerformanceChart({ history, startingCash }) {
 }
 
 // ── Summary Card ────────────────────────────────────────────────────
-function SummaryCard({ summary, config }) {
+// Window-aware: when `windowReturns` is supplied the return number reflects
+// the selected window (1D/7D/30D/All). Falls back to lifetime gain when the
+// new endpoint hasn't loaded yet so existing UX is preserved on first paint.
+const WINDOW_LABELS = {
+  '1d': '1D',
+  '7d': '7D',
+  '30d': '30D',
+  'all': 'Since Inception',
+}
+
+function SummaryCard({ summary, config, windowReturns, timeRange }) {
   if (!summary) return null
 
-  const isPositive = summary.total_return >= 0
+  const winRet = windowReturns?.portfolio
+  // Prefer windowed number when available; fall back to lifetime fields.
+  const returnDollar = winRet?.return ?? summary.total_return
+  const returnPct = winRet?.return_pct ?? summary.total_return_pct
+  const isPositive = (returnPct ?? 0) >= 0
+  const windowLabel = WINDOW_LABELS[timeRange] || WINDOW_LABELS.all
 
   return (
     <Card variant="glass" className="mb-4">
@@ -190,8 +181,9 @@ function SummaryCard({ summary, config }) {
         {formatCurrency(summary.total_value)}
       </div>
       <div className={`text-sm flex items-center gap-1.5 font-data ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-        <span>{isPositive ? '+' : ''}{formatCurrency(Math.abs(summary.total_return))}</span>
-        <span className="text-dark-500">({formatPercent(summary.total_return_pct, true)})</span>
+        <span>{isPositive ? '+' : ''}{formatCurrency(Math.abs(returnDollar ?? 0))}</span>
+        <span className="text-dark-500">({formatPercent(returnPct, true)})</span>
+        <span className="text-[10px] uppercase tracking-wider text-dark-500 ml-1">{windowLabel}</span>
       </div>
 
       <div className="border-t border-dark-700/50 mt-4 pt-3">
@@ -208,8 +200,62 @@ function SummaryCard({ summary, config }) {
   )
 }
 
+// ── Window Returns Bar (global time-range selector) ─────────────────
+// Owns the page-level `timeRange` selection. Affects:
+//   - SummaryCard return number
+//   - PositionsList per-position return column
+//   - PerformanceChart filter window
+const WINDOW_PILLS = [
+  { value: '1d', label: '1D' },
+  { value: '7d', label: '7D' },
+  { value: '30d', label: '30D' },
+  { value: 'all', label: 'All' },
+]
+
+function WindowReturnsBar({ timeRange, setTimeRange, loading }) {
+  return (
+    <Card variant="glass" className="mb-4" padding="p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">
+            Returns Window
+          </div>
+          <div className="text-[10px] text-dark-500 mt-0.5">
+            Applies to portfolio value, positions, and chart
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {loading && (
+            <span className="text-[10px] text-dark-500 font-data" aria-live="polite">
+              Loading…
+            </span>
+          )}
+          <div className="flex bg-dark-850 rounded-lg p-0.5">
+            {WINDOW_PILLS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setTimeRange(value)}
+                className={`px-2.5 py-1 sm:px-3 sm:py-1 text-xs rounded transition-colors ${
+                  timeRange === value
+                    ? 'bg-primary-500 text-white'
+                    : 'text-dark-400 hover:text-white'
+                }`}
+                aria-pressed={timeRange === value}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 // ── Positions List ──────────────────────────────────────────────────
-function PositionsList({ positions }) {
+// Window-aware: when `windowReturns` is supplied, the per-position return %
+// reflects the selected window. Otherwise falls back to lifetime gain_loss_pct.
+function PositionsList({ positions, windowReturns, timeRange }) {
   const [selectedPosition, setSelectedPosition] = useState(null)
 
   if (!positions || positions.length === 0) {
@@ -220,9 +266,21 @@ function PositionsList({ positions }) {
     )
   }
 
+  // Index per-position window returns by ticker for O(1) lookup
+  const windowByTicker = {}
+  if (windowReturns?.positions) {
+    for (const p of windowReturns.positions) {
+      windowByTicker[p.ticker] = p
+    }
+  }
+  const windowLabel = WINDOW_LABELS[timeRange] || WINDOW_LABELS.all
+
   return (
     <Card variant="glass" className="mb-4">
       <CardHeader title={`Positions (${positions.length})`} />
+      <div className="text-[10px] text-dark-500 mb-2 -mt-1 font-data">
+        Return shown: <span className="text-dark-300">{windowLabel}</span>
+      </div>
       <div className="space-y-1">
         {positions.map(position => (
           <button
@@ -262,12 +320,26 @@ function PositionsList({ positions }) {
                 {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
               </div>
             </div>
-            <div className="text-right">
-              <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
-              <span className={`text-[10px] font-data ${position.gain_loss_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {position.gain_loss_pct >= 0 ? '+' : ''}{position.gain_loss_pct?.toFixed(2)}%
-              </span>
-            </div>
+            {(() => {
+              const winRow = windowByTicker[position.ticker]
+              // Prefer windowed return; fall back to lifetime gain_loss_pct
+              // if the endpoint hasn't responded yet or for unknown tickers.
+              const pct = winRow?.return_pct ?? position.gain_loss_pct
+              const isPos = (pct ?? 0) >= 0
+              const isMidWindow = winRow?.notes?.includes('opened mid-window')
+              return (
+                <div className="text-right">
+                  <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
+                  <span
+                    className={`text-[10px] font-data ${isPos ? 'text-emerald-400' : 'text-red-400'}`}
+                    title={isMidWindow ? 'Position opened during this window — return shown since purchase' : undefined}
+                  >
+                    {isPos ? '+' : ''}{pct != null ? pct.toFixed(2) : '—'}%
+                    {isMidWindow && <span className="text-dark-500 ml-1">·new</span>}
+                  </span>
+                </div>
+              )
+            })()}
             <div className="ml-3 text-right">
               {/* Show appropriate score based on stock type */}
               {position.is_growth_stock ? (
@@ -1337,6 +1409,15 @@ export default function AIPortfolio() {
   const [earningsExpanded, setEarningsExpanded] = useState(false)
   const [riskData, setRiskData] = useState(null)
   const [riskExpanded, setRiskExpanded] = useState(false)
+  // Global time-range selector — drives summary card, positions list,
+  // and performance chart. Persisted in localStorage so the user's pick
+  // survives page refreshes during a trading session.
+  const [timeRange, setTimeRange] = useState(() => {
+    const saved = localStorage.getItem('aiPortfolioTimeRange')
+    return ['1d', '7d', '30d', 'all'].includes(saved) ? saved : 'all'
+  })
+  const [windowReturns, setWindowReturns] = useState(null)
+  const [windowReturnsLoading, setWindowReturnsLoading] = useState(false)
 
   const fetchData = async (showLoading = true) => {
     try {
@@ -1454,6 +1535,31 @@ export default function AIPortfolio() {
   useEffect(() => {
     localStorage.setItem('aiPortfolioAutoRefresh', autoRefresh.toString())
   }, [autoRefresh])
+
+  // Fetch window returns whenever the user picks a different window OR
+  // the underlying portfolio refreshes (so per-position returns stay fresh
+  // as current_price updates from background scans).
+  useEffect(() => {
+    let cancelled = false
+    setWindowReturnsLoading(true)
+    api.getAIPortfolioWindowReturns(timeRange)
+      .then(data => { if (!cancelled) setWindowReturns(data) })
+      .catch(err => {
+        if (!cancelled) {
+          console.error('Failed to fetch window returns:', err)
+          setWindowReturns(null)  // Fall back to lifetime numbers on error
+        }
+      })
+      .finally(() => { if (!cancelled) setWindowReturnsLoading(false) })
+    return () => { cancelled = true }
+    // `lastUpdated` triggers refetch when fetchData() completes — keeps
+    // windowed positions in sync with the auto-refresh cycle.
+  }, [timeRange, lastUpdated])
+
+  // Persist time-range pick
+  useEffect(() => {
+    localStorage.setItem('aiPortfolioTimeRange', timeRange)
+  }, [timeRange])
 
   const handleUpdateConfig = async (config) => {
     try {
@@ -1649,9 +1755,16 @@ export default function AIPortfolio() {
 
       {activeTab === 'overview' && (
         <>
+          <WindowReturnsBar
+            timeRange={timeRange}
+            setTimeRange={setTimeRange}
+            loading={windowReturnsLoading}
+          />
+
           <PerformanceChart
             history={history}
             startingCash={portfolio?.config?.starting_cash || 25000}
+            timeRange={timeRange}
           />
 
           <SectorAllocationChart
@@ -1664,6 +1777,8 @@ export default function AIPortfolio() {
           <SummaryCard
             summary={portfolio?.summary}
             config={portfolio?.config}
+            windowReturns={windowReturns}
+            timeRange={timeRange}
           />
 
           <ConfigPanel
@@ -1675,7 +1790,11 @@ export default function AIPortfolio() {
             waitingForTrades={waitingForTrades}
           />
 
-          <PositionsList positions={portfolio?.positions} />
+          <PositionsList
+            positions={portfolio?.positions}
+            windowReturns={windowReturns}
+            timeRange={timeRange}
+          />
 
           <TradeHistory trades={trades} />
 

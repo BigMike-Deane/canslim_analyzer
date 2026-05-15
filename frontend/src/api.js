@@ -356,6 +356,9 @@ export const api = {
 
   getAIPortfolioHistory: (days = 30) => request(`/api/ai-portfolio/history?days=${days}`),
 
+  getAIPortfolioWindowReturns: (window = 'all') =>
+    request(`/api/ai-portfolio/window-returns?window=${window}`),
+
   getAIPortfolioTrades: (limit = 50, ticker = null) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (ticker) params.set('ticker', ticker)
