@@ -1210,6 +1210,12 @@ async def get_ml_status(
             "training_samples": active.training_samples,
             "feature_count": active.feature_count,
             "activated_at": active.activated_at.isoformat() if active.activated_at else None,
+            # Eval-backtest outcomes — the actual graduation gate. Null on
+            # legacy rows that pre-date the eval pipeline.
+            "eval_return_pct": active.eval_return_pct,
+            "eval_sharpe": active.eval_sharpe,
+            "eval_max_drawdown_pct": active.eval_max_drawdown_pct,
+            "eval_decile_wr": active.eval_decile_wr,
         }
         if (active.model_type or "classifier") == "regression":
             model_info.update({

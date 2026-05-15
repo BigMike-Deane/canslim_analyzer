@@ -219,6 +219,12 @@ export default function Admin() {
     const color = primary.ok(primary.value)
       ? 'text-emerald-400' : primary.warn(primary.value)
       ? 'text-amber-400' : 'text-red-400'
+    // Eval-backtest fields — the graduation gate. Null on legacy rows.
+    const hasEval = m.eval_return_pct != null || m.eval_sharpe != null
+    const evalReturnColor = (m.eval_return_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+    const evalSharpeColor = (m.eval_sharpe ?? 0) >= 1.0
+      ? 'text-emerald-400' : (m.eval_sharpe ?? 0) >= 0.5
+      ? 'text-amber-400' : 'text-red-400'
     return (
       <a
         href="#ml-signal-layer"
@@ -229,8 +235,33 @@ export default function Admin() {
         <span className={`text-[10px] px-1.5 py-0.5 rounded-md ${isRegression ? 'bg-accent-500/15 text-accent-400' : 'bg-primary-500/15 text-primary-400'}`}>
           {isRegression ? 'regression' : 'classifier'}
         </span>
-        <span className="text-[10px] text-dark-500">{primary.label}</span>
+        <span className="text-[10px] text-dark-500" title={isRegression ? 'CV Spearman' : 'CV ROC AUC'}>
+          {primary.label}
+        </span>
         <span className={`text-sm font-data ${color}`}>{primary.fmt(primary.value)}</span>
+        {hasEval && (
+          <>
+            <span className="text-[10px] text-dark-600">·</span>
+            <span className="text-[10px] text-dark-500" title="Eval-backtest total return — the graduation gate">eval ret</span>
+            <span className={`text-sm font-data ${evalReturnColor}`}>
+              {m.eval_return_pct != null ? `${m.eval_return_pct >= 0 ? '+' : ''}${m.eval_return_pct.toFixed(1)}%` : '-'}
+            </span>
+            <span className="text-[10px] text-dark-500" title="Eval-backtest Sharpe ratio">Sh</span>
+            <span className={`text-sm font-data ${evalSharpeColor}`}>
+              {m.eval_sharpe != null ? m.eval_sharpe.toFixed(2) : '-'}
+            </span>
+            {m.eval_max_drawdown_pct != null && (
+              <span className="text-[10px] text-dark-500 font-data" title="Eval-backtest max drawdown">
+                DD {m.eval_max_drawdown_pct.toFixed(1)}%
+              </span>
+            )}
+            {m.eval_decile_wr != null && (
+              <span className="text-[10px] text-dark-500 font-data" title="Top-decile win rate vs baseline">
+                D10 {(m.eval_decile_wr * 100).toFixed(1)}%
+              </span>
+            )}
+          </>
+        )}
         {m.training_samples != null && (
           <span className="text-[10px] text-dark-500">
             · {m.training_samples} samples
