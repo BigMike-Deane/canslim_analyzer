@@ -335,6 +335,105 @@ function FilterBar({ days, setDays, ticker, setTicker, action, setAction, includ
   )
 }
 
+// ── ML Gate Scoreboard ───────────────────────────────────────────────
+// Surfaces MLPrediction.actual_outcome + actual_gain_pct: did the model's
+// veto turn out to be right? "Correct" = vetoed AND would have lost.
+// "Wrong" = vetoed AND would have won (model cost us upside). Backfilled
+// by backend/ml_backfill.py once each veto's holding window closes; we
+// render Pending until then.
+function MLGateScoreboard({ entries }) {
+  const vetoes = entries.filter(e => e.action === 'VETOED')
+  if (vetoes.length === 0) return null
+
+  const withOutcome = vetoes.filter(v => v.actual_outcome != null)
+  const pending = vetoes.length - withOutcome.length
+  const correct = withOutcome.filter(v => v.actual_outcome === 0).length
+  const wrong = withOutcome.length - correct
+  const correctRate = withOutcome.length > 0
+    ? (correct / withOutcome.length) * 100
+    : null
+
+  // Avg gain we avoided on correct vetoes — negative (we sidestepped losses).
+  const correctWithGain = withOutcome.filter(
+    v => v.actual_outcome === 0 && v.actual_gain_pct != null
+  )
+  const avgAvoidedLoss = correctWithGain.length > 0
+    ? correctWithGain.reduce((s, v) => s + v.actual_gain_pct, 0) / correctWithGain.length
+    : null
+
+  // Avg gain we missed on wrong vetoes — positive (model cost us upside).
+  const wrongWithGain = withOutcome.filter(
+    v => v.actual_outcome === 1 && v.actual_gain_pct != null
+  )
+  const avgMissedGain = wrongWithGain.length > 0
+    ? wrongWithGain.reduce((s, v) => s + v.actual_gain_pct, 0) / wrongWithGain.length
+    : null
+
+  const rateColor = correctRate == null ? 'text-dark-400'
+    : correctRate >= 60 ? 'text-emerald-400'
+    : correctRate >= 50 ? 'text-amber-400'
+    : 'text-red-400'
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader
+        title="ML Gate Scoreboard"
+        subtitle="Is the ML veto paying for itself?"
+      />
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-2">
+        <div>
+          <p className="text-[10px] text-dark-500 uppercase tracking-wider">Total Vetoes</p>
+          <p className="text-lg font-bold font-data text-amber-400">{vetoes.length}</p>
+        </div>
+        <div title="Vetoes whose 30-day outcome window has closed and been backfilled">
+          <p className="text-[10px] text-dark-500 uppercase tracking-wider">Resolved</p>
+          <p className="text-lg font-bold font-data text-dark-100">
+            {withOutcome.length}
+            {pending > 0 && (
+              <span className="text-[10px] text-dark-500 font-normal ml-1">
+                · {pending} pending
+              </span>
+            )}
+          </p>
+        </div>
+        <div title="Correctness rate: vetoes where the predicted-loss actually materialized">
+          <p className="text-[10px] text-dark-500 uppercase tracking-wider">Correct rate</p>
+          <p className={`text-lg font-bold font-data ${rateColor}`}>
+            {correctRate != null ? `${correctRate.toFixed(0)}%` : '–'}
+          </p>
+          {withOutcome.length > 0 && (
+            <p className="text-[10px] text-dark-500">
+              {correct}✓ / {wrong}✗
+            </p>
+          )}
+        </div>
+        <div title="Average gain on correct vetoes — negative means we sidestepped losses">
+          <p className="text-[10px] text-dark-500 uppercase tracking-wider">Avg avoided</p>
+          <p className={`text-lg font-bold font-data ${avgAvoidedLoss != null && avgAvoidedLoss < 0 ? 'text-emerald-400' : 'text-dark-100'}`}>
+            {avgAvoidedLoss != null
+              ? `${avgAvoidedLoss >= 0 ? '+' : ''}${avgAvoidedLoss.toFixed(1)}%`
+              : '–'}
+          </p>
+        </div>
+        <div title="Average gain on wrong vetoes — positive means the model cost us upside">
+          <p className="text-[10px] text-dark-500 uppercase tracking-wider">Avg missed</p>
+          <p className={`text-lg font-bold font-data ${avgMissedGain != null && avgMissedGain > 0 ? 'text-red-400' : 'text-dark-100'}`}>
+            {avgMissedGain != null
+              ? `+${avgMissedGain.toFixed(1)}%`
+              : '–'}
+          </p>
+        </div>
+      </div>
+      {withOutcome.length === 0 && (
+        <p className="text-[10px] text-dark-500 mt-2 italic">
+          No outcomes resolved yet — vetoes are backfilled by ml_backfill.py
+          once each 30-day window closes.
+        </p>
+      )}
+    </Card>
+  )
+}
+
 // ── Summary stats ────────────────────────────────────────────────────
 function JournalStats({ entries }) {
   if (!entries || entries.length === 0) return null
@@ -437,6 +536,9 @@ export default function TradeJournal() {
 
       {/* Summary stats */}
       <JournalStats entries={entries} />
+
+      {/* ML gate scoreboard — only renders when there are vetoes to score */}
+      <MLGateScoreboard entries={entries} />
 
       {/* Error state */}
       {error && (
