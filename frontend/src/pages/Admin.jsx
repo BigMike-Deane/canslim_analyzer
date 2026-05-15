@@ -32,6 +32,7 @@ export default function Admin() {
   const [mlStatus, setMlStatus] = useState(null)
   const [mlTraining, setMlTraining] = useState(false)
   const [mlValidation, setMlValidation] = useState(null)
+  const [mlFeatures, setMlFeatures] = useState(null)
   const [mlMode, setMlMode] = useState('regression')
 
   // Scanner control state
@@ -112,12 +113,15 @@ export default function Admin() {
 
   async function loadMLStatus() {
     try {
-      const [status, validation] = await Promise.all([
+      const [status, validation, features] = await Promise.all([
         api.getMLStatus(),
         api.getMLValidation().catch(() => null),
+        // 404 when no active model — fall through to null and render nothing.
+        api.getMLFeatures().catch(() => null),
       ])
       setMlStatus(status)
       setMlValidation(validation)
+      setMlFeatures(features)
     } catch {}
   }
 
@@ -769,6 +773,49 @@ export default function Admin() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )
+          })()}
+
+          {/* Feature importance bar chart */}
+          {mlFeatures?.feature_importance && Object.keys(mlFeatures.feature_importance).length > 0 && (() => {
+            const entries = Object.entries(mlFeatures.feature_importance)
+              .map(([name, value]) => ({ name, value: Number(value) || 0 }))
+              .sort((a, b) => b.value - a.value)
+            const top = entries.slice(0, 15)
+            const maxValue = top[0]?.value || 1
+            const totalShown = top.reduce((s, e) => s + e.value, 0)
+            return (
+              <div>
+                <h3 className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Feature Importance</h3>
+                <p className="text-[10px] text-dark-500 mb-2">
+                  XGBoost gain for the top {top.length} features in v{mlFeatures.version}.
+                  These {top.length} account for{' '}
+                  <span className="font-data">{(totalShown * 100).toFixed(0)}%</span> of total importance.
+                </p>
+                <div className="space-y-1">
+                  {top.map(({ name, value }) => {
+                    const pct = maxValue > 0 ? (value / maxValue) * 100 : 0
+                    return (
+                      <div key={name} className="flex items-center gap-2 text-[11px]">
+                        <span className="font-data text-dark-300 w-32 truncate" title={name}>{name}</span>
+                        <div className="flex-1 h-2 bg-dark-700/40 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary-500/70"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="font-data text-dark-400 w-12 text-right">{(value * 100).toFixed(1)}%</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {entries.length > top.length && (
+                  <p className="text-[10px] text-dark-600 mt-2">
+                    {entries.length - top.length} additional feature{entries.length - top.length === 1 ? '' : 's'} not shown
+                    {' '}({((1 - totalShown) * 100).toFixed(0)}% of total importance).
+                  </p>
+                )}
               </div>
             )
           })()}
