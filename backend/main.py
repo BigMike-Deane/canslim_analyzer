@@ -4046,6 +4046,18 @@ async def get_backtest(backtest_id: int, current_user: User = Depends(get_curren
         BacktestTrade.backtest_id == backtest_id
     ).order_by(BacktestTrade.date).all()
 
+    # overlay_stats is stored as JSON text — parse defensively so a malformed
+    # row doesn't break the detail page.
+    overlay_stats_parsed = None
+    if backtest.overlay_stats:
+        try:
+            import json as _json
+            overlay_stats_parsed = (backtest.overlay_stats
+                                    if isinstance(backtest.overlay_stats, dict)
+                                    else _json.loads(backtest.overlay_stats))
+        except Exception:
+            overlay_stats_parsed = None
+
     return {
         "backtest": {
             "id": backtest.id,
@@ -4065,7 +4077,8 @@ async def get_backtest(backtest_id: int, current_user: User = Depends(get_curren
             "progress_pct": backtest.progress_pct,
             "error_message": backtest.error_message,
             "created_at": backtest.created_at.isoformat() + "Z" if backtest.created_at else None,
-            "completed_at": backtest.completed_at.isoformat() + "Z" if backtest.completed_at else None
+            "completed_at": backtest.completed_at.isoformat() + "Z" if backtest.completed_at else None,
+            "overlay_stats": overlay_stats_parsed
         },
         "performance_chart": [
             {

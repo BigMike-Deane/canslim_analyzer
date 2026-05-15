@@ -232,10 +232,30 @@ function PositionsList({ positions }) {
             className="w-full text-left flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
           >
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-dark-100">{position.ticker}</span>
                 {position.is_growth_stock && (
                   <TagBadge color="purple">Growth</TagBadge>
+                )}
+                {position.insider_sentiment === 'bullish' && (
+                  <TagBadge color="emerald" title="Aggregate insider sentiment is bullish (net buys exceed sells)">
+                    Insider: bullish
+                  </TagBadge>
+                )}
+                {position.insider_sentiment === 'bearish' && (
+                  <TagBadge color="amber" title="Aggregate insider sentiment is bearish (net sells exceed buys)">
+                    Insider: bearish
+                  </TagBadge>
+                )}
+                {(position.short_interest_pct ?? 0) >= 20 && (
+                  <TagBadge color="red" title="Short interest above 20% — crowded short, squeeze risk in either direction">
+                    Short: {position.short_interest_pct.toFixed(0)}%
+                  </TagBadge>
+                )}
+                {(position.short_interest_pct ?? 0) >= 10 && (position.short_interest_pct ?? 0) < 20 && (
+                  <TagBadge color="amber" title="Short interest in the 10-20% range — elevated but not extreme">
+                    Short: {position.short_interest_pct.toFixed(0)}%
+                  </TagBadge>
                 )}
               </div>
               <div className="text-dark-400 text-[10px] font-data mt-0.5">
@@ -1098,39 +1118,66 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
           High-conviction pre-earnings plays: long bases + beat streaks + approaching earnings
         </div>
         <div className="space-y-1">
-          {csAlerts.map((stock) => (
-            <Link
-              key={stock.ticker}
-              to={`/stock/${stock.ticker}`}
-              className="flex justify-between items-center py-2 px-2 -mx-2 rounded hover:bg-dark-750/50 transition-colors border-b border-dark-700/30 last:border-0"
-            >
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-dark-100">{stock.ticker}</span>
-                  {stock.base_type && stock.base_type !== 'none' && (
-                    <TagBadge color="cyan">{stock.weeks_in_base}w {stock.base_type}</TagBadge>
-                  )}
-                  {stock.is_breaking_out && (
-                    <TagBadge color="amber">Breakout</TagBadge>
-                  )}
+          {csAlerts.map((stock) => {
+            // Color-code entry_status: PRE-BREAKOUT = ideal setup,
+            // AT_PIVOT = actionable, EXTENDED = chase risk. Backend writes
+            // these labels at backend/main.py:2852.
+            const entryColor = stock.entry_status === 'PRE_BREAKOUT' ? 'emerald'
+              : stock.entry_status === 'AT_PIVOT' ? 'amber'
+              : stock.entry_status === 'EXTENDED' ? 'red'
+              : 'cyan'
+            const entryLabel = stock.entry_status
+              ? stock.entry_status.replace('_', ' ').toLowerCase()
+              : null
+            // confidence is 0-1; >= 0.7 = strong, >= 0.5 = moderate
+            const confColor = (stock.confidence ?? 0) >= 0.7 ? 'text-emerald-400'
+              : (stock.confidence ?? 0) >= 0.5 ? 'text-amber-400'
+              : 'text-dark-500'
+            return (
+              <Link
+                key={stock.ticker}
+                to={`/stock/${stock.ticker}`}
+                className="flex justify-between items-center py-2 px-2 -mx-2 rounded hover:bg-dark-750/50 transition-colors border-b border-dark-700/30 last:border-0"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-dark-100">{stock.ticker}</span>
+                    {stock.base_type && stock.base_type !== 'none' && (
+                      <TagBadge color="cyan">{stock.weeks_in_base}w {stock.base_type}</TagBadge>
+                    )}
+                    {entryLabel && (
+                      <TagBadge color={entryColor}>{entryLabel}</TagBadge>
+                    )}
+                    {stock.is_breaking_out && stock.entry_status !== 'AT_PIVOT' && (
+                      <TagBadge color="amber">Breakout</TagBadge>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-dark-400 flex flex-wrap gap-x-1.5 gap-y-0 mt-0.5 font-data">
+                    <span>C:{stock.c_score?.toFixed(0)}</span>
+                    <span>L:{stock.l_score?.toFixed(1)}</span>
+                    <span className="text-dark-600">{'\u00B7'}</span>
+                    <span>{stock.earnings_beat_streak} beats</span>
+                    <span className="text-dark-600">{'\u00B7'}</span>
+                    <span className="text-amber-400 whitespace-nowrap">{stock.days_to_earnings}d to earnings</span>
+                    <span className="text-dark-600">{'\u00B7'}</span>
+                    <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
+                    {stock.confidence != null && (
+                      <>
+                        <span className="text-dark-600">{'\u00B7'}</span>
+                        <span className={confColor} title="Coiled Spring confidence (0-1) \u2014 backend signal overlap score">
+                          conf {(stock.confidence * 100).toFixed(0)}%
+                        </span>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[10px] text-dark-400 flex flex-wrap gap-x-1.5 gap-y-0 mt-0.5 font-data">
-                  <span>C:{stock.c_score?.toFixed(0)}</span>
-                  <span>L:{stock.l_score?.toFixed(1)}</span>
-                  <span className="text-dark-600">{'\u00B7'}</span>
-                  <span>{stock.earnings_beat_streak} beats</span>
-                  <span className="text-dark-600">{'\u00B7'}</span>
-                  <span className="text-amber-400 whitespace-nowrap">{stock.days_to_earnings}d to earnings</span>
-                  <span className="text-dark-600">{'\u00B7'}</span>
-                  <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
+                <div className="text-right">
+                  <ScoreBadge score={stock.canslim_score} size="sm" />
+                  <div className="text-[10px] text-teal-400 font-data mt-0.5">+{stock.cs_bonus} bonus</div>
                 </div>
-              </div>
-              <div className="text-right">
-                <ScoreBadge score={stock.canslim_score} size="sm" />
-                <div className="text-[10px] text-teal-400 font-data mt-0.5">+{stock.cs_bonus} bonus</div>
-              </div>
-            </Link>
-          ))}
+              </Link>
+            )
+          })}
         </div>
       </CollapsibleSection>
     </Card>

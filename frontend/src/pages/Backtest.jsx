@@ -602,6 +602,56 @@ function BacktestResults({ backtest, onClose }) {
         <StatGrid stats={detailStats} columns={3} />
       </Card>
 
+      {/* Overlay activity — counters from the cs_bear / correction-zone /
+          bear-base path. Only renders when the strategy actually exercised
+          one or more overlay code paths; default backtests stay clean. */}
+      {(() => {
+        const os = bt.overlay_stats
+        if (!os || typeof os !== 'object') return null
+        // (label, key, format) — only render counters > 0 so default-strategy
+        // runs don't add visual noise.
+        const rows = [
+          ['Correction zone active', 'cz_active_days',         (v) => `${v}d`],
+          ['CZ candidates passed',   'cz_pass',                (v) => v],
+          ['CZ rejected (pre-filter)','cz_pre_filter_rejected',(v) => v],
+          ['CZ rejected (cs_only)',  'cz_cs_only_rejected',    (v) => v],
+          ['CZ rejected (low conf)', 'cz_cs_confidence_rejected', (v) => v],
+          ['CZ position-mult applied','cz_position_mult_applied',(v) => v],
+          ['Bear base bonus applied','bear_base_bonus_applied',(v) => v],
+          ['Bear base bonus total',  'bear_base_bonus_total',  (v) => v],
+        ].filter(([, k]) => os[k] != null && os[k] > 0)
+        if (rows.length === 0) return null
+        return (
+          <Card variant="glass">
+            <CardHeader title="Overlay activity" />
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {rows.map(([label, key, fmt]) => (
+                <span
+                  key={key}
+                  title={`overlay_stats.${key}`}
+                  className="text-[10px] font-data px-2 py-0.5 rounded border bg-dark-700/40 text-dark-200 border-dark-600"
+                >
+                  {label}: <span className="text-primary-400">{fmt(os[key])}</span>
+                </span>
+              ))}
+              {os.ml_was_active && (
+                <span
+                  title="overlay_stats.ml_was_active — this backtest used the ML signal layer"
+                  className="text-[10px] font-data px-2 py-0.5 rounded border bg-purple-500/10 text-purple-300 border-purple-500/30"
+                >
+                  ML active
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-dark-500 mt-2">
+              Counters set by the strategy's overlay code paths
+              (correction zone, bear base, ML signal). Empty when the strategy
+              didn't exercise these paths.
+            </p>
+          </Card>
+        )
+      })()}
+
       {/* Performance Chart */}
       <PerformanceChart data={performance_chart} startingCash={bt.starting_cash} />
 
