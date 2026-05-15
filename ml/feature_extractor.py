@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 #   The CS signal still reaches the model via composite_score and entry_type.
 #   signal_factors STILL captures these fields for future use; only the matrix is pruned.
 #
+#
+# 2026-05-14: Pruned 5 zero-importance features (rs_line_bonus,
+# earnings_drift_bonus, soft_zone, volume_dry_up, volume_dry_up_score) —
+# all under 5% non-zero in training. Eval-safe: v29 stays pinned because
+# inference reads model.feature_names_in_ from the saved joblib, not this
+# in-code list. See canslim-may13-dead-features-audit.md.
+#
 FEATURE_COLUMNS = [
     # Core quality (3) — the "what" of the stock
     "total_score",
@@ -33,19 +40,13 @@ FEATURE_COLUMNS = [
     # Entry context (2) — the "when" and "how" of the entry
     "entry_type",           # ordinal: breakout=0, pre-breakout=1, standard=2
     "market_regime",        # ordinal: bearish=0, neutral=1, bullish=2
-    # Entry quality flags (1)
-    "soft_zone",            # binary 0/1 (below threshold = lower conviction)
     # Price action (5) — entry timing quality
     "relative_volume",       # volume / 50-day avg at entry (accumulation)
     "pct_from_21ma",         # % distance from 21-day MA (support proximity)
     "pct_from_50ma",         # % distance from 50-day MA (trend health)
     "atr_pct",               # volatility context (tighter = more coiled)
     "sector_rs_rank",        # sector momentum (group leadership)
-    # Bonuses (4)
-    "rs_line_bonus",         # RS trend confirmation (+8 rising, -5 diverging)
-    "earnings_drift_bonus",  # post-earnings momentum for big beats
-    "volume_dry_up",         # binary: tight volume in base (bullish consolidation)
-    "volume_dry_up_score",   # continuous 0-100 (Apr 2026): how compressed recent vol vs baseline
+    # Bonuses (1) — the other 4 in this group were dropped 2026-05-14
     "deterministic_boost",   # boost for strong deterministic (N+S+L+I+M) scores
     # Individual CANSLIM components (6) — decompose total_score for finer signal
     "c_score",               # current quarterly earnings (0-15)

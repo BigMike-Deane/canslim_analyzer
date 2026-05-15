@@ -219,10 +219,11 @@ class TestExtractFeatures:
         assert f["composite_score"] == 55.3
         assert f["entry_type"] == 0  # breakout
         assert f["market_regime"] == 2  # bullish
-        assert f["soft_zone"] == 1
         # Removed features should not be in output
         assert "soft_zone_multiplier" not in f
         assert "coiled_spring" not in f  # pruned in v13
+        # Pruned 2026-05-14 — zero-importance features no longer in matrix
+        assert "soft_zone" not in f
         # v11: deterministic_boost is restored
         assert "deterministic_boost" in f
 
@@ -244,9 +245,10 @@ class TestExtractFeatures:
             "estimate_revision_bonus": 0,
         })
         f = _extract_features(trade)
-        assert f["soft_zone"] == 0
         # Pruned in v13 — must not appear regardless of signal_factors
         assert "coiled_spring" not in f
+        # Pruned 2026-05-14
+        assert "soft_zone" not in f
 
     def test_nan_canslim_score(self):
         trade = _make_trade(canslim_score=float("nan"))
@@ -263,22 +265,23 @@ class TestExtractFeatures:
         f = _extract_features(trade)
         assert f["entry_type"] == 2  # standard (default)
 
-    def test_feature_count_is_24(self):
-        """Verify v13: 24 features (pruned 5 zero-importance features from v12)."""
-        assert len(FEATURE_COLUMNS) == 24
-        # Pruned in v13 (zero importance in active v9 model)
+    def test_feature_count_post_prune(self):
+        """2026-05-14: 19 features after pruning 5 zero-importance bonuses
+        (rs_line_bonus, earnings_drift_bonus, soft_zone, volume_dry_up,
+        volume_dry_up_score) from the v13 set of 24."""
+        assert len(FEATURE_COLUMNS) == 19
+        # v13 prune still in effect
         for col in PRUNED_FEATURE_COLUMNS:
             assert col not in FEATURE_COLUMNS, f"{col} should have been pruned in v13"
         # Earlier removals still excluded
         assert "soft_zone_multiplier" not in FEATURE_COLUMNS
         assert "cs_c_score" not in FEATURE_COLUMNS
-        # v13: retained signal-carrying features
+        # 2026-05-14 prune — these 5 must NOT be in FEATURE_COLUMNS anymore
+        for col in ("rs_line_bonus", "earnings_drift_bonus", "soft_zone",
+                    "volume_dry_up", "volume_dry_up_score"):
+            assert col not in FEATURE_COLUMNS, f"{col} should have been pruned 2026-05-14"
+        # Retained signal-carrying features
         assert "deterministic_boost" in FEATURE_COLUMNS
-        assert "rs_line_bonus" in FEATURE_COLUMNS
-        assert "earnings_drift_bonus" in FEATURE_COLUMNS
-        # v12: continuous dry-up retained
-        assert "volume_dry_up_score" in FEATURE_COLUMNS
-        assert "volume_dry_up" in FEATURE_COLUMNS
         # v11: CANSLIM components retained
         assert "c_score" in FEATURE_COLUMNS
         assert "a_score" in FEATURE_COLUMNS
