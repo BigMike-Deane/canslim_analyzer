@@ -305,6 +305,11 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-dark-100">{position.ticker}</span>
+                {position.sector && (
+                  <TagBadge color="default" title={`Sector: ${position.sector}`}>
+                    {position.sector}
+                  </TagBadge>
+                )}
                 {position.is_growth_stock && (
                   <TagBadge color="purple">Growth</TagBadge>
                 )}
@@ -906,7 +911,9 @@ function TradeHistory({ trades }) {
   return (
     <Card variant="glass" className="mb-4">
       <CardHeader title="Recent Trades" />
-      <div className="space-y-1 max-h-64 overflow-y-auto">
+      {/* No inner max-height: let the list grow to ~20 rows; outer page
+          scroll handles overflow. Removes scroll-in-scroll on mobile. */}
+      <div className="space-y-1">
         {trades.slice(0, 20).map(trade => (
           <div
             key={trade.id}
@@ -1076,7 +1083,14 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
   return (
     <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-3">
-        <CardHeader title="AI Trading" className="mb-0" />
+        <div className="flex items-center gap-2">
+          <CardHeader title="AI Trading" className="mb-0" />
+          {config?.paper_mode && (
+            <TagBadge color="amber" title="Paper mode — trades are simulated, no real positions are affected">
+              Paper Mode
+            </TagBadge>
+          )}
+        </div>
         <button
           onClick={handleToggle}
           disabled={updating}
@@ -1198,6 +1212,7 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
         title="Coiled Spring Alerts"
         badge={<TagBadge color="teal">{csAlerts.length} candidates</TagBadge>}
         defaultOpen={csExpanded}
+        onOpenChange={setCsExpanded}
       >
         <div className="text-[10px] text-dark-400 mb-2">
           High-conviction pre-earnings plays: long bases + beat streaks + approaching earnings
@@ -1273,6 +1288,16 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
 function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
   if (!riskData) return null
 
+  // Smart-hide: when portfolio is genuinely "all clear" (no alerts, low heat,
+  // no over-concentration) the section is just dead vertical space. The
+  // user can still see heat status implicit in the absence of a warning —
+  // section reappears the moment any signal flips. Matches the audit's
+  // "less scroll when nothing to look at" theme.
+  const hasAlerts = (riskData.position_alerts?.length ?? 0) > 0
+  const overConcentrated = (riskData.sector_concentration || []).some(s => s.count >= 3)
+  const heatLow = (riskData.portfolio_heat ?? 0) < 10
+  if (!hasAlerts && !overConcentrated && heatLow) return null
+
   const heatColor = riskData.heat_status === 'danger' ? 'red'
     : riskData.heat_status === 'warning' ? 'amber' : 'green'
 
@@ -1289,6 +1314,7 @@ function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
           </div>
         }
         defaultOpen={riskExpanded}
+        onOpenChange={setRiskExpanded}
       >
         <div className="space-y-3 mt-1">
           {/* Heat bar */}
@@ -1359,6 +1385,7 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
           </div>
         }
         defaultOpen={earningsExpanded}
+        onOpenChange={setEarningsExpanded}
       >
         <div className="space-y-1 mt-1">
           {earningsCalendar.positions.map(p => (
@@ -1417,11 +1444,21 @@ export default function AIPortfolio() {
   const [lastPriceRefresh, setLastPriceRefresh] = useState(null)
   const [isRefreshingPrices, setIsRefreshingPrices] = useState(false)
   const [csAlerts, setCsAlerts] = useState([])
-  const [csExpanded, setCsExpanded] = useState(true)
+  // Three section expand-states persist to localStorage so the user's
+  // last collapse/expand pick survives a refresh. Each key follows the
+  // `aiPortfolio<Name>Expanded` convention.
+  const [csExpanded, setCsExpanded] = useState(() => {
+    const saved = localStorage.getItem('aiPortfolioCsExpanded')
+    return saved == null ? true : saved === 'true'
+  })
   const [earningsCalendar, setEarningsCalendar] = useState(null)
-  const [earningsExpanded, setEarningsExpanded] = useState(false)
+  const [earningsExpanded, setEarningsExpanded] = useState(() => {
+    return localStorage.getItem('aiPortfolioEarningsExpanded') === 'true'
+  })
   const [riskData, setRiskData] = useState(null)
-  const [riskExpanded, setRiskExpanded] = useState(false)
+  const [riskExpanded, setRiskExpanded] = useState(() => {
+    return localStorage.getItem('aiPortfolioRiskExpanded') === 'true'
+  })
   // Global time-range selector — drives summary card, positions list,
   // and performance chart. Persisted in localStorage so the user's pick
   // survives page refreshes during a trading session.
@@ -1574,6 +1611,19 @@ export default function AIPortfolio() {
     localStorage.setItem('aiPortfolioTimeRange', timeRange)
   }, [timeRange])
 
+  // Persist collapse/expand state for the three top-of-page sections.
+  // Keeping each as its own useEffect lets us re-use the same key shape
+  // and stay obvious when greping.
+  useEffect(() => {
+    localStorage.setItem('aiPortfolioCsExpanded', String(csExpanded))
+  }, [csExpanded])
+  useEffect(() => {
+    localStorage.setItem('aiPortfolioEarningsExpanded', String(earningsExpanded))
+  }, [earningsExpanded])
+  useEffect(() => {
+    localStorage.setItem('aiPortfolioRiskExpanded', String(riskExpanded))
+  }, [riskExpanded])
+
   const handleUpdateConfig = async (config) => {
     try {
       await api.updateAIPortfolioConfig(config)
@@ -1725,15 +1775,8 @@ export default function AIPortfolio() {
         setCsExpanded={setCsExpanded}
       />
 
-      {/* Paper Mode Banner */}
-      {portfolio?.config?.paper_mode && (
-        <Card variant="glass" className="mb-4 border-amber-500/30 bg-amber-500/5" padding="p-3">
-          <div className="flex items-center gap-2 text-amber-400">
-            <span className="text-sm font-semibold">PAPER MODE</span>
-            <span className="text-[10px] text-dark-400">Trades are simulated - no real positions affected</span>
-          </div>
-        </Card>
-      )}
+      {/* Paper Mode is now indicated as a chip next to the AI Trading
+          header inside ConfigPanel below — saves a full-width banner. */}
 
       {/* Risk Monitor */}
       <RiskMonitorSection

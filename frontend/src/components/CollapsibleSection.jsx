@@ -1,11 +1,18 @@
 import { useState } from 'react'
 
-export default function CollapsibleSection({ title, badge, defaultOpen = true, children }) {
+export default function CollapsibleSection({ title, badge, defaultOpen = true, onOpenChange, children }) {
   const [open, setOpen] = useState(defaultOpen)
+  const toggle = () => {
+    setOpen(prev => {
+      const next = !prev
+      onOpenChange?.(next)
+      return next
+    })
+  }
   return (
     <div>
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={toggle}
         className="flex items-center justify-between w-full mb-2 group"
       >
         <div className="flex items-center gap-2">
