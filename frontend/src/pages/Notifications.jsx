@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime, formatDateTime } from '../api'
+import { useToast } from '../components/Toast'
 
 const PAGE_SIZE = 50
 
@@ -38,6 +39,7 @@ export default function Notifications() {
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
+  const toast = useToast()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -62,19 +64,27 @@ export default function Notifications() {
     if (n.read_at) return
     try {
       await api.markNotificationRead(n.id)
-      setItems(items.map(i => i.id === n.id ? { ...i, read_at: new Date().toISOString() } : i))
+      // Functional form: if the user fires multiple actions quickly, each
+      // closes over a different `items` snapshot and the later setItems
+      // overwrites the earlier one's change. Using `prev =>` reads the
+      // latest committed state instead.
+      setItems(prev => prev.map(i => i.id === n.id ? { ...i, read_at: new Date().toISOString() } : i))
       setUnreadCount(c => Math.max(0, c - 1))
-    } catch {}
+    } catch (err) {
+      toast.error(err?.message || 'Failed to mark as read')
+    }
   }
 
   async function handleDelete(n, e) {
     e.stopPropagation()
     try {
       await api.deleteNotification(n.id)
-      setItems(items.filter(i => i.id !== n.id))
+      setItems(prev => prev.filter(i => i.id !== n.id))
       setTotal(t => Math.max(0, t - 1))
       if (!n.read_at) setUnreadCount(c => Math.max(0, c - 1))
-    } catch {}
+    } catch (err) {
+      toast.error(err?.message || 'Failed to delete')
+    }
   }
 
   async function handleMarkAllRead() {
@@ -82,8 +92,10 @@ export default function Notifications() {
       await api.markAllNotificationsRead()
       setUnreadCount(0)
       const now = new Date().toISOString()
-      setItems(items.map(i => i.read_at ? i : { ...i, read_at: now }))
-    } catch {}
+      setItems(prev => prev.map(i => i.read_at ? i : { ...i, read_at: now }))
+    } catch (err) {
+      toast.error(err?.message || 'Failed to mark all as read')
+    }
   }
 
   function handleRowClick(n) {
