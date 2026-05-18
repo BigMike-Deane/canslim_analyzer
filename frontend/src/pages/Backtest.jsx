@@ -825,12 +825,15 @@ export default function Backtest() {
   const deleteBacktest = async (id) => {
     try {
       await api.deleteBacktest(id)
-      setBacktests(backtests.filter(b => b.id !== id))
+      // Functional form so concurrent state updates (e.g. polling refresh
+      // landing between click and setState) don't get clobbered.
+      setBacktests(prev => prev.filter(b => b.id !== id))
       if (selectedBacktest?.backtest?.id === id) {
         setSelectedBacktest(null)
       }
     } catch (err) {
       console.error('Failed to delete backtest:', err)
+      setError(err.message || 'Failed to delete backtest')
     }
   }
 
