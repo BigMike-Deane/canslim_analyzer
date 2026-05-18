@@ -1095,8 +1095,20 @@ export default function StockDetail() {
           <div className="text-dark-300 text-sm truncate">{stock.name}</div>
           <div className="text-xs text-dark-400 mt-0.5">{stock.sector} / {stock.industry}</div>
         </div>
-        <div className="flex-shrink-0 self-center sm:self-start">
+        <div className="flex-shrink-0 self-center sm:self-start flex flex-col items-center gap-1">
           <ScoreGauge score={stock.canslim_score} label={getScoreLabel(stock.canslim_score)} />
+          {stock.data_freshness?.age_text && (
+            <span
+              className={`text-[10px] font-data px-1.5 py-0.5 rounded border ${
+                stock.data_freshness.is_stale
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                  : 'bg-dark-800/70 text-dark-400 border-dark-700'
+              }`}
+              title={stock.last_updated ? `Last scan: ${formatDateTime(stock.last_updated)}` : 'No scan history'}
+            >
+              {stock.data_freshness.is_stale ? 'Stale · ' : ''}{stock.data_freshness.age_text}
+            </span>
+          )}
         </div>
       </div>
 
