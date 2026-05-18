@@ -374,6 +374,42 @@ class TestAIPortfolio:
         r = client.get("/api/ai-portfolio/trades")
         assert r.status_code == 200
 
+    def test_ai_portfolio_trades_response_shape(self):
+        # Seed one BUY and one SELL (matching the test client's user_id=1) so
+        # we can pin every field the DecisionLog row depends on.
+        from backend.database import SessionLocal, AIPortfolioTrade
+        from datetime import datetime, timezone
+        db = SessionLocal()
+        try:
+            db.query(AIPortfolioTrade).filter(AIPortfolioTrade.ticker.in_(["ZZZA", "ZZZB"])).delete(synchronize_session=False)
+            db.add(AIPortfolioTrade(
+                user_id=1, ticker="ZZZA", action="BUY",
+                shares=10.0, price=50.0, total_value=500.0,
+                reason="test buy", canslim_score=78.0, is_growth_stock=False,
+                signal_factors={"entry_type": "pre-breakout"},
+                executed_at=datetime.now(timezone.utc),
+            ))
+            db.add(AIPortfolioTrade(
+                user_id=1, ticker="ZZZB", action="SELL",
+                shares=10.0, price=60.0, total_value=600.0,
+                reason="TRAILING STOP", canslim_score=72.0,
+                cost_basis=500.0, realized_gain=100.0, holding_days=14,
+                signal_factors={"sell_reason": "TRAILING STOP", "gain_pct": 20.0},
+                executed_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        finally:
+            db.close()
+        data = client.get("/api/ai-portfolio/trades").json()
+        assert isinstance(data, list) and len(data) >= 2
+        for row in data:
+            for key in ("id", "ticker", "action", "shares", "price", "holding_days", "signal_factors", "executed_at"):
+                assert key in row, f"missing {key} in trade row"
+        sell = next((r for r in data if r["ticker"] == "ZZZB"), None)
+        assert sell is not None and sell["holding_days"] == 14
+        buy = next((r for r in data if r["ticker"] == "ZZZA"), None)
+        assert buy is not None and buy["signal_factors"]["entry_type"] == "pre-breakout"
+
     def test_ai_portfolio_history_returns_200(self):
         r = client.get("/api/ai-portfolio/history?days=7")
         assert r.status_code == 200

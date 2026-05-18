@@ -56,9 +56,29 @@ function groupByDay(trades) {
   }))
 }
 
+// Pick the score that actually drove this trade. Growth stocks use growth_mode_score;
+// everything else uses canslim_score. Some legacy rows have neither.
+function tradeScore(trade) {
+  if (trade.is_growth_stock && trade.growth_mode_score != null) return trade.growth_mode_score
+  if (trade.canslim_score != null) return trade.canslim_score
+  return null
+}
+
+function EntryTypeChip({ entryType }) {
+  if (!entryType || entryType === 'standard') return null
+  const label = entryType === 'pre-breakout' ? 'Pre-break' : entryType === 'breakout' ? 'Breakout' : entryType
+  // teal = anticipation, cyan = confirmation — visually distinct
+  const color = entryType === 'pre-breakout' ? 'teal' : 'cyan'
+  return <TagBadge color={color}>{label}</TagBadge>
+}
+
 function TradeRow({ trade }) {
   const kind = classifyTrade(trade)
   const gainPositive = (trade.realized_gain ?? 0) >= 0
+  const score = tradeScore(trade)
+  const entryType = trade.action === 'BUY' ? trade.signal_factors?.entry_type : null
+  const gainPct = trade.action === 'SELL' ? trade.signal_factors?.gain_pct : null
+  const holdDays = trade.action === 'SELL' ? trade.holding_days : null
   return (
     <div className="flex items-start justify-between py-2.5 px-2 -mx-2 rounded hover:bg-dark-800/50 transition-colors border-b border-dark-700/30 last:border-0">
       <div className="flex items-start gap-2 min-w-0 flex-1">
@@ -70,6 +90,15 @@ function TradeRow({ trade }) {
             </Link>
             <KindChip kind={kind} />
             {trade.is_growth_stock && <TagBadge color="purple">G</TagBadge>}
+            <EntryTypeChip entryType={entryType} />
+            {score != null && (
+              <span
+                className="text-[10px] font-data text-dark-300 bg-dark-800/70 border border-dark-700 px-1.5 py-0.5 rounded"
+                title={trade.is_growth_stock ? 'Growth Mode score at time of trade' : 'CANSLIM score at time of trade'}
+              >
+                {Math.round(score)}
+              </span>
+            )}
             {trade.signal_factors?.ml_confidence != null && (
               <MLConfidenceBadge confidence={trade.signal_factors.ml_confidence} size="xs" />
             )}
@@ -93,6 +122,17 @@ function TradeRow({ trade }) {
         {trade.realized_gain != null && (
           <div className={`text-[11px] font-data ${gainPositive ? 'text-emerald-400' : 'text-red-400'}`}>
             {gainPositive ? '+' : ''}{formatCurrency(trade.realized_gain)}
+          </div>
+        )}
+        {(holdDays != null || gainPct != null) && (
+          <div className="text-[10px] font-data text-dark-500 mt-0.5">
+            {holdDays != null && <span>{holdDays}d</span>}
+            {holdDays != null && gainPct != null && <span className="text-dark-600"> · </span>}
+            {gainPct != null && (
+              <span className={gainPct >= 0 ? 'text-emerald-400/80' : 'text-red-400/80'}>
+                {gainPct >= 0 ? '+' : ''}{gainPct.toFixed(1)}%
+              </span>
+            )}
           </div>
         )}
       </div>
