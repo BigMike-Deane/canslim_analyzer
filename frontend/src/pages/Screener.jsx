@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap } from '../api'
+import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
 import { MiniStat } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
+import { useToast } from '../components/Toast'
 
 function FilterBar({ filters, onFilterChange, sectors }) {
   return (
@@ -89,6 +90,21 @@ function CANSLIMBreakdown({ stock }) {
 
 function StockRow({ stock }) {
   const [expanded, setExpanded] = useState(false)
+  const [watching, setWatching] = useState(false)
+  const toast = useToast()
+
+  const handleAddToWatchlist = async (e) => {
+    e.stopPropagation()
+    if (watching) return
+    setWatching(true)
+    try {
+      await api.addToWatchlist({ ticker: stock.ticker })
+      toast.success(`${stock.ticker} added to watchlist`)
+    } catch (err) {
+      toast.error(err.message || 'Failed to add to watchlist')
+      setWatching(false)
+    }
+  }
 
   return (
     <div className="border-b border-dark-700/30 last:border-0">
@@ -102,7 +118,12 @@ function StockRow({ stock }) {
             <span className="text-dark-500 text-[10px] font-data">{formatMarketCap(stock.market_cap)}</span>
           </div>
           <div className="text-dark-400 text-sm truncate">{stock.name}</div>
-          <div className="text-dark-500 text-[10px] tracking-wide">{stock.sector}</div>
+          <div className="flex items-center gap-2 text-dark-500 text-[10px] tracking-wide">
+            <span>{stock.sector}</span>
+            {stock.last_updated && (
+              <span className="font-data text-dark-600">· {formatRelativeTime(stock.last_updated)}</span>
+            )}
+          </div>
         </div>
 
         <div className="text-right ml-3 flex flex-col items-end gap-1">
@@ -136,8 +157,12 @@ function StockRow({ stock }) {
             >
               View Details
             </Link>
-            <button className="text-sm px-4 py-2 rounded-lg bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600 transition-colors">
-              + Watch
+            <button
+              onClick={handleAddToWatchlist}
+              disabled={watching}
+              className="text-sm px-4 py-2 rounded-lg bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {watching ? '✓ Watching' : '+ Watch'}
             </button>
           </div>
         </div>
