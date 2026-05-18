@@ -96,6 +96,25 @@ Key finding: 5-state market state machine HURTS over full cycles. NoState's bina
 - `api.js` - API client with TTL-based caching
 - `App.jsx` - Main application router
 
+#### setState: use the functional form when reading prior state
+When a handler computes the next state from the current state, use the
+functional form `setX(prev => next)` — never `setX(items.map(...))` that
+closes over the state variable directly. The closed-over snapshot is
+frozen at handler-define time, so concurrent updates (polling refreshes,
+overlapping click handlers, async callbacks) eat each other's changes.
+
+```javascript
+// Wrong — stale closure. If a poll lands between click and this line,
+// the polled data is overwritten by the filter of pre-poll items.
+setItems(items.filter(i => i.id !== id))
+
+// Right — reads the latest committed state.
+setItems(prev => prev.filter(i => i.id !== id))
+```
+
+Real bugs from this class: `20bedb5` (Notifications mark-read/delete),
+`3f64176` (Backtest delete vs 2s polling refresh).
+
 ### Tests (`/tests/`)
 - 576 tests passing, 5 skipped (Redis tests when unavailable)
 - `conftest.py` - Shared fixtures with in-memory SQLite
