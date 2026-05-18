@@ -398,7 +398,10 @@ function DecisionBanner({ summary, post }) {
   const decision = summary?.decision || 'insufficient_data'
   const style = DECISION_STYLE[decision] || DECISION_STYLE.insufficient_data
   const postSells = post?.realized_sell_pct?.n ?? 0
-  const minPostSells = summary?.decision_criteria?.min_post_sells ?? 5
+  const criteria = summary?.decision_criteria || {}
+  const minPostSells = criteria.min_post_sells ?? 5
+  const minReturnDelta = criteria.min_return_delta_pp ?? -5.0
+  const minSharpeDelta = criteria.min_sharpe_delta ?? 0.0
   return (
     <div className={`border ${style.border} ${style.bg} rounded-xl p-5`}>
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -415,6 +418,20 @@ function DecisionBanner({ summary, post }) {
       </div>
       {summary?.decision_reason && (
         <div className="mt-3 text-xs text-dark-200 leading-relaxed">{summary.decision_reason}</div>
+      )}
+      {decision === 'insufficient_data' && (
+        <div className="mt-3 pt-3 border-t border-dark-700/40 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-dark-400 uppercase tracking-wider">To pass:</span>
+          <span className="font-data px-2 py-0.5 rounded border border-dark-700 bg-dark-800/60 text-dark-200">
+            sells ≥ {minPostSells}
+          </span>
+          <span className="font-data px-2 py-0.5 rounded border border-dark-700 bg-dark-800/60 text-dark-200">
+            return Δ ≥ {minReturnDelta > 0 ? '+' : ''}{minReturnDelta.toFixed(2)}pp
+          </span>
+          <span className="font-data px-2 py-0.5 rounded border border-dark-700 bg-dark-800/60 text-dark-200">
+            Sharpe Δ ≥ {minSharpeDelta > 0 ? '+' : ''}{minSharpeDelta.toFixed(2)}
+          </span>
+        </div>
       )}
     </div>
   )
