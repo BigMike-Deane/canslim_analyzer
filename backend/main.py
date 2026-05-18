@@ -3654,7 +3654,7 @@ async def initialize_ai_portfolio_endpoint(
 async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks, current_user: User = Depends(get_current_active_user), force: bool = Query(False)):
     """Manually trigger an AI trading cycle (runs in background)"""
     from backend.database import SessionLocal
-    from backend.ai_trader import take_portfolio_snapshot, _trading_cycle_lock, _trading_cycle_started, is_market_open
+    from backend.ai_trader import take_portfolio_snapshot, _trading_cycle_lock, _trading_cycle_started, is_market_open, get_cst_now
     from datetime import datetime
 
     # Capture user_id before background task (request scope won't be available later)
@@ -3667,9 +3667,13 @@ async def run_ai_trading_cycle_endpoint(background_tasks: BackgroundTasks, curre
             "message": "Market is closed. Trading only runs during market hours (Mon-Fri 9:30 AM - 4:00 PM Eastern)."
         }
 
-    # Check if a cycle is already running BEFORE launching background task
+    # Check if a cycle is already running BEFORE launching background task.
+    # Use get_cst_now() (naive UTC) — datetime.now() is naive LOCAL time,
+    # and _trading_cycle_started is set via _set_cycle_started(get_cst_now())
+    # inside ai_trader. Mixing the two gave wrong elapsed values on hosts
+    # whose system clock isn't UTC.
     if _trading_cycle_lock and _trading_cycle_started:
-        elapsed = (datetime.now() - _trading_cycle_started).total_seconds()
+        elapsed = (get_cst_now() - _trading_cycle_started).total_seconds()
         if elapsed < 300:  # 5 minute timeout
             return {
                 "status": "busy",
