@@ -140,7 +140,25 @@ def _wipe_user_rows():
             db.query(FidelityTrade).filter(FidelityTrade.user_id == uid).delete()
             db.query(Notification).filter(Notification.user_id == uid).delete()
             db.query(PushSubscription).filter(PushSubscription.user_id == uid).delete()
-        # Snapshot/positions cascade via snapshot_id; clear by user_id directly.
+        # FidelityPosition needs an explicit wipe: the FK to FidelitySnapshot
+        # has no ondelete=CASCADE, and bulk-delete with synchronize_session=
+        # False doesn't trigger ORM cascade. Without this, each test run that
+        # creates a snapshot+position leaks one orphan position; the orphans
+        # all share snapshot_id with later snapshots (SQLite reuses freed PKs
+        # when AUTOINCREMENT is off) and the sync-to-portfolio query then
+        # returns N copies, producing N PortfolioPosition rows for bob.
+        # Clear orphans first (parent gone), then snapshots, then any
+        # snapshot-tied positions that survive.
+        db.query(FidelityPosition).filter(
+            ~FidelityPosition.snapshot_id.in_(db.query(FidelitySnapshot.id))
+        ).delete(synchronize_session=False)
+        bob_alice_snap_ids = [s.id for s in db.query(FidelitySnapshot).filter(
+            FidelitySnapshot.user_id.in_([ALICE_ID, BOB_ID])
+        ).all()]
+        if bob_alice_snap_ids:
+            db.query(FidelityPosition).filter(
+                FidelityPosition.snapshot_id.in_(bob_alice_snap_ids)
+            ).delete(synchronize_session=False)
         db.query(FidelitySnapshot).filter(FidelitySnapshot.user_id.in_([ALICE_ID, BOB_ID])).delete(synchronize_session=False)
         db.query(PortfolioPosition).filter(PortfolioPosition.user_id.is_(None)).delete()
         db.commit()
