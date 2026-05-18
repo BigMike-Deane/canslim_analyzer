@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
@@ -172,6 +172,7 @@ function StockRow({ stock }) {
 }
 
 export default function Screener() {
+  const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [stocks, setStocks] = useState([])
@@ -179,7 +180,7 @@ export default function Screener() {
   const [page, setPage] = useState(1)
   const pageSize = 50
   const [filters, setFilters] = useState({
-    sector: null,
+    sector: searchParams.get('sector') || null,
     min_score: 0,
     sort_by: 'canslim_score',
     limit: pageSize,

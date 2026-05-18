@@ -4509,6 +4509,7 @@ async def get_market_breadth(current_user: User = Depends(get_current_active_use
         })
     sectors.sort(key=lambda x: x["avg_score"], reverse=True)
 
+    as_of = db.query(func.max(Stock.last_updated)).scalar()
     return {
         "total": total,
         "new_highs": new_highs,
@@ -4527,6 +4528,7 @@ async def get_market_breadth(current_user: User = Depends(get_current_active_use
             "avg_score": round(sum(scores) / max(1, len(scores)), 1) if scores else 0,
         },
         "sectors": sectors,
+        "as_of": (as_of.isoformat() + "Z") if as_of else None,
     }
 
 

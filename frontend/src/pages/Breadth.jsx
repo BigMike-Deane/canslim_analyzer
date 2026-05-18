@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { api, formatPercent } from '../api'
+import { Link } from 'react-router-dom'
+import { api, formatPercent, formatRelativeTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
@@ -9,7 +10,11 @@ function SectorRow({ sector }) {
   const scoreColor = sector.avg_score >= 60 ? 'text-emerald-400' : sector.avg_score >= 45 ? 'text-amber-400' : 'text-red-400'
 
   return (
-    <div className="flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0">
+    <Link
+      to={`/screener?sector=${encodeURIComponent(sector.sector)}`}
+      className="flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-800/40 -mx-4 px-4 transition-colors cursor-pointer"
+      title={`Drill into ${sector.sector} on the Screener`}
+    >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-sm text-dark-100 font-medium truncate">{sector.sector}</span>
@@ -41,7 +46,7 @@ function SectorRow({ sector }) {
           <div className="text-[10px] text-dark-500">nr high</div>
         </div>
       </div>
-    </div>
+    </Link>
   )
 }
 
@@ -119,7 +124,10 @@ export default function Breadth() {
 
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <PageHeader title="Market Breadth" />
+      <PageHeader
+        title="Market Breadth"
+        subtitle={data.as_of ? `Updated ${formatRelativeTime(data.as_of)}` : undefined}
+      />
 
       {/* Key metrics */}
       <SectionLabel>Breadth Indicators</SectionLabel>
