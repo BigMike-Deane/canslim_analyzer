@@ -1145,15 +1145,29 @@ async def sync_fidelity_to_portfolio(current_user: User = Depends(get_current_ac
         FidelityPosition.snapshot_id == snapshot.id
     ).all()
 
+    # Dedupe by symbol. A Fidelity snapshot can in principle contain
+    # multiple rows for one ticker (split lots, or options + stock under
+    # the same underlying). Last-write-wins matches the upsert semantics
+    # below. Previously this loop did an in-DB `existing?` lookup per
+    # FidelityPosition; SessionLocal is autoflush=False so the lookup
+    # missed in-session db.add()s and produced one PortfolioPosition row
+    # per duplicate FidelityPosition.
+    fid_by_symbol = {}
+    for fp in fid_positions:
+        fid_by_symbol[fp.symbol] = fp
+
+    # Build the existing-row lookup once so we don't depend on autoflush.
+    existing_by_symbol = {
+        p.ticker: p for p in db.query(PortfolioPosition).filter(
+            PortfolioPosition.user_id == current_user.id,
+        ).all()
+    }
+
     added = 0
     updated = 0
 
-    for fp in fid_positions:
-        existing = db.query(PortfolioPosition).filter(
-            PortfolioPosition.ticker == fp.symbol,
-            PortfolioPosition.user_id == current_user.id,
-        ).first()
-
+    for symbol, fp in fid_by_symbol.items():
+        existing = existing_by_symbol.get(symbol)
         if existing:
             existing.shares = fp.quantity
             existing.cost_basis = fp.average_cost_basis
@@ -1176,7 +1190,7 @@ async def sync_fidelity_to_portfolio(current_user: User = Depends(get_current_ac
             added += 1
 
     # Remove portfolio positions not in Fidelity snapshot — scoped to caller.
-    fid_symbols = {fp.symbol for fp in fid_positions}
+    fid_symbols = set(fid_by_symbol.keys())
     stale_q = db.query(PortfolioPosition).filter(
         PortfolioPosition.user_id == current_user.id,
     )

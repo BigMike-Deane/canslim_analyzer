@@ -740,6 +740,39 @@ class TestFidelitySyncToPortfolio:
         finally:
             db.close()
 
+    def test_dedupes_duplicate_symbol_in_snapshot(self):
+        """Regression: if a snapshot contains two FidelityPosition rows for
+        the same symbol (split lots, or stale orphan rows in test/dev DBs),
+        the sync must produce exactly ONE PortfolioPosition for that ticker.
+
+        Pre-fix the loop's `db.query(PortfolioPosition).first()` "existing?"
+        check missed in-session db.add()s under autoflush=False, and each
+        duplicate FidelityPosition spawned its own PortfolioPosition row.
+        Last-write-wins; the second row's values land in the DB."""
+        _make_snapshot(positions=[
+            {"symbol": "AAPL", "quantity": 100, "last_price": 180,
+             "current_value": 18000, "total_gain_loss": 3000,
+             "total_gain_loss_pct": 20, "average_cost_basis": 150},
+            {"symbol": "AAPL", "quantity": 50, "last_price": 181,
+             "current_value": 9050, "total_gain_loss": 1500,
+             "total_gain_loss_pct": 19.7, "average_cost_basis": 151},
+        ])
+        r = client.post("/api/fidelity/sync-to-portfolio")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["added"] == 1, "duplicate symbol must collapse to one add"
+        assert body["updated"] == 0
+
+        db = _db()
+        try:
+            rows = db.query(PortfolioPosition).filter_by(ticker="AAPL").all()
+            assert len(rows) == 1, f"expected 1 row, got {len(rows)}"
+            # Last-write-wins: second snapshot row's values land.
+            assert rows[0].shares == 50
+            assert rows[0].cost_basis == 151
+        finally:
+            db.close()
+
     def test_removes_stale_positions(self):
         """Branch: PortfolioPosition not in latest snapshot → removed.
         Seed under user_id=1 to match the auth-bypassed _fake_user (post-IDOR-fix
