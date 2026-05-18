@@ -1259,11 +1259,15 @@ class TestMarkTickerAsDelisted:
 
     def test_skips_increment_within_hour_window(self, db_session):
         """Hourly dedup: a single scan cycle hitting the ticker via multiple
-        code paths must not push it over the 3-strike threshold prematurely."""
+        code paths must not push it over the 3-strike threshold prematurely.
+
+        Seed `last_failed_at` in the same TZ frame the runtime code uses
+        (naive UTC via data_fetcher._db_now) so the 30-minute window holds
+        on hosts whose clock isn't UTC."""
         rec = DelistedTicker(
             ticker="DEDUP",
             failure_count=1,
-            last_failed_at=datetime.now() - timedelta(minutes=30),  # < 1hr
+            last_failed_at=data_fetcher._db_now() - timedelta(minutes=30),  # < 1hr
         )
         db_session.add(rec)
         db_session.commit()

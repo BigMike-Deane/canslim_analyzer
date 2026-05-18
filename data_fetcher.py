@@ -8,7 +8,22 @@ Includes Redis cache layer for improved performance
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _db_now():
+    """Naive UTC datetime — use for DB columns to keep wire/read values
+    in a single TZ frame regardless of host. The DelistedTicker model
+    defaults `last_failed_at = datetime.now(timezone.utc)` which
+    SQLAlchemy strips to naive UTC numbers on write; this helper matches
+    that frame for runtime updates and comparisons.
+
+    `datetime.now()` (naive local) used to be mixed in for the same
+    column, which was silently correct only when the host clock was
+    UTC. In-memory cache timestamps elsewhere in this file still use
+    `datetime.now()` because both sides of those comparisons are local-
+    naive (internally consistent within a single process)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from typing import Optional
 from collections import OrderedDict
 import time
@@ -629,21 +644,21 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
             # Cap one increment per hour so a single scan cycle that touches
             # the same ticker through multiple code paths can't push it over
             # the threshold prematurely.
-            if existing.last_failed_at and (datetime.now() - existing.last_failed_at).total_seconds() < 3600:
+            if existing.last_failed_at and (_db_now() - existing.last_failed_at).total_seconds() < 3600:
                 logger.debug(f"{ticker} already marked this hour, skipping duplicate")
                 return
             existing.failure_count += 1
-            existing.last_failed_at = datetime.now()
+            existing.last_failed_at = _db_now()
             existing.reason = reason
             # Before committing to 30-day exclusion, verify with FMP
             if existing.failure_count >= 3:
                 if _fmp_confirms_delisted(ticker):
-                    existing.recheck_after = datetime.now() + timedelta(days=30)
+                    existing.recheck_after = _db_now() + timedelta(days=30)
                 else:
                     # FMP still has this ticker — likely a transient Yahoo issue
                     logger.info(f"{ticker} failed Yahoo 3x but FMP has data — resetting failure count")
                     existing.failure_count = 0
-                    existing.recheck_after = datetime.now() + timedelta(days=1)
+                    existing.recheck_after = _db_now() + timedelta(days=1)
                     db.commit()
                     return
         else:
@@ -652,7 +667,7 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
                 reason=reason,
                 source=source,
                 failure_count=1,
-                recheck_after=datetime.now() + timedelta(days=7)  # Recheck after 7 days initially
+                recheck_after=_db_now() + timedelta(days=7)  # Recheck after 7 days initially
             )
             db.add(delisted)
             _known_delisted_cache.add(ticker)
@@ -697,12 +712,12 @@ def get_delisted_tickers() -> set:
     try:
         from backend.database import DelistedTicker
 
-        # Only exclude tickers with 3+ failures whose recheck window hasn't passed
-        # This prevents temporary API issues from permanently excluding valid stocks
-        # Note: recheck_after is stored as naive datetime via datetime.now(), so compare with naive
+        # Only exclude tickers with 3+ failures whose recheck window hasn't passed.
+        # This prevents temporary API issues from permanently excluding valid stocks.
+        # recheck_after is naive-UTC numbers (see _db_now); compare with same.
         delisted = db.query(DelistedTicker.ticker).filter(
             DelistedTicker.failure_count >= 3,
-            DelistedTicker.recheck_after > datetime.now()
+            DelistedTicker.recheck_after > _db_now()
         ).all()
 
         return {t.ticker for t in delisted}
