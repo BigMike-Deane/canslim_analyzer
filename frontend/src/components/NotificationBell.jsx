@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime } from '../api'
+import { useToast } from './Toast'
 
 const POLL_INTERVAL_MS = 30_000
 
@@ -19,6 +20,7 @@ export default function NotificationBell({ collapsed }) {
   const [loading, setLoading] = useState(false)
   const [anchor, setAnchor] = useState(null)  // {top, left} of dropdown when open
   const navigate = useNavigate()
+  const toast = useToast()
   const ref = useRef(null)
   const buttonRef = useRef(null)
   const dropdownRef = useRef(null)
@@ -102,7 +104,9 @@ export default function NotificationBell({ collapsed }) {
       try {
         await api.markNotificationRead(n.id)
         setUnreadCount(c => Math.max(0, c - 1))
-      } catch {}
+      } catch (err) {
+        toast.error(err?.message || 'Failed to mark as read')
+      }
     }
     const ticker = n?.data?.ticker
     if (ticker) navigate(`/stock/${ticker}`)
@@ -114,8 +118,14 @@ export default function NotificationBell({ collapsed }) {
     try {
       await api.markAllNotificationsRead()
       setUnreadCount(0)
-      setItems(items.map(i => i.read_at ? i : { ...i, read_at: new Date().toISOString() }))
-    } catch {}
+      // Functional form: the 30s poll tick or open-dropdown fetch can land
+      // between this click and the setItems below. Closing over `items`
+      // would let the stale snapshot overwrite the polled data.
+      const now = new Date().toISOString()
+      setItems(prev => prev.map(i => i.read_at ? i : { ...i, read_at: now }))
+    } catch (err) {
+      toast.error(err?.message || 'Failed to mark all as read')
+    }
   }
 
   return (
