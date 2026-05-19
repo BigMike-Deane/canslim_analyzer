@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api, formatDate, formatDateTime, formatRelativeTime } from '../api'
 
 // "4m 22s" / "1h 04m" / "23s" — duration between two ISO timestamps.
@@ -41,6 +41,13 @@ export default function Admin() {
   const [scanInterval, setScanInterval] = useState(35)
   const [scannerBusy, setScannerBusy] = useState(false)
   const [scannerMessage, setScannerMessage] = useState(null)
+  // Ref-mirror of scannerBusy: the polling setInterval below only re-binds
+  // when `scanner?.is_scanning` flips, so the loadScanner closure it calls
+  // captures a stale scannerBusy from the original render. Without the ref,
+  // a poll-tick during a Save/Run/Stop in flight overwrites the user's
+  // in-progress source/interval edits with server-current values.
+  const scannerBusyRef = useRef(false)
+  useEffect(() => { scannerBusyRef.current = scannerBusy }, [scannerBusy])
 
   useEffect(() => {
     loadUsers()
@@ -60,7 +67,8 @@ export default function Admin() {
       const s = await api.getScannerStatus()
       setScanner(s)
       // Only sync form controls from server when user hasn't been editing.
-      if (!scannerBusy) {
+      // Read via ref — see scannerBusyRef definition for why.
+      if (!scannerBusyRef.current) {
         if (s.source) setScanSource(s.source)
         if (s.interval_minutes) setScanInterval(s.interval_minutes)
       }
