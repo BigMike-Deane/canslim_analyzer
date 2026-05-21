@@ -380,28 +380,10 @@ class TestCheckRateLimit:
 
         assert async_data_fetcher._rate_limiter["calls_this_minute"] == 1  # reset then ++
 
-    async def test_backoff_until_in_past_clears(self, primitives):
-        # backoff_until in the past should be cleared without sleeping
-        async_data_fetcher._rate_limiter["backoff_until"] = datetime.now() - timedelta(seconds=10)
-        await async_data_fetcher._check_rate_limit()
-        assert async_data_fetcher._rate_limiter["backoff_until"] is None
-
-    async def test_backoff_until_in_future_sleeps(self, primitives, monkeypatch):
-        # backoff_until in the future should sleep, then clear
-        sleep_calls = []
-
-        async def fake_sleep(n):
-            sleep_calls.append(n)
-
-        monkeypatch.setattr(async_data_fetcher.asyncio, "sleep", fake_sleep)
-        async_data_fetcher._rate_limiter["backoff_until"] = datetime.now() + timedelta(seconds=5)
-
-        await async_data_fetcher._check_rate_limit()
-
-        assert len(sleep_calls) == 1
-        # Slept some positive amount close to 5s (don't pin exact — clock drifts)
-        assert 4.0 <= sleep_calls[0] <= 5.1
-        assert async_data_fetcher._rate_limiter["backoff_until"] is None
+    # backoff_until branch tests removed 2026-05-21 alongside commit 6b9b368:
+    # the field and its if-branch in _check_rate_limit were dead code (no
+    # setter ever wrote a non-None value). 429 backoff is handled by the
+    # centralized fmp_rate_limiter module.
 
     async def test_at_max_calls_waits_for_next_minute(self, primitives, monkeypatch):
         sleep_calls = []
