@@ -88,21 +88,23 @@ function CANSLIMBreakdown({ stock }) {
   )
 }
 
-function StockRow({ stock }) {
+function StockRow({ stock, isWatched, onWatched }) {
   const [expanded, setExpanded] = useState(false)
-  const [watching, setWatching] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const toast = useToast()
 
   const handleAddToWatchlist = async (e) => {
     e.stopPropagation()
-    if (watching) return
-    setWatching(true)
+    if (isWatched || submitting) return
+    setSubmitting(true)
     try {
       await api.addToWatchlist({ ticker: stock.ticker })
+      onWatched(stock.ticker)
       toast.success(`${stock.ticker} added to watchlist`)
     } catch (err) {
       toast.error(err.message || 'Failed to add to watchlist')
-      setWatching(false)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -159,10 +161,10 @@ function StockRow({ stock }) {
             </Link>
             <button
               onClick={handleAddToWatchlist}
-              disabled={watching}
+              disabled={isWatched || submitting}
               className="text-sm px-4 py-2 rounded-lg bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {watching ? '✓ Watching' : '+ Watch'}
+              {submitting ? 'Adding…' : isWatched ? '✓ Watching' : '+ Watch'}
             </button>
           </div>
         </div>
@@ -187,6 +189,26 @@ export default function Screener() {
     offset: 0
   })
   const [total, setTotal] = useState(0)
+  // Set of tickers currently in the user's watchlist. Hydrated on mount so
+  // rows that the user already added render as "✓ Watching" instead of
+  // "+ Watch" after a page reload (previously component-local-only state
+  // showed every row as add-able, causing duplicate-add attempts and
+  // confusing 4xx responses).
+  const [watchedTickers, setWatchedTickers] = useState(new Set())
+
+  useEffect(() => {
+    api.getWatchlist()
+      .then(items => setWatchedTickers(new Set((items || []).map(i => i.ticker))))
+      .catch(err => console.error('Failed to load watchlist for hydration:', err))
+  }, [])
+
+  const markWatched = useCallback((ticker) => {
+    setWatchedTickers(prev => {
+      const next = new Set(prev)
+      next.add(ticker)
+      return next
+    })
+  }, [])
 
   const fetchStocks = useCallback(async () => {
     try {
@@ -264,7 +286,12 @@ export default function Screener() {
         <>
           <Card variant="glass">
             {stocks.map(stock => (
-              <StockRow key={stock.ticker} stock={stock} />
+              <StockRow
+                key={stock.ticker}
+                stock={stock}
+                isWatched={watchedTickers.has(stock.ticker)}
+                onWatched={markWatched}
+              />
             ))}
           </Card>
 
