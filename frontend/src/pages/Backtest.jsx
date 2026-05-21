@@ -11,6 +11,7 @@ import PageHeader from '../components/PageHeader'
 import { tooltipStyle } from '../components/chartTheme'
 import BacktestCompareView from '../components/BacktestCompareView'
 import MLMatrixView from '../components/MLMatrixView'
+import { useToast } from '../components/Toast'
 
 function PerformanceChart({ data, startingCash }) {
   if (!data || data.length < 2) {
@@ -757,6 +758,7 @@ export default function Backtest() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
   const pollingRef = useRef(null)
+  const toast = useToast()
 
   const fetchBacktests = useCallback(async () => {
     try {
@@ -819,6 +821,7 @@ export default function Backtest() {
       setSelectedBacktest(data)
     } catch (err) {
       console.error('Failed to fetch backtest:', err)
+      toast.error(err?.message || 'Failed to load backtest')
     }
   }
 
