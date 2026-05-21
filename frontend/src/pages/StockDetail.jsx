@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { getAdjacentTickers } from '../stockListContext'
 import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { api, formatScore, getScoreClass, getScoreLabel, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
@@ -961,6 +962,11 @@ export default function StockDetail() {
   const [refreshing, setRefreshing] = useState(false)
   const [scoreResolution, setScoreResolution] = useState('daily')
 
+  // Adjacent tickers from the list page the user came from (Screener,
+  // Watchlist, Breakouts). null source = no context (direct URL, etc.),
+  // in which case the prev/next nav is hidden entirely.
+  const adjacents = useMemo(() => getAdjacentTickers(ticker), [ticker])
+
   const fetchStock = async (resolution = scoreResolution) => {
     try {
       // Reset before fetching so a failure on a new ticker doesn't render
@@ -982,6 +988,14 @@ export default function StockDetail() {
     fetchStock(scoreResolution)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker, scoreResolution])
+
+  // Scroll to top when the ticker changes — without this, clicking the
+  // prev/next nav from the page header leaves the viewport at the bottom
+  // of the previous page (same component, same route pattern, so React
+  // Router does not auto-scroll).
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' })
+  }, [ticker])
 
   const handleRefresh = async () => {
     try {
@@ -1070,15 +1084,48 @@ export default function StockDetail() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-5 gap-3">
         <div className="min-w-0">
-          <button
-            onClick={() => navigate(-1)}
-            className="inline-flex items-center gap-1 text-xs text-dark-400 hover:text-dark-200 transition-colors mb-2"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M15 18l-6-6 6-6" />
-            </svg>
-            Back
-          </button>
+          <div className="flex items-center gap-3 mb-2">
+            <button
+              onClick={() => navigate(-1)}
+              className="inline-flex items-center gap-1 text-xs text-dark-400 hover:text-dark-200 transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+              Back
+            </button>
+            {adjacents.source && (adjacents.prev || adjacents.next) && (
+              <div className="flex items-center gap-2 text-xs">
+                <button
+                  onClick={() => adjacents.prev && navigate(`/stock/${adjacents.prev}`)}
+                  disabled={!adjacents.prev}
+                  className="inline-flex items-center gap-1 text-dark-400 hover:text-dark-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title={adjacents.prev ? `Previous: ${adjacents.prev}` : 'No previous ticker'}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M15 18l-6-6 6-6" />
+                  </svg>
+                  {adjacents.prev || '—'}
+                </button>
+                <span className="text-dark-500 text-[10px] font-data">
+                  {adjacents.position
+                    ? `${adjacents.position.idx}/${adjacents.position.total} · ${adjacents.source}`
+                    : adjacents.source}
+                </span>
+                <button
+                  onClick={() => adjacents.next && navigate(`/stock/${adjacents.next}`)}
+                  disabled={!adjacents.next}
+                  className="inline-flex items-center gap-1 text-dark-400 hover:text-dark-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title={adjacents.next ? `Next: ${adjacents.next}` : 'No next ticker'}
+                >
+                  {adjacents.next || '—'}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M9 18l6-6-6-6" />
+                  </svg>
+                </button>
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-bold text-dark-50 flex items-center gap-2">
               {stock.ticker}

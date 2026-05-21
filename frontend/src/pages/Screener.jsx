@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
+import { saveStockListContext } from '../stockListContext'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
 import { MiniStat } from '../components/StatGrid'
@@ -237,6 +238,14 @@ export default function Screener() {
   useEffect(() => {
     fetchStocks()
   }, [fetchStocks])
+
+  // Surface the current visible-stock order to StockDetail so its prev/next
+  // ticker buttons can walk through this exact filter+sort+page combination.
+  useEffect(() => {
+    if (stocks.length > 0) {
+      saveStockListContext('Screener', stocks.map(s => s.ticker))
+    }
+  }, [stocks])
 
   const handleFilterChange = (newFilters) => {
     setPage(1)

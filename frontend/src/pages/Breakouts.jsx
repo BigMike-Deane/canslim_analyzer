@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency } from '../api'
+import { saveStockListContext } from '../stockListContext'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
@@ -77,6 +78,14 @@ export default function Breakouts() {
     }
     fetchBreakouts()
   }, [])
+
+  // Surface the breakout order to StockDetail so its prev/next nav
+  // walks through the same ordered breakout list.
+  useEffect(() => {
+    if (stocks.length > 0) {
+      saveStockListContext('Breakouts', stocks.map(s => s.ticker))
+    }
+  }, [stocks])
 
   if (loading) {
     return (
