@@ -146,7 +146,13 @@ export default function Settings() {
     try {
       const subs = await api.listPushSubscriptions()
       setPushSubs(subs)
-    } catch {}
+    } catch (err) {
+      // Called fire-and-forget after handleRevoke succeeds — if the
+      // refresh silently failed the just-revoked row stayed in the UI
+      // and looked like revoke hadn't worked. Surface via the existing
+      // pushMessage channel (same surface handleTest / handleRevoke use).
+      setPushMessage({ kind: 'error', text: err?.message || 'Failed to load push subscriptions' })
+    }
   }, [])
 
   useEffect(() => { refreshPushSubs() }, [refreshPushSubs])
