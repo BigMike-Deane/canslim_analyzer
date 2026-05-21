@@ -220,12 +220,15 @@ api_semaphore = None
 _rate_lock = None
 
 # Global rate limiter - tracks calls per minute
+# Note: `backoff_until` and the corresponding if-branch in _check_rate_limit
+# were removed 2026-05-21 as unreachable dead code — no setter ever wrote a
+# non-None value, and 429 backoff is handled by the centralized
+# fmp_rate_limiter module loaded at line 255-259 of _init_async_primitives.
 _rate_limiter = {
     "calls_this_minute": 0,
     "minute_start": None,
     "max_calls_per_minute": 250,  # Target 250, well under 300 limit
     "consecutive_429s": 0,
-    "backoff_until": None,
     "total_calls": 0,
     "total_429s": 0
 }
@@ -249,7 +252,6 @@ async def _init_async_primitives():
     _rate_limiter["calls_this_minute"] = 0
     _rate_limiter["minute_start"] = None
     _rate_limiter["consecutive_429s"] = 0
-    _rate_limiter["backoff_until"] = None
     _rate_limiter["total_calls"] = 0
     _rate_limiter["total_429s"] = 0
     # Initialize centralized rate limiter (loads config if not already done)
@@ -325,14 +327,6 @@ async def _check_rate_limit():
 
     async with _rate_lock:
         now = datetime.now()
-
-        # Check if we're in backoff period from 429
-        if _rate_limiter["backoff_until"]:
-            if now < _rate_limiter["backoff_until"]:
-                wait_secs = (_rate_limiter["backoff_until"] - now).total_seconds()
-                logger.info(f"Rate limit backoff: waiting {wait_secs:.1f}s")
-                await asyncio.sleep(wait_secs)
-            _rate_limiter["backoff_until"] = None
 
         # Reset counter if we're in a new minute
         if _rate_limiter["minute_start"] is None or (now - _rate_limiter["minute_start"]).total_seconds() >= 60:
@@ -1094,11 +1088,18 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
             error_str = str(e).lower()
             if "rate" in error_str or "429" in error_str or "too many" in error_str:
                 raise  # Re-raise rate limit errors for outer retry logic
-            # Check for 404 or "not found" errors indicating delisted ticker
+            # Check for 404 or "not found" errors indicating delisted ticker.
+            # 404 stays at debug — delisting is recorded via mark_ticker_as_delisted.
             if "404" in error_str or "not found" in error_str:
                 mark_ticker_as_delisted(ticker, reason="yahoo_404", source="async_data_fetcher")
-            # Auth errors already handled by yf_safe_call
-            logger.debug(f"{ticker}: Yahoo info error: {e}")
+                logger.debug(f"{ticker}: Yahoo 404 (marked delisted): {e}")
+            else:
+                # Auth errors already handled by yf_safe_call. Everything else
+                # (TimeoutError, ConnectionError, JSON parse, etc.) was previously
+                # logged at DEBUG and invisible in prod — silent staleness with no
+                # operator-facing signal. Lift to WARNING so transient network
+                # failures show up in container logs before they accumulate.
+                logger.warning(f"{ticker}: Yahoo info error: {e}")
             return result
 
     # Use semaphore to limit concurrent Yahoo requests with retry logic
