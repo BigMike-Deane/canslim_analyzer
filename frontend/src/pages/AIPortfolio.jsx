@@ -1630,6 +1630,7 @@ export default function AIPortfolio() {
       fetchData()
     } catch (err) {
       console.error('Failed to update config:', err)
+      toast.error(err?.message || 'Failed to update config')
     }
   }
 
@@ -1639,6 +1640,7 @@ export default function AIPortfolio() {
       fetchData()
     } catch (err) {
       console.error('Failed to initialize:', err)
+      toast.error(err?.message || 'Failed to initialize AI Portfolio')
     }
   }
 
@@ -1660,6 +1662,7 @@ export default function AIPortfolio() {
     } catch (err) {
       console.error('Failed to refresh:', err)
       setIsRefreshingPrices(false)
+      toast.error(err?.message || 'Failed to refresh prices')
     }
   }
 
@@ -1682,6 +1685,7 @@ export default function AIPortfolio() {
     } catch (err) {
       console.error('Failed to run cycle:', err)
       setWaitingForTrades(false)
+      toast.error(err?.message || 'Failed to run trading cycle')
     }
   }
 
