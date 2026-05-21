@@ -698,7 +698,15 @@ def send_morning_briefing_if_due():
                 stop_price = p.cost_basis * (1 - base_stop / 100)
 
             pct_to_stop = ((p.current_price - stop_price) / p.current_price * 100) if p.current_price and stop_price else 0
-            days_held = (datetime.now(timezone.utc) - p.purchase_date).days if p.purchase_date else 0
+            # .date() on both sides matches the convention used in 6 ai_trader.py
+            # sites — strips time AND tzinfo, so the subtraction works whether
+            # SQLAlchemy returned purchase_date as naive (the default for
+            # DateTime columns without timezone=True) or aware. Previously this
+            # raised "can't subtract offset-naive and offset-aware datetimes"
+            # the moment a position had a non-None purchase_date, silently
+            # killing the morning briefing email under the wrapping try/except
+            # at line 1605.
+            days_held = (datetime.now(timezone.utc).date() - p.purchase_date.date()).days if p.purchase_date else 0
 
             pos_data.append({
                 "ticker": p.ticker,
