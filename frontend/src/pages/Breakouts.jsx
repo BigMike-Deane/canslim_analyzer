@@ -1,10 +1,25 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
+
+const SORT_OPTIONS = [
+  { value: 'canslim_score', label: 'Score' },
+  { value: 'volume_ratio', label: 'Volume' },
+  { value: 'current_price', label: 'Price' },
+  { value: 'pct_from_high', label: 'Near 52wk High' },
+]
+
+const BASE_TYPE_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'cup_with_handle', label: 'Cup+Handle' },
+  { key: 'cup', label: 'Cup' },
+  { key: 'flat_base', label: 'Flat Base' },
+  { key: 'double_bottom', label: 'Double Bottom' },
+]
 
 function BreakoutRow({ stock }) {
   const pctFromHigh = stock.week_52_high && stock.current_price
@@ -61,6 +76,9 @@ export default function Breakouts() {
   const [loading, setLoading] = useState(true)
   const [stocks, setStocks] = useState([])
   const [error, setError] = useState(null)
+  const [sortBy, setSortBy] = useState('canslim_score')
+  const [baseType, setBaseType] = useState('all')
+  const [sector, setSector] = useState('')
 
   useEffect(() => {
     const fetchBreakouts = async () => {
@@ -79,13 +97,47 @@ export default function Breakouts() {
     fetchBreakouts()
   }, [])
 
-  // Surface the breakout order to StockDetail so its prev/next nav
-  // walks through the same ordered breakout list.
-  useEffect(() => {
-    if (stocks.length > 0) {
-      saveStockListContext('Breakouts', stocks.map(s => s.ticker))
-    }
+  // Distinct sectors present in the fetched set
+  const sectors = useMemo(() => {
+    const s = new Set()
+    stocks.forEach(st => { if (st.sector) s.add(st.sector) })
+    return [...s].sort()
   }, [stocks])
+
+  // Apply filter + sort. Reset sector if it disappears from the set.
+  const displayStocks = useMemo(() => {
+    let arr = stocks.slice()
+    if (baseType !== 'all') {
+      arr = arr.filter(s => s.base_type === baseType)
+    }
+    if (sector) {
+      arr = arr.filter(s => s.sector === sector)
+    }
+    arr.sort((a, b) => {
+      if (sortBy === 'pct_from_high') {
+        // Closer-to-high first (smaller pct gap = first)
+        const aPct = a.week_52_high && a.current_price
+          ? (a.week_52_high - a.current_price) / a.week_52_high
+          : Infinity
+        const bPct = b.week_52_high && b.current_price
+          ? (b.week_52_high - b.current_price) / b.week_52_high
+          : Infinity
+        return aPct - bPct
+      }
+      const av = a[sortBy] ?? -Infinity
+      const bv = b[sortBy] ?? -Infinity
+      return bv - av
+    })
+    return arr
+  }, [stocks, sortBy, baseType, sector])
+
+  // Surface the (filtered+sorted) breakout order to StockDetail so its
+  // prev/next nav walks through the same list the user is viewing.
+  useEffect(() => {
+    if (displayStocks.length > 0) {
+      saveStockListContext('Breakouts', displayStocks.map(s => s.ticker))
+    }
+  }, [displayStocks])
 
   if (loading) {
     return (
@@ -102,15 +154,75 @@ export default function Breakouts() {
     )
   }
 
+  const hasFilters = baseType !== 'all' || sector !== ''
+  const countLabel = hasFilters && displayStocks.length !== stocks.length
+    ? `${displayStocks.length} of ${stocks.length}`
+    : `${stocks.length}`
+
   return (
     <div className="p-4 md:p-6">
       <PageHeader
         title="Breaking Out"
         subtitle="Stocks clearing base patterns with strong volume"
         badge={
-          <span className="text-xs font-data text-dark-400">{stocks.length} stocks</span>
+          <span className="text-xs font-data text-dark-400">{countLabel} stocks</span>
         }
       />
+
+      {/* Filters */}
+      {!error && stocks.length > 0 && (
+        <div className="mb-3 space-y-2">
+          {/* Base-type pills */}
+          <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+            {BASE_TYPE_FILTERS.map(f => (
+              <button
+                key={f.key}
+                onClick={() => setBaseType(f.key)}
+                className={`text-xs px-3.5 py-2 rounded-full whitespace-nowrap transition-colors ${
+                  baseType === f.key
+                    ? 'bg-primary-500/30 text-primary-300 font-medium'
+                    : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Sort + sector dropdowns */}
+          <div className="flex gap-2 flex-wrap">
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value)}
+              className="text-xs bg-dark-700 text-dark-300 border border-dark-600 rounded-lg px-2.5 py-2 focus:outline-none focus:border-primary-500/40"
+              aria-label="Sort by"
+            >
+              {SORT_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>Sort: {o.label}</option>
+              ))}
+            </select>
+            {sectors.length > 1 && (
+              <select
+                value={sector}
+                onChange={e => setSector(e.target.value)}
+                className="text-xs bg-dark-700 text-dark-300 border border-dark-600 rounded-lg px-2.5 py-2 focus:outline-none focus:border-primary-500/40"
+                aria-label="Filter by sector"
+              >
+                <option value="">All Sectors</option>
+                {sectors.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+            {hasFilters && (
+              <button
+                onClick={() => { setBaseType('all'); setSector('') }}
+                className="text-xs px-3 py-2 rounded-lg text-dark-400 hover:text-dark-200 transition-colors"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <Card variant="glass" className="mb-4">
         {error ? (
@@ -126,9 +238,16 @@ export default function Breakouts() {
               Check back after market activity.
             </div>
           </div>
+        ) : displayStocks.length === 0 ? (
+          <div className="text-center py-8">
+            <div className="font-semibold text-dark-100 mb-2">No matches for this filter</div>
+            <div className="text-dark-400 text-sm">
+              Try a different base type or sector — {stocks.length} breakout{stocks.length !== 1 ? 's' : ''} available with other filters.
+            </div>
+          </div>
         ) : (
           <div>
-            {stocks.map(stock => (
+            {displayStocks.map(stock => (
               <BreakoutRow key={stock.ticker} stock={stock} />
             ))}
           </div>
