@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import Card, { CardHeader } from '../components/Card'
 import PageHeader from '../components/PageHeader'
@@ -83,13 +84,31 @@ export default function CorrelationMatrix() {
     return (
       <div className="p-4 md:p-6 max-w-5xl mx-auto">
         <PageHeader title="Correlation Matrix" subtitle="Portfolio position correlations" />
-        <Card variant="glass" className="text-center py-8">
-          <div className="text-dark-400 text-sm">
-            Need at least 2 positions to calculate correlations.
+        <Card variant="glass" className="py-10 px-4 text-center">
+          <div className="w-12 h-12 rounded-full bg-dark-700 flex items-center justify-center mx-auto mb-3 text-primary-400">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="9" cy="9" r="4" />
+              <circle cx="17" cy="15" r="4" />
+            </svg>
           </div>
-          <div className="text-dark-500 text-xs mt-1">
-            Currently holding {positions_count || 0} position{positions_count !== 1 ? 's' : ''}.
+          <div className="text-dark-100 font-semibold text-base mb-2">
+            Diversification check unavailable
           </div>
+          <p className="text-dark-400 text-sm max-w-md mx-auto mb-2">
+            The correlation matrix shows how closely your positions move together — high correlations (above 0.7) signal concentration risk that simple sector counts can miss.
+          </p>
+          <p className="text-dark-500 text-xs mb-4">
+            Currently holding {positions_count || 0} position{positions_count !== 1 ? 's' : ''}. Need at least 2 to compute correlations.
+          </p>
+          <Link
+            to="/ai-portfolio"
+            className="inline-flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-full bg-primary-500/20 text-primary-300 hover:bg-primary-500/30 transition-colors"
+          >
+            Open AI Portfolio
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </Link>
         </Card>
       </div>
     )
