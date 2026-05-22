@@ -381,6 +381,53 @@ class TestListing:
         ids2 = {i["id"] for i in page2["items"]}
         assert ids1.isdisjoint(ids2)
 
+    def test_kind_filter_restricts_results(self):
+        # Mixed kinds, filter narrows to one
+        db = SessionLocal()
+        try:
+            db.add(Notification(user_id=USER_A_ID, kind="trade", title="T1", body=""))
+            db.add(Notification(user_id=USER_A_ID, kind="trade", title="T2", body=""))
+            db.add(Notification(user_id=USER_A_ID, kind="stop_loss", title="S1", body=""))
+            db.add(Notification(user_id=USER_A_ID, kind="breakout", title="B1", body=""))
+            db.commit()
+        finally:
+            db.close()
+        only_trades = client.get("/api/notifications?kind=trade").json()
+        assert only_trades["total"] == 2
+        assert {i["title"] for i in only_trades["items"]} == {"T1", "T2"}
+        only_stops = client.get("/api/notifications?kind=stop_loss").json()
+        assert only_stops["total"] == 1
+        assert only_stops["items"][0]["title"] == "S1"
+        # unread_count is overall, NOT scoped to the kind filter (drives bell badge)
+        assert only_stops["unread_count"] == 4
+
+    def test_kind_filter_with_unread_only(self):
+        db = SessionLocal()
+        try:
+            t1 = Notification(user_id=USER_A_ID, kind="trade", title="T1", body="")
+            t2 = Notification(user_id=USER_A_ID, kind="trade", title="T2", body="")
+            db.add(t1); db.add(t2)
+            db.commit()
+            t1_id = t1.id
+        finally:
+            db.close()
+        client.post(f"/api/notifications/{t1_id}/read")
+        # Both filters compose
+        r = client.get("/api/notifications?kind=trade&unread_only=true").json()
+        assert r["total"] == 1
+        assert r["items"][0]["title"] == "T2"
+
+    def test_kind_filter_with_unknown_kind_returns_empty(self):
+        db = SessionLocal()
+        try:
+            db.add(Notification(user_id=USER_A_ID, kind="trade", title="T", body=""))
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/notifications?kind=nonexistent_kind").json()
+        assert r["total"] == 0
+        assert r["items"] == []
+
 
 # ── Mutation: read / read-all / delete ───────────────────────────────
 

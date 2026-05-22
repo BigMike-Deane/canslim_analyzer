@@ -36,6 +36,7 @@ export default function Notifications() {
   const [total, setTotal] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const [unreadOnly, setUnreadOnly] = useState(false)
+  const [kindFilter, setKindFilter] = useState('')
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
@@ -45,7 +46,10 @@ export default function Notifications() {
     setLoading(true)
     try {
       const data = await api.getNotifications({
-        unread_only: unreadOnly, limit: PAGE_SIZE, offset,
+        unread_only: unreadOnly,
+        kind: kindFilter || undefined,
+        limit: PAGE_SIZE,
+        offset,
       })
       setItems(data.items || [])
       setTotal(data.total || 0)
@@ -53,12 +57,12 @@ export default function Notifications() {
     } finally {
       setLoading(false)
     }
-  }, [unreadOnly, offset])
+  }, [unreadOnly, kindFilter, offset])
 
   useEffect(() => { load() }, [load])
 
-  // Reset to page 1 when filter toggles
-  useEffect(() => { setOffset(0) }, [unreadOnly])
+  // Reset to page 1 when either filter toggles
+  useEffect(() => { setOffset(0) }, [unreadOnly, kindFilter])
 
   async function handleMarkRead(n) {
     if (n.read_at) return
@@ -118,7 +122,18 @@ export default function Notifications() {
               : `${total} total`}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
+          <select
+            value={kindFilter}
+            onChange={e => setKindFilter(e.target.value)}
+            className="text-[11px] bg-dark-800 text-dark-300 border border-dark-700 rounded-md px-2.5 py-1.5 focus:outline-none focus:border-primary-500/40"
+            aria-label="Filter by kind"
+          >
+            <option value="">All types</option>
+            {Object.entries(KIND_META).map(([k, m]) => (
+              <option key={k} value={k}>{m.label}</option>
+            ))}
+          </select>
           <button
             onClick={() => setUnreadOnly(v => !v)}
             className={`text-[11px] px-3 py-1.5 rounded-md border transition-colors ${
@@ -146,7 +161,9 @@ export default function Notifications() {
         )}
         {!loading && items.length === 0 && (
           <div className="px-4 py-12 text-center text-xs text-dark-500">
-            {unreadOnly ? 'Nothing unread.' : 'No notifications yet.'}
+            {kindFilter
+              ? `No ${(KIND_META[kindFilter]?.label || kindFilter).toLowerCase()} notifications${unreadOnly ? ' unread' : ''}.`
+              : unreadOnly ? 'Nothing unread.' : 'No notifications yet.'}
           </div>
         )}
         {!loading && items.map(n => (

@@ -175,6 +175,7 @@ export const api = {
   getNotifications: (params = {}) => {
     const sp = new URLSearchParams()
     if (params.unread_only) sp.set('unread_only', 'true')
+    if (params.kind) sp.set('kind', params.kind)
     if (params.limit) sp.set('limit', params.limit)
     if (params.offset != null) sp.set('offset', params.offset)
     const q = sp.toString()

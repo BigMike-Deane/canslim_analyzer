@@ -42,6 +42,7 @@ class NotificationList(BaseModel):
 @router.get("", response_model=NotificationList)
 async def list_notifications(
     unread_only: bool = Query(False),
+    kind: Optional[str] = Query(None, max_length=64),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user=Depends(get_current_active_user),
@@ -50,13 +51,16 @@ async def list_notifications(
     """List the current user's notifications, newest first.
 
     With unread_only=true, returns only items where read_at IS NULL. Otherwise
-    returns all (read or unread). `total` is the count under the same filter;
-    `unread_count` is always the user's overall unread count (drives the
-    header bell badge regardless of which view is open).
+    returns all (read or unread). With kind=<kind>, filters to that single
+    notification kind (e.g. "trade", "stop_loss"). `total` is the count under
+    the same filters; `unread_count` is always the user's overall unread count
+    (drives the header bell badge regardless of which view is open).
     """
     base = db.query(Notification).filter(Notification.user_id == current_user.id)
     if unread_only:
         base = base.filter(Notification.read_at.is_(None))
+    if kind:
+        base = base.filter(Notification.kind == kind)
 
     total = base.with_entities(func.count(Notification.id)).scalar() or 0
 
