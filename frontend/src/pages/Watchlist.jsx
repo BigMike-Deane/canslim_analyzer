@@ -1,12 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatDate } from '../api'
 import { saveStockListContext } from '../stockListContext'
-import Card from '../components/Card'
+import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
+
+function hasActiveAlert(item) {
+  const meetsTarget = item.target_price && item.current_price != null
+    && item.current_price >= item.target_price
+  const meetsScore = item.alert_score && item.canslim_score != null
+    && item.canslim_score >= item.alert_score
+  return meetsTarget || meetsScore
+}
 
 function WatchlistItem({ item, onRemove }) {
   // Stock data is now bundled in the /api/watchlist response — no per-row fetch.
@@ -184,13 +192,27 @@ export default function Watchlist() {
     fetchWatchlist()
   }, [])
 
-  // Surface the watchlist order to StockDetail so its prev/next nav
-  // walks through the same ordered list the user is browsing.
+  // Split into active-alerts (target/score hit) and the rest. useMemo so the
+  // partition is stable across renders — alertItems referenced by the prev/next
+  // saveStockListContext effect below.
+  const { alertItems, restItems } = useMemo(() => {
+    const alertItems = []
+    const restItems = []
+    for (const item of items) {
+      if (hasActiveAlert(item)) alertItems.push(item)
+      else restItems.push(item)
+    }
+    return { alertItems, restItems }
+  }, [items])
+
+  // Surface the same alert-first order to StockDetail so its prev/next nav
+  // walks the list the way the user sees it.
   useEffect(() => {
     if (items.length > 0) {
-      saveStockListContext('Watchlist', items.map(i => i.ticker))
+      const ordered = [...alertItems, ...restItems].map(i => i.ticker)
+      saveStockListContext('Watchlist', ordered)
     }
-  }, [items])
+  }, [alertItems, restItems, items.length])
 
   const handleAdd = async (item) => {
     try {
@@ -262,15 +284,38 @@ export default function Watchlist() {
           </button>
         </Card>
       ) : (
-        <Card variant="glass" padding="">
-          {items.map(item => (
-            <WatchlistItem
-              key={item.id}
-              item={item}
-              onRemove={handleRemove}
-            />
-          ))}
-        </Card>
+        <>
+          {alertItems.length > 0 && (
+            <>
+              <SectionLabel>
+                <span className="text-amber-400">
+                  Active Alerts &middot; {alertItems.length}
+                </span>
+              </SectionLabel>
+              <Card variant="glass" padding="" className="mb-4 !border-amber-500/20 bg-amber-500/[0.03]">
+                {alertItems.map(item => (
+                  <WatchlistItem
+                    key={`alert-${item.id}`}
+                    item={item}
+                    onRemove={handleRemove}
+                  />
+                ))}
+              </Card>
+              {restItems.length > 0 && <SectionLabel>Watching &middot; {restItems.length}</SectionLabel>}
+            </>
+          )}
+          {restItems.length > 0 && (
+            <Card variant="glass" padding="">
+              {restItems.map(item => (
+                <WatchlistItem
+                  key={item.id}
+                  item={item}
+                  onRemove={handleRemove}
+                />
+              ))}
+            </Card>
+          )}
+        </>
       )}
 
       <Modal
