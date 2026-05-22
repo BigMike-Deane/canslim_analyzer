@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react'
-import { api } from '../api'
+import { useState, useEffect, useRef } from 'react'
+import { api, formatRelativeTime } from '../api'
 import Card, { CardHeader } from '../components/Card'
+
+const AUTO_REFRESH_MS = 30_000
 
 function StatusBadge({ status }) {
   const color = status === 'healthy' ? 'bg-green-500/20 text-green-400'
@@ -49,8 +51,27 @@ export default function SystemHealth() {
   const [loading, setLoading] = useState(true)
   const [backingUp, setBackingUp] = useState(false)
   const [error, setError] = useState('')
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [lastRefreshed, setLastRefreshed] = useState(null)
+  // Tick once a second so the "Updated X ago" chip stays current without
+  // refetching — re-renders are cheap, network calls aren't.
+  const [, setTick] = useState(0)
+  const intervalRef = useRef(null)
 
   useEffect(() => { load() }, [])
+
+  // Auto-refresh data on AUTO_REFRESH_MS cadence while enabled.
+  useEffect(() => {
+    if (!autoRefresh) return
+    intervalRef.current = setInterval(() => { load() }, AUTO_REFRESH_MS)
+    return () => clearInterval(intervalRef.current)
+  }, [autoRefresh])
+
+  // Tick the relative-time clock once a second (separate from the data refetch).
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [])
 
   async function load() {
     try {
@@ -60,6 +81,7 @@ export default function SystemHealth() {
       ])
       setData(health)
       setBackups(backupList.backups || [])
+      setLastRefreshed(new Date().toISOString())
     } catch (e) {
       setError(e.message)
     } finally {
@@ -93,14 +115,35 @@ export default function SystemHealth() {
 
   return (
     <div className="p-4 md:p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-dark-100">System Health</h1>
-        <button
-          onClick={load}
-          className="text-xs text-dark-400 hover:text-dark-200 px-3 py-1 rounded border border-dark-700 hover:border-dark-600"
-        >
-          Refresh
-        </button>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h1 className="text-xl font-bold text-dark-100">System Health</h1>
+          {lastRefreshed && (
+            <p className="text-[11px] text-dark-500 mt-0.5">
+              Updated {formatRelativeTime(lastRefreshed)}
+              {autoRefresh && <span className="text-dark-600"> · auto every 30s</span>}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh(v => !v)}
+            className={`text-xs px-3 py-1 rounded border transition-colors ${
+              autoRefresh
+                ? 'bg-primary-500/10 text-primary-400 border-primary-500/30'
+                : 'text-dark-400 border-dark-700 hover:border-dark-600'
+            }`}
+            title={autoRefresh ? 'Pause auto-refresh' : 'Resume auto-refresh'}
+          >
+            {autoRefresh ? 'Auto' : 'Paused'}
+          </button>
+          <button
+            onClick={load}
+            className="text-xs text-dark-400 hover:text-dark-200 px-3 py-1 rounded border border-dark-700 hover:border-dark-600"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Status Overview */}
