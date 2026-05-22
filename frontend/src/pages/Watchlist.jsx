@@ -92,79 +92,142 @@ function WatchlistItem({ item, onRemove }) {
   )
 }
 
-function AddWatchlistForm({ onClose, onAdd }) {
+function AddWatchlistForm({ onClose, onAdd, onBulkAdd }) {
+  const [mode, setMode] = useState('single')   // 'single' | 'bulk'
   const [ticker, setTicker] = useState('')
+  const [bulkText, setBulkText] = useState('')
   const [targetPrice, setTargetPrice] = useState('')
   const [alertScore, setAlertScore] = useState('')
   const [notes, setNotes] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!ticker) return
+    if (submitting) return
 
-    onAdd({
-      ticker: ticker.toUpperCase(),
-      target_price: targetPrice ? parseFloat(targetPrice) : null,
-      alert_score: alertScore ? parseFloat(alertScore) : null,
-      notes: notes || null
-    })
-    onClose()
+    if (mode === 'bulk') {
+      if (!bulkText.trim()) return
+      setSubmitting(true)
+      try {
+        await onBulkAdd(bulkText)
+        onClose()
+      } finally {
+        setSubmitting(false)
+      }
+      return
+    }
+
+    if (!ticker) return
+    setSubmitting(true)
+    try {
+      await onAdd({
+        ticker: ticker.toUpperCase(),
+        target_price: targetPrice ? parseFloat(targetPrice) : null,
+        alert_score: alertScore ? parseFloat(alertScore) : null,
+        notes: notes || null,
+      })
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Ticker Symbol</label>
-        <input
-          type="text"
-          value={ticker}
-          onChange={(e) => setTicker(e.target.value.toUpperCase())}
-          placeholder="AAPL"
-          className="w-full mt-1"
-          required
-        />
+      {/* Mode tabs */}
+      <div className="flex gap-1 border-b border-dark-700/40">
+        {[
+          { id: 'single', label: 'Single' },
+          { id: 'bulk', label: 'Bulk paste' },
+        ].map(t => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setMode(t.id)}
+            className={`text-xs font-medium px-3 py-1.5 border-b-2 transition-colors ${
+              mode === t.id
+                ? 'text-primary-400 border-primary-500'
+                : 'text-dark-400 border-transparent hover:text-dark-200'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+      {mode === 'single' ? (
+        <>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Ticker Symbol</label>
+            <input
+              type="text"
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.toUpperCase())}
+              placeholder="AAPL"
+              className="w-full mt-1"
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Target Price</label>
+              <input
+                type="number"
+                step="0.01"
+                value={targetPrice}
+                onChange={(e) => setTargetPrice(e.target.value)}
+                placeholder="200.00"
+                className="w-full mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Score Alert</label>
+              <input
+                type="number"
+                step="1"
+                min="0"
+                max="100"
+                value={alertScore}
+                onChange={(e) => setAlertScore(e.target.value)}
+                placeholder="80"
+                className="w-full mt-1"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Notes</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Watching for breakout, earnings soon, etc."
+              className="w-full mt-1"
+            />
+          </div>
+        </>
+      ) : (
         <div>
-          <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Target Price</label>
-          <input
-            type="number"
-            step="0.01"
-            value={targetPrice}
-            onChange={(e) => setTargetPrice(e.target.value)}
-            placeholder="200.00"
-            className="w-full mt-1"
+          <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Paste tickers</label>
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder="AAPL, MSFT, NVDA&#10;TSLA GOOGL&#10;META AMZN"
+            className="w-full mt-1 h-32 font-data text-sm"
+            required
           />
+          <p className="text-[11px] text-dark-500 mt-1">
+            Separate by commas, spaces, or newlines. Existing tickers are skipped.
+            Target price, score alert, and notes can be added per-ticker later.
+          </p>
         </div>
-        <div>
-          <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Score Alert</label>
-          <input
-            type="number"
-            step="1"
-            min="0"
-            max="100"
-            value={alertScore}
-            onChange={(e) => setAlertScore(e.target.value)}
-            placeholder="80"
-            className="w-full mt-1"
-          />
-        </div>
-      </div>
+      )}
 
-      <div>
-        <label className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">Notes</label>
-        <input
-          type="text"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Watching for breakout, earnings soon, etc."
-          className="w-full mt-1"
-        />
-      </div>
-
-      <button type="submit" className="w-full btn-primary">
-        Add to Watchlist
+      <button type="submit" disabled={submitting} className="w-full btn-primary disabled:opacity-50">
+        {submitting
+          ? 'Adding...'
+          : mode === 'bulk' ? 'Bulk Import' : 'Add to Watchlist'}
       </button>
     </form>
   )
@@ -222,6 +285,26 @@ export default function Watchlist() {
     } catch (err) {
       console.error('Failed to add to watchlist:', err)
       toast.error(err.message || 'Failed to add to watchlist')
+    }
+  }
+
+  const handleBulkAdd = async (tickersText) => {
+    try {
+      const result = await api.bulkAddToWatchlist(tickersText)
+      const parts = []
+      if (result.added?.length) parts.push(`${result.added.length} added`)
+      if (result.skipped?.length) parts.push(`${result.skipped.length} already there`)
+      if (result.invalid?.length) parts.push(`${result.invalid.length} invalid`)
+      const summary = parts.length ? parts.join(' · ') : 'No tickers processed'
+      if (result.added?.length) {
+        toast.success(`Watchlist import: ${summary}`)
+      } else {
+        toast.info(`Watchlist import: ${summary}`)
+      }
+      fetchWatchlist()
+    } catch (err) {
+      console.error('Failed to bulk import:', err)
+      toast.error(err.message || 'Bulk import failed')
     }
   }
 
@@ -326,6 +409,7 @@ export default function Watchlist() {
         <AddWatchlistForm
           onClose={() => setShowAddModal(false)}
           onAdd={handleAdd}
+          onBulkAdd={handleBulkAdd}
         />
       </Modal>
 

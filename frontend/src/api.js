@@ -309,6 +309,15 @@ export const api = {
     return result
   },
 
+  bulkAddToWatchlist: async (tickers) => {
+    const result = await request('/api/watchlist/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ tickers })
+    })
+    cache.invalidate('/api/watchlist')
+    return result
+  },
+
   removeFromWatchlist: async (id) => {
     const result = await request(`/api/watchlist/${id}`, { method: 'DELETE' })
     cache.invalidate('/api/watchlist')
