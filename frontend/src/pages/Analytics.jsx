@@ -1,11 +1,42 @@
 import { useState, useEffect } from 'react'
-import { api, formatCurrency, formatPercent } from '../api'
+import { api, formatCurrency, formatPercent, formatRelativeTime } from '../api'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, AreaChart, Area, ReferenceLine } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import { tooltipStyle as TOOLTIP_STYLE } from '../components/chartTheme'
+
+const CSV_COLUMNS = [
+  'executed_at', 'ticker', 'action', 'sector', 'shares', 'price',
+  'total_value', 'cost_basis', 'realized_gain', 'holding_days',
+  'canslim_score', 'entry_type', 'sell_reason', 'reason',
+]
+
+function csvEscape(v) {
+  if (v === null || v === undefined) return ''
+  const s = String(v)
+  // RFC 4180: wrap in quotes when value contains comma, quote, or newline;
+  // embedded quotes are escaped by doubling.
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
+}
+
+function downloadTradesCsv(trades) {
+  const header = CSV_COLUMNS.join(',')
+  const lines = trades.map(t => CSV_COLUMNS.map(c => csvEscape(t[c])).join(','))
+  const csv = [header, ...lines].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const stamp = new Date().toISOString().slice(0, 10)
+  a.href = url
+  a.download = `trade-analytics-${stamp}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 const SELL_REASON_COLORS = {
   'STOP LOSS': '#ef4444',
@@ -402,12 +433,26 @@ export default function Analytics() {
   const {
     summary, by_sector, monthly_pnl, by_entry_type, by_sell_reason,
     by_hold_duration, cumulative_pnl, best_trades, worst_trades,
-    realized_vs_unrealized,
+    realized_vs_unrealized, as_of, trades,
   } = analytics
+
+  const exportable = Array.isArray(trades) && trades.length > 0
 
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <PageHeader title="Trade Analytics" />
+      <PageHeader
+        title="Trade Analytics"
+        subtitle={as_of ? `Updated ${formatRelativeTime(as_of)}` : undefined}
+        actions={exportable ? (
+          <button
+            onClick={() => downloadTradesCsv(trades)}
+            className="text-xs text-dark-300 hover:text-dark-100 px-3 py-1 rounded border border-dark-700 hover:border-dark-600 transition-colors"
+            title={`Export ${trades.length} trades as CSV`}
+          >
+            Export CSV
+          </button>
+        ) : null}
+      />
 
       {/* Summary Stats */}
       <SectionLabel>Overview</SectionLabel>

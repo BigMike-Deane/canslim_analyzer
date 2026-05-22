@@ -1417,8 +1417,13 @@ class TestAnalyticsTrades:
         d = r.json()
         for key in ("summary", "by_sector", "monthly_pnl", "by_entry_type",
                     "by_sell_reason", "by_hold_duration", "cumulative_pnl",
-                    "best_trades", "worst_trades", "realized_vs_unrealized"):
+                    "best_trades", "worst_trades", "realized_vs_unrealized",
+                    "as_of", "trades"):
             assert key in d
+        # Empty-state contract: as_of None, trades []. Frontend uses these
+        # to decide whether to render the freshness chip / CSV button.
+        assert d["as_of"] is None
+        assert d["trades"] == []
 
     def test_with_trades_returns_aggregates(self):
         """Both wins and losses → profit_factor is a finite ratio."""
@@ -1484,6 +1489,46 @@ class TestAnalyticsTrades:
         assert r.status_code == 200, r.text
         d = r.json()
         assert d["summary"]["profit_factor"] is None
+
+    def test_response_pins_as_of_and_trades_export_shape(self):
+        """as_of mirrors the latest executed_at; trades export carries the
+        flat columns the frontend builds CSV from."""
+        db = _db()
+        try:
+            for i, (tk, action, gain) in enumerate([
+                ("AAPL", "BUY", None),
+                ("AAPL", "SELL", 50.0),
+                ("TSLA", "BUY", None),
+            ]):
+                db.add(AIPortfolioTrade(
+                    user_id=1, ticker=tk, action=action,
+                    shares=10.0, price=100.0 + i * 5,
+                    total_value=1000.0,
+                    reason="entry-signal",
+                    canslim_score=80.0,
+                    cost_basis=100.0 if action == "SELL" else None,
+                    realized_gain=gain,
+                    signal_factors={"entry_type": "pre-breakout",
+                                     "sell_reason": "trailing-stop"},
+                    executed_at=datetime.now(timezone.utc) - timedelta(days=10 - i),
+                ))
+            db.commit()
+        finally:
+            db.close()
+        r = client.get("/api/analytics/trades?days=90")
+        assert r.status_code == 200, r.text
+        d = r.json()
+        # as_of is an ISO timestamp string (frontend feeds it to formatRelativeTime).
+        assert isinstance(d["as_of"], str) and d["as_of"].endswith("Z")
+        # trades carries one row per AIPortfolioTrade in the window.
+        assert len(d["trades"]) == 3
+        cols = {"executed_at", "ticker", "action", "sector", "shares", "price",
+                "total_value", "cost_basis", "realized_gain", "holding_days",
+                "canslim_score", "entry_type", "sell_reason", "reason"}
+        assert cols.issubset(d["trades"][0].keys())
+        # Sorted newest-first.
+        ts = [row["executed_at"] for row in d["trades"]]
+        assert ts == sorted(ts, reverse=True)
 
 
 class TestMarketBreadth:

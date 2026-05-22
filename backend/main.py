@@ -4842,7 +4842,8 @@ async def get_trade_analytics(
     if not trades:
         return {"summary": {}, "by_sector": [], "monthly_pnl": [], "by_entry_type": [],
                 "by_sell_reason": [], "by_hold_duration": [], "cumulative_pnl": [],
-                "best_trades": [], "worst_trades": [], "realized_vs_unrealized": {}}
+                "best_trades": [], "worst_trades": [], "realized_vs_unrealized": {},
+                "as_of": None, "trades": []}
 
     sells = [t for t in trades if t.action == "SELL"]
     buys = [t for t in trades if t.action == "BUY"]
@@ -5040,6 +5041,33 @@ async def get_trade_analytics(
         "positions": sorted(unrealized_positions, key=lambda x: x["pnl"], reverse=True),
     }
 
+    # Flat trade rows for CSV export — kept distinct from the aggregated
+    # views above so the client can download exactly what was analyzed.
+    # Stays scoped to the requested `days` window via the same `trades` list.
+    export_rows = []
+    for t in sorted(trades, key=lambda x: x.executed_at or datetime.min, reverse=True):
+        factors = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+        stock = stocks_by_ticker.get(t.ticker)
+        export_rows.append({
+            "executed_at": t.executed_at.isoformat() + 'Z' if t.executed_at else None,
+            "ticker": t.ticker,
+            "action": t.action,
+            "sector": (stock.sector if stock and stock.sector else "Unknown"),
+            "shares": t.shares,
+            "price": t.price,
+            "total_value": t.total_value,
+            "cost_basis": t.cost_basis,
+            "realized_gain": t.realized_gain,
+            "holding_days": t.holding_days,
+            "canslim_score": t.canslim_score,
+            "entry_type": factors.get("entry_type") if isinstance(factors, dict) else None,
+            "sell_reason": factors.get("sell_reason") if isinstance(factors, dict) else None,
+            "reason": t.reason,
+        })
+
+    as_of_dt = max((t.executed_at for t in trades if t.executed_at), default=None)
+    as_of = (as_of_dt.isoformat() + 'Z') if as_of_dt else None
+
     return {
         "summary": summary,
         "by_sector": by_sector,
@@ -5051,6 +5079,8 @@ async def get_trade_analytics(
         "best_trades": best_trades,
         "worst_trades": worst_trades,
         "realized_vs_unrealized": realized_vs_unrealized,
+        "as_of": as_of,
+        "trades": export_rows,
     }
 
 
