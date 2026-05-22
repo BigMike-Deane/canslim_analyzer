@@ -60,6 +60,22 @@ class TestBearBaseEndpoint:
     def test_limit(self):
         assert len(client.get("/api/bear-base?limit=5").json()["candidates"]) <= 5
 
+    def test_includes_as_of_key(self):
+        # Freshness signal — key always present; value may be None when
+        # no BearBaseCandidate rows exist (e.g. fresh test DB).
+        assert "as_of" in client.get("/api/bear-base?limit=5").json()
+
+
+class TestInsiderSentimentEndpoint:
+    def test_returns_structure(self):
+        r = client.get("/api/insider-sentiment?sentiment=all")
+        assert r.status_code == 200
+        d = r.json()
+        assert "summary" in d and "stocks" in d and "total" in d
+
+    def test_includes_as_of_key(self):
+        assert "as_of" in client.get("/api/insider-sentiment?sentiment=all").json()
+
 
 class TestIndustryGroupsEndpoint:
     def test_returns_structure(self):

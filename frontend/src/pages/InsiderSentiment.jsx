@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, formatCompactValue, formatMarketCap } from '../api'
+import { api, formatCurrency, formatCompactValue, formatMarketCap, formatRelativeTime } from '../api'
 import Card from '../components/Card'
 import { ScoreBadge, TagBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -138,6 +138,7 @@ export default function InsiderSentiment() {
         title="Insider Sentiment"
         backTo="/"
         backLabel="Command Center"
+        subtitle={data?.as_of ? `Updated ${formatRelativeTime(data.as_of)}` : undefined}
         badge={<TagBadge color="green">SMART MONEY</TagBadge>}
         className="[&_h1]:text-emerald-300"
       />

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency } from '../api'
+import { api, formatCurrency, formatRelativeTime } from '../api'
 import Card from '../components/Card'
 import { ScoreBadge, TagBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -236,7 +236,11 @@ export default function BearBase() {
         title="Bear Base Watchlist"
         backTo="/"
         backLabel="Command Center"
-        subtitle="Stocks building sound bases during market weakness — first to break out on recovery"
+        subtitle={
+          data?.as_of
+            ? `Stocks building sound bases during market weakness — Updated ${formatRelativeTime(data.as_of)}`
+            : 'Stocks building sound bases during market weakness — first to break out on recovery'
+        }
         badge={
           <TagBadge color="red">BASE BUILDING</TagBadge>
         }

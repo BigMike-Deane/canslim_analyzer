@@ -1501,6 +1501,9 @@ async def get_insider_sentiment(
     # Count total for pagination
     total = db.query(func.count(Stock.id)).filter(*base_filter).scalar() or 0
 
+    # Freshness signal: most recent insider data ingest across the universe
+    as_of = db.query(func.max(Stock.insider_updated_at)).scalar()
+
     summary = {
         "total_bullish": summary_q.total_bullish or 0,
         "total_bearish": summary_q.total_bearish or 0,
@@ -1536,6 +1539,7 @@ async def get_insider_sentiment(
         "total": total,
         "limit": limit,
         "offset": offset,
+        "as_of": (as_of.isoformat() + "Z") if as_of else None,
     }
 
 
@@ -4664,6 +4668,7 @@ async def get_bear_base_candidates(
 ):
     """Get stocks building quality bases during bear markets, ranked by readiness."""
     from backend.bear_base import get_bear_base_list
+    from backend.database import BearBaseCandidate
     candidates = get_bear_base_list(db, limit=limit)
 
     # Include market regime context
@@ -4672,12 +4677,16 @@ async def get_bear_base_candidates(
     spy_info = mkt.get('indexes', {}).get('SPY', {}) if mkt else {}
     is_bear = spy_info.get('price', 0) < spy_info.get('ma_50', 0) if spy_info.get('price') and spy_info.get('ma_50') else False
 
+    # Freshness signal: most recent bear-base watchlist refresh
+    as_of = db.query(func.max(BearBaseCandidate.last_updated)).scalar()
+
     return {
         "candidates": candidates,
         "total": len(candidates),
         "is_bear_market": is_bear,
         "spy_price": spy_info.get('price'),
         "spy_ma50": spy_info.get('ma_50'),
+        "as_of": (as_of.isoformat() + "Z") if as_of else None,
     }
 
 
