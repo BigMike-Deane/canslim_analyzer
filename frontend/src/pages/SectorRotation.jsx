@@ -206,8 +206,15 @@ export default function SectorRotation() {
       </div>
 
       {/* Full groups table */}
-      <SectionLabel>All Industry Groups</SectionLabel>
-      <Card variant="glass">
+      <SectionLabel>All Industry Groups · {sortedGroups.length}</SectionLabel>
+      <Card variant="glass" padding="">
+        <div className="text-[10px] text-dark-500 px-3 py-2 border-b border-dark-700/30 flex items-center gap-1.5 sm:hidden">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+            <polyline points="9 18 15 12 9 6" transform="translate(8 0)" />
+          </svg>
+          Swipe to see more columns
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
