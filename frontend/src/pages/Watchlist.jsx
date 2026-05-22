@@ -9,34 +9,10 @@ import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
 
 function WatchlistItem({ item, onRemove }) {
-  const [stock, setStock] = useState(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const fetchStock = async () => {
-      try {
-        const data = await api.getStock(item.ticker)
-        setStock(data)
-      } catch (err) {
-        console.error(`Failed to fetch ${item.ticker}:`, err)
-        setStock({ ticker: item.ticker, error: true })
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchStock()
-  }, [item.ticker])
-
-  if (loading) {
-    return (
-      <div className="border-b border-dark-700/30 last:border-0 py-3 px-4">
-        <div className="skeleton h-16 rounded" />
-      </div>
-    )
-  }
-
-  const meetsTarget = item.target_price && stock?.current_price >= item.target_price
-  const meetsScoreAlert = item.alert_score && stock?.canslim_score >= item.alert_score
+  // Stock data is now bundled in the /api/watchlist response — no per-row fetch.
+  const meetsTarget = item.target_price && item.current_price != null && item.current_price >= item.target_price
+  const meetsScoreAlert = item.alert_score && item.canslim_score != null && item.canslim_score >= item.alert_score
+  const hasData = item.current_price != null || item.canslim_score != null
 
   return (
     <div className="border-b border-dark-700/30 last:border-0 py-3 px-4 hover:bg-dark-800/40 transition-colors">
@@ -50,20 +26,18 @@ function WatchlistItem({ item, onRemove }) {
               </span>
             )}
           </div>
-          {stock && (
+          {item.name && (
             <div className="text-dark-400 text-sm truncate max-w-[160px] sm:max-w-[240px]">
-              {stock.name}
+              {item.name}
             </div>
           )}
         </Link>
 
         <div className="text-right flex flex-col items-end gap-1">
-          {stock?.error ? (
-            <div className="text-red-400 text-xs">Failed to load</div>
-          ) : stock ? (
+          {hasData ? (
             <>
-              <span className="font-semibold font-data text-dark-50">{formatCurrency(stock.current_price)}</span>
-              <ScoreBadge score={stock.canslim_score} size="xs" />
+              <span className="font-semibold font-data text-dark-50">{formatCurrency(item.current_price)}</span>
+              <ScoreBadge score={item.canslim_score} size="xs" />
             </>
           ) : (
             <div className="text-dark-500 text-sm">No data</div>

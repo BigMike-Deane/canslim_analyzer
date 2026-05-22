@@ -686,6 +686,20 @@ class TestWatchlist:
         assert "items" in d
         assert isinstance(d["items"], list)
 
+    def test_watchlist_item_includes_name_and_sector(self):
+        # The frontend used to refetch each row via /api/stocks/{ticker} just
+        # to grab name+sector. The bulk response now carries those fields so
+        # the per-row N+1 can be dropped — pin them here so a future change
+        # doesn't silently reintroduce the regression.
+        _ensure_stock("WLNS", score=82.0)
+        # Add to watchlist
+        client.post("/api/watchlist", json={"ticker": "WLNS"})
+        items = client.get("/api/watchlist").json()["items"]
+        item = next((i for i in items if i["ticker"] == "WLNS"), None)
+        assert item is not None
+        assert "name" in item and item["name"] == "WLNS Inc."
+        assert "sector" in item and item["sector"] == "Technology"
+
 
 class TestStockSearch:
     def test_search_returns_200(self):

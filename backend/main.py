@@ -3731,7 +3731,9 @@ async def get_watchlist(current_user: User = Depends(get_current_active_user), d
             "alert_score": w.alert_score,
             "current_price": stock.current_price if stock else None,
             "canslim_score": stock.canslim_score if stock else None,
-            "projected_growth": stock.projected_growth if stock else None
+            "projected_growth": stock.projected_growth if stock else None,
+            "name": stock.name if stock else None,
+            "sector": stock.sector if stock else None,
         })
 
     return {"items": items}
