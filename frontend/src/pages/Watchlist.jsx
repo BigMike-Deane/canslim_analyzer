@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency, formatDate } from '../api'
+import { api, formatCurrency, formatDate, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
@@ -236,6 +236,7 @@ function AddWatchlistForm({ onClose, onAdd, onBulkAdd }) {
 export default function Watchlist() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState([])
+  const [asOf, setAsOf] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const toast = useToast()
 
@@ -244,6 +245,7 @@ export default function Watchlist() {
       setLoading(true)
       const data = await api.getWatchlist()
       setItems(data.items || [])
+      setAsOf(data.as_of || null)
     } catch (err) {
       console.error('Failed to fetch watchlist:', err)
     } finally {
@@ -335,6 +337,7 @@ export default function Watchlist() {
     <div className="p-4 md:p-6">
       <PageHeader
         title="Watchlist"
+        subtitle={asOf ? `Scores updated ${formatRelativeTime(asOf)}` : undefined}
         backTo="/"
         backLabel="Command Center"
         actions={

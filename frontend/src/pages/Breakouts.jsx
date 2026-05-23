@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCurrency } from '../api'
+import { api, formatCurrency, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge } from '../components/Badge'
@@ -75,6 +75,7 @@ function BreakoutRow({ stock }) {
 export default function Breakouts() {
   const [loading, setLoading] = useState(true)
   const [stocks, setStocks] = useState([])
+  const [asOf, setAsOf] = useState(null)
   const [error, setError] = useState(null)
   const [sortBy, setSortBy] = useState('canslim_score')
   const [baseType, setBaseType] = useState('all')
@@ -86,6 +87,7 @@ export default function Breakouts() {
         setLoading(true)
         const data = await api.getBreakingOutStocks(50) // Get up to 50
         setStocks(data.stocks || [])
+        setAsOf(data.as_of || null)
         setError(null)
       } catch (err) {
         console.error('Failed to fetch breakouts:', err)
@@ -163,7 +165,9 @@ export default function Breakouts() {
     <div className="p-4 md:p-6">
       <PageHeader
         title="Breaking Out"
-        subtitle="Stocks clearing base patterns with strong volume"
+        subtitle={asOf
+          ? `Stocks clearing base patterns with strong volume · Updated ${formatRelativeTime(asOf)}`
+          : 'Stocks clearing base patterns with strong volume'}
         badge={
           <span className="text-xs font-data text-dark-400">{countLabel} stocks</span>
         }

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams, useLocation, Link } from 'react-router-dom'
-import { api, formatCurrency, APIError } from '../api'
+import { api, formatCurrency, formatRelativeTime, APIError } from '../api'
 import { useAuth } from '../auth'
 import { Line, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, Area, AreaChart, ReferenceLine, ComposedChart } from 'recharts'
 import Card, { CardHeader } from '../components/Card'
@@ -872,11 +872,23 @@ export default function Backtest() {
     }
   }
 
+  // Derive freshness from the most recent completed backtest so users can see
+  // at a glance whether the queue is making progress (or stalled).
+  const lastCompletedAt = useMemo(() => {
+    const completed = backtests
+      .map(b => b.completed_at)
+      .filter(Boolean)
+      .sort()
+    return completed.length ? completed[completed.length - 1] : null
+  }, [backtests])
+
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
       <PageHeader
         title="CANSLIM Backtesting"
-        subtitle="Test the AI trading strategy against historical data to see how it would have performed."
+        subtitle={lastCompletedAt
+          ? `Test the AI trading strategy against historical data · Last completed ${formatRelativeTime(lastCompletedAt)}`
+          : "Test the AI trading strategy against historical data to see how it would have performed."}
       />
 
       <Card variant="glass" className="mb-4" padding="p-3">

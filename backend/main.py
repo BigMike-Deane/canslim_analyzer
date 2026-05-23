@@ -1396,6 +1396,8 @@ async def get_breaking_out_stocks(
     # If there aren't many breakouts, that's accurate (don't pad with extended stocks)
     stocks = filter_duplicate_stocks(breakout_stocks, limit)
 
+    as_of = db.query(func.max(Stock.last_updated)).filter(Stock.is_breaking_out == True).scalar()
+
     return {
         "stocks": [{
             "ticker": s.ticker,
@@ -1412,7 +1414,8 @@ async def get_breaking_out_stocks(
             "projected_growth": s.projected_growth,
             "is_breaking_out": s.is_breaking_out or False
         } for s in stocks],
-        "total": len(stocks)
+        "total": len(stocks),
+        "as_of": (as_of.isoformat() + "Z") if as_of else None,
     }
 
 
@@ -3736,7 +3739,12 @@ async def get_watchlist(current_user: User = Depends(get_current_active_user), d
             "sector": stock.sector if stock else None,
         })
 
-    return {"items": items}
+    last_updates = [s.last_updated for s in stocks_by_ticker.values() if s.last_updated]
+    as_of_dt = max(last_updates) if last_updates else None
+    return {
+        "items": items,
+        "as_of": (as_of_dt.isoformat() + "Z") if as_of_dt else None,
+    }
 
 
 @app.post("/api/watchlist")
@@ -4561,10 +4569,13 @@ async def get_industry_groups(
         key=lambda g: g['rank'], reverse=True
     )
 
+    as_of = db.query(func.max(Stock.last_updated)).filter(Stock.industry.isnot(None)).scalar()
+
     return {
         "groups": groups,
         "total": len(groups),
         "rotation": rotation,
+        "as_of": (as_of.isoformat() + "Z") if as_of else None,
     }
 
 

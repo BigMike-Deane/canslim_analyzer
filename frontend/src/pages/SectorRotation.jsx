@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api } from '../api'
+import { api, formatRelativeTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import PageHeader from '../components/PageHeader'
 
@@ -145,7 +145,9 @@ export default function SectorRotation() {
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
       <PageHeader
         title="Sector Rotation"
-        subtitle={`${total} industry groups tracked`}
+        subtitle={data.as_of
+          ? `${total} industry groups tracked · Updated ${formatRelativeTime(data.as_of)}`
+          : `${total} industry groups tracked`}
       />
 
       {/* Summary stat */}

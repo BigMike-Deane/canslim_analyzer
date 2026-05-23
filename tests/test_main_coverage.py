@@ -1097,6 +1097,13 @@ class TestTopGrowthAndBreakingOut:
         for s in d["stocks"]:
             assert s["is_breaking_out"] is True
 
+    def test_breaking_out_response_includes_as_of(self):
+        # Freshness chip contract: as_of is None or an ISO string with Z suffix.
+        r = client.get("/api/stocks/breaking-out?limit=10")
+        d = r.json()
+        assert "as_of" in d
+        assert d["as_of"] is None or (isinstance(d["as_of"], str) and d["as_of"].endswith("Z"))
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 1: Watchlist CRUD
@@ -1575,8 +1582,9 @@ class TestIndustryGroups:
             r = client.get("/api/industry-groups")
         assert r.status_code == 200
         d = r.json()
-        for key in ("groups", "total", "rotation"):
+        for key in ("groups", "total", "rotation", "as_of"):
             assert key in d
+        assert d["as_of"] is None or (isinstance(d["as_of"], str) and d["as_of"].endswith("Z"))
 
 
 class TestBearBaseAndEarningsGapups:

@@ -685,6 +685,9 @@ class TestWatchlist:
         d = client.get("/api/watchlist").json()
         assert "items" in d
         assert isinstance(d["items"], list)
+        # Freshness chip contract: as_of is None or an ISO string with Z suffix.
+        assert "as_of" in d
+        assert d["as_of"] is None or (isinstance(d["as_of"], str) and d["as_of"].endswith("Z"))
 
     def test_watchlist_item_includes_name_and_sector(self):
         # The frontend used to refetch each row via /api/stocks/{ticker} just
