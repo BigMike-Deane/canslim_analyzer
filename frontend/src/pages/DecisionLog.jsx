@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatDateTime } from '../api'
 import Card from '../components/Card'
 import PageHeader from '../components/PageHeader'
 import { ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
+import { useToast } from '../components/Toast'
 
 // Derive a coarse kind from the free-text reason. Mirrors the prefixes
 // ai_trader.py writes (STOP LOSS, TRAILING STOP, PARTIAL TRAILING STOP,
@@ -144,14 +145,26 @@ export default function DecisionLog() {
   const [trades, setTrades] = useState(null)
   const [activeKinds, setActiveKinds] = useState(new Set())  // empty = all
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const toast = useToast()
 
-  useEffect(() => {
+  const loadTrades = useCallback(() => {
     setLoading(true)
+    setError(null)
     api.getAIPortfolioTrades(200)
       .then(t => setTrades(Array.isArray(t) ? t : []))
-      .catch(() => setTrades([]))
+      .catch(err => {
+        console.error('Failed to fetch trades:', err)
+        const msg = err?.message || 'Failed to load trades'
+        setError(msg)
+        toast.error(msg)
+      })
       .finally(() => setLoading(false))
-  }, [])
+  }, [toast])
+
+  useEffect(() => {
+    loadTrades()
+  }, [loadTrades])
 
   const filtered = useMemo(() => {
     if (!trades) return []
@@ -224,7 +237,19 @@ export default function DecisionLog() {
         <Card variant="glass" className="text-center py-10 text-dark-400">Loading…</Card>
       )}
 
-      {!loading && grouped.length === 0 && (
+      {!loading && error && (
+        <Card variant="glass" className="text-center py-8">
+          <div className="text-red-400 text-sm mb-3">{error}</div>
+          <button
+            onClick={loadTrades}
+            className="text-xs font-data px-3 py-1.5 rounded border border-dark-700 text-dark-300 hover:border-dark-600 hover:text-dark-100"
+          >
+            Retry
+          </button>
+        </Card>
+      )}
+
+      {!loading && !error && grouped.length === 0 && (
         <Card variant="glass" className="text-center py-10 text-dark-400">
           {trades && trades.length > 0
             ? 'No trades match the active filter.'
