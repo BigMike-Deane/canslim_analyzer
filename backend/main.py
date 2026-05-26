@@ -49,20 +49,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class _YFinanceDelistedFilter(logging.Filter):
-    """Drop yfinance ERROR records that just restate that a ticker is delisted.
+class _YFinanceNoiseFilter(logging.Filter):
+    """Drop yfinance ERROR records that are unactionable batch-scan noise.
 
-    Why: we already track delisted symbols in the `DelistedTicker` table via
-    `data_fetcher.mark_ticker_as_delisted` and exclude them on subsequent
-    scans. The same tickers still surface inside batch fetches, where
-    yfinance logs them at ERROR level. Those lines drown out genuine signal
-    (rate-limits, network failures) without being actionable themselves.
+    Two distinct sources, both pure noise during full-universe scans:
+
+    1. Delisted/acquired tickers. We already track these in the
+       `DelistedTicker` table via `data_fetcher.mark_ticker_as_delisted` and
+       exclude them on subsequent scans. Until then they surface inside batch
+       fetches, where yfinance logs them at ERROR level. The `.info`/
+       quoteSummary path emits "No fundamentals data found for symbol: X"
+       (a 404); older download paths emit "possibly delisted" / "Failed
+       download" / "Quote not found".
+
+    2. Yahoo session/auth churn. yfinance rotates its anti-scraping "crumb"
+       token and self-heals on the next call, but logs each miss at ERROR
+       level ("Invalid Crumb" 401, or the feature-access 401). A genuine
+       total-auth outage still surfaces elsewhere — every fetch fails and
+       tickers get marked no-data — so dropping the raw 401 line loses no
+       actionable signal.
+
+    These lines drown out the errors that *are* actionable (rate-limits,
+    network failures like curl errors), which is why we keep those visible.
     """
 
     _NOISE_SUBSTRINGS = (
+        # 1. Delisted / no-data restatements
         "possibly delisted",
         "Failed download",  # covers "Failed download" / "Failed downloads"
         "Quote not found",
+        "No fundamentals data found",  # 404 from .info / quoteSummary endpoint
+        # 2. Yahoo session/auth churn (self-healing crumb rotation)
+        "Invalid Crumb",
+        "unable to access this feature",
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -73,7 +92,7 @@ class _YFinanceDelistedFilter(logging.Filter):
         return not any(s in msg for s in self._NOISE_SUBSTRINGS)
 
 
-logging.getLogger("yfinance").addFilter(_YFinanceDelistedFilter())
+logging.getLogger("yfinance").addFilter(_YFinanceNoiseFilter())
 
 
 # ============== Request Models ==============
