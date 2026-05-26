@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, formatCurrency, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
@@ -11,7 +11,19 @@ const SORT_OPTIONS = [
   { value: 'volume_ratio', label: 'Volume' },
   { value: 'current_price', label: 'Price' },
   { value: 'pct_from_high', label: 'Near 52wk High' },
+  { value: 'freshness', label: 'Freshness' },
 ]
+
+// Canonical per-stock freshness column (mirrors backend `Stock.last_updated`,
+// the same field the page-level `as_of` is derived from). Returns a millisecond
+// epoch, or -Infinity when the row carries no/invalid timestamp so unknowns
+// always sort last under most-recent-first ordering.
+function freshnessMillis(stock) {
+  const raw = stock?.last_updated
+  if (!raw) return -Infinity
+  const t = Date.parse(raw)
+  return Number.isNaN(t) ? -Infinity : t
+}
 
 const BASE_TYPE_FILTERS = [
   { key: 'all', label: 'All' },
@@ -73,13 +85,37 @@ function BreakoutRow({ stock }) {
 }
 
 export default function Breakouts() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
   const [stocks, setStocks] = useState([])
   const [asOf, setAsOf] = useState(null)
   const [error, setError] = useState(null)
-  const [sortBy, setSortBy] = useState('canslim_score')
-  const [baseType, setBaseType] = useState('all')
-  const [sector, setSector] = useState('')
+  // Seed filter + sort state from the URL so links/back-button restore the view.
+  const [sortBy, setSortBy] = useState(() => {
+    const s = searchParams.get('sort')
+    return SORT_OPTIONS.some(o => o.value === s) ? s : 'canslim_score'
+  })
+  const [baseType, setBaseType] = useState(() => {
+    const b = searchParams.get('base')
+    return BASE_TYPE_FILTERS.some(f => f.key === b) ? b : 'all'
+  })
+  const [sector, setSector] = useState(() => searchParams.get('sector') || '')
+
+  // Mirror the current filter/sort state back into the URL (replace, no history
+  // spam). Defaults are dropped so a pristine view has a clean URL.
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams)
+    if (sortBy && sortBy !== 'canslim_score') next.set('sort', sortBy)
+    else next.delete('sort')
+    if (baseType && baseType !== 'all') next.set('base', baseType)
+    else next.delete('base')
+    if (sector) next.set('sector', sector)
+    else next.delete('sector')
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortBy, baseType, sector])
 
   useEffect(() => {
     const fetchBreakouts = async () => {
@@ -106,6 +142,14 @@ export default function Breakouts() {
     return [...s].sort()
   }, [stocks])
 
+  // A sector seeded from the URL may not exist in the freshly-fetched set;
+  // drop it so the dropdown never shows a value with no matching <option>.
+  useEffect(() => {
+    if (sector && stocks.length > 0 && !sectors.includes(sector)) {
+      setSector('')
+    }
+  }, [sectors, sector, stocks.length])
+
   // Apply filter + sort. Reset sector if it disappears from the set.
   const displayStocks = useMemo(() => {
     let arr = stocks.slice()
@@ -126,12 +170,30 @@ export default function Breakouts() {
           : Infinity
         return aPct - bPct
       }
+      if (sortBy === 'freshness') {
+        // Most-recently-updated first; missing timestamps sort last.
+        return freshnessMillis(b) - freshnessMillis(a)
+      }
       const av = a[sortBy] ?? -Infinity
       const bv = b[sortBy] ?? -Infinity
       return bv - av
     })
     return arr
   }, [stocks, sortBy, baseType, sector])
+
+  // Per-pill match counts, computed against the set with all OTHER (non
+  // base-type) filters applied — i.e. the sector filter — so each pill shows
+  // exactly how many rows selecting it would yield. The "all" pill counts the
+  // full (sector-filtered) set.
+  const baseTypeCounts = useMemo(() => {
+    const base = sector ? stocks.filter(s => s.sector === sector) : stocks
+    const counts = { all: base.length }
+    for (const f of BASE_TYPE_FILTERS) {
+      if (f.key === 'all') continue
+      counts[f.key] = base.filter(s => s.base_type === f.key).length
+    }
+    return counts
+  }, [stocks, sector])
 
   // Surface the (filtered+sorted) breakout order to StockDetail so its
   // prev/next nav walks through the same list the user is viewing.
@@ -178,19 +240,22 @@ export default function Breakouts() {
         <div className="mb-3 space-y-2">
           {/* Base-type pills */}
           <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-            {BASE_TYPE_FILTERS.map(f => (
-              <button
-                key={f.key}
-                onClick={() => setBaseType(f.key)}
-                className={`text-xs px-3.5 py-2 rounded-full whitespace-nowrap transition-colors ${
-                  baseType === f.key
-                    ? 'bg-primary-500/30 text-primary-300 font-medium'
-                    : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+            {BASE_TYPE_FILTERS.map(f => {
+              const count = baseTypeCounts[f.key] ?? 0
+              return (
+                <button
+                  key={f.key}
+                  onClick={() => setBaseType(f.key)}
+                  className={`text-xs px-3.5 py-2 rounded-full whitespace-nowrap transition-colors ${
+                    baseType === f.key
+                      ? 'bg-primary-500/30 text-primary-300 font-medium'
+                      : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
+                  }`}
+                >
+                  {f.label} <span className="opacity-60">({count})</span>
+                </button>
+              )
+            })}
           </div>
 
           {/* Sort + sector dropdowns */}

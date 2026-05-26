@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, formatCurrency, formatDate, formatPercent } from '../api'
 import Card, { CardHeader } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
@@ -54,9 +54,11 @@ function JournalEntry({ entry }) {
   const isVetoed = entry.action === 'VETOED'
   const totalValue = entry.price && entry.shares ? entry.price * entry.shares : null
 
+  const dotCfg = actionColors[entry.action] || actionColors.BUY
+
   return (
     <div className="flex gap-3">
-      {/* Timeline connector (hidden on mobile for cleaner layout) */}
+      {/* Timeline connector (desktop) — hidden on mobile to save horizontal space */}
       <div className="hidden sm:flex">
         <TimelineDot action={entry.action} />
       </div>
@@ -67,6 +69,18 @@ function JournalEntry({ entry }) {
         className="flex-1 mb-3 cursor-pointer transition-all hover:border-white/[0.1]"
         onClick={() => setExpanded(e => !e)}
       >
+        {/* Mobile timeline marker — vertical stack fallback so mobile users
+            still get a chronological action cue (desktop dot is hidden <640px) */}
+        <div className="flex sm:hidden items-center gap-2 mb-2 pb-2 border-b border-dark-700/30">
+          <span className={`w-2 h-2 rounded-full ${dotCfg.dot} ring-2 ring-dark-900 shrink-0`} />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-dark-400">
+            {entry.action}
+          </span>
+          <span className="text-[10px] text-dark-500 font-data ml-auto">
+            {formatDate(entry.date)}
+          </span>
+        </div>
+
         {/* Header row */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
@@ -479,17 +493,47 @@ function JournalStats({ entries }) {
 
 // ── Main page ────────────────────────────────────────────────────────
 export default function TradeJournal() {
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const [entries, setEntries] = useState([])
   const [total, setTotal] = useState(0)
   const [vetoedCount, setVetoedCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  // Filters
-  const [days, setDays] = useState(90)
-  const [ticker, setTicker] = useState('')
-  const [action, setAction] = useState('')
-  const [includeVetoed, setIncludeVetoed] = useState(false)
+  // Filters — hydrate initial state from the URL on mount, falling back to the
+  // component's defaults (days=90, ticker='', action='', includeVetoed=false)
+  // when a param is absent. includeVetoed is persisted as "1"/"0".
+  const [days, setDays] = useState(() => {
+    const raw = parseInt(searchParams.get('days'), 10)
+    return Number.isFinite(raw) ? raw : 90
+  })
+  const [ticker, setTicker] = useState(() => searchParams.get('ticker') || '')
+  const [action, setAction] = useState(() => searchParams.get('action') || '')
+  const [includeVetoed, setIncludeVetoed] = useState(() => searchParams.get('vetoes') === '1')
+
+  // Persist filters to the URL (replace, so we don't pollute history). Mirrors
+  // the canonical pattern in Backtest.jsx: copy current params, set/delete the
+  // changed keys, then setSearchParams(next, { replace: true }). Non-default
+  // values are written; defaults are removed to keep the URL clean.
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams)
+
+    if (days !== 90) next.set('days', String(days))
+    else next.delete('days')
+
+    if (ticker) next.set('ticker', ticker)
+    else next.delete('ticker')
+
+    if (action) next.set('action', action)
+    else next.delete('action')
+
+    if (includeVetoed) next.set('vetoes', '1')
+    else next.delete('vetoes')
+
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days, ticker, action, includeVetoed])
 
   // Debounced ticker search
   const [debouncedTicker, setDebouncedTicker] = useState('')

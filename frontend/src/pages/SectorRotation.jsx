@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { api, formatRelativeTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import PageHeader from '../components/PageHeader'
@@ -79,6 +79,7 @@ export default function SectorRotation() {
   const [error, setError] = useState(null)
   const [sortBy, setSortBy] = useState('rank')
   const [sortDir, setSortDir] = useState('desc')
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     const fetchData = async () => {
@@ -105,6 +106,25 @@ export default function SectorRotation() {
     }
   }
 
+  const allGroups = data?.groups || []
+
+  const sortedGroups = useMemo(() => {
+    return [...allGroups].sort((a, b) => {
+      const aVal = a[sortBy] ?? 0
+      const bVal = b[sortBy] ?? 0
+      if (typeof aVal === 'string') {
+        return sortDir === 'desc' ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal)
+      }
+      return sortDir === 'desc' ? bVal - aVal : aVal - bVal
+    })
+  }, [allGroups, sortBy, sortDir])
+
+  const filteredGroups = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return sortedGroups
+    return sortedGroups.filter(g => (g.industry || '').toLowerCase().includes(q))
+  }, [sortedGroups, search])
+
   if (loading) {
     return (
       <div className="p-4 md:p-6 max-w-5xl mx-auto">
@@ -128,18 +148,9 @@ export default function SectorRotation() {
     )
   }
 
-  const { groups = [], total = 0, rotation = {} } = data
+  const { total = 0, rotation = {} } = data
   const improving = rotation.improving || []
   const deteriorating = rotation.deteriorating || []
-
-  const sortedGroups = [...groups].sort((a, b) => {
-    const aVal = a[sortBy] ?? 0
-    const bVal = b[sortBy] ?? 0
-    if (typeof aVal === 'string') {
-      return sortDir === 'desc' ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal)
-    }
-    return sortDir === 'desc' ? bVal - aVal : aVal - bVal
-  })
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
@@ -209,6 +220,28 @@ export default function SectorRotation() {
 
       {/* Full groups table */}
       <SectionLabel>All Industry Groups · {sortedGroups.length}</SectionLabel>
+      <div className="mb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div className="relative flex-1 sm:max-w-xs">
+          <svg
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-500 pointer-events-none"
+            width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          >
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search industry groups..."
+            className="w-full !pl-9"
+          />
+        </div>
+        <div className="text-[10px] text-dark-500 font-data shrink-0">
+          Showing {filteredGroups.length} of {sortedGroups.length}
+        </div>
+      </div>
       <Card variant="glass" padding="">
         <div className="text-[10px] text-dark-500 px-3 py-2 border-b border-dark-700/30 flex items-center gap-1.5 sm:hidden">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -230,7 +263,13 @@ export default function SectorRotation() {
               </tr>
             </thead>
             <tbody>
-              {sortedGroups.map(g => (
+              {filteredGroups.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-dark-500 text-sm">
+                    No industry groups match "{search}"
+                  </td>
+                </tr>
+              ) : filteredGroups.map(g => (
                 <tr key={g.industry} className="border-b border-dark-700/20 hover:bg-dark-700/20 transition-colors">
                   <td className="px-3 py-2.5 text-sm text-dark-100 font-medium">{g.industry}</td>
                   <td className="px-3 py-2.5">

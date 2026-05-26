@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatDateTime, formatTime } from '../api'
 import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
@@ -239,6 +239,18 @@ const WINDOW_PILLS = [
   { value: 'all', label: 'All' },
 ]
 
+// Sort options for the PositionsList header dropdown. Each key maps to a
+// null-safe accessor; direction baked in (e.g. value/gain%/score/days-held
+// read high→low, ticker/sector read A→Z). Default is value descending.
+const POSITION_SORTS = [
+  { value: 'value',  label: 'Value (high → low)' },
+  { value: 'gain',   label: 'Gain % (high → low)' },
+  { value: 'score',  label: 'Score (high → low)' },
+  { value: 'days',   label: 'Days held (most → least)' },
+  { value: 'ticker', label: 'Ticker (A → Z)' },
+  { value: 'sector', label: 'Sector (A → Z)' },
+]
+
 // ── Positions List ──────────────────────────────────────────────────
 // Window-aware: when `windowReturns` is supplied, the per-position return %
 // reflects the selected window. Otherwise falls back to lifetime gain_loss_pct.
@@ -246,6 +258,36 @@ const WINDOW_PILLS = [
 // scanning the list without scrolling back to the summary at the top.
 function PositionsList({ positions, windowReturns, timeRange, setTimeRange, loading }) {
   const [selectedPosition, setSelectedPosition] = useState(null)
+  const [sortKey, setSortKey] = useState('value')
+
+  // Effective per-position score depends on stock type (mirrors the render
+  // below: growth stocks show current_growth_score, others current_score).
+  const scoreOf = (p) => (p.is_growth_stock ? p.current_growth_score : p.current_score) ?? 0
+  // Days held — same Date.now()/86_400_000 math the PositionDetailModal uses.
+  const daysHeldOf = (p) => p.purchase_date
+    ? Math.max(0, Math.floor((Date.now() - new Date(p.purchase_date).getTime()) / 86400000))
+    : 0
+
+  // Derived (never mutate the prop array, never store in state). Spread before
+  // sort so the source array is untouched. All comparators are null-safe.
+  const sortedPositions = useMemo(() => {
+    const arr = [...(positions || [])]
+    switch (sortKey) {
+      case 'gain':
+        return arr.sort((a, b) => (b.gain_loss_pct ?? 0) - (a.gain_loss_pct ?? 0))
+      case 'score':
+        return arr.sort((a, b) => scoreOf(b) - scoreOf(a))
+      case 'days':
+        return arr.sort((a, b) => daysHeldOf(b) - daysHeldOf(a))
+      case 'ticker':
+        return arr.sort((a, b) => (a.ticker ?? '').localeCompare(b.ticker ?? ''))
+      case 'sector':
+        return arr.sort((a, b) => (a.sector ?? '').localeCompare(b.sector ?? ''))
+      case 'value':
+      default:
+        return arr.sort((a, b) => (b.current_value ?? 0) - (a.current_value ?? 0))
+    }
+  }, [positions, sortKey])
 
   if (!positions || positions.length === 0) {
     return (
@@ -276,6 +318,22 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           {loading && (
             <span className="text-[10px] text-dark-500 font-data" aria-live="polite">…</span>
           )}
+          {/* Sort control — mirrors the strategy <select> styling in ConfigPanel */}
+          <div className="relative">
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value)}
+              aria-label="Sort positions"
+              className="appearance-none bg-dark-700 border border-dark-600 text-dark-200 text-[11px] rounded-lg pl-2.5 pr-6 py-1 cursor-pointer hover:border-dark-500 focus:border-primary-500 focus:outline-none transition-colors"
+            >
+              {POSITION_SORTS.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            <svg className="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-dark-400" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
           <div className="flex bg-dark-850 rounded-lg p-0.5">
             {WINDOW_PILLS.map(({ value, label }) => (
               <button
@@ -298,7 +356,7 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
         Return shown: <span className="text-dark-300">{windowLabel}</span>
       </div>
       <div className="space-y-1">
-        {positions.map(position => (
+        {sortedPositions.map(position => (
           <button
             key={position.id}
             type="button"

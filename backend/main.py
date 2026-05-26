@@ -1431,7 +1431,8 @@ async def get_breaking_out_stocks(
             "breakout_volume_ratio": s.breakout_volume_ratio or s.volume_ratio or 1.0,
             "volume_ratio": s.volume_ratio if s.volume_ratio is not None else 1.0,  # Default to 1.0 for NULL
             "projected_growth": s.projected_growth,
-            "is_breaking_out": s.is_breaking_out or False
+            "is_breaking_out": s.is_breaking_out or False,
+            "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
         } for s in stocks],
         "total": len(stocks),
         "as_of": (as_of.isoformat() + "Z") if as_of else None,

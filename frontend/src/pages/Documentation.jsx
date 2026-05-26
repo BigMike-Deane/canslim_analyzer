@@ -4,6 +4,77 @@ import { TagBadge } from '../components/Badge'
 import { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 
+/* ─── Table of Contents sections ──────────────────────────────────── */
+
+const TOC_SECTIONS = [
+  { id: 'what-is-canslim',        title: 'What is CANSLIM?' },
+  { id: 'market-direction',       title: 'Market Direction' },
+  { id: 'scoring-breakdown',      title: 'Scoring Breakdown' },
+  { id: 'growth-mode-scoring',    title: 'Growth Mode Scoring' },
+  { id: 'coiled-spring-alerts',   title: 'Coiled Spring Alerts' },
+  { id: 'technical-analysis',     title: 'Technical Analysis' },
+  { id: 'ai-trader-logic',        title: 'AI Trader Logic' },
+  { id: 'sector-adjusted',        title: 'Sector-Adjusted Scoring' },
+  { id: 'growth-projection',      title: 'Growth Projection Model' },
+  { id: 'portfolio-recs',         title: 'Portfolio Recommendations' },
+  { id: 'using-the-app',          title: 'Using the App' },
+]
+
+/* ─── Table of Contents navigation ────────────────────────────────── */
+
+function TableOfContents() {
+  // Mobile dropdown: navigate to the chosen section by hash.
+  const handleSelect = (e) => {
+    const id = e.target.value
+    if (!id) return
+    const el = document.getElementById(id)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      // keep the URL hash in sync for shareable deep-links
+      history.replaceState(null, '', `#${id}`)
+    }
+  }
+
+  return (
+    <>
+      {/* Mobile: dropdown jump menu (hidden on lg+) */}
+      <div className="lg:hidden mb-4">
+        <label htmlFor="doc-toc-select" className="sr-only">Jump to section</label>
+        <select
+          id="doc-toc-select"
+          onChange={handleSelect}
+          defaultValue=""
+          className="w-full bg-dark-800 border border-dark-700/50 rounded-xl px-3 py-2.5 text-sm text-dark-200 focus:outline-none focus:border-primary-500/60"
+        >
+          <option value="" disabled>Jump to section…</option>
+          {TOC_SECTIONS.map((s) => (
+            <option key={s.id} value={s.id}>{s.title}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Desktop: sticky sidebar (hidden below lg) */}
+      <nav className="hidden lg:block sticky top-6 self-start" aria-label="Table of contents">
+        <Card variant="glass" padding="p-3">
+          <SectionLabel>On This Page</SectionLabel>
+          <ul className="space-y-0.5">
+            {TOC_SECTIONS.map((s) => (
+              <li key={s.id}>
+                <a
+                  href={`#${s.id}`}
+                  className="block px-2 py-1.5 rounded-lg text-xs text-dark-400 hover:text-primary-400 hover:bg-dark-700/40 transition-colors"
+                >
+                  {s.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      </nav>
+    </>
+  )
+}
+
 /* ─── Collapsible Score Card ──────────────────────────────────────── */
 
 function ScoreCard({ letter, title, maxPoints, description, factors, color }) {
@@ -187,13 +258,23 @@ export default function Documentation() {
   ]
 
   return (
-    <div className="p-4 md:p-6 pb-24">
+    <div className="p-4 md:p-6 pb-24 scroll-smooth">
       <PageHeader
         title="Documentation"
         subtitle="Understanding the CANSLIM scoring methodology and growth projections"
       />
 
+      <div className="lg:flex lg:gap-6 lg:items-start">
+        {/* Navigation: sticky sidebar (desktop) / dropdown (mobile) */}
+        <aside className="lg:w-56 lg:shrink-0">
+          <TableOfContents />
+        </aside>
+
+        {/* Documentation content */}
+        <div className="lg:flex-1 lg:min-w-0">
+
       {/* What is CANSLIM */}
+      <section id="what-is-canslim" className="scroll-mt-24">
       <Card variant="accent" accent="cyan" className="mb-4">
         <h2 className="font-semibold text-primary-400 text-sm mb-2">What is CANSLIM?</h2>
         <p className="text-dark-300 text-sm">
@@ -202,8 +283,10 @@ export default function Documentation() {
           The acronym represents 7 key criteria that historically correlate with winning stocks.
         </p>
       </Card>
+      </section>
 
       {/* Market Direction */}
+      <section id="market-direction" className="scroll-mt-24">
       <Card variant="accent" accent="cyan" className="mb-4">
         <h2 className="font-semibold text-primary-400 text-sm mb-2">Market Direction (Dashboard)</h2>
         <p className="text-dark-300 text-sm mb-3">
@@ -278,8 +361,10 @@ export default function Documentation() {
           This approach provides a more comprehensive view than SPY alone, capturing both growth momentum (QQQ) and value stability (DIA).
         </p>
       </Card>
+      </section>
 
       {/* Scoring Breakdown */}
+      <section id="scoring-breakdown" className="scroll-mt-24">
       <SectionLabel className="mt-6">Scoring Breakdown</SectionLabel>
       <p className="text-dark-400 text-xs mb-4">
         Total score is out of 100 points. Tap each criterion to see detailed scoring logic.
@@ -288,10 +373,12 @@ export default function Documentation() {
       {canslimScores.map(score => (
         <ScoreCard key={score.letter} {...score} />
       ))}
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Growth Mode Scoring */}
+      <section id="growth-mode-scoring" className="scroll-mt-24">
       <Card variant="accent" accent="purple" className="mb-4">
         <h2 className="font-semibold text-purple-400 text-sm mb-2">Growth Mode Scoring</h2>
         <p className="text-dark-300 text-sm mb-3">
@@ -318,10 +405,12 @@ export default function Documentation() {
           </Card>
         </div>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Coiled Spring Alerts */}
+      <section id="coiled-spring-alerts" className="scroll-mt-24">
       <Card variant="accent" accent="purple" className="mb-4">
         <h2 className="font-semibold text-purple-400 text-sm mb-2">Coiled Spring Alerts</h2>
         <p className="text-dark-300 text-sm mb-3">
@@ -368,10 +457,12 @@ export default function Documentation() {
           These are pre-earnings plays - the goal is to identify explosive setups BEFORE they move.
         </p>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Technical Analysis */}
+      <section id="technical-analysis" className="scroll-mt-24">
       <SectionLabel>Technical Analysis</SectionLabel>
       <p className="text-dark-400 text-xs mb-4">
         O'Neil emphasized buying stocks breaking out of proper base patterns. The app detects these patterns automatically.
@@ -440,10 +531,12 @@ export default function Documentation() {
           <StatRow label="Volume ratio < 1.5x" value={<span className="text-dark-500 font-data text-xs">Weak - proceed with caution</span>} />
         </div>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* AI Trader Logic */}
+      <section id="ai-trader-logic" className="scroll-mt-24">
       <SectionLabel>AI Trader Logic</SectionLabel>
       <p className="text-dark-400 text-xs mb-4">
         The AI Portfolio automatically buys and sells based on CANSLIM principles. Here's how it makes decisions.
@@ -504,10 +597,12 @@ export default function Documentation() {
           ))}
         </div>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Sector-Adjusted Scoring */}
+      <section id="sector-adjusted" className="scroll-mt-24">
       <SectionLabel>Sector-Adjusted Scoring</SectionLabel>
       <p className="text-dark-400 text-xs mb-4">
         Not all sectors grow at the same rate. A 20% EPS growth is excellent for Industrials but mediocre for Technology.
@@ -530,10 +625,12 @@ export default function Documentation() {
         </div>
         <p className="text-dark-500 text-[10px] mt-2">Other sectors use default thresholds: Excellent 25%, Good 15%</p>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Growth Projection Model */}
+      <section id="growth-projection" className="scroll-mt-24">
       <SectionLabel>Growth Projection Model</SectionLabel>
       <p className="text-dark-400 text-xs mb-4">
         The 6-month growth projection uses a weighted combination of factors to estimate potential upside.
@@ -577,10 +674,12 @@ export default function Documentation() {
           </div>
         </div>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Portfolio Recommendations */}
+      <section id="portfolio-recs" className="scroll-mt-24">
       <SectionLabel>Portfolio Recommendations</SectionLabel>
       <p className="text-dark-400 text-xs mb-4">
         The BUY/HOLD/SELL recommendations for portfolio positions use a weighted signal system analyzing 5 factors.
@@ -653,10 +752,12 @@ export default function Documentation() {
           </div>
         </div>
       </Card>
+      </section>
 
       <div className="my-6 h-px bg-dark-700/50" />
 
       {/* Using the App */}
+      <section id="using-the-app" className="scroll-mt-24">
       <SectionLabel>Using the App</SectionLabel>
 
       <Card variant="glass" className="mb-4">
@@ -745,8 +846,11 @@ export default function Documentation() {
           Data is refreshed every 90 minutes during market hours. Earnings data cached for 24 hours. Institutional data cached for 7 days.
         </p>
       </Card>
+      </section>
 
       <div className="h-8" />
+        </div>
+      </div>
     </div>
   )
 }

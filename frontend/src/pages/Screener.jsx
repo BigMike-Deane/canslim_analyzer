@@ -175,19 +175,29 @@ function StockRow({ stock, isWatched, onWatched }) {
 }
 
 export default function Screener() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [stocks, setStocks] = useState([])
   const [sectors, setSectors] = useState([])
-  const [page, setPage] = useState(1)
   const pageSize = 50
+  // Hydrate page/filters from the URL on mount so a shared/bookmarked link
+  // (or a browser back/forward) restores the same filter+sort+page view.
+  const initialPage = (() => {
+    const p = parseInt(searchParams.get('page'), 10)
+    return Number.isFinite(p) && p >= 1 ? p : 1
+  })()
+  const initialMinScore = (() => {
+    const m = Number(searchParams.get('min_score'))
+    return searchParams.get('min_score') != null && Number.isFinite(m) ? m : 0
+  })()
+  const [page, setPage] = useState(initialPage)
   const [filters, setFilters] = useState({
     sector: searchParams.get('sector') || null,
-    min_score: 0,
-    sort_by: 'canslim_score',
+    min_score: initialMinScore,
+    sort_by: searchParams.get('sort_by') || 'canslim_score',
     limit: pageSize,
-    offset: 0
+    offset: (initialPage - 1) * pageSize
   })
   const [total, setTotal] = useState(0)
   // Set of tickers currently in the user's watchlist. Hydrated on mount so
@@ -238,6 +248,32 @@ export default function Screener() {
   useEffect(() => {
     fetchStocks()
   }, [fetchStocks])
+
+  // Persist the active filter/sort/page combo to the URL query string so the
+  // view is shareable/bookmarkable and survives back/forward. Mirrors the
+  // Backtest.jsx idiom: copy current params, set/delete the changed keys, then
+  // setSearchParams(next, { replace: true }) so per-keystroke filter changes
+  // don't pollute browser history. Only non-default values are written (matches
+  // sector's "|| null" hydration convention — a clean URL when nothing is set).
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams)
+
+    if (filters.sector) next.set('sector', filters.sector)
+    else next.delete('sector')
+
+    if (filters.min_score && filters.min_score !== 0) next.set('min_score', String(filters.min_score))
+    else next.delete('min_score')
+
+    if (filters.sort_by && filters.sort_by !== 'canslim_score') next.set('sort_by', filters.sort_by)
+    else next.delete('sort_by')
+
+    if (page && page !== 1) next.set('page', String(page))
+    else next.delete('page')
+
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true })
+    }
+  }, [filters.sector, filters.min_score, filters.sort_by, page, searchParams, setSearchParams])
 
   // Surface the current visible-stock order to StockDetail so its prev/next
   // ticker buttons can walk through this exact filter+sort+page combination.
