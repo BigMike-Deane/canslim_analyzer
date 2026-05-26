@@ -1043,6 +1043,34 @@ class TestFmpConfirmsDelisted:
         monkeypatch.setattr(data_fetcher.requests, "get", lambda *a, **k: fake)
         assert data_fetcher._fmp_confirms_delisted("DEAD") is True
 
+    def test_returns_true_when_profile_not_actively_trading(self, monkeypatch):
+        # FMP retains profiles for acquired/delisted names (PXD/SGEN/etc.);
+        # isActivelyTrading=False is the authoritative delisted signal.
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        fake = _mock_response(
+            status_code=200,
+            json_data=[{"symbol": "PXD", "isActivelyTrading": False}],
+        )
+        monkeypatch.setattr(data_fetcher.requests, "get", lambda *a, **k: fake)
+        assert data_fetcher._fmp_confirms_delisted("PXD") is True
+
+    def test_returns_false_when_profile_actively_trading(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        fake = _mock_response(
+            status_code=200,
+            json_data=[{"symbol": "AAPL", "isActivelyTrading": True}],
+        )
+        monkeypatch.setattr(data_fetcher.requests, "get", lambda *a, **k: fake)
+        assert data_fetcher._fmp_confirms_delisted("AAPL") is False
+
+    def test_missing_actively_trading_flag_fails_safe(self, monkeypatch):
+        # No flag at all -> ambiguous -> must NOT confirm delisting (fail safe),
+        # so a transient Yahoo outage can't wrongly exclude a live stock.
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        fake = _mock_response(status_code=200, json_data=[{"symbol": "MSFT"}])
+        monkeypatch.setattr(data_fetcher.requests, "get", lambda *a, **k: fake)
+        assert data_fetcher._fmp_confirms_delisted("MSFT") is False
+
 
 class TestFetchFmpProfile:
     def test_returns_empty_without_api_key(self, monkeypatch):

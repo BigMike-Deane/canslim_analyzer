@@ -682,8 +682,19 @@ def mark_ticker_as_delisted(ticker: str, reason: str = "no_data", source: str = 
 
 
 def _fmp_confirms_delisted(ticker: str) -> bool:
-    """Quick FMP quote check to verify if a ticker is truly delisted.
-    Returns True if FMP also can't find it (confirming delisting)."""
+    """Quick FMP profile check to verify if a ticker is truly delisted.
+
+    Returns True when FMP confirms the ticker is gone, False when FMP shows
+    it still trades (treated as a transient Yahoo issue we decline to exclude).
+
+    FMP RETAINS profiles for acquired/delisted companies (for historical
+    data), so mere profile presence is NOT proof a ticker still trades —
+    that conflation let dead names (PXD/SGEN/CTLT/JWN/RETA…) reset their
+    failure_count forever and never get excluded, 404-spamming every scan.
+    The authoritative signal is `isActivelyTrading`:
+      - explicit False  -> confirmed delisted          -> True (allow exclusion)
+      - True or missing -> still trading / ambiguous    -> False (fail safe)
+    """
     api_key = os.environ.get('FMP_API_KEY', '')
     if not api_key:
         return True  # Can't verify, assume delisted
@@ -693,8 +704,11 @@ def _fmp_confirms_delisted(ticker: str) -> bool:
         if resp.status_code == 200:
             data = resp.json()
             if data and isinstance(data, list) and len(data) > 0:
-                # FMP has this ticker — it's NOT delisted
-                return False
+                # `is False` (identity) is deliberate: a missing flag (None)
+                # must fail safe to "not delisted", not be coerced by `not`.
+                if data[0].get("isActivelyTrading") is False:
+                    return True  # FMP confirms it stopped trading
+                return False  # FMP shows an active (or unflagged) profile
         return True
     except Exception:
         return True  # Can't reach FMP, err on side of caution
