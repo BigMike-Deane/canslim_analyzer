@@ -262,6 +262,11 @@ def run_migrations():
         # forward-only; existing 1.6M rows stay NULL and are ignored by the
         # shadow override path until they age out of the eval window.
         ("stock_scores", "c_score_uncapped", "FLOAT"),
+        # Analyst price-target range (May 2026 — surfaced on StockDetail's
+        # Analyst Consensus card). consensus was already cached; high/low are
+        # the new spread bounds for the range bar.
+        ("stock_data_cache", "analyst_target_high", "FLOAT"),
+        ("stock_data_cache", "analyst_target_low", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1324,6 +1329,8 @@ class StockDataCache(Base):
 
     # Analyst data (refreshed daily)
     analyst_target_price = Column(Float)
+    analyst_target_high = Column(Float)
+    analyst_target_low = Column(Float)
     analyst_count = Column(Integer)
     analyst_updated_at = Column(DateTime)
 

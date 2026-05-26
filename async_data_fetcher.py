@@ -1425,7 +1425,9 @@ async def get_stock_data_async(
         mark_data_fetched(ticker, "balance_sheet")
 
         set_cached_data(ticker, "analyst", {
-            "target_consensus": yahoo_info.get("analyst_target_price", 0),
+            "target_price": yahoo_info.get("analyst_target_price", 0),
+            "target_high": yahoo_info.get("analyst_target_high", 0),
+            "target_low": yahoo_info.get("analyst_target_low", 0),
             "num_analysts": yahoo_info.get("num_analyst_opinions", 0),
         }, persist_to_db=True)
         mark_data_fetched(ticker, "analyst")

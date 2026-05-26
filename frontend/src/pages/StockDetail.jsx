@@ -6,7 +6,6 @@ import { api, formatScore, getScoreClass, getScoreLabel, getScoreHex, formatCurr
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
-import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
 
@@ -305,7 +304,8 @@ function ScoreDetailContent({ scoreKey, scoreData, details, stock }) {
 /* ─── CANSLIM Breakdown ───────────────────────────────────────────── */
 
 function CANSLIMDetail({ stock }) {
-  const [selectedScore, setSelectedScore] = useState(null)
+  // Which letter's breakdown is expanded inline (null = all collapsed).
+  const [expandedScore, setExpandedScore] = useState(null)
 
   const scores = [
     { key: 'C', label: 'Current Earnings', value: stock.c_score, max: 15, desc: 'Quarterly earnings growth' },
@@ -327,33 +327,42 @@ function CANSLIMDetail({ stock }) {
     return stock.score_details[key.toLowerCase()] || stock.score_details[key] || null
   }
 
-  const selectedScoreObj = selectedScore ? scores.find(s => s.key === selectedScore) : null
-
   return (
-    <>
-      <Card variant="glass" className="mb-4">
-        <CardHeader title="CANSLIM Breakdown" />
-        <div className="space-y-3">
-          {scores.map(s => {
-            const normalized = normalizeScore(s.value, s.max)
-            const barColor =
-              normalized >= 80 ? 'bg-emerald-500' :
-              normalized >= 65 ? 'bg-green-500' :
-              normalized >= 50 ? 'bg-stone-400' :
-              normalized >= 35 ? 'bg-rose-500' : 'bg-red-500'
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="CANSLIM Breakdown" />
+      <div className="space-y-3">
+        {scores.map(s => {
+          const normalized = normalizeScore(s.value, s.max)
+          const barColor =
+            normalized >= 80 ? 'bg-emerald-500' :
+            normalized >= 65 ? 'bg-green-500' :
+            normalized >= 50 ? 'bg-stone-400' :
+            normalized >= 35 ? 'bg-rose-500' : 'bg-red-500'
+          const isExpanded = expandedScore === s.key
 
-            return (
-              <div key={s.key} className="flex items-center gap-3">
+          return (
+            <div key={s.key}>
+              <div className="flex items-center gap-3">
                 <button
-                  onClick={() => setSelectedScore(s.key)}
-                  className={`w-10 h-10 rounded-xl font-bold text-lg flex items-center justify-center shrink-0 ${getScoreClass(normalized)} hover:scale-110 active:scale-95 transition-all cursor-pointer`}
-                  title={`Click for ${s.label} details`}
+                  onClick={() => setExpandedScore(prev => prev === s.key ? null : s.key)}
+                  aria-expanded={isExpanded}
+                  className={`w-10 h-10 rounded-xl font-bold text-lg flex items-center justify-center shrink-0 ${getScoreClass(normalized)} hover:scale-110 active:scale-95 transition-all cursor-pointer ${isExpanded ? 'ring-2 ring-primary-500/60' : ''}`}
+                  title={`${isExpanded ? 'Hide' : 'Show'} ${s.label} details`}
                 >
                   {s.key}
                 </button>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-center">
-                    <span className="font-medium text-sm text-dark-200">{s.label}</span>
+                    <span className="font-medium text-sm text-dark-200 flex items-center gap-1">
+                      {s.label}
+                      <svg
+                        className={`text-dark-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                        width="11" height="11" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2.5"
+                      >
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    </span>
                     <span className={`text-xs font-data font-semibold ${getScoreClass(normalized)}`}>
                       {s.value != null ? `${s.value.toFixed(1)}/${s.max}` : '-'}
                     </span>
@@ -367,32 +376,24 @@ function CANSLIMDetail({ stock }) {
                   <div className="text-dark-500 text-[10px] mt-0.5">{s.desc}</div>
                 </div>
               </div>
-            )
-          })}
-        </div>
-      </Card>
 
-      {/* Score Detail Modal */}
-      <Modal
-        open={!!selectedScore}
-        onClose={() => setSelectedScore(null)}
-        title={selectedScoreObj ? `${selectedScoreObj.key} - ${selectedScoreObj.label}` : ''}
-        size="sm"
-      >
-        {selectedScore && selectedScoreObj && (
-          <ScoreDetailContent
-            scoreKey={selectedScore}
-            scoreData={{
-              value: selectedScoreObj.value,
-              max: selectedScoreObj.max,
-              normalized: normalizeScore(selectedScoreObj.value, selectedScoreObj.max),
-            }}
-            details={getDetail(selectedScore)}
-            stock={stock}
-          />
-        )}
-      </Modal>
-    </>
+              {/* Inline drill-down (replaces the old modal) — keeps the score
+                  bar in view and lets the user expand several letters at once. */}
+              {isExpanded && (
+                <div className="mt-2 ml-[52px] pl-3 border-l-2 border-primary-500/30">
+                  <ScoreDetailContent
+                    scoreKey={s.key}
+                    scoreData={{ value: s.value, max: s.max, normalized }}
+                    details={getDetail(s.key)}
+                    stock={stock}
+                  />
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Card>
   )
 }
 
@@ -437,6 +438,87 @@ function PriceInfo({ stock }) {
           },
         ]}
       />
+    </Card>
+  )
+}
+
+/* ─── Analyst Consensus ────────────────────────────────────────────── */
+
+function AnalystConsensus({ stock }) {
+  const target = stock.analyst_target_price
+  // No analyst coverage → render nothing (the backend sends null, not 0).
+  if (!target) return null
+
+  const current = stock.current_price
+  const low = stock.analyst_target_low
+  const high = stock.analyst_target_high
+  const upside = stock.analyst_upside_pct
+  const count = stock.analyst_count
+
+  const upsideColor =
+    upside == null ? 'text-dark-300' : upside >= 0 ? 'text-emerald-400' : 'text-red-400'
+
+  // Range bar maps low→high onto 0→100%. Only drawn when we have a real spread.
+  const haveRange = low != null && high != null && high > low
+  const pos = (v) =>
+    v == null ? null : Math.min(100, Math.max(0, ((v - low) / (high - low)) * 100))
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Analyst Consensus" />
+      <StatGrid
+        columns={2}
+        stats={[
+          {
+            label: 'Consensus Target',
+            value: <span className="text-xl">{formatCurrency(target)}</span>,
+          },
+          {
+            label: 'Upside vs Current',
+            value: upside != null ? formatPercent(upside, true) : '-',
+            color: upsideColor,
+          },
+        ]}
+      />
+
+      {haveRange && (
+        <div className="mt-4">
+          <div className="flex justify-between text-[10px] text-dark-500 font-data mb-1.5">
+            <span>Low {formatCurrency(low)}</span>
+            <span>High {formatCurrency(high)}</span>
+          </div>
+          <div className="relative h-2 bg-dark-700 rounded-full">
+            {current != null && pos(current) != null && (
+              <div
+                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-1 h-4 bg-dark-300 rounded"
+                style={{ left: `${pos(current)}%` }}
+                title={`Current ${formatCurrency(current)}`}
+              />
+            )}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-primary-400 ring-2 ring-dark-900"
+              style={{ left: `${pos(target)}%` }}
+              title={`Consensus ${formatCurrency(target)}`}
+            />
+          </div>
+          <div className="flex items-center gap-3 mt-2 text-[10px] text-dark-500">
+            <span className="flex items-center gap-1">
+              <span className="w-1 h-3 bg-dark-300 rounded inline-block" /> Current
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-primary-400 inline-block" /> Consensus
+            </span>
+            {count ? (
+              <span className="ml-auto">{count} analyst{count === 1 ? '' : 's'}</span>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {!haveRange && count ? (
+        <div className="mt-2 text-[10px] text-dark-500">
+          {count} analyst{count === 1 ? '' : 's'}
+        </div>
+      ) : null}
     </Card>
   )
 }
@@ -1160,6 +1242,8 @@ export default function StockDetail() {
       </div>
 
       <PriceInfo stock={stock} />
+
+      <AnalystConsensus stock={stock} />
 
       <GrowthModeSection stock={stock} />
 

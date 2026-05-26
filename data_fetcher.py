@@ -163,6 +163,8 @@ def load_cache_from_db():
                     if record.analyst_updated_at:
                         set_cached_data(ticker, "analyst", {
                             "target_price": record.analyst_target_price,
+                            "target_high": record.analyst_target_high,
+                            "target_low": record.analyst_target_low,
                             "count": record.analyst_count
                         }, persist_to_db=False)
                         with _freshness_lock:
@@ -283,6 +285,10 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
             # Only update if we have actual data (don't overwrite with None)
             if data.get("target_price"):
                 record.analyst_target_price = data.get("target_price")
+            if data.get("target_high"):
+                record.analyst_target_high = data.get("target_high")
+            if data.get("target_low"):
+                record.analyst_target_low = data.get("target_low")
             if data.get("count") is not None:
                 record.analyst_count = data.get("count")
             record.analyst_updated_at = now
@@ -317,6 +323,10 @@ def save_ticker_to_db_cache(ticker: str, data_type: str, data):
                 record.analyst_target_price = data.get("analyst_target_price")
                 record.analyst_count = data.get("num_analyst_opinions")
                 record.analyst_updated_at = now
+                if data.get("analyst_target_high"):
+                    record.analyst_target_high = data.get("analyst_target_high")
+                if data.get("analyst_target_low"):
+                    record.analyst_target_low = data.get("analyst_target_low")
             if data.get("cash_and_equivalents") or data.get("total_debt"):
                 record.total_cash = data.get("cash_and_equivalents")
                 record.total_debt = data.get("total_debt")

@@ -33,7 +33,7 @@ from backend.database import (
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
     BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, CoiledSpringAlert,
     EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade,
-    User, MLModel, MLPrediction
+    User, MLModel, MLPrediction, StockDataCache
 )
 from backend.auth import get_current_active_user, get_admin_user
 from backend.config import settings
@@ -1651,6 +1651,19 @@ async def get_stock(
                 seen_dates.add(h.date)
                 history.append(h)
 
+    # Analyst price targets live in the raw-data L2 cache (StockDataCache), not
+    # on the Stock row. Pull them so StockDetail can render the Analyst Consensus
+    # card. Treat 0 (the FMP/Yahoo default for "no coverage") as missing.
+    cache_row = db.query(StockDataCache).filter(StockDataCache.ticker == ticker).first()
+    analyst_target_price = (cache_row.analyst_target_price or None) if cache_row else None
+    analyst_target_high = (cache_row.analyst_target_high or None) if cache_row else None
+    analyst_target_low = (cache_row.analyst_target_low or None) if cache_row else None
+    analyst_count = cache_row.analyst_count if cache_row else None
+    analyst_updated_at = cache_row.analyst_updated_at if cache_row else None
+    analyst_upside_pct = None
+    if analyst_target_price and stock.current_price and stock.current_price > 0:
+        analyst_upside_pct = ((analyst_target_price - stock.current_price) / stock.current_price) * 100
+
     return {
         "ticker": stock.ticker,
         "name": stock.name,
@@ -1719,6 +1732,15 @@ async def get_stock(
         "short_interest_pct": stock.short_interest_pct,
         "short_ratio": stock.short_ratio,
         "short_updated_at": (stock.short_updated_at.isoformat() + "Z") if stock.short_updated_at else None,
+
+        # Analyst consensus (from StockDataCache L2 cache; upside is computed
+        # vs current price, null-safe when there's no coverage)
+        "analyst_target_price": analyst_target_price,
+        "analyst_target_high": analyst_target_high,
+        "analyst_target_low": analyst_target_low,
+        "analyst_count": analyst_count,
+        "analyst_upside_pct": analyst_upside_pct,
+        "analyst_updated_at": (analyst_updated_at.isoformat() + "Z") if analyst_updated_at else None,
 
         "score_history": [{
             "date": h.date.isoformat(),

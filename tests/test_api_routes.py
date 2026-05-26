@@ -25,7 +25,7 @@ from backend.database import (
     init_db, get_db, SessionLocal, User, Stock, StockScore,
     PortfolioPosition, AIPortfolioConfig, AIPortfolioPosition,
     AIPortfolioTrade, BacktestRun, MarketSnapshot, Watchlist, MLModel,
-    MLPrediction,
+    MLPrediction, StockDataCache,
 )
 from backend.auth import get_current_active_user, get_admin_user
 from tests.conftest import override_dependency
@@ -318,6 +318,77 @@ class TestSingleStock:
     def test_resolution_invalid_value_rejected(self):
         r = client.get("/api/stocks/TSLA?resolution=hourly")
         assert r.status_code == 422  # FastAPI regex validation
+
+
+class TestAnalystConsensus:
+    """The /api/stocks/{ticker} response surfaces analyst price targets from
+    the StockDataCache L2 cache, plus a computed upside vs current price."""
+
+    def _seed_cache(self, ticker, **kw):
+        db = _get_db()
+        try:
+            db.query(StockDataCache).filter_by(ticker=ticker).delete()
+            db.add(StockDataCache(ticker=ticker, **kw))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_fields_present_in_response(self):
+        """All six analyst keys are always in the payload (null when no data)."""
+        _ensure_stock("ANLST", score=80.0)
+        d = client.get("/api/stocks/ANLST").json()
+        for key in ("analyst_target_price", "analyst_target_high",
+                    "analyst_target_low", "analyst_count",
+                    "analyst_upside_pct", "analyst_updated_at"):
+            assert key in d
+
+    def test_targets_surfaced_and_upside_computed(self):
+        """current_price=150 (from _ensure_stock), consensus=180 -> +20% upside."""
+        _ensure_stock("UPSD", score=80.0)
+        self._seed_cache("UPSD", analyst_target_price=180.0,
+                         analyst_target_high=210.0, analyst_target_low=160.0,
+                         analyst_count=12,
+                         analyst_updated_at=datetime.now(timezone.utc))
+        d = client.get("/api/stocks/UPSD").json()
+        assert d["analyst_target_price"] == 180.0
+        assert d["analyst_target_high"] == 210.0
+        assert d["analyst_target_low"] == 160.0
+        assert d["analyst_count"] == 12
+        assert d["analyst_upside_pct"] == pytest.approx(20.0, abs=0.01)
+        assert d["analyst_updated_at"] is not None
+
+    def test_negative_upside_when_target_below_price(self):
+        """consensus=120 vs price=150 -> -20% downside."""
+        _ensure_stock("DOWN", score=70.0)
+        self._seed_cache("DOWN", analyst_target_price=120.0,
+                         analyst_updated_at=datetime.now(timezone.utc))
+        d = client.get("/api/stocks/DOWN").json()
+        assert d["analyst_upside_pct"] == pytest.approx(-20.0, abs=0.01)
+
+    def test_zero_target_treated_as_no_coverage(self):
+        """FMP/Yahoo send 0 for uncovered names; that must surface as null,
+        not a bogus -100% upside."""
+        _ensure_stock("ZERO", score=60.0)
+        self._seed_cache("ZERO", analyst_target_price=0.0,
+                         analyst_target_high=0.0, analyst_target_low=0.0)
+        d = client.get("/api/stocks/ZERO").json()
+        assert d["analyst_target_price"] is None
+        assert d["analyst_target_high"] is None
+        assert d["analyst_target_low"] is None
+        assert d["analyst_upside_pct"] is None
+
+    def test_no_cache_row_yields_nulls(self):
+        """A stock with no StockDataCache row still returns null analyst fields."""
+        _ensure_stock("NOCACHE", score=75.0)
+        db = _get_db()
+        try:
+            db.query(StockDataCache).filter_by(ticker="NOCACHE").delete()
+            db.commit()
+        finally:
+            db.close()
+        d = client.get("/api/stocks/NOCACHE").json()
+        assert d["analyst_target_price"] is None
+        assert d["analyst_upside_pct"] is None
 
 
 class TestPortfolio:
