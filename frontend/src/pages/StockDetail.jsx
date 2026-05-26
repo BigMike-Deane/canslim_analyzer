@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getAdjacentTickers } from '../stockListContext'
 import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
-import { api, formatScore, getScoreClass, getScoreLabel, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
+import { api, formatScore, getScoreClass, getScoreLabel, getScoreHex, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Modal from '../components/Modal'
+import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
 
 /* ─── Score Gauge (SVG ring) ──────────────────────────────────────── */
@@ -16,9 +17,6 @@ function ScoreGauge({ score, label }) {
   const circumference = 2 * Math.PI * radius
   const progress = (score || 0) / 100
   const strokeDashoffset = circumference * (1 - progress)
-
-  const getColor = (s) =>
-    s >= 80 ? '#34d399' : s >= 65 ? '#34d399' : s >= 50 ? '#fbbf24' : s >= 35 ? '#fb923c' : '#f87171'
 
   return (
     <div className="flex flex-col items-center">
@@ -32,7 +30,7 @@ function ScoreGauge({ score, label }) {
           />
           <circle
             cx="50" cy="50" r={radius}
-            stroke={getColor(score)}
+            stroke={getScoreHex(score)}
             strokeWidth="3"
             fill="none"
             strokeDasharray={circumference}
@@ -60,17 +58,19 @@ function ScoreDetailContent({ scoreKey, scoreData, details, stock }) {
   const formatPct = (val) => val != null ? `${val.toFixed(1)}%` : '-'
   const formatEps = (val) => val != null ? `$${val.toFixed(2)}` : '-'
 
+  // Tiers + hues mirror getScoreClass / getScoreHex so this drill-down agrees
+  // with the gauge and badges (and keeps mid-scores off brand amber).
   const normalizedColor =
     scoreData.normalized >= 80 ? 'text-emerald-400' :
-    scoreData.normalized >= 65 ? 'text-emerald-400' :
-    scoreData.normalized >= 50 ? 'text-amber-400' :
-    scoreData.normalized >= 35 ? 'text-orange-400' : 'text-red-400'
+    scoreData.normalized >= 65 ? 'text-green-400' :
+    scoreData.normalized >= 50 ? 'text-stone-300' :
+    scoreData.normalized >= 35 ? 'text-rose-300' : 'text-red-400'
 
   const barColor =
     scoreData.normalized >= 80 ? 'bg-emerald-500' :
-    scoreData.normalized >= 65 ? 'bg-emerald-500' :
-    scoreData.normalized >= 50 ? 'bg-amber-500' :
-    scoreData.normalized >= 35 ? 'bg-orange-500' : 'bg-red-500'
+    scoreData.normalized >= 65 ? 'bg-green-500' :
+    scoreData.normalized >= 50 ? 'bg-stone-400' :
+    scoreData.normalized >= 35 ? 'bg-rose-500' : 'bg-red-500'
 
   const renderDataSection = () => {
     switch (scoreKey) {
@@ -338,9 +338,9 @@ function CANSLIMDetail({ stock }) {
             const normalized = normalizeScore(s.value, s.max)
             const barColor =
               normalized >= 80 ? 'bg-emerald-500' :
-              normalized >= 65 ? 'bg-emerald-500' :
-              normalized >= 50 ? 'bg-amber-500' :
-              normalized >= 35 ? 'bg-orange-500' : 'bg-red-500'
+              normalized >= 65 ? 'bg-green-500' :
+              normalized >= 50 ? 'bg-stone-400' :
+              normalized >= 35 ? 'bg-rose-500' : 'bg-red-500'
 
             return (
               <div key={s.key} className="flex items-center gap-3">
@@ -1192,7 +1192,7 @@ export default function StockDetail() {
         className="w-full btn-secondary flex items-center justify-center gap-2"
       >
         {refreshing ? (
-          <span>Refreshing...</span>
+          <span className="inline-flex items-center gap-2"><Spinner size="xs" inline />Refreshing…</span>
         ) : (
           <span>Refresh Analysis</span>
         )}

@@ -12,6 +12,7 @@ import { tooltipStyle } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
 import PortfolioDetailView from '../components/PortfolioDetailView'
+import EmptyState from '../components/EmptyState'
 
 // ── Performance Chart ───────────────────────────────────────────────
 // `timeRange` is now controlled by the page-level WindowReturnsBar so the
@@ -248,9 +249,11 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
 
   if (!positions || positions.length === 0) {
     return (
-      <Card variant="glass" className="mb-4 text-center py-8 text-dark-400">
-        No positions yet. Initialize the portfolio to start trading.
-      </Card>
+      <EmptyState
+        className="mb-4"
+        message="No positions yet"
+        hint="Initialize the portfolio to start trading."
+      />
     )
   }
 

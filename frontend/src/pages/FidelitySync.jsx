@@ -4,6 +4,7 @@ import { api, formatCurrency, formatPercent, formatDate, formatRelativeTime } fr
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ActionBadge, TagBadge, PnlText, ScoreBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
+import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
 
 function UploadZone({ label, hint, accept, onUpload, uploading }) {
@@ -590,7 +591,7 @@ export default function FidelitySync() {
                 disabled={syncing}
                 className="text-xs px-3 py-1.5 rounded-lg bg-primary-600/20 text-primary-400 border border-primary-500/30 hover:bg-primary-600/30 transition-colors disabled:opacity-50"
               >
-                {syncing ? 'Syncing...' : 'Sync to AI Portfolio'}
+                {syncing ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Syncing…</span> : 'Sync to AI Portfolio'}
               </button>
             )}
           </div>
@@ -667,7 +668,7 @@ export default function FidelitySync() {
 
       {/* Tab Content */}
       {loading ? (
-        <div className="text-center py-12 text-dark-500 text-sm animate-pulse">Loading...</div>
+        <Spinner label="Loading…" />
       ) : !latestSnapshot ? (
         <Card variant="default" className="text-center py-12">
           <p className="text-dark-500 text-sm">No positions uploaded yet</p>

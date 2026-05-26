@@ -708,6 +708,19 @@ export function getScoreLabel(score) {
   return 'Weak'
 }
 
+// Raw hex for the same score tiers as getScoreClass — for SVG strokes / solid
+// fills that can't use the CSS `.score-*` classes. Palette is hue-matched to
+// those badges (emerald → green → neutral stone → rose → red) so a gauge and
+// the badge beside it agree, and mid-scores stay clear of brand amber.
+export function getScoreHex(score) {
+  if (score == null) return '#5a5240'   // dark-500 — unknown
+  if (score >= 80) return '#34d399'     // emerald-400 — excellent
+  if (score >= 65) return '#4ade80'     // green-400  — good
+  if (score >= 50) return '#a8a29e'     // stone-400  — average (neutral, not amber)
+  if (score >= 35) return '#fb7185'     // rose-400   — poor
+  return '#f87171'                      // red-400    — weak
+}
+
 export function formatCurrency(value) {
   if (value == null) return '-'
   return new Intl.NumberFormat('en-US', {

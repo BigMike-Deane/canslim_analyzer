@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime, formatDateTime } from '../api'
 import { useToast } from '../components/Toast'
+import Spinner from '../components/Spinner'
 
 const PAGE_SIZE = 50
 
@@ -157,7 +158,7 @@ export default function Notifications() {
 
       <div className="bg-dark-900 border border-dark-700/60 rounded-lg overflow-hidden">
         {loading && (
-          <div className="px-4 py-12 text-center text-xs text-dark-500">Loading…</div>
+          <Spinner label="Loading notifications…" />
         )}
         {!loading && items.length === 0 && (
           <div className="px-4 py-12 text-center text-xs text-dark-500">

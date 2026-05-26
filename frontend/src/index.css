@@ -102,7 +102,7 @@ select {
 
 /* ─── Buttons ─── */
 .btn-primary {
-  /* Brand-red primary: white text on deep crimson, lifts to bright red on hover. */
+  /* Brand-amber primary: white text on deep amber, lifts to canonical Bloomberg amber on hover. */
   @apply bg-primary-600 hover:bg-primary-500 text-white font-semibold px-4 py-2 rounded-lg transition-all duration-200 text-sm;
 }
 
@@ -141,12 +141,12 @@ select {
 }
 
 .glow-cyan {
-  /* Backwards-compat alias — now glows brand-red. */
-  text-shadow: 0 0 10px rgba(220, 38, 38, 0.35);
+  /* Backwards-compat alias — now glows brand amber (rgb 245,158,11). */
+  text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
 }
 
 .glow-brand {
-  text-shadow: 0 0 10px rgba(220, 38, 38, 0.35);
+  text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
 }
 
 /* ─── Accent Lines ─── */
@@ -179,10 +179,11 @@ select {
 }
 
 .recharts-default-tooltip {
-  /* Warm-tinted surface to match new dark-800 (#1f1416) */
-  background: #1f1416 !important;
-  border: 1px solid rgba(47, 34, 37, 0.9) !important;
-  border-radius: 8px !important;
+  /* Matches dark-800 (#1a1815) + amber border — mirrors chartTheme.js tooltipStyle
+     so charts that don't pass an explicit contentStyle still read on-brand. */
+  background: #1a1815 !important;
+  border: 1px solid rgba(245, 158, 11, 0.12) !important;
+  border-radius: 10px !important;
   font-family: 'Sora', system-ui, sans-serif !important;
 }
 

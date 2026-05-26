@@ -6,6 +6,8 @@ import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceB
 import StatGrid from '../components/StatGrid'
 import Sparkline from '../components/Sparkline'
 import CollapsibleSection from '../components/CollapsibleSection'
+import Spinner from '../components/Spinner'
+import EmptyState from '../components/EmptyState'
 import { useToast } from '../components/Toast'
 
 // Auto-refresh during market hours (M-F 8:30am-4pm CST)
@@ -480,14 +482,14 @@ export default function CommandCenter() {
               disabled={!!runningAction}
               className="text-[10px] font-medium px-3 py-1.5 rounded-lg bg-primary-600/15 text-primary-400 border border-primary-500/20 hover:bg-primary-600/25 transition-colors disabled:opacity-50"
             >
-              {runningAction === 'cycle' ? 'Running...' : 'Run Cycle'}
+              {runningAction === 'cycle' ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Running…</span> : 'Run Cycle'}
             </button>
             <button
               onClick={() => handleAction('scan')}
               disabled={!!runningAction || scanner?.is_scanning}
               className="text-[10px] font-medium px-3 py-1.5 rounded-lg bg-dark-700 text-dark-300 border border-dark-600 hover:bg-dark-600 transition-colors disabled:opacity-50"
             >
-              {runningAction === 'scan' ? 'Starting...' : 'Start Scan'}
+              {runningAction === 'scan' ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Starting…</span> : 'Start Scan'}
             </button>
           </div>
           <span className="text-[10px] text-dark-500 font-data hidden sm:inline">
@@ -662,7 +664,7 @@ export default function CommandCenter() {
             >
               <div className="max-h-80 overflow-y-auto -mx-1">
                 {(!positions || positions.length === 0) && (
-                  <div className="text-dark-500 text-xs py-6 text-center">No active positions</div>
+                  <EmptyState bare compact message="No active positions" hint="The AI portfolio holds no open positions right now." />
                 )}
                 {positions?.map(p => (
                   <PositionRow
@@ -688,7 +690,7 @@ export default function CommandCenter() {
             >
               <div className="max-h-72 overflow-y-auto -mx-1">
                 {(!candidates || candidates.length === 0) && (
-                  <div className="text-dark-500 text-xs py-6 text-center">No candidates above threshold</div>
+                  <EmptyState bare compact message="No candidates above threshold" hint="No stocks currently clear the buy score. Try a fresh scan." />
                 )}
                 {candidates?.map(c => <CandidateRow key={c.ticker} c={c} />)}
               </div>
@@ -712,7 +714,7 @@ export default function CommandCenter() {
           <Card variant="glass" animate stagger={4}>
             <CollapsibleSection title="Earnings">
               {(!earnings || earnings.length === 0) ? (
-                <div className="text-dark-500 text-xs py-4 text-center">No upcoming earnings</div>
+                <EmptyState bare compact message="No upcoming earnings" />
               ) : (
                 <div className="space-y-0.5">
                   {earnings.slice(0, 6).map(e => (
@@ -743,7 +745,7 @@ export default function CommandCenter() {
           <Card variant="glass" animate stagger={5}>
             <CollapsibleSection title="Trades">
               {(!trades || trades.length === 0) ? (
-                <div className="text-dark-500 text-xs py-4 text-center">No recent trades</div>
+                <EmptyState bare compact message="No recent trades" />
               ) : (
                 <>
                   <div className="space-y-0.5">

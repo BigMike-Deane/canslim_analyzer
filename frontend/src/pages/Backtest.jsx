@@ -8,6 +8,8 @@ import { StatusBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge } from '
 import StatGrid from '../components/StatGrid'
 import DataTable from '../components/DataTable'
 import PageHeader from '../components/PageHeader'
+import Spinner from '../components/Spinner'
+import EmptyState from '../components/EmptyState'
 import { tooltipStyle } from '../components/chartTheme'
 import BacktestCompareView from '../components/BacktestCompareView'
 import MLMatrixView from '../components/MLMatrixView'
@@ -222,7 +224,7 @@ function BacktestForm({ onSubmit, isLoading }) {
           disabled={isLoading}
           className="w-full bg-primary-500 hover:bg-primary-400 disabled:bg-dark-700 disabled:text-dark-500 rounded-lg py-3 sm:py-2.5 text-sm font-semibold transition-colors"
         >
-          {isLoading ? 'Starting...' : 'Start Backtest'}
+          {isLoading ? <span className="inline-flex items-center justify-center gap-2"><Spinner size="xs" inline />Starting…</span> : 'Start Backtest'}
         </button>
       </form>
     </Card>
@@ -342,10 +344,15 @@ function BacktestList({ backtests, onSelect, onDelete, onCancel, onCompare }) {
 
   if (!backtests || backtests.length === 0) {
     return (
-      <Card variant="glass" className="text-center py-10">
-        <div className="text-dark-300 font-medium mb-1">No backtests yet</div>
-        <div className="text-dark-500 text-xs">Configure and run your first backtest above to see historical performance.</div>
-      </Card>
+      <EmptyState
+        icon={
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 3v18h18" /><path d="M7 14l3-3 3 3 4-5" />
+          </svg>
+        }
+        message="No backtests yet"
+        hint="Configure and run your first backtest above to see historical performance."
+      />
     )
   }
 
@@ -717,7 +724,7 @@ function MultiPeriodPanel({ onLaunch, isLoading }) {
             disabled={isLoading}
             className="w-full bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 text-purple-300 disabled:bg-dark-700 disabled:text-dark-500 disabled:border-dark-700 rounded-lg py-2 text-sm font-semibold transition-colors"
           >
-            {isLoading ? 'Starting...' : `Launch ${presets.length} Backtests`}
+            {isLoading ? <span className="inline-flex items-center justify-center gap-2"><Spinner size="xs" inline />Starting…</span> : `Launch ${presets.length} Backtests`}
           </button>
         </div>
       )}

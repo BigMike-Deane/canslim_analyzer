@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { api, formatDate, formatDateTime, formatRelativeTime } from '../api'
+import Spinner from '../components/Spinner'
 
 // "4m 22s" / "1h 04m" / "23s" — duration between two ISO timestamps.
 function _formatScanDuration(startIso, endIso) {
@@ -573,7 +574,7 @@ export default function Admin() {
               disabled={mlTraining}
               className="px-3 py-1.5 bg-primary-600 hover:bg-primary-500 disabled:bg-primary-600/50 text-white text-xs font-medium rounded-lg transition-colors"
             >
-              {mlTraining ? 'Training...' : 'Retrain Model'}
+              {mlTraining ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Training…</span> : 'Retrain Model'}
             </button>
           </div>
         </div>

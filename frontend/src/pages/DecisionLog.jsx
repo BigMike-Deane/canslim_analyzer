@@ -4,6 +4,7 @@ import { api, formatCurrency, formatDateTime } from '../api'
 import Card from '../components/Card'
 import PageHeader from '../components/PageHeader'
 import { ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
+import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
 
 // Derive a coarse kind from the free-text reason. Mirrors the prefixes
@@ -234,7 +235,7 @@ export default function DecisionLog() {
       </Card>
 
       {loading && (
-        <Card variant="glass" className="text-center py-10 text-dark-400">Loading…</Card>
+        <Card variant="glass"><Spinner label="Loading decisions…" /></Card>
       )}
 
       {!loading && error && (
