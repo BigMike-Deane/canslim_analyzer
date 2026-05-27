@@ -585,9 +585,11 @@ class CANSLIMScorer:
         if len(annual) < 3:
             return 0, "Insufficient data"
 
-        # Calculate 3-year CAGR
+        # 3 annual data points span 2 years (recent → 1yr ago → 2yr ago), so the
+        # CAGR exponent is 1/span (=1/2), not 1/n_points (=1/3). The prior 1/3
+        # treated a 2-year span as 3 years and systematically understated growth.
         recent = annual[0]
-        older = annual[2]  # 3 years ago
+        older = annual[2]  # 2 years ago
 
         if older <= 0 or recent <= 0:
             if recent > 0 and older <= 0:
@@ -597,7 +599,7 @@ class CANSLIMScorer:
                 return max_score * 0.7, "Turnaround"
             return 0, "Negative earnings"
 
-        cagr = ((recent / older) ** (1 / 3) - 1) * 100
+        cagr = ((recent / older) ** (1 / 2) - 1) * 100
 
         # Get sector-adjusted thresholds
         sector = getattr(data, 'sector', None) or 'default'
@@ -621,7 +623,7 @@ class CANSLIMScorer:
         roe_score, roe_detail = self._calculate_roe_bonus(data, roe_max)
 
         total_score = min(cagr_score + roe_score, max_score)
-        return round(total_score, 1), f"3yr CAGR: {cagr:+.0f}%{roe_detail}"
+        return round(total_score, 1), f"2yr CAGR: {cagr:+.0f}%{roe_detail}"
 
     def _score_new_highs(self, data: StockData) -> tuple[float, str]:
         """

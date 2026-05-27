@@ -2945,7 +2945,7 @@ class TestBacktesterAScoreSync:
         source = inspect.getsource(BacktestEngine._calculate_scores)
 
         # Should have turnaround path for A score
-        assert "current_annual > 0 and three_years_ago <= 0" in source, \
+        assert "current_annual > 0 and two_years_ago <= 0" in source, \
             "A score should handle negative->positive turnaround"
 
     def test_roe_handles_decimal_format(self):
