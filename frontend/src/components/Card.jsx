@@ -24,7 +24,9 @@ export default function Card({
   animate = false,
   stagger,
   onClick,
+  as: Tag = 'div',
   children,
+  ...rest
 }) {
   const base = variants[variant] || variants.default
   const accentCls = variant === 'accent' && accent ? accentColors[accent] || '' : ''
@@ -32,21 +34,24 @@ export default function Card({
   const staggerCls = animate && stagger ? `stagger-${stagger}` : ''
   const clickCls = onClick ? 'cursor-pointer' : ''
 
+  // `as` lets a card render as a semantic element (e.g. <section>) and `...rest`
+  // forwards ARIA props like aria-labelledby so it can act as a named landmark.
   return (
-    <div
+    <Tag
       className={`border ${base} ${accentCls} ${rounded} ${padding} ${animCls} ${staggerCls} ${clickCls} ${className}`}
       onClick={onClick}
+      {...rest}
     >
       {children}
-    </div>
+    </Tag>
   )
 }
 
-export function CardHeader({ title, subtitle, action, className = '' }) {
+export function CardHeader({ title, subtitle, action, className = '', titleId }) {
   return (
     <div className={`flex items-center justify-between mb-3 ${className}`}>
       <div>
-        <h3 className="text-sm font-semibold text-dark-100">{title}</h3>
+        <h3 id={titleId} className="text-sm font-semibold text-dark-100">{title}</h3>
         {subtitle && <p className="text-xs text-dark-400 mt-0.5">{subtitle}</p>}
       </div>
       {action && <div>{action}</div>}

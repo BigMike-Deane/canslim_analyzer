@@ -328,8 +328,8 @@ function CANSLIMDetail({ stock }) {
   }
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="CANSLIM Breakdown" />
+    <Card as="section" aria-labelledby="sd-canslim-heading" variant="glass" className="mb-4">
+      <CardHeader title="CANSLIM Breakdown" titleId="sd-canslim-heading" />
       <div className="space-y-3">
         {scores.map(s => {
           const normalized = normalizeScore(s.value, s.max)
@@ -405,8 +405,8 @@ function PriceInfo({ stock }) {
     : null
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Price Information" />
+    <Card as="section" aria-labelledby="sd-price-heading" variant="glass" className="mb-4">
+      <CardHeader title="Price Information" titleId="sd-price-heading" />
       <StatGrid
         columns={2}
         stats={[
@@ -464,8 +464,8 @@ function AnalystConsensus({ stock }) {
     v == null ? null : Math.min(100, Math.max(0, ((v - low) / (high - low)) * 100))
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Analyst Consensus" />
+    <Card as="section" aria-labelledby="sd-analyst-heading" variant="glass" className="mb-4">
+      <CardHeader title="Analyst Consensus" titleId="sd-analyst-heading" />
       <StatGrid
         columns={2}
         stats={[
@@ -595,7 +595,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
 
   if (!history || history.length < 2) {
     return (
-      <Card variant="glass" className="mb-4 text-center py-6">
+      <Card as="section" aria-label="Score Replay" variant="glass" className="mb-4 text-center py-6">
         <div className="text-dark-500 text-xs">Not enough score history yet</div>
       </Card>
     )
@@ -656,9 +656,9 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
   ]
 
   return (
-    <Card variant="glass" className="mb-4">
+    <Card as="section" aria-labelledby="sd-replay-heading" variant="glass" className="mb-4">
       <div className="flex items-center justify-between mb-2">
-        <CardHeader title="Score Replay" />
+        <CardHeader title="Score Replay" titleId="sd-replay-heading" />
         <div className="flex items-center gap-2">
           {onResolutionChange && (
             <div className="flex bg-dark-900/50 rounded overflow-hidden border border-white/5">
@@ -837,8 +837,8 @@ function InsiderShortSection({ stock }) {
   }
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Market Signals" />
+    <Card as="section" aria-labelledby="sd-signals-heading" variant="glass" className="mb-4">
+      <CardHeader title="Market Signals" titleId="sd-signals-heading" />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         {hasInsider && (
@@ -913,9 +913,10 @@ function GrowthModeSection({ stock }) {
   ]
 
   return (
-    <Card variant="accent" accent="green" className="mb-4">
+    <Card as="section" aria-labelledby="sd-growth-heading" variant="accent" accent="green" className="mb-4">
       <CardHeader
         title="Growth Mode Score"
+        titleId="sd-growth-heading"
         action={
           <div className="flex items-center gap-2">
             <TagBadge color="green">
@@ -958,9 +959,10 @@ function GrowthModeSection({ stock }) {
 
 function TechnicalAnalysis({ stock }) {
   return (
-    <Card variant="glass" className="mb-4">
+    <Card as="section" aria-labelledby="sd-technical-heading" variant="glass" className="mb-4">
       <CardHeader
         title="Technical Analysis"
+        titleId="sd-technical-heading"
         action={
           stock.is_breaking_out && (
             <TagBadge color="amber">Breaking Out</TagBadge>
@@ -1164,7 +1166,7 @@ export default function StockDetail() {
   return (
     <div className="p-4 md:p-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-5 gap-3">
+      <header className="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-5 gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-3 mb-2">
             <button
@@ -1239,7 +1241,7 @@ export default function StockDetail() {
             </span>
           )}
         </div>
-      </div>
+      </header>
 
       <PriceInfo stock={stock} />
 
@@ -1260,31 +1262,33 @@ export default function StockDetail() {
       />
 
       {/* Actions */}
-      <SectionLabel>Actions</SectionLabel>
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4">
-        <button onClick={handleAddToWatchlist} className="btn-secondary">
-          + Watchlist
-        </button>
-        <button onClick={handleAddToPortfolio} className="btn-primary">
-          + Portfolio
-        </button>
-      </div>
+      <section aria-label="Actions">
+        <SectionLabel>Actions</SectionLabel>
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4">
+          <button onClick={handleAddToWatchlist} className="btn-secondary">
+            + Watchlist
+          </button>
+          <button onClick={handleAddToPortfolio} className="btn-primary">
+            + Portfolio
+          </button>
+        </div>
 
-      <button
-        onClick={handleRefresh}
-        disabled={refreshing}
-        className="w-full btn-secondary flex items-center justify-center gap-2"
-      >
-        {refreshing ? (
-          <span className="inline-flex items-center gap-2"><Spinner size="xs" inline />Refreshing…</span>
-        ) : (
-          <span>Refresh Analysis</span>
-        )}
-      </button>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="w-full btn-secondary flex items-center justify-center gap-2"
+        >
+          {refreshing ? (
+            <span className="inline-flex items-center gap-2"><Spinner size="xs" inline />Refreshing…</span>
+          ) : (
+            <span>Refresh Analysis</span>
+          )}
+        </button>
 
-      <div className="text-dark-500 text-[10px] text-center mt-3">
-        Last updated: {stock.last_updated ? formatDateTime(stock.last_updated) : 'Never'}
-      </div>
+        <div className="text-dark-500 text-[10px] text-center mt-3">
+          Last updated: {stock.last_updated ? formatDateTime(stock.last_updated) : 'Never'}
+        </div>
+      </section>
 
       <div className="h-4" />
     </div>
