@@ -1260,6 +1260,34 @@ export default function StockDetail() {
 
       <PriceInfo stock={stock} />
 
+      {/* Position sizing — derived from current AI Portfolio state +
+          this stock's pivot/price. Rendered high in the page (right
+          after PriceInfo) because it's the most decision-relevant
+          info: shares, limit, stop, dollar risk, copyable trade
+          ticket. The card self-suppresses when the trade isn't
+          actionable (extended, below score gate, no cash, already
+          at max-positions). */}
+      {(() => {
+        if (!aiPortfolio?.summary || !stock?.current_price) return null
+        const heldTickers = new Set(
+          (aiPortfolio.positions || []).map(p => p.ticker?.toUpperCase())
+        )
+        const alreadyHeld = heldTickers.has((stock.ticker || ticker).toUpperCase())
+        const sizing = computePositionSizing({
+          ticker: stock.ticker || ticker,
+          currentPrice: stock.current_price,
+          pivotPrice: stock.pivot_price,
+          score: stock.canslim_score,
+          cash: aiPortfolio.summary.cash,
+          totalValue: aiPortfolio.summary.total_value,
+          positionsCount: aiPortfolio.positions?.length || 0,
+          maxPositions: aiPortfolio.config?.max_positions,
+          stopLossPct: aiPortfolio.config?.stop_loss_pct,
+          minScore: aiPortfolio.config?.min_score_to_buy,
+        })
+        return <PositionSizingCard sizing={sizing} alreadyHeld={alreadyHeld} />
+      })()}
+
       <AnalystConsensus stock={stock} />
 
       <GrowthModeSection stock={stock} />
@@ -1279,32 +1307,6 @@ export default function StockDetail() {
       {/* Actions */}
       <section aria-label="Actions">
         <SectionLabel>Actions</SectionLabel>
-
-        {/* Position sizing — derived from current AI Portfolio state +
-            this stock's pivot/price. Renders the card only if both the
-            portfolio fetched and the stock has a usable price. The card
-            self-suppresses when the trade isn't actionable (extended,
-            below score gate, no cash, already at max-positions). */}
-        {(() => {
-          if (!aiPortfolio?.summary || !stock?.current_price) return null
-          const heldTickers = new Set(
-            (aiPortfolio.positions || []).map(p => p.ticker?.toUpperCase())
-          )
-          const alreadyHeld = heldTickers.has((stock.ticker || ticker).toUpperCase())
-          const sizing = computePositionSizing({
-            ticker: stock.ticker || ticker,
-            currentPrice: stock.current_price,
-            pivotPrice: stock.pivot_price,
-            score: stock.canslim_score,
-            cash: aiPortfolio.summary.cash,
-            totalValue: aiPortfolio.summary.total_value,
-            positionsCount: aiPortfolio.positions?.length || 0,
-            maxPositions: aiPortfolio.config?.max_positions,
-            stopLossPct: aiPortfolio.config?.stop_loss_pct,
-            minScore: aiPortfolio.config?.min_score_to_buy,
-          })
-          return <PositionSizingCard sizing={sizing} alreadyHeld={alreadyHeld} />
-        })()}
 
         <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4">
           <button onClick={handleAddToWatchlist} className="btn-secondary">
