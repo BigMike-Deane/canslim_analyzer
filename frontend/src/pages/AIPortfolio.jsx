@@ -51,12 +51,35 @@ function PerformanceChart({ history, startingCash, timeRange }) {
     // Server-side WindowReturns are unaffected — those compute against the
     // window's first snapshot directly, so the summary card and per-position
     // returns still anchor at the user-selected window start.
+    let trimmed = false
     if (startingCash != null && filtered.length > 1) {
       const FLAT_EPSILON = 0.5
       const firstActivityIdx = filtered.findIndex(d =>
         d.total_value != null && Math.abs(d.total_value - startingCash) > FLAT_EPSILON
       )
-      if (firstActivityIdx > 0) filtered = filtered.slice(firstActivityIdx)
+      if (firstActivityIdx > 0) {
+        filtered = filtered.slice(firstActivityIdx)
+        trimmed = true
+      }
+    }
+
+    // SPY benchmark is server-normalized against snapshots[0].total_value
+    // (the pre-inception $25k baseline). After we trim leading flat days,
+    // SPY still carries the Day-0 anchor — so if SPY drifted up during the
+    // pre-inception period it would head-start the portfolio on the chart
+    // for reasons unrelated to strategy. Rebase SPY client-side so its
+    // first visible point lands at startingCash, matching the "Start"
+    // reference line. Each downstream point is scaled by the same ratio so
+    // SPY's *relative* moves from the new anchor are preserved.
+    if (trimmed && filtered.length > 0) {
+      const anchorSpy = filtered[0].spy_value
+      if (anchorSpy != null && anchorSpy > 0 && startingCash != null) {
+        const spyMultiplier = startingCash / anchorSpy
+        filtered = filtered.map(d => ({
+          ...d,
+          spy_value: d.spy_value != null ? d.spy_value * spyMultiplier : null,
+        }))
+      }
     }
 
     // For longer views with many data points, dedupe to latest per day
