@@ -745,12 +745,19 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
         ml_record.activated_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Reload model in memory — picks up the freshly-copied active.joblib
+        # Reload model in memory — picks up the freshly-copied active.joblib.
+        # If this fails the activation row already committed, so production
+        # is in a split state (DB says active, memory still holds the old
+        # weights). We log so operators can see the mismatch instead of
+        # silently believing the deploy completed.
         try:
             from ml.model import reload_model
             reload_model()
         except Exception:
-            pass
+            logger.exception(
+                f"reload_model() failed after activating ML v{ml_record.version}; "
+                "in-memory weights may not match the active DB row"
+            )
 
         primary_metric = f"{metric_name}={new_metric:.4f}" if new_metric else "unknown"
         logger.info(f"ML model v{ml_record.version} ({model_type}) trained and activated: {primary_metric}")
@@ -764,7 +771,13 @@ def _run_training(db_url: str, strategy: str, backtest_ids: list, ml_model_id: i
                 ml_record.error_message = str(e)[:500]
                 db.commit()
         except Exception:
-            pass
+            # If even the failure-record write fails the DB row stays as
+            # 'training' forever and the Admin UI never surfaces the real
+            # error. Log explicitly so we can see a double-failure in logs.
+            logger.exception(
+                f"Failed to record training failure for ML id={ml_model_id}; "
+                "row may remain stuck in 'training' status"
+            )
     finally:
         db.close()
 

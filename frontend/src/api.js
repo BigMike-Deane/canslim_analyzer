@@ -149,17 +149,30 @@ export const api = {
   // Auth
   getMe: () => request('/api/auth/me'),
 
-  updateMyWebhook: (webhook_url) => request('/api/auth/me/webhook', {
-    method: 'PATCH',
-    body: JSON.stringify({ webhook_url }),
-  }),
+  // PATCH endpoints below mutate the user profile that getMe() returns;
+  // without invalidation the cached /api/auth/me payload kept the pre-save
+  // values for up to the default 300s TTL, so Settings would re-show stale
+  // prefs after a save+nav-away+nav-back. Mirrors the invalidation pattern
+  // used elsewhere (notifications, portfolio, watchlist).
+  updateMyWebhook: async (webhook_url) => {
+    const r = await request('/api/auth/me/webhook', {
+      method: 'PATCH',
+      body: JSON.stringify({ webhook_url }),
+    })
+    cache.invalidate('/api/auth/me')
+    return r
+  },
 
   testMyWebhook: () => request('/api/auth/me/webhook/test', { method: 'POST' }),
 
-  updateNotificationPrefs: (prefs) => request('/api/auth/me/notification-prefs', {
-    method: 'PATCH',
-    body: JSON.stringify(prefs),
-  }),
+  updateNotificationPrefs: async (prefs) => {
+    const r = await request('/api/auth/me/notification-prefs', {
+      method: 'PATCH',
+      body: JSON.stringify(prefs),
+    })
+    cache.invalidate('/api/auth/me')
+    return r
+  },
 
   // Web Push (per-device, native browser notifications)
   getVapidPublicKey: () => request('/api/push/vapid-public-key'),
