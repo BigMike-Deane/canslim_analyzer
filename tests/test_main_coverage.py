@@ -32,6 +32,7 @@ Regressions named below are guarded against by specific tests:
 import os
 import pytest
 from datetime import datetime, date, timezone, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("REQUIRE_AUTH", "false")
@@ -3705,3 +3706,126 @@ class TestPortfolioGameplan:
             for key in ("action", "priority", "ticker", "reason", "details"):
                 assert key in a, f"missing {key} in {a}"
             assert a["action"] in {"SELL", "TRIM", "BUY", "ADD", "WATCH"}
+
+
+class TestGetDataFreshness:
+    """Direct unit tests for backend.main.get_data_freshness.
+
+    Pure helper consumed by /api/stocks (line 1148) and /api/stocks/{ticker}
+    (line 1764). The freshness chip on Screener + StockDetail depends on its
+    `age_text` shape strings ("Just now", "Nm ago", "Nh ago", "Nd ago") so a
+    silent refactor of those strings would break the chip without any
+    integration test noticing. Pins both the strings and the is_stale flag.
+    """
+
+    def test_none_input_returns_unknown(self):
+        from backend.main import get_data_freshness
+        r = get_data_freshness(None)
+        assert r == {"age_minutes": None, "age_text": "Unknown", "is_stale": True}
+
+    def test_naive_datetime_treated_as_utc(self):
+        # The DB returns naive datetimes for legacy rows; helper must not
+        # raise TypeError on subtraction (real bug class fixed in 5fac9e9).
+        from backend.main import get_data_freshness
+        now_naive = datetime.utcnow().replace(microsecond=0)
+        r = get_data_freshness(now_naive)
+        assert r["age_text"] == "Just now"
+        assert r["is_stale"] is False
+
+    def test_just_now_under_one_minute(self):
+        from backend.main import get_data_freshness
+        ts = datetime.now(timezone.utc) - timedelta(seconds=15)
+        assert get_data_freshness(ts)["age_text"] == "Just now"
+
+    def test_minutes_ago_under_one_hour(self):
+        from backend.main import get_data_freshness
+        ts = datetime.now(timezone.utc) - timedelta(minutes=42)
+        r = get_data_freshness(ts)
+        assert r["age_text"] == "42m ago"
+        assert r["age_minutes"] == 42
+        assert r["is_stale"] is False  # 42m < 4h default threshold
+
+    def test_hours_ago_under_24h(self):
+        from backend.main import get_data_freshness
+        ts = datetime.now(timezone.utc) - timedelta(hours=5, minutes=10)
+        r = get_data_freshness(ts)
+        assert r["age_text"] == "5h ago"
+        assert r["is_stale"] is True  # 5h > 4h default threshold
+
+    def test_days_ago_over_24h(self):
+        from backend.main import get_data_freshness
+        ts = datetime.now(timezone.utc) - timedelta(days=3, hours=2)
+        r = get_data_freshness(ts)
+        assert r["age_text"] == "3d ago"
+        assert r["is_stale"] is True
+
+
+class TestCsStats:
+    """Direct unit tests for backend.main._cs_stats.
+
+    Pure aggregator consumed by /api/coiled-spring/history (line 3014). The
+    win_rate / big_win_rate denominators MUST exclude pending alerts — a
+    bug there would lift win-rate to look healthier than it is. Pins the
+    counts + the pending-exclusion rule.
+    """
+
+    @staticmethod
+    def _alert(outcome):
+        # _cs_stats only reads .outcome, so a SimpleNamespace stand-in is
+        # enough — no need to construct a SQLAlchemy CoiledSpringAlert row.
+        return SimpleNamespace(outcome=outcome)
+
+    def test_empty_list_returns_all_zero(self):
+        from backend.main import _cs_stats
+        r = _cs_stats([])
+        assert r == {
+            "total": 0, "with_outcome": 0, "wins": 0, "big_wins": 0,
+            "losses": 0, "flat": 0, "pending": 0,
+            "win_rate": 0, "big_win_rate": 0,
+        }
+
+    def test_pending_excluded_from_win_rate_denominator(self):
+        # 2 wins of 4 resolved = 50%, regardless of how many pending sit alongside.
+        from backend.main import _cs_stats
+        alerts = [
+            self._alert("win"), self._alert("win"),
+            self._alert("loss"), self._alert("loss"),
+            self._alert(None), self._alert(None), self._alert(None),
+        ]
+        r = _cs_stats(alerts)
+        assert r["total"] == 7
+        assert r["with_outcome"] == 4
+        assert r["pending"] == 3
+        assert r["wins"] == 2
+        assert r["losses"] == 2
+        assert r["win_rate"] == 50.0
+
+    def test_big_win_counted_as_both_win_and_big_win(self):
+        # The outcome enum has 'big_win' in addition to 'win'; both should
+        # count in `wins` (line 2971 reads `outcome in ('win', 'big_win')`).
+        from backend.main import _cs_stats
+        alerts = [
+            self._alert("big_win"), self._alert("big_win"),
+            self._alert("win"),
+            self._alert("loss"),
+        ]
+        r = _cs_stats(alerts)
+        assert r["wins"] == 3
+        assert r["big_wins"] == 2
+        assert r["losses"] == 1
+        assert r["win_rate"] == 75.0
+        assert r["big_win_rate"] == 50.0
+
+    def test_flat_outcome_neither_win_nor_loss(self):
+        from backend.main import _cs_stats
+        alerts = [
+            self._alert("win"),
+            self._alert("flat"), self._alert("flat"),
+            self._alert("loss"),
+        ]
+        r = _cs_stats(alerts)
+        assert r["wins"] == 1
+        assert r["flat"] == 2
+        assert r["losses"] == 1
+        assert r["with_outcome"] == 4
+        assert r["win_rate"] == 25.0
