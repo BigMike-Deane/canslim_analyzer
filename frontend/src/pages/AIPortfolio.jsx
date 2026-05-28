@@ -114,15 +114,46 @@ function PerformanceChart({ history, startingCash, timeRange }) {
   const lineColor = isPositive ? '#10b981' : '#ef4444'
   const gradientId = isPositive ? 'perfGradientGreen' : 'perfGradientRed'
 
+  // Compact-currency tick formatter for the Y axis. Portfolio values live
+  // in the $20k–$100k range so "$25k" / "$32.5k" reads cleaner than the
+  // full "$25,000.00" — and short labels keep the small h-44 chart from
+  // sacrificing plot area to axis text.
+  const formatYTick = (v) => {
+    if (v == null) return ''
+    if (Math.abs(v) >= 1000) {
+      // 1 decimal under $10k for resolution, 0 decimals above so the ladder
+      // shows clean $25k / $30k / $35k steps when the line is up at altitude.
+      return `$${(v / 1000).toFixed(v < 10000 ? 1 : 0)}k`
+    }
+    return `$${v.toFixed(0)}`
+  }
+
+  // X-axis tick formatter is range-aware: intraday view shows time only;
+  // multi-day views show month+day. Same CST timezone as the tooltip so the
+  // axis ticks and the hover label agree.
+  const formatXTick = (ts) => {
+    if (!ts) return ''
+    const d = new Date(ts)
+    if (isNaN(d)) return ''
+    if (timeRange === '1d') {
+      return d.toLocaleTimeString('en-US', {
+        timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true,
+      })
+    }
+    return d.toLocaleDateString('en-US', {
+      timeZone: 'America/Chicago', month: 'short', day: 'numeric',
+    })
+  }
+
   return (
     <Card variant="glass" className="mb-4">
       <div className="flex justify-between items-center mb-2">
         <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Performance</span>
         <span className="text-dark-500 text-[10px] font-data">{filteredHistory.length} pts</span>
       </div>
-      <div className="h-44">
+      <div className="h-52">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={filteredHistory}>
+          <AreaChart data={filteredHistory} margin={{ top: 8, right: 4, bottom: 0, left: 4 }}>
             <defs>
               <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={lineColor} stopOpacity={0.25} />
@@ -157,7 +188,12 @@ function PerformanceChart({ history, startingCash, timeRange }) {
               y={startingCash}
               stroke="#666"
               strokeDasharray="3 3"
-              label={{ value: 'Start', position: 'right', fill: '#666', fontSize: 10 }}
+              label={{
+                value: `Start ${formatYTick(startingCash)}`,
+                position: 'insideTopLeft',
+                fill: '#666',
+                fontSize: 10,
+              }}
             />
             <Tooltip
               contentStyle={tooltipStyle}
@@ -174,8 +210,24 @@ function PerformanceChart({ history, startingCash, timeRange }) {
                 return ''
               }}
             />
-            <XAxis dataKey="timestamp" hide />
-            <YAxis hide domain={['dataMin - 500', 'dataMax + 500']} />
+            <XAxis
+              dataKey="timestamp"
+              tickFormatter={formatXTick}
+              tick={{ fill: '#8c7479', fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={36}
+            />
+            <YAxis
+              orientation="right"
+              domain={['dataMin - 500', 'dataMax + 500']}
+              tickFormatter={formatYTick}
+              tick={{ fill: '#8c7479', fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              width={42}
+              tickCount={4}
+            />
           </AreaChart>
         </ResponsiveContainer>
       </div>
