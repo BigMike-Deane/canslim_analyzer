@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, memo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import { computePositionSizing } from '../positionSizing'
+import { useOwnerPrefs } from '../hooks/useOwnerPrefs'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -382,6 +383,7 @@ export default function CommandCenter() {
   const [runningAction, setRunningAction] = useState(null)
   const [mlStatus, setMlStatus] = useState(null)
   const toast = useToast()
+  const { matchesPrefs } = useOwnerPrefs()
 
   const fetchData = useCallback(async () => {
     // ML status rides the same market tick as the main payload so a training
@@ -723,17 +725,37 @@ export default function CommandCenter() {
           </Card>
 
           {/* Top Candidates */}
+          {(() => {
+            const visibleCandidates = (candidates || []).filter(matchesPrefs)
+            const hiddenByPrefs = (candidates?.length || 0) - visibleCandidates.length
+            return (
           <Card as="section" aria-labelledby="cc-candidates-heading" variant="glass" animate stagger={3}>
             <CollapsibleSection
               title="Top Candidates"
               titleId="cc-candidates-heading"
-              badge={<span className="text-[10px] font-data text-dark-500">{candidates?.length || 0}</span>}
+              badge={
+                <span className="text-[10px] font-data text-dark-500">
+                  {visibleCandidates.length}
+                  {hiddenByPrefs > 0 && (
+                    <span
+                      className="ml-1 text-amber-400/80"
+                      title={`${hiddenByPrefs} hidden by Owner Preferences — edit in Settings`}
+                    >
+                      ({hiddenByPrefs} hidden)
+                    </span>
+                  )}
+                </span>
+              }
             >
               <div className="max-h-72 overflow-y-auto -mx-1">
-                {(!candidates || candidates.length === 0) && (
-                  <EmptyState bare compact message="No candidates above threshold" hint="No stocks currently clear the buy score. Try a fresh scan." />
+                {visibleCandidates.length === 0 && (
+                  <EmptyState
+                    bare compact
+                    message={hiddenByPrefs > 0 ? 'All candidates hidden by Owner Preferences' : 'No candidates above threshold'}
+                    hint={hiddenByPrefs > 0 ? 'Adjust filters in Settings to widen the view.' : 'No stocks currently clear the buy score. Try a fresh scan.'}
+                  />
                 )}
-                {candidates?.map(c => <CandidateRow key={c.ticker} c={c} portfolio={portfolio} />)}
+                {visibleCandidates.map(c => <CandidateRow key={c.ticker} c={c} portfolio={portfolio} />)}
               </div>
               {candidates?.length > 0 && (
                 <Link to="/screener" className="block text-center text-[10px] text-primary-400 hover:text-primary-300 mt-2 pt-2 border-t border-dark-700/30 transition-colors">
@@ -742,6 +764,8 @@ export default function CommandCenter() {
               )}
             </CollapsibleSection>
           </Card>
+            )
+          })()}
         </div>
 
         {/* ═══ RIGHT COLUMN ═══ */}

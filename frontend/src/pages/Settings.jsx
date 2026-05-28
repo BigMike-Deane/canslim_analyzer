@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api, formatRelativeTime } from '../api'
 import { useAuth } from '../auth'
+import { useOwnerPrefs } from '../hooks/useOwnerPrefs'
 
 // Notification kinds the user can mute. Matches backend _VALID_KINDS in
 // routes/auth.py and frontend KIND_META in pages/Notifications.jsx.
@@ -97,6 +98,10 @@ export default function Settings() {
   // Polls every minute so the active-now indicator under quiet hours stays
   // honest without forcing a save.
   const [chicagoHour, setChicagoHour] = useState(() => _currentChicagoHour())
+  // Owner preferences — three persistent client-side filters that
+  // shape which candidates appear on CommandCenter (and, eventually,
+  // other list pages). Stored in localStorage; no server roundtrip.
+  const { prefs: ownerPrefs, setPrefs: setOwnerPrefs } = useOwnerPrefs()
   useEffect(() => {
     const tick = () => setChicagoHour(_currentChicagoHour())
     const id = setInterval(tick, 60_000)
@@ -475,6 +480,100 @@ export default function Settings() {
             {prefsMessage.text}
           </div>
         )}
+      </section>
+
+      {/* Owner preferences — client-side filters that shape which
+          candidates appear on the home dashboard. Stored in localStorage
+          per-device (not synced to other browsers). Mirrors the
+          trading-prefs comment block in CLAUDE.md. */}
+      <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
+        <h2 className="text-lg font-medium text-white mb-1">Owner preferences</h2>
+        <p className="text-sm text-dark-400 mb-4">
+          Filter candidates to your usual trading style. Applied client-side on
+          the Command Center "Top Candidates" list. Other pages (Screener,
+          Breakouts) keep their own filters independent for now.
+        </p>
+
+        {/* Max share price — owner's CLAUDE.md preference is under $25. */}
+        <div className="mb-4">
+          <label className="block text-xs font-semibold tracking-wide text-dark-400 mb-1.5">
+            MAX SHARE PRICE
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="text-dark-500">$</span>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              placeholder="No limit"
+              value={ownerPrefs.maxSharePrice ?? ''}
+              onChange={(e) => {
+                const raw = e.target.value
+                const next = raw === '' ? null : Math.max(0, Number(raw))
+                setOwnerPrefs({ maxSharePrice: Number.isFinite(next) ? next : null })
+              }}
+              className="w-32 px-3 py-1.5 rounded bg-dark-850 border border-dark-700 text-dark-100 text-sm focus:border-primary-500/60 focus:outline-none"
+            />
+            {ownerPrefs.maxSharePrice != null && (
+              <button
+                onClick={() => setOwnerPrefs({ maxSharePrice: null })}
+                className="text-xs text-dark-500 hover:text-dark-300"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-dark-500 mt-1">
+            Hide candidates priced above this. Leave blank to show all.
+          </p>
+        </div>
+
+        {/* Hide extended — chases above pivot+5%. */}
+        <label className="flex items-start gap-3 px-3 py-2.5 rounded border border-dark-700/60 bg-dark-850 mb-2 cursor-pointer hover:border-dark-600">
+          <input
+            type="checkbox"
+            checked={ownerPrefs.hideExtended}
+            onChange={(e) => setOwnerPrefs({ hideExtended: e.target.checked })}
+            className="mt-0.5 accent-primary-500"
+          />
+          <div className="flex-1">
+            <div className="text-sm text-dark-100">Hide extended candidates</div>
+            <div className="text-[11px] text-dark-500">
+              Drops anything more than 5% above its pivot — chasing the breakout.
+            </div>
+          </div>
+        </label>
+
+        {/* Hide near-earnings — gap-down risk on fresh entries. */}
+        <label className="flex items-start gap-3 px-3 py-2.5 rounded border border-dark-700/60 bg-dark-850 mb-2 cursor-pointer hover:border-dark-600">
+          <input
+            type="checkbox"
+            checked={ownerPrefs.hideNearEarnings}
+            onChange={(e) => setOwnerPrefs({ hideNearEarnings: e.target.checked })}
+            className="mt-0.5 accent-primary-500"
+          />
+          <div className="flex-1">
+            <div className="text-sm text-dark-100">
+              Hide candidates within{' '}
+              <input
+                type="number"
+                min="1"
+                max="30"
+                value={ownerPrefs.nearEarningsDays}
+                onChange={(e) => {
+                  const n = Math.max(1, Math.min(30, Number(e.target.value) || 7))
+                  setOwnerPrefs({ nearEarningsDays: n })
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-12 px-1.5 py-0.5 rounded bg-dark-900 border border-dark-700 text-dark-100 text-xs text-center"
+              />
+              {' '}days of earnings
+            </div>
+            <div className="text-[11px] text-dark-500">
+              Avoids the gap-down risk on positions taken right before a report.
+            </div>
+          </div>
+        </label>
       </section>
 
       {/* Web Push (per-device) */}
