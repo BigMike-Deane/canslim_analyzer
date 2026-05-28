@@ -1715,6 +1715,10 @@ async def get_stock(
         "base_type": stock.base_type,
         "is_breaking_out": stock.is_breaking_out,
         "breakout_volume_ratio": stock.breakout_volume_ratio or stock.volume_ratio or 1.0,
+        # Pivot price feeds the position-sizing helper on the frontend
+        # (computePositionSizing): pre-breakout entries limit just above pivot,
+        # active breakouts limit just above current. Null when no base detected.
+        "pivot_price": stock.pivot_price,
 
         # Earnings catalyst / Coiled Spring data
         "days_to_earnings": getattr(stock, 'days_to_earnings', None),
@@ -5781,6 +5785,9 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
         market_data = {"regime": "unknown"}
 
     # --- 2. Portfolio Summary ---
+    # stop_loss_pct + min_score_to_buy feed the client-side
+    # computePositionSizing helper that renders trade tickets next to
+    # CandidateRow / on StockDetail. Cheap to include — already on config.
     portfolio_summary = {
         "total_value": portfolio["total_value"],
         "cash": portfolio["cash"],
@@ -5790,6 +5797,8 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
         "total_return_pct": portfolio.get("total_return_pct", 0),
         "positions_count": len(positions),
         "max_positions": config.max_positions,
+        "stop_loss_pct": config.stop_loss_pct,
+        "min_score_to_buy": config.min_score_to_buy,
         "strategy": getattr(config, 'strategy', None) or "balanced",
         "paper_mode": getattr(config, 'paper_mode', False) or False,
         "is_active": config.is_active,

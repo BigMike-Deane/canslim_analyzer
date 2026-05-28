@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, memo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatTime, formatRelativeTime, getScoreClass } from '../api'
+import { computePositionSizing } from '../positionSizing'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -264,7 +265,27 @@ const PositionRow = memo(function PositionRow({ p, earningsDays }) {
   )
 })
 
-function CandidateRow({ c }) {
+function CandidateRow({ c, portfolio }) {
+  // When the portfolio summary is loaded we can render the actionable
+  // "30sh @ $24.50" chip in place of the bare price. Sizing is a pure
+  // derivation — no network, no extra render cost. Suppressed for
+  // non-actionable kinds (extended / below_threshold / no_cash) so the
+  // dashboard never invites a chase.
+  const sizing = portfolio?.total_value && c.price && c.score
+    ? computePositionSizing({
+        ticker: c.ticker,
+        currentPrice: c.price,
+        pivotPrice: c.pivot_price,
+        score: c.score,
+        cash: portfolio.cash,
+        totalValue: portfolio.total_value,
+        positionsCount: portfolio.positions_count,
+        maxPositions: portfolio.max_positions,
+        stopLossPct: portfolio.stop_loss_pct,
+        minScore: portfolio.min_score_to_buy,
+      })
+    : null
+  const sizingActionable = sizing?.kind === 'actionable'
   // Owner's CLAUDE.md filter is "stocks under $25 that fit CANSLIM" — surface
   // that as a visual signal so the home screen does the filter pass without
   // requiring a tap into StockDetail. >=$25 stays visible but muted.
@@ -313,7 +334,14 @@ function CandidateRow({ c }) {
             +{c.projected_growth?.toFixed(0)}%
           </span>
         )}
-        {price != null && (
+        {sizingActionable ? (
+          <span
+            className="text-[10px] font-data shrink-0 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+            title={`Suggested: BUY ${sizing.shares} ${c.ticker} @ $${sizing.limitPrice.toFixed(2)} (stop $${sizing.stopPrice.toFixed(2)}, risk ${sizing.riskPct}% of portfolio)`}
+          >
+            {sizing.shares}sh@${sizing.limitPrice.toFixed(2)}
+          </span>
+        ) : price != null && (
           <span
             className={`text-[10px] font-data shrink-0 ${priceColor}`}
             title={price < 25 ? 'Under $25 — matches owner filter' : `$${price.toFixed(2)}`}
@@ -705,7 +733,7 @@ export default function CommandCenter() {
                 {(!candidates || candidates.length === 0) && (
                   <EmptyState bare compact message="No candidates above threshold" hint="No stocks currently clear the buy score. Try a fresh scan." />
                 )}
-                {candidates?.map(c => <CandidateRow key={c.ticker} c={c} />)}
+                {candidates?.map(c => <CandidateRow key={c.ticker} c={c} portfolio={portfolio} />)}
               </div>
               {candidates?.length > 0 && (
                 <Link to="/screener" className="block text-center text-[10px] text-primary-400 hover:text-primary-300 mt-2 pt-2 border-t border-dark-700/30 transition-colors">

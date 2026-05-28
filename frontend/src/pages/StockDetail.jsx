@@ -8,6 +8,8 @@ import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
+import PositionSizingCard from '../components/PositionSizingCard'
+import { computePositionSizing } from '../positionSizing'
 
 /* ─── Score Gauge (SVG ring) ──────────────────────────────────────── */
 
@@ -1045,6 +1047,10 @@ export default function StockDetail() {
   const [error, setError] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [scoreResolution, setScoreResolution] = useState('daily')
+  // AI Portfolio config + summary drives the position-sizing card below.
+  // Lightweight piggyback fetch — same endpoint AIPortfolio.jsx uses, so
+  // it'll hit the api.js 120s cache on the second view of this page.
+  const [aiPortfolio, setAiPortfolio] = useState(null)
 
   // Adjacent tickers from the list page the user came from (Screener,
   // Watchlist, Breakouts). null source = no context (direct URL, etc.),
@@ -1072,6 +1078,15 @@ export default function StockDetail() {
     fetchStock(scoreResolution)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker, scoreResolution])
+
+  // Fetch AI Portfolio state once on mount — drives PositionSizingCard.
+  // Swallow failures: the card is best-effort. If the API errors, the
+  // card simply hides and the existing Actions buttons still work.
+  useEffect(() => {
+    api.getAIPortfolio()
+      .then(setAiPortfolio)
+      .catch(() => setAiPortfolio(null))
+  }, [])
 
   // Scroll to top when the ticker changes — without this, clicking the
   // prev/next nav from the page header leaves the viewport at the bottom
@@ -1264,6 +1279,33 @@ export default function StockDetail() {
       {/* Actions */}
       <section aria-label="Actions">
         <SectionLabel>Actions</SectionLabel>
+
+        {/* Position sizing — derived from current AI Portfolio state +
+            this stock's pivot/price. Renders the card only if both the
+            portfolio fetched and the stock has a usable price. The card
+            self-suppresses when the trade isn't actionable (extended,
+            below score gate, no cash, already at max-positions). */}
+        {(() => {
+          if (!aiPortfolio?.summary || !stock?.current_price) return null
+          const heldTickers = new Set(
+            (aiPortfolio.positions || []).map(p => p.ticker?.toUpperCase())
+          )
+          const alreadyHeld = heldTickers.has((stock.ticker || ticker).toUpperCase())
+          const sizing = computePositionSizing({
+            ticker: stock.ticker || ticker,
+            currentPrice: stock.current_price,
+            pivotPrice: stock.pivot_price,
+            score: stock.canslim_score,
+            cash: aiPortfolio.summary.cash,
+            totalValue: aiPortfolio.summary.total_value,
+            positionsCount: aiPortfolio.positions?.length || 0,
+            maxPositions: aiPortfolio.config?.max_positions,
+            stopLossPct: aiPortfolio.config?.stop_loss_pct,
+            minScore: aiPortfolio.config?.min_score_to_buy,
+          })
+          return <PositionSizingCard sizing={sizing} alreadyHeld={alreadyHeld} />
+        })()}
+
         <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4">
           <button onClick={handleAddToWatchlist} className="btn-secondary">
             + Watchlist
