@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatTime, formatRelativeTime, getScoreClass } from '../api'
 import { computePositionSizing } from '../positionSizing'
 import { useOwnerPrefs } from '../hooks/useOwnerPrefs'
+import PositionHealthChip from '../components/PositionHealthChip'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
@@ -235,6 +236,7 @@ const PositionRow = memo(function PositionRow({ p, earningsDays }) {
       className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-dark-750/50 transition-colors group"
     >
       <div className="flex items-center gap-2 min-w-0">
+        <PositionHealthChip position={p} compact />
         <span className="text-xs font-semibold text-primary-400 w-11 shrink-0 group-hover:text-primary-300">{p.ticker}</span>
         <span className="text-[10px] font-data text-dark-500 w-7 shrink-0">{p.position_pct?.toFixed(0)}%</span>
         {stopDist != null && (

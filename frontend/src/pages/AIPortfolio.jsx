@@ -13,6 +13,7 @@ import { useToast } from '../components/Toast'
 import Modal from '../components/Modal'
 import PortfolioDetailView from '../components/PortfolioDetailView'
 import EmptyState from '../components/EmptyState'
+import PositionHealthChip from '../components/PositionHealthChip'
 
 // ── Performance Chart ───────────────────────────────────────────────
 // `timeRange` is now controlled by the page-level WindowReturnsBar so the
@@ -457,6 +458,7 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           >
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
+                <PositionHealthChip position={position} />
                 <span className="font-medium text-dark-100">{position.ticker}</span>
                 {position.sector && (
                   <TagBadge color="default" title={`Sector: ${position.sector}`}>
