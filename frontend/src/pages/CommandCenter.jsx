@@ -10,10 +10,13 @@ import Spinner from '../components/Spinner'
 import EmptyState from '../components/EmptyState'
 import { useToast } from '../components/Toast'
 
-// Auto-refresh during market hours (M-F 8:30am-4pm CST)
+// Auto-refresh during market hours (M-F 8:30am-4pm CST).
+// Gate is evaluated PER TICK, not at effect-mount, so a tab opened at 8:25am
+// will start polling at the next tick after 8:30, and one opened at 3:55pm
+// will stop firing past 4:00 without needing the user to reload.
 function useMarketRefresh(callback, intervalMs = 60000) {
   useEffect(() => {
-    const check = () => {
+    const isMarketHours = () => {
       const now = new Date()
       const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: 'numeric', weekday: 'short', hour12: false }).formatToParts(now)
       const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0')
@@ -24,10 +27,10 @@ function useMarketRefresh(callback, intervalMs = 60000) {
       return isWeekday && totalMins >= 510 && totalMins <= 960
     }
 
-    if (check()) {
-      const id = setInterval(callback, intervalMs)
-      return () => clearInterval(id)
-    }
+    const id = setInterval(() => {
+      if (isMarketHours()) callback()
+    }, intervalMs)
+    return () => clearInterval(id)
   }, [callback, intervalMs])
 }
 
@@ -93,10 +96,10 @@ function IndexRow({ label, data }) {
 function DefensePriorityCard({ positions }) {
   if (!positions || positions.length === 0) return null
   return (
-    <Card variant="accent" accent="red" className="bg-red-500/[0.04] mb-3">
+    <Card as="section" aria-labelledby="cc-defense-heading" variant="accent" accent="red" className="bg-red-500/[0.04] mb-3">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-red-300">Defensive Priority</span>
+          <span id="cc-defense-heading" className="text-sm font-semibold text-red-300">Defensive Priority</span>
           <TagBadge color="red">DEFENSE DAY</TagBadge>
         </div>
         <span className="text-[10px] text-dark-500">closest to stop</span>
@@ -148,10 +151,10 @@ function CoiledSpringSection({ cs }) {
   if (!hasData) return null
 
   return (
-    <Card variant="accent" accent="teal" className="bg-teal-500/[0.03]">
+    <Card as="section" aria-labelledby="cc-coiled-spring-heading" variant="accent" accent="teal" className="bg-teal-500/[0.03]">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-teal-300">Coiled Spring</span>
+          <span id="cc-coiled-spring-heading" className="text-sm font-semibold text-teal-300">Coiled Spring</span>
           <TagBadge color="teal">CATALYST</TagBadge>
         </div>
         <Link to="/coiled-spring/history" className="text-teal-400 text-[10px] hover:text-teal-300 transition-colors">
@@ -353,21 +356,26 @@ export default function CommandCenter() {
   const toast = useToast()
 
   const fetchData = useCallback(async () => {
+    // ML status rides the same market tick as the main payload so a training
+    // run that completes while the dashboard is open flips the pill from
+    // "training" to "v<n>" without requiring a page reload. allSettled keeps
+    // a single endpoint failure from blanking the other panel.
     try {
-      const result = await api.getCommandCenter()
-      setData(result)
-      setLastUpdate(new Date())
-      setError(null)
-    } catch (e) {
-      setError(e.message)
+      const [main, ml] = await Promise.allSettled([
+        api.getCommandCenter(),
+        api.getMLStatus(),
+      ])
+      if (main.status === 'fulfilled') {
+        setData(main.value)
+        setLastUpdate(new Date())
+        setError(null)
+      } else {
+        setError(main.reason?.message || 'Failed to load')
+      }
+      if (ml.status === 'fulfilled') setMlStatus(ml.value)
     } finally {
       setLoading(false)
     }
-  }, [])
-
-  // Fetch ML model status separately (lightweight)
-  useEffect(() => {
-    api.getMLStatus().then(setMlStatus).catch(() => {})
   }, [])
 
   useEffect(() => { fetchData() }, [fetchData])
@@ -463,7 +471,7 @@ export default function CommandCenter() {
   return (
     <div className="p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4 md:mb-5">
+      <header className="flex items-center justify-between mb-4 md:mb-5">
         <div className="flex items-center gap-2 md:gap-3 min-w-0">
           <h1 className="text-base md:text-lg font-bold text-dark-50 shrink-0">Command Center</h1>
           <div className="flex items-center gap-2">
@@ -492,11 +500,14 @@ export default function CommandCenter() {
               {runningAction === 'scan' ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Starting…</span> : 'Start Scan'}
             </button>
           </div>
-          <span className="text-[10px] text-dark-500 font-data hidden sm:inline">
-            {lastUpdate ? formatTime(lastUpdate.toISOString()) : ''}
+          <span
+            className="text-[10px] text-dark-500 font-data"
+            title={lastUpdate ? formatTime(lastUpdate.toISOString()) : ''}
+          >
+            {lastUpdate ? `Updated ${formatRelativeTime(lastUpdate.toISOString())}` : ''}
           </span>
         </div>
-      </div>
+      </header>
 
       {/* ═══════════════════════════════════════════
           MOBILE LAYOUT: optimized card order
@@ -505,9 +516,9 @@ export default function CommandCenter() {
 
       {/* Mobile-only: Portfolio hero card */}
       <div className="md:hidden mb-3">
-        <Card variant="glass">
+        <Card as="section" aria-labelledby="cc-mobile-portfolio-heading" variant="glass">
           <div className="flex items-center justify-between mb-2">
-            <SectionLabel>Portfolio</SectionLabel>
+            <SectionLabel id="cc-mobile-portfolio-heading">Portfolio</SectionLabel>
             <span className="text-[10px] text-dark-500 capitalize font-medium">{strategyLabel}</span>
           </div>
           <div className="flex items-baseline gap-3 mb-2">
@@ -571,8 +582,8 @@ export default function CommandCenter() {
         {/* ═══ LEFT COLUMN (desktop only for market/portfolio/risk) ═══ */}
         <div className="md:col-span-3 space-y-3">
           {/* Market Regime */}
-          <Card variant="glass" animate stagger={1}>
-            <SectionLabel>Market</SectionLabel>
+          <Card as="section" aria-labelledby="cc-market-heading" variant="glass" animate stagger={1}>
+            <SectionLabel id="cc-market-heading">Market</SectionLabel>
             <div className="space-y-0.5">
               <IndexRow label="SPY" data={market?.spy} />
               <IndexRow label="QQQ" data={market?.qqq} />
@@ -592,9 +603,9 @@ export default function CommandCenter() {
           </Card>
 
           {/* Portfolio Summary (desktop) */}
-          <Card variant="glass" animate stagger={2} className="hidden md:block">
+          <Card as="section" aria-labelledby="cc-portfolio-heading" variant="glass" animate stagger={2} className="hidden md:block">
             <div className="flex items-center justify-between mb-1">
-              <SectionLabel>Portfolio</SectionLabel>
+              <SectionLabel id="cc-portfolio-heading">Portfolio</SectionLabel>
               <span className="text-[10px] text-dark-500 capitalize font-medium">{strategyLabel}</span>
             </div>
             <div className={`text-2xl font-bold font-data mb-1 ${
@@ -634,8 +645,8 @@ export default function CommandCenter() {
           </Card>
 
           {/* Risk (desktop) */}
-          <Card variant="glass" animate stagger={3} className="hidden md:block">
-            <SectionLabel>Risk</SectionLabel>
+          <Card as="section" aria-labelledby="cc-risk-heading" variant="glass" animate stagger={3} className="hidden md:block">
+            <SectionLabel id="cc-risk-heading">Risk</SectionLabel>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-dark-400">Heat</span>
               <span className={`text-sm font-data font-semibold ${
@@ -657,9 +668,10 @@ export default function CommandCenter() {
         {/* ═══ CENTER COLUMN ═══ */}
         <div className="md:col-span-5 space-y-3">
           {/* Positions */}
-          <Card variant="glass" animate stagger={2}>
+          <Card as="section" aria-labelledby="cc-positions-heading" variant="glass" animate stagger={2}>
             <CollapsibleSection
               title="Positions"
+              titleId="cc-positions-heading"
               badge={<span className="text-[10px] font-data text-dark-500">{positions?.length || 0}</span>}
             >
               <div className="max-h-80 overflow-y-auto -mx-1">
@@ -683,9 +695,10 @@ export default function CommandCenter() {
           </Card>
 
           {/* Top Candidates */}
-          <Card variant="glass" animate stagger={3}>
+          <Card as="section" aria-labelledby="cc-candidates-heading" variant="glass" animate stagger={3}>
             <CollapsibleSection
               title="Top Candidates"
+              titleId="cc-candidates-heading"
               badge={<span className="text-[10px] font-data text-dark-500">{candidates?.length || 0}</span>}
             >
               <div className="max-h-72 overflow-y-auto -mx-1">
@@ -711,8 +724,8 @@ export default function CommandCenter() {
           </div>
 
           {/* Earnings Countdown */}
-          <Card variant="glass" animate stagger={4}>
-            <CollapsibleSection title="Earnings">
+          <Card as="section" aria-labelledby="cc-earnings-heading" variant="glass" animate stagger={4}>
+            <CollapsibleSection title="Earnings" titleId="cc-earnings-heading">
               {(!earnings || earnings.length === 0) ? (
                 <EmptyState bare compact message="No upcoming earnings" />
               ) : (
@@ -742,8 +755,8 @@ export default function CommandCenter() {
           </Card>
 
           {/* Recent Trades */}
-          <Card variant="glass" animate stagger={5}>
-            <CollapsibleSection title="Trades">
+          <Card as="section" aria-labelledby="cc-trades-heading" variant="glass" animate stagger={5}>
+            <CollapsibleSection title="Trades" titleId="cc-trades-heading">
               {(!trades || trades.length === 0) ? (
                 <EmptyState bare compact message="No recent trades" />
               ) : (
@@ -779,8 +792,8 @@ export default function CommandCenter() {
           </Card>
 
           {/* Mobile Risk (collapsed by default) */}
-          <Card variant="glass" className="md:hidden">
-            <CollapsibleSection title="Risk" defaultOpen={false}>
+          <Card as="section" aria-labelledby="cc-mobile-risk-heading" variant="glass" className="md:hidden">
+            <CollapsibleSection title="Risk" titleId="cc-mobile-risk-heading" defaultOpen={false}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-dark-400">Heat</span>
                 <span className={`text-sm font-data font-semibold ${
@@ -800,10 +813,10 @@ export default function CommandCenter() {
           </Card>
 
           {/* Scanner Status */}
-          <Card variant="glass" padding="px-4 py-3" animate stagger={6}>
+          <Card as="section" aria-labelledby="cc-scanner-heading" variant="glass" padding="px-4 py-3" animate stagger={6}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Scanner</span>
+                <span id="cc-scanner-heading" className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Scanner</span>
                 {scanner?.is_scanning ? (
                   <span className="flex items-center gap-1.5 text-[10px] text-primary-400">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse-dot" />
@@ -861,10 +874,10 @@ export default function CommandCenter() {
           </Card>
 
           {/* ML Model Status */}
-          <Card variant="glass" padding="px-4 py-3" animate stagger={7}>
+          <Card as="section" aria-labelledby="cc-ml-heading" variant="glass" padding="px-4 py-3" animate stagger={7}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">ML Model</span>
+                <span id="cc-ml-heading" className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">ML Model</span>
                 {mlStatus?.active_model ? (
                   <span
                     className="flex items-center gap-1.5 text-[10px] text-emerald-400"

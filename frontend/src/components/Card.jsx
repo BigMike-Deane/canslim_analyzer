@@ -59,10 +59,10 @@ export function CardHeader({ title, subtitle, action, className = '', titleId })
   )
 }
 
-export function SectionLabel({ children, className = '' }) {
+export function SectionLabel({ children, className = '', id }) {
   return (
     <div className={`flex items-center gap-2 mb-3 ${className}`}>
-      <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">
+      <span id={id} className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">
         {children}
       </span>
       <div className="flex-1 h-px bg-dark-700/50" />

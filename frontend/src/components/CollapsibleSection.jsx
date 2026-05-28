@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-export default function CollapsibleSection({ title, badge, defaultOpen = true, onOpenChange, children }) {
+export default function CollapsibleSection({ title, titleId, badge, defaultOpen = true, onOpenChange, children }) {
   const [open, setOpen] = useState(defaultOpen)
   const toggle = () => {
     setOpen(prev => {
@@ -14,9 +14,10 @@ export default function CollapsibleSection({ title, badge, defaultOpen = true, o
       <button
         onClick={toggle}
         className="flex items-center justify-between w-full mb-2 group"
+        aria-expanded={open}
       >
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{title}</span>
+          <span id={titleId} className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{title}</span>
           {badge}
         </div>
         <svg
