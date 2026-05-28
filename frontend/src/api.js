@@ -176,12 +176,20 @@ export const api = {
 
   // Web Push (per-device, native browser notifications)
   getVapidPublicKey: () => request('/api/push/vapid-public-key'),
-  subscribePush: (subscription) => request('/api/push/subscribe', {
-    method: 'POST',
-    body: JSON.stringify(subscription),
-  }),
+  subscribePush: async (subscription) => {
+    const r = await request('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(subscription),
+    })
+    cache.invalidate('/api/push/subscriptions')
+    return r
+  },
   listPushSubscriptions: () => request('/api/push/subscriptions'),
-  deletePushSubscription: (id) => request(`/api/push/subscriptions/${id}`, { method: 'DELETE' }),
+  deletePushSubscription: async (id) => {
+    const r = await request(`/api/push/subscriptions/${id}`, { method: 'DELETE' })
+    cache.invalidate('/api/push/subscriptions')
+    return r
+  },
   testPush: () => request('/api/push/test', { method: 'POST' }),
 
   // Notifications (in-app, per-user)
@@ -612,6 +620,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(userData),
     })
+    cache.invalidate('/api/admin/users')
     return result
   },
 
@@ -620,6 +629,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     })
+    cache.invalidate('/api/admin/users')
     return result
   },
 
@@ -630,7 +640,14 @@ export const api = {
 
   // System Health & Backups
   getSystemHealth: () => request('/api/system-health'),
-  triggerBackup: () => request('/api/system/backup', { method: 'POST' }),
+  triggerBackup: async () => {
+    const r = await request('/api/system/backup', { method: 'POST' })
+    // Backup runs in a background task; the file may not be on disk yet,
+    // but invalidating clears the cached list so the next GET returns
+    // whatever the server reports rather than the pre-trigger snapshot.
+    cache.invalidate('/api/system/backups')
+    return r
+  },
   getBackups: () => request('/api/system/backups'),
 
   // Admin — Live A/B evaluation (Approach 2 keep/revert dashboard)
