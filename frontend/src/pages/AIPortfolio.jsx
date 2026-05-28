@@ -42,6 +42,23 @@ function PerformanceChart({ history, startingCash, timeRange }) {
       filtered = filtered.filter(d => new Date(d.timestamp || d.date) >= cutoff)
     }
 
+    // Trim leading "flat startingCash" snapshots — the portfolio sits at
+    // exactly the starting cash on every snapshot between Initialize and the
+    // first BUY. Those days are visually dead and push the actual equity
+    // curve into a sliver on the right edge of the chart. Drop everything
+    // before the first snapshot whose total_value departs from startingCash
+    // by more than 50¢ (epsilon covers rounding when a partial buy lands).
+    // Server-side WindowReturns are unaffected — those compute against the
+    // window's first snapshot directly, so the summary card and per-position
+    // returns still anchor at the user-selected window start.
+    if (startingCash != null && filtered.length > 1) {
+      const FLAT_EPSILON = 0.5
+      const firstActivityIdx = filtered.findIndex(d =>
+        d.total_value != null && Math.abs(d.total_value - startingCash) > FLAT_EPSILON
+      )
+      if (firstActivityIdx > 0) filtered = filtered.slice(firstActivityIdx)
+    }
+
     // For longer views with many data points, dedupe to latest per day
     // But only if there are enough unique days to make a readable chart (7+)
     if (range !== '1d' && filtered.length > 60) {
