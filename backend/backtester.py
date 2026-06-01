@@ -2716,6 +2716,39 @@ class BacktestEngine:
                 sells.append(trade)
                 continue
 
+            # ── EXPERIMENT (gated, default OFF): score-floor exit ──────────────
+            # Hypothesis: cut laggards whose CANSLIM score sits below an absolute
+            # floor for N consecutive scans — even if modestly green — to free
+            # capital for fresh >=min_score candidates. Distinct from SCORE CRASH
+            # (which needs a big DROP from purchase AND ignores profitable names),
+            # so it catches names that simply decay to mediocrity without a crash.
+            # Winners up >= min_gain_to_exempt are exempt: trailing-stop / take-
+            # profit manage them (avoids cutting future winners on a score dip —
+            # the concentration mistake that sank the rotation experiment).
+            # Enabled only via profile_overrides; absent => champion unchanged.
+            # NOT mirrored to ai_trader.py: offline backtest research only until a
+            # post-June-18 ship decision (keeps the live eval surface untouched).
+            floor_cfg = self.profile.get('score_floor_exit', {})
+            if (floor_cfg.get('enabled')
+                    and gain_pct < floor_cfg.get('min_gain_to_exempt', 20)
+                    and current_score < floor_cfg.get('floor', 60)):
+                floor = floor_cfg.get('floor', 60)
+                need = floor_cfg.get('consecutive', 3)
+                stab = self._check_score_stability(ticker, current_score, threshold=floor)
+                if stab.get('consecutive_low', 0) >= need:
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=position.shares,
+                        price=price,
+                        reason=f"SCORE FLOOR: {current_score:.0f} < {floor:.0f} for {stab.get('consecutive_low')} scans, gain {gain_pct:+.1f}%",
+                        score=current_score,
+                        priority=4,
+                    )
+                    trade._signal_factors = {"sell_reason": "SCORE FLOOR", "gain_pct": round(gain_pct, 1), "consecutive_low": stab.get('consecutive_low')}
+                    sells.append(trade)
+                    continue
+
             # PARTIAL PROFIT TAKING - let winners run while locking in gains
             partial_taken = position.partial_profit_taken
             partial_action = get_partial_profit_action(gain_pct, current_score, partial_taken)
