@@ -322,6 +322,124 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
   )
 }
 
+// ── Edge Scorecard ──────────────────────────────────────────────────
+// The one card that answers "is the AI actually generating alpha, or just
+// riding beta?" — return vs SPY, beta-adjusted Jensen alpha, Sharpe, max
+// drawdown, win rate. All derived on-read server-side from the equity curve +
+// MarketSnapshot SPY series (see backend/edge_metrics.py).
+function EdgeMetric({ label, value, sub, tone = 'neutral', title }) {
+  const toneClass =
+    tone === 'pos' ? 'text-emerald-400' : tone === 'neg' ? 'text-red-400' : 'text-white'
+  return (
+    <div className="px-1" title={title}>
+      <div className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{label}</div>
+      <div className={`text-lg font-bold font-data mt-0.5 ${toneClass}`}>{value}</div>
+      {sub && <div className="text-[10px] text-dark-500 mt-0.5">{sub}</div>}
+    </div>
+  )
+}
+
+function EdgeScorecard({ edge }) {
+  if (!edge) return null
+
+  const pct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`)
+  const num = (v, d = 2) => (v == null ? '—' : v.toFixed(d))
+  const tone = (v) => (v == null ? 'neutral' : v >= 0 ? 'pos' : 'neg')
+
+  const insufficient = edge.status !== 'ok'
+  const excess = edge.excess_return_pct
+
+  let verdict = null
+  if (!insufficient && excess != null) {
+    verdict =
+      excess >= 0
+        ? `Beating SPY by ${excess.toFixed(1)}% since inception`
+        : `Trailing SPY by ${Math.abs(excess).toFixed(1)}% since inception`
+  }
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Edge Scorecard" subtitle="Risk-adjusted performance vs SPY" />
+      {insufficient ? (
+        <EmptyState
+          bare
+          compact
+          message="Not enough history yet"
+          hint="Edge metrics appear after a couple of trading days of snapshots."
+        />
+      ) : (
+        <>
+          {verdict && (
+            <div
+              className={`text-sm font-semibold mb-3 ${
+                excess >= 0 ? 'text-emerald-400' : 'text-red-400'
+              }`}
+            >
+              {verdict}
+            </div>
+          )}
+          <div className="grid grid-cols-3 gap-y-4 gap-x-2">
+            <EdgeMetric
+              label="You"
+              value={pct(edge.total_return_pct)}
+              tone={tone(edge.total_return_pct)}
+              sub="total return"
+              title="Portfolio total return since inception (window-scale, not annualized)"
+            />
+            <EdgeMetric
+              label="SPY"
+              value={pct(edge.spy_return_pct)}
+              tone={tone(edge.spy_return_pct)}
+              sub="same window"
+              title="SPY benchmark return over the same window"
+            />
+            <EdgeMetric
+              label="Alpha"
+              value={pct(edge.alpha_pct)}
+              tone={tone(edge.alpha_pct)}
+              sub="β-adjusted"
+              title="Jensen's alpha over the window: return minus beta×SPY return. Positive = skill beyond market exposure."
+            />
+            <EdgeMetric
+              label="Beta"
+              value={num(edge.beta)}
+              sub="vs SPY"
+              title="Sensitivity to SPY moves. >1 = swings more than the market."
+            />
+            <EdgeMetric
+              label="Sharpe"
+              value={num(edge.sharpe)}
+              tone={tone(edge.sharpe)}
+              sub="annualized"
+              title="Return per unit of risk (annualized, risk-free = 0). Higher is better; >1 is good."
+            />
+            <EdgeMetric
+              label="Max DD"
+              value={pct(edge.max_drawdown_pct)}
+              sub={
+                edge.spy_max_drawdown_pct != null
+                  ? `SPY ${edge.spy_max_drawdown_pct.toFixed(1)}%`
+                  : 'peak → trough'
+              }
+              title="Largest peak-to-trough decline. SPY's shown for comparison — smaller (less negative) is better."
+            />
+          </div>
+          <div className="border-t border-dark-700/50 mt-4 pt-2 flex items-center justify-between text-[10px] text-dark-500">
+            <span>
+              {edge.win_rate_pct != null
+                ? `Win rate ${edge.win_rate_pct}% (${edge.closed_trades} closed)`
+                : `${edge.closed_trades} closed trades`}
+            </span>
+            <span>
+              {edge.trading_days} trading days{edge.low_sample ? ' · small sample' : ''}
+            </span>
+          </div>
+        </>
+      )}
+    </Card>
+  )
+}
+
 // Pill values shared by SummaryCard's inline selector.
 // Drives SummaryCard return number + PositionsList per-row return +
 // PerformanceChart filter window.
@@ -1623,17 +1741,19 @@ export default function AIPortfolio() {
   })
   const [windowReturns, setWindowReturns] = useState(null)
   const [windowReturnsLoading, setWindowReturnsLoading] = useState(false)
+  const [edge, setEdge] = useState(null)
 
   const fetchData = async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true)
-      const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo] = await Promise.all([
+      const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo, edgeData] = await Promise.all([
         api.getAIPortfolio(),
         api.getAIPortfolioHistory(90),
         api.getAIPortfolioTrades(50),
         api.getCoiledSpringCandidates().catch(() => ({ candidates: [] })),
         api.getEarningsCalendar().catch(() => null),
         api.getPortfolioRisk().catch(() => null),
+        api.getAIPortfolioEdge().catch(() => null),
       ])
       setPortfolio(portfolioData)
       setHistory(historyData)
@@ -1641,6 +1761,7 @@ export default function AIPortfolio() {
       setCsAlerts(csData?.candidates || [])
       setEarningsCalendar(earningsData)
       setRiskData(riskInfo)
+      setEdge(edgeData)
       setLastUpdated(new Date())
 
       // Check if data changed while waiting for trades
@@ -1986,6 +2107,8 @@ export default function AIPortfolio() {
             startingCash={portfolio?.config?.starting_cash || 25000}
             timeRange={timeRange}
           />
+
+          <EdgeScorecard edge={edge} />
 
           <SectorAllocationChart
             riskData={riskData}

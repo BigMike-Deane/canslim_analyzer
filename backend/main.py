@@ -3439,6 +3439,115 @@ async def get_ai_portfolio_history(
     } for s in snapshots]
 
 
+@app.get("/api/ai-portfolio/edge")
+async def get_ai_portfolio_edge(
+    days: int = Query(365, le=3650),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Risk-adjusted edge scorecard: is the AI portfolio generating alpha?
+
+    Derived entirely on-read from two persisted series — the
+    ``AIPortfolioSnapshot`` equity curve and the daily ``MarketSnapshot``
+    SPY benchmark (same source as /history, NOT the eval-blocklisted
+    historical_data.py) — plus realized trade P&L for win rate. Nothing here
+    writes, and ``ai_trader.py`` is untouched, so the June-18 eval surface is
+    unaffected.
+
+    Returns return-vs-SPY, beta-adjusted alpha, Sharpe, max drawdown,
+    volatility and win rate. Defaults to all available history (~since
+    inception). See ``backend/edge_metrics.py`` for the math + conventions.
+    """
+    from datetime import timedelta, datetime as dt, timezone
+    from sqlalchemy import or_
+    from backend.edge_metrics import compute_edge_metrics, leading_flat_start_index
+
+    start_date = dt.now(timezone.utc) - timedelta(days=days)
+    start_date_only = date.today() - timedelta(days=days)
+
+    snapshots = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.user_id == current_user.id,
+        or_(
+            AIPortfolioSnapshot.timestamp >= start_date,
+            AIPortfolioSnapshot.date >= start_date_only,
+        )
+    ).all()
+
+    def _snap_day(s):
+        return s.date or (s.timestamp.date() if s.timestamp else None)
+
+    def _snap_ts(s):
+        if s.timestamp:
+            return s.timestamp
+        return dt.combine(s.date, dt.min.time()) if s.date else dt.min
+
+    # Reduce to one equity point per calendar day: end-of-day (latest snapshot).
+    by_day = {}
+    for s in snapshots:
+        d = _snap_day(s)
+        if d is None:
+            continue
+        cur = by_day.get(d)
+        if cur is None or _snap_ts(s) >= _snap_ts(cur):
+            by_day[d] = s
+    days_sorted = sorted(by_day)
+
+    # Drop the pre-inception flat segment (cash undeployed before the first
+    # trade) so beta/Sharpe/alpha and the SPY anchor reflect the real active
+    # period — mirrors the performance chart's pre-inception trim.
+    if days_sorted:
+        flat_start = leading_flat_start_index([by_day[d].total_value for d in days_sorted])
+        days_sorted = days_sorted[flat_start:]
+
+    # Build SPY benchmark rebased to the portfolio's starting equity, aligned
+    # 1:1 with the daily portfolio points (carry-forward over weekends/gaps).
+    spy_by_date = {}
+    if days_sorted:
+        for ms in db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= start_date_only - timedelta(days=7),
+            MarketSnapshot.spy_price.isnot(None),
+        ).all():
+            spy_by_date[ms.date] = ms.spy_price
+
+    spy_anchor = None
+    base_value = None
+    if days_sorted and spy_by_date:
+        first_day = days_sorted[0]
+        spy_anchor = spy_by_date.get(first_day)
+        if spy_anchor is None:
+            earlier = [d for d in spy_by_date if d <= first_day]
+            if earlier:
+                spy_anchor = spy_by_date[max(earlier)]
+        base_value = by_day[first_day].total_value
+
+    def _spy_value_for(day):
+        if not spy_anchor or not base_value:
+            return None
+        price = spy_by_date.get(day)
+        if price is None:
+            earlier = [d for d in spy_by_date if d <= day]
+            if not earlier:
+                return None
+            price = spy_by_date[max(earlier)]
+        return base_value * (price / spy_anchor)
+
+    port_values = [by_day[d].total_value for d in days_sorted]
+    spy_values = [_spy_value_for(d) for d in days_sorted]
+
+    realized_gains = [
+        g for (g,) in db.query(AIPortfolioTrade.realized_gain).filter(
+            AIPortfolioTrade.user_id == current_user.id,
+            AIPortfolioTrade.action == "SELL",
+            AIPortfolioTrade.realized_gain.isnot(None),
+        ).all()
+    ]
+
+    metrics = compute_edge_metrics(port_values, spy_values, realized_gains)
+    metrics["inception_date"] = days_sorted[0].isoformat() if days_sorted else None
+    metrics["as_of"] = days_sorted[-1].isoformat() if days_sorted else None
+    return metrics
+
+
 _WINDOW_TO_DAYS = {"1d": 1, "7d": 7, "30d": 30}
 
 
