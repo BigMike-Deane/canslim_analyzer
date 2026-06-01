@@ -479,13 +479,27 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
     ? Math.max(0, Math.floor((Date.now() - new Date(p.purchase_date).getTime()) / 86400000))
     : 0
 
+  // Per-position window returns indexed by ticker (O(1) lookup), shared by the
+  // sort comparator and the row render so both agree on the number shown.
+  const windowByTicker = useMemo(() => {
+    const idx = {}
+    for (const p of windowReturns?.positions || []) idx[p.ticker] = p
+    return idx
+  }, [windowReturns])
+
+  // Effective gain % — MUST mirror the row render below (winRow.return_pct,
+  // falling back to lifetime gain_loss_pct). Sorting on lifetime gain while the
+  // row shows a windowed number is the bug this fixes (e.g. Gain% sort on 1D
+  // ordered by all-time return, not the 1D return on screen).
+  const gainOf = (p) => windowByTicker[p.ticker]?.return_pct ?? p.gain_loss_pct ?? 0
+
   // Derived (never mutate the prop array, never store in state). Spread before
   // sort so the source array is untouched. All comparators are null-safe.
   const sortedPositions = useMemo(() => {
     const arr = [...(positions || [])]
     switch (sortKey) {
       case 'gain':
-        return arr.sort((a, b) => (b.gain_loss_pct ?? 0) - (a.gain_loss_pct ?? 0))
+        return arr.sort((a, b) => gainOf(b) - gainOf(a))
       case 'score':
         return arr.sort((a, b) => scoreOf(b) - scoreOf(a))
       case 'days':
@@ -498,7 +512,9 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
       default:
         return arr.sort((a, b) => (b.current_value ?? 0) - (a.current_value ?? 0))
     }
-  }, [positions, sortKey])
+    // windowByTicker in deps so flipping the time-range window re-sorts the
+    // 'gain' order to match the freshly-displayed per-window returns.
+  }, [positions, sortKey, windowByTicker])
 
   if (!positions || positions.length === 0) {
     return (
@@ -510,13 +526,6 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
     )
   }
 
-  // Index per-position window returns by ticker for O(1) lookup
-  const windowByTicker = {}
-  if (windowReturns?.positions) {
-    for (const p of windowReturns.positions) {
-      windowByTicker[p.ticker] = p
-    }
-  }
   const windowLabel = WINDOW_LABELS[timeRange] || WINDOW_LABELS.all
 
   return (
