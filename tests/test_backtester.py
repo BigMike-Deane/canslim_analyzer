@@ -3574,3 +3574,32 @@ class TestCopyBacktestStaticSnapshot:
         db = self._fresh_session()
         with pytest.raises(ValueError, match="source == target"):
             copy_backtest_static_snapshot(db, 500, 500)
+
+
+def test_profile_overrides_do_not_leak_across_engines():
+    """Regression: profile_overrides must not poison the shared strategy
+    profile singleton for subsequent BacktestEngine instances.
+
+    get_strategy_profile() returns a live reference into the config singleton;
+    _deep_merge mutates self.profile in place. Without a deep-copy in
+    BacktestEngine.__init__, an engine built with overrides permanently alters
+    the in-memory profile, so the next engine (e.g. an A/B "control") silently
+    inherits them. This caused sequential backtest pairs in the single-worker
+    queue to read byte-for-byte identical — a "control" that secretly ran the
+    treatment. See backtester.py __init__ deep-copy.
+    """
+    from backend.backtester import BacktestEngine
+
+    # First engine injects an override into its profile.
+    s1, _ = make_mock_db()
+    e1 = BacktestEngine(
+        s1, 1,
+        profile_overrides={"score_floor_exit": {"enabled": True, "floor": 60}},
+    )
+    assert e1.profile.get("score_floor_exit", {}).get("enabled") is True
+
+    # Second engine, NO overrides — must NOT see the prior run's override.
+    s2, _ = make_mock_db()
+    e2 = BacktestEngine(s2, 1)
+    assert e2.profile.get("score_floor_exit", {}).get("enabled") is not True, \
+        "profile_overrides leaked into a later engine via the shared singleton"

@@ -5,6 +5,7 @@ Simulates historical trading using the AI Portfolio logic.
 Runs day-by-day simulation over a historical period.
 """
 
+import copy
 import logging
 import math
 import sys
@@ -318,7 +319,15 @@ class BacktestEngine:
         # Strategy profile (balanced or growth) — load BEFORE market state
         # so profile-level market_state overrides (e.g. FTD thresholds) apply
         self.strategy = self.backtest.strategy or "balanced"
-        self.profile = get_strategy_profile(self.strategy)
+        # Deep-copy: get_strategy_profile() returns a live reference into the
+        # module-level config singleton's strategy_profiles dict. _deep_merge
+        # below mutates self.profile in place, so without this copy a backtest
+        # with profile_overrides permanently poisons the in-memory profile for
+        # EVERY subsequent backtest in the same worker process (single-worker
+        # queue). Symptom: sequential A/B pairs read identical because the
+        # "control" inherited the prior run's overrides. Copy makes each run's
+        # profile independent. Backtester-only — trading_utils/ai_trader untouched.
+        self.profile = copy.deepcopy(get_strategy_profile(self.strategy))
 
         # Apply profile overrides for A/B testing (e.g., ML signal on/off)
         if profile_overrides:
