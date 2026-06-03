@@ -340,27 +340,90 @@ function EdgeMetric({ label, value, sub, tone = 'neutral', title }) {
   )
 }
 
+// Edge Scorecard window selector. `all` uses a large day count so the
+// scorecard covers full history even past a year; the page's initial fetch
+// uses the same EDGE_ALL_DAYS so the default `all` view needs no refetch.
+const EDGE_ALL_DAYS = 3650
+const EDGE_WINDOWS = [
+  { value: '7d', label: '7D', days: 7 },
+  { value: '30d', label: '30D', days: 30 },
+  { value: '90d', label: '90D', days: 90 },
+  { value: 'all', label: 'All', days: EDGE_ALL_DAYS },
+]
+const EDGE_WINDOW_PHRASE = {
+  '7d': 'over the last 7 days',
+  '30d': 'over the last 30 days',
+  '90d': 'over the last 90 days',
+  all: 'since inception',
+}
+
 function EdgeScorecard({ edge }) {
-  if (!edge) return null
+  // `edge` is the all-window scorecard fetched by the page. Narrower windows
+  // are fetched on demand; keep `data` separate so `all` reuses the prop
+  // (no refetch) while other windows hit the endpoint with their day count.
+  const [range, setRange] = useState('all')
+  const [data, setData] = useState(edge)
+  const [loading, setLoading] = useState(false)
+
+  // Re-sync to the parent's all-window edge when it loads/changes, but only
+  // while viewing `all` — don't clobber a narrower window the user selected.
+  useEffect(() => {
+    if (range === 'all') setData(edge)
+  }, [edge, range])
+
+  async function selectRange(next) {
+    if (next === range) return
+    setRange(next)
+    if (next === 'all') { setData(edge); return }
+    setLoading(true)
+    try {
+      const win = EDGE_WINDOWS.find(w => w.value === next)
+      setData(await api.getAIPortfolioEdge(win.days))
+    } catch {
+      // Keep the prior window's numbers rather than blanking the card.
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (!data) return null
 
   const pct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`)
   const num = (v, d = 2) => (v == null ? '—' : v.toFixed(d))
   const tone = (v) => (v == null ? 'neutral' : v >= 0 ? 'pos' : 'neg')
 
-  const insufficient = edge.status !== 'ok'
-  const excess = edge.excess_return_pct
+  const insufficient = data.status !== 'ok'
+  const excess = data.excess_return_pct
+  const phrase = EDGE_WINDOW_PHRASE[range] || 'over the window'
 
   let verdict = null
   if (!insufficient && excess != null) {
     verdict =
       excess >= 0
-        ? `Beating SPY by ${excess.toFixed(1)}% since inception`
-        : `Trailing SPY by ${Math.abs(excess).toFixed(1)}% since inception`
+        ? `Beating SPY by ${excess.toFixed(1)}% ${phrase}`
+        : `Trailing SPY by ${Math.abs(excess).toFixed(1)}% ${phrase}`
   }
+
+  const rangeSelector = (
+    <div className="flex bg-dark-850 rounded-lg p-0.5" role="group" aria-label="Edge window">
+      {EDGE_WINDOWS.map(({ value, label }) => (
+        <button
+          key={value}
+          onClick={() => selectRange(value)}
+          className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+            range === value ? 'bg-primary-500 text-white' : 'text-dark-400 hover:text-white'
+          }`}
+          aria-pressed={range === value}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
 
   return (
     <Card variant="glass" className="mb-4">
-      <CardHeader title="Edge Scorecard" subtitle="Risk-adjusted performance vs SPY" />
+      <CardHeader title="Edge Scorecard" subtitle="Risk-adjusted performance vs SPY" action={rangeSelector} />
       {insufficient ? (
         <EmptyState
           bare
@@ -379,47 +442,47 @@ function EdgeScorecard({ edge }) {
               {verdict}
             </div>
           )}
-          <div className="grid grid-cols-3 gap-y-4 gap-x-2">
+          <div className={`grid grid-cols-3 gap-y-4 gap-x-2 transition-opacity ${loading ? 'opacity-50' : ''}`} aria-busy={loading}>
             <EdgeMetric
               label="You"
-              value={pct(edge.total_return_pct)}
-              tone={tone(edge.total_return_pct)}
+              value={pct(data.total_return_pct)}
+              tone={tone(data.total_return_pct)}
               sub="total return"
-              title="Portfolio total return since inception (window-scale, not annualized)"
+              title="Portfolio total return over the selected window (window-scale, not annualized)"
             />
             <EdgeMetric
               label="SPY"
-              value={pct(edge.spy_return_pct)}
-              tone={tone(edge.spy_return_pct)}
+              value={pct(data.spy_return_pct)}
+              tone={tone(data.spy_return_pct)}
               sub="same window"
               title="SPY benchmark return over the same window"
             />
             <EdgeMetric
               label="Alpha"
-              value={pct(edge.alpha_pct)}
-              tone={tone(edge.alpha_pct)}
+              value={pct(data.alpha_pct)}
+              tone={tone(data.alpha_pct)}
               sub="β-adjusted"
               title="Jensen's alpha over the window: return minus beta×SPY return. Positive = skill beyond market exposure."
             />
             <EdgeMetric
               label="Beta"
-              value={num(edge.beta)}
+              value={num(data.beta)}
               sub="vs SPY"
               title="Sensitivity to SPY moves. >1 = swings more than the market."
             />
             <EdgeMetric
               label="Sharpe"
-              value={num(edge.sharpe)}
-              tone={tone(edge.sharpe)}
+              value={num(data.sharpe)}
+              tone={tone(data.sharpe)}
               sub="annualized"
               title="Return per unit of risk (annualized, risk-free = 0). Higher is better; >1 is good."
             />
             <EdgeMetric
               label="Max DD"
-              value={pct(edge.max_drawdown_pct)}
+              value={pct(data.max_drawdown_pct)}
               sub={
-                edge.spy_max_drawdown_pct != null
-                  ? `SPY ${edge.spy_max_drawdown_pct.toFixed(1)}%`
+                data.spy_max_drawdown_pct != null
+                  ? `SPY ${data.spy_max_drawdown_pct.toFixed(1)}%`
                   : 'peak → trough'
               }
               title="Largest peak-to-trough decline. SPY's shown for comparison — smaller (less negative) is better."
@@ -427,12 +490,12 @@ function EdgeScorecard({ edge }) {
           </div>
           <div className="border-t border-dark-700/50 mt-4 pt-2 flex items-center justify-between text-[10px] text-dark-500">
             <span>
-              {edge.win_rate_pct != null
-                ? `Win rate ${edge.win_rate_pct}% (${edge.closed_trades} closed)`
-                : `${edge.closed_trades} closed trades`}
+              {data.win_rate_pct != null
+                ? `Win rate ${data.win_rate_pct}% (${data.closed_trades} closed)`
+                : `${data.closed_trades} closed trades`}
             </span>
             <span>
-              {edge.trading_days} trading days{edge.low_sample ? ' · small sample' : ''}
+              {data.trading_days} trading days{data.low_sample ? ' · small sample' : ''}
             </span>
           </div>
         </>
@@ -1807,7 +1870,7 @@ export default function AIPortfolio() {
         api.getCoiledSpringCandidates().catch(() => ({ candidates: [] })),
         api.getEarningsCalendar().catch(() => null),
         api.getPortfolioRisk().catch(() => null),
-        api.getAIPortfolioEdge().catch(() => null),
+        api.getAIPortfolioEdge(EDGE_ALL_DAYS).catch(() => null),
       ])
       setPortfolio(portfolioData)
       setHistory(historyData)
