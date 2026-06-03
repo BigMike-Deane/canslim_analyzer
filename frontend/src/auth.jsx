@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { cache } from './cache'
 
 const AuthContext = createContext(null)
 
@@ -64,6 +65,10 @@ export function AuthProvider({ children }) {
     const tokens = await resp.json()
     localStorage.setItem('access_token', tokens.access_token)
     localStorage.setItem('refresh_token', tokens.refresh_token)
+    // Drop any cached responses from a previously signed-in user — the
+    // response cache is keyed by URL only, so without this a new user would
+    // be served the prior user's portfolio/account data until each TTL lapses.
+    cache.clear()
     const me = await fetchMe(tokens.access_token)
     setUser(me)
     return me
@@ -72,6 +77,8 @@ export function AuthProvider({ children }) {
   function logout() {
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
+    // Clear cached responses so the next user to sign in starts clean.
+    cache.clear()
     setUser(null)
   }
 

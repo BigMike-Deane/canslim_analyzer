@@ -667,13 +667,22 @@ def send_morning_briefing_if_due():
         from backend.ai_trader import get_portfolio_value, get_market_regime, evaluate_buys, get_effective_score
         from backend.email_utils import send_morning_briefing_email
 
+        # The morning briefing is the owner's report. Scope every portfolio
+        # query to the owner (user 1) explicitly — get_portfolio_value() and
+        # evaluate_buys() already default to user 1, but the positions query
+        # below was unfiltered, so it pulled EVERY user's positions into the
+        # owner's email once multi-user accounts existed.
+        OWNER_USER_ID = 1
+
         # Portfolio summary
-        portfolio = get_portfolio_value(db)
+        portfolio = get_portfolio_value(db, user_id=OWNER_USER_ID)
         market_regime = get_market_regime(db)
 
         # Current positions with stop distances and earnings warnings
         from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
-        positions = db.query(AIPortfolioPosition).all()
+        positions = db.query(AIPortfolioPosition).filter(
+            AIPortfolioPosition.user_id == OWNER_USER_ID
+        ).all()
 
         # Load strategy profile for stop calculation
         profile = yaml_config.get(f'strategy_profiles.{config.strategy}', {}) if hasattr(config, 'strategy') else {}
@@ -1879,12 +1888,19 @@ def send_weekly_performance_email():
         # Get snapshots for the past week
         one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
+        # Weekly summary is the owner's report — scope every query to user 1.
+        # Without this, snapshots/trades from all users were mixed together.
+        OWNER_USER_ID = 1
+
         # Get first and last snapshots of the week
         first_snapshot = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.user_id == OWNER_USER_ID,
             AIPortfolioSnapshot.timestamp >= one_week_ago
         ).order_by(AIPortfolioSnapshot.timestamp.asc()).first()
 
-        last_snapshot = db.query(AIPortfolioSnapshot).order_by(
+        last_snapshot = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.user_id == OWNER_USER_ID
+        ).order_by(
             AIPortfolioSnapshot.timestamp.desc()
         ).first()
 
@@ -1913,6 +1929,7 @@ def send_weekly_performance_email():
 
         # Get trades from the week
         trades = db.query(AIPortfolioTrade).filter(
+            AIPortfolioTrade.user_id == OWNER_USER_ID,
             AIPortfolioTrade.executed_at >= one_week_ago
         ).order_by(AIPortfolioTrade.executed_at.desc()).all()
 
