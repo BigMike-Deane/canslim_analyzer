@@ -10,6 +10,7 @@ import CollapsibleSection from '../components/CollapsibleSection'
 import Sparkline from '../components/Sparkline'
 import { tooltipStyle } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
+import { buildCsv, downloadCsv } from '../csv'
 import Modal from '../components/Modal'
 import PortfolioDetailView from '../components/PortfolioDetailView'
 import EmptyState from '../components/EmptyState'
@@ -1183,16 +1184,60 @@ function PositionDetailModal({ position, onClose }) {
 }
 
 // ── Trade History ───────────────────────────────────────────────────
+// Column order for the AI Portfolio trade CSV. `entry_type`/`sell_reason`
+// are flattened out of each trade's `signal_factors` blob at export time.
+const AI_TRADE_CSV_COLUMNS = [
+  'executed_at', 'ticker', 'action', 'shares', 'price', 'total_value',
+  'cost_basis', 'realized_gain', 'holding_days', 'canslim_score',
+  'growth_mode_score', 'is_growth_stock', 'entry_type', 'sell_reason', 'reason',
+]
+
 function TradeHistory({ trades }) {
   const [selectedTrade, setSelectedTrade] = useState(null)
+  const [exporting, setExporting] = useState(false)
+  const toast = useToast()
 
   if (!trades || trades.length === 0) {
     return null
   }
 
+  // Export ALL trades, not just the ~20 shown here: re-fetch at the endpoint's
+  // max (200, comfortably above the live trade count) so the download reflects
+  // the full history regardless of what's rendered.
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const all = await api.getAIPortfolioTrades(200)
+      const rows = all.map(t => ({
+        ...t,
+        is_growth_stock: t.is_growth_stock ? 'yes' : 'no',
+        entry_type: t.signal_factors?.entry_type ?? '',
+        sell_reason: t.signal_factors?.sell_reason ?? '',
+      }))
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadCsv(`ai-portfolio-trades-${stamp}.csv`, buildCsv(AI_TRADE_CSV_COLUMNS, rows))
+    } catch (err) {
+      toast.error(err?.message || 'Failed to export trades')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <Card variant="glass" className="mb-4">
-      <CardHeader title="Recent Trades" />
+      <CardHeader
+        title="Recent Trades"
+        action={
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="text-xs text-dark-300 hover:text-dark-100 px-3 py-1 rounded border border-dark-700 hover:border-dark-600 transition-colors disabled:opacity-50"
+            title="Export all AI Portfolio trades as CSV"
+          >
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
+        }
+      />
       {/* No inner max-height: let the list grow to ~20 rows; outer page
           scroll handles overflow. Removes scroll-in-scroll on mobile. */}
       <div className="space-y-1">

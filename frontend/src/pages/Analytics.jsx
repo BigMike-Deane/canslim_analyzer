@@ -6,6 +6,7 @@ import { PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import { tooltipStyle as TOOLTIP_STYLE } from '../components/chartTheme'
+import { buildCsv, downloadCsv } from '../csv'
 
 const CSV_COLUMNS = [
   'executed_at', 'ticker', 'action', 'sector', 'shares', 'price',
@@ -13,29 +14,9 @@ const CSV_COLUMNS = [
   'canslim_score', 'entry_type', 'sell_reason', 'reason',
 ]
 
-function csvEscape(v) {
-  if (v === null || v === undefined) return ''
-  const s = String(v)
-  // RFC 4180: wrap in quotes when value contains comma, quote, or newline;
-  // embedded quotes are escaped by doubling.
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
-  return s
-}
-
 function downloadTradesCsv(trades) {
-  const header = CSV_COLUMNS.join(',')
-  const lines = trades.map(t => CSV_COLUMNS.map(c => csvEscape(t[c])).join(','))
-  const csv = [header, ...lines].join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
   const stamp = new Date().toISOString().slice(0, 10)
-  a.href = url
-  a.download = `trade-analytics-${stamp}.csv`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  downloadCsv(`trade-analytics-${stamp}.csv`, buildCsv(CSV_COLUMNS, trades))
 }
 
 const SELL_REASON_COLORS = {
