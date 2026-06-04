@@ -1,0 +1,167 @@
+"""Read-only exit-plan derivation for AI Portfolio positions.
+
+Surfaces, for a held position, the *price levels and conditions that would
+trigger a SELL* — the same triggers ``backend/ai_trader.py::evaluate_sells``
+acts on, but computed WITHOUT importing or modifying ``ai_trader.py`` (it is on
+the June-18 eval freeze). Instead this reuses the shared threshold helpers the
+trader itself calls:
+
+  - ``get_strategy_profile``          (backend/trading_utils.py)
+  - ``select_effective_stop_loss_pct``(backend/trading_utils.py)
+  - ``get_trailing_stop_pct`` / ``apply_pyramid_widening`` (backend/trading_engine.py)
+
+so the levels shown to the user are produced by the *identical* code path the
+live trader runs — they cannot drift from reality the way a re-implemented copy
+(e.g. the hard-coded 15/12/10/8 tiers inline in the endpoint) would.
+
+Pure: no DB, no I/O, no globals. Input is plain position scalars + config
+values; output is a JSON-friendly dict. Trivially unit-testable; zero risk to
+the trading path.
+
+Scope / honest caveats baked into the trigger ``note`` fields:
+  - The hard stop is the *base* (normal/bearish) percentage. The live trader may
+    *widen* it per-position via ATR for volatile names — that only ever gives a
+    position MORE room, so the displayed level is a conservative floor.
+  - Take-profit is shown as the price target, but the trader only takes the full
+    profit when the score is *also* fading — noted on the trigger.
+  - Score-based exits (crash / weak-position) are conditions, not prices.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
+from backend.trading_utils import get_strategy_profile, select_effective_stop_loss_pct
+
+
+def _pct(numer: float, denom: float) -> Optional[float]:
+    if not denom:
+        return None
+    return (numer / denom - 1.0) * 100.0
+
+
+def compute_exit_plan(
+    *,
+    cost_basis: Optional[float],
+    current_price: Optional[float],
+    peak_price: Optional[float] = None,
+    gain_loss_pct: Optional[float] = None,
+    current_score: Optional[float] = None,
+    purchase_score: Optional[float] = None,
+    pyramid_count: int = 0,
+    strategy: str = "balanced",
+    sell_score_threshold: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
+    stop_loss_pct: Optional[float] = None,
+    is_bearish_market: bool = False,
+) -> dict:
+    """Derive the active sell triggers for one position.
+
+    Returns a dict::
+
+        {
+          "triggers": [ {kind, label, price|None, distance_pct|None,
+                         direction, note, ...}, ... ],
+          "nearest_kind": str | None,   # price trigger closest to firing
+        }
+
+    ``direction`` is ``"down"`` for protective stops (price below current) and
+    ``"up"`` for the profit target. ``distance_pct`` is the signed move from the
+    current price to the trigger (always reported as a positive magnitude with
+    ``direction`` giving the sense): for a stop it is the downside cushion, for
+    the target it is the upside still to go.
+    """
+    profile = get_strategy_profile(strategy)
+    triggers: list[dict] = []
+
+    has_price = (
+        cost_basis is not None and cost_basis > 0
+        and current_price is not None and current_price > 0
+    )
+
+    # ── 1. Hard stop loss ────────────────────────────────────────────
+    # Mirrors evaluate_sells: effective stop = profile/config normal (or bearish
+    # when SPY<50MA). VIX + ATR adjustments are intentionally skipped here — VIX
+    # needs live data and ATR only widens, so the base is a safe floor.
+    if has_price:
+        stop_pct = select_effective_stop_loss_pct(
+            profile=profile,
+            stop_loss_config={},
+            default_normal_pct=stop_loss_pct if stop_loss_pct is not None else 8.0,
+            is_bearish_market=is_bearish_market,
+            vix_proxy=None,
+            vix_config=None,
+        )
+        stop_price = cost_basis * (1 - stop_pct / 100.0)
+        triggers.append({
+            "kind": "stop_loss",
+            "label": "Stop loss",
+            "price": round(stop_price, 2),
+            "direction": "down",
+            "distance_pct": round(abs(_pct(stop_price, current_price) or 0.0), 1),
+            "note": (
+                f"{stop_pct:.0f}% below entry"
+                + (" · bearish-market stop" if is_bearish_market else "")
+                + " · may widen for volatile names"
+            ),
+        })
+
+    # ── 2. Trailing stop ─────────────────────────────────────────────
+    # Only active once the position has run up enough from cost basis to reach a
+    # tier (get_trailing_stop_pct returns None below +5% peak gain). Anchored at
+    # the peak, not the entry.
+    if has_price and peak_price and peak_price > 0:
+        peak_gain_pct = (peak_price / cost_basis - 1.0) * 100.0
+        trail_pct = get_trailing_stop_pct(peak_gain_pct, profile)
+        if trail_pct and pyramid_count:
+            trail_pct = apply_pyramid_widening(trail_pct, pyramid_count)
+        if trail_pct:
+            trail_price = peak_price * (1 - trail_pct / 100.0)
+            pyr_note = f" (+{min(pyramid_count*2,6):.0f}% pyramid room)" if pyramid_count else ""
+            triggers.append({
+                "kind": "trailing_stop",
+                "label": "Trailing stop",
+                "price": round(trail_price, 2),
+                "direction": "down",
+                "distance_pct": round(abs(_pct(trail_price, current_price) or 0.0), 1),
+                "note": f"{trail_pct:.0f}% off peak ${peak_price:,.2f}{pyr_note}",
+            })
+
+    # ── 3. Take-profit target ────────────────────────────────────────
+    tp_pct = profile.get("take_profit_pct", take_profit_pct)
+    if has_price and tp_pct:
+        tp_price = cost_basis * (1 + tp_pct / 100.0)
+        # If already past the target, it can fire on the next score fade.
+        to_go = _pct(tp_price, current_price)
+        triggers.append({
+            "kind": "take_profit",
+            "label": "Take profit",
+            "price": round(tp_price, 2),
+            "direction": "up",
+            "distance_pct": round(abs(to_go) if to_go is not None else 0.0, 1),
+            "reached": current_price >= tp_price,
+            "note": f"+{tp_pct:.0f}% target · fires when score also fades",
+        })
+
+    # ── 4. Score exit (condition, not a price) ───────────────────────
+    if sell_score_threshold is not None:
+        triggers.append({
+            "kind": "score_exit",
+            "label": "Score exit",
+            "price": None,
+            "direction": "score",
+            "distance_pct": None,
+            "threshold": round(sell_score_threshold, 0),
+            "current_score": round(current_score, 0) if current_score is not None else None,
+            "note": (
+                f"sells if score falls below {sell_score_threshold:.0f}"
+                + (f" (now {current_score:.0f})" if current_score is not None else "")
+            ),
+        })
+
+    # ── Nearest price-based trigger (closest to firing) ──────────────
+    priced = [t for t in triggers if t.get("price") is not None and t.get("distance_pct") is not None]
+    nearest_kind = min(priced, key=lambda t: t["distance_pct"])["kind"] if priced else None
+
+    return {"triggers": triggers, "nearest_kind": nearest_kind}

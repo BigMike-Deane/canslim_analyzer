@@ -1105,6 +1105,67 @@ function TradeDetailModal({ trade, onClose }) {
   )
 }
 
+// ── Exit Plan ───────────────────────────────────────────────────────
+// Read-only view of the live sell triggers for a held position. The math
+// (stop / trailing / take-profit price levels, distance-to-trigger) is computed
+// server-side in backend/exit_plan.py — which reuses the trader's own threshold
+// helpers — so what's shown here is what would actually fire. The component is
+// pure presentation; it never re-derives a threshold client-side.
+function ExitPlanSection({ plan }) {
+  if (!plan || !plan.triggers?.length) return null
+
+  const distLabel = (t) => {
+    if (t.distance_pct == null) return null
+    return t.direction === 'up' ? `${t.distance_pct}% to go` : `${t.distance_pct}% away`
+  }
+  // Protective stops tighten in tone as price nears them; the upside target is
+  // always green (nearing it is good).
+  const distTone = (t) => {
+    if (t.direction === 'up') return 'text-emerald-400'
+    if (t.distance_pct == null) return 'text-dark-400'
+    if (t.distance_pct <= 5) return 'text-red-400'
+    if (t.distance_pct <= 12) return 'text-amber-400'
+    return 'text-dark-300'
+  }
+
+  return (
+    <div className="bg-dark-850 rounded-lg p-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Exit Plan</span>
+        <span className="text-[10px] text-dark-500">what would trigger a sell</span>
+      </div>
+      <div className="space-y-1.5">
+        {plan.triggers.map((t) => {
+          const nearest = t.kind === plan.nearest_kind
+          return (
+            <div
+              key={t.kind}
+              className={`flex items-center justify-between rounded-md px-2 py-1.5 ${
+                nearest ? 'bg-primary-500/10 ring-1 ring-primary-500/30' : ''
+              }`}
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-dark-100">{t.label}</span>
+                  {nearest && <span className="text-[9px] uppercase tracking-wider text-primary-400">nearest</span>}
+                  {t.reached && <span className="text-[9px] uppercase tracking-wider text-emerald-400">reached</span>}
+                </div>
+                <div className="text-[10px] text-dark-500 truncate">{t.note}</div>
+              </div>
+              <div className="text-right shrink-0 ml-2">
+                <div className="text-xs font-data text-dark-100">
+                  {t.price != null ? formatCurrency(t.price) : `< ${t.threshold}`}
+                </div>
+                {distLabel(t) && <div className={`text-[10px] font-data ${distTone(t)}`}>{distLabel(t)}</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Position Detail Modal ───────────────────────────────────────────
 function PositionDetailModal({ position, onClose }) {
   const [trades, setTrades] = useState(null)
@@ -1217,6 +1278,9 @@ function PositionDetailModal({ position, onClose }) {
             <StatRow label="Partial Profit" value={<span className="font-data">{position.partial_profit_taken.toFixed(0)}% sold</span>} />
           )}
         </div>
+
+        {/* Exit plan — live sell triggers (server-computed, mirrors evaluate_sells) */}
+        <ExitPlanSection plan={position.exit_plan} />
 
         {/* Score history sparkline */}
         {scoreHistory && scoreHistory.length >= 2 && (

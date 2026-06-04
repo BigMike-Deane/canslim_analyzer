@@ -3245,6 +3245,15 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
         position_stocks = db.query(Stock).filter(Stock.ticker.in_(position_tickers)).all()
         stocks_by_ticker = {s.ticker: s for s in position_stocks}
 
+    # Resolve the bearish-market gate once for the whole portfolio so every
+    # position's exit plan uses the same stop regime evaluate_sells would
+    # (SPY < 50MA ⇒ tighter bearish stop). Cached call — no extra fetch.
+    from backend.exit_plan import compute_exit_plan
+    _md = get_cached_market_direction() or {}
+    _spy = _md.get("indexes", {}).get("SPY", {}) if _md.get("success") else {}
+    _spy_price, _spy_ma50 = _spy.get("price", 0), _spy.get("ma_50", 0)
+    is_bearish_market = (_spy_price < _spy_ma50) if (_spy_price and _spy_ma50) else False
+
     # Build positions with stock data for insider/short signals
     positions_data = []
     for p in positions:
@@ -3301,6 +3310,24 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
             "sector": stock.sector if stock else None,
             # Trailing stop tracking
             "trailing_stop": trailing_stop_info,
+            # Exit plan: live sell-trigger price levels + conditions (read-only
+            # mirror of ai_trader.evaluate_sells via shared threshold helpers).
+            "exit_plan": compute_exit_plan(
+                cost_basis=p.cost_basis,
+                current_price=p.current_price,
+                peak_price=p.peak_price,
+                gain_loss_pct=p.gain_loss_pct,
+                # Effective score (growth stocks use growth score), matching
+                # ai_trader.get_effective_score without importing the frozen module.
+                current_score=(p.current_growth_score if p.is_growth_stock else p.current_score),
+                purchase_score=(p.purchase_growth_score if p.is_growth_stock else p.purchase_score),
+                pyramid_count=p.pyramid_count or 0,
+                strategy=getattr(config, 'strategy', None) or "balanced",
+                sell_score_threshold=config.sell_score_threshold,
+                take_profit_pct=config.take_profit_pct,
+                stop_loss_pct=config.stop_loss_pct,
+                is_bearish_market=is_bearish_market,
+            ),
             # Insider/Short signals from Stock table
             "insider_sentiment": stock.insider_sentiment if stock else None,
             "insider_buy_count": stock.insider_buy_count if stock else None,
