@@ -3249,10 +3249,16 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
     # position's exit plan uses the same stop regime evaluate_sells would
     # (SPY < 50MA ⇒ tighter bearish stop). Cached call — no extra fetch.
     from backend.exit_plan import compute_exit_plan
+    from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
+    from backend.trading_utils import get_strategy_profile
     _md = get_cached_market_direction() or {}
     _spy = _md.get("indexes", {}).get("SPY", {}) if _md.get("success") else {}
     _spy_price, _spy_ma50 = _spy.get("price", 0), _spy.get("ma_50", 0)
     is_bearish_market = (_spy_price < _spy_ma50) if (_spy_price and _spy_ma50) else False
+    # Load the active strategy profile once so the trailing-stop threshold below
+    # uses the REAL per-profile tiers (e.g. nostate_cs_bear 25/18/12/8) instead
+    # of the stale hard-coded 15/12/10/8 — same source as ai_trader.evaluate_sells.
+    _profile = get_strategy_profile(getattr(config, "strategy", None) or "balanced")
 
     # Build positions with stock data for insider/short signals
     positions_data = []
@@ -3265,24 +3271,20 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
             peak_gain_pct = ((p.peak_price / p.cost_basis) - 1) * 100 if p.cost_basis > 0 else 0
             drop_from_peak = ((p.peak_price - p.current_price) / p.peak_price) * 100 if p.peak_price > 0 else 0
 
-            # Determine threshold
-            if peak_gain_pct >= 50:
-                threshold = 15
-            elif peak_gain_pct >= 30:
-                threshold = 12
-            elif peak_gain_pct >= 20:
-                threshold = 10
-            elif peak_gain_pct >= 10:
-                threshold = 8
-            else:
-                threshold = None
+            # Profile-aware trailing threshold (+ pyramid widening) — matches
+            # ai_trader.evaluate_sells and the Exit Plan card, so the health
+            # chip's "near_stop" agrees with the real trailing stop. Returns
+            # None below the +5% peak-gain activation tier.
+            threshold = get_trailing_stop_pct(peak_gain_pct, _profile)
+            if threshold and p.pyramid_count:
+                threshold = apply_pyramid_widening(threshold, p.pyramid_count)
 
             trailing_stop_info = {
                 "peak_price": p.peak_price,
                 "peak_date": p.peak_date.isoformat() if p.peak_date else None,
                 "drop_from_peak_pct": round(drop_from_peak, 1),
-                "threshold_pct": threshold,
-                "near_stop": threshold and drop_from_peak >= threshold * 0.7  # Within 70% of threshold
+                "threshold_pct": round(threshold) if threshold else None,
+                "near_stop": bool(threshold and drop_from_peak >= threshold * 0.7)  # Within 70% of threshold
             }
 
         position_data = {

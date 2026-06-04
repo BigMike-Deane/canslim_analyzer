@@ -830,6 +830,42 @@ class TestAIPortfolioRoutes:
         finally:
             db.close()
 
+    def test_trailing_threshold_uses_profile_not_hardcoded(self):
+        """Regression: /api/ai-portfolio trailing_stop.threshold_pct must reflect
+        the active strategy profile's tiers, not the old hard-coded 15/12/10/8.
+
+        A 60%-peak-gain position on nostate_optimized should report the 25% tier
+        (the profile's gain_50_plus), which the stale hard-coded ladder put at 15.
+        """
+        from backend.trading_utils import get_strategy_profile
+        from backend.trading_engine import get_trailing_stop_pct
+
+        _ensure_ai_config(strategy="nostate_optimized")
+        db = _db()
+        try:
+            _ensure_stock("HPEAK", score=82.0)
+            if not db.query(AIPortfolioPosition).filter_by(ticker="HPEAK", user_id=1).first():
+                # cost 100, peak 160 (+60% peak gain), now 140, no pyramids
+                db.add(AIPortfolioPosition(
+                    user_id=1, ticker="HPEAK", shares=10.0,
+                    cost_basis=100.0, current_price=140.0, current_value=1400.0,
+                    gain_loss=400.0, gain_loss_pct=40.0,
+                    purchase_score=80.0, current_score=82.0,
+                    peak_price=160.0, peak_date=datetime.now(timezone.utc),
+                    purchase_date=datetime.now(timezone.utc) - timedelta(days=30),
+                    pyramid_count=0,
+                ))
+                db.commit()
+        finally:
+            db.close()
+
+        r = client.get("/api/ai-portfolio")
+        assert r.status_code == 200
+        pos = next(p for p in r.json()["positions"] if p["ticker"] == "HPEAK")
+        expected = get_trailing_stop_pct(60.0, get_strategy_profile("nostate_optimized"))
+        assert pos["trailing_stop"]["threshold_pct"] == round(expected)
+        assert pos["trailing_stop"]["threshold_pct"] != 15  # the old hard-coded value
+
     def test_history_returns_snapshot_list(self):
         r = client.get("/api/ai-portfolio/history?days=30")
         assert r.status_code == 200
