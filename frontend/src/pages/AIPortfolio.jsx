@@ -328,14 +328,20 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
 // riding beta?" — return vs SPY, beta-adjusted Jensen alpha, Sharpe, max
 // drawdown, win rate. All derived on-read server-side from the equity curve +
 // MarketSnapshot SPY series (see backend/edge_metrics.py).
-function EdgeMetric({ label, value, sub, tone = 'neutral', title }) {
+// `dim` marks a metric as statistically provisional (small sample). It is
+// rendered at reduced opacity with an explanatory tooltip rather than hidden —
+// the number still exists, we just signal "don't trust this yet."
+function EdgeMetric({ label, value, sub, tone = 'neutral', title, dim = false }) {
   const toneClass =
     tone === 'pos' ? 'text-emerald-400' : tone === 'neg' ? 'text-red-400' : 'text-white'
   return (
-    <div className="px-1" title={title}>
+    <div
+      className={`px-1 ${dim ? 'opacity-40' : ''}`}
+      title={dim ? 'Provisional — needs ~20 trading days of snapshots to be reliable' : title}
+    >
       <div className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{label}</div>
       <div className={`text-lg font-bold font-data mt-0.5 ${toneClass}`}>{value}</div>
-      {sub && <div className="text-[10px] text-dark-500 mt-0.5">{sub}</div>}
+      {sub && <div className="text-[10px] text-dark-500 mt-0.5">{dim ? 'building…' : sub}</div>}
     </div>
   )
 }
@@ -395,6 +401,11 @@ function EdgeScorecard({ edge }) {
   const insufficient = data.status !== 'ok'
   const excess = data.excess_return_pct
   const phrase = EDGE_WINDOW_PHRASE[range] || 'over the window'
+  // `low_sample` trips for any series under ~20 trading days — which includes an
+  // established account viewing the 7D/30D tab. Only treat it as a *young
+  // account* cold-start on the All window, where a thin series means the
+  // portfolio itself is new (not just the selected window).
+  const youngAccount = range === 'all' && data.low_sample
 
   let verdict = null
   if (!insufficient && excess != null) {
@@ -428,8 +439,8 @@ function EdgeScorecard({ edge }) {
         <EmptyState
           bare
           compact
-          message="Not enough history yet"
-          hint="Edge metrics appear after a couple of trading days of snapshots."
+          message={(data.trading_days || 0) <= 1 ? 'Building your track record' : 'Not enough history yet'}
+          hint={`${data.trading_days || 0} trading day${data.trading_days === 1 ? '' : 's'} so far — edge metrics vs SPY unlock after 2.`}
         />
       ) : (
         <>
@@ -440,6 +451,15 @@ function EdgeScorecard({ edge }) {
               }`}
             >
               {verdict}
+            </div>
+          )}
+          {/* Small-sample caveat: return-vs-SPY is valid on any window, but the
+              regression/annualized stats (β, Sharpe, Alpha) are noise until ~20
+              daily observations. Flag them rather than hide them. */}
+          {youngAccount && (
+            <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-md px-2.5 py-1.5 mb-3">
+              Early data — only {data.trading_days} trading day{data.trading_days === 1 ? '' : 's'}. Beta, Sharpe &amp; Alpha
+              are provisional until ~20 days; your return vs SPY above is already meaningful.
             </div>
           )}
           <div className={`grid grid-cols-3 gap-y-4 gap-x-2 transition-opacity ${loading ? 'opacity-50' : ''}`} aria-busy={loading}>
@@ -462,12 +482,14 @@ function EdgeScorecard({ edge }) {
               value={pct(data.alpha_pct)}
               tone={tone(data.alpha_pct)}
               sub="β-adjusted"
+              dim={youngAccount}
               title="Jensen's alpha over the window: return minus beta×SPY return. Positive = skill beyond market exposure."
             />
             <EdgeMetric
               label="Beta"
               value={num(data.beta)}
               sub="vs SPY"
+              dim={youngAccount}
               title="Sensitivity to SPY moves. >1 = swings more than the market."
             />
             <EdgeMetric
@@ -475,6 +497,7 @@ function EdgeScorecard({ edge }) {
               value={num(data.sharpe)}
               tone={tone(data.sharpe)}
               sub="annualized"
+              dim={youngAccount}
               title="Return per unit of risk (annualized, risk-free = 0). Higher is better; >1 is good."
             />
             <EdgeMetric
@@ -500,6 +523,31 @@ function EdgeScorecard({ edge }) {
           </div>
         </>
       )}
+    </Card>
+  )
+}
+
+// ── New-account framing ─────────────────────────────────────────────
+// Shown only while the portfolio is too young for edge metrics
+// (edge.status !== 'ok', i.e. < 2 trading days of snapshots). Frames the
+// otherwise-sparse overview as expected rather than broken, so a brand-new
+// user understands the empty Edge card and flat chart are a cold start.
+function TrackRecordBanner({ edge }) {
+  if (!edge || edge.status === 'ok') return null
+  const days = edge.trading_days || 0
+  return (
+    <Card variant="glass" className="mb-4 border border-primary-500/30">
+      <div className="flex items-start gap-2.5">
+        <span className="text-lg leading-none mt-0.5" aria-hidden="true">🌱</span>
+        <div>
+          <div className="text-sm font-semibold text-white">Building your track record</div>
+          <div className="text-xs text-dark-400 mt-1 leading-relaxed">
+            Your AI portfolio is {days <= 1 ? 'just getting started' : `${days} trading days in`}. Risk-adjusted
+            metrics (alpha, beta, Sharpe) and the longer return windows fill in as daily snapshots accumulate —
+            check back over the next couple of weeks to see your edge vs SPY take shape.
+          </div>
+        </div>
+      </div>
     </Card>
   )
 }
@@ -2230,6 +2278,10 @@ export default function AIPortfolio() {
 
       {activeTab === 'overview' && (
         <>
+          {/* Cold-start framing for brand-new accounts (renders nothing once
+              the portfolio has ≥2 trading days of history). */}
+          <TrackRecordBanner edge={edge} />
+
           {/* SummaryCard hoisted to top so the time-range pills (embedded
               in its header) are visible immediately — no scrolling. */}
           <SummaryCard
