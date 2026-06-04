@@ -1419,9 +1419,11 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
   const [refreshing, setRefreshing] = useState(false)
   const [strategies, setStrategies] = useState([])
   const [changingStrategy, setChangingStrategy] = useState(false)
+  const [startCash, setStartCash] = useState(config?.starting_cash || 25000)
 
   useEffect(() => {
     setIsActive(config?.is_active || false)
+    setStartCash(config?.starting_cash || 25000)
   }, [config])
 
   // Load available strategies
@@ -1458,13 +1460,17 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
     }
   }
 
+  // Clamp to the endpoint's accepted range ($1k–$1M) so a stray input can't
+  // 400 the request; round to whole dollars.
+  const initCash = Math.min(1000000, Math.max(1000, Math.round(Number(startCash) || 0)))
+
   const handleInitialize = async () => {
-    if (!confirm('This will reset the AI Portfolio to $25,000 and clear all history. Continue?')) {
+    if (!confirm(`This will reset the AI Portfolio to $${initCash.toLocaleString()} and clear all history. Continue?`)) {
       return
     }
     setInitializing(true)
     try {
-      await onInitialize()
+      await onInitialize(initCash)
     } finally {
       setInitializing(false)
     }
@@ -1574,12 +1580,28 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
         </button>
       </div>
 
+      <div className="flex items-center gap-2 mb-2">
+        <label htmlFor="ai-start-cash" className="text-xs text-dark-400 whitespace-nowrap">Starting cash</label>
+        <div className="relative flex-1">
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-dark-500 text-sm pointer-events-none">$</span>
+          <input
+            id="ai-start-cash"
+            type="number"
+            min={1000}
+            max={1000000}
+            step={1000}
+            value={startCash}
+            onChange={(e) => setStartCash(e.target.value)}
+            className="w-full pl-5 pr-2 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm font-data text-dark-100 focus:border-primary-500 outline-none"
+          />
+        </div>
+      </div>
       <button
         onClick={handleInitialize}
         disabled={initializing}
         className="w-full py-2 mb-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-dark-300"
       >
-        {initializing ? 'Resetting...' : 'Reset Portfolio ($25k)'}
+        {initializing ? 'Resetting...' : `Reset Portfolio ($${initCash.toLocaleString()})`}
       </button>
 
       <Link
@@ -2027,9 +2049,9 @@ export default function AIPortfolio() {
     }
   }
 
-  const handleInitialize = async () => {
+  const handleInitialize = async (startingCash = 25000) => {
     try {
-      await api.initializeAIPortfolio(25000)
+      await api.initializeAIPortfolio(startingCash, portfolio?.config?.strategy)
       fetchData()
     } catch (err) {
       console.error('Failed to initialize:', err)

@@ -399,8 +399,12 @@ export const api = {
     return request(`/api/ai-portfolio/trades?${params}`)
   },
 
-  initializeAIPortfolio: async (startingCash = 25000) => {
-    const result = await request(`/api/ai-portfolio/initialize?starting_cash=${startingCash}`, { method: 'POST' })
+  initializeAIPortfolio: async (startingCash = 25000, strategy = null) => {
+    const params = new URLSearchParams({ starting_cash: String(startingCash) })
+    // Pass the current strategy so a reset doesn't silently revert it to the
+    // endpoint's default (nostate_optimized).
+    if (strategy) params.set('strategy', strategy)
+    const result = await request(`/api/ai-portfolio/initialize?${params}`, { method: 'POST' })
     cache.invalidate('/api/ai-portfolio')
     return result
   },
