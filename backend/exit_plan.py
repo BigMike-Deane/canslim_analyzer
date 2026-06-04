@@ -132,16 +132,24 @@ def compute_exit_plan(
     tp_pct = profile.get("take_profit_pct", take_profit_pct)
     if has_price and tp_pct:
         tp_price = cost_basis * (1 + tp_pct / 100.0)
-        # If already past the target, it can fire on the next score fade.
+        # If already past the target, it does NOT auto-sell — the full-profit
+        # rule also requires the score to fade — so the position is held as a
+        # runner. Flag that explicitly so the UI doesn't show "X% to go" or
+        # treat a passed target as the nearest *approaching* trigger.
         to_go = _pct(tp_price, current_price)
+        reached = current_price >= tp_price
         triggers.append({
             "kind": "take_profit",
             "label": "Take profit",
             "price": round(tp_price, 2),
             "direction": "up",
             "distance_pct": round(abs(to_go) if to_go is not None else 0.0, 1),
-            "reached": current_price >= tp_price,
-            "note": f"+{tp_pct:.0f}% target · fires when score also fades",
+            "reached": reached,
+            "note": (
+                f"+{tp_pct:.0f}% target passed · held while score holds up"
+                if reached
+                else f"+{tp_pct:.0f}% target · fires when score also fades"
+            ),
         })
 
     # ── 4. Score exit (condition, not a price) ───────────────────────
@@ -161,7 +169,13 @@ def compute_exit_plan(
         })
 
     # ── Nearest price-based trigger (closest to firing) ──────────────
-    priced = [t for t in triggers if t.get("price") is not None and t.get("distance_pct") is not None]
+    # Exclude an already-reached target: a passed take-profit that's being held
+    # for the score is not an *approaching* trigger, so the nearest actionable
+    # exit for a runner is its trailing stop, not the target behind it.
+    priced = [
+        t for t in triggers
+        if t.get("price") is not None and t.get("distance_pct") is not None and not t.get("reached")
+    ]
     nearest_kind = min(priced, key=lambda t: t["distance_pct"])["kind"] if priced else None
 
     return {"triggers": triggers, "nearest_kind": nearest_kind}

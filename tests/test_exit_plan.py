@@ -130,6 +130,19 @@ class TestNearest:
         )
         assert plan["nearest_kind"] == "stop_loss"
 
+    def test_reached_take_profit_is_not_nearest(self):
+        # DELL-like runner: blew through the +75% target but is held; the
+        # nearest *actionable* trigger is the trailing stop, not the passed
+        # target.
+        plan = compute_exit_plan(
+            cost_basis=194.96, current_price=418.37, peak_price=469.05,
+            pyramid_count=2, current_score=71, purchase_score=69,
+            strategy="nostate_cs_bear", sell_score_threshold=45,
+            take_profit_pct=75, stop_loss_pct=8,
+        )
+        assert _by_kind(plan, "take_profit")["reached"] is True
+        assert plan["nearest_kind"] == "trailing_stop"
+
     def test_score_exit_never_nearest(self):
         # score_exit has no price/distance, so it can't be picked as nearest.
         plan = compute_exit_plan(

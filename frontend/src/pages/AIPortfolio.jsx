@@ -1115,6 +1115,7 @@ function ExitPlanSection({ plan }) {
   if (!plan || !plan.triggers?.length) return null
 
   const distLabel = (t) => {
+    if (t.reached) return 'target passed'
     if (t.distance_pct == null) return null
     return t.direction === 'up' ? `${t.distance_pct}% to go` : `${t.distance_pct}% away`
   }
