@@ -1629,10 +1629,9 @@ async def get_stock(
 
     # Score history: at `daily` resolution we dedup to the last scan per day
     # (preserves the existing chart shape). At `all` resolution we return every
-    # scan so intraday swings become visible. The 200-row cap is per-day at
-    # daily resolution; at per-scan resolution we lift it to ~25 days × 24
-    # scans/day = 600 rows, which keeps wire size reasonable.
+    # scan so intraday swings become visible.
     if resolution == "all":
+        # Per-scan: ~25 days × 24 scans/day = 600 rows keeps wire size reasonable.
         history = (
             db.query(StockScore)
             .filter(StockScore.stock_id == stock.id)
@@ -1641,15 +1640,28 @@ async def get_stock(
             .all()
         )
     else:
-        history_raw = db.query(StockScore).filter(
-            StockScore.stock_id == stock.id
-        ).order_by(StockScore.date.desc(), StockScore.timestamp.desc()).limit(200).all()
-        seen_dates = set()
-        history = []
-        for h in history_raw:
-            if h.date not in seen_dates:
-                seen_dates.add(h.date)
-                history.append(h)
+        # Daily: dedup to the last scan of each day IN SQL, then cap. The cap
+        # must bound DISTINCT DAYS — applying .limit() to raw rows truncates the
+        # series to ~5 days when a stock is scanned dozens of times per day
+        # (the per-day count is high), which silently collapsed the 2W/1M
+        # slicer windows. Sub-select the max timestamp per date, then fetch
+        # exactly those rows (timestamps are microsecond-unique, so no
+        # cross-date collisions).
+        daily_max_ts = (
+            db.query(func.max(StockScore.timestamp))
+            .filter(StockScore.stock_id == stock.id)
+            .group_by(StockScore.date)
+        )
+        history = (
+            db.query(StockScore)
+            .filter(
+                StockScore.stock_id == stock.id,
+                StockScore.timestamp.in_(daily_max_ts),
+            )
+            .order_by(StockScore.date.desc())
+            .limit(200)
+            .all()
+        )
 
     # Analyst price targets live in the raw-data L2 cache (StockDataCache), not
     # on the Stock row. Pull them so StockDetail can render the Analyst Consensus

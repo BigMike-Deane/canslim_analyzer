@@ -319,6 +319,45 @@ class TestSingleStock:
         r = client.get("/api/stocks/TSLA?resolution=hourly")
         assert r.status_code == 422  # FastAPI regex validation
 
+    def test_daily_resolution_not_truncated_by_high_scan_volume(self):
+        """Regression: a heavily-scanned stock (dozens of scans/day) must still
+        return every distinct DAY at daily resolution. The old query applied
+        .limit(200) to raw rows BEFORE deduping, so ~30 scans/day collapsed the
+        series to ~6 days — which pinned the 2W/1M slicer to the same few days
+        (FTNT showed only 5/31-6/05). Dedup-in-SQL caps distinct days, not rows.
+        """
+        ticker = "DENSE"
+        _ensure_stock(ticker, score=70.0)
+        db = _get_db()
+        try:
+            stock = db.query(Stock).filter_by(ticker=ticker).first()
+            db.query(StockScore).filter_by(stock_id=stock.id).delete()
+            # 12 days × 30 scans = 360 raw rows (> the 200 raw cap). The last
+            # scan of each day carries a marker score so we can verify which row
+            # survives the dedup.
+            for day_offset in range(12):
+                d = date.today() - timedelta(days=day_offset)
+                base = datetime.combine(d, datetime.min.time())
+                for hour in range(30):
+                    last = hour == 29
+                    db.add(StockScore(
+                        stock_id=stock.id, date=d,
+                        timestamp=base + timedelta(minutes=hour * 30),
+                        total_score=99.0 if last else 50.0,
+                        c_score=12, a_score=11, n_score=10, s_score=12,
+                        l_score=11, i_score=8, m_score=11, current_price=150.0,
+                    ))
+            db.commit()
+        finally:
+            db.close()
+
+        d = client.get(f"/api/stocks/{ticker}?resolution=daily").json()
+        days = {h["date"] for h in d["score_history"]}
+        # All 12 distinct days present despite 360 raw rows.
+        assert len(days) == 12
+        # Each surviving row is the LAST scan of its day (max timestamp).
+        assert all(h["total_score"] == 99.0 for h in d["score_history"])
+
 
 class TestAnalystConsensus:
     """The /api/stocks/{ticker} response surfaces analyst price targets from
