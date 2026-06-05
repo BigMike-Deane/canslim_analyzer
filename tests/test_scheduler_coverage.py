@@ -1293,10 +1293,27 @@ class TestThreadControls:
 class TestCleanupOldStockScores:
     """Tier 2: scheduler.cleanup_old_stock_scores.
 
-    DB-bloat prevention. Deletes StockScore rows older than N days in
-    batches; VACUUMs SQLite afterward. The function takes an explicit
-    Session arg (unlike the SessionLocal-opening helpers above).
+    Two-tier retention to keep the Score Replay 3M window meaningful without
+    unbounded DB growth:
+      • < scan_days old        → keep every scan (per-scan resolution)
+      • scan_days..daily_days  → thin to ONE row/day (last scan = max timestamp)
+      • > daily_days old       → delete entirely
+    The function takes an explicit Session arg (unlike the SessionLocal-opening
+    helpers above).
     """
+
+    def _add_scan(self, db_session, stock_id, days_ago, hour=12, score=70.0):
+        ts = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        ts = ts.replace(hour=hour, minute=0, second=0, microsecond=0)
+        from backend.database import StockScore
+        db_session.add(
+            StockScore(
+                stock_id=stock_id,
+                timestamp=ts,
+                date=ts.date(),
+                total_score=score,
+            )
+        )
 
     def test_no_old_scores_returns_zero(self, db_session):
         from backend.database import Stock, StockScore
@@ -1306,54 +1323,76 @@ class TestCleanupOldStockScores:
         db_session.add(stock)
         db_session.commit()
 
-        # All scores within window.
+        # All scores inside the per-scan window — nothing to prune, even with
+        # several scans on the same day.
         for i in range(3):
-            db_session.add(
-                StockScore(
-                    stock_id=stock.id,
-                    timestamp=datetime.now(timezone.utc) - timedelta(days=i),
-                    date=date.today() - timedelta(days=i),
-                    total_score=70.0,
-                )
-            )
+            self._add_scan(db_session, stock.id, days_ago=i, hour=9)
+            self._add_scan(db_session, stock.id, days_ago=i, hour=15)
         db_session.commit()
 
-        deleted = cleanup_old_stock_scores(db_session, days_to_keep=30)
+        deleted = cleanup_old_stock_scores(db_session, scan_days=30, daily_days=90)
         assert deleted == 0
+        assert db_session.query(StockScore).count() == 6
 
-    def test_deletes_old_scores(self, db_session):
+    def test_deletes_beyond_daily_horizon(self, db_session):
         from backend.database import Stock, StockScore
         from backend.scheduler import cleanup_old_stock_scores
 
-        stock = Stock(ticker="OLD", current_price=100.0)
+        stock = Stock(ticker="ANCIENT", current_price=100.0)
         db_session.add(stock)
         db_session.commit()
 
-        # 5 old (60d) + 2 fresh (1d).
+        # 5 ancient (>90d) on distinct dates + 2 fresh (1-2d). Ancient rows are
+        # past the daily horizon so all go, regardless of being one-per-day.
         for i in range(5):
-            db_session.add(
-                StockScore(
-                    stock_id=stock.id,
-                    timestamp=datetime.now(timezone.utc) - timedelta(days=60 + i),
-                    date=date.today() - timedelta(days=60 + i),
-                    total_score=70.0,
-                )
-            )
+            self._add_scan(db_session, stock.id, days_ago=95 + i)
         for i in range(2):
-            db_session.add(
-                StockScore(
-                    stock_id=stock.id,
-                    timestamp=datetime.now(timezone.utc) - timedelta(days=i + 1),
-                    date=date.today() - timedelta(days=i + 1),
-                    total_score=72.0,
-                )
-            )
+            self._add_scan(db_session, stock.id, days_ago=i + 1)
         db_session.commit()
 
-        deleted = cleanup_old_stock_scores(db_session, days_to_keep=30)
+        deleted = cleanup_old_stock_scores(db_session, scan_days=30, daily_days=90)
         assert deleted == 5
-        remaining = db_session.query(StockScore).count()
-        assert remaining == 2
+        assert db_session.query(StockScore).count() == 2
+
+    def test_mid_window_thinned_to_one_per_day(self, db_session):
+        from backend.database import Stock, StockScore
+        from backend.scheduler import cleanup_old_stock_scores
+
+        stock = Stock(ticker="MIDBAND", current_price=100.0)
+        db_session.add(stock)
+        db_session.commit()
+
+        # A day in the 30-90d mid band with 3 intra-day scans. Only the last
+        # scan of the day (max timestamp, the 15:00 one) must survive.
+        for hour, score in [(8, 60.0), (12, 65.0), (15, 70.0)]:
+            self._add_scan(db_session, stock.id, days_ago=50, hour=hour, score=score)
+        db_session.commit()
+
+        deleted = cleanup_old_stock_scores(db_session, scan_days=30, daily_days=90)
+        assert deleted == 2
+        rows = db_session.query(StockScore).all()
+        assert len(rows) == 1
+        # The kept row is the last scan of that day.
+        assert rows[0].total_score == 70.0
+        assert rows[0].timestamp.hour == 15
+
+    def test_fresh_intraday_scans_untouched(self, db_session):
+        from backend.database import Stock, StockScore
+        from backend.scheduler import cleanup_old_stock_scores
+
+        stock = Stock(ticker="RECENT", current_price=100.0)
+        db_session.add(stock)
+        db_session.commit()
+
+        # Multiple scans today (well inside scan_days) — per-scan resolution
+        # must be preserved, so none are thinned.
+        for hour in (9, 11, 13, 15):
+            self._add_scan(db_session, stock.id, days_ago=2, hour=hour)
+        db_session.commit()
+
+        deleted = cleanup_old_stock_scores(db_session, scan_days=30, daily_days=90)
+        assert deleted == 0
+        assert db_session.query(StockScore).count() == 4
 
 
 class TestCleanupPriceCache:

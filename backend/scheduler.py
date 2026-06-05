@@ -164,22 +164,75 @@ def _record_failure(task_name: str, error: str):
         )
 
 
-def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
-    """Delete StockScore records older than N days to prevent database bloat."""
+def cleanup_old_stock_scores(db: Session, scan_days: int = 30, daily_days: int = 90):
+    """Two-tier StockScore retention to bound DB growth without flattening the
+    Score Replay 3M window.
+
+    Three age bands (by `timestamp`):
+      • < scan_days old           → keep EVERY scan (per-scan resolution intact)
+      • scan_days .. daily_days    → keep ONE row per (stock_id, date): the last
+                                      scan of that day (max timestamp), matching
+                                      what the daily-resolution chart renders so a
+                                      day's value doesn't shift as it ages into
+                                      the 3M-only band
+      • > daily_days old           → delete entirely
+
+    Returns the total number of rows deleted.
+    """
     from datetime import timedelta
-    from sqlalchemy import text
+    from sqlalchemy import text, func, and_, or_
     from backend.database import StockScore
 
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
+    now = datetime.now(timezone.utc)
+    scan_cutoff = now - timedelta(days=scan_days)
+    daily_cutoff = now - timedelta(days=daily_days)
+
+    # The mid band: older than the per-scan horizon but still inside the daily
+    # horizon. These rows get thinned to one-per-day.
+    mid_window = and_(StockScore.timestamp >= daily_cutoff,
+                      StockScore.timestamp < scan_cutoff)
+
+    # Keepers = the last scan of each (stock_id, date) within the mid band.
+    daily_max = (
+        db.query(
+            StockScore.stock_id.label("sid"),
+            StockScore.date.label("d"),
+            func.max(StockScore.timestamp).label("mts"),
+        )
+        .filter(mid_window)
+        .group_by(StockScore.stock_id, StockScore.date)
+        .subquery()
+    )
+    keeper_ids = (
+        db.query(StockScore.id)
+        .join(
+            daily_max,
+            and_(
+                StockScore.stock_id == daily_max.c.sid,
+                StockScore.date == daily_max.c.d,
+                StockScore.timestamp == daily_max.c.mts,
+            ),
+        )
+    )
+
+    # Drop everything past the daily horizon, plus the intra-day duplicates in
+    # the mid band (anything that isn't a per-day keeper).
+    delete_filter = or_(
+        StockScore.timestamp < daily_cutoff,
+        and_(mid_window, StockScore.id.notin_(keeper_ids)),
+    )
 
     # Count before delete
-    count_before = db.query(StockScore).filter(StockScore.timestamp < cutoff_date).count()
+    count_before = db.query(StockScore).filter(delete_filter).count()
 
     if count_before == 0:
         logger.info("StockScore cleanup: No old records to delete")
         return 0
 
-    logger.info(f"StockScore cleanup: Deleting {count_before} records older than {days_to_keep} days")
+    logger.info(
+        f"StockScore cleanup: pruning {count_before} rows "
+        f"(per-scan kept <{scan_days}d, daily-only {scan_days}-{daily_days}d, removed >{daily_days}d)"
+    )
 
     # Delete in batches to avoid memory issues
     batch_size = 5000
@@ -187,7 +240,7 @@ def cleanup_old_stock_scores(db: Session, days_to_keep: int = 30):
     while True:
         # Use subquery to get IDs first, then delete by ID (more compatible)
         subquery = db.query(StockScore.id).filter(
-            StockScore.timestamp < cutoff_date
+            delete_filter
         ).limit(batch_size).subquery().select()
 
         deleted = db.query(StockScore).filter(
@@ -1582,7 +1635,7 @@ def run_continuous_scan():
         cleanup_db = None
         try:
             cleanup_db = SessionLocal()
-            cleanup_old_stock_scores(cleanup_db, days_to_keep=30)
+            cleanup_old_stock_scores(cleanup_db, scan_days=30, daily_days=90)
         except Exception as e:
             logger.error(f"StockScore cleanup failed: {e}")
         finally:
