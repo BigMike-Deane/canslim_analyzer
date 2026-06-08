@@ -215,6 +215,7 @@ class TestBacktestEngine:
             'cz_position_mult_applied',
             'bear_base_bonus_applied',
             'bear_base_bonus_total',
+            'extension_guard_rejected',  # 50MA extension guard skips (default-off feature).
             'ml_was_active',  # Set from resolved profile; bool, not counter.
         }
         assert set(engine.overlay_stats.keys()) == expected_keys
@@ -274,6 +275,61 @@ class TestBacktestEngine:
             "cz_pass must increment when a cs_only candidate clears both filters"
         assert engine.overlay_stats['cz_cs_only_rejected'] >= 1, \
             "cz_cs_only_rejected must increment when a cs_only candidate has no CS bonus"
+
+
+    def _ext_guard_engine(self, mock_session, guard_profile):
+        """Build an engine wired for the extension-guard path with one over-extended
+        candidate (EXT, 40% above the 50MA) and one healthy candidate (OK, 10% above)."""
+        from backend.backtester import BacktestEngine
+        engine = BacktestEngine(mock_session, 1)
+        engine.profile = {
+            'min_score': 60,
+            'quality_filters': {'min_c_score': 0, 'min_l_score': 0},
+            **guard_profile,
+        }
+        engine.static_data = {"EXT": {"sector": "Technology", "days_to_earnings": None},
+                              "OK": {"sector": "Technology", "days_to_earnings": None}}
+        engine.data_provider = MagicMock()
+        # 50MA fixed at 100 for both; price determines extension.
+        engine.data_provider.get_moving_average.return_value = 100.0
+        engine.data_provider.get_price_on_date.side_effect = (
+            lambda t, *_a, **_k: 140.0 if t == "EXT" else 110.0)
+        engine.data_provider.get_market_direction.return_value = {
+            "weighted_signal": 1.5, "spy": {"price": 500, "ma_50": 490}
+        }
+        return engine
+
+    def test_extension_guard_rejects_when_enabled(self, mock_db):
+        """With extension_guard on, a candidate priced >max% above its 50MA is skipped."""
+        mock_session, _ = mock_db
+        engine = self._ext_guard_engine(
+            mock_session, {'extension_guard': {'enabled': True, 'max_pct_above_50ma': 30}})
+        base = {
+            "total_score": 80, "c_score": 12, "a_score": 12, "l_score": 10,
+            "n_score": 10, "s_score": 10, "i_score": 8,
+            "has_base_pattern": True, "base_pattern": {"type": "flat"},
+            "weeks_in_base": 6, "pct_from_pivot": 5, "pct_from_high": 5,
+            "is_breaking_out": False, "volume_ratio": 1.3,
+            "rs_12m": 1.2, "rs_3m": 1.15, "is_growth_stock": False,
+        }
+        engine._evaluate_buys(date.today(), {"EXT": dict(base), "OK": dict(base)})
+        # EXT is 40% above the 50MA (>30 cap) → exactly one guard rejection.
+        assert engine.overlay_stats['extension_guard_rejected'] == 1
+
+    def test_extension_guard_noop_when_disabled(self, mock_db):
+        """Default (no extension_guard key) must not reject anyone — backward compatible."""
+        mock_session, _ = mock_db
+        engine = self._ext_guard_engine(mock_session, {})  # no extension_guard → default off
+        base = {
+            "total_score": 80, "c_score": 12, "a_score": 12, "l_score": 10,
+            "n_score": 10, "s_score": 10, "i_score": 8,
+            "has_base_pattern": True, "base_pattern": {"type": "flat"},
+            "weeks_in_base": 6, "pct_from_pivot": 5, "pct_from_high": 5,
+            "is_breaking_out": False, "volume_ratio": 1.3,
+            "rs_12m": 1.2, "rs_3m": 1.15, "is_growth_stock": False,
+        }
+        engine._evaluate_buys(date.today(), {"EXT": dict(base), "OK": dict(base)})
+        assert engine.overlay_stats['extension_guard_rejected'] == 0
 
 
 class TestSimulatedPosition:

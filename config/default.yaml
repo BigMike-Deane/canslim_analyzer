@@ -356,6 +356,16 @@ ai_trader:
     strong_threshold: 60         # N+S+L+I+M >= 60 → +8 to composite
     strong_bonus: 8
 
+  # Entry extension guard: block buys when price is too far above the 50MA at entry.
+  # Complements the pivot-relative extended_penalty, which misses late-stage bases whose
+  # pivot already sits far above the 50MA. Default OFF — opt in per strategy profile via
+  # profile_overrides (extension_guard.enabled). Backtest diagnostic: entries >30% above
+  # the 50MA had median outcome ~-10% with ~2-week holds. Currently backtester-only;
+  # mirror to ai_trader.py only after the multi-window sweep clears the gate.
+  extension_guard:
+    enabled: false
+    max_pct_above_50ma: 30           # skip new entries priced more than this % above the 50MA
+
   # Stop loss settings
   stops:
     normal_stop_loss_pct: 8.0          # O'Neil: cut losses at 7-8%, no exceptions

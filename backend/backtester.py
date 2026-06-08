@@ -426,6 +426,7 @@ class BacktestEngine:
             'cz_position_mult_applied': 0,  # times position size was reduced via _correction_zone_mult
             'bear_base_bonus_applied': 0,   # candidates that received bear base bonus
             'bear_base_bonus_total': 0,     # cumulative bonus points awarded
+            'extension_guard_rejected': 0,  # candidates skipped: price too far above 50MA at entry
             'ml_was_active': ml_was_active, # True iff ML actively gated trades (read by ML training dedup)
         }
 
@@ -3081,6 +3082,26 @@ class BacktestEngine:
             if not self._check_sector_limit(sector):
                 _funnel["sector"] += 1
                 continue
+
+            # EXTENSION GUARD: skip entries too far above the 50MA (late-stage extended bases).
+            # The pivot-relative `extended_penalty` already discourages chasing past the pivot,
+            # but a base whose pivot itself sits far above the 50MA slips through that check
+            # (e.g. live FSLR bought +44.8% above its 50MA, then -12%). Diagnostic over
+            # backtest_trades: entries >30% above the 50MA had a median outcome ~-10% with
+            # ~2-week holds, while the 20-30% band was still healthy (median +1.5%).
+            # A/B-testable via profile_overrides; default off so no profile changes behavior
+            # until it opts in. NOTE: backtester-only — do NOT mirror to ai_trader.py until the
+            # June-18 eval freeze lifts and a multi-window sweep clears the gate.
+            ext_guard = self.profile.get('extension_guard',
+                                         config.get('ai_trader.extension_guard', {}))
+            if ext_guard.get('enabled', False):
+                max_pct_above_50ma = ext_guard.get('max_pct_above_50ma', 30)
+                _eg_ma50 = _nan_safe(self.data_provider.get_moving_average(ticker, current_date, 50))
+                if isinstance(_eg_ma50, (int, float)) and _eg_ma50 > 0:
+                    if ((price / _eg_ma50) - 1) * 100 > max_pct_above_50ma:
+                        _funnel["extension"] = _funnel.get("extension", 0) + 1
+                        self.overlay_stats['extension_guard_rejected'] += 1
+                        continue
 
             # QUALITY FILTERS: Only buy stocks with strong fundamentals
             # Strategy profile overrides YAML defaults
