@@ -1856,6 +1856,13 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start breakout monitor: {e}")
 
+    # Start stop-guard breach monitor (freeze-safe mitigation for the
+    # evaluate_sells missing-guard bug; remove after the June-18 guard port)
+    try:
+        start_stop_guard_monitor_job()
+    except Exception as e:
+        logger.warning(f"Failed to start stop-guard monitor: {e}")
+
     # Start weekly A/B eval snapshot email (Mon 9 AM UTC)
     try:
         start_ab_eval_email_job()
@@ -2525,3 +2532,42 @@ def _run_breakout_monitor():
         check_intraday_breakouts()
     except Exception as e:
         logger.error(f"Breakout monitor error: {e}")
+
+
+def start_stop_guard_monitor_job():
+    """Schedule the stop-guard breach monitor (every 30 min during market hours).
+
+    Freeze-safe mitigation for the evaluate_sells missing-new_position_guard
+    bug — see backend/stop_guard_monitor.py. Remove this job when the guard
+    port ships into ai_trader.py post-June-18.
+    """
+    job_id = "stop_guard_breach_monitor"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_stop_guard_monitor,
+        IntervalTrigger(minutes=30),
+        id=job_id,
+        name="Stop-Guard Breach Monitor",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Stop-guard breach monitor scheduled (every 30 min)")
+
+
+def _run_stop_guard_monitor():
+    """Wrapper for stop-guard breach monitor with market-hours gate."""
+    try:
+        from backend.ai_trader import is_market_open
+        if not is_market_open():
+            return
+        from backend.stop_guard_monitor import check_stop_guard_breaches
+        breaches = check_stop_guard_breaches()
+        if breaches:
+            logger.warning(f"Stop-guard monitor: {len(breaches)} breach alert(s) sent")
+    except Exception as e:
+        logger.error(f"Stop-guard monitor error: {e}")
