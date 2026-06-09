@@ -3090,8 +3090,10 @@ class BacktestEngine:
             # backtest_trades: entries >30% above the 50MA had a median outcome ~-10% with
             # ~2-week holds, while the 20-30% band was still healthy (median +1.5%).
             # A/B-testable via profile_overrides; default off so no profile changes behavior
-            # until it opts in. NOTE: backtester-only — do NOT mirror to ai_trader.py until the
-            # June-18 eval freeze lifts and a multi-window sweep clears the gate.
+            # until it opts in. NOTE: backtester-only — never mirrored to ai_trader.py.
+            # VERDICT 2026-06-09: a 4-window sweep KILLED this on the nostate_optimized champion
+            # (no edge at caps 25-30; cap 20 cut -23pp). Kept default-off as a research tool for
+            # future non-champion strategies. See config/default.yaml ai_trader.extension_guard.
             ext_guard = self.profile.get('extension_guard',
                                          config.get('ai_trader.extension_guard', {}))
             if ext_guard.get('enabled', False):

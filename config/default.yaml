@@ -359,9 +359,18 @@ ai_trader:
   # Entry extension guard: block buys when price is too far above the 50MA at entry.
   # Complements the pivot-relative extended_penalty, which misses late-stage bases whose
   # pivot already sits far above the 50MA. Default OFF — opt in per strategy profile via
-  # profile_overrides (extension_guard.enabled). Backtest diagnostic: entries >30% above
-  # the 50MA had median outcome ~-10% with ~2-week holds. Currently backtester-only;
-  # mirror to ai_trader.py only after the multi-window sweep clears the gate.
+  # profile_overrides (extension_guard.enabled).
+  #
+  # VERDICT 2026-06-09 (KILLED on nostate_optimized champion): a 4-window A/B sweep
+  # (control vs caps 30/25/20) found NO robust edge. Caps 25-30 were no-ops (the champion's
+  # composite ranking + 8-position cap already keeps >25%-extended names out of the executed
+  # portfolio); cap 20 DESTROYED value (full-cycle return 173.6%->150.3%, worse drawdown)
+  # because the champion's winners include healthy momentum leaders sitting 20-30% above the
+  # 50MA. A blunt 50MA hard-cap is the wrong altitude for this strategy. NOT mirrored to
+  # ai_trader.py. Kept default-off as a research tool for future non-champion strategies
+  # (e.g. growth mode) where the broad-population leak may still be real. Don't re-pursue on
+  # the champion without a fundamentally different formulation. Diagnostic that motivated it:
+  # entries >30% above the 50MA had median outcome ~-10% across ALL historical backtests.
   extension_guard:
     enabled: false
     max_pct_above_50ma: 30           # skip new entries priced more than this % above the 50MA
