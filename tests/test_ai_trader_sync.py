@@ -613,3 +613,93 @@ class TestPartialTrailingGateMigrated:
             assert should_take_partial_on_trailing_stop(
                 pyramid_count=pyramid_count, score=score
             ) is expected, f"helper boundary moved for ({pyramid_count}, {score})"
+
+
+# ── New-position guard parity in evaluate_sells (jun-09 regression) ────────────
+
+
+class TestEvaluateSellsNewPositionGuard:
+    """Regression (2026-06-09): the live evaluate_sells() was MISSING the
+    new_position_guard clamp that _check_and_execute_stop_losses_impl AND
+    backtester._evaluate_sells both apply. A fast-falling new buy's ATR stop
+    widened pro-cyclically toward the 20% cap, so the intended 8% stop never
+    fired — FSLR was held to -18%, AMD to -13.7%. Pin the guard into the
+    function the live trading loop actually calls."""
+
+    def test_new_position_wide_atr_stop_clamped_to_guard(self, monkeypatch):
+        import backend.ai_trader as at
+        import data_fetcher
+        from config_loader import config as yaml_config
+
+        sess = _fresh_session()
+        # New (5d) non-pyramided position down -12% — between the 8% guard and a
+        # blown-out 20% ATR stop. Only the guard clamp makes the hard stop fire.
+        pos = _make_position(
+            ticker="FALL", cost_basis=100.0, current_price=88.0,
+            current_value=8800.0, gain_loss=-1200.0, gain_loss_pct=-12.0,
+            purchase_date=datetime.now(timezone.utc) - timedelta(days=5),
+            pyramid_count=0, peak_price=100.0, current_score=75.0,
+        )
+        sess.add(pos)
+        sess.commit()
+
+        # Simulate pro-cyclical ATR widening: stop blows out to the 20% cap.
+        monkeypatch.setattr(at, "calculate_atr_stop", lambda *a, **k: 20.0)
+        # Avoid network: no VIX provider, no live market lookup.
+        monkeypatch.setattr(at, "HistoricalDataProvider", None)
+        monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
+                            lambda: {}, raising=False)
+        # Force the guard enabled regardless of env yaml.
+        orig_get = yaml_config.get
+
+        def _patched_get(key, default=None):
+            if key == "ai_trader.new_position_guard":
+                return {"enabled": True, "guard_days": 21,
+                        "guard_stop_pct": 8.0, "skip_if_pyramided": True}
+            return orig_get(key, default)
+
+        monkeypatch.setattr(yaml_config, "get", _patched_get)
+
+        sells = at.evaluate_sells(sess, user_id=pos.user_id)
+        reasons = [s["reason"] for s in sells]
+        assert any("STOP LOSS" in r for r in reasons), (
+            "new_position_guard must clamp the 20% ATR stop to 8% so a -12% "
+            "new position fires a STOP LOSS (the jun-09 bug skipped this clamp)"
+        )
+
+    def test_pyramided_position_not_clamped(self, monkeypatch):
+        """skip_if_pyramided: a proven (pyramided) winner keeps the wider ATR
+        stop — the guard must NOT clamp it, so -12% does not hard-stop."""
+        import backend.ai_trader as at
+        import data_fetcher
+        from config_loader import config as yaml_config
+
+        sess = _fresh_session()
+        pos = _make_position(
+            ticker="PYR", cost_basis=100.0, current_price=88.0,
+            current_value=8800.0, gain_loss=-1200.0, gain_loss_pct=-12.0,
+            purchase_date=datetime.now(timezone.utc) - timedelta(days=5),
+            pyramid_count=2, peak_price=100.0, current_score=75.0,
+        )
+        sess.add(pos)
+        sess.commit()
+
+        monkeypatch.setattr(at, "calculate_atr_stop", lambda *a, **k: 20.0)
+        monkeypatch.setattr(at, "HistoricalDataProvider", None)
+        monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
+                            lambda: {}, raising=False)
+        orig_get = yaml_config.get
+
+        def _patched_get(key, default=None):
+            if key == "ai_trader.new_position_guard":
+                return {"enabled": True, "guard_days": 21,
+                        "guard_stop_pct": 8.0, "skip_if_pyramided": True}
+            return orig_get(key, default)
+
+        monkeypatch.setattr(yaml_config, "get", _patched_get)
+
+        sells = at.evaluate_sells(sess, user_id=pos.user_id)
+        reasons = [s["reason"] for s in sells]
+        assert not any("STOP LOSS" in r for r in reasons), (
+            "pyramided position should keep the wide ATR stop (skip_if_pyramided)"
+        )

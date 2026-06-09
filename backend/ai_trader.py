@@ -1622,6 +1622,23 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         # ATR-based adaptive stop loss - volatile stocks get wider stops
         position_stop_pct = calculate_atr_stop(position.ticker, position.current_price, effective_stop_loss_pct)
 
+        # F: NEW POSITION GUARD — tighter stop for new positions in first N days.
+        # MIRROR of _check_and_execute_stop_losses_impl (1304-1314) and backtester
+        # _evaluate_sells (~2552). Without it, a fast-falling new buy's ATR stop widens
+        # pro-cyclically toward the 20% cap and the intended 8% stop never fires
+        # (jun-09 bug: live FSLR held to -18%, AMD -13.7%). Restores ai_trader<->backtester sync.
+        guard_config = yaml_config.get('ai_trader.new_position_guard', {})
+        if guard_config.get('enabled', False) and position.purchase_date:
+            guard_days = guard_config.get('guard_days', 21)
+            guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
+            skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
+            purchase_dt = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
+            holding_days = (date.today() - purchase_dt).days
+            pyramid_count = getattr(position, 'pyramid_count', 0) or 0
+            if holding_days <= guard_days:
+                if not (skip_if_pyramided and pyramid_count > 0):
+                    position_stop_pct = min(position_stop_pct, guard_stop_pct)
+
         # Market-aware stop loss (with ATR adaptation)
         if gain_pct <= -position_stop_pct:
             market_note = " (bearish market)" if is_bearish_market else ""
