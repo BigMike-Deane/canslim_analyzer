@@ -2548,8 +2548,12 @@ class BacktestEngine:
                     effective_stop_loss_pct = max(base_stop_loss_pct, atr_stop_pct)
                     effective_stop_loss_pct = min(effective_stop_loss_pct, max_stop_pct)  # Cap
 
-            # F: NEW POSITION GUARD — tighter stop for new positions in first N days
-            guard_config = config.get('ai_trader.new_position_guard', {})
+            # F: NEW POSITION GUARD — tighter stop for new positions in first N days.
+            # Profile-overridable (A/B-testable) with YAML fallback, so a sweep can disable
+            # it to measure its value — e.g. simulating the live evaluate_sells() bug where
+            # the guard is missing (see canslim-jun09 stop-loss finding).
+            guard_config = self.profile.get('new_position_guard',
+                                            config.get('ai_trader.new_position_guard', {}))
             if guard_config.get('enabled', False):
                 guard_days = guard_config.get('guard_days', 21)
                 guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
