@@ -352,6 +352,13 @@ ai_trader:
   # lever for the post-June-18 exit redesign — default OFF, opt in per sweep
   # arm via profile_overrides. Champion loser-tail evidence (backtests 756/733):
   # NFLX 207d -> -11.2%, VVV 78d -> -8.0%, GHC 56d -> -7.6%.
+  #
+  # VERDICT 2026-06-09 (NO-OP on nostate_optimized champion): a 5-window sweep
+  # (4x 2-year windows 780-795 + full-cycle 2022-2026 runs 796-799) produced
+  # ZERO binding events — champion paths' stale losers either recover past +5%
+  # (then the 4% 5-10 trail manages them) or hit the ATR stop first. The
+  # mined examples (NFLX 207d) did not recur under the fresh static snapshot.
+  # Keep default-off as a research tool; nothing to mirror into ai_trader.py.
   aging_loser_guard:
     enabled: false
     min_holding_days: 45             # Only positions held at least this long
@@ -363,6 +370,16 @@ ai_trader:
   # it round-trips to floor_gain_pct — caps the giveback band where +10..28%
   # peaks exit near flat (TRMK +27.6% peak -> +6.7% realized, ACGL +12.3% ->
   # -3.7% in backtest 756). Backtester-only A/B lever — default OFF.
+  #
+  # VERDICT 2026-06-09 (UNPROVEN — do NOT ship): in daily-bar simulation the
+  # floor almost always fires the same day as the trailing tier (pure relabel,
+  # bit-identical results in all 4 short windows 780-795). Full-cycle run 798
+  # showed +8.8pp vs control 796, but the paths are identical until a SINGLE
+  # binding event (ACGL full-sell vs partial-trail, 2024-10-31) — n=1 path
+  # fork, same evidence class as the killed June-1 "+47.8pp" standout. Binding
+  # events are too rare (~2 per 4yr) to ever validate via backtest. Keep
+  # default-off; only differentiated behavior is full-sell-vs-partial on
+  # pyramided round-trippers and gap-throughs.
   profit_giveback_floor:
     enabled: false
     arm_at_peak_gain: 12.0           # Arm the floor once peak gain reaches this %
