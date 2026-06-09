@@ -347,6 +347,28 @@ ai_trader:
     guard_stop_pct: 8.0              # F: 8% max loss for new positions (vs normal ATR-adjusted)
     skip_if_pyramided: true          # Don't apply guard if position has been pyramided (proven winner)
 
+  # Aging Loser Guard: clamp the ATR-widened stop back down for stale positions
+  # that never showed a real gain (thesis never worked). Backtester-only A/B
+  # lever for the post-June-18 exit redesign — default OFF, opt in per sweep
+  # arm via profile_overrides. Champion loser-tail evidence (backtests 756/733):
+  # NFLX 207d -> -11.2%, VVV 78d -> -8.0%, GHC 56d -> -7.6%.
+  aging_loser_guard:
+    enabled: false
+    min_holding_days: 45             # Only positions held at least this long
+    max_peak_gain: 5.0               # Only if peak gain never reached this %
+    clamp_stop_pct: 8.0              # Clamp stop to this (vs ATR-widened up to 20%)
+    skip_if_pyramided: true          # Pyramided = proven conviction, leave alone
+
+  # Profit Giveback Floor: once a position peaks past arm_at_peak_gain, exit if
+  # it round-trips to floor_gain_pct — caps the giveback band where +10..28%
+  # peaks exit near flat (TRMK +27.6% peak -> +6.7% realized, ACGL +12.3% ->
+  # -3.7% in backtest 756). Backtester-only A/B lever — default OFF.
+  profit_giveback_floor:
+    enabled: false
+    arm_at_peak_gain: 12.0           # Arm the floor once peak gain reaches this %
+    floor_gain_pct: 1.0              # Exit if gain falls to/below this % after arming
+    skip_if_pyramided: false         # Floor applies to pyramided positions too
+
   # Deterministic score boost: bonus to composite for stocks with strong
   # non-FMP scores (N+S+L+I+M). Reduces FMP influence on ranking/sizing.
   deterministic_boost:

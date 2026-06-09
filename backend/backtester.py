@@ -2564,6 +2564,29 @@ class BacktestEngine:
                         # Use the tighter guard stop instead of the wider ATR-adjusted stop
                         effective_stop_loss_pct = min(effective_stop_loss_pct, guard_stop_pct)
 
+            # AGING LOSER GUARD (default OFF — exit-redesign A/B lever, 2026-06-09).
+            # Positions past the new-position window that never showed a real gain
+            # (peak below max_peak_gain) get their ATR-widened stop clamped back down,
+            # so a thesis that never worked can't ride a 15-20% stop for months
+            # (champion examples: NFLX 207d -> -11.2%, VVV 78d -> -8.0%).
+            # Opt in per sweep arm via profile_overrides (aging_loser_guard.enabled).
+            aging_clamped = False
+            aging_config = self.profile.get('aging_loser_guard',
+                                            config.get('ai_trader.aging_loser_guard', {}))
+            if aging_config.get('enabled', False):
+                min_holding_days = aging_config.get('min_holding_days', 45)
+                max_peak_gain = aging_config.get('max_peak_gain', 5.0)
+                clamp_stop_pct = aging_config.get('clamp_stop_pct', 8.0)
+                aging_skip_pyramided = aging_config.get('skip_if_pyramided', True)
+                holding_days = (current_date - position.purchase_date).days
+                peak_gain = ((position.peak_price / position.cost_basis) - 1) * 100 if position.peak_price > 0 else 0
+                if (holding_days >= min_holding_days
+                        and peak_gain < max_peak_gain
+                        and not (aging_skip_pyramided and position.pyramid_count > 0)
+                        and clamp_stop_pct < effective_stop_loss_pct):
+                    effective_stop_loss_pct = clamp_stop_pct
+                    aging_clamped = True
+
             # Market-aware stop loss check
             if gain_pct <= -effective_stop_loss_pct:
                 market_note = " (bearish market)" if is_bearish_market else ""
@@ -2578,6 +2601,9 @@ class BacktestEngine:
                     priority=1
                 )
                 trade._signal_factors = {"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(effective_stop_loss_pct, 1)}
+                if aging_clamped:
+                    trade._signal_factors["aging_loser"] = True
+                    self.overlay_stats['aging_loser_stops'] = self.overlay_stats.get('aging_loser_stops', 0) + 1
                 sells.append(trade)
                 continue
 
@@ -2585,6 +2611,36 @@ class BacktestEngine:
             if position.peak_price > 0:
                 drop_from_peak = ((position.peak_price - price) / position.peak_price) * 100
                 peak_gain_pct = ((position.peak_price / position.cost_basis) - 1) * 100 if position.cost_basis > 0 else 0
+
+                # PROFIT GIVEBACK FLOOR (default OFF — exit-redesign A/B lever, 2026-06-09).
+                # Once a position has peaked past arm_at_peak_gain, never let it round-trip
+                # below floor_gain_pct: caps the "giveback band" where +10..28% peaks exit
+                # near flat (champion examples: TRMK +27.6% peak -> +6.7% realized,
+                # ACGL +12.3% -> -3.7%). Binds mostly on pyramid-widened trails and
+                # gap-throughs; the tier trail still handles the common case.
+                # Opt in per sweep arm via profile_overrides (profit_giveback_floor.enabled).
+                floor_config = self.profile.get('profit_giveback_floor',
+                                                config.get('ai_trader.profit_giveback_floor', {}))
+                if floor_config.get('enabled', False):
+                    arm_at_peak_gain = floor_config.get('arm_at_peak_gain', 12.0)
+                    floor_gain_pct = floor_config.get('floor_gain_pct', 1.0)
+                    floor_skip_pyramided = floor_config.get('skip_if_pyramided', False)
+                    if (peak_gain_pct >= arm_at_peak_gain
+                            and gain_pct <= floor_gain_pct
+                            and not (floor_skip_pyramided and position.pyramid_count > 0)):
+                        trade = SimulatedTrade(
+                            ticker=ticker,
+                            action="SELL",
+                            shares=position.shares,
+                            price=price,
+                            reason=f"GIVEBACK FLOOR: Peaked +{peak_gain_pct:.1f}%, now {gain_pct:+.1f}% - capping round trip",
+                            score=current_score,
+                            priority=2
+                        )
+                        trade._signal_factors = {"sell_reason": "GIVEBACK FLOOR", "gain_pct": round(gain_pct, 1), "peak_gain_pct": round(peak_gain_pct, 1)}
+                        sells.append(trade)
+                        self.overlay_stats['giveback_floor_exits'] = self.overlay_stats.get('giveback_floor_exits', 0) + 1
+                        continue
 
                 # Dynamic trailing stop thresholds — strategy profile overrides
                 trailing_stop_pct = get_trailing_stop_pct(peak_gain_pct, self.profile)
