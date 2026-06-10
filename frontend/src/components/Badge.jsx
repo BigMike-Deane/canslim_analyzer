@@ -74,7 +74,9 @@ export function ActionBadge({ action, className = '' }) {
   )
 }
 
-export function TagBadge({ children, color = 'default', className = '' }) {
+// Forwards ...rest (title, aria-*, data-*) onto the span — several call
+// sites pass `title` tooltips; without the spread they were silently dropped.
+export function TagBadge({ children, color = 'default', className = '', ...rest }) {
   const colors = {
     default: 'bg-dark-700 text-dark-300 border-dark-600',
     cyan: 'bg-primary-500/10 text-primary-400 border-primary-500/20',
@@ -87,7 +89,10 @@ export function TagBadge({ children, color = 'default', className = '' }) {
   }
 
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${colors[color] || colors.default} ${className}`}>
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded border ${colors[color] || colors.default} ${className}`}
+      {...rest}
+    >
       {children}
     </span>
   )
