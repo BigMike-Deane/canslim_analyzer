@@ -124,6 +124,25 @@ The math is identical (14-period simple TR average, ×2.5 multiplier, capped at
 
 ---
 
+## Bundled non-parity fix (June 19)
+
+### N1 — Partial trailing stop sends a full-exit-looking notification
+
+- **Observed live 2026-06-10:** IESC partial trailing stop (50%, trade #235) sent
+  "TRAILING STOP: IESC / 4.71 shares @ $687.45 (+2.0%)" — indistinguishable from a
+  full liquidation; owner reasonably assumed the position was closed.
+- **Cause:** `execute_trade` (ai_trader.py ~1509) collapses the reason via substring
+  match — `"PARTIAL TRAILING STOP (50%)"` contains `"TRAILING STOP"` → generic
+  `send_stop_loss_webhook` template (email_utils.py:607-608) with no partial/remaining
+  info.
+- **Fix:** when the reason starts with `PARTIAL`, pass a distinct stop_type (e.g.
+  `"PARTIAL TRAILING STOP (50%)"`) and include shares-kept in the message. Touches
+  `ai_trader.py` (call site) + `email_utils.py` (template) — notification-only, no
+  trading-logic change, but held to June 19 to keep ai_trader.py byte-identical
+  through the freeze.
+
+---
+
 ## Net read
 
 The divergences do **not** all point the same way: D1 makes backtests optimistic,
@@ -143,5 +162,7 @@ formulation.
    to both `evaluate_sells` and `_evaluate_sells`, asserting identical decisions —
    makes the next drift a test failure, not a live loss. May motivate extracting the
    sell loop into `trading_engine.py`.
-5. **D4/D5** backtester-side fidelity work (peak-from-highs, stop-on-low bracket) —
+5. **N1** partial-stop notification wording (distinct title + shares-kept) — small,
+   bundle with D1's commit or its own.
+6. **D4/D5** backtester-side fidelity work (peak-from-highs, stop-on-low bracket) —
    can start pre-June-18 since it doesn't touch `ai_trader.py`.
