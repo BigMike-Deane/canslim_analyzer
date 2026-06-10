@@ -121,6 +121,28 @@ The math is identical (14-period simple TR average, ×2.5 multiplier, capped at
   so it is the pessimistic bound — live sits inside the bracket, but the bracket
   is so wide that cadence is **first-order**, dwarfing every formulation lever
   ever swept (±10pp).
+- **ORDERING BRACKET 2026-06-10** (`use_prior_peak` knob, commit `d00a5c0`, runs
+  812-816 = both levers + optimistic low-then-high ordering): the four 2-yr
+  windows stay below control under BOTH orderings — ctrl/opt/pess: 2018-20
+  +17.7/+8.8/+3.9, 2019-21 +17.5/+2.7/+1.0, 2020-22 +14.1/+6.4/−1.5, 2021-23
+  +4.4/+3.9/−3.9. **8/8 window arms negative vs control** → the cadence drag is
+  robust at roughly −1..−15pp per 2yr (optimistic) to −8..−17pp (pessimistic).
+  BUT the full-cycle optimistic arm came in at **+175.8% vs control +140.3%**
+  (Sharpe 1.67 vs 1.63) — a single 4-yr compounding path is fork-dominated at
+  this n (same ACGL-fork lesson, jun-09), and fill-at-stop-level mechanics are
+  genuinely favorable in long bulls (D5-alone was +17pp). **Trust the windows,
+  not the full-cycle headline in either direction:** do not quote −56pp as the
+  cadence cost; quote "consistent single-to-low-double-digit pp drag per 2yr,
+  confirmed live" (see live validation below).
+- **LIVE CHURN VALIDATION 2026-06-10** (user 1 real trades Apr 8–Jun 10, n=27
+  sells, vs #800/#803 trade logs): live exhibits the D4 churn signature and is
+  WORSE than the pessimistic model — trailing-family share of exits 41% (ctrl
+  26%, intraday arm 42%); trailing-stop avg hold **9.2d** (ctrl 81d, #803 38d);
+  trailing WR 50% (76%/91%); trailing avg gain −0.1% (+3.6%/+3.5%); ~13
+  sells/mo vs ~2.3 modeled. Bonus: live hard stops avg **−11.4%** vs −8.8%
+  modeled = the D1 guard bug visible in aggregate. Caveats: 2.1 months, one
+  regime, seed-phase ramp inflates churn rate. The cadence redesign (item 4
+  below) is a **diagnosis**, not a hypothesis.
 
 ---
 
@@ -181,8 +203,11 @@ formulation.
    the measured bracket (−8..−56pp from intraday cadence, 5/5 windows) makes it
    the highest-expected-value change on this list. Design carefully: last
    scan-of-day vs a 15:30-CST window; interaction with D2's per-day clock.
-   Pre-validate against live trade log: D4's churn signature (more trades,
-   lower WR) should be visible in live sells vs backtest #800's.
+   ~~Pre-validate against live trade log~~ **VALIDATED 2026-06-10** — live
+   trailing exits hold 9.2d at 50% WR / −0.1% avg vs 81d / 76% / +3.6%
+   modeled (see D5 live-validation block above). Note the windows-vs-full-cycle
+   nuance: quote the cadence cost as a consistent −1..−17pp per 2yr drag, not
+   the −56pp single-path headline.
 5. **Parity harness:** shared-fixture test feeding identical positions/prices/scores
    to both `evaluate_sells` and `_evaluate_sells`, asserting identical decisions —
    makes the next drift a test failure, not a live loss. May motivate extracting the

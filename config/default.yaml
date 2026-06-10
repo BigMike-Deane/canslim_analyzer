@@ -404,6 +404,14 @@ ai_trader:
   # the bracket. Implication for June-19: evaluating live trailing stops once
   # daily near the close (the control arm's behavior) is the highest-leverage
   # live-side exit candidate ever measured here.
+  # ORDERING BRACKET + LIVE VALIDATION 2026-06-10 (runs 812-816, use_prior_peak
+  # = optimistic ordering): 8/8 window arms below control under BOTH orderings
+  # (drag −1..−17pp per 2yr window) — but the full-cycle optimistic arm BEAT
+  # control (+175.8 vs +140.3), so single-path 4yr numbers are fork-dominated;
+  # quote the per-window drag, NOT −56pp. Live trade log (n=27 sells) confirms
+  # the signature harder than any model: trailing exits 9.2d hold / 50% WR /
+  # −0.1% avg vs 81d / 76% / +3.6% in the control. See
+  # docs/parity-audit-evaluate-sells.md D5 verdict blocks.
   # D4: live raises peak_price from intraday prices every ~90min cycle, so the
   # live peak watermark is systematically >= the backtest's close-only peak and
   # live trailing stops fire earlier than backtests model. Track the backtest
