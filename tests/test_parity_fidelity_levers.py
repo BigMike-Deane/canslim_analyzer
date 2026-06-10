@@ -231,6 +231,76 @@ class TestStopOnDailyLow:
         assert abs(engine.positions["CONV"].peak_price - 101.20) < 1e-9
 
     @patch('backend.backtester.config')
+    def test_use_prior_peak_spares_same_day_whipsaw(self, mock_config):
+        """Optimistic ordering: peak rose to 120 only today (prev 100), so the
+        low is checked against yesterday's 100-peak and must NOT trigger."""
+        engine = _engine(mock_config, {
+            'stop_on_daily_low': {'enabled': True, 'include_trailing': True,
+                                  'use_prior_peak': True},
+            'trailing_stops': {'gain_20_to_30': 12},  # pin tier (profile varies)
+        })
+        # current peak 125 (e.g. D4 raised it from today's high), prev peak 100.
+        # peak=120 would put peak_gain at 19.99999... (fp) — wrong tier.
+        _add_position(engine, "WHIP", peak=125.0, price=113.0)
+        engine.positions["WHIP"].prev_peak_price = 100.0
+        # tier from current peak: peak_gain 25% -> 12% trail
+        # pessimistic level: 125*0.88 = 110.0 (low 109.5 would trip)
+        # optimistic level:  100*0.88 = 88.0  (low 109.5 must NOT trip)
+        engine.data_provider.get_ohlc_on_date.return_value = {
+            "open": 115.0, "high": 116.0, "low": 109.5, "close": 113.0}
+
+        sells = engine._evaluate_sells(date.today(), {})
+
+        assert sells == []
+        assert 'low_only_trailing' not in engine.overlay_stats
+
+    @patch('backend.backtester.config')
+    def test_default_ordering_trips_same_day_whipsaw(self, mock_config):
+        """Same scenario without use_prior_peak: low 109.5 <= 110.0 trips."""
+        engine = _engine(mock_config, {
+            **LOW_ON,
+            'trailing_stops': {'gain_20_to_30': 12},  # pin tier (profile varies)
+        })
+        _add_position(engine, "WHIP", peak=125.0, price=113.0)
+        engine.positions["WHIP"].prev_peak_price = 100.0
+        engine.data_provider.get_ohlc_on_date.return_value = {
+            "open": 115.0, "high": 116.0, "low": 109.5, "close": 113.0}
+
+        sells = engine._evaluate_sells(date.today(), {})
+
+        assert len(sells) == 1
+        assert abs(sells[0].price - 125.0 * 0.88) < 1e-9
+
+    @patch('backend.backtester.config')
+    def test_use_prior_peak_unset_prev_falls_back_to_current(self, mock_config):
+        """prev_peak_price never populated (0.0): fall back to the current peak
+        so the knob degrades to the default ordering, not to no-trigger."""
+        engine = _engine(mock_config, {'stop_on_daily_low': {
+            'enabled': True, 'include_trailing': True, 'use_prior_peak': True}})
+        _add_position(engine, "TRL", peak=115.0, price=107.0)
+        assert engine.positions["TRL"].prev_peak_price == 0.0
+        engine.data_provider.get_ohlc_on_date.return_value = {
+            "open": 110.0, "high": 111.0, "low": 105.0, "close": 107.0}
+
+        sells = engine._evaluate_sells(date.today(), {})
+
+        assert len(sells) == 1
+        assert sells[0].price == 115.0 * 0.92
+
+    @patch('backend.backtester.config')
+    def test_update_positions_snapshots_prev_peak(self, mock_config):
+        """_update_positions must record the pre-update peak each day."""
+        engine = _engine(mock_config, PEAK_ON)
+        _add_position(engine, "SNAP", peak=110.0, price=105.0)
+        engine.data_provider.get_ohlc_on_date.return_value = {
+            "open": 104.0, "high": 120.0, "low": 103.0, "close": 105.0}
+
+        engine._update_positions(date.today())
+
+        assert engine.positions["SNAP"].prev_peak_price == 110.0
+        assert engine.positions["SNAP"].peak_price == 120.0
+
+    @patch('backend.backtester.config')
     def test_missing_ohlc_falls_back_to_close_only(self, mock_config):
         """Lever on but no bar: behave exactly like the close-only baseline."""
         engine = _engine(mock_config, LOW_ON)

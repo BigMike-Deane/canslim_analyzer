@@ -102,6 +102,7 @@ class SimulatedPosition:
     pyramid_count: int = 0  # Number of times pyramided into
     signal_factors: dict = field(default_factory=dict)  # Trade journal: factors that drove the buy
     is_experimental: bool = False  # True for nibble/V-bottom positions (isolated from circuit breaker)
+    prev_peak_price: float = 0.0  # Peak as of the PRIOR day's update (D5 use_prior_peak ordering)
 
 
 @dataclass
@@ -1994,6 +1995,9 @@ class BacktestEngine:
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if price and price > 0:
+                # Snapshot the pre-update peak: D5's use_prior_peak ordering checks
+                # today's low against the peak as it stood BEFORE today's bar
+                position.prev_peak_price = position.peak_price
                 watermark = price
                 if peak_from_highs:
                     ohlc = self.data_provider.get_ohlc_on_date(ticker, current_date)
@@ -2543,6 +2547,11 @@ class BacktestEngine:
                                       config.get('ai_trader.stop_on_daily_low', {}))
         use_daily_low = low_config.get('enabled', False)
         low_includes_trailing = low_config.get('include_trailing', True)
+        # Ordering bound: default (False) checks today's low against the peak
+        # AFTER today's bar updated it (assumes high-then-low — pessimistic).
+        # True checks the low against the PRIOR day's peak (assumes low-then-high
+        # — optimistic). Live's true cadence sits between the two.
+        low_use_prior_peak = low_config.get('use_prior_peak', False)
 
         # VIX-regime stop adjustment (proxy fetched here; math via shared helper)
         vix_config = config.get('vix_stops', {})
@@ -2716,7 +2725,14 @@ class BacktestEngine:
                     trail_drop = drop_from_peak
                     low_only_trail = False
                     if use_daily_low and low_includes_trailing and day_low:
-                        trail_level = position.peak_price * (1 - effective_trailing_stop / 100)
+                        # use_prior_peak: the low is checked against yesterday's
+                        # peak (today's bar can't have raised the watermark before
+                        # the low printed). Tier selection stays on the current
+                        # peak — tiers shift rarely; documented approximation.
+                        low_peak_ref = position.peak_price
+                        if low_use_prior_peak and position.prev_peak_price > 0:
+                            low_peak_ref = position.prev_peak_price
+                        trail_level = low_peak_ref * (1 - effective_trailing_stop / 100)
                         if day_low <= trail_level:
                             low_only_trail = not trail_triggered
                             trail_triggered = True

@@ -417,6 +417,9 @@ ai_trader:
   stop_on_daily_low:
     enabled: false
     include_trailing: true           # Also trigger trailing stops on the low
+    use_prior_peak: false            # false: low vs today's peak (high-then-low,
+                                     # pessimistic). true: low vs yesterday's peak
+                                     # (low-then-high, optimistic). Live is between.
 
   # Deterministic score boost: bonus to composite for stocks with strong
   # non-FMP scores (N+S+L+I+M). Reduces FMP influence on ranking/sizing.
