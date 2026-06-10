@@ -362,6 +362,35 @@ class HistoricalDataProvider:
 
         return None
 
+    def get_ohlc_on_date(self, ticker: str, as_of_date: date) -> Optional[dict]:
+        """
+        Get the full OHLC bar for a specific date (exact date only, no
+        prior-date fallback — a stale high/low is wrong for peak watermarks
+        and intraday stop checks, the two consumers of this method).
+
+        Returns:
+            {"open", "high", "low", "close"} as floats, or None if the
+            ticker/date has no bar.
+        """
+        df = self._price_cache.get(ticker)
+        if df is None:
+            return None
+
+        mask = df["date"] == as_of_date
+        if not mask.any():
+            return None
+
+        row = df.loc[mask].iloc[0]
+        try:
+            return {
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+
     def get_volume_on_date(self, ticker: str, as_of_date: date) -> Optional[float]:
         """Get volume for a specific date"""
         df = self._price_cache.get(ticker)

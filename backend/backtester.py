@@ -1980,12 +1980,33 @@ class BacktestEngine:
 
     def _update_positions(self, current_date: date):
         """Update position prices and track peak for trailing stops"""
+        # D4 PEAK FROM DAILY HIGHS (default OFF — parity-fidelity A/B lever, 2026-06-10).
+        # Live update_position_prices raises peak_price from intraday prices every
+        # ~90min cycle (and backfills from daily highs on init), so the live peak
+        # watermark is systematically >= the backtest's close-only peak — live
+        # trailing stops fire earlier than backtests model. This lever makes the
+        # backtester track peak from the daily HIGH instead, mirroring live.
+        # Opt in per sweep arm via profile_overrides (peak_from_daily_highs.enabled).
+        # See docs/parity-audit-evaluate-sells.md D4.
+        peak_config = self.profile.get('peak_from_daily_highs',
+                                       config.get('ai_trader.peak_from_daily_highs', {}))
+        peak_from_highs = peak_config.get('enabled', False)
         for ticker, position in list(self.positions.items()):
             price = self.data_provider.get_price_on_date(ticker, current_date)
             if price and price > 0:
+                watermark = price
+                if peak_from_highs:
+                    ohlc = self.data_provider.get_ohlc_on_date(ticker, current_date)
+                    if ohlc and ohlc.get("high") and ohlc["high"] > 0:
+                        watermark = max(watermark, ohlc["high"])
                 # Track peak price for trailing stop
-                if price > position.peak_price:
-                    position.peak_price = price
+                if watermark > position.peak_price:
+                    if peak_from_highs and price <= position.peak_price:
+                        # The close alone would not have raised the peak — this
+                        # update exists only because of the lever
+                        self.overlay_stats['peak_from_high_only'] = \
+                            self.overlay_stats.get('peak_from_high_only', 0) + 1
+                    position.peak_price = watermark
                     position.peak_date = current_date
 
     def _calculate_scores(self, current_date: date, tickers: List[str] = None) -> Dict[str, dict]:
@@ -2510,6 +2531,19 @@ class BacktestEngine:
         partial_min_score = partial_trailing_config.get('partial_min_score', 65)
         partial_sell_pct = partial_trailing_config.get('partial_sell_pct', 50)
 
+        # D5 STOP ON DAILY LOW (default OFF — parity-fidelity A/B lever, 2026-06-10).
+        # Live checks stops every ~90min scan on live prices; the backtester checks
+        # once on the close, so an intraday breach that recovers by close is sold
+        # live but invisible here. This lever triggers stop-family exits when the
+        # daily LOW breached the level, filling at the stop level (or the open on
+        # a gap-through) — the pessimistic bound that brackets live cadence.
+        # Opt in per sweep arm via profile_overrides (stop_on_daily_low.enabled).
+        # See docs/parity-audit-evaluate-sells.md D5.
+        low_config = self.profile.get('stop_on_daily_low',
+                                      config.get('ai_trader.stop_on_daily_low', {}))
+        use_daily_low = low_config.get('enabled', False)
+        low_includes_trailing = low_config.get('include_trailing', True)
+
         # VIX-regime stop adjustment (proxy fetched here; math via shared helper)
         vix_config = config.get('vix_stops', {})
         vix_proxy = (
@@ -2538,6 +2572,14 @@ class BacktestEngine:
             gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100
             score_data = scores.get(ticker, {})
             current_score = _nan_safe(score_data.get("total_score", 0))
+
+            # D5: today's open/low for intraday stop checks (lever only)
+            day_open = day_low = None
+            if use_daily_low:
+                ohlc = self.data_provider.get_ohlc_on_date(ticker, current_date)
+                if ohlc:
+                    day_open = ohlc.get("open") or None
+                    day_low = ohlc.get("low") or None
 
             # ATR-based stop loss: volatile stocks get wider stops
             effective_stop_loss_pct = base_stop_loss_pct
@@ -2587,20 +2629,38 @@ class BacktestEngine:
                     effective_stop_loss_pct = clamp_stop_pct
                     aging_clamped = True
 
-            # Market-aware stop loss check
-            if gain_pct <= -effective_stop_loss_pct:
+            # Market-aware stop loss check.
+            # D5: when the lever is on, trigger on the daily LOW breaching the
+            # stop level and fill at that level (open if it gapped through) —
+            # models live intraday execution instead of close-only.
+            stop_triggered = gain_pct <= -effective_stop_loss_pct
+            stop_fill_price = price
+            stop_gain_pct = gain_pct
+            low_only_stop = False
+            if use_daily_low and day_low:
+                stop_level = position.cost_basis * (1 - effective_stop_loss_pct / 100)
+                if day_low <= stop_level:
+                    low_only_stop = not stop_triggered
+                    stop_triggered = True
+                    stop_fill_price = min(day_open, stop_level) if day_open else stop_level
+                    stop_gain_pct = ((stop_fill_price - position.cost_basis) / position.cost_basis) * 100
+            if stop_triggered:
                 market_note = " (bearish market)" if is_bearish_market else ""
                 atr_note = f" (ATR-adj {effective_stop_loss_pct:.1f}%)" if use_atr_stops and effective_stop_loss_pct != base_stop_loss_pct else ""
                 trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
                     shares=position.shares,
-                    price=price,
-                    reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}",
+                    price=stop_fill_price,
+                    reason=f"STOP LOSS: Down {abs(stop_gain_pct):.1f}%{market_note}{atr_note}",
                     score=current_score,
                     priority=1
                 )
-                trade._signal_factors = {"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(effective_stop_loss_pct, 1)}
+                trade._signal_factors = {"sell_reason": "STOP LOSS", "gain_pct": round(stop_gain_pct, 1), "stop_pct": round(effective_stop_loss_pct, 1)}
+                if low_only_stop:
+                    # Close-only would have missed this — the lever's marginal effect
+                    trade._signal_factors["intraday_low_stop"] = True
+                    self.overlay_stats['low_only_stops'] = self.overlay_stats.get('low_only_stops', 0) + 1
                 if aging_clamped:
                     trade._signal_factors["aging_loser"] = True
                     self.overlay_stats['aging_loser_stops'] = self.overlay_stats.get('aging_loser_stops', 0) + 1
@@ -2650,7 +2710,23 @@ class BacktestEngine:
                     effective_trailing_stop = apply_pyramid_widening(trailing_stop_pct, position.pyramid_count)
                     pyramid_widening = effective_trailing_stop - trailing_stop_pct
 
-                    if drop_from_peak >= effective_trailing_stop:
+                    # D5: same intraday-low trigger/fill modeling as the hard stop
+                    trail_triggered = drop_from_peak >= effective_trailing_stop
+                    trail_fill_price = price
+                    trail_drop = drop_from_peak
+                    low_only_trail = False
+                    if use_daily_low and low_includes_trailing and day_low:
+                        trail_level = position.peak_price * (1 - effective_trailing_stop / 100)
+                        if day_low <= trail_level:
+                            low_only_trail = not trail_triggered
+                            trail_triggered = True
+                            trail_fill_price = min(day_open, trail_level) if day_open else trail_level
+                            trail_drop = ((position.peak_price - trail_fill_price) / position.peak_price) * 100
+
+                    if trail_triggered:
+                        trail_gain_pct = ((trail_fill_price - position.cost_basis) / position.cost_basis) * 100
+                        if low_only_trail:
+                            self.overlay_stats['low_only_trailing'] = self.overlay_stats.get('low_only_trailing', 0) + 1
                         # High conviction: partial sell + widen stop on remainder
                         # (shared helper — mirrored in ai_trader.evaluate_sells)
                         if should_take_partial_on_trailing_stop(
@@ -2665,17 +2741,19 @@ class BacktestEngine:
                                 ticker=ticker,
                                 action="SELL",
                                 shares=shares_to_sell,
-                                price=price,
-                                reason=f"TRAILING STOP (PARTIAL {partial_sell_pct}%): Peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%)",
+                                price=trail_fill_price,
+                                reason=f"TRAILING STOP (PARTIAL {partial_sell_pct}%): Peak ${position.peak_price:.2f} -> ${trail_fill_price:.2f} (-{trail_drop:.1f}%)",
                                 score=current_score,
                                 priority=2,
                                 is_partial=True,
                                 sell_pct=partial_sell_pct
                             )
-                            trade._signal_factors = {"sell_reason": "PARTIAL TRAILING", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1), "sell_pct": partial_sell_pct}
+                            trade._signal_factors = {"sell_reason": "PARTIAL TRAILING", "gain_pct": round(trail_gain_pct, 1), "drop_from_peak": round(trail_drop, 1), "sell_pct": partial_sell_pct}
+                            if low_only_trail:
+                                trade._signal_factors["intraday_low_stop"] = True
                             sells.append(trade)
-                            # Reset peak to current price so remaining shares get a fresh wider stop
-                            position.peak_price = price
+                            # Reset peak to the fill price so remaining shares get a fresh wider stop
+                            position.peak_price = trail_fill_price
                             position.peak_date = current_date
                         else:
                             # Standard: full sell
@@ -2684,12 +2762,14 @@ class BacktestEngine:
                                 ticker=ticker,
                                 action="SELL",
                                 shares=position.shares,
-                                price=price,
-                                reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} -> ${price:.2f} (-{drop_from_peak:.1f}%){pyramid_note}",
+                                price=trail_fill_price,
+                                reason=f"TRAILING STOP: Peak ${position.peak_price:.2f} -> ${trail_fill_price:.2f} (-{trail_drop:.1f}%){pyramid_note}",
                                 score=current_score,
                                 priority=2
                             )
-                            trade._signal_factors = {"sell_reason": "TRAILING STOP", "gain_pct": round(gain_pct, 1), "drop_from_peak": round(drop_from_peak, 1)}
+                            trade._signal_factors = {"sell_reason": "TRAILING STOP", "gain_pct": round(trail_gain_pct, 1), "drop_from_peak": round(trail_drop, 1)}
+                            if low_only_trail:
+                                trade._signal_factors["intraday_low_stop"] = True
                             sells.append(trade)
                         continue
 

@@ -386,6 +386,25 @@ ai_trader:
     floor_gain_pct: 1.0              # Exit if gain falls to/below this % after arming
     skip_if_pyramided: false         # Floor applies to pyramided positions too
 
+  # Parity-fidelity levers (D4/D5, 2026-06-10): make the backtester model the
+  # live trader's intraday behavior. Backtester-only, default OFF — champion
+  # close-only behavior stays pinned; opt in per sweep arm via profile_overrides.
+  # See docs/parity-audit-evaluate-sells.md.
+  #
+  # D4: live raises peak_price from intraday prices every ~90min cycle, so the
+  # live peak watermark is systematically >= the backtest's close-only peak and
+  # live trailing stops fire earlier than backtests model. Track the backtest
+  # peak from the daily HIGH instead, mirroring live.
+  peak_from_daily_highs:
+    enabled: false
+  # D5: live checks stops intraday every scan; close-only checks miss breaches
+  # that recover by close. Trigger stop-family exits when the daily LOW breached
+  # the level, fill at the stop level (or the open on gap-throughs) — the
+  # pessimistic bound that brackets live cadence against close-only (optimistic).
+  stop_on_daily_low:
+    enabled: false
+    include_trailing: true           # Also trigger trailing stops on the low
+
   # Deterministic score boost: bonus to composite for stocks with strong
   # non-FMP scores (N+S+L+I+M). Reduces FMP influence on ranking/sizing.
   deterministic_boost:
