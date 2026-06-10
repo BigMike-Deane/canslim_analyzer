@@ -730,6 +730,7 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
               </div>
               <div className="text-dark-400 text-[10px] font-data mt-0.5">
                 {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
+                <ExitPlanChip plan={position.exit_plan} />
               </div>
             </div>
             {(() => {
@@ -1164,6 +1165,35 @@ function ExitPlanSection({ plan }) {
         })}
       </div>
     </div>
+  )
+}
+
+// Compact one-line readout of the position's nearest exit trigger, for the
+// positions list rows. Same server-computed data as ExitPlanSection (the card
+// in the detail modal) — presentation-only, never re-derives a threshold.
+// Renders nothing when the plan has no price trigger (e.g. data still loading).
+function ExitPlanChip({ plan }) {
+  if (!plan?.triggers?.length || !plan.nearest_kind) return null
+  const t = plan.triggers.find((x) => x.kind === plan.nearest_kind)
+  if (!t || t.price == null) return null
+  // Same tone thresholds as ExitPlanSection: protective stops tighten in tone
+  // as price nears them; the upside target is always green.
+  const tone = t.direction === 'up'
+    ? 'text-emerald-400'
+    : t.distance_pct == null ? 'text-dark-400'
+      : t.distance_pct <= 5 ? 'text-red-400'
+        : t.distance_pct <= 12 ? 'text-amber-400'
+          : 'text-dark-400'
+  const dist = t.distance_pct != null
+    ? (t.direction === 'up' ? `${t.distance_pct}% to go` : `${t.distance_pct}% away`)
+    : null
+  return (
+    <span
+      className={`font-data ${tone}`}
+      title={`Nearest exit trigger: ${t.label}${t.note ? ` — ${t.note}` : ''}`}
+    >
+      {' '}· {t.label} {formatCurrency(t.price)}{dist ? ` (${dist})` : ''}
+    </span>
   )
 }
 
