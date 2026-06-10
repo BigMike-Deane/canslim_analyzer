@@ -391,6 +391,19 @@ ai_trader:
   # close-only behavior stays pinned; opt in per sweep arm via profile_overrides.
   # See docs/parity-audit-evaluate-sells.md.
   #
+  # VERDICT 2026-06-10 (5/5 windows, runs 800-811): the cadence gap is FIRST-
+  # ORDER. ctrl-vs-both deltas: full-cycle 22-26 +140.3%->+84.3% (-56pp),
+  # 2018-20 -13.8pp, 2019-21 -16.5pp, 2020-22 -15.6pp, 2021-23 -8.2pp —
+  # unanimous, with a consistent churn signature (trades +40..120%, Sharpe
+  # collapses). Intraday peak watermark + intraday trail trigger together
+  # shake winners out on ordinary daily ranges; close-only backtests model a
+  # calmer trader than the live ~90min loop actually is. D5 alone was +17pp
+  # (41 binding events, n-small); D4 alone return-neutral but churn-heavy.
+  # NOTE: D4+D5 assumes worst-case intra-day ordering (high raises peak
+  # before low is checked), so it is the PESSIMISTIC bound; live sits inside
+  # the bracket. Implication for June-19: evaluating live trailing stops once
+  # daily near the close (the control arm's behavior) is the highest-leverage
+  # live-side exit candidate ever measured here.
   # D4: live raises peak_price from intraday prices every ~90min cycle, so the
   # live peak watermark is systematically >= the backtest's close-only peak and
   # live trailing stops fire earlier than backtests model. Track the backtest

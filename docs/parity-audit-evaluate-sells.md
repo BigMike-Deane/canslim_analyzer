@@ -96,6 +96,10 @@ The math is identical (14-period simple TR average, ×2.5 multiplier, capped at
 - **Fix:** decide which is *correct* (intraday peak is arguably truer to O'Neil) and
   make the backtester model it (e.g. track peak from daily highs), rather than
   degrading live. This is a backtester change → freeze-safe if wanted early.
+- **MEASURED 2026-06-10** (`peak_from_daily_highs` lever, commit `3a1926c`, runs
+  800-811): alone, return-neutral but churn-heavy — full-cycle +140.3%→+141.1%
+  with trades 258→307, WR 64→58, Sharpe 1.63→1.52, and 560 peak raises the close
+  never saw. Combined with D5 it is catastrophic (see D5 verdict below).
 
 ### D5 — Evaluation cadence: intraday multiple-times-daily vs once at close
 
@@ -105,6 +109,18 @@ The math is identical (14-period simple TR average, ×2.5 multiplier, capped at
 - This is an inherent fidelity gap, not a bug. **Quantify it** instead: a backtest
   variant that checks stops against the daily **low** (pessimistic bound) vs close
   (current, optimistic bound) brackets the live behavior. Freeze-safe to build now.
+- **MEASURED 2026-06-10** (`stop_on_daily_low` lever, commit `3a1926c`, runs
+  800-811): alone, +17pp full-cycle with Sharpe 1.63→1.89 (filling at the stop
+  level beats riding to a lower close) — but only 41 binding events, n-small.
+  **D4+D5 together (the most live-like model) is the headline: 5/5 windows
+  unanimously worse** — full-cycle +140.3%→+84.3% (−56pp), windows −13.8 / −16.5 /
+  −15.6 / −8.2pp, trades +40..120% in every window, Sharpe collapses (e.g. 1.21→
+  0.32, 1.15→−0.14). Intraday peak watermark + intraday trail trigger shake
+  winners out on ordinary daily ranges. Caveat: the combined model assumes
+  worst-case intra-day ordering (high raises the peak before the low is checked),
+  so it is the pessimistic bound — live sits inside the bracket, but the bracket
+  is so wide that cadence is **first-order**, dwarfing every formulation lever
+  ever swept (±10pp).
 
 ---
 
@@ -153,16 +169,26 @@ tightening (D3), and a higher peak watermark (D4). This supports the June-9
 conclusion: fix parity first, then re-measure, before designing any new exit
 formulation.
 
-## June-19 execution order (proposed)
+## June-19 execution order (proposed; updated 2026-06-10 after D4/D5 sweeps)
 
 1. **D1** guard port into `evaluate_sells` (+ regression test, delete sentinel monitor).
 2. **D2** per-day dedup in `check_score_stability`'s query (+ test pinning scans-vs-days).
 3. **D3** ATR caching / last-known fallback.
-4. **Parity harness:** shared-fixture test feeding identical positions/prices/scores
+4. **NEW — exit cadence (from the D4/D5 sweep verdict):** evaluate live
+   *trailing* stops once daily near the close instead of every ~90min scan
+   (hard stops stay intraday for crash protection). This is the only live-side
+   exit candidate whose backtest model is honest — it IS the control arm — and
+   the measured bracket (−8..−56pp from intraday cadence, 5/5 windows) makes it
+   the highest-expected-value change on this list. Design carefully: last
+   scan-of-day vs a 15:30-CST window; interaction with D2's per-day clock.
+   Pre-validate against live trade log: D4's churn signature (more trades,
+   lower WR) should be visible in live sells vs backtest #800's.
+5. **Parity harness:** shared-fixture test feeding identical positions/prices/scores
    to both `evaluate_sells` and `_evaluate_sells`, asserting identical decisions —
    makes the next drift a test failure, not a live loss. May motivate extracting the
    sell loop into `trading_engine.py`.
-5. **N1** partial-stop notification wording (distinct title + shares-kept) — small,
+6. **N1** partial-stop notification wording (distinct title + shares-kept) — small,
    bundle with D1's commit or its own.
-6. **D4/D5** backtester-side fidelity work (peak-from-highs, stop-on-low bracket) —
-   can start pre-June-18 since it doesn't touch `ai_trader.py`.
+7. ~~D4/D5 backtester-side fidelity work~~ **DONE 2026-06-10** (`3a1926c`, runs
+   800-811): both levers shipped default-off; verdicts recorded above and in
+   `config/default.yaml`.
