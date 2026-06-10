@@ -5693,12 +5693,29 @@ async def get_portfolio_risk(current_user: User = Depends(get_current_active_use
                     "near_limit": True
                 })
 
+    # Per-position weights (sorted heaviest-first) + the trader's REAL
+    # concentration limits, so the frontend can tone against what the
+    # trader actually enforces (check_sector_limit / position sizing)
+    # instead of inventing its own thresholds.
+    from backend.trading_utils import MAX_SECTOR_ALLOCATION, MAX_STOCKS_PER_SECTOR
+    position_weights = sorted(
+        [{"ticker": s["ticker"], "pct": s["position_pct"], "gain_pct": s["gain_pct"]}
+         for s in stop_distances],
+        key=lambda x: x["pct"], reverse=True,
+    )
+
     return {
         "portfolio_heat": round(total_heat, 1),
         "heat_status": heat_status,
         "sector_concentration": sector_concentration,
         "position_alerts": position_alerts,
         "stop_distances": sorted(stop_distances, key=lambda x: x["distance_pct"]),
+        "position_weights": position_weights,
+        "limits": {
+            "max_position_pct": max_pos_pct,
+            "max_sector_allocation_pct": round(MAX_SECTOR_ALLOCATION * 100, 1),
+            "max_stocks_per_sector": MAX_STOCKS_PER_SECTOR,
+        },
     }
 
 

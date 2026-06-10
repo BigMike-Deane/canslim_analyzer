@@ -972,9 +972,26 @@ class TestAIPortfolioRoutes:
         assert r.status_code == 200
         d = r.json()
         for key in ("portfolio_heat", "heat_status", "sector_concentration",
-                    "position_alerts", "stop_distances"):
+                    "position_alerts", "stop_distances",
+                    "position_weights", "limits"):
             assert key in d
         assert d["heat_status"] in ("normal", "warning", "danger")
+
+    def test_risk_limits_mirror_trader_caps(self):
+        """The concentration view tones against the trader's REAL caps —
+        limits must come from trading_utils/config, not frontend guesses."""
+        from backend.trading_utils import MAX_SECTOR_ALLOCATION, MAX_STOCKS_PER_SECTOR
+
+        d = client.get("/api/ai-portfolio/risk").json()
+        limits = d["limits"]
+        assert limits["max_sector_allocation_pct"] == round(MAX_SECTOR_ALLOCATION * 100, 1)
+        assert limits["max_stocks_per_sector"] == MAX_STOCKS_PER_SECTOR
+        assert limits["max_position_pct"] > 0
+        # Weights are heaviest-first and carry ticker + pct
+        weights = d["position_weights"]
+        assert all(w["pct"] >= weights[i + 1]["pct"] for i, w in enumerate(weights[:-1]))
+        for w in weights:
+            assert set(w) >= {"ticker", "pct", "gain_pct"}
 
     def test_earnings_calendar_buckets_by_risk(self):
         # Ensure our position stocks have a days_to_earnings field

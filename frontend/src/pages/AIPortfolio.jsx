@@ -1843,15 +1843,35 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
 function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
   if (!riskData) return null
 
+  // Concentration limits come from the backend (`limits`) — the trader's
+  // OWN caps (check_sector_limit / position sizing), so the tones here flag
+  // exactly what would constrain the next buy. Fallbacks match the YAML
+  // defaults for older cached payloads.
+  const limits = riskData.limits || {}
+  const sectorCapPct = limits.max_sector_allocation_pct ?? 50
+  const sectorCapCount = limits.max_stocks_per_sector ?? 4
+  const posCapPct = limits.max_position_pct ?? 25
+
+  const sectorTone = (s) => {
+    if (s.pct >= sectorCapPct || s.count >= sectorCapCount) return 'red'
+    if (s.pct >= sectorCapPct * 0.8 || s.count >= sectorCapCount - 1) return 'amber'
+    return 'default'
+  }
+  const weightTone = (w) =>
+    w.pct >= posCapPct * 0.95 ? 'bg-red-500'
+      : w.pct >= posCapPct * 0.8 ? 'bg-amber-500'
+        : 'bg-emerald-500'
+
   // Smart-hide: when portfolio is genuinely "all clear" (no alerts, low heat,
-  // no over-concentration) the section is just dead vertical space. The
-  // user can still see heat status implicit in the absence of a warning —
-  // section reappears the moment any signal flips. Matches the audit's
-  // "less scroll when nothing to look at" theme.
+  // no sector at/near its real cap, no position near its size cap) the
+  // section is just dead vertical space. Section reappears the moment any
+  // signal flips. Matches the audit's "less scroll when nothing to look at"
+  // theme.
   const hasAlerts = (riskData.position_alerts?.length ?? 0) > 0
-  const overConcentrated = (riskData.sector_concentration || []).some(s => s.count >= 3)
+  const overConcentrated = (riskData.sector_concentration || []).some(s => sectorTone(s) !== 'default')
+  const heavyPosition = (riskData.position_weights || []).some(w => w.pct >= posCapPct * 0.8)
   const heatLow = (riskData.portfolio_heat ?? 0) < 10
-  if (!hasAlerts && !overConcentrated && heatLow) return null
+  if (!hasAlerts && !overConcentrated && !heavyPosition && heatLow) return null
 
   const heatColor = riskData.heat_status === 'danger' ? 'red'
     : riskData.heat_status === 'warning' ? 'amber' : 'green'
@@ -1885,18 +1905,53 @@ function RiskMonitorSection({ riskData, riskExpanded, setRiskExpanded }) {
               />
             </div>
           </div>
-          {/* Sector concentration */}
+          {/* Sector concentration — toned against the trader's real caps */}
           {riskData.sector_concentration?.length > 0 && (
             <div>
-              <div className="text-[10px] text-dark-400 mb-1">Sector Concentration</div>
+              <div className="text-[10px] text-dark-400 mb-1">
+                Sector Concentration
+                <span className="text-dark-500"> · caps: {formatPercent(sectorCapPct)} value / {sectorCapCount} stocks</span>
+              </div>
               <div className="flex flex-wrap gap-1">
                 {riskData.sector_concentration.map(s => (
                   <TagBadge
                     key={s.sector}
-                    color={s.count >= 3 ? 'amber' : 'default'}
+                    color={sectorTone(s)}
+                    title={
+                      sectorTone(s) === 'red'
+                        ? `At a sector cap — the trader will block or trim new ${s.sector} buys`
+                        : sectorTone(s) === 'amber'
+                          ? `Approaching a sector cap (${formatPercent(sectorCapPct)} value or ${sectorCapCount} stocks)`
+                          : undefined
+                    }
                   >
                     {s.sector}: {s.count} ({formatPercent(s.pct)})
                   </TagBadge>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Position weights vs the per-position size cap */}
+          {riskData.position_weights?.length > 0 && (
+            <div>
+              <div className="text-[10px] text-dark-400 mb-1">
+                Position Weights
+                <span className="text-dark-500"> · cap {formatPercent(posCapPct)} each</span>
+              </div>
+              <div className="space-y-1">
+                {riskData.position_weights.map(w => (
+                  <div key={w.ticker} className="flex items-center gap-2 text-xs">
+                    <span className="font-medium text-dark-200 w-14 shrink-0">{w.ticker}</span>
+                    <div className="flex-1 h-1.5 bg-dark-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${weightTone(w)}`}
+                        style={{ width: `${Math.min((w.pct / posCapPct) * 100, 100)}%` }}
+                      />
+                    </div>
+                    <span className="font-data text-dark-300 w-12 text-right shrink-0">
+                      {formatPercent(w.pct)}
+                    </span>
+                  </div>
                 ))}
               </div>
             </div>
