@@ -39,16 +39,34 @@ Cloud sessions cannot SSH to the VPS. A poller on the VPS watches the
 > VPS) — any token found in git history is dead. Do not add credentials to
 > this repo.
 
-Cloud sessions are **code-only**: write code, run tests, open PRs. For
-live numbers:
-- **Owner:** log into the web app at `https://canslim.duckdns.org` from
-  any device (it's mobile-first) — portfolio, Edge Scorecard, charts.
-- **Cloud session needing live data:** ask the owner to paste the JSON
-  from the relevant endpoint (they can curl from a logged-in browser
-  session or relay app screenshots).
+Live API access comes from the **cloud environment's settings**, never
+from this repo:
+- If the env var `CANSLIM_API_TOKEN` is present in your session, use it:
+  `curl -H "Authorization: Bearer $CANSLIM_API_TOKEN" https://canslim.duckdns.org/api/...`
+  It is an owner/admin JWT the owner placed in the claude.ai environment
+  config (expires ~2026-06-21). This unlocks the full workflow: portfolio
+  reads, `/api/admin/strategy-ab-eval`, and **backtest sweeps** via
+  `POST /api/backtests` (ctrl/treatment pairs with `profile_overrides`,
+  poll `GET /api/backtests` for completion — see the parity-lever sweeps
+  pattern, `tests/test_parity_fidelity_levers.py` + audit doc D2/D4/D5).
+- If the env var is missing or the network blocks the domain, fall back
+  to code-only work and tell the owner which toggle is missing
+  (environment env var / network allowlist for `canslim.duckdns.org`).
+- **Owner:** the web app at `https://canslim.duckdns.org` works from any
+  device (mobile-first) — portfolio, Edge Scorecard, charts.
 - The June-18 eval routine carries its own short-lived token (managed in
   the routine config on claude.ai, not in git) and emails the owner its
   readout. The June-19 kickoff routine is repo-only and needs no token.
+
+## Session log — REQUIRED for continuity
+
+The owner's local Claude memory does not exist in cloud sessions, and
+cloud sessions don't share context with each other. The replacement:
+**append a dated entry to `docs/road-log-2026-06.md`** (create it if
+missing) at the end of any session that ships, decides, or discovers
+something — 3-8 lines: what was done, commits/PRs, verdicts, open ends.
+Read that file at session start, right after this one. When the owner
+returns, the local session syncs it back into long-term memory.
 
 ## State of play (2026-06-11)
 
