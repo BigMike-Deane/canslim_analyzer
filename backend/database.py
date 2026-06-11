@@ -979,6 +979,21 @@ class MarketSnapshot(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class SpyIntradayPrice(Base):
+    """Append-only intraday SPY price log, written (throttled) on each
+    market-direction refresh. MarketSnapshot above is one row per DAY
+    updated in place, which destroys intraday history as it's written —
+    this table preserves it so the AI Portfolio performance chart can show
+    SPY moving in parallel with the per-scan portfolio snapshots.
+    """
+    __tablename__ = "spy_intraday_prices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, index=True, nullable=False,
+                       default=lambda: datetime.now(timezone.utc))
+    price = Column(Float, nullable=False)
+
+
 # ============== AI Portfolio Models ==============
 
 class AIPortfolioConfig(Base):

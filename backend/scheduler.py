@@ -1642,6 +1642,25 @@ def run_continuous_scan():
             if cleanup_db:
                 cleanup_db.close()
 
+        # Prune intraday SPY ticks past the chart's max window (365d + margin)
+        spy_tick_db = None
+        try:
+            from datetime import timedelta
+            from backend.database import SpyIntradayPrice
+            spy_tick_db = SessionLocal()
+            tick_cutoff = datetime.now(timezone.utc) - timedelta(days=400)
+            deleted = spy_tick_db.query(SpyIntradayPrice).filter(
+                SpyIntradayPrice.timestamp < tick_cutoff
+            ).delete(synchronize_session=False)
+            spy_tick_db.commit()
+            if deleted:
+                logger.info(f"Pruned {deleted} SpyIntradayPrice rows older than 400d")
+        except Exception as e:
+            logger.error(f"SpyIntradayPrice cleanup failed: {e}")
+        finally:
+            if spy_tick_db:
+                spy_tick_db.close()
+
         cleanup_price_cache()
 
         # Phase 4.5: Post-earnings gap-up detection

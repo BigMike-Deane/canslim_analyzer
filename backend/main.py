@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.database import (
     init_db, get_db, Stock, StockScore, PortfolioPosition,
-    Watchlist, AnalysisJob, MarketSnapshot,
+    Watchlist, AnalysisJob, MarketSnapshot, SpyIntradayPrice,
     AIPortfolioConfig, AIPortfolioPosition, AIPortfolioTrade, AIPortfolioSnapshot,
     BacktestRun, BacktestSnapshot, BacktestTrade, BacktestPosition, CoiledSpringAlert,
     EarningsAudit, FidelitySnapshot, FidelityPosition, FidelityTrade,
@@ -609,6 +609,25 @@ def update_market_snapshot(db: Session, force_refresh: bool = False):
         snapshot.weighted_signal = market_data.get("weighted_signal", 0)
         snapshot.market_score = market_data.get("market_score", 7.5)
         snapshot.market_trend = market_data.get("market_trend", "neutral")
+
+        # Append-only intraday SPY tick (the daily row above is updated in
+        # place, destroying intraday history the AI Portfolio chart needs).
+        # Throttled to one row per 5 minutes regardless of caller, since this
+        # function is reachable from the scheduler AND user-triggered
+        # refresh endpoints.
+        spy_price_now = spy.get("price") or 0
+        if spy_price_now > 0:
+            last_tick = db.query(SpyIntradayPrice).order_by(
+                SpyIntradayPrice.timestamp.desc()
+            ).first()
+            tick_is_due = True
+            if last_tick and last_tick.timestamp:
+                last_ts = last_tick.timestamp
+                if last_ts.tzinfo is None:
+                    last_ts = last_ts.replace(tzinfo=timezone.utc)
+                tick_is_due = (datetime.now(timezone.utc) - last_ts).total_seconds() >= 300
+            if tick_is_due:
+                db.add(SpyIntradayPrice(price=spy_price_now))
 
         db.commit()
         logger.info(f"Market snapshot updated: trend={snapshot.market_trend}, "
@@ -3422,13 +3441,52 @@ async def get_ai_portfolio_history(
         for ms in market_snaps:
             spy_by_date[ms.date] = ms.spy_price
 
+    # Intraday SPY ticks (append-only log, accruing since 2026-06-11). Where
+    # a tick exists at-or-before a snapshot's timestamp, it is preferred over
+    # the one-price-per-day map so the SPY line moves in parallel with the
+    # per-scan portfolio points. Days that predate the log keep the daily
+    # step behavior via the spy_by_date fallback below.
+    import bisect
+
+    def _as_naive_utc(ts):
+        if ts is None:
+            return None
+        if ts.tzinfo is not None:
+            return ts.astimezone(timezone.utc).replace(tzinfo=None)
+        return ts
+
+    spy_ticks = []
+    if snapshots:
+        tick_rows = db.query(SpyIntradayPrice).filter(
+            SpyIntradayPrice.timestamp >= start_date - timedelta(days=3),
+            SpyIntradayPrice.price > 0,
+        ).all()
+        spy_ticks = sorted(
+            (_as_naive_utc(r.timestamp), r.price)
+            for r in tick_rows if r.timestamp is not None
+        )
+    spy_tick_times = [t for t, _ in spy_ticks]
+
+    def _spy_tick_for(snap):
+        """Latest intraday SPY price at-or-before the snapshot, else None."""
+        if not spy_ticks or not snap.timestamp:
+            return None
+        i = bisect.bisect_right(spy_tick_times, _as_naive_utc(snap.timestamp))
+        if i == 0:
+            return None
+        return spy_ticks[i - 1][1]
+
     # Pick the SPY anchor price from the first snapshot's date (or nearest
     # earlier MarketSnapshot if exact-day is missing — weekend snapshots etc).
     spy_anchor = None
     base_value = None
-    if snapshots and spy_by_date:
+    if snapshots and (spy_by_date or spy_ticks):
+        # Prefer an intraday tick at the first snapshot so the SPY line is
+        # anchored to the same moment as the portfolio's first point; fall
+        # back to the daily map for histories that predate the tick log.
+        spy_anchor = _spy_tick_for(snapshots[0])
         first_day = snapshots[0].date or (snapshots[0].timestamp.date() if snapshots[0].timestamp else None)
-        if first_day:
+        if spy_anchor is None and first_day:
             spy_anchor = spy_by_date.get(first_day)
             if spy_anchor is None:
                 # Fall back to nearest earlier date in the lookup
@@ -3453,6 +3511,9 @@ async def get_ai_portfolio_history(
     def _spy_value_for(snap):
         if not spy_anchor or not base_value:
             return None
+        tick_price = _spy_tick_for(snap)
+        if tick_price is not None:
+            return round(base_value * (tick_price / spy_anchor), 2)
         snap_day = snap.date or (snap.timestamp.date() if snap.timestamp else None)
         if not snap_day:
             return None
