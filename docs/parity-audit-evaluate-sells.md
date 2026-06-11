@@ -58,6 +58,21 @@ Both sides call the same shared `evaluate_score_crash()` (trading_engine.py:579)
   history fix) before feeding `check_score_stability_from_history`. Decide
   deliberately whether "1 per day" should be last-scan or worst-scan — backtest uses
   the day's single score, so last-scan-of-day is the closer mirror.
+- **MEASURED 2026-06-11** (`score_crash_scan_clock` lever, commit `5fbab9b`, runs
+  817-826, all arms fingerprint-matched `de13a18febb7`): **low-impact and
+  sign-mixed — NOT the robust drag cadence showed.** Scan-vs-ctrl return deltas:
+  2018-20 −3.7pp, 2019-21 0.0 (byte-identical results), 2020-22 +0.5pp,
+  2021-23 **+10.4pp** (fast crash cuts helped in the whipsaw bear), full-cycle
+  −14.1pp (fork-dominated single path — same caveat as D5, don't quote it).
+  Crash sells under the lever: 7 / 2 / 1 / 6 per 2-yr window, 17 full-cycle —
+  n-small everywhere, so the per-window deltas are mostly fork noise around a
+  handful of events. (Note: the 19-21 arm logged 2 crash sells yet identical
+  economics — those positions were exiting the same day under another rule, so
+  the counter overstates lever-only binding.) **Implication for June 19:** the
+  per-day dedup remains correct as a cheap parity alignment, but expect no
+  return improvement from it — deprioritize behind D1 and the cadence redesign
+  (item 4). Mild counter-signal: the fast clock *helped* in the 2021-23 bear,
+  so don't ship the dedup mid-bear without re-checking.
 
 ---
 

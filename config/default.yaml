@@ -437,6 +437,12 @@ ai_trader:
   # Approximation: live intraday scores wobble around the daily value; the
   # lever replicates the single daily score. Pessimistic for blips that live
   # would catch mid-recovery, faithful for genuine one-day crashes.
+  # MEASURED 2026-06-11 (runs 817-826): low-impact, sign-mixed — deltas
+  # −3.7 / 0.0 / +0.5 / +10.4pp across the four 2-yr windows with only 1-7
+  # binding crash sells each; full-cycle −14.1pp is fork-dominated (same D5
+  # caveat). The fast live clock is NOT a measurable systematic drag; the
+  # June-19 per-day dedup is parity hygiene, not a return lever. See
+  # docs/parity-audit-evaluate-sells.md D2.
   score_crash_scan_clock:
     enabled: false
     scans_per_day: 4                 # ~6.5h market day / 90min scan cadence
