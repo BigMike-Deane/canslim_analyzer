@@ -32,26 +32,23 @@ Cloud sessions cannot SSH to the VPS. A poller on the VPS watches the
 - Deployed state on departure: `main` = `deploy` = `296491a`, all 4
   containers healthy, suite green.
 
-## Live API access (road token)
+## Live data access — NO tokens in this repo
 
-Base URL: `https://canslim.duckdns.org`. Owner/admin JWT (user 1), expires
-**~2026-06-21**:
+> **History note:** an earlier revision of this file embedded an owner JWT.
+> That key was **rotated on 2026-06-11** (`JWT_SECRET_KEY` changed on the
+> VPS) — any token found in git history is dead. Do not add credentials to
+> this repo.
 
-```
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiZXhwIjoxNzgyMDc5MzEwLCJ0eXBlIjoiYWNjZXNzIn0.GIJTlBrweuIyPk4TvLIq5aLOCMDsZAgEV2aB2WzPmHQ
-```
-
-Use as `Authorization: Bearer <token>`. Useful endpoints:
-- `GET /api/ai-portfolio` — positions + P&L (per authed user)
-- `GET /api/ai-portfolio/history?days=7` — performance chart data
-- `GET /api/ai-portfolio/edge` — alpha/beta/Sharpe scorecard
-- `GET /api/admin/strategy-ab-eval?strategy=nostate_cs_bear&cutoff_date=2026-05-07&pre_window_days=30` — the June-18 eval read
-- `POST /api/backtests` — enqueue backtests (see CLAUDE.md for shape;
-  `profile_overrides` supported, scoring keys rejected by design)
-
-This token is in a **private repo** deliberately (owner's call, 2026-06-11).
-It cannot be revoked individually (stateless JWT) — rotating `SECRET_KEY`
-on the VPS invalidates it along with all sessions.
+Cloud sessions are **code-only**: write code, run tests, open PRs. For
+live numbers:
+- **Owner:** log into the web app at `https://canslim.duckdns.org` from
+  any device (it's mobile-first) — portfolio, Edge Scorecard, charts.
+- **Cloud session needing live data:** ask the owner to paste the JSON
+  from the relevant endpoint (they can curl from a logged-in browser
+  session or relay app screenshots).
+- The June-18 eval routine carries its own short-lived token (managed in
+  the routine config on claude.ai, not in git) and emails the owner its
+  readout. The June-19 kickoff routine is repo-only and needs no token.
 
 ## State of play (2026-06-11)
 
@@ -112,8 +109,9 @@ Priority order (all measured):
   the June-18 verdict.
 
 ## Cleanup when the owner returns
-- Decide whether to keep the deploy poller (remove cron line + this doc's
-  token section, or rotate SECRET_KEY).
+- Decide whether to keep the deploy poller (remove the cron line if not).
 - `git checkout main` in `/opt/canslim_analyzer` if the poller left a
   detached HEAD.
-- Delete this file or update it; its token expires ~June 21.
+- Delete `/opt/canslim_analyzer/.env.bak-jwt-rotation` on the VPS (backup
+  of the pre-rotation env, made 2026-06-11).
+- Delete or archive this file.
