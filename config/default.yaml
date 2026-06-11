@@ -428,6 +428,18 @@ ai_trader:
     use_prior_peak: false            # false: low vs today's peak (high-then-low,
                                      # pessimistic). true: low vs yesterday's peak
                                      # (low-then-high, optimistic). Live is between.
+  # D2: live score-crash stability reads the last 3 ~90min scans
+  # (check_score_stability lookback=3), so "3 consecutive low" confirms in
+  # ~4.5 hours and blip protection spans one afternoon — the backtester
+  # appends ONE score per trading day, so the same gates take 3 trading days.
+  # Model the live clock by appending each day's score scans_per_day times:
+  # one low day fills the consecutive/2-of-3 windows same-day, like live.
+  # Approximation: live intraday scores wobble around the daily value; the
+  # lever replicates the single daily score. Pessimistic for blips that live
+  # would catch mid-recovery, faithful for genuine one-day crashes.
+  score_crash_scan_clock:
+    enabled: false
+    scans_per_day: 4                 # ~6.5h market day / 90min scan cadence
 
   # Deterministic score boost: bonus to composite for stocks with strong
   # non-FMP scores (N+S+L+I+M). Reduces FMP influence on ranking/sizing.

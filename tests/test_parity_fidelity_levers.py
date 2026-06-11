@@ -342,8 +342,83 @@ class TestGetOhlcOnDate:
         assert self._provider().get_ohlc_on_date("ZZZZ", date(2024, 1, 3)) is None
 
 
+CLOCK_ON = {'score_crash_scan_clock': {'enabled': True, 'scans_per_day': 4}}
+
+# Score 48 threads the gates: crash-eligible (48 < threshold 50, drop
+# 75-48=27 > 20, gain -5% < ignore-if-profitable 10) without tripping the
+# WEAK POSITION branch (48 > sell_score_threshold 45 in make_mock_db).
+CRASH_SCORES = {"CRSH": {"total_score": 48.0}}
+
+
+class TestScoreCrashScanClock:
+    @patch('backend.backtester.config')
+    def test_default_off_single_low_day_no_crash(self, mock_config):
+        """Daily clock (champion pinned): one low day is 1 low scan — no sell,
+        single append to history."""
+        engine = _engine(mock_config)
+        _add_position(engine, "CRSH", price=95.0)
+
+        sells = engine._evaluate_sells(date.today(), CRASH_SCORES)
+
+        assert sells == []
+        assert engine.score_history["CRSH"] == [48.0]
+        assert 'scan_clock_crash_sells' not in engine.overlay_stats
+
+    @patch('backend.backtester.config')
+    def test_default_off_crash_confirms_on_second_day(self, mock_config):
+        """Daily clock: the 2-of-last-3 gate confirms on the SECOND low day
+        (the legacy 3-consecutive gate alone would take three)."""
+        engine = _engine(mock_config)
+        _add_position(engine, "CRSH", price=95.0)
+
+        day1 = engine._evaluate_sells(date.today() - timedelta(days=1), CRASH_SCORES)
+        day2 = engine._evaluate_sells(date.today(), CRASH_SCORES)
+
+        assert day1 == []
+        assert len(day2) == 1
+        assert day2[0].reason.startswith("SCORE CRASH")
+        assert 'scan_clock_crash_sells' not in engine.overlay_stats  # lever off
+
+    @patch('backend.backtester.config')
+    def test_enabled_single_low_day_crash_sells(self, mock_config):
+        """Scan clock: one low day stands in for 4 low scans — the same
+        afternoon-confirm live exhibits. Sell fires on day one."""
+        engine = _engine(mock_config, CLOCK_ON)
+        _add_position(engine, "CRSH", price=95.0)
+
+        sells = engine._evaluate_sells(date.today(), CRASH_SCORES)
+
+        assert len(sells) == 1
+        assert sells[0].reason.startswith("SCORE CRASH")
+        assert sells[0]._signal_factors["sell_reason"] == "SCORE CRASH"
+        assert engine.overlay_stats.get('scan_clock_crash_sells') == 1
+
+    @patch('backend.backtester.config')
+    def test_enabled_history_stays_capped_at_five(self, mock_config):
+        """Replication must not grow the stability window beyond 5 entries."""
+        engine = _engine(mock_config, CLOCK_ON)
+        _add_position(engine, "CRSH", price=95.0)
+
+        engine._evaluate_sells(date.today() - timedelta(days=1), CRASH_SCORES)
+        engine._evaluate_sells(date.today(), CRASH_SCORES)
+
+        assert engine.score_history["CRSH"] == [48.0] * 5
+
+    @patch('backend.backtester.config')
+    def test_enabled_healthy_score_no_crash(self, mock_config):
+        """The lever only accelerates the clock — it must not invent sells
+        when the crash conditions (drop > 20, score < 50) don't hold."""
+        engine = _engine(mock_config, CLOCK_ON)
+        _add_position(engine, "OK", price=95.0)
+
+        sells = engine._evaluate_sells(date.today(), {"OK": {"total_score": 60.0}})
+
+        assert sells == []
+        assert 'scan_clock_crash_sells' not in engine.overlay_stats
+
+
 class TestLiveTraderUntouched:
-    def test_ai_trader_has_neither_lever(self):
+    def test_ai_trader_has_no_lever(self):
         """These levers make the backtester MORE live-like; there is nothing to
         mirror into ai_trader.py. If this fails, someone copied them over —
         that must be a deliberate decision, not a drive-by sync."""
@@ -353,3 +428,4 @@ class TestLiveTraderUntouched:
         src = inspect.getsource(ai_trader)
         assert "peak_from_daily_highs" not in src
         assert "stop_on_daily_low" not in src
+        assert "score_crash_scan_clock" not in src

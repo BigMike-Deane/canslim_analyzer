@@ -2487,12 +2487,17 @@ class BacktestEngine:
         n = max(1, len(sorted_medians) - 1)
         return round((rank / n) * 100, 1)
 
-    def _update_score_history(self, ticker: str, score: float):
-        """Track score history for stability checks"""
+    def _update_score_history(self, ticker: str, score: float, repeats: int = 1):
+        """Track score history for stability checks.
+
+        repeats > 1 is the D2 scan-clock lever: the day's score stands in for
+        that many ~90min live scans, so one low day can fill the consecutive /
+        2-of-3 windows the way a single bad afternoon does live.
+        """
         if ticker not in self.score_history:
             self.score_history[ticker] = []
-        self.score_history[ticker].append(score)
-        # Keep last 5 scores (about 5 trading days worth)
+        self.score_history[ticker].extend([score] * max(1, repeats))
+        # Keep last 5 scores (about 5 trading days worth at repeats=1)
         if len(self.score_history[ticker]) > 5:
             self.score_history[ticker] = self.score_history[ticker][-5:]
 
@@ -2508,11 +2513,25 @@ class BacktestEngine:
         """Evaluate positions for sells using ai_trader logic"""
         sells = []
 
+        # D2 SCORE-CRASH SCAN CLOCK (default OFF — parity-fidelity A/B lever,
+        # 2026-06-11). Live's check_score_stability reads the last 3 ~90min
+        # scans (lookback=3), so "3 consecutive low" confirms in ~4.5 hours and
+        # blip protection spans an afternoon; this history gets ONE score per
+        # trading day, so the same gates take 3 trading days. Model the live
+        # clock by appending each day's score scans_per_day times — one low day
+        # then fills the consecutive/2-of-3 windows same-day, like live.
+        # Opt in per sweep arm via profile_overrides (score_crash_scan_clock).
+        # See docs/parity-audit-evaluate-sells.md D2.
+        clock_config = self.profile.get('score_crash_scan_clock',
+                                        config.get('ai_trader.score_crash_scan_clock', {}))
+        scan_clock_on = clock_config.get('enabled', False)
+        scan_clock_repeats = int(clock_config.get('scans_per_day', 4)) if scan_clock_on else 1
+
         # Update score history for all positions
         for ticker in self.positions:
             score_data = scores.get(ticker, {})
             current_score = score_data.get("total_score", 0)
-            self._update_score_history(ticker, current_score)
+            self._update_score_history(ticker, current_score, repeats=scan_clock_repeats)
 
         # Get market condition for market-aware stop losses
         market = self.data_provider.get_market_direction(current_date)
@@ -2879,6 +2898,9 @@ class BacktestEngine:
                     priority=3
                 )
                 trade._signal_factors = {"sell_reason": "SCORE CRASH", "gain_pct": round(gain_pct, 1), "score_drop": round(score_drop, 1)}
+                if scan_clock_on:
+                    self.overlay_stats['scan_clock_crash_sells'] = \
+                        self.overlay_stats.get('scan_clock_crash_sells', 0) + 1
                 sells.append(trade)
                 continue
 
