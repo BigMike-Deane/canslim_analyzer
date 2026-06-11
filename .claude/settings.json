@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c 'import httpx, pytest, fastapi, sqlalchemy' 2>/dev/null || pip install -q -r requirements.txt httpx 2>&1 | tail -1",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -38,7 +38,10 @@ Accounts_History*.csv
 dist/
 build/
 CLAUDE.local.md
-.claude/
+# Ignore .claude contents (github_token, local notes, worktrees) but track
+# settings.json so cloud sessions get the dep-install SessionStart hook.
+.claude/*
+!.claude/settings.json
 
 # Test artifacts
 .coverage
