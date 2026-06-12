@@ -32,6 +32,30 @@ Cloud sessions cannot SSH to the VPS. A poller on the VPS watches the
 - Deployed state on departure: `main` = `deploy` = `296491a`, all 4
   containers healthy, suite green.
 
+### Deploying from a cloud session (iPad) — vacation workflow (set 2026-06-12)
+
+The `deploy`-branch poller **is** the cloud deploy path — no SSH needed. The
+owner deploys from the iPad exactly the way the PC terminal did today.
+
+- **Standing policy: auto-deploy freeze-safe changes.** Once the owner
+  requests/approves a change in a session, ship it immediately — do **not**
+  wait for a separate "deploy" instruction. Procedure:
+  1. Implement + push. (In this environment the git proxy routes the
+     designated-branch push straight onto `main` on GitHub, so `main` already
+     carries the change and no separate `claude/…` branch appears on GitHub.)
+  2. Ensure a `main → deploy` PR exists (create one if not) and **merge it**.
+     Merging moves `deploy`; the VPS poller rebuilds within ~10 min.
+  3. Confirm: `GET https://canslim.duckdns.org/health` → 200, and for UI work
+     sanity-check the live app. (No commit-SHA endpoint exists yet — only
+     `/health`. Adding `/api/version` returning the running git SHA is the
+     recommended first real auto-deploy so deploys become verifiable.)
+- **Freeze guard is the safety net.** The poller refuses any deploy touching
+  `ai_trader.py`/`canslim_scorer.py` before June 19. A change touching those is
+  NOT freeze-safe — never auto-deploy it; flag it to the owner instead.
+- **Freeze-safe = deployable now:** `frontend/`, backend endpoints outside
+  ai_trader/scorer, docs, tests, non-trading config (mirror of "Good
+  road-session tasks" below).
+
 ## Live data access — NO tokens in this repo
 
 > **History note:** an earlier revision of this file embedded an owner JWT.
