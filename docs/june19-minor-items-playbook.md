@@ -1,4 +1,4 @@
-# June-19 Minor Items — N1 (partial-stop notification) + D2 (score-crash clock)
+# June-19 Minor Items — N1 (partial-stop notify) + D2 (score clock) + D3 (ATR cache)
 
 Both are one-liner hookups in the frozen `ai_trader.py`; the freeze-safe halves
 (email template, dedup helper, tests) are **already shipped** 2026-06-12.
@@ -57,6 +57,36 @@ of the function is unchanged — it already consumes `recent_scores`.)
 
 Verify: `tests/test_partial_stop_and_score_dedup.py` pins the dedup; after the
 hookup, `tests/test_ai_trader_*` score-crash tests stay green.
+
+## D3 — ATR stop: last-known cache on fetch failure
+**Bug:** `calculate_atr_stop` (`ai_trader.py:1134`) does a synchronous per-cycle
+Yahoo chart fetch (5s timeout) and on ANY failure (non-200, missing data,
+exception) returns `base_stop_pct`. So a position's stop silently snaps from
+(say) 18% to 7% for that cycle and back — a random premature stop-out risk, and
+non-deterministic vs the backtester (which uses always-available local ATR).
+Bias: live-pessimistic.
+
+**Shipped (freeze-safe):** `trading_engine.cache_atr_stop(ticker, stop)` +
+`atr_stop_fallback(ticker, base_stop_pct, max_age_days=5)` — reuse the most
+recent good ATR stop (within 5 days) when a fetch fails, else base. Process-local.
+
+**June-19 change** — `ai_trader.py` `calculate_atr_stop`:
+1. Add `from backend.trading_engine import cache_atr_stop, atr_stop_fallback`.
+2. On success, just before `return effective_stop` (~line 1189):
+   ```python
+                        cache_atr_stop(ticker, effective_stop)
+                        return effective_stop
+   ```
+3. Replace the two FETCH-FAILURE returns (the `return base_stop_pct` at ~line
+   1162 "no quote data" and ~line 1193 "after the try") with:
+   ```python
+       return atr_stop_fallback(ticker, base_stop_pct)
+   ```
+   **Leave** the `use_atr_stops=False` early return (~line 1144) as
+   `return base_stop_pct` — that's intentional, not a failure.
+
+Verify: `tests/test_atr_stop_fallback.py` (already green) pins the cache/fallback;
+after the hookup, `tests/test_ai_trader_coverage.py` ATR tests stay green.
 
 ## Ship
 Bundle with the other June-19 `ai_trader.py` edits in one post-freeze

@@ -111,6 +111,40 @@ def trailing_stops_allowed_now(yaml_config=None, now_et=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# ATR-stop last-known cache (D3)
+# ---------------------------------------------------------------------------
+# Live calculate_atr_stop() does a per-cycle Yahoo fetch and silently returns
+# the BASE stop on any failure (throttle/404/timeout) — so a position's stop
+# snaps from (say) 18% to 7% for that cycle, risking a random premature
+# stop-out, then snaps back. These let the live path reuse the most recent good
+# ATR stop on a failed fetch instead. Process-local (the trading cycle is one
+# process); off until calculate_atr_stop() calls them (June-19).
+
+_atr_stop_cache: dict = {}  # ticker -> (date, effective_stop_pct)
+
+
+def cache_atr_stop(ticker: str, effective_stop_pct: float, today=None) -> None:
+    """Record a successfully-computed ATR stop for `ticker` (call on success)."""
+    from datetime import date as _date
+    _atr_stop_cache[ticker] = (today or _date.today(), float(effective_stop_pct))
+
+
+def atr_stop_fallback(ticker: str, base_stop_pct: float, max_age_days: int = 5, today=None) -> float:
+    """Effective stop to use when the live ATR fetch FAILS: the last good ATR
+    stop for `ticker` if cached within `max_age_days`, else `base_stop_pct`.
+    Avoids snapping a wide volatility stop down to base on a transient Yahoo
+    failure (D3)."""
+    from datetime import date as _date, timedelta
+    entry = _atr_stop_cache.get(ticker)
+    if entry is None:
+        return base_stop_pct
+    cached_date, stop = entry
+    if ((today or _date.today()) - cached_date) <= timedelta(days=max_age_days):
+        return stop
+    return base_stop_pct
+
+
+# ---------------------------------------------------------------------------
 # Score stability / blip detection
 # ---------------------------------------------------------------------------
 
