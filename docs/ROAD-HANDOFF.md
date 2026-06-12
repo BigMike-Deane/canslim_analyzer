@@ -40,15 +40,18 @@ owner deploys from the iPad exactly the way the PC terminal did today.
 - **Standing policy: auto-deploy freeze-safe changes.** Once the owner
   requests/approves a change in a session, ship it immediately — do **not**
   wait for a separate "deploy" instruction. Procedure:
-  1. Implement + push. (In this environment the git proxy routes the
-     designated-branch push straight onto `main` on GitHub, so `main` already
-     carries the change and no separate `claude/…` branch appears on GitHub.)
-  2. Ensure a `main → deploy` PR exists (create one if not) and **merge it**.
-     Merging moves `deploy`; the VPS poller rebuilds within ~10 min.
-  3. Confirm: `GET https://canslim.duckdns.org/health` → 200, and for UI work
-     sanity-check the live app. (No commit-SHA endpoint exists yet — only
-     `/health`. Adding `/api/version` returning the running git SHA is the
-     recommended first real auto-deploy so deploys become verifiable.)
+  1. Implement the change. **Bump the deploy stamp:** set `BUILD_VERSION` in
+     `backend/build_info.py` to the current UTC minute (e.g. `2026-06-12T14:05Z`)
+     in the same change — this is how the deploy is verified in step 3. Push.
+     (In this environment the git proxy routes the designated-branch push onto a
+     branch on GitHub but does NOT reliably advance `main`; use a GitHub PR to
+     land on `main`/`deploy`, not raw `git push`.)
+  2. Ensure a `main → deploy` PR exists (create one if not) and **merge it** via
+     the GitHub API/app. Merging moves `deploy`; the VPS poller rebuilds within
+     ~10 min.
+  3. Verify: poll `GET https://canslim.duckdns.org/health` until `build` equals
+     the stamp you set in step 1 (that confirms the rebuild picked up your
+     commit — not just that the site is up). For UI work also eyeball the app.
 - **Freeze guard is the safety net.** The poller refuses any deploy touching
   `ai_trader.py`/`canslim_scorer.py` before June 19. A change touching those is
   NOT freeze-safe — never auto-deploy it; flag it to the owner instead.
