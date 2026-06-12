@@ -41,8 +41,10 @@ owner deploys from the iPad exactly the way the PC terminal did today.
   requests/approves a change in a session, ship it immediately — do **not**
   wait for a separate "deploy" instruction. Procedure:
   1. Implement the change. **Bump the deploy stamp:** set `BUILD_VERSION` in
-     `backend/build_info.py` to the current UTC minute (e.g. `2026-06-12T14:05Z`)
-     in the same change — this is how the deploy is verified in step 3. Push.
+     `backend/build_info.py` to the current **Central** time (project convention:
+     UTC internally, `America/Chicago` for anything user-facing) via
+     `TZ=America/Chicago date +"%Y-%m-%dT%H:%M %Z"` → e.g. `2026-06-11T21:35 CDT`
+     — this is how the deploy is verified in step 3. Push.
      (In this environment the git proxy routes the designated-branch push onto a
      branch on GitHub but does NOT reliably advance `main`; use a GitHub PR to
      land on `main`/`deploy`, not raw `git push`.)
