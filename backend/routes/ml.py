@@ -883,7 +883,9 @@ async def trigger_training(
 @router.post("/train-exit")
 async def train_exit_model(
     min_samples: int = Query(default=300, description="Minimum labeled snapshots required to train."),
-    holdout_frac: float = Query(default=0.2, ge=0.05, le=0.5, description="Time-ordered holdout fraction for evaluation."),
+    holdout_frac: float = Query(default=0.2, ge=0.05, le=0.5, description="Time-ordered holdout fraction (used when holdout_backtest_id=0)."),
+    subsample_weekly: bool = Query(default=True, description="Keep one snapshot per (backtest, ticker, ISO-week) to kill consecutive-day overlap autocorrelation that inflates Spearman."),
+    holdout_backtest_id: int = Query(default=0, description="If >0, OUT-OF-WINDOW eval: train on all OTHER backtests, test on this one's window. Else time-ordered split."),
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
@@ -891,14 +893,19 @@ async def train_exit_model(
     report holdout Spearman / R² / feature importance. Predicts the forward-
     horizon return of a held position (the exit/hold signal). Saves/activates
     nothing — pure measurement, like /diagnose for the entry model.
+
+    Honest eval: subsample_weekly removes overlapping consecutive-day rows;
+    holdout_backtest_id gives a true out-of-regime test.
     """
     import numpy as np
     import pandas as pd
+    from datetime import date as _date
     from backend.database import BacktestHoldSnapshot
 
     rows = (
         db.query(BacktestHoldSnapshot.features, BacktestHoldSnapshot.fwd_return_pct,
-                 BacktestHoldSnapshot.date)
+                 BacktestHoldSnapshot.date, BacktestHoldSnapshot.ticker,
+                 BacktestHoldSnapshot.backtest_id)
         .filter(BacktestHoldSnapshot.fwd_return_pct.isnot(None))
         .all()
     )
@@ -908,23 +915,43 @@ async def train_exit_model(
                 "hint": "Run a backtest with profile_overrides.hold_snapshot_capture.enabled=true to populate."}
 
     recs = []
-    for feats, y, dt in rows:
+    for feats, y, dt, tk, bid in rows:
         if not isinstance(feats, dict) or not feats:
             continue
         r = dict(feats)
         r["_y"] = float(y)
         r["_date"] = str(dt)
+        r["_ticker"] = tk
+        r["_bid"] = int(bid)
+        try:
+            iso = _date.fromisoformat(str(dt)).isocalendar()
+            r["_week"] = f"{iso[0]}-{iso[1]}"
+        except Exception:
+            r["_week"] = "0-0"
         recs.append(r)
     df = pd.DataFrame(recs).sort_values("_date").reset_index(drop=True)
-    feat_cols = [c for c in df.columns if not c.startswith("_")]
-    X = df[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-    y = df["_y"].values
+    raw_n = len(df)
+    if subsample_weekly:
+        df = df.drop_duplicates(subset=["_bid", "_ticker", "_week"], keep="first").reset_index(drop=True)
 
-    n = len(df)
-    cut = int(n * (1 - holdout_frac))
-    if cut < 50 or n - cut < 25:
-        return {"status": "insufficient_data", "labeled_snapshots": n,
-                "hint": "Not enough rows for a stable time-ordered split."}
+    feat_cols = [c for c in df.columns if not c.startswith("_")]
+    Xall = df[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+    yall = df["_y"].values
+
+    if holdout_backtest_id > 0:
+        mask = (df["_bid"] == holdout_backtest_id).values
+        if mask.sum() < 25 or (~mask).sum() < 50:
+            return {"status": "insufficient_data", "used_snapshots": len(df),
+                    "hint": f"holdout backtest {holdout_backtest_id}: {int(mask.sum())} test / {int((~mask).sum())} train rows — too few."}
+        Xtr, ytr, Xte, yte = Xall[~mask], yall[~mask], Xall[mask], yall[mask]
+        split = f"out-of-window (holdout backtest {holdout_backtest_id})"
+    else:
+        n = len(df); cut = int(n * (1 - holdout_frac))
+        if cut < 50 or n - cut < 25:
+            return {"status": "insufficient_data", "used_snapshots": n,
+                    "hint": "Not enough rows for a stable time-ordered split."}
+        Xtr, ytr, Xte, yte = Xall.iloc[:cut], yall[:cut], Xall.iloc[cut:], yall[cut:]
+        split = f"time-ordered {int((1-holdout_frac)*100)}/{int(holdout_frac*100)}"
 
     from xgboost import XGBRegressor
     from scipy.stats import spearmanr
@@ -932,24 +959,25 @@ async def train_exit_model(
 
     model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.05,
                          subsample=0.8, colsample_bytree=0.8, random_state=42)
-    model.fit(X.iloc[:cut], y[:cut])
-    pred = model.predict(X.iloc[cut:])
-    y_hold = y[cut:]
-    sp = spearmanr(pred, y_hold).correlation
-    r2 = r2_score(y_hold, pred)
+    model.fit(Xtr, ytr)
+    pred = model.predict(Xte)
+    sp = spearmanr(pred, yte).correlation
+    r2 = r2_score(yte, pred)
     imp = sorted(zip(feat_cols, model.feature_importances_.tolist()), key=lambda x: -x[1])
 
     return {
         "status": "ok",
-        "labeled_snapshots": n,
-        "train_rows": cut,
-        "holdout_rows": n - cut,
-        "horizon_days": int(df.attrs.get("horizon", 15)) if False else None,
-        "mean_fwd_return_pct": round(float(np.mean(y)), 2),
+        "split": split,
+        "subsample_weekly": subsample_weekly,
+        "raw_snapshots": raw_n,
+        "used_snapshots": int(len(df)),
+        "train_rows": int(len(Xtr)),
+        "holdout_rows": int(len(Xte)),
+        "mean_fwd_return_pct": round(float(np.mean(yall)), 2),
         "holdout_spearman": round(float(sp), 4) if sp == sp else None,
         "holdout_r2": round(float(r2), 4),
         "feature_importance": {k: round(v, 4) for k, v in imp},
-        "note": "Measure-only. Compare holdout_spearman to the entry model's ~0.05 — >0.15 means real exit signal.",
+        "note": "Honest read = subsample_weekly + out-of-window. Compare to entry ~0.05 and the naive in-window 0.44.",
     }
 
 

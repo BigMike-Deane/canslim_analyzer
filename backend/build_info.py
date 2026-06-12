@@ -25,7 +25,7 @@ import os
 
 # Bumped on every deploy. Format: Central time (America/Chicago) to the minute,
 # e.g. "2026-06-11T21:35 CDT".
-BUILD_VERSION = "2026-06-12T07:34 CDT"
+BUILD_VERSION = "2026-06-12T07:53 CDT"
 
 
 def get_build_version() -> str:
