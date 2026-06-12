@@ -507,6 +507,17 @@ ai_trader:
     partial_min_score: 65               # Min score to qualify for partial
     partial_sell_pct: 50                # Sell this % of position, keep remainder
 
+  # Trailing-stop cadence (June-19 exit-parity item 2). When daily_only is true,
+  # LIVE trailing stops fire only in the close window (once/day) — matching the
+  # backtester's daily cadence and cutting intraday churn. Hard stops (stop-loss,
+  # score-crash) stay intraday. Default OFF (no behavior change); flip June 19.
+  # Consumed by trading_engine.trailing_stops_allowed_now().
+  trailing_cadence:
+    daily_only: false                   # OFF until June-19 landing (then evaluate live trailing once daily)
+    window_start_hour_et: 15            # 15:00 ET = final hour before close; the ~15:30 ET scan lands here
+    window_start_minute_et: 0
+    market_close_hour_et: 16
+
   # Insider trading signal weights
   insider_signals:
     bullish_bonus: 5      # +5 points for bullish insiders
