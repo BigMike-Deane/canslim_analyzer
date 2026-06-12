@@ -590,7 +590,8 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
 
 def send_stop_loss_webhook(ticker: str, shares: float, price: float,
                            stop_type: str, loss_pct: float,
-                           user_id: int = None) -> bool:
+                           user_id: int = None, is_partial: bool = False,
+                           shares_kept: float = None) -> bool:
     """Send urgent webhook when stop loss triggers.
 
     Args:
@@ -600,18 +601,30 @@ def send_stop_loss_webhook(ticker: str, shares: float, price: float,
         stop_type: STOP LOSS or TRAILING STOP
         loss_pct: Loss percentage
         user_id: Owner of this position. See send_trade_webhook for routing.
+        is_partial: True for a partial trailing stop — the position is NOT
+            closed. Makes the notification say so, instead of looking like a
+            full liquidation (N1: live IESC partial read as a full exit
+            2026-06-10). Default False → byte-identical to the legacy message.
+        shares_kept: Remaining shares after the partial sell, surfaced when known.
 
     Returns:
         True if sent successfully
     """
-    title = f"{stop_type}: {ticker}"
-    message = f"{ticker}: {shares:.2f} shares @ ${price:.2f} ({loss_pct:+.1f}%)\nAutomatic stop triggered"
     tags = ["rotating_light", "chart_with_downwards_trend"]
+    if is_partial:
+        title = f"PARTIAL {stop_type}: {ticker}"
+        kept = f" — {shares_kept:.2f} shares kept" if shares_kept is not None else ""
+        message = (f"{ticker}: sold {shares:.2f} shares @ ${price:.2f} ({loss_pct:+.1f}%)\n"
+                   f"PARTIAL exit — position is STILL OPEN{kept}.")
+    else:
+        title = f"{stop_type}: {ticker}"
+        message = f"{ticker}: {shares:.2f} shares @ ${price:.2f} ({loss_pct:+.1f}%)\nAutomatic stop triggered"
 
     create_notification(
         user_id, kind="stop_loss", title=title, body=message, priority="urgent", tags=tags,
         data={"ticker": ticker, "shares": shares, "price": price,
-              "stop_type": stop_type, "loss_pct": loss_pct},
+              "stop_type": stop_type, "loss_pct": loss_pct,
+              "is_partial": is_partial, "shares_kept": shares_kept},
     )
 
     url = get_user_webhook_url(user_id) if user_id is not None else None

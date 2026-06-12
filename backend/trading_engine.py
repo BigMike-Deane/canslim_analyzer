@@ -114,6 +114,29 @@ def trailing_stops_allowed_now(yaml_config=None, now_et=None) -> bool:
 # Score stability / blip detection
 # ---------------------------------------------------------------------------
 
+def dedup_scores_to_daily(score_rows, lookback: int) -> list:
+    """Reduce scan-frequency score rows to one per calendar day — the latest
+    scan of each day — most-recent day first, capped at ``lookback`` days (D2).
+
+    Live ``check_score_stability`` reads the last N *scans* (every ~90 min), so
+    "3 consecutive low" can confirm a score crash in a single bad afternoon,
+    while the backtester appends once per *trading day*. Feeding the live
+    history through this first aligns the two clocks. Input must be ordered
+    newest-first; each row needs a ``.timestamp`` (datetime). Off until
+    ``check_score_stability`` calls it (June-19).
+    """
+    seen = {}
+    for row in score_rows:
+        ts = getattr(row, "timestamp", None)
+        day = ts.date() if ts is not None else None
+        if day is None or day in seen:
+            continue
+        seen[day] = row          # first-seen per day == latest scan (desc order)
+        if len(seen) >= lookback:
+            break
+    return list(seen.values())
+
+
 def check_score_stability_from_history(
     recent_scores: list,
     current_score: float,
