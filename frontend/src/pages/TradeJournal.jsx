@@ -151,18 +151,14 @@ function JournalEntry({ entry }) {
           </div>
         )}
 
-        {/* ML confidence chip on regular trades (when present) */}
+        {/* ML confidence chip on regular trades. Bonus moved to the expanded
+            detail view (it's ~noise per the 2026-06-12 ML investigation). */}
         {!isVetoed && entry.ml_confidence != null && (
           <div className="flex items-center gap-1 mt-1">
             <span className="text-[10px] text-dark-500">ML</span>
             <span className={`text-[10px] font-data ${entry.ml_confidence >= 0.30 ? 'text-emerald-400' : 'text-amber-400'}`}>
               {entry.ml_confidence.toFixed(3)}
             </span>
-            {entry.ml_bonus != null && entry.ml_bonus !== 0 && (
-              <span className="text-[10px] font-data text-dark-400">
-                ({entry.ml_bonus >= 0 ? '+' : ''}{entry.ml_bonus.toFixed(1)} bonus)
-              </span>
-            )}
           </div>
         )}
 

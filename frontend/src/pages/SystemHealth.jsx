@@ -48,6 +48,7 @@ function TimeAgo({ iso }) {
 export default function SystemHealth() {
   const [data, setData] = useState(null)
   const [health, setHealth] = useState(null)  // /health: running build/version stamp
+  const [mlStatus, setMlStatus] = useState(null)  // ML model telemetry (moved off Command Center)
   const [backups, setBackups] = useState([])
   const [loading, setLoading] = useState(true)
   const [backingUp, setBackingUp] = useState(false)
@@ -76,13 +77,15 @@ export default function SystemHealth() {
 
   async function load() {
     try {
-      const [sysHealth, buildHealth, backupList] = await Promise.all([
+      const [sysHealth, buildHealth, ml, backupList] = await Promise.all([
         api.getSystemHealth(),
         api.getHealth().catch(() => null),
+        api.getMLStatus().catch(() => null),
         api.getBackups().catch(() => ({ backups: [] })),
       ])
       setData(sysHealth)
       setHealth(buildHealth)
+      setMlStatus(ml)
       setBackups(backupList.backups || [])
       setLastRefreshed(new Date().toISOString())
     } catch (e) {
@@ -150,12 +153,36 @@ export default function SystemHealth() {
       </div>
 
       {/* Running build — confirms which deploy is live (see backend/build_info.py) */}
-      <HealthCard title="App Build" status={health?.status}>
-        <div className="flex flex-wrap gap-x-10 gap-y-1">
-          <Stat label="Build" value={<span className="font-data">{health?.build || 'unknown'}</span>} sub="deploy stamp" />
-          <Stat label="Version" value={health?.version} />
-        </div>
-      </HealthCard>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <HealthCard title="App Build" status={health?.status}>
+          <div className="flex flex-wrap gap-x-10 gap-y-1">
+            <Stat label="Build" value={<span className="font-data">{health?.build || 'unknown'}</span>} sub="deploy stamp" />
+            <Stat label="Version" value={health?.version} />
+          </div>
+        </HealthCard>
+
+        {/* ML model telemetry — moved here from the Command Center (ops, not at-a-glance). */}
+        <HealthCard
+          title="ML Model"
+          status={mlStatus?.config?.enabled ? (mlStatus?.active_model ? 'healthy' : 'not configured') : 'not configured'}
+        >
+          {mlStatus?.active_model ? (
+            <div className="flex flex-wrap gap-x-8 gap-y-1">
+              <Stat label="Active" value={<span className="font-data">v{mlStatus.active_model.version} · {mlStatus.active_model.model_type}</span>}
+                    sub={mlStatus?.config?.enabled ? `veto ${mlStatus.config.min_confidence}` : 'log-only'} />
+              <Stat
+                label={mlStatus.active_model.model_type === 'regression' ? 'Spearman' : 'ROC AUC'}
+                value={<span className="font-data">{mlStatus.active_model.model_type === 'regression'
+                  ? (mlStatus.active_model.spearman || 0).toFixed(3)
+                  : (mlStatus.active_model.roc_auc || 0).toFixed(3)}</span>}
+                sub={`${mlStatus.active_model.training_samples} trades`}
+              />
+            </div>
+          ) : (
+            <Stat label="Active model" value="none" />
+          )}
+        </HealthCard>
+      </div>
 
       {/* Status Overview */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

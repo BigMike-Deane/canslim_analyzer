@@ -1446,9 +1446,6 @@ function TradeHistory({ trades }) {
               <ActionBadge action={trade.action} />
               <span className="font-medium text-dark-100">{trade.ticker}</span>
               {trade.is_growth_stock && <TagBadge color="purple">G</TagBadge>}
-              {trade.signal_factors?.ml_confidence != null && (
-                <MLConfidenceBadge confidence={trade.signal_factors.ml_confidence} />
-              )}
             </div>
             <div className="text-right">
               <div className="font-data text-dark-200">

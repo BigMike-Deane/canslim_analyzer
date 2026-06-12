@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatDateTime } from '../api'
 import Card from '../components/Card'
 import PageHeader from '../components/PageHeader'
-import { ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
+import { ActionBadge, TagBadge } from '../components/Badge'
 import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
 
@@ -100,9 +100,6 @@ function TradeRow({ trade }) {
               >
                 {Math.round(score)}
               </span>
-            )}
-            {trade.signal_factors?.ml_confidence != null && (
-              <MLConfidenceBadge confidence={trade.signal_factors.ml_confidence} size="xs" />
             )}
             <span className="text-[10px] text-dark-500 font-data">
               {new Date(trade.executed_at).toLocaleTimeString('en-US', {
