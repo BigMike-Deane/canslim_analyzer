@@ -122,3 +122,36 @@ Live model is v29 (XGBoost classifier, entry P(win), AUC **0.5676**, f1 0.03,
 - Infra left in place for future use: the exit-capture lever + train-exit endpoint
   are default-off / measure-only, harmless. v29 never touched; all retrains were
   `auto_activate=false`.
+
+## 2026-06-12 — June-19 exit-parity queue fully STAGED (freeze-safe, cloud session)
+
+Same session as above. Staged every June-19 exit-parity item so the post-freeze
+landing (after 2026-06-18 17:00 UTC) is mechanical. ai_trader.py/canslim_scorer.py
+stayed byte-identical throughout; each frozen edit is a documented one-liner with
+its freeze-safe scaffolding + tests already shipped (default-inert).
+
+- **D1 stop-loss clamp** — verified playbook `docs/d1-stoploss-clamp-playbook.md`.
+  The guard block is byte-identical to the proven `_check_and_execute_stop_losses_impl`
+  block; deps in scope; backtester already has the guard (no change). Regression nets:
+  `tests/test_evaluate_sells_d1_parity.py` + the parity harness D1 case (both
+  strict-xfail, flip on landing). ⚠️ existing `fix/stoploss-new-position-guard`
+  branch is STALE — do NOT merge; apply fresh.
+- **Item 2 trailing cadence** — shipped `trading_engine.trailing_stops_allowed_now()`
+  + `ai_trader.trailing_cadence` config (default OFF) + 7 tests. June-19: one-line
+  gate at `ai_trader.py:1651` + flip lever. Backtester already daily (control arm).
+  `docs/trailing-cadence-playbook.md`.
+- **Item 3 parity harness** — `tests/test_evaluate_sells_engine_parity.py`: one
+  fixture drives BOTH evaluate_sells + backtester._evaluate_sells, asserts same
+  decision. 3 scenarios in parity (stop-loss/hold/trailing) + D1 strict-xfail.
+  (Gotcha pinned: nostate_optimized overrides default.yaml trailing bands → 18% not 12%.)
+- **N1 partial-stop notification** — `send_stop_loss_webhook(is_partial=, shares_kept=)`
+  → "PARTIAL … STILL OPEN" instead of looking like a full exit. Default unchanged.
+- **D2 score-crash dedup** — `trading_engine.dedup_scores_to_daily()`. LOW priority
+  (measured sign-mixed; even helped in 2021-23 bear). Don't ship mid-bear.
+- **D3 ATR-stop cache** — `trading_engine.cache_atr_stop` + `atr_stop_fallback`:
+  reuse last-known good ATR stop (≤5d) on a failed Yahoo fetch instead of snapping
+  to base (random premature stop-outs). Default-inert.
+- N1/D2/D3 frozen one-liners all in `docs/june19-minor-items-playbook.md`.
+- Also shipped this session (deployed): Central-time `/health` build stamp + UI
+  version display; AI Portfolio + Coiled Spring + ML-tag declutter; iPad
+  auto-deploy pipeline. All freeze-safe; live model v29 + trading untouched.
