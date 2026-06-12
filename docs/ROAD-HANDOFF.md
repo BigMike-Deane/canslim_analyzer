@@ -5,6 +5,31 @@ app) while the owner travels. Local-machine memory does not transfer; this
 doc + `CLAUDE.md` + `docs/parity-audit-evaluate-sells.md` are the working
 context. Written by the local session on 2026-06-11.
 
+> ### 2026-06-12 status update (cloud session) — read this + `docs/road-log-2026-06.md` first
+> Two things changed materially since this doc was written:
+>
+> 1. **The June-19 exit-parity queue is fully STAGED.** Every item's freeze-safe
+>    scaffolding + tests are shipped (default-inert); each frozen `ai_trader.py`
+>    edit is now a documented one-liner. Apply these playbooks AFTER the freeze
+>    lifts (2026-06-18 17:00 UTC):
+>    - `docs/d1-stoploss-clamp-playbook.md` — D1 stop-loss clamp.
+>      ⚠️ the `fix/stoploss-new-position-guard` branch is STALE — do NOT merge it; apply fresh.
+>    - `docs/trailing-cadence-playbook.md` — item 2 (trailing-stop cadence).
+>    - `docs/june19-minor-items-playbook.md` — N1, D2, D3.
+>    Two strict-xfail regression nets (`test_evaluate_sells_d1_parity.py`,
+>    `test_evaluate_sells_engine_parity.py`) flip green when D1 lands.
+> 2. **ML rankers are PARKED (closed line).** Entry + exit models were rigorously
+>    bounded to ~noise out-of-sample (entry AUC 0.57; exit 0.44 naive → −0.13
+>    out-of-window). Edge is the deterministic score + rule-based exits — do not
+>    re-litigate. Infra (exit-capture lever, `train-exit` endpoint) left
+>    default-off / measure-only; live model v29 untouched.
+>
+> **Deploy reality:** the cloud git proxy does NOT reliably advance `main` — land
+> changes with **GitHub PRs** (then a `main → deploy` PR to ship), not raw
+> `git push`. The live build is shown at `/health` `build` (Central time) and in
+> the UI (Sidebar footer / System Health). `main` + `deploy` have moved well past
+> `296491a`. Full per-change record is in `docs/road-log-2026-06.md` (06-12 entries).
+
 ## Hard rules (read first)
 
 1. **FREEZE until 2026-06-18 17:00 UTC:** `backend/ai_trader.py` and
