@@ -309,6 +309,12 @@ class BacktestEngine:
         self.trades_executed: int = 0
         self.sells_executed: int = 0  # Track sells separately for accurate win rate
         self.profitable_trades: int = 0
+        # Exit/hold ML training capture (default-off lever; see _capture_hold_snapshots).
+        self.capture_hold_snapshots: bool = False
+        self.hold_snapshot_horizon: int = 15  # forward trading days for the label
+        self._hold_snapshots: list = []        # raw rows pending forward-label back-fill
+        self._trading_days: list = []          # set at run start; used for forward lookup
+        self._current_day_idx: int = 0
         self.drawdown_halt: bool = False  # Circuit breaker: no new buys when True
 
         # Re-entry cooldown tracking: ticker -> (date, reason)
@@ -739,7 +745,13 @@ class BacktestEngine:
             # Simulate each trading day
             total_days = len(trading_days)
             progress = 30.0  # Start at 30% (data loading complete)
+            # Exit/hold capture lever (default off): resolve once per run.
+            _hs_cfg = self.profile.get('hold_snapshot_capture') or config.get('backtester.hold_snapshot_capture', {})
+            self.capture_hold_snapshots = bool(_hs_cfg.get('enabled', False))
+            self.hold_snapshot_horizon = int(_hs_cfg.get('horizon_days', 15))
+            self._trading_days = trading_days
             for i, current_date in enumerate(trading_days):
+                self._current_day_idx = i
                 # G: Clear seed day flag after day 1
                 if i > 0:
                     self.is_seed_day = False
@@ -761,6 +773,10 @@ class BacktestEngine:
                 self.backtest.progress_pct = progress
                 if i % 10 == 0:  # Commit every 10 days
                     self.db.commit()
+
+            # Back-fill forward-return labels + persist hold snapshots (lever-gated).
+            if self.capture_hold_snapshots:
+                self._backfill_and_persist_hold_snapshots()
 
             # Calculate final metrics
             self._calculate_final_metrics()
@@ -1456,6 +1472,11 @@ class BacktestEngine:
         # Tier 1: Score HELD positions every day (needed for sell/pyramid triggers)
         held_tickers = list(self.positions.keys())
         held_scores = self._calculate_scores(current_date, tickers=held_tickers) if held_tickers else {}
+
+        # Exit/hold ML capture: snapshot each held position's state BEFORE sells
+        # are evaluated, so the features reflect the live hold decision point.
+        if self.capture_hold_snapshots and held_tickers:
+            self._capture_hold_snapshots(current_date, held_scores)
 
         # Evaluate and execute sells first
         sells = self._evaluate_sells(current_date, held_scores)
@@ -4232,6 +4253,87 @@ class BacktestEngine:
             signal_factors=signal_factors
         )
         self.db.add(db_trade)
+
+    def _capture_hold_snapshots(self, current_date: date, held_scores: dict):
+        """Append a hold-decision-point feature row for each held position.
+
+        Forward-return label is back-filled after the sim completes
+        (_backfill_and_persist_hold_snapshots). Fully defensive — any failure
+        is swallowed so training capture never affects trade simulation.
+        """
+        try:
+            market = self.data_provider.get_market_direction(current_date) or {}
+            weighted_signal = market.get("weighted_signal", 0) or 0
+            for ticker, position in self.positions.items():
+                try:
+                    price = self.data_provider.get_price_on_date(ticker, current_date)
+                    if not price or price <= 0 or not position.cost_basis:
+                        continue
+                    peak = position.peak_price or price
+                    cur_score = _nan_safe((held_scores.get(ticker) or {}).get("total_score"), 0.0)
+                    try:
+                        atr_pct = self.data_provider.get_atr(ticker, current_date) or 0.0
+                    except Exception:
+                        atr_pct = 0.0
+                    features = {
+                        "gain_pct": round((price - position.cost_basis) / position.cost_basis * 100, 2),
+                        "drop_from_peak": round((peak - price) / peak * 100, 2) if peak > 0 else 0.0,
+                        "peak_gain_pct": round((peak / position.cost_basis - 1) * 100, 2),
+                        "days_held": (current_date - position.purchase_date).days,
+                        "current_score": round(cur_score, 1),
+                        "purchase_score": round(_nan_safe(position.purchase_score, 0.0), 1),
+                        "score_delta": round(cur_score - _nan_safe(position.purchase_score, 0.0), 1),
+                        "atr_pct": round(_nan_safe(atr_pct, 0.0), 2),
+                        "partial_profit_taken": round(_nan_safe(position.partial_profit_taken, 0.0), 1),
+                        "pyramid_count": int(position.pyramid_count or 0),
+                        "is_growth_stock": 1 if position.is_growth_stock else 0,
+                        "market_signal": round(_nan_safe(weighted_signal, 0.0), 2),
+                    }
+                    self._hold_snapshots.append({
+                        "idx": self._current_day_idx,
+                        "ticker": ticker,
+                        "date": current_date,
+                        "price": price,
+                        "features": features,
+                    })
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"hold-snapshot capture skipped {current_date}: {e}")
+
+    def _backfill_and_persist_hold_snapshots(self):
+        """Compute the forward-horizon return label for each captured snapshot
+        and bulk-persist to backtest_hold_snapshots. Defensive — never raises."""
+        try:
+            from backend.database import BacktestHoldSnapshot
+            horizon = self.hold_snapshot_horizon
+            n_days = len(self._trading_days)
+            rows = []
+            for snap in self._hold_snapshots:
+                fwd_idx = snap["idx"] + horizon
+                fwd_return = None
+                if fwd_idx < n_days:
+                    try:
+                        fwd_price = self.data_provider.get_price_on_date(snap["ticker"], self._trading_days[fwd_idx])
+                        if fwd_price and fwd_price > 0 and snap["price"] > 0:
+                            fwd_return = round((fwd_price / snap["price"] - 1) * 100, 2)
+                    except Exception:
+                        fwd_return = None
+                rows.append(BacktestHoldSnapshot(
+                    backtest_id=self.backtest.id,
+                    date=snap["date"],
+                    ticker=snap["ticker"],
+                    features=sanitize_signal_factors(snap["features"]),
+                    fwd_return_pct=fwd_return,
+                    horizon_days=horizon,
+                ))
+            if rows:
+                self.db.bulk_save_objects(rows)
+                self.db.commit()
+                logger.info(f"Backtest {self.backtest.id}: persisted {len(rows)} hold snapshots "
+                            f"({sum(1 for r in rows if r.fwd_return_pct is not None)} with forward label)")
+        except Exception as e:
+            logger.warning(f"hold-snapshot persist failed: {e}")
 
     def _take_snapshot(self, current_date: date):
         """Take daily portfolio snapshot"""

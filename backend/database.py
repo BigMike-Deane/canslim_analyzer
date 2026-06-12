@@ -1235,6 +1235,33 @@ class BacktestTrade(Base):
     )
 
 
+class BacktestHoldSnapshot(Base):
+    """Per-day snapshot of a HELD position during a backtest — training data for
+    the exit/hold ML model. Captured only when the ``hold_snapshot_capture``
+    backtester lever is enabled (default OFF), so normal runs are unaffected.
+
+    ``features`` is the position-state feature vector at the hold decision point
+    (gain, drop_from_peak, days_held, score trajectory, ATR, regime, …).
+    ``fwd_return_pct`` is the label: the position's return over ``horizon_days``
+    forward trading days. It is NULL when the forward window runs past the sim's
+    end (those rows are dropped at training time).
+    """
+    __tablename__ = "backtest_hold_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    backtest_id = Column(Integer, ForeignKey("backtest_runs.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    ticker = Column(String, nullable=False)
+
+    features = Column(JSON)             # position-state feature vector
+    fwd_return_pct = Column(Float)      # forward-horizon return label (nullable)
+    horizon_days = Column(Integer)      # forward horizon actually used (trading days)
+
+    __table_args__ = (
+        Index('ix_backtest_hold_snap_bt_date', 'backtest_id', 'date'),
+    )
+
+
 class BacktestPosition(Base):
     """Current positions during backtest simulation (cleared between runs)"""
     __tablename__ = "backtest_positions"

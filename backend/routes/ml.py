@@ -880,6 +880,79 @@ async def trigger_training(
     }
 
 
+@router.post("/train-exit")
+async def train_exit_model(
+    min_samples: int = Query(default=300, description="Minimum labeled snapshots required to train."),
+    holdout_frac: float = Query(default=0.2, ge=0.05, le=0.5, description="Time-ordered holdout fraction for evaluation."),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Measure-only: train an exit/hold regressor on backtest_hold_snapshots and
+    report holdout Spearman / R² / feature importance. Predicts the forward-
+    horizon return of a held position (the exit/hold signal). Saves/activates
+    nothing — pure measurement, like /diagnose for the entry model.
+    """
+    import numpy as np
+    import pandas as pd
+    from backend.database import BacktestHoldSnapshot
+
+    rows = (
+        db.query(BacktestHoldSnapshot.features, BacktestHoldSnapshot.fwd_return_pct,
+                 BacktestHoldSnapshot.date)
+        .filter(BacktestHoldSnapshot.fwd_return_pct.isnot(None))
+        .all()
+    )
+    if len(rows) < min_samples:
+        return {"status": "insufficient_data", "labeled_snapshots": len(rows),
+                "needed": min_samples,
+                "hint": "Run a backtest with profile_overrides.hold_snapshot_capture.enabled=true to populate."}
+
+    recs = []
+    for feats, y, dt in rows:
+        if not isinstance(feats, dict) or not feats:
+            continue
+        r = dict(feats)
+        r["_y"] = float(y)
+        r["_date"] = str(dt)
+        recs.append(r)
+    df = pd.DataFrame(recs).sort_values("_date").reset_index(drop=True)
+    feat_cols = [c for c in df.columns if not c.startswith("_")]
+    X = df[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+    y = df["_y"].values
+
+    n = len(df)
+    cut = int(n * (1 - holdout_frac))
+    if cut < 50 or n - cut < 25:
+        return {"status": "insufficient_data", "labeled_snapshots": n,
+                "hint": "Not enough rows for a stable time-ordered split."}
+
+    from xgboost import XGBRegressor
+    from scipy.stats import spearmanr
+    from sklearn.metrics import r2_score
+
+    model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.05,
+                         subsample=0.8, colsample_bytree=0.8, random_state=42)
+    model.fit(X.iloc[:cut], y[:cut])
+    pred = model.predict(X.iloc[cut:])
+    y_hold = y[cut:]
+    sp = spearmanr(pred, y_hold).correlation
+    r2 = r2_score(y_hold, pred)
+    imp = sorted(zip(feat_cols, model.feature_importances_.tolist()), key=lambda x: -x[1])
+
+    return {
+        "status": "ok",
+        "labeled_snapshots": n,
+        "train_rows": cut,
+        "holdout_rows": n - cut,
+        "horizon_days": int(df.attrs.get("horizon", 15)) if False else None,
+        "mean_fwd_return_pct": round(float(np.mean(y)), 2),
+        "holdout_spearman": round(float(sp), 4) if sp == sp else None,
+        "holdout_r2": round(float(r2), 4),
+        "feature_importance": {k: round(v, 4) for k, v in imp},
+        "note": "Measure-only. Compare holdout_spearman to the entry model's ~0.05 — >0.15 means real exit signal.",
+    }
+
+
 @router.post("/evaluate-oos")
 async def evaluate_oos_endpoint(
     strategy: str = Query(default="nostate_optimized"),
