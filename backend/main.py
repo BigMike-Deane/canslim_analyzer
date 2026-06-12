@@ -868,12 +868,15 @@ async def health_check(request: Request = None, db: Session = Depends(get_db)):
     stock_count = db.query(func.count(Stock.id)).scalar() or 0
     portfolio_count = db.query(func.count(PortfolioPosition.id)).scalar() or 0
 
+    from backend.build_info import get_build_version
+
     return {
         "status": "healthy" if db_status == "healthy" else "degraded",
         "database": db_status,
         "stocks_cached": stock_count,
         "portfolio_positions": portfolio_count,
-        "version": settings.VERSION
+        "version": settings.VERSION,
+        "build": get_build_version(),
     }
 
 

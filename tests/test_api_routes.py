@@ -200,6 +200,8 @@ class TestHealthEndpoint:
         assert "database" in d
         assert "stocks_cached" in d
         assert "version" in d
+        # Deploy stamp for iPad-side deploy verification (see backend/build_info.py)
+        assert d.get("build"), "health must expose a non-empty build stamp"
 
     def test_health_db_healthy(self):
         d = client.get("/health").json()
