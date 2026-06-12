@@ -1796,15 +1796,11 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
                       <TagBadge color="amber">Breakout</TagBadge>
                     )}
                   </div>
-                  <div className="text-[10px] text-dark-400 flex flex-wrap gap-x-1.5 gap-y-0 mt-0.5 font-data">
-                    <span>C:{stock.c_score?.toFixed(0)}</span>
-                    <span>L:{stock.l_score?.toFixed(1)}</span>
-                    <span className="text-dark-600">{'\u00B7'}</span>
-                    <span>{stock.earnings_beat_streak} beats</span>
-                    <span className="text-dark-600">{'\u00B7'}</span>
+                  {/* At-a-glance catalyst trio: entry status (badge above),
+                      days-to-earnings, confidence. Component scores (C/L), beat
+                      count and institutional % live on the stock page this links to. */}
+                  <div className="text-[10px] text-dark-400 flex items-center gap-1.5 mt-0.5 font-data">
                     <span className="text-amber-400 whitespace-nowrap">{stock.days_to_earnings}d to earnings</span>
-                    <span className="text-dark-600">{'\u00B7'}</span>
-                    <span>{stock.institutional_holders_pct?.toFixed(1)}% inst</span>
                     {stock.confidence != null && (
                       <>
                         <span className="text-dark-600">{'\u00B7'}</span>
