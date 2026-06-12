@@ -77,3 +77,48 @@ done now so the June-19 port lands with proof.
   ~1.9pp by the very FSLR D1 stop-out this harness targets) — flagging that the
   KEEP verdict rests on contaminated, un-cross-checked data.
 - No frozen file touched (`ai_trader.py` / `canslim_scorer.py` byte-identical).
+
+## 2026-06-12 — UI declutter, deploy/version infra, + ML ceiling investigation (cloud session)
+
+Long session. Three threads, all freeze-safe; live model + trading untouched.
+
+### Cloud (iPad) deploy pipeline + version visibility
+- Established the vacation deploy workflow (runbook in `ROAD-HANDOFF.md`):
+  cloud session ships freeze-safe change → `main → deploy` PR merge → VPS poller
+  rebuilds ~10min. **Auto-deploy freeze-safe changes** is the standing policy.
+- Added `backend/build_info.py` deploy stamp surfaced at `/health` `build` field
+  + in the UI (Sidebar footer + System Health "App Build" card). Stamp is
+  **Central time** (`America/Chicago`, auto CST/CDT) per project convention.
+  `.git` is excluded from the Docker context + poller passes no SHA, so the
+  committed stamp (bumped each deploy) is the verification mechanism.
+
+### AI Portfolio declutter (frontend)
+- Holdings rows + Coiled Spring candidate rows were `flex-wrap` badge-stacks
+  (sector full-name, insider, short-interest, growth, dual score / 6-metric
+  strip). Collapsed to single-line at-a-glance rows matching Command Center's
+  column discipline; demoted signals moved to the tap-through detail modal /
+  stock page. `AIPortfolio.jsx`.
+
+### ML investigation — CONCLUSION: low generalizable ceiling, stop ML rankers
+Live model is v29 (XGBoost classifier, entry P(win), AUC **0.5676**, f1 0.03,
+779 samples). Investigated whether more data/signals/label/exit-pivot help:
+- **Feature data is half-empty:** many training rows carry `_nan_safe` defaults
+  (legacy backtests predate full `signal_factors` capture). 150/230 backtests
+  excluded as ML-contaminated → only 46 clean → data-starved.
+- **Label fix (magnitude/regression):** v31 experimental → Spearman 0.059. No help.
+- **Clean-data refresh** (4 ML-off backtests 827-830) → v32 Spearman 0.035. No help.
+- **Exit/hold pivot** (NEW, default-off `hold_snapshot_capture` lever +
+  `backtest_hold_snapshots` table + `POST /api/ml/train-exit`, all freeze-safe):
+  predict held position's forward-15d return. Naive in-window Spearman **0.44**
+  — but that was **overlap autocorrelation inflation** (consecutive-day snapshots,
+  overlapping fwd windows). Corrected (weekly subsample): **−0.03**;
+  **out-of-window** (train 2018-22 / test 2022-24): **−0.13**; (hold out 2018-20):
+  **−0.06**. Does NOT generalize.
+- **Verdict:** neither entry nor exit outcome is predictable from these features
+  beyond noise once evaluated honestly (overlap-corrected, out-of-regime). Edge
+  is in the deterministic CANSLIM score + rule-based exits, not an ML residual.
+  ML's only real value is the existing crude veto. **Do not invest further in ML
+  rankers; redirect to the June-19 deterministic exit-parity work (D1, cadence).**
+- Infra left in place for future use: the exit-capture lever + train-exit endpoint
+  are default-off / measure-only, harmless. v29 never touched; all retrains were
+  `auto_activate=false`.
