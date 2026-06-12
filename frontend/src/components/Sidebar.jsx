@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '../auth'
+import { api } from '../api'
 import NotificationBell from './NotificationBell'
 import Icon from './Icon'
 
@@ -63,6 +64,12 @@ function getNavGroups(isAdmin) {
 export default function Sidebar({ collapsed, onToggle }) {
   const location = useLocation()
   const { user, logout } = useAuth()
+  // Running build/version from /health — lets you confirm at a glance which
+  // deploy is live (see backend/build_info.py). Fetched once on mount.
+  const [health, setHealth] = useState(null)
+  useEffect(() => {
+    api.getHealth().then(setHealth).catch(() => {})
+  }, [])
 
   return (
     <aside className={`hidden md:flex flex-col h-screen sticky top-0 bg-dark-900 border-r border-dark-700/40 transition-all duration-300 ${
@@ -173,6 +180,13 @@ export default function Sidebar({ collapsed, onToggle }) {
                 </svg>
               </button>
             )}
+          </div>
+        )}
+        {!collapsed && health && (
+          <div className="px-3 pb-1.5 -mt-0.5">
+            <span className="text-[9px] text-dark-600 font-data" title={`version ${health.version || '?'}`}>
+              v{health.version || '?'} · {health.build || 'dev'}
+            </span>
           </div>
         )}
         <button

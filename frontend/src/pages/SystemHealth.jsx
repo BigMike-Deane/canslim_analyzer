@@ -47,6 +47,7 @@ function TimeAgo({ iso }) {
 
 export default function SystemHealth() {
   const [data, setData] = useState(null)
+  const [health, setHealth] = useState(null)  // /health: running build/version stamp
   const [backups, setBackups] = useState([])
   const [loading, setLoading] = useState(true)
   const [backingUp, setBackingUp] = useState(false)
@@ -75,11 +76,13 @@ export default function SystemHealth() {
 
   async function load() {
     try {
-      const [health, backupList] = await Promise.all([
+      const [sysHealth, buildHealth, backupList] = await Promise.all([
         api.getSystemHealth(),
+        api.getHealth().catch(() => null),
         api.getBackups().catch(() => ({ backups: [] })),
       ])
-      setData(health)
+      setData(sysHealth)
+      setHealth(buildHealth)
       setBackups(backupList.backups || [])
       setLastRefreshed(new Date().toISOString())
     } catch (e) {
@@ -145,6 +148,14 @@ export default function SystemHealth() {
           </button>
         </div>
       </div>
+
+      {/* Running build — confirms which deploy is live (see backend/build_info.py) */}
+      <HealthCard title="App Build" status={health?.status}>
+        <div className="flex flex-wrap gap-x-10 gap-y-1">
+          <Stat label="Build" value={<span className="font-data">{health?.build || 'unknown'}</span>} sub="deploy stamp" />
+          <Stat label="Version" value={health?.version} />
+        </div>
+      </HealthCard>
 
       {/* Status Overview */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
