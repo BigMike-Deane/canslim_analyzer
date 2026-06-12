@@ -70,6 +70,46 @@ def apply_pyramid_widening(trailing_stop_pct: float, pyramid_count: int) -> floa
     return trailing_stop_pct
 
 
+def trailing_stops_allowed_now(yaml_config=None, now_et=None) -> bool:
+    """Trailing-stop cadence gate (June-19 exit-parity item 2).
+
+    When ``ai_trader.trailing_cadence.daily_only`` is enabled, live trailing
+    stops only fire inside the close window (default: the final hour before the
+    16:00 ET close), i.e. once per day — matching the backtester's daily
+    cadence and removing the intraday-churn drag (measured −1..−17pp per 2yr
+    window, 8/8 arms; live-validated: trailing exits held 9.2d / 50% WR / −0.1%
+    avg vs 81d / 76% / +3.6% modeled). HARD stops (stop-loss, score-crash) are
+    NOT gated by this — they stay intraday for crash protection.
+
+    Default-OFF: returns True (always allow) when the lever is disabled, so
+    behavior is unchanged until the lever is flipped. The backtester does not
+    call this — it already evaluates once daily at the close, so enabling the
+    live lever is what RESTORES trader↔backtester trailing-cadence parity.
+
+    Args:
+        yaml_config: config object (defaults to global config).
+        now_et: override for the current ET time (tests); defaults to now in
+            America/New_York.
+    """
+    if yaml_config is None:
+        yaml_config = config
+    cfg = yaml_config.get('ai_trader.trailing_cadence', {})
+    if not cfg.get('daily_only', False):
+        return True
+
+    if now_et is None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+
+    start_hour = cfg.get('window_start_hour_et', 15)
+    start_minute = cfg.get('window_start_minute_et', 0)
+    close_hour = cfg.get('market_close_hour_et', 16)
+    window_start = now_et.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+    market_close = now_et.replace(hour=close_hour, minute=0, second=0, microsecond=0)
+    return window_start <= now_et <= market_close
+
+
 # ---------------------------------------------------------------------------
 # Score stability / blip detection
 # ---------------------------------------------------------------------------
