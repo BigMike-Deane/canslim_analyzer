@@ -688,92 +688,53 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
         Return shown: <span className="text-dark-300">{windowLabel}</span>
       </div>
       <div className="space-y-1">
-        {sortedPositions.map(position => (
-          <button
-            key={position.id}
-            type="button"
-            onClick={() => setSelectedPosition(position)}
-            className="w-full text-left flex justify-between items-center py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <PositionHealthChip position={position} />
-                <span className="font-medium text-dark-100">{position.ticker}</span>
-                {position.sector && (
-                  <TagBadge color="default" title={`Sector: ${position.sector}`}>
-                    {position.sector}
-                  </TagBadge>
-                )}
-                {position.is_growth_stock && (
-                  <TagBadge color="purple">Growth</TagBadge>
-                )}
-                {position.insider_sentiment === 'bullish' && (
-                  <TagBadge color="emerald" title="Aggregate insider sentiment is bullish (net buys exceed sells)">
-                    Insider: bullish
-                  </TagBadge>
-                )}
-                {position.insider_sentiment === 'bearish' && (
-                  <TagBadge color="amber" title="Aggregate insider sentiment is bearish (net sells exceed buys)">
-                    Insider: bearish
-                  </TagBadge>
-                )}
-                {(position.short_interest_pct ?? 0) >= 20 && (
-                  <TagBadge color="red" title="Short interest above 20% — crowded short, squeeze risk in either direction">
-                    Short: {position.short_interest_pct.toFixed(0)}%
-                  </TagBadge>
-                )}
-                {(position.short_interest_pct ?? 0) >= 10 && (position.short_interest_pct ?? 0) < 20 && (
-                  <TagBadge color="amber" title="Short interest in the 10-20% range — elevated but not extreme">
-                    Short: {position.short_interest_pct.toFixed(0)}%
-                  </TagBadge>
-                )}
+        {sortedPositions.map(position => {
+          const winRow = windowByTicker[position.ticker]
+          // Prefer windowed return; fall back to lifetime gain_loss_pct if the
+          // endpoint hasn't responded yet or for unknown tickers.
+          const pct = winRow?.return_pct ?? position.gain_loss_pct
+          const isPos = (pct ?? 0) >= 0
+          const isMidWindow = winRow?.notes?.includes('opened mid-window')
+          const glanceScore = position.is_growth_stock ? position.current_growth_score : position.current_score
+          return (
+            <button
+              key={position.id}
+              type="button"
+              onClick={() => setSelectedPosition(position)}
+              className="w-full text-left flex justify-between items-center gap-3 py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
+            >
+              {/* At-a-glance identity only. Secondary signals (sector full name,
+                  insider sentiment, short interest, growth tag, alt score) live in
+                  the detail modal that opens on tap — see PositionDetailModal. */}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 min-w-0">
+                  <PositionHealthChip position={position} compact />
+                  <span className="font-medium text-dark-100 shrink-0">{position.ticker}</span>
+                  {position.sector && (
+                    <span className="text-[10px] text-dark-500 truncate" title={position.sector}>
+                      {position.sector.split(' ')[0]}
+                    </span>
+                  )}
+                </div>
+                <div className="text-dark-400 text-[10px] font-data mt-0.5">
+                  {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
+                  <ExitPlanChip plan={position.exit_plan} />
+                </div>
               </div>
-              <div className="text-dark-400 text-[10px] font-data mt-0.5">
-                {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
-                <ExitPlanChip plan={position.exit_plan} />
+              <div className="text-right shrink-0">
+                <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
+                <span
+                  className={`text-[10px] font-data ${isPos ? 'text-emerald-400' : 'text-red-400'}`}
+                  title={isMidWindow ? 'Position opened during this window — return shown since purchase' : undefined}
+                >
+                  {isPos ? '+' : ''}{pct != null ? pct.toFixed(2) : '—'}%
+                  {isMidWindow && <span className="text-dark-500 ml-1">·new</span>}
+                </span>
               </div>
-            </div>
-            {(() => {
-              const winRow = windowByTicker[position.ticker]
-              // Prefer windowed return; fall back to lifetime gain_loss_pct
-              // if the endpoint hasn't responded yet or for unknown tickers.
-              const pct = winRow?.return_pct ?? position.gain_loss_pct
-              const isPos = (pct ?? 0) >= 0
-              const isMidWindow = winRow?.notes?.includes('opened mid-window')
-              return (
-                <div className="text-right">
-                  <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
-                  <span
-                    className={`text-[10px] font-data ${isPos ? 'text-emerald-400' : 'text-red-400'}`}
-                    title={isMidWindow ? 'Position opened during this window — return shown since purchase' : undefined}
-                  >
-                    {isPos ? '+' : ''}{pct != null ? pct.toFixed(2) : '—'}%
-                    {isMidWindow && <span className="text-dark-500 ml-1">·new</span>}
-                  </span>
-                </div>
-              )
-            })()}
-            <div className="ml-3 text-right">
-              {/* Show appropriate score based on stock type */}
-              {position.is_growth_stock ? (
-                <ScoreBadge score={position.current_growth_score} size="sm" />
-              ) : (
-                <ScoreBadge score={position.current_score} size="sm" />
-              )}
-              {/* Show secondary score if available */}
-              {position.is_growth_stock && position.current_score > 0 && (
-                <div className="text-[10px] text-dark-400 font-data mt-0.5">
-                  CANSLIM: {position.current_score?.toFixed(0)}
-                </div>
-              )}
-              {!position.is_growth_stock && position.current_growth_score > 0 && (
-                <div className="text-[10px] text-dark-400 font-data mt-0.5">
-                  Growth: {position.current_growth_score?.toFixed(0)}
-                </div>
-              )}
-            </div>
-          </button>
-        ))}
+              <ScoreBadge score={glanceScore} size="sm" className="shrink-0" />
+            </button>
+          )
+        })}
       </div>
       <PositionDetailModal position={selectedPosition} onClose={() => setSelectedPosition(null)} />
     </Card>
@@ -1252,6 +1213,26 @@ function PositionDetailModal({ position, onClose }) {
           <span className="text-base font-bold text-dark-100">{position.ticker}</span>
           {position.sector && <TagBadge color="blue">{position.sector}</TagBadge>}
           {position.is_growth_stock && <TagBadge color="purple">Growth</TagBadge>}
+          {position.insider_sentiment === 'bullish' && (
+            <TagBadge color="emerald" title="Aggregate insider sentiment is bullish (net buys exceed sells)">
+              Insider: bullish
+            </TagBadge>
+          )}
+          {position.insider_sentiment === 'bearish' && (
+            <TagBadge color="amber" title="Aggregate insider sentiment is bearish (net sells exceed buys)">
+              Insider: bearish
+            </TagBadge>
+          )}
+          {(position.short_interest_pct ?? 0) >= 20 && (
+            <TagBadge color="red" title="Short interest above 20% — crowded short, squeeze risk in either direction">
+              Short: {position.short_interest_pct.toFixed(0)}%
+            </TagBadge>
+          )}
+          {(position.short_interest_pct ?? 0) >= 10 && (position.short_interest_pct ?? 0) < 20 && (
+            <TagBadge color="amber" title="Short interest in the 10-20% range — elevated but not extreme">
+              Short: {position.short_interest_pct.toFixed(0)}%
+            </TagBadge>
+          )}
         </div>
       }
     >
@@ -1305,6 +1286,14 @@ function PositionDetailModal({ position, onClose }) {
               </span>
             }
           />
+          {/* Alt score — moved off the holdings row; shown here so both scores
+              stay available for growth/CANSLIM stocks. */}
+          {position.is_growth_stock && position.current_score > 0 && (
+            <StatRow label="CANSLIM Score" value={<span className="font-data">{position.current_score.toFixed(1)}</span>} />
+          )}
+          {!position.is_growth_stock && position.current_growth_score > 0 && (
+            <StatRow label="Growth Score" value={<span className="font-data">{position.current_growth_score.toFixed(1)}</span>} />
+          )}
           {position.partial_profit_taken > 0 && (
             <StatRow label="Partial Profit" value={<span className="font-data">{position.partial_profit_taken.toFixed(0)}% sold</span>} />
           )}
