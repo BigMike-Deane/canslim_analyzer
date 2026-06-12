@@ -5,7 +5,7 @@ import { computePositionSizing } from '../positionSizing'
 import { useOwnerPrefs } from '../hooks/useOwnerPrefs'
 import PositionHealthChip from '../components/PositionHealthChip'
 import Card, { SectionLabel } from '../components/Card'
-import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, MLConfidenceBadge, CSConfidenceBadge } from '../components/Badge'
+import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import Sparkline from '../components/Sparkline'
 import CollapsibleSection from '../components/CollapsibleSection'
@@ -383,28 +383,17 @@ export default function CommandCenter() {
   const [error, setError] = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
   const [runningAction, setRunningAction] = useState(null)
-  const [mlStatus, setMlStatus] = useState(null)
   const toast = useToast()
   const { matchesPrefs } = useOwnerPrefs()
 
   const fetchData = useCallback(async () => {
-    // ML status rides the same market tick as the main payload so a training
-    // run that completes while the dashboard is open flips the pill from
-    // "training" to "v<n>" without requiring a page reload. allSettled keeps
-    // a single endpoint failure from blanking the other panel.
     try {
-      const [main, ml] = await Promise.allSettled([
-        api.getCommandCenter(),
-        api.getMLStatus(),
-      ])
-      if (main.status === 'fulfilled') {
-        setData(main.value)
-        setLastUpdate(new Date())
-        setError(null)
-      } else {
-        setError(main.reason?.message || 'Failed to load')
-      }
-      if (ml.status === 'fulfilled') setMlStatus(ml.value)
+      const main = await api.getCommandCenter()
+      setData(main)
+      setLastUpdate(new Date())
+      setError(null)
+    } catch (e) {
+      setError(e?.message || 'Failed to load')
     } finally {
       setLoading(false)
     }
@@ -927,84 +916,6 @@ export default function CommandCenter() {
             )}
           </Card>
 
-          {/* ML Model Status */}
-          <Card as="section" aria-labelledby="cc-ml-heading" variant="glass" padding="px-4 py-3" animate stagger={7}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <span id="cc-ml-heading" className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">ML Model</span>
-                {mlStatus?.active_model ? (
-                  <span
-                    className="flex items-center gap-1.5 text-[10px] text-emerald-400"
-                    title={`${mlStatus.active_model.model_type === 'regression' ? 'Regression' : 'Classifier'} model influences candidate scoring.${mlStatus.active_model.activated_at ? ' Activated ' + new Date(mlStatus.active_model.activated_at).toLocaleDateString() : ''}`}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    v{mlStatus.active_model.version}
-                  </span>
-                ) : mlStatus?.latest_training?.status === 'training' ? (
-                  <span
-                    className="flex items-center gap-1.5 text-[10px] text-primary-400"
-                    title="Walk-forward CV in progress. Will activate if eval-gate passes."
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse-dot" />
-                    training
-                  </span>
-                ) : (
-                  <a
-                    href="/admin#ml-signal-layer"
-                    className="text-[10px] text-dark-500 hover:text-primary-400 underline-offset-2 hover:underline"
-                    title="No active model — scoring runs without ML signal. Click to train."
-                  >
-                    no active model
-                  </a>
-                )}
-              </div>
-              {mlStatus?.active_model && (
-                <span
-                  className="text-[10px] font-data text-dark-400"
-                  title={mlStatus.active_model.model_type === 'regression'
-                    ? 'Spearman rank correlation. Gate: ≥ 0.15. Healthy: ≥ 0.30.'
-                    : 'ROC AUC on held-out folds. Gate: ≥ 0.54. Healthy: ≥ 0.60.'}
-                >
-                  {mlStatus.active_model.model_type === 'regression'
-                    ? `Sp ${(mlStatus.active_model.spearman || 0).toFixed(3)}`
-                    : `AUC ${(mlStatus.active_model.roc_auc || 0).toFixed(3)}`
-                  }
-                </span>
-              )}
-            </div>
-            {mlStatus?.active_model && (
-              <div className="mt-1.5 flex items-center gap-3 text-[10px] font-data text-dark-500">
-                {mlStatus.active_model.model_type === 'regression' ? (
-                  <>
-                    <span className="text-purple-400/80">{mlStatus.active_model.model_type}</span>
-                    <span>DirAcc {mlStatus.active_model.direction_accuracy ? ((mlStatus.active_model.direction_accuracy) * 100).toFixed(0) + '%' : '-'}</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Acc {((mlStatus.active_model.accuracy || 0) * 100).toFixed(0)}%</span>
-                    <span>F1 {((mlStatus.active_model.f1 || 0) * 100).toFixed(0)}%</span>
-                  </>
-                )}
-                <span>{mlStatus.active_model.training_samples} trades</span>
-              </div>
-            )}
-            {mlStatus?.latest_training?.status === 'failed' && (
-              <div
-                className="mt-1.5 text-[10px] text-red-400 truncate"
-                title={mlStatus.latest_training.error_message || 'Training failed'}
-              >
-                {mlStatus.latest_training.error_message || 'Training failed'}
-              </div>
-            )}
-            {!mlStatus?.config?.enabled && mlStatus?.active_model && (
-              <div
-                className="mt-1 text-[10px] text-amber-500/80"
-                title="ml_signal.enabled=false. Predictions are logged but do NOT influence buy scoring."
-              >
-                log-only · not influencing trades
-              </div>
-            )}
-          </Card>
         </div>
       </div>
     </div>
