@@ -4,12 +4,15 @@ import { api } from '../api'
 import Card, { CardHeader } from '../components/Card'
 import PageHeader from '../components/PageHeader'
 
+// Heat ramp tuned to the app's opacity conventions (badges sit at /15–/30) so
+// the matrix doesn't read as a louder, more saturated island than the rest of
+// the UI — while still keeping four clearly distinguishable bands.
 function getCellColor(value, isDiagonal) {
   if (isDiagonal) return 'bg-dark-600'
-  if (value > 0.8) return 'bg-red-600/70'
-  if (value > 0.6) return 'bg-orange-500/60'
-  if (value > 0.3) return 'bg-amber-500/50'
-  return 'bg-emerald-600/40'
+  if (value > 0.8) return 'bg-red-500/40'
+  if (value > 0.6) return 'bg-orange-500/35'
+  if (value > 0.3) return 'bg-amber-500/30'
+  return 'bg-emerald-500/25'
 }
 
 function getCellTextColor(value, isDiagonal) {
@@ -150,19 +153,19 @@ export default function CorrelationMatrix() {
         </div>
         <div className="flex items-center gap-4 mt-3">
           <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded bg-emerald-600/40" />
+            <div className="w-3 h-3 rounded bg-emerald-500/25" />
             <span className="text-[10px] text-dark-500">Low (&lt;0.3)</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded bg-amber-500/50" />
+            <div className="w-3 h-3 rounded bg-amber-500/30" />
             <span className="text-[10px] text-dark-500">Medium (0.3-0.6)</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded bg-orange-500/60" />
+            <div className="w-3 h-3 rounded bg-orange-500/35" />
             <span className="text-[10px] text-dark-500">High (0.6-0.8)</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded bg-red-600/70" />
+            <div className="w-3 h-3 rounded bg-red-500/40" />
             <span className="text-[10px] text-dark-500">Very High (&gt;0.8)</span>
           </div>
         </div>
@@ -170,14 +173,22 @@ export default function CorrelationMatrix() {
 
       {/* Heat map */}
       <Card variant="glass">
-        <CardHeader title="Correlation Heat Map" />
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-dark-100">Correlation Heat Map</h3>
+          {tickers.length > 5 && (
+            <span className="text-[10px] text-dark-500 sm:hidden">Scroll horizontally →</span>
+          )}
+        </div>
+        {/* Row-label column is pinned (sticky left) so it stays visible while the
+            N×N grid scrolls horizontally — otherwise on a phone you lose track of
+            which row you're reading. */}
+        <div className="overflow-x-auto -mx-1 sm:mx-0">
+          <table className="border-collapse">
             <thead>
               <tr>
-                <th className="p-2 text-xs text-dark-500 font-medium text-left" />
+                <th className="sticky left-0 z-10 bg-dark-800 p-1.5 text-xs text-dark-500 font-medium text-left" />
                 {tickers.map(ticker => (
-                  <th key={ticker} className="p-2 text-xs text-dark-300 font-data font-medium text-center min-w-[60px]">
+                  <th key={ticker} className="p-1.5 text-[11px] text-dark-300 font-data font-medium text-center min-w-[52px]">
                     {ticker}
                   </th>
                 ))}
@@ -186,19 +197,20 @@ export default function CorrelationMatrix() {
             <tbody>
               {tickers.map((rowTicker, rowIdx) => (
                 <tr key={rowTicker}>
-                  <td className="p-2 text-xs text-dark-300 font-data font-medium whitespace-nowrap">
+                  <td className="sticky left-0 z-10 bg-dark-800 p-1.5 pr-3 text-[11px] text-dark-300 font-data font-medium whitespace-nowrap">
                     {rowTicker}
                   </td>
                   {tickers.map((colTicker, colIdx) => {
                     const value = matrix[rowIdx][colIdx]
                     const isDiagonal = rowIdx === colIdx
                     return (
-                      <td
-                        key={colTicker}
-                        className={`p-2 text-center text-xs font-data font-medium rounded ${getCellColor(value, isDiagonal)} ${getCellTextColor(value, isDiagonal)}`}
-                        title={`${rowTicker} vs ${colTicker}: ${value.toFixed(2)}`}
-                      >
-                        {value.toFixed(2)}
+                      <td key={colTicker} className="p-0.5">
+                        <div
+                          className={`py-1.5 text-center text-[11px] font-data font-medium rounded ${getCellColor(value, isDiagonal)} ${getCellTextColor(value, isDiagonal)}`}
+                          title={`${rowTicker} vs ${colTicker}: ${value.toFixed(2)}`}
+                        >
+                          {value.toFixed(2)}
+                        </div>
                       </td>
                     )
                   })}

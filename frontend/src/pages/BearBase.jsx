@@ -93,7 +93,7 @@ function MarketBanner({ isBear, spyPrice, spyMa50 }) {
         </svg>
       </div>
       <div>
-        <div className="text-sm font-semibold text-amber-300">Market bullish — this list shows stocks that were building bases</div>
+        <div className="text-sm font-semibold text-amber-300">Market bullish — base-builders from the last downturn</div>
         <div className="text-[10px] text-amber-400/70 font-data mt-0.5">
           SPY ${spyPrice?.toFixed(2) || '--'} | 50MA ${spyMa50?.toFixed(2) || '--'}
         </div>
@@ -206,20 +206,6 @@ export default function BearBase() {
         : <span className="text-dark-500 text-xs">-</span>,
     },
     {
-      key: 'volume_dry_up',
-      label: 'Vol Dry-Up',
-      align: 'center',
-      mobileHide: true,
-      render: (val) => <BoolBadge value={val} label="DRY-UP" />,
-    },
-    {
-      key: 'institutional_acc',
-      label: 'Inst. Acc.',
-      align: 'center',
-      mobileHide: true,
-      render: (val) => <BoolBadge value={val} label="ACC" />,
-    },
-    {
       key: 'days_on_list',
       label: 'Days',
       align: 'right',
@@ -268,8 +254,10 @@ export default function BearBase() {
             spyMa50={data.spy_ma50}
           />
 
-          {/* Summary stats */}
-          <Card variant="glass" className="mb-4 !border-red-500/20 bg-red-500/5">
+          {/* Summary stats — the MarketBanner above already carries the bear/bull
+              color signal, so this card stays neutral glass rather than washing
+              the (independently green/amber/red-coded) values in red. */}
+          <Card variant="glass" className="mb-4">
             <StatGrid
               columns={4}
               stats={[
@@ -315,10 +303,14 @@ export default function BearBase() {
               if (!row?.readiness_factors) return null
               return (
                 <div className="border-t border-dark-700/30">
-                  <div className="px-4 pt-2 pb-1">
+                  <div className="px-4 pt-2 pb-1 flex items-center justify-between gap-2">
                     <span className="text-[10px] font-semibold tracking-wider uppercase text-dark-400">
                       {expandedTicker} Readiness Breakdown
                     </span>
+                    <div className="flex items-center gap-1.5">
+                      <BoolBadge value={row.volume_dry_up} label="DRY-UP" />
+                      <BoolBadge value={row.institutional_acc} label="ACC" />
+                    </div>
                   </div>
                   <ReadinessBreakdown factors={row.readiness_factors} />
                 </div>

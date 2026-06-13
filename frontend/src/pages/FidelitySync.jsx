@@ -4,6 +4,7 @@ import { api, formatCurrency, formatPercent, formatDate, formatRelativeTime } fr
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ActionBadge, TagBadge, PnlText, ScoreBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
+import StatGrid from '../components/StatGrid'
 import Spinner from '../components/Spinner'
 import { useToast } from '../components/Toast'
 
@@ -338,27 +339,17 @@ function ReconciliationView({ data }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-dark-800/50 rounded-lg p-3 border border-dark-700/30">
-          <div className="text-[10px] text-dark-500 uppercase tracking-wider">Fidelity Value</div>
-          <div className="text-lg font-bold font-data text-dark-100 mt-1">{formatCurrency(summary.fidelity_total)}</div>
-        </div>
-        <div className="bg-dark-800/50 rounded-lg p-3 border border-dark-700/30">
-          <div className="text-[10px] text-dark-500 uppercase tracking-wider">AI Portfolio Value</div>
-          <div className="text-lg font-bold font-data text-dark-100 mt-1">{formatCurrency(summary.ai_total)}</div>
-        </div>
-        <div className="bg-dark-800/50 rounded-lg p-3 border border-dark-700/30">
-          <div className="text-[10px] text-dark-500 uppercase tracking-wider">Overlap</div>
-          <div className="text-lg font-bold font-data text-primary-400 mt-1">
-            {summary.overlap_count}/{summary.total_unique_symbols}
-            <span className="text-xs text-dark-500 ml-1">({summary.overlap_pct}%)</span>
-          </div>
-        </div>
-        <div className="bg-dark-800/50 rounded-lg p-3 border border-dark-700/30">
-          <div className="text-[10px] text-dark-500 uppercase tracking-wider">Snapshot</div>
-          <div className="text-sm font-medium text-dark-200 mt-1">{snapshot_date || '-'}</div>
-        </div>
-      </div>
+      <Card variant="glass">
+        <StatGrid
+          columns={4}
+          stats={[
+            { label: 'Fidelity Value', value: formatCurrency(summary.fidelity_total) },
+            { label: 'AI Portfolio Value', value: formatCurrency(summary.ai_total) },
+            { label: 'Overlap', value: `${summary.overlap_count}/${summary.total_unique_symbols}`, sublabel: `${summary.overlap_pct}%`, color: 'text-primary-400' },
+            { label: 'Snapshot', value: snapshot_date || '-' },
+          ]}
+        />
+      </Card>
 
       {matches.length > 0 && (
         <Card variant="glass">

@@ -2,6 +2,15 @@ import { useState, useEffect, useMemo } from 'react'
 import { api, formatRelativeTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import PageHeader from '../components/PageHeader'
+import DataTable from '../components/DataTable'
+
+function RankBadge({ rank }) {
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-data font-semibold border ${getRankColor(rank)}`}>
+      #{rank}
+    </span>
+  )
+}
 
 function getRankColor(rank) {
   if (rank >= 80) return 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30'
@@ -51,34 +60,10 @@ function RotationEntry({ group, type }) {
   )
 }
 
-function SortableHeader({ label, sortKey, currentSort, currentDir, onSort }) {
-  const isActive = currentSort === sortKey
-  return (
-    <th
-      className="px-3 py-2 text-xs text-dark-400 font-medium text-left cursor-pointer hover:text-dark-200 transition-colors select-none"
-      onClick={() => onSort(sortKey)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {isActive && (
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="text-primary-400">
-            {currentDir === 'desc'
-              ? <polyline points="6 9 12 15 18 9" />
-              : <polyline points="18 15 12 9 6 15" />
-            }
-          </svg>
-        )}
-      </span>
-    </th>
-  )
-}
-
 export default function SectorRotation() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [sortBy, setSortBy] = useState('rank')
-  const [sortDir, setSortDir] = useState('desc')
   const [search, setSearch] = useState('')
 
   useEffect(() => {
@@ -97,33 +82,14 @@ export default function SectorRotation() {
     fetchData()
   }, [])
 
-  const handleSort = (key) => {
-    if (sortBy === key) {
-      setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-    } else {
-      setSortBy(key)
-      setSortDir('desc')
-    }
-  }
-
   const allGroups = data?.groups || []
 
-  const sortedGroups = useMemo(() => {
-    return [...allGroups].sort((a, b) => {
-      const aVal = a[sortBy] ?? 0
-      const bVal = b[sortBy] ?? 0
-      if (typeof aVal === 'string') {
-        return sortDir === 'desc' ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal)
-      }
-      return sortDir === 'desc' ? bVal - aVal : aVal - bVal
-    })
-  }, [allGroups, sortBy, sortDir])
-
+  // Search filters; DataTable owns sorting (rank desc by default).
   const filteredGroups = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return sortedGroups
-    return sortedGroups.filter(g => (g.industry || '').toLowerCase().includes(q))
-  }, [sortedGroups, search])
+    if (!q) return allGroups
+    return allGroups.filter(g => (g.industry || '').toLowerCase().includes(q))
+  }, [allGroups, search])
 
   if (loading) {
     return (
@@ -219,7 +185,7 @@ export default function SectorRotation() {
       </div>
 
       {/* Full groups table */}
-      <SectionLabel>All Industry Groups · {sortedGroups.length}</SectionLabel>
+      <SectionLabel>All Industry Groups · {allGroups.length}</SectionLabel>
       <div className="mb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="relative flex-1 sm:max-w-xs">
           <svg
@@ -239,53 +205,26 @@ export default function SectorRotation() {
           />
         </div>
         <div className="text-[10px] text-dark-500 font-data shrink-0">
-          Showing {filteredGroups.length} of {sortedGroups.length}
+          Showing {filteredGroups.length} of {allGroups.length}
         </div>
       </div>
-      <Card variant="glass" padding="">
-        <div className="text-[10px] text-dark-500 px-3 py-2 border-b border-dark-700/30 flex items-center gap-1.5 sm:hidden">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-            <polyline points="9 18 15 12 9 6" transform="translate(8 0)" />
-          </svg>
-          Swipe to see more columns
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-dark-700/50">
-                <SortableHeader label="Industry" sortKey="industry" currentSort={sortBy} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Rank" sortKey="rank" currentSort={sortBy} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Composite RS" sortKey="composite_rs" currentSort={sortBy} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Stocks" sortKey="stock_count" currentSort={sortBy} currentDir={sortDir} onSort={handleSort} />
-                <th className="px-3 py-2 text-xs text-dark-400 font-medium text-left">RS 12m</th>
-                <th className="px-3 py-2 text-xs text-dark-400 font-medium text-left">RS 3m</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredGroups.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-dark-500 text-sm">
-                    No industry groups match "{search}"
-                  </td>
-                </tr>
-              ) : filteredGroups.map(g => (
-                <tr key={g.industry} className="border-b border-dark-700/20 hover:bg-dark-700/20 transition-colors">
-                  <td className="px-3 py-2.5 text-sm text-dark-100 font-medium">{g.industry}</td>
-                  <td className="px-3 py-2.5">
-                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-data font-semibold border ${getRankColor(g.rank)}`}>
-                      #{g.rank}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2.5 text-sm font-data text-dark-200">{g.composite_rs?.toFixed(2) || '-'}</td>
-                  <td className="px-3 py-2.5 text-sm font-data text-dark-300">{g.stock_count}</td>
-                  <td className="px-3 py-2.5 text-sm font-data text-dark-300">{g.avg_rs_12m?.toFixed(2) || '-'}</td>
-                  <td className="px-3 py-2.5 text-sm font-data text-dark-300">{g.avg_rs_3m?.toFixed(2) || '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <Card variant="glass" padding="px-2 py-1">
+        <DataTable
+          compact
+          keyField="industry"
+          data={filteredGroups}
+          defaultSort="rank"
+          defaultSortDir="desc"
+          emptyMessage={search ? `No industry groups match "${search}"` : 'No industry groups'}
+          columns={[
+            { key: 'industry', label: 'Industry', sortable: true, className: 'text-dark-100 font-medium' },
+            { key: 'rank', label: 'Rank', sortable: true, render: v => <RankBadge rank={v} /> },
+            { key: 'composite_rs', label: 'Composite RS', sortable: true, mono: true, className: 'text-dark-200', render: v => v?.toFixed(2) || '-' },
+            { key: 'stock_count', label: 'Stocks', sortable: true, mono: true, className: 'text-dark-300' },
+            { key: 'avg_rs_12m', label: 'RS 12m', mono: true, mobileHide: true, className: 'text-dark-300', render: v => v?.toFixed(2) || '-' },
+            { key: 'avg_rs_3m', label: 'RS 3m', mono: true, mobileHide: true, className: 'text-dark-300', render: v => v?.toFixed(2) || '-' },
+          ]}
+        />
       </Card>
 
       <div className="h-4" />

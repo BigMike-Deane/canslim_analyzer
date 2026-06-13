@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatDate, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { SectionLabel } from '../components/Card'
-import { ScoreBadge } from '../components/Badge'
+import { ScoreBadge, TagBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
+import EmptyState from '../components/EmptyState'
 import { useToast } from '../components/Toast'
 
 function hasActiveAlert(item) {
@@ -29,9 +30,7 @@ function WatchlistItem({ item, onRemove }) {
           <div className="flex items-center gap-2">
             <span className="font-semibold text-dark-50">{item.ticker}</span>
             {(meetsTarget || meetsScoreAlert) && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/20">
-                ALERT
-              </span>
+              <TagBadge color="amber">ALERT</TagBadge>
             )}
           </div>
           {item.name && (
@@ -351,24 +350,21 @@ export default function Watchlist() {
       />
 
       {items.length === 0 ? (
-        <Card variant="glass" className="text-center py-10">
-          <div className="text-3xl mb-3 text-dark-500">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-dark-500">
+        <EmptyState
+          icon={
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
               <circle cx="12" cy="12" r="3" />
             </svg>
-          </div>
-          <div className="font-semibold text-dark-100 mb-2">Watchlist Empty</div>
-          <div className="text-dark-400 text-sm mb-4 max-w-xs mx-auto">
-            Add stocks you're watching to track their CANSLIM scores and set price alerts.
-          </div>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="btn-primary"
-          >
-            Add Stock to Watch
-          </button>
-        </Card>
+          }
+          message="Watchlist Empty"
+          hint="Add stocks you're watching to track their CANSLIM scores and set price alerts."
+          action={
+            <button onClick={() => setShowAddModal(true)} className="btn-primary">
+              Add Stock to Watch
+            </button>
+          }
+        />
       ) : (
         <>
           {alertItems.length > 0 && (

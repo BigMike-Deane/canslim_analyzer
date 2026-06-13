@@ -2,6 +2,32 @@ import { useState, useEffect, useCallback } from 'react'
 import { api, formatRelativeTime } from '../api'
 import { useAuth } from '../auth'
 import { useOwnerPrefs } from '../hooks/useOwnerPrefs'
+import PageHeader from '../components/PageHeader'
+import Card from '../components/Card'
+
+// Shared inline form-result line. Replaces the three copy-pasted
+// `text-green-400 / text-red-400` message blocks and normalizes the success
+// color onto the app's emerald token (the rest of the app never uses green-400).
+function FormMessage({ message }) {
+  if (!message) return null
+  return (
+    <div className={`mt-3 text-sm ${message.kind === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
+      {message.text}
+    </div>
+  )
+}
+
+// Section title inside a settings Card — one consistent treatment instead of
+// the four inline `text-lg font-medium text-white` headings.
+function SettingsSection({ title, description, children }) {
+  return (
+    <Card as="section" variant="glass" className="mb-4 sm:mb-5">
+      <h2 className="text-base font-semibold text-dark-100 mb-1">{title}</h2>
+      {description && <p className="text-sm text-dark-400 mb-4">{description}</p>}
+      {children}
+    </Card>
+  )
+}
 
 // Notification kinds the user can mute. Matches backend _VALID_KINDS in
 // routes/auth.py and frontend KIND_META in pages/Notifications.jsx.
@@ -53,7 +79,7 @@ function HourSelect({ value, onChange, disabled }) {
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value === '' ? null : parseInt(e.target.value))}
       disabled={disabled}
-      className="px-2 py-1 bg-dark-800 border border-dark-600 rounded text-white text-sm font-data disabled:opacity-50"
+      className="px-2 py-1 bg-dark-800 border border-dark-600 rounded text-dark-100 text-sm font-data disabled:opacity-50"
     >
       <option value="">--</option>
       {Array.from({ length: 24 }, (_, h) => (
@@ -311,19 +337,21 @@ export default function Settings() {
   }
 
   return (
-    <div className="p-6 max-w-2xl">
-      <h1 className="text-2xl font-semibold text-white mb-6">Settings</h1>
+    <div className="p-4 md:p-6 max-w-2xl">
+      <PageHeader title="Settings" subtitle="Notifications, alert filters, and delivery channels" />
 
       {/* Notification preferences (per-kind mute + quiet hours) */}
-      <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
-        <h2 className="text-lg font-medium text-white mb-1">Notification preferences</h2>
-        <p className="text-sm text-dark-400 mb-4">
-          Mute specific kinds and silence push during quiet hours.{' '}
-          <span className="text-amber-400">Urgent alerts</span>{' '}
-          (stop losses, circuit breakers) always come through. In-app
-          notifications are always recorded — only push delivery is gated.
-        </p>
-
+      <SettingsSection
+        title="Notification preferences"
+        description={
+          <>
+            Mute specific kinds and silence push during quiet hours.{' '}
+            <span className="text-amber-400">Urgent alerts</span>{' '}
+            (stop losses, circuit breakers) always come through. In-app
+            notifications are always recorded — only push delivery is gated.
+          </>
+        }
+      >
         <div className="mb-4">
           <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">MUTE KINDS</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
@@ -471,29 +499,27 @@ export default function Settings() {
           type="button"
           onClick={handleSavePrefs}
           disabled={!prefsDirty || prefsBusy}
-          className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm rounded"
+          className="btn-primary disabled:opacity-50"
         >
           {prefsBusy ? 'Saving…' : 'Save preferences'}
         </button>
-        {prefsMessage && (
-          <div className={`mt-3 text-sm ${prefsMessage.kind === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-            {prefsMessage.text}
-          </div>
-        )}
-      </section>
+        <FormMessage message={prefsMessage} />
+      </SettingsSection>
 
       {/* Owner preferences — client-side filters that shape which
           candidates appear on the home dashboard. Stored in localStorage
           per-device (not synced to other browsers). Mirrors the
           trading-prefs comment block in CLAUDE.md. */}
-      <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
-        <h2 className="text-lg font-medium text-white mb-1">Owner preferences</h2>
-        <p className="text-sm text-dark-400 mb-4">
-          Filter candidates to your usual trading style. Applied client-side on
-          the Command Center "Top Candidates" list. Other pages (Screener,
-          Breakouts) keep their own filters independent for now.
-        </p>
-
+      <SettingsSection
+        title="Owner preferences"
+        description={
+          <>
+            Filter candidates to your usual trading style. Applied client-side on
+            the Command Center "Top Candidates" list. Other pages (Screener,
+            Breakouts) keep their own filters independent for now.
+          </>
+        }
+      >
         {/* Max share price — owner's CLAUDE.md preference is under $25. */}
         <div className="mb-4">
           <label className="block text-xs font-semibold tracking-wide text-dark-400 mb-1.5">
@@ -574,17 +600,19 @@ export default function Settings() {
             </div>
           </div>
         </label>
-      </section>
+      </SettingsSection>
 
       {/* Web Push (per-device) */}
-      <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
-        <h2 className="text-lg font-medium text-white mb-1">Push notifications</h2>
-        <p className="text-sm text-dark-400 mb-4">
-          Get native phone alerts when trades fire, breakouts trigger, or the SPY gate flips.
-          Each device is registered separately. {' '}
-          <span className="text-amber-400">On iOS</span>, this only works if you've added CANSLIM to your home screen first.
-        </p>
-
+      <SettingsSection
+        title="Push notifications"
+        description={
+          <>
+            Get native phone alerts when trades fire, breakouts trigger, or the SPY gate flips.
+            Each device is registered separately. {' '}
+            <span className="text-amber-400">On iOS</span>, this only works if you've added CANSLIM to your home screen first.
+          </>
+        }
+      >
         {pushPermission === 'unsupported' && (
           <div className="text-sm text-amber-400">
             This browser doesn't support Web Push.
@@ -597,7 +625,7 @@ export default function Settings() {
               type="button"
               onClick={handleEnablePush}
               disabled={pushBusy}
-              className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm rounded"
+              className="btn-primary disabled:opacity-50"
             >
               {pushBusy ? 'Working…' : pushPermission === 'granted' ? 'Re-register this device' : 'Enable on this device'}
             </button>
@@ -606,7 +634,7 @@ export default function Settings() {
                 type="button"
                 onClick={handleTestPush}
                 disabled={pushBusy}
-                className="px-4 py-2 bg-dark-700 hover:bg-dark-600 disabled:bg-dark-800 disabled:text-dark-500 text-dark-200 text-sm rounded"
+                className="btn-secondary disabled:opacity-50"
               >
                 Send test push
               </button>
@@ -614,11 +642,7 @@ export default function Settings() {
           </div>
         )}
 
-        {pushMessage && (
-          <div className={`mt-3 text-sm ${pushMessage.kind === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-            {pushMessage.text}
-          </div>
-        )}
+        <FormMessage message={pushMessage} />
 
         {pushSubs.length > 0 && (
           <div className="mt-4 border-t border-dark-700/60 pt-4">
@@ -646,17 +670,19 @@ export default function Settings() {
             </ul>
           </div>
         )}
-      </section>
+      </SettingsSection>
 
       {/* ntfy webhook (legacy / fallback) */}
-      <section className="bg-dark-900 border border-dark-700 rounded-lg p-5">
-        <h2 className="text-lg font-medium text-white mb-1">ntfy webhook (fallback)</h2>
-        <p className="text-sm text-dark-400 mb-4">
-          Trade buys, sells, and stop-losses for <span className="text-dark-200">{user?.email}</span> also fire
-          to the webhook URL below. Per-user — only your trades fire to your URL.
-          Leave blank to disable. Web Push above is the primary channel; ntfy is here for redundancy.
-        </p>
-
+      <SettingsSection
+        title="ntfy webhook (fallback)"
+        description={
+          <>
+            Trade buys, sells, and stop-losses for <span className="text-dark-200">{user?.email}</span> also fire
+            to the webhook URL below. Per-user — only your trades fire to your URL.
+            Leave blank to disable. Web Push above is the primary channel; ntfy is here for redundancy.
+          </>
+        }
+      >
         <label className="block text-sm text-dark-300 mb-1">Webhook URL</label>
         <input
           type="url"
@@ -666,7 +692,7 @@ export default function Settings() {
           value={webhookUrl}
           onChange={e => setWebhookUrl(e.target.value)}
           placeholder="https://ntfy.sh/your-private-topic"
-          className="w-full px-3 py-2 bg-dark-800 border border-dark-600 rounded text-white text-sm font-mono focus:outline-none focus:border-primary-500"
+          className="w-full px-3 py-2 bg-dark-800 border border-dark-600 rounded text-dark-100 text-sm font-mono focus:outline-none focus:border-primary-500"
         />
         <p className="text-xs text-dark-500 mt-1">
           ntfy.sh format works out of the box. Pick a long, hard-to-guess topic name (anyone with the URL can read your alerts).
@@ -677,7 +703,7 @@ export default function Settings() {
             type="button"
             onClick={handleSave}
             disabled={!dirty || saving}
-            className="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:bg-dark-700 disabled:text-dark-500 text-white text-sm rounded"
+            className="btn-primary disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
@@ -686,18 +712,14 @@ export default function Settings() {
             onClick={handleTest}
             disabled={!originalUrl || testing || dirty}
             title={dirty ? 'Save first, then test' : !originalUrl ? 'No URL configured' : 'Send a test notification'}
-            className="px-4 py-2 bg-dark-700 hover:bg-dark-600 disabled:bg-dark-800 disabled:text-dark-500 text-dark-200 text-sm rounded"
+            className="btn-secondary disabled:opacity-50"
           >
             {testing ? 'Sending…' : 'Send test'}
           </button>
         </div>
 
-        {message && (
-          <div className={`mt-3 text-sm ${message.kind === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-            {message.text}
-          </div>
-        )}
-      </section>
+        <FormMessage message={message} />
+      </SettingsSection>
     </div>
   )
 }
