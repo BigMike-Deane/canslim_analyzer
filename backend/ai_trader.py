@@ -1516,7 +1516,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
             if "STOP LOSS" in reason or "TRAILING STOP" in reason:
                 send_stop_loss_webhook(ticker, shares, price,
                                        "STOP LOSS" if "STOP LOSS" in reason else "TRAILING STOP",
-                                       gain_pct, user_id=user_id)
+                                       gain_pct, user_id=user_id,
+                                       is_partial=reason.startswith("PARTIAL"))
             else:
                 send_trade_webhook(ticker, "SELL", shares, price, reason, gain_pct, user_id=user_id)
         except Exception as e:
