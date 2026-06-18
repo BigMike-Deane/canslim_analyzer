@@ -233,3 +233,25 @@ qualifying stocks in choppy regimes), (b) sell-side churn (chopped out of the
 few held). Next: Phase 2 whipsaw/shake-out reduction (root cause) and/or a
 SMARTER conditional sweep that yields surplus cash to stock buys. Levers kept
 default-off; nothing shipped; ai_trader.py untouched. Build 2026-06-18T15:27 CDT.
+
+## 2026-06-18 PM — Phase 2 whipsaw_guard KILLED → convergent diagnosis: selection, not exits
+
+Phase 2 min-hold grace on the WEAK-POSITION exit (runs 874-885): **HURT W1 −6.6pp
+& raised its maxDD 5.3→7.8%, no effect W2/W3/W4. KILLED.** The shake-out theory
+was wrong — those cuts were correctly removing flat-weak positions before they
+fell further; grace just held losers.
+
+**CONVERGENT FINDING across all 3 levers (throttle, cash-sweep, whipsaw-guard):**
+the W1/W2 underperformance is a **stock-SELECTION-vs-index gap inherent to the
+momentum strategy**, NOT exits/exposure/churn. Proof: the cash-sweep won W1/W2
+only by REPLACING the strategy's picks with SPY; whipsaw-grace LOST by holding
+the picks longer. The strategy's CANSLIM-momentum picks crush SPY in trends
+(W3/W4 +24/+72pp excess) and lag SPY in chop (W1/W2). Exits + risk controls work
+correctly. This is the nature of the strategy, not a bug.
+
+**Implication:** the only lever that helps the chop windows is SPY-participation
+on idle cash — but it must be CONDITIONAL (deploy to SPY only when genuinely
+under-invested / no qualifying buys, and yield to real stock buys first) so it
+doesn't cannibalize winning picks in trends. That smarter conditional sweep is
+the one remaining high-value candidate; the simple levers are exhausted. All
+levers default-off, nothing shipped, ai_trader.py untouched.
