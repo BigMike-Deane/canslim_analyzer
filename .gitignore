@@ -48,3 +48,4 @@ CLAUDE.local.md
 htmlcov/
 .pytest_cache/
 preview-copper-rebrand.html
+.draft-revert-pr-body.md

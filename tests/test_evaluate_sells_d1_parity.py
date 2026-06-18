@@ -157,20 +157,13 @@ def _stop_loss_sells(sells):
     return [s for s in sells if "STOP LOSS" in s["reason"]]
 
 
-@pytest.mark.xfail(
-    reason="D1: new_position_guard not yet ported into evaluate_sells "
-           "(June-18 freeze; fix lands June 19). When this XPASSES, port is "
-           "live — remove this marker and delete the stop_guard_monitor "
-           "sentinel + its test per their instructions.",
-    strict=True,
-)
 def test_new_position_below_atr_stop_is_cut_by_guard(
     db_session, wide_atr_stop, stub_market_bullish, no_historical_data,
 ):
     """A 5-day-old position down 12% under an 18% ATR stop MUST be cut: the
-    new_position_guard clamps the stop to 8%, so −12% <= −8% triggers. Today
-    `evaluate_sells` omits the guard, leaves the stop at 18%, and rides the
-    loss — the D1 bug this test pins until the June-19 port lands."""
+    new_position_guard clamps the stop to 8%, so −12% <= −8% triggers. Pins the
+    D1 fix (guard ported into evaluate_sells, landed 2026-06-18) against
+    regression — before the port this rode the loss to the 18% ATR stop."""
     from backend.ai_trader import evaluate_sells
 
     _seed_config(db_session)
