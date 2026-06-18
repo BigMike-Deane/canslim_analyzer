@@ -513,7 +513,7 @@ ai_trader:
   # score-crash) stay intraday. Default OFF (no behavior change); flip June 19.
   # Consumed by trading_engine.trailing_stops_allowed_now().
   trailing_cadence:
-    daily_only: false                   # OFF until June-19 landing (then evaluate live trailing once daily)
+    daily_only: false                   # Base default OFF (keeps dev/test trailing-trigger tests time-independent); ENABLED for live in config/production.yaml (2026-06-18)
     window_start_hour_et: 15            # 15:00 ET = final hour before close; the ~15:30 ET scan lands here
     window_start_minute_et: 0
     market_close_hour_et: 16

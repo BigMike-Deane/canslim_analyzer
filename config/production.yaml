@@ -19,3 +19,12 @@ api:
   fmp:
     rate_limit: 300
     timeout: 10
+
+# Trailing-stop cadence (June-19 exit-parity item 2) — ENABLED in live only.
+# Live trailing stops fire once daily in the close window, matching the
+# backtester's daily cadence and cutting the intraday churn measured at
+# -1..-17pp per 2yr window (8/8 arms). Hard stops stay intraday. Kept OFF in
+# default.yaml so dev/test trailing-trigger tests remain time-independent.
+ai_trader:
+  trailing_cadence:
+    daily_only: true

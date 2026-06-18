@@ -49,6 +49,7 @@ from backend.trading_engine import (
     get_tightened_trailing_stop,
     evaluate_score_crash,
     sanitize_signal_factors,
+    trailing_stops_allowed_now,
 )
 
 # Import email utils with fallback for testing
@@ -1665,7 +1666,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
             if trailing_stop_pct and pyramid_count > 0:
                 trailing_stop_pct = apply_pyramid_widening(trailing_stop_pct, pyramid_count)
 
-            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
+            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct and trailing_stops_allowed_now(yaml_config):
                 # Partial trailing stop for high-conviction positions
                 # If pyramided 2+ times and score still strong, sell 50% and keep running
                 partial_trailing_config = yaml_config.get('ai_trader.trailing_stops', {})
@@ -1722,7 +1723,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
 
                     tightened_trailing = get_tightened_trailing_stop(peak_gain_pct, profile, tighten_factor=earnings_tighten_factor)
 
-                    if tightened_trailing and drop_from_peak >= tightened_trailing:
+                    if tightened_trailing and drop_from_peak >= tightened_trailing and trailing_stops_allowed_now(yaml_config):
                         sells.append({
                             "position": position,
                             "reason": f"PRE-EARNINGS STOP: {int(days_to_earn)}d to earnings, peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%, tightened to {tightened_trailing:.0f}%)",
