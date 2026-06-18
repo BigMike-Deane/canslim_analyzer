@@ -1,5 +1,12 @@
 # Road Handoff — 2026-06-11 → ~2026-06-18
 
+> **ARCHIVED 2026-06-18.** The owner is back; the trip's freeze-safe work and the
+> post-freeze exit-parity queue (D1, cadence, D3, D2, N1) are landed + deployed,
+> and the deploy poller is retired. Kept for history only — see
+> `docs/road-log-2026-06.md` for the session record. Do not follow the
+> cloud-session / poller workflow below; deploys are back to direct SSH.
+
+
 Context document for **cloud Claude Code sessions** (claude.ai/code / iPad
 app) while the owner travels. Local-machine memory does not transfer; this
 doc + `CLAUDE.md` + `docs/parity-audit-evaluate-sells.md` are the working
