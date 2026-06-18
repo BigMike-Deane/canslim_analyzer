@@ -209,3 +209,27 @@ Pulled current live data (user 1): book = **8 positions, ALL 2x-pyramided**, +28
 - Pyramid-widening sub-question is BRACKETED by these arms (widening was active; T1=24% / T2=22% effective for 2x-pyramided vs current 29%), so a "disable widening" lever (→25% flat) would land neutral too — NOT worth building.
 - **Conclusion:** the wide 50+ band (+ pyramid-widening) is correct; the 11.9% give-back exposure is the deliberate, validated price of the let-winners-run edge that produces the alpha. Do NOT tighten. Side-obs: there IS a weak strategy window (W2 2020-06→22-06: -2% vs SPY +38%) — known choppy-regime lag, not this study's question.
 - No code shipped. Sweep runs 834-845 kept in VPS Postgres as the record.
+
+## 2026-06-18 PM — Risk→Participation pivot: throttle parked, cash-sweep thesis confirmed but killed
+
+Phase 0 bear-exposure throttle (runs 846-865): v1 any-bear threshold whipsawed
+W4 −15.6pp; v2 deep-bear gate (weighted_signal<−0.5) flipped it to **+9.24pp ret
+& maxDD 11.2→7.1 in W4, +3pp W3, neutral W1/W2**. PARKED not shipped — a single
+threshold swung the same window −15.6→+9.2pp = too fragile to generalize, and it
+only helps the already-strong windows (recent, least-reproducible data), not the
+weak ones.
+
+**PIVOT confirmed by trade-level diag (846/849):** maxDD is 5–13% everywhere →
+downside already solved. Weak windows = UNDER-PARTICIPATION: W2 dead flat vs SPY
++38% (idle cash earns nothing), W1 churned (24d holds, 19 weak-position exits,
+lost to just holding SPY).
+
+Phase 1 cash-sweep (runs 866-873; enable spy_sweep on champion, OFF by default):
+**confirms the thesis, kills the crude fix.** W1 +8.6pp / W2 +12.1pp (−2%→+10%!)
+but W3 −55.9pp / W4 −49.5pp + maxDD up everywhere — the sweep diverts cash into
+SPY and STARVES the winning stock buys in rich regimes. Net hugely negative.
+KILL as-is. Two root sub-problems exposed: (a) buy-side cash-drag (too few
+qualifying stocks in choppy regimes), (b) sell-side churn (chopped out of the
+few held). Next: Phase 2 whipsaw/shake-out reduction (root cause) and/or a
+SMARTER conditional sweep that yields surplus cash to stock buys. Levers kept
+default-off; nothing shipped; ai_trader.py untouched. Build 2026-06-18T15:27 CDT.
