@@ -281,3 +281,25 @@ DONE (this also explains months of killed experiments). Future big-project energ
 → the other frontiers: edge validation/observability, real brokerage execution,
 multi-user productization. Levers left default-off/inert; ai_trader.py untouched;
 nothing shipped except the latent spy_sweep bug fix. Build 2026-06-18T17:11 CDT.
+
+## 2026-06-18 PM — Edge Validation project Phase 1 SHIPPED: live edge = promising_insufficient_sample
+
+New big project (owner pick after participation concluded): prove whether the
+edge is real. Phase 1 shipped + deployed (build 2026-06-18T17:36 CDT): extended
+`edge_metrics.py` (pure-stdlib, ai_trader untouched) with alpha t-stat/p-value/95%
+CI (regularized incomplete beta → Student-t), Wilson win-rate CI, and an
+edge_verdict, surfaced in `/api/ai-portfolio/edge`. +13 tests (t-dist vs textbook
+criticals, noise=insig, persistent-alpha=sig). Charter: docs/edge-validation-project.md.
+
+**LIVE VERDICT (user 1, 52d, 30 trades): `promising_insufficient_sample`.**
+total +27.77% vs SPY +13.28% (excess +14.5pp), headline alpha 11.73% / beta 1.21
+/ sharpe 4.13 — BUT alpha t=0.85, **p=0.40, NOT significant**; annualized-alpha
+95% CI **[−68%, +169%]**; win-rate 66.7% CI **[48.8%, 80.8%]**. The big alpha is
+statistically indistinguishable from luck at this sample — the swinging point
+estimate was small-sample noise, now quantified. Don't scale on it yet.
+Rough power: t scales ~√n, so confirming (t≈2) at the current effect needs ~5.5×
+the obs ≈ ~270 trading days (~10 more months of live data).
+
+Next phases: P2 live-vs-backtest reconciliation, P3 per-rule attribution, P4
+formal power/sample-size projection. Frontend display of the verdict/CIs = small
+follow-up (API returns them now).
