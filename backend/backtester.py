@@ -1395,6 +1395,58 @@ class BacktestEngine:
                 logger.debug(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${spy_price:.2f} "
                              f"= ${idle_cash:,.0f}")
 
+    def _apply_bear_exposure_throttle(self, current_date: date, weighted_signal: float,
+                                      min_cash_pct: float, held_scores: dict):
+        """Phase 1 Risk & Resilience: actively trim stock exposure to the bear
+        cash-reserve target in adverse regimes, instead of only gating buys.
+
+        The dynamic reserve (cash_reserve_bear/_strong_bear) only raises the
+        *buy* threshold; the book otherwise rides full stock exposure down a
+        bear, protected only by per-position stops + the late circuit-breaker.
+        This sells the weakest-scored positions (full exits) until cash reaches
+        the reserve target. Tactical, not permanent — the normal buy logic
+        redeploys when the regime turns bullish again (buys stay gated in bear
+        by the SPY<50MA / FTD gates, so trims don't immediately churn back).
+
+        Default-OFF lever (profile_overrides bear_exposure_throttle.enabled).
+        Mirror into ai_trader.evaluate_sells ONLY if a multi-window sweep wins.
+        """
+        cfg = self.profile.get('bear_exposure_throttle', {})
+        if not cfg.get('enabled', False) or not self.positions:
+            return
+        # Only act in a bear/strong-bear regime.
+        if weighted_signal >= cfg.get('bear_signal_threshold', 0.0):
+            return
+        target_cash_pct = cfg.get('target_cash_pct') or min_cash_pct
+        portfolio_value = self._get_portfolio_value(current_date)
+        if portfolio_value <= 0 or (self.cash / portfolio_value) >= target_cash_pct:
+            return
+
+        # Sell weakest-scored positions first until cash reaches the target.
+        ranked = sorted(self.positions.keys(),
+                        key=lambda t: held_scores.get(t, {}).get("total_score", 0))
+        for ticker in ranked:
+            pv = self._get_portfolio_value(current_date)
+            if pv <= 0 or (self.cash / pv) >= target_cash_pct:
+                break
+            position = self.positions.get(ticker)
+            if not position:
+                continue
+            price = self.data_provider.get_price_on_date(ticker, current_date)
+            if not price or price <= 0:
+                continue
+            score = held_scores.get(ticker, {}).get("total_score", 0)
+            gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100 if position.cost_basis > 0 else 0
+            trade = SimulatedTrade(
+                ticker=ticker, action="SELL", shares=position.shares, price=price,
+                reason=f"BEAR THROTTLE: regime de-risk to {target_cash_pct*100:.0f}% cash",
+                score=score, priority=0,
+            )
+            trade._signal_factors = {"sell_reason": "BEAR THROTTLE",
+                                     "gain_pct": round(gain_pct, 1),
+                                     "weighted_signal": round(weighted_signal, 2)}
+            self._execute_sell(current_date, trade)
+
     def _simulate_day(self, current_date: date):
         """Simulate one trading day with two-tier scoring for performance."""
         # Update position prices and peak tracking
@@ -1500,6 +1552,11 @@ class BacktestEngine:
             min_cash_pct = alloc_config.get('cash_reserve_bear', 0.40)
         else:
             min_cash_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
+
+        # Phase 1 Risk & Resilience: active bear-exposure throttle (default-off).
+        # The reserve above only GATES buys; this actively trims to the reserve.
+        self._apply_bear_exposure_throttle(
+            current_date, weighted_signal_cash, min_cash_pct, held_scores)
 
         # Portfolio heat check — advisory penalty, not hard block
         heat_config = config.get('portfolio_heat', {})
