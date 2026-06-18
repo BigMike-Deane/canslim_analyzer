@@ -50,6 +50,8 @@ from backend.trading_engine import (
     evaluate_score_crash,
     sanitize_signal_factors,
     trailing_stops_allowed_now,
+    cache_atr_stop,
+    atr_stop_fallback,
 )
 
 # Import email utils with fallback for testing
@@ -1160,7 +1162,7 @@ def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) 
             if result:
                 quote_list = result[0].get("indicators", {}).get("quote", [])
                 if not quote_list:
-                    return base_stop_pct
+                    return atr_stop_fallback(ticker, base_stop_pct)
                 indicators = quote_list[0]
                 highs = indicators.get("high", [])
                 lows = indicators.get("low", [])
@@ -1187,11 +1189,12 @@ def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) 
                         effective_stop = min(effective_stop, max_stop_pct)
                         if effective_stop > base_stop_pct:
                             logger.debug(f"{ticker}: ATR stop {effective_stop:.1f}% (ATR={atr:.2f}, base={base_stop_pct}%)")
+                        cache_atr_stop(ticker, effective_stop)
                         return effective_stop
     except Exception as e:
         logger.debug(f"{ticker}: ATR calculation failed ({e}), using base stop {base_stop_pct}%")
 
-    return base_stop_pct
+    return atr_stop_fallback(ticker, base_stop_pct)
 
 
 def check_and_execute_stop_losses(db: Session, user_id: int = 1) -> dict:
