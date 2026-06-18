@@ -1395,6 +1395,24 @@ class BacktestEngine:
                 logger.debug(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${spy_price:.2f} "
                              f"= ${idle_cash:,.0f}")
 
+    def _whipsaw_grace_active(self, position, current_date: date) -> bool:
+        """Phase 2 Participation: suppress premature WEAK-POSITION shake-outs
+        within a min-hold grace window, so a fresh buy whose score blips below
+        the sell threshold in its first days has room to work instead of being
+        churned out (W1 diag: 24-day avg holds, 19 weak-position exits, lost to
+        just holding SPY). HARD exits (stop-loss, trailing, score-crash) are NOT
+        gated — downside stays fully protected; only the discretionary
+        flat-and-weak cut waits out the grace.
+
+        Default-OFF lever (profile_overrides whipsaw_guard.enabled). Mirror into
+        ai_trader.evaluate_sells ONLY if a multi-window sweep wins.
+        """
+        cfg = self.profile.get('whipsaw_guard', {})
+        if not cfg.get('enabled', False) or not position.purchase_date:
+            return False
+        holding_days = (current_date - position.purchase_date).days
+        return holding_days < cfg.get('min_hold_days', 15)
+
     def _apply_bear_exposure_throttle(self, current_date: date, weighted_signal: float,
                                       min_cash_pct: float, held_scores: dict):
         """Phase 1 Risk & Resilience: actively trim stock exposure to the bear
@@ -3034,7 +3052,9 @@ class BacktestEngine:
                     sells.append(trade)
 
             # Weak flat/losing positions — cut and redeploy capital
-            elif gain_pct < 10 and current_score < self.backtest.sell_score_threshold:
+            # (Phase 2: whipsaw_guard grace gives fresh buys room before this cut)
+            elif (gain_pct < 10 and current_score < self.backtest.sell_score_threshold
+                  and not self._whipsaw_grace_active(position, current_date)):
                 trade = SimulatedTrade(
                     ticker=ticker,
                     action="SELL",
