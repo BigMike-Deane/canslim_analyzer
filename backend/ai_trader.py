@@ -52,6 +52,7 @@ from backend.trading_engine import (
     trailing_stops_allowed_now,
     cache_atr_stop,
     atr_stop_fallback,
+    dedup_scores_to_daily,
 )
 
 # Import email utils with fallback for testing
@@ -530,10 +531,13 @@ def check_score_stability(db: Session, ticker: str, current_score: float, thresh
         return {"is_stable": True, "recent_scores": [], "avg_score": current_score,
                 "consecutive_low": low, "recent_low_count": low, "warning": "Stock not found"}
 
-    # Get scores from last N scans (roughly last 4-5 hours if scanning every 90 min)
-    recent_scores = db.query(StockScore).filter(
+    # Score-crash clock counts TRADING DAYS, not raw ~90-min scans, to match the
+    # backtester (which appends once per trading day). Fetch a wider window of raw
+    # scans, then dedup to one row per calendar day (latest scan) newest-first.
+    raw = db.query(StockScore).filter(
         StockScore.stock_id == stock.id
-    ).order_by(StockScore.timestamp.desc()).limit(lookback).all()
+    ).order_by(StockScore.timestamp.desc()).limit(lookback * 8).all()
+    recent_scores = dedup_scores_to_daily(raw, lookback)
 
     if len(recent_scores) < 2:
         # Not enough history, trust current score
