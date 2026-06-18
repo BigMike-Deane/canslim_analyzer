@@ -1602,10 +1602,21 @@ class BacktestEngine:
                     pass  # FTD is advisory — don't block on failure
 
         profile_max_positions = self.profile.get('max_positions', self.backtest.max_positions)
+        # Conditional SPY cash-sweep yield-to-buys: cash parked in the sweep is
+        # reclaimable on demand (liquidated below at "first dibs"), so count it as
+        # available when deciding can_buy. Without this, parking cash in SPY drops
+        # self.cash below the reserve → can_buy=False → the sweep never liquidates
+        # → deadlock that starves stock buys (the W3/W4 −50pp failure). Sweep off
+        # → spy_sweep_shares=0 → reclaimable=0 → identical to before.
+        reclaimable_sweep = 0.0
+        if self.spy_sweep_shares > 0:
+            _spy_px = self.data_provider.get_spy_price_on_date(current_date) or 0
+            reclaimable_sweep = self.spy_sweep_shares * _spy_px
+        available_cash = self.cash + reclaimable_sweep
         can_buy = (not self.drawdown_halt and
-                   self.cash / portfolio_value >= min_cash_pct and
+                   available_cash / portfolio_value >= min_cash_pct and
                    len(self.positions) < profile_max_positions and
-                   self.cash >= 100)
+                   available_cash >= 100)
 
         # Track idle days (no positions, all cash) for re-seeding
         if not self.positions:
