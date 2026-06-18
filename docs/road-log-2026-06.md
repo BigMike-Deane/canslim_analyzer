@@ -155,3 +155,43 @@ its freeze-safe scaffolding + tests already shipped (default-inert).
 - Also shipped this session (deployed): Central-time `/health` build stamp + UI
   version display; AI Portfolio + Coiled Spring + ML-tag declutter; iPad
   auto-deploy pipeline. All freeze-safe; live model v29 + trading untouched.
+
+## 2026-06-18 — OWNER BACK: freeze lifted early, full exit-parity queue LANDED + deployed
+
+Owner returned from the road. Decided to **lift the freeze ~3.5h early** (the
+17:00 UTC cutoff was meant to be ~08:00 CST; owner was awake and ready). Before
+touching any frozen file, captured the **authoritative clean-surface C-score-cap
+eval** (nostate_cs_bear, cutoff 2026-05-07, pre=14): **decision = KEEP**, return
+delta **−1.38pp** (≥ −5pp floor; narrowed from −2.68pp on Jun 11), Sharpe delta
+**+0.0591**, post win rate 79.4% over 34 sells. Post-window data even shows the
+symptoms we then fixed (15 TRAILING_STOP churn exits; a −22.34% FSLR D1 stop-out).
+The 17:00 UTC routine still fires and will email the same KEEP — independent
+confirmation. Approach 2 stands; revert branch + `.draft-revert-pr-body.md` now
+moot (file gitignored).
+
+**Finding: `main` shipped RED.** The Jun-12 staging added 4 `trading_engine`
+helpers but never wired them, so `test_trading_engine_imports_complete` flagged
+them as dead code (prod ran them harmlessly as unused fns). Resolved by landing
+the whole queue.
+
+**Landed the full June-19 exit-parity queue** (main `51bb80a`→`b66cbe2`, suite
+**3212 passed / 0 failed**, deploy stamp `2026-06-18T08:48 CDT`). Every change
+restores live↔backtester parity — they make live match the already-validated
+champion, not new behavior:
+- **D1** (`59f8bb9`): `new_position_guard` 8% clamp ported into `evaluate_sells`
+  (the live money leak). Deleted `stop_guard_monitor.py` sentinel + its test +
+  scheduler job. D1 regression nets flipped green.
+- **Cadence / item 2** (`564c248`): trailing stops gated to daily close-window
+  via `trailing_stops_allowed_now`. ENABLED for live in `config/production.yaml`;
+  `default.yaml` stays OFF so dev/test trailing-trigger tests stay time-independent.
+- **D3** (`79d775b`): ATR-stop last-known cache + `atr_stop_fallback` on Yahoo
+  fetch failure (was snapping to base → premature stop-outs).
+- **D2** (`570aca6`): score-crash clock dedups scans→trading days. Landed now
+  (uptrend, not mid-bear) as parity hygiene.
+- **N1** (`9cb7282`): partial trailing stops now say STILL OPEN, not full exit.
+- Test adaptations (`b66cbe2`): un-xfailed both D1 parity nets; D2 score test
+  re-spaced to daily.
+
+**VPS cleanup (owner back):** retired the deploy poller (removed its cron line,
+**kept** the finance-tracker line), cleared the detached HEAD (`git checkout main`),
+deleted `.env.bak-jwt-rotation`. Deployed via direct SSH (not the poller).
