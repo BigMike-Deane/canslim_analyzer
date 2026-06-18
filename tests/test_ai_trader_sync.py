@@ -441,9 +441,11 @@ class TestCheckScoreStabilityAdapter:
         # Chronological: 80 (oldest) → 75 → 35 → 30 (most recent)
         # We insert in chronological order so timestamps are increasing.
         # DB will return them desc (30, 35, 75, 80); adapter reverses.
-        base_ts = datetime.now(timezone.utc) - timedelta(days=5)
+        # One score per DAY: the D2 daily-clock dedups multiple same-day scans
+        # to one row/day, so the lookback must span distinct days to see 4 points.
+        base_ts = datetime.now(timezone.utc) - timedelta(days=8)
         for i, score in enumerate([80, 75, 35, 30]):
-            ts = base_ts + timedelta(hours=i)
+            ts = base_ts + timedelta(days=i)
             db.add(StockScore(
                 stock_id=stock.id,
                 total_score=float(score),

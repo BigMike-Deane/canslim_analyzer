@@ -13,11 +13,10 @@ Method: feed matched position state (gain, score, peak, days-held, ATR-stop) to
   - backtester: engine._evaluate_sells(date, scores) → [SimulatedTrade]
 normalize each side's output to a decision CATEGORY per ticker, and compare.
 
-The `d1_new_position_fast_fall` scenario is a KNOWN divergence (the missing
-new_position_guard in evaluate_sells, D1). It is marked xfail(strict): the
-engines disagree today and will AGREE once the June-19 guard port lands — at
-which point the strict-xfail flips to a hard failure, forcing its removal. So
-this harness is also a tripwire for the D1 fix.
+The `d1_new_position_fast_fall` scenario was a KNOWN divergence (the missing
+new_position_guard in evaluate_sells, D1). With the guard ported into
+evaluate_sells (2026-06-18) the engines now AGREE, so the scenario asserts
+parity directly and guards against regression.
 """
 
 from __future__ import annotations
@@ -182,17 +181,11 @@ def test_engine_decision_parity(name, db_session, bt_engine, monkeypatch):
     assert live == back, f"PARITY BREAK on {name}: live={live} vs backtest={back}"
 
 
-@pytest.mark.xfail(
-    reason="D1: new_position_guard missing from evaluate_sells — live HOLDs a "
-           "fast-falling new position the backtester STOP_LOSSes. Engines AGREE "
-           "once the June-19 guard port lands; strict flips this to a hard "
-           "failure then (remove it + see docs/d1-stoploss-clamp-playbook.md).",
-    strict=True,
-)
 def test_engine_parity_d1_new_position(db_session, bt_engine, monkeypatch):
-    """Known divergence: 5-day-old −12% position under a 20% ATR stop. Backtester
-    clamps to the 8% guard and sells; live (no guard) holds. This asserts parity,
-    so it FAILS today and XPASSes when D1 is fixed."""
+    """Formerly-divergent case, now parity: 5-day-old −12% position under a 20%
+    ATR stop. Backtester clamps to the 8% guard and sells; live now does too
+    (D1 guard ported into evaluate_sells, 2026-06-18). Pins the parity against
+    regression."""
     sc = dict(gain_pct=-12.0, score=75, peak=88.0, days_held=5, atr_stop=20.0)
     live = _run_live(db_session, monkeypatch, sc)
     back = _run_backtest(bt_engine, sc)
