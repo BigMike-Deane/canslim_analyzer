@@ -160,3 +160,89 @@ class TestSpyAlignment:
         assert m["total_return_pct"] == 33.0
         assert m["excess_return_pct"] == 12.0
         assert m["beta"] is None  # only one usable benchmark return
+
+
+# ─── Edge Validation Phase 1: statistical significance ────────────────────────
+import math
+from backend.edge_metrics import (
+    _student_t_two_sided_p, _t_critical_95, _wilson_ci, _alpha_significance,
+    _edge_verdict, compute_edge_metrics,
+)
+
+
+class TestStudentT:
+    def test_two_sided_p_known_values(self):
+        # t=2.228, df=10 → two-sided p ≈ 0.05 (textbook critical value)
+        assert abs(_student_t_two_sided_p(2.228, 10) - 0.05) < 0.002
+        # t=2.0, df=60 → p ≈ 0.0501
+        assert abs(_student_t_two_sided_p(2.0, 60) - 0.0501) < 0.003
+        # t=0 → p=1.0 (no evidence against null)
+        assert abs(_student_t_two_sided_p(0.0, 30) - 1.0) < 1e-9
+
+    def test_t_critical_95_known(self):
+        assert abs(_t_critical_95(10) - 2.228) < 0.01   # df=10
+        assert abs(_t_critical_95(30) - 2.042) < 0.01   # df=30
+        assert _t_critical_95(1000) < 2.0               # → ~1.96 for large df
+
+
+class TestWilsonCI:
+    def test_basic(self):
+        lo, hi = _wilson_ci(8, 10)        # 80% wins, n=10
+        assert 0 <= lo < 80 < hi <= 100   # interval brackets the estimate, wide
+        assert _wilson_ci(0, 0) is None
+
+    def test_tighter_with_more_data(self):
+        narrow = _wilson_ci(800, 1000)
+        wide = _wilson_ci(8, 10)
+        assert (narrow[1] - narrow[0]) < (wide[1] - wide[0])
+
+
+class TestAlphaSignificance:
+    def test_pure_noise_is_insignificant(self):
+        # Portfolio == SPY + tiny zero-mean wiggle → alpha ~0, NOT significant.
+        spy = [0.001 * ((i % 7) - 3) for i in range(60)]
+        port = [s + 0.0005 * ((i % 5) - 2) for i, s in enumerate(spy)]
+        sig = _alpha_significance(port, spy)
+        assert sig is not None
+        assert sig["significant_95"] is False
+
+    def test_strong_persistent_alpha_is_significant(self):
+        # Portfolio = SPY beta-1 plus a steady +20bps/day with low noise → sig.
+        spy = [0.002 * ((i % 9) - 4) for i in range(80)]
+        port = [s + 0.002 + 0.0001 * ((i % 3) - 1) for i, s in enumerate(spy)]
+        sig = _alpha_significance(port, spy)
+        assert sig is not None
+        assert sig["t_stat"] > 2.0
+        assert sig["significant_95"] is True
+        assert sig["alpha_annualized_ci_low_pct"] > 0  # CI excludes zero
+
+    def test_too_few_obs(self):
+        assert _alpha_significance([0.01, 0.02], [0.01, 0.02]) is None
+
+
+class TestEdgeVerdict:
+    def test_small_sample_inconclusive(self):
+        assert _edge_verdict({"alpha_annualized_pct": 50, "significant_95": True}, 5, 3) \
+            == "inconclusive_small_sample"
+
+    def test_promising_but_not_significant(self):
+        sig = {"alpha_annualized_pct": 12.0, "significant_95": False}
+        assert _edge_verdict(sig, 60, 30) == "promising_insufficient_sample"
+
+    def test_significant_edge(self):
+        sig = {"alpha_annualized_pct": 12.0, "significant_95": True}
+        assert _edge_verdict(sig, 60, 30) == "significant_edge"
+
+    def test_no_edge(self):
+        sig = {"alpha_annualized_pct": -3.0, "significant_95": False}
+        assert _edge_verdict(sig, 60, 30) == "no_measurable_edge"
+
+
+class TestComputeEdgeIntegration:
+    def test_includes_significance_and_verdict(self):
+        port = [25000 * (1.004 ** i) for i in range(40)]   # steady climber
+        spy = [25000 * (1.001 ** i) for i in range(40)]
+        m = compute_edge_metrics(port, spy, realized_gains=[100, -50, 200, 80, -30])
+        assert "edge_verdict" in m
+        assert "alpha_significance" in m and m["alpha_significance"] is not None
+        assert "win_rate_ci_95" in m

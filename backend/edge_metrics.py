@@ -103,6 +103,142 @@ def _annualized_vol_pct(returns: Sequence[float]) -> Optional[float]:
     return round(statistics.stdev(returns) * math.sqrt(TRADING_DAYS_PER_YEAR) * 100, 2)
 
 
+# ─── Statistical significance (Edge Validation project, Phase 1) ──────────────
+# Pure-stdlib so the same zero-risk, unit-testable guarantees hold. The point of
+# these is to replace false-precision point estimates with honest uncertainty:
+# with ~30 trades the alpha estimate is noisy, and the verdict should say so.
+
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the incomplete beta (Numerical Recipes)."""
+    MAXIT, EPS, FPMIN = 300, 1e-15, 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < FPMIN:
+        d = FPMIN
+    d = 1.0 / d
+    h = d
+    for m in range(1, MAXIT + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < EPS:
+            break
+    return h
+
+
+def _betai(a: float, b: float, x: float) -> float:
+    """Regularized incomplete beta I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lbeta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+    bt = math.exp(lbeta + a * math.log(x) + b * math.log(1.0 - x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+def _student_t_two_sided_p(t: float, df: int) -> Optional[float]:
+    """Two-sided p-value P(|T| > |t|) for Student's t with df degrees of freedom."""
+    if df <= 0:
+        return None
+    return _betai(df / 2.0, 0.5, df / (df + t * t))
+
+
+def _t_critical_95(df: int) -> float:
+    """Two-sided 95% critical t value via bisection on the t survival function."""
+    lo, hi = 0.0, 1000.0
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        if (_student_t_two_sided_p(mid, df) or 0.0) > 0.05:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _wilson_ci(wins: int, n: int, z: float = 1.96) -> Optional[tuple]:
+    """Wilson score 95% interval for a binomial proportion, as percents."""
+    if n <= 0:
+        return None
+    phat = wins / n
+    denom = 1.0 + z * z / n
+    center = (phat + z * z / (2 * n)) / denom
+    half = (z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n))) / denom
+    return (round(max(0.0, center - half) * 100, 1), round(min(1.0, center + half) * 100, 1))
+
+
+def _alpha_significance(p_ret: Sequence[float], s_ret: Sequence[float]) -> Optional[dict]:
+    """OLS of daily portfolio returns on SPY returns; tests whether the intercept
+    (Jensen's alpha) is distinguishable from zero. Returns t-stat, p-value, df,
+    and a 95% CI on the annualized alpha. None if too few observations."""
+    n = len(p_ret)
+    if n < 3 or len(s_ret) != n:
+        return None
+    mx = statistics.fmean(s_ret)
+    my = statistics.fmean(p_ret)
+    sxx = sum((s - mx) ** 2 for s in s_ret)
+    if sxx <= 0:
+        return None
+    beta = sum((s - mx) * (p - my) for s, p in zip(s_ret, p_ret)) / sxx
+    alpha_daily = my - beta * mx
+    sse = sum((p - (alpha_daily + beta * s)) ** 2 for s, p in zip(s_ret, p_ret))
+    df = n - 2
+    if df < 1:
+        return None
+    s2 = sse / df
+    se_alpha = math.sqrt(s2 * (1.0 / n + mx * mx / sxx))
+    if se_alpha == 0:
+        return None
+    t = alpha_daily / se_alpha
+    p_two = _student_t_two_sided_p(t, df)
+    tcrit = _t_critical_95(df)
+    ann = TRADING_DAYS_PER_YEAR
+    return {
+        "alpha_daily_bps": round(alpha_daily * 10000, 2),
+        "alpha_annualized_pct": round(alpha_daily * ann * 100, 2),
+        "alpha_annualized_ci_low_pct": round((alpha_daily - tcrit * se_alpha) * ann * 100, 2),
+        "alpha_annualized_ci_high_pct": round((alpha_daily + tcrit * se_alpha) * ann * 100, 2),
+        "t_stat": round(t, 2),
+        "df": df,
+        "p_value": round(p_two, 4) if p_two is not None else None,
+        "significant_95": bool(p_two is not None and p_two < 0.05),
+    }
+
+
+def _edge_verdict(sig: Optional[dict], trading_days: int, closed_trades: int) -> str:
+    """Synthesize a plain-language verdict from significance + sample size."""
+    if sig is None or trading_days < LOW_SAMPLE_THRESHOLD or closed_trades < 10:
+        return "inconclusive_small_sample"
+    positive = sig["alpha_annualized_pct"] > 0
+    if sig["significant_95"] and positive:
+        return "significant_edge"
+    if sig["significant_95"] and not positive:
+        return "significant_negative"
+    if positive:
+        return "promising_insufficient_sample"
+    return "no_measurable_edge"
+
+
 def compute_edge_metrics(
     port_values: Sequence[float],
     spy_values: Sequence[float],
@@ -195,6 +331,16 @@ def compute_edge_metrics(
                 # actual portfolio return minus what beta-exposure to SPY "earned".
                 if total_return_pct is not None and spy_return_pct is not None:
                     result["alpha_pct"] = round(total_return_pct - beta * spy_return_pct, 2)
+                # Edge Validation Phase 1: is that alpha distinguishable from luck?
+                result["alpha_significance"] = _alpha_significance(p_ret, s_ret)
+
+    # Win-rate confidence interval (Wilson) + plain-language edge verdict.
+    _gains = [g for g in realized_gains if g is not None]
+    if _gains:
+        result["win_rate_ci_95"] = _wilson_ci(sum(1 for g in _gains if g > 0), len(_gains))
+    result["edge_verdict"] = _edge_verdict(
+        result.get("alpha_significance"), result["trading_days"], len(_gains)
+    )
 
     return result
 
