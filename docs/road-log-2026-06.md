@@ -255,3 +255,29 @@ under-invested / no qualifying buys, and yield to real stock buys first) so it
 doesn't cannibalize winning picks in trends. That smarter conditional sweep is
 the one remaining high-value candidate; the simple levers are exhausted. All
 levers default-off, nothing shipped, ai_trader.py untouched.
+
+## 2026-06-18 PM — Conditional sweep KILLED → Participation project CONCLUDED (no free lunch)
+
+Conditional SPY cash-sweep (yield-to-buys fix; runs 886-893): fixed a real
+deadlock bug in the existing spy_sweep (parked cash dropped self.cash below
+reserve → can_buy=False → sweep never liquidated → starved buys; now can_buy
+counts reclaimable sweep value — KEPT as a latent bug fix, sweep still off by
+default). Result: kept weak-window gains (W1 +13.3pp, W2 +13.5pp) and halved the
+strong-window damage vs the crude sweep, BUT still **−24.6pp W3 / −30.8pp W4 and
+DOUBLED drawdown (W1 5.3→10.3, W3 8.8→17.0). Net −28.6pp across 4 windows. KILLED**
+(fails gate: hurts strong windows + blows the 5-13% DD envelope).
+
+**PARTICIPATION PROJECT CONCLUDED.** Four independent levers (bear throttle,
+simple sweep, whipsaw-guard, conditional sweep) converge on one structural truth:
+**the chop-window lag is INSEPARABLE from the trend-window alpha** — every path to
+helping W1/W2 dilutes the strategy with SPY, which necessarily surrenders the
++72pp trend outperformance and adds drawdown. They're the same momentum exposure;
++13pp in chop costs ~−28pp in trends. No free lunch, now proven.
+
+**Strategic close:** the CANSLIM-momentum strategy is at its efficient frontier
+for this approach; exits + risk controls work correctly; regime-dependence is
+intrinsic and should be ACCEPTED, not engineered away. Strategy-lever hunting is
+DONE (this also explains months of killed experiments). Future big-project energy
+→ the other frontiers: edge validation/observability, real brokerage execution,
+multi-user productization. Levers left default-off/inert; ai_trader.py untouched;
+nothing shipped except the latent spy_sweep bug fix. Build 2026-06-18T17:11 CDT.
