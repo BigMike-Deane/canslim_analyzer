@@ -303,3 +303,27 @@ the obs ≈ ~270 trading days (~10 more months of live data).
 Next phases: P2 live-vs-backtest reconciliation, P3 per-rule attribution, P4
 formal power/sample-size projection. Frontend display of the verdict/CIs = small
 follow-up (API returns them now).
+
+## 2026-06-18 PM — Edge Validation Phase 2: live-vs-backtest reconciliation (tool built + validated)
+
+Built `backend/edge_reconciliation.py` (pure-stdlib, +8 tests, committed `ad59e52`,
+not yet deployed/wired): summarizes SELL trades into per-reason behavioral
+fingerprints (count/win%/avg-hold-days/avg-realized%) and flags live-vs-backtest
+divergence. Ran it on real data — live trades (user 1, 30 sells) vs champion
+backtest 892 (2024-01→2026-02, 67 sells):
+
+**It independently RE-DISCOVERED the D1 + cadence divergences from trade data
+alone** (validating both the tool and that the morning fixes targeted real gaps):
+- TRAILING STOP: **live 9.2d / 50% / −0.07%** vs model **131d / 60% / +5.34%**
+  → hold_days + realized_pct flag. The exact cadence-churn symptom (now fixed).
+- STOP LOSS: live 13.8d / **−11.4%** vs model 68d / −9.3% → the D1 aggregate (fixed).
+- ALL: live avg hold **21d** vs model **138.5d**; live win 66.7% vs 73.1%.
+
+**Caveat surfaced by the run:** the hold-days dimension is AGE-confounded — the
+live book is only 52 days old, so it literally cannot have 138-day avg holds, and
+TAKE PROFIT / PROTECT GAINS show model-only (presence) simply because live is too
+young for 385-day winners. The age-ROBUST signals are realized_pct + win_rate
+(where TRAILING STOP −0.07 vs +5.34 is the real catch). **P2 follow-ups:** add an
+age-guard to suppress spurious hold_days flags on a young book; wire an admin
+endpoint; re-run post-fix once enough NEW (post-2026-06-18) trades accumulate to
+confirm live converges toward the model.
