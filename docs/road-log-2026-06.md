@@ -195,3 +195,17 @@ champion, not new behavior:
 **VPS cleanup (owner back):** retired the deploy poller (removed its cron line,
 **kept** the finance-tracker line), cleared the detached HEAD (`git checkout main`),
 deleted `.env.bak-jwt-rotation`. Deployed via direct SSH (not the poller).
+
+## 2026-06-18 PM — CTO/CSO read + winner-protection backtest study → KILLED (leave bands)
+
+Pulled current live data (user 1): book = **8 positions, ALL 2x-pyramided**, +28.95% vs SPY +12.4%, **alpha +13.84%, beta 1.22, Sharpe 4.28** (52d since 4-07). Alpha estimate has swung +4%→+7%→+13.8% over 3wks on the same window = small-sample/regime-inflated, don't trust the magnitude. Key structural read: **the dominant risk is giving back WINNERS, not new-buy losses** — $3,411 (11.9% of book) sits between current prices and trailing triggers, concentrated in MU (29% give-back band), DELL (22%), STRL (15%). Corollary: **the just-shipped D1 is a no-op on this book** (everything pyramided → guard skips; only 2 new positions, both green); the CADENCE change is the one acting on it.
+
+**Study (runs 834-845):** does tightening the 50+ trailing band (where MU/DELL/STRL sit) protect give-back? nostate_optimized, "all", $25k, 4 regime windows × {ctrl=25, T1=20, T2=18}. Result = **NO ROBUST EDGE → leave bands as-is:**
+- W1 2018-06→20-06: ctrl=T1=T2 IDENTICAL (band never bound).
+- W2 2020-06→22-06: ctrl=T1 identical; **T2 HURT** (-4.62 vs -2.08 ret, maxDD 8.3→10.4).
+- W3 2022-06→24-06: ctrl=T1=T2 IDENTICAL (59.0% ret).
+- W4 2024-01→26-02: T1/T2 marginally better (+0.9pp ret, -0.8pp maxDD, +0.02 sharpe).
+- Net: T1 neutral (0/0/0/+slight), T2 net-negative. Classic sign-mixed/one-window pattern that the project's killed experiments (score-floor, rotation, extension-guard) all showed. **Fails the robust-multi-window gate.**
+- Pyramid-widening sub-question is BRACKETED by these arms (widening was active; T1=24% / T2=22% effective for 2x-pyramided vs current 29%), so a "disable widening" lever (→25% flat) would land neutral too — NOT worth building.
+- **Conclusion:** the wide 50+ band (+ pyramid-widening) is correct; the 11.9% give-back exposure is the deliberate, validated price of the let-winners-run edge that produces the alpha. Do NOT tighten. Side-obs: there IS a weak strategy window (W2 2020-06→22-06: -2% vs SPY +38%) — known choppy-regime lag, not this study's question.
+- No code shipped. Sweep runs 834-845 kept in VPS Postgres as the record.
