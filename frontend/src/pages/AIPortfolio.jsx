@@ -363,6 +363,96 @@ const EDGE_WINDOW_PHRASE = {
   all: 'since inception',
 }
 
+// ── Statistical-significance framing for the edge ───────────────────
+// Maps backend `edge_verdict` strings (backend/edge_metrics.py:_edge_verdict)
+// to a label, a tone color, and a plain-English caption for a non-statistician
+// owner. The point of this block is to stop the headline return-vs-SPY number
+// from being read as "proven" when it isn't yet statistically distinguishable
+// from luck.
+const EDGE_VERDICT_CFG = {
+  significant_edge: {
+    label: 'Significant edge',
+    cls: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25',
+    caption: 'Alpha is statistically confirmed (p < 0.05). The edge vs SPY is real at the 95% level.',
+  },
+  promising_insufficient_sample: {
+    label: 'Promising · insufficient sample',
+    cls: 'text-amber-300 bg-amber-500/10 border-amber-500/25',
+    caption: "Positive alpha, but not yet statistically significant — could still be luck. Don't size up on it yet; it needs more closed trades to confirm.",
+  },
+  no_measurable_edge: {
+    label: 'No measurable edge',
+    cls: 'text-dark-300 bg-dark-700/40 border-dark-600/40',
+    caption: 'No positive alpha vs SPY detected over this sample — returns are explained by market exposure.',
+  },
+  significant_negative: {
+    label: 'Significant underperformance',
+    cls: 'text-red-300 bg-red-500/10 border-red-500/25',
+    caption: 'Statistically significant negative alpha (p < 0.05) — the strategy is trailing a passive SPY position after adjusting for risk.',
+  },
+  inconclusive_small_sample: {
+    label: 'Inconclusive · small sample',
+    cls: 'text-dark-300 bg-dark-700/40 border-dark-600/40',
+    caption: 'Too few trading days / closed trades to assess statistical significance yet. Keep accumulating a track record.',
+  },
+}
+
+// Renders the significance story (verdict chip + annualized-alpha CI + p-value +
+// Wilson win-rate band) beneath the metrics grid. Every field is guarded — the
+// whole block returns null if the backend didn't emit a verdict, and the
+// alpha/win-rate rows each render only when their data is present.
+function EdgeSignificance({ data }) {
+  const verdict = data?.edge_verdict
+  if (!verdict) return null
+  const cfg = EDGE_VERDICT_CFG[verdict] || EDGE_VERDICT_CFG.inconclusive_small_sample
+
+  const sig = data.alpha_significance // may be null until ~20 daily obs
+  const ci = data.win_rate_ci_95 // [low_pct, high_pct] or null
+
+  const fmtPct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`)
+  // Alpha CI straddling zero is the visual tell that the edge isn't proven.
+  const spansZero =
+    sig && sig.alpha_annualized_ci_low_pct != null && sig.alpha_annualized_ci_high_pct != null &&
+    sig.alpha_annualized_ci_low_pct < 0 && sig.alpha_annualized_ci_high_pct > 0
+
+  return (
+    <div className="border-t border-dark-700/50 mt-4 pt-3">
+      <div className={`inline-flex items-center gap-1.5 text-[11px] font-semibold rounded-md border px-2 py-1 ${cfg.cls}`}>
+        <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" aria-hidden="true" />
+        {cfg.label}
+      </div>
+      <p className="text-[11px] leading-snug text-dark-400 mt-2">{cfg.caption}</p>
+
+      {sig && (
+        <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+          <div className="text-dark-400">
+            Alpha (annualized){' '}
+            <span className={sig.alpha_annualized_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+              {fmtPct(sig.alpha_annualized_pct)}
+            </span>
+          </div>
+          <div className="text-dark-400 text-right">
+            p = {sig.p_value == null ? '—' : sig.p_value.toFixed(3)}{' '}
+            <span className={sig.significant_95 ? 'text-emerald-400' : 'text-dark-500'}>
+              {sig.significant_95 ? '(significant)' : '(not yet significant)'}
+            </span>
+          </div>
+          <div className="col-span-2 text-dark-500">
+            95% CI {fmtPct(sig.alpha_annualized_ci_low_pct)} … {fmtPct(sig.alpha_annualized_ci_high_pct)}
+            {spansZero && <span className="text-amber-300/90"> · spans 0% — not yet proven</span>}
+          </div>
+        </div>
+      )}
+
+      {Array.isArray(ci) && ci.length === 2 && data.win_rate_pct != null && (
+        <div className="mt-1.5 text-[11px] text-dark-500">
+          Win rate {data.win_rate_pct}% · 95% likely between {ci[0]?.toFixed(0)}%–{ci[1]?.toFixed(0)}%
+        </div>
+      )}
+    </div>
+  )
+}
+
 function EdgeScorecard({ edge }) {
   // `edge` is the all-window scorecard fetched by the page. Narrower windows
   // are fetched on demand; keep `data` separate so `all` reuses the prop
@@ -511,6 +601,7 @@ function EdgeScorecard({ edge }) {
               title="Largest peak-to-trough decline. SPY's shown for comparison — smaller (less negative) is better."
             />
           </div>
+          <EdgeSignificance data={data} />
           <div className="border-t border-dark-700/50 mt-4 pt-2 flex items-center justify-between text-[10px] text-dark-500">
             <span>
               {data.win_rate_pct != null
