@@ -3710,6 +3710,90 @@ async def get_ai_portfolio_edge(
     return metrics
 
 
+@app.get("/api/ai-portfolio/edge/reconciliation")
+async def get_ai_portfolio_edge_reconciliation(
+    backtest_id: Optional[int] = Query(None, description="Reference backtest to reconcile against; defaults to the latest completed nostate_optimized run"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Edge Validation Phase 2 — live-vs-backtest EXIT-behavior reconciliation.
+
+    Compares the behavioral fingerprint of each exit reason (share of sells,
+    win rate, avg hold days, avg realized %) between live trading and a
+    reference backtest, so trader<->backtester divergences (the D1 stop-guard
+    gap, trailing-stop cadence churn) surface SYSTEMATICALLY rather than by
+    accident. Read-only; ai_trader.py untouched. See backend/edge_reconciliation.py
+    for why fingerprints (not trade-by-trade) are the honest unit of comparison.
+    """
+    from backend.edge_reconciliation import (
+        summarize_exits, compare_exit_behavior,
+        live_trade_to_record, backtest_trade_to_record,
+    )
+
+    live_sells = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == current_user.id,
+        AIPortfolioTrade.action == "SELL",
+    ).all()
+    live_records = [live_trade_to_record(t) for t in live_sells]
+    live_summary = summarize_exits(live_records)
+
+    # Reference backtest: explicit id, else the latest completed nostate_optimized
+    # run (the champion strategy), else any latest completed run.
+    ref = None
+    if backtest_id is not None:
+        ref = db.query(BacktestRun).filter(
+            BacktestRun.id == backtest_id, BacktestRun.status == "completed"
+        ).first()
+    else:
+        ref = db.query(BacktestRun).filter(
+            BacktestRun.status == "completed",
+            BacktestRun.strategy == "nostate_optimized",
+        ).order_by(BacktestRun.completed_at.desc().nullslast()).first()
+        if ref is None:
+            ref = db.query(BacktestRun).filter(
+                BacktestRun.status == "completed"
+            ).order_by(BacktestRun.id.desc()).first()
+
+    if ref is None:
+        return {
+            "status": "no_reference_backtest",
+            "live_exit_count": len(live_records),
+            "live_summary": live_summary,
+            "message": "No completed backtest is available to reconcile against.",
+        }
+
+    bt_sells = db.query(BacktestTrade).filter(
+        BacktestTrade.backtest_id == ref.id,
+        BacktestTrade.action == "SELL",
+    ).all()
+    bt_records = [
+        backtest_trade_to_record({
+            "reason": t.reason,
+            "holding_days": t.holding_days,
+            "gain_pct": t.realized_gain_pct,
+        })
+        for t in bt_sells
+    ]
+    bt_summary = summarize_exits(bt_records)
+
+    comparison = compare_exit_behavior(live_summary, bt_summary)
+    return {
+        "status": "ok",
+        "reference_backtest": {
+            "id": ref.id,
+            "name": ref.name,
+            "strategy": ref.strategy,
+            "start_date": ref.start_date.isoformat() if ref.start_date else None,
+            "end_date": ref.end_date.isoformat() if ref.end_date else None,
+        },
+        "live_exit_count": len(live_records),
+        "backtest_exit_count": len(bt_records),
+        "live_summary": live_summary,
+        "backtest_summary": bt_summary,
+        "comparison": comparison,
+    }
+
+
 _WINDOW_TO_DAYS = {"1d": 1, "7d": 7, "30d": 30}
 
 
