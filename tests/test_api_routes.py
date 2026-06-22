@@ -24,7 +24,7 @@ from backend.main import app
 from backend.database import (
     init_db, get_db, SessionLocal, User, Stock, StockScore,
     PortfolioPosition, AIPortfolioConfig, AIPortfolioPosition,
-    AIPortfolioTrade, BacktestRun, MarketSnapshot, Watchlist, MLModel,
+    AIPortfolioTrade, BacktestRun, BacktestTrade, MarketSnapshot, Watchlist, MLModel,
     MLPrediction, StockDataCache,
 )
 from backend.auth import get_current_active_user, get_admin_user
@@ -1016,3 +1016,79 @@ class TestTradeJournal:
         # action=VETOED filters BUYs out, even without include_vetoed=true.
         assert all(e["action"] == "VETOED" for e in d["entries"])
         assert any(e["ticker"] == "ZZZ" for e in d["entries"])
+
+
+class TestEdgeReconciliation:
+    """Phase 2 live-vs-backtest exit-behavior reconciliation endpoint."""
+
+    def _seed(self):
+        _ensure_user()
+        db = _get_db()
+        try:
+            bt = BacktestRun(
+                user_id=1, name="Recon Test BT", status="completed",
+                start_date=date(2023, 1, 1), end_date=date(2024, 1, 1),
+                starting_cash=25000.0, final_value=33000.0,
+                total_return_pct=32.0, strategy="nostate_optimized",
+                progress_pct=100.0, created_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+            )
+            db.add(bt); db.commit(); db.refresh(bt)
+            for reason, hold, gpct in [
+                ("TRAILING STOP: peak", 80, 12.0),
+                ("TRAILING STOP: peak", 75, 9.0),
+                ("STOP LOSS: down 8%", 12, -8.0),
+                ("PARTIAL PROFIT 25%", 40, 20.0),
+            ]:
+                db.add(BacktestTrade(
+                    backtest_id=bt.id, date=date(2023, 6, 1), ticker="XYZ",
+                    action="SELL", shares=10.0, price=110.0, reason=reason,
+                    realized_gain=100.0, realized_gain_pct=gpct, holding_days=hold,
+                ))
+            for reason, hold, cb, rg in [
+                ("TRAILING STOP: peak", 9, 100.0, 110.0),   # +11%
+                ("STOP LOSS: down 8%", 10, 100.0, -80.0),   # -8%
+                ("PARTIAL PROFIT 25%", 38, 100.0, 190.0),   # +19%
+            ]:
+                db.add(AIPortfolioTrade(
+                    user_id=1, ticker="RCN", action="SELL", shares=10.0,
+                    price=110.0, total_value=1000.0, reason=reason,
+                    cost_basis=cb, realized_gain=rg, holding_days=hold,
+                    executed_at=datetime.now(timezone.utc),
+                ))
+            db.commit()
+            return bt.id
+        finally:
+            db.close()
+
+    def _cleanup(self, bt_id):
+        db = _get_db()
+        try:
+            db.query(BacktestTrade).filter_by(backtest_id=bt_id).delete()
+            db.query(BacktestRun).filter_by(id=bt_id).delete()
+            db.query(AIPortfolioTrade).filter_by(user_id=1, ticker="RCN").delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_reconciliation_shape(self):
+        bt_id = self._seed()
+        try:
+            r = client.get(f"/api/ai-portfolio/edge/reconciliation?backtest_id={bt_id}")
+            assert r.status_code == 200
+            d = r.json()
+            assert d["status"] == "ok"
+            assert d["reference_backtest"]["id"] == bt_id
+            assert d["backtest_exit_count"] == 4
+            assert d["live_exit_count"] >= 3
+            assert "ALL" in d["backtest_summary"]
+            assert "ALL" in d["live_summary"]
+            assert d["comparison"]["verdict"] in ("aligned", "diverged")
+            assert isinstance(d["comparison"]["reasons"], list)
+        finally:
+            self._cleanup(bt_id)
+
+    def test_unknown_backtest_id_returns_no_reference(self):
+        r = client.get("/api/ai-portfolio/edge/reconciliation?backtest_id=99999999")
+        assert r.status_code == 200
+        assert r.json()["status"] == "no_reference_backtest"
