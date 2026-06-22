@@ -67,6 +67,17 @@ class TestCANSLIMScorer:
         assert score > 0, "High ROE with positive CAGR should give positive score"
         assert "ROE" in detail, "Detail should mention ROE"
 
+    def test_annual_cagr_uses_two_year_span_exponent(self, mock_stock_data, mock_data_fetcher):
+        """Regression: 3 annual data points span 2 years, so the CAGR exponent is
+        1/2, not 1/3. Earnings doubling over the span is ~41%/yr (the prior 1/3
+        fencepost bug reported ~26%). Guards _score_annual_earnings and its
+        backtester twin against a silent revert."""
+        scorer = CANSLIMScorer(mock_data_fetcher)
+        mock_stock_data.annual_earnings = [8.0, 6.0, 4.0]  # recent/older = 2x over 2yr span
+        score, detail = scorer._score_annual_earnings(mock_stock_data)
+        # (8/4) ** (1/2) - 1 = 41.4%   (old 1/3 exponent gave +26%)
+        assert "+41%" in detail, f"Expected 2-year-span CAGR ~+41%, got: {detail}"
+
     def test_score_new_highs_at_52w_high(self, mock_stock_data, mock_data_fetcher):
         """Test N score when at 52-week high"""
         scorer = CANSLIMScorer(mock_data_fetcher)
