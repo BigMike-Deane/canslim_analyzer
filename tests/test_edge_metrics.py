@@ -246,3 +246,122 @@ class TestComputeEdgeIntegration:
         assert "edge_verdict" in m
         assert "alpha_significance" in m and m["alpha_significance"] is not None
         assert "win_rate_ci_95" in m
+
+    def test_includes_power_block(self):
+        # Phase 4: a beta-bearing series should also emit a `power` block.
+        port = [25000 * (1.004 ** i) for i in range(40)]
+        spy = [25000 * (1.001 ** i) for i in range(40)]
+        m = compute_edge_metrics(port, spy, realized_gains=[100, -50, 200])
+        assert "power" in m and m["power"] is not None
+        assert m["power"]["required_days"] >= 1
+
+
+from backend.edge_metrics import _normal_ppf, _power_analysis, attribute_returns
+
+
+class TestNormalPPF:
+    def test_known_quantiles(self):
+        assert abs(_normal_ppf(0.975) - 1.95996) < 1e-3   # two-sided 95%
+        assert abs(_normal_ppf(0.80) - 0.84162) < 1e-3    # 80% power
+        assert abs(_normal_ppf(0.5)) < 1e-6               # median = 0
+        assert abs(_normal_ppf(0.025) + 1.95996) < 1e-3   # symmetric
+
+    def test_boundaries(self):
+        assert _normal_ppf(0.0) == float("-inf")
+        assert _normal_ppf(1.0) == float("inf")
+
+
+class TestPowerAnalysis:
+    def test_required_n_matches_formula(self):
+        # Construct residuals with a known effect size d = mean/sd.
+        # port = beta*spy + resid; use beta=0 so resid == port returns.
+        # resid alternating ±a around mean m → mean=m, sd≈a. Pick m, a so d is clean.
+        # Use m=0.001, sd via a spread → compute expected N and compare.
+        n = 60
+        # residual series: mean 0.001, with deterministic spread
+        resid = [0.001 + (0.01 if i % 2 == 0 else -0.01) for i in range(n)]
+        # Feed as p_ret with beta 0 and s_ret all zeros so residual == p_ret.
+        p_ret = resid
+        s_ret = [0.0] * n
+        out = _power_analysis(p_ret, s_ret, beta=0.0)
+        assert out is not None
+        import statistics as st
+        d = abs(st.fmean(resid)) / st.stdev(resid)
+        z = _normal_ppf(0.975) + _normal_ppf(0.80)
+        expected = math.ceil((z / d) ** 2)
+        assert out["required_days"] == expected
+        assert abs(out["effect_size"] - round(d, 4)) < 1e-4
+
+    def test_already_sufficient_when_strong(self):
+        # Huge, low-noise alpha → required N tiny → already sufficient.
+        n = 80
+        p_ret = [0.02 + (0.0001 if i % 2 else -0.0001) for i in range(n)]
+        s_ret = [0.0] * n
+        out = _power_analysis(p_ret, s_ret, beta=0.0)
+        assert out["already_sufficient"] is True
+        assert out["additional_days_needed"] == 0
+        assert out["est_additional_months"] == 0.0
+
+    def test_zero_variance_returns_none(self):
+        # Constant residuals → sd 0 → undefined effect → None.
+        assert _power_analysis([0.01] * 10, [0.0] * 10, beta=0.0) is None
+
+    def test_too_few_obs_returns_none(self):
+        assert _power_analysis([0.01, 0.02], [0.0, 0.0], beta=0.0) is None
+
+
+class TestAttributeReturns:
+    def _positions(self):
+        # 3 closed positions: two winners, one loser. SPY return supplied per
+        # hold window so excess is hand-computable.
+        return [
+            {"ticker": "AAA", "realized_gain": 600.0, "deployed": 1000.0,
+             "position_return_pct": 60.0, "spy_return_pct": 10.0, "holding_days": 40},
+            {"ticker": "BBB", "realized_gain": 300.0, "deployed": 1000.0,
+             "position_return_pct": 30.0, "spy_return_pct": 5.0, "holding_days": 20},
+            {"ticker": "CCC", "realized_gain": -100.0, "deployed": 1000.0,
+             "position_return_pct": -10.0, "spy_return_pct": 8.0, "holding_days": 15},
+        ]
+
+    def test_empty_is_insufficient(self):
+        out = attribute_returns([])
+        assert out["status"] == "insufficient_data"
+        assert out["closed_positions"] == 0
+
+    def test_excess_and_aggregates(self):
+        out = attribute_returns(self._positions(), starting_equity=25000.0)
+        assert out["status"] == "ok"
+        assert out["closed_positions"] == 3
+        # excess = realized_gain − deployed*(spy/100)
+        # AAA: 600 − 1000*0.10 = 500 ; BBB: 300 − 50 = 250 ; CCC: −100 − 80 = −180
+        by = {p["ticker"]: p for p in out["positions"]}
+        assert by["AAA"]["excess_gain"] == 500.0
+        assert by["BBB"]["excess_gain"] == 250.0
+        assert by["CCC"]["excess_gain"] == -180.0
+        assert out["total_realized_gain"] == 800.0
+        assert out["total_excess_gain"] == 570.0
+        assert out["gross_winners_gain"] == 900.0
+        assert out["gross_losers_loss"] == -100.0
+        # contribution_pct = realized_gain / starting_equity * 100
+        assert by["AAA"]["contribution_pct"] == round(600 / 25000 * 100, 2)
+
+    def test_ranked_and_concentration(self):
+        out = attribute_returns(self._positions(), starting_equity=25000.0)
+        # Ranked by realized_gain desc: AAA, BBB, CCC
+        assert [p["ticker"] for p in out["positions"]] == ["AAA", "BBB", "CCC"]
+        # top contributor AAA, top detractor CCC
+        assert out["top_contributors"][0]["ticker"] == "AAA"
+        assert out["top_detractors"][0]["ticker"] == "CCC"
+        c = out["concentration"]
+        # AAA is 600/900 = 66.7% of gains; top3 = 100%; half of gains (450)
+        # reached by AAA alone (600 >= 450) → names_for_half = 1
+        assert c["top1_share_of_gains_pct"] == 66.7
+        assert c["top3_share_of_gains_pct"] == 100.0
+        assert c["names_for_half_of_gains"] == 1
+
+    def test_missing_spy_leaves_excess_none(self):
+        positions = [{"ticker": "ZZZ", "realized_gain": 100.0, "deployed": 1000.0,
+                      "position_return_pct": 10.0, "spy_return_pct": None, "holding_days": 5}]
+        out = attribute_returns(positions, starting_equity=10000.0)
+        assert out["positions"][0]["excess_gain"] is None
+        assert out["total_excess_gain"] is None  # no excess values at all

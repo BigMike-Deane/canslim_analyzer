@@ -3565,7 +3565,7 @@ async def get_ai_portfolio_edge(
     """
     from datetime import timedelta, datetime as dt, timezone
     from sqlalchemy import or_
-    from backend.edge_metrics import compute_edge_metrics, leading_flat_start_index
+    from backend.edge_metrics import compute_edge_metrics, leading_flat_start_index, attribute_returns
 
     start_date = dt.now(timezone.utc) - timedelta(days=days)
     start_date_only = date.today() - timedelta(days=days)
@@ -3650,6 +3650,63 @@ async def get_ai_portfolio_edge(
     metrics = compute_edge_metrics(port_values, spy_values, realized_gains)
     metrics["inception_date"] = days_sorted[0].isoformat() if days_sorted else None
     metrics["as_of"] = days_sorted[-1].isoformat() if days_sorted else None
+
+    # Edge Validation Phase 3: per-position return/alpha attribution. Pull the
+    # full SELL rows (not just realized_gain) and price each position's SPY
+    # return over its OWN hold window, so we can see which names drive the edge.
+    sell_rows = db.query(
+        AIPortfolioTrade.ticker, AIPortfolioTrade.shares, AIPortfolioTrade.price,
+        AIPortfolioTrade.cost_basis, AIPortfolioTrade.realized_gain,
+        AIPortfolioTrade.holding_days, AIPortfolioTrade.executed_at,
+    ).filter(
+        AIPortfolioTrade.user_id == current_user.id,
+        AIPortfolioTrade.action == "SELL",
+        AIPortfolioTrade.realized_gain.isnot(None),
+    ).all()
+
+    # SPY lookup wide enough to cover each position's BUY date (sell − hold).
+    attr_spy = {}
+    if sell_rows:
+        earliest_buy = min(
+            (r.executed_at.date() - timedelta(days=(r.holding_days or 0))
+             for r in sell_rows if r.executed_at),
+            default=None,
+        )
+        if earliest_buy is not None:
+            for ms in db.query(MarketSnapshot.date, MarketSnapshot.spy_price).filter(
+                MarketSnapshot.date >= earliest_buy - timedelta(days=7),
+                MarketSnapshot.spy_price.isnot(None),
+            ).all():
+                attr_spy[ms.date] = ms.spy_price
+
+    def _spy_on(d):
+        price = attr_spy.get(d)
+        if price is None:
+            earlier = [k for k in attr_spy if k <= d]
+            if not earlier:
+                return None
+            price = attr_spy[max(earlier)]
+        return price
+
+    positions = []
+    for r in sell_rows:
+        if r.executed_at is None:
+            continue
+        sell_d = r.executed_at.date()
+        buy_d = sell_d - timedelta(days=(r.holding_days or 0))
+        deployed = (r.cost_basis * r.shares) if (r.cost_basis is not None and r.shares is not None) else None
+        pos_ret = round((r.price / r.cost_basis - 1.0) * 100, 2) if (r.cost_basis and r.price) else None
+        spy_buy, spy_sell = _spy_on(buy_d), _spy_on(sell_d)
+        spy_ret = round((spy_sell / spy_buy - 1.0) * 100, 2) if (spy_buy and spy_sell) else None
+        positions.append({
+            "ticker": r.ticker, "realized_gain": r.realized_gain, "deployed": deployed,
+            "position_return_pct": pos_ret, "spy_return_pct": spy_ret,
+            "holding_days": r.holding_days,
+        })
+
+    start_equity = base_value if base_value else (port_values[0] if port_values else None)
+    metrics["attribution"] = attribute_returns(positions, starting_equity=start_equity)
+
     return metrics
 
 
