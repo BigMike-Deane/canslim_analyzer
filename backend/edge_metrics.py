@@ -239,6 +239,184 @@ def _edge_verdict(sig: Optional[dict], trading_days: int, closed_trades: int) ->
     return "no_measurable_edge"
 
 
+def _normal_ppf(p: float) -> float:
+    """Inverse standard-normal CDF via Acklam's rational approximation
+    (≈1e-9 abs error). Pure stdlib so the module stays scipy-free.
+    Returns ±inf at the open boundaries."""
+    if p <= 0.0:
+        return float("-inf")
+    if p >= 1.0:
+        return float("inf")
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow, phigh = 0.02425, 1 - 0.02425
+    if p < plow:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+               ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+    if p <= phigh:
+        q = p - 0.5
+        r = q * q
+        return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / \
+               (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+    q = math.sqrt(-2 * math.log(1 - p))
+    return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+            ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+
+
+def _power_analysis(
+    p_ret: Sequence[float],
+    s_ret: Sequence[float],
+    beta: float,
+    alpha_level: float = 0.05,
+    power: float = 0.80,
+) -> Optional[dict]:
+    """Edge Validation Phase 4 — how much MORE data to detect the edge if it's real.
+
+    Treats the daily market-neutral residual r_t = p_ret_t − β·s_ret_t (whose
+    mean is the daily Jensen alpha) as an iid one-sample series and solves the
+    standard z-based sample-size formula for a two-sided test::
+
+        N = ((z_{1−α/2} + z_power) / d)²,   d = |mean(r)| / sd(r)
+
+    Returns required/additional *trading days* (the unit the alpha regression
+    is measured in) plus a calendar-month estimate. ``None`` when the effect is
+    undefined (degenerate variance) or the sample is too small to estimate d.
+
+    Assumptions (intentionally explicit, and surfaced in the output): the
+    observed effect size persists; daily residuals are iid (ignores
+    autocorrelation, so the true requirement is likely somewhat larger); trade
+    cadence stays constant for the calendar estimate; the z-approximation is
+    mildly conservative vs the exact noncentral-t at small N.
+    """
+    n = len(p_ret)
+    if n < 3 or len(s_ret) != n:
+        return None
+    resid = [p - beta * s for p, s in zip(p_ret, s_ret)]
+    mean_r = statistics.fmean(resid)
+    sd_r = statistics.stdev(resid) if len(resid) > 1 else 0.0
+    if sd_r <= 0 or mean_r == 0:
+        return None
+    effect = abs(mean_r) / sd_r
+    z_alpha = _normal_ppf(1 - alpha_level / 2)
+    z_power = _normal_ppf(power)
+    required = ((z_alpha + z_power) / effect) ** 2
+    required_days = max(1, math.ceil(required))
+    additional = max(0, required_days - n)
+    return {
+        "effect_size": round(effect, 4),
+        "current_days": n,
+        "required_days": required_days,
+        "additional_days_needed": additional,
+        "already_sufficient": additional == 0,
+        "est_additional_months": round(additional / TRADING_DAYS_PER_YEAR * 12, 1),
+        "alpha_level": alpha_level,
+        "target_power": power,
+        "assumptions": (
+            "z-approx two-sided one-sample test on daily alpha residuals; "
+            "assumes effect size persists, residuals iid (ignores "
+            "autocorrelation — true N likely larger), constant trade cadence."
+        ),
+    }
+
+
+def attribute_returns(
+    positions: Sequence[dict],
+    starting_equity: Optional[float] = None,
+    top_n: int = 5,
+) -> dict:
+    """Edge Validation Phase 3 — decompose the realized edge by closed position.
+
+    ``positions`` is a list of per-SELL dicts the caller has already extracted
+    (mirrors the Phase 2 "caller passes records" pattern), each with:
+      ``ticker``, ``realized_gain`` (dollar P&L on the lot), ``deployed``
+      (cost_basis × shares, the capital at risk), ``position_return_pct``,
+      ``spy_return_pct`` (SPY's return over the SAME hold window), and
+      ``holding_days``.
+
+    For each position computes ``excess_gain`` — the dollars earned beyond what
+    that same capital would have made sitting in SPY over the identical window
+    (realized_gain − deployed × spy_return_pct/100) — and, when
+    ``starting_equity`` is known, ``contribution_pct`` (the position's pp of
+    starting equity). Returns positions ranked by dollar contribution, aggregate
+    roll-ups, and a concentration block answering "do a few names drive the
+    edge?". ``status='insufficient_data'`` when there are no closed positions.
+    """
+    rows = []
+    for p in positions:
+        rg = p.get("realized_gain")
+        if rg is None:
+            continue
+        deployed = p.get("deployed")
+        spy_ret = p.get("spy_return_pct")
+        excess = None
+        if deployed is not None and spy_ret is not None:
+            excess = round(rg - deployed * (spy_ret / 100.0), 2)
+        rows.append({
+            "ticker": p.get("ticker"),
+            "realized_gain": round(rg, 2),
+            "deployed": round(deployed, 2) if deployed is not None else None,
+            "position_return_pct": p.get("position_return_pct"),
+            "spy_return_pct": spy_ret,
+            "excess_gain": excess,
+            "holding_days": p.get("holding_days"),
+            "contribution_pct": (
+                round(rg / starting_equity * 100, 2)
+                if starting_equity else None
+            ),
+        })
+
+    if not rows:
+        return {"status": "insufficient_data", "closed_positions": 0}
+
+    rows.sort(key=lambda r: r["realized_gain"], reverse=True)
+    winners = [r for r in rows if r["realized_gain"] > 0]
+    losers = [r for r in rows if r["realized_gain"] < 0]
+    gross_winners = round(sum(r["realized_gain"] for r in winners), 2)
+    gross_losers = round(sum(r["realized_gain"] for r in losers), 2)
+
+    # Concentration of the *gains*: what share do the very top names carry?
+    top1_share = round(winners[0]["realized_gain"] / gross_winners * 100, 1) if gross_winners > 0 else None
+    top3_share = (
+        round(sum(r["realized_gain"] for r in winners[:3]) / gross_winners * 100, 1)
+        if gross_winners > 0 else None
+    )
+    names_for_half = None
+    if gross_winners > 0:
+        cum = 0.0
+        for i, r in enumerate(winners, 1):
+            cum += r["realized_gain"]
+            if cum >= gross_winners / 2:
+                names_for_half = i
+                break
+
+    excesses = [r["excess_gain"] for r in rows if r["excess_gain"] is not None]
+    return {
+        "status": "ok",
+        "closed_positions": len(rows),
+        "positions": rows,
+        "total_realized_gain": round(sum(r["realized_gain"] for r in rows), 2),
+        "total_excess_gain": round(sum(excesses), 2) if excesses else None,
+        "gross_winners_gain": gross_winners,
+        "gross_losers_loss": gross_losers,
+        "winners": len(winners),
+        "losers": len(losers),
+        "top_contributors": rows[:top_n],
+        "top_detractors": [r for r in reversed(rows) if r["realized_gain"] < 0][:top_n],
+        "concentration": {
+            "top1_share_of_gains_pct": top1_share,
+            "top3_share_of_gains_pct": top3_share,
+            "names_for_half_of_gains": names_for_half,
+        },
+    }
+
+
 def compute_edge_metrics(
     port_values: Sequence[float],
     spy_values: Sequence[float],
@@ -333,6 +511,8 @@ def compute_edge_metrics(
                     result["alpha_pct"] = round(total_return_pct - beta * spy_return_pct, 2)
                 # Edge Validation Phase 1: is that alpha distinguishable from luck?
                 result["alpha_significance"] = _alpha_significance(p_ret, s_ret)
+                # Edge Validation Phase 4: if it IS real, how much more data to prove it?
+                result["power"] = _power_analysis(p_ret, s_ret, beta)
 
     # Win-rate confidence interval (Wilson) + plain-language edge verdict.
     _gains = [g for g in realized_gains if g is not None]
