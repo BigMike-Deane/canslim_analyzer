@@ -1092,3 +1092,40 @@ class TestEdgeReconciliation:
         r = client.get("/api/ai-portfolio/edge/reconciliation?backtest_id=99999999")
         assert r.status_code == 200
         assert r.json()["status"] == "no_reference_backtest"
+
+    def test_cannot_reconcile_against_another_users_backtest(self):
+        # IDOR guard: a backtest owned by a DIFFERENT user must be unreachable
+        # even when its id is supplied explicitly — no cross-user fingerprint leak.
+        db = _get_db()
+        try:
+            other = BacktestRun(
+                user_id=4242, name="Other User BT", status="completed",
+                start_date=date(2023, 1, 1), end_date=date(2024, 1, 1),
+                starting_cash=25000.0, final_value=33000.0,
+                total_return_pct=32.0, strategy="nostate_optimized",
+                progress_pct=100.0, created_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+            )
+            db.add(other); db.commit(); db.refresh(other)
+            other_id = other.id
+            db.add(BacktestTrade(
+                backtest_id=other_id, date=date(2023, 6, 1), ticker="ZZZ",
+                action="SELL", shares=10.0, price=110.0, reason="STOP LOSS: x",
+                realized_gain=100.0, realized_gain_pct=5.0, holding_days=20,
+            ))
+            db.commit()
+        finally:
+            db.close()
+        try:
+            # Authenticated as user 1 (module _fake_user), requesting user 4242's run.
+            r = client.get(f"/api/ai-portfolio/edge/reconciliation?backtest_id={other_id}")
+            assert r.status_code == 200
+            assert r.json()["status"] == "no_reference_backtest"
+        finally:
+            db = _get_db()
+            try:
+                db.query(BacktestTrade).filter_by(backtest_id=other_id).delete()
+                db.query(BacktestRun).filter_by(id=other_id).delete()
+                db.commit()
+            finally:
+                db.close()

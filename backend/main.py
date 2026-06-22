@@ -3739,19 +3739,29 @@ async def get_ai_portfolio_edge_reconciliation(
 
     # Reference backtest: explicit id, else the latest completed nostate_optimized
     # run (the champion strategy), else any latest completed run.
+    # Ownership-scoped on EVERY branch: a user may only reconcile against their
+    # OWN backtests. Without user_id filters this leaks other users' exit
+    # fingerprints (supplied id) or silently reconciles against another user's
+    # latest run (default). A non-owned/unknown id falls through to
+    # no_reference_backtest — same response as "none exists", so existence
+    # isn't disclosed either.
     ref = None
     if backtest_id is not None:
         ref = db.query(BacktestRun).filter(
-            BacktestRun.id == backtest_id, BacktestRun.status == "completed"
+            BacktestRun.id == backtest_id,
+            BacktestRun.user_id == current_user.id,
+            BacktestRun.status == "completed",
         ).first()
     else:
         ref = db.query(BacktestRun).filter(
+            BacktestRun.user_id == current_user.id,
             BacktestRun.status == "completed",
             BacktestRun.strategy == "nostate_optimized",
         ).order_by(BacktestRun.completed_at.desc().nullslast()).first()
         if ref is None:
             ref = db.query(BacktestRun).filter(
-                BacktestRun.status == "completed"
+                BacktestRun.user_id == current_user.id,
+                BacktestRun.status == "completed",
             ).order_by(BacktestRun.id.desc()).first()
 
     if ref is None:
