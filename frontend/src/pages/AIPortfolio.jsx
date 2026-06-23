@@ -708,7 +708,9 @@ function EdgeAttribution({ edge }) {
 
       {marketDriven && (
         <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-md px-2.5 py-1.5 mb-3">
-          Most of the realized gain came from market exposure — only {usd(excess)} beat a passive SPY position over the same windows. The dollar P&L overstates the edge.
+          {excess < 0
+            ? `The realized gain came entirely from market exposure — the portfolio actually trailed a passive SPY position by ${usd(Math.abs(excess))} over the same windows. The dollar P&L overstates the edge.`
+            : `Most of the realized gain came from market exposure — only ${usd(excess)} beat a passive SPY position over the same windows. The dollar P&L overstates the edge.`}
         </div>
       )}
 
