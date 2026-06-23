@@ -449,6 +449,37 @@ function EdgeSignificance({ data }) {
           Win rate {data.win_rate_pct}% · 95% likely between {ci[0]?.toFixed(0)}%–{ci[1]?.toFixed(0)}%
         </div>
       )}
+
+      <EdgePower power={data.power} significant={sig?.significant_95} />
+    </div>
+  )
+}
+
+// Phase 4 power analysis: when the alpha isn't yet statistically proven, how
+// much MORE data would it take to confirm it (if the current effect size
+// holds)? Reads `data.power` (backend/edge_metrics.py:_power_analysis) — a
+// z-based one-sample sample-size estimate on the daily alpha residuals.
+// Renders nothing once the alpha is already significant (the question is moot)
+// or when the effect is undefined / too small to estimate.
+function EdgePower({ power, significant }) {
+  if (!power || significant) return null
+  if (power.already_sufficient) {
+    return (
+      <div className="mt-2 text-[11px] text-emerald-400/90">
+        Sample is now large enough to detect this effect at 95% confidence (80% power) — accumulate the alpha trend to confirm direction.
+      </div>
+    )
+  }
+  if (power.additional_days_needed == null) return null
+  return (
+    <div className="mt-2 text-[11px] text-dark-500">
+      <span className="text-dark-400">Power:</span> at the current effect size,
+      {' '}≈{power.additional_days_needed} more trading day{power.additional_days_needed === 1 ? '' : 's'}
+      {power.est_additional_months != null && ` (~${power.est_additional_months} mo)`}
+      {' '}of data would be needed to prove this alpha at 95% confidence (80% power).
+      <span className="block text-dark-600 mt-0.5">
+        {power.current_days} of ≈{power.required_days} days collected · assumes the edge persists.
+      </span>
     </div>
   )
 }
@@ -614,6 +645,210 @@ function EdgeScorecard({ edge }) {
           </div>
         </>
       )}
+    </Card>
+  )
+}
+
+// ── Phase 3: per-position attribution ───────────────────────────────
+// Decomposes the realized edge across closed positions to answer the
+// question the headline return can't: is the gain SKILL (beat SPY over each
+// hold window) or just MARKET exposure? Reads the lifetime `edge.attribution`
+// block (backend/edge_metrics.py:attribute_returns) — NOT window-scoped, so it
+// uses the page-level `edge` prop, never the windowed scorecard `data`.
+function EdgeAttribution({ edge }) {
+  const a = edge?.attribution
+  if (!a || a.status !== 'ok' || !a.closed_positions) return null
+
+  const usd = (v) => (v == null ? '—' : formatCurrency(v))
+  const pct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`)
+  const signCls = (v) => (v == null ? 'text-dark-400' : v >= 0 ? 'text-emerald-400' : 'text-red-400')
+
+  // The headline insight: realized P&L vs the slice of it that actually beat
+  // SPY. When excess ≪ realized, the gains were market-driven, not edge.
+  const realized = a.total_realized_gain
+  const excess = a.total_excess_gain
+  const marketDriven = realized != null && excess != null && realized > 0 && excess < realized * 0.5
+
+  const conc = a.concentration || {}
+
+  const PositionRows = ({ rows }) => (
+    <div className="space-y-1">
+      {rows.map((r) => (
+        <div key={r.ticker + r.holding_days} className="grid grid-cols-12 gap-1 items-center text-[11px] py-0.5">
+          <span className="col-span-3 font-semibold text-dark-200 truncate">{r.ticker}</span>
+          <span className={`col-span-2 text-right ${signCls(r.position_return_pct)}`}>{pct(r.position_return_pct)}</span>
+          <span className="col-span-3 text-right text-dark-500">SPY {pct(r.spy_return_pct)}</span>
+          <span className={`col-span-2 text-right ${signCls(r.excess_gain)}`} title="Dollars earned beyond what the same capital would have made in SPY over this hold window">{usd(r.excess_gain)}</span>
+          <span className="col-span-2 text-right text-dark-400">{r.holding_days != null ? `${r.holding_days}d` : '—'}</span>
+        </div>
+      ))}
+    </div>
+  )
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Edge Attribution" subtitle="Which closed positions drive the edge — skill or market?" />
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <EdgeMetric
+          label="Realized P&L"
+          value={usd(realized)}
+          tone={realized == null ? 'neutral' : realized >= 0 ? 'pos' : 'neg'}
+          sub={`${a.closed_positions} closed`}
+          title="Total realized dollar gain/loss across all closed positions."
+        />
+        <EdgeMetric
+          label="Excess vs SPY"
+          value={usd(excess)}
+          tone={excess == null ? 'neutral' : excess >= 0 ? 'pos' : 'neg'}
+          sub="beyond market"
+          title="Realized P&L minus what the same capital would have earned sitting in SPY over each position's own hold window. This is the part attributable to selection/timing skill, not market exposure."
+        />
+      </div>
+
+      {marketDriven && (
+        <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-md px-2.5 py-1.5 mb-3">
+          Most of the realized gain came from market exposure — only {usd(excess)} beat a passive SPY position over the same windows. The dollar P&L overstates the edge.
+        </div>
+      )}
+
+      <div className="flex items-center justify-between text-[11px] text-dark-400 mb-2">
+        <span>{a.winners}W / {a.losers}L · winners {usd(a.gross_winners_gain)}, losers {usd(a.gross_losers_loss)}</span>
+      </div>
+
+      {(conc.top1_share_of_gains_pct != null || conc.names_for_half_of_gains != null) && (
+        <div className="text-[11px] text-dark-500 border-t border-dark-700/50 pt-2 mb-1">
+          Concentration:{' '}
+          {conc.top1_share_of_gains_pct != null && <>top name = {conc.top1_share_of_gains_pct}% of gains</>}
+          {conc.top3_share_of_gains_pct != null && <> · top 3 = {conc.top3_share_of_gains_pct}%</>}
+          {conc.names_for_half_of_gains != null && <> · {conc.names_for_half_of_gains} name{conc.names_for_half_of_gains === 1 ? '' : 's'} = half the gains</>}
+        </div>
+      )}
+
+      <div className="border-t border-dark-700/50 mt-2 pt-2">
+        <CollapsibleSection title="Top contributors & detractors" defaultOpen={false}>
+          <div className="grid grid-cols-12 gap-1 text-[10px] uppercase tracking-wide text-dark-600 mb-1">
+            <span className="col-span-3">Ticker</span>
+            <span className="col-span-2 text-right">Return</span>
+            <span className="col-span-3 text-right">vs SPY</span>
+            <span className="col-span-2 text-right">Excess $</span>
+            <span className="col-span-2 text-right">Held</span>
+          </div>
+          {a.top_contributors?.length > 0 && <PositionRows rows={a.top_contributors} />}
+          {a.top_detractors?.length > 0 && (
+            <>
+              <div className="text-[10px] uppercase tracking-wide text-dark-600 mt-2 mb-1">Detractors</div>
+              <PositionRows rows={a.top_detractors} />
+            </>
+          )}
+        </CollapsibleSection>
+      </div>
+    </Card>
+  )
+}
+
+// ── Phase 2: live-vs-backtest exit reconciliation ───────────────────
+// Surfaces trader↔backtester drift the headline numbers hide: for each exit
+// reason, does live trading behave like the reference backtest? A flagged
+// reason means the engine takes (or skips) an exit the backtest doesn't, or
+// holds/realizes it very differently — the mechanism behind backtests
+// overstating live performance. Reads /api/ai-portfolio/edge/reconciliation
+// (backend/edge_reconciliation.py). Read-only; ai_trader.py untouched.
+const RECON_FLAG_LABEL = {
+  hold_days: 'hold days',
+  win_rate: 'win rate',
+  realized_pct: 'avg return',
+  presence: 'one side only',
+}
+
+function ExitReconciliation({ reconciliation: rec }) {
+  if (!rec) return null
+
+  if (rec.status === 'no_reference_backtest') {
+    return (
+      <Card variant="glass" className="mb-4">
+        <CardHeader title="Live vs Backtest Exits" subtitle="Trader↔backtester exit-behavior drift" />
+        <EmptyState
+          bare
+          compact
+          message="No reference backtest yet"
+          hint="Run a nostate_optimized backtest to reconcile live exits against the model."
+        />
+      </Card>
+    )
+  }
+  if (rec.status !== 'ok' || !rec.comparison) return null
+
+  const cmp = rec.comparison
+  const aligned = cmp.verdict === 'aligned'
+  // Show reasons with enough data to compare, flagged ones first.
+  const rows = (cmp.reasons || [])
+    .filter((r) => (r.live?.count || 0) + (r.backtest?.count || 0) > 0)
+    .sort((a, b) => (b.divergence_flags?.length || 0) - (a.divergence_flags?.length || 0))
+
+  const pct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`)
+  const side = (s) =>
+    s
+      ? `${s.count}× · ${s.avg_hold_days != null ? `${s.avg_hold_days}d` : '—'} · WR ${s.win_rate != null ? `${s.win_rate}%` : '—'} · ${pct(s.avg_realized_pct)}`
+      : '—'
+
+  const ref = rec.reference_backtest || {}
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Live vs Backtest Exits" subtitle="Do live exits behave like the model? Divergence = drift." />
+
+      <div className="flex items-center gap-2 mb-3">
+        <span
+          className={`inline-flex items-center gap-1.5 text-[11px] font-semibold rounded-md border px-2 py-1 ${
+            aligned
+              ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25'
+              : 'text-amber-300 bg-amber-500/10 border-amber-500/25'
+          }`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" aria-hidden="true" />
+          {aligned ? 'Exits aligned' : `${cmp.diverged_reasons?.length || 0} reason${cmp.diverged_reasons?.length === 1 ? '' : 's'} diverged`}
+        </span>
+        <span className="text-[10px] text-dark-500">
+          {rec.live_exit_count} live vs {rec.backtest_exit_count} backtest exits
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {rows.map((r) => {
+          const flagged = r.divergence_flags?.length > 0
+          return (
+            <div
+              key={r.reason}
+              className={`rounded-md border px-2.5 py-1.5 ${
+                flagged ? 'border-amber-500/25 bg-amber-500/[0.04]' : 'border-dark-700/50'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-[11px] font-semibold text-dark-200">{r.reason}</span>
+                <div className="flex flex-wrap gap-1 justify-end">
+                  {r.divergence_flags?.map((f) => (
+                    <span key={f} className="text-[9px] uppercase tracking-wide text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded px-1 py-0.5">
+                      {RECON_FLAG_LABEL[f] || f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 text-[10px]">
+                <span className="text-dark-500"><span className="text-dark-400">Live</span> {side(r.live)}</span>
+                <span className="text-dark-500 text-right"><span className="text-dark-400">BT</span> {side(r.backtest)}</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="border-t border-dark-700/50 mt-3 pt-2 text-[10px] text-dark-500">
+        vs {ref.name || `backtest #${ref.id}`}
+        {ref.strategy && ` (${ref.strategy})`}
+        {ref.start_date && ref.end_date && ` · ${ref.start_date} → ${ref.end_date}`}
+        {' · '}fingerprint = count · avg hold · win rate · avg realized
+      </div>
     </Card>
   )
 }
@@ -2152,11 +2387,12 @@ export default function AIPortfolio() {
   const [windowReturns, setWindowReturns] = useState(null)
   const [windowReturnsLoading, setWindowReturnsLoading] = useState(false)
   const [edge, setEdge] = useState(null)
+  const [reconciliation, setReconciliation] = useState(null)
 
   const fetchData = async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true)
-      const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo, edgeData] = await Promise.all([
+      const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo, edgeData, reconData] = await Promise.all([
         api.getAIPortfolio(),
         api.getAIPortfolioHistory(90),
         api.getAIPortfolioTrades(50),
@@ -2164,6 +2400,7 @@ export default function AIPortfolio() {
         api.getEarningsCalendar().catch(() => null),
         api.getPortfolioRisk().catch(() => null),
         api.getAIPortfolioEdge(EDGE_ALL_DAYS).catch(() => null),
+        api.getAIPortfolioEdgeReconciliation().catch(() => null),
       ])
       setPortfolio(portfolioData)
       setHistory(historyData)
@@ -2172,6 +2409,7 @@ export default function AIPortfolio() {
       setEarningsCalendar(earningsData)
       setRiskData(riskInfo)
       setEdge(edgeData)
+      setReconciliation(reconData)
       setLastUpdated(new Date())
 
       // Check if data changed while waiting for trades
@@ -2523,6 +2761,10 @@ export default function AIPortfolio() {
           />
 
           <EdgeScorecard edge={edge} />
+
+          <EdgeAttribution edge={edge} />
+
+          <ExitReconciliation reconciliation={reconciliation} />
 
           <SectorAllocationChart
             riskData={riskData}

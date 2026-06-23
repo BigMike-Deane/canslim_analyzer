@@ -393,6 +393,11 @@ export const api = {
   getAIPortfolioEdge: (days = 365) =>
     request(`/api/ai-portfolio/edge?days=${days}`),
 
+  getAIPortfolioEdgeReconciliation: (backtestId = null) =>
+    request(
+      `/api/ai-portfolio/edge/reconciliation${backtestId != null ? `?backtest_id=${backtestId}` : ''}`,
+    ),
+
   getAIPortfolioTrades: (limit = 50, ticker = null) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (ticker) params.set('ticker', ticker)
