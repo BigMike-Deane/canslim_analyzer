@@ -1093,6 +1093,67 @@ class TestEdgeReconciliation:
         assert r.status_code == 200
         assert r.json()["status"] == "no_reference_backtest"
 
+    def test_since_filters_live_exits(self):
+        # `since` drops live exits executed before the cutoff (e.g. to isolate
+        # post-parity-fix behavior) while leaving the reference backtest intact.
+        _ensure_user()
+        db = _get_db()
+        try:
+            bt = BacktestRun(
+                user_id=1, name="Since Test BT", status="completed",
+                start_date=date(2023, 1, 1), end_date=date(2024, 1, 1),
+                starting_cash=25000.0, final_value=30000.0,
+                total_return_pct=20.0, strategy="nostate_optimized",
+                progress_pct=100.0, created_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+            )
+            db.add(bt); db.commit(); db.refresh(bt)
+            bt_id = bt.id
+            db.add(BacktestTrade(
+                backtest_id=bt_id, date=date(2023, 6, 1), ticker="SNCE",
+                action="SELL", shares=10.0, price=110.0, reason="STOP LOSS: x",
+                realized_gain=-80.0, realized_gain_pct=-8.0, holding_days=12,
+            ))
+            # One pre-cutoff live sell and one post-cutoff (naive-UTC, as stored).
+            db.add(AIPortfolioTrade(
+                user_id=1, ticker="SNCE", action="SELL", shares=10.0, price=110.0,
+                total_value=1000.0, reason="STOP LOSS: down 18%", cost_basis=100.0,
+                realized_gain=-180.0, holding_days=14,
+                executed_at=datetime(2026, 6, 1),
+            ))
+            db.add(AIPortfolioTrade(
+                user_id=1, ticker="SNCE", action="SELL", shares=10.0, price=110.0,
+                total_value=1000.0, reason="STOP LOSS: down 8%", cost_basis=100.0,
+                realized_gain=-80.0, holding_days=10,
+                executed_at=datetime(2026, 6, 20),
+            ))
+            db.commit()
+        finally:
+            db.close()
+        try:
+            base = f"/api/ai-portfolio/edge/reconciliation?backtest_id={bt_id}"
+            d_all = client.get(base).json()
+            d_since = client.get(base + "&since=2026-06-15").json()
+            assert d_all["since"] is None
+            assert d_since["since"] == "2026-06-15"
+            # Exactly the one pre-cutoff SNCE sell is dropped; backtest unchanged.
+            assert d_all["live_exit_count"] - d_since["live_exit_count"] == 1
+            assert d_all["backtest_exit_count"] == d_since["backtest_exit_count"]
+        finally:
+            db = _get_db()
+            try:
+                db.query(BacktestTrade).filter_by(backtest_id=bt_id).delete()
+                db.query(BacktestRun).filter_by(id=bt_id).delete()
+                db.query(AIPortfolioTrade).filter_by(user_id=1, ticker="SNCE").delete()
+                db.commit()
+            finally:
+                db.close()
+
+    def test_since_invalid_format_returns_400(self):
+        r = client.get("/api/ai-portfolio/edge/reconciliation?since=06-18-2026")
+        assert r.status_code == 400
+        assert "since" in r.json()["detail"].lower()
+
     def test_cannot_reconcile_against_another_users_backtest(self):
         # IDOR guard: a backtest owned by a DIFFERENT user must be unreachable
         # even when its id is supplied explicitly — no cross-user fingerprint leak.

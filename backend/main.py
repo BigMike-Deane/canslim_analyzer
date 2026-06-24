@@ -3713,6 +3713,7 @@ async def get_ai_portfolio_edge(
 @app.get("/api/ai-portfolio/edge/reconciliation")
 async def get_ai_portfolio_edge_reconciliation(
     backtest_id: Optional[int] = Query(None, description="Reference backtest to reconcile against; defaults to the latest completed nostate_optimized run"),
+    since: Optional[str] = Query(None, description="Only include LIVE exits executed on/after this date (YYYY-MM-DD), e.g. 2026-06-18 to isolate post-parity-fix behavior. The reference backtest is NOT filtered."),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -3724,16 +3725,34 @@ async def get_ai_portfolio_edge_reconciliation(
     gap, trailing-stop cadence churn) surface SYSTEMATICALLY rather than by
     accident. Read-only; ai_trader.py untouched. See backend/edge_reconciliation.py
     for why fingerprints (not trade-by-trade) are the honest unit of comparison.
+
+    ``since`` filters only the LIVE exit set (by ``executed_at``), letting you
+    isolate behavior after a known parity fix — e.g. ``since=2026-06-18`` answers
+    "did the D1 stop-guard fix close the live STOP LOSS leak?" without the prior
+    debt contaminating the average. The reference backtest is a fixed historical
+    run, so filtering it by a present-day calendar date is meaningless and is
+    deliberately left untouched.
     """
     from backend.edge_reconciliation import (
         summarize_exits, compare_exit_behavior,
         live_trade_to_record, backtest_trade_to_record,
     )
 
-    live_sells = db.query(AIPortfolioTrade).filter(
+    since_dt = None
+    if since is not None:
+        try:
+            # executed_at is stored naive-UTC; keep the boundary naive to match.
+            since_dt = datetime.strptime(since, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid 'since' date; expected YYYY-MM-DD.")
+
+    live_q = db.query(AIPortfolioTrade).filter(
         AIPortfolioTrade.user_id == current_user.id,
         AIPortfolioTrade.action == "SELL",
-    ).all()
+    )
+    if since_dt is not None:
+        live_q = live_q.filter(AIPortfolioTrade.executed_at >= since_dt)
+    live_sells = live_q.all()
     live_records = [live_trade_to_record(t) for t in live_sells]
     live_summary = summarize_exits(live_records)
 
@@ -3767,6 +3786,7 @@ async def get_ai_portfolio_edge_reconciliation(
     if ref is None:
         return {
             "status": "no_reference_backtest",
+            "since": since,
             "live_exit_count": len(live_records),
             "live_summary": live_summary,
             "message": "No completed backtest is available to reconcile against.",
@@ -3789,6 +3809,7 @@ async def get_ai_portfolio_edge_reconciliation(
     comparison = compare_exit_behavior(live_summary, bt_summary)
     return {
         "status": "ok",
+        "since": since,
         "reference_backtest": {
             "id": ref.id,
             "name": ref.name,
