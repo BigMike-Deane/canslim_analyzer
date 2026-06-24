@@ -1859,8 +1859,13 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
             })
             continue
 
-        # For winners, use additional score-based logic
-        profile_take_profit = profile.get('take_profit_pct', portfolio_config.take_profit_pct)
+        # For winners, use additional score-based logic.
+        # Fallback is the literal 75.0 to stay in parity with the backtester
+        # (backtester.py get_partial_profit_action caller) and the sibling reads
+        # at lines 3763/3783 — a profile that omits take_profit_pct must take
+        # profit at the same threshold live and in simulation, not at the stale
+        # AIPortfolioConfig column default (25.0).
+        profile_take_profit = profile.get('take_profit_pct', 75.0)
         if gain_pct >= 20:
             # If up 20%+, only sell if score is weak AND gains are fading
             if score < portfolio_config.sell_score_threshold:
