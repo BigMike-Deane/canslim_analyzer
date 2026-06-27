@@ -152,21 +152,33 @@ async def upload_fidelity_activity(file: UploadFile = File(...), current_user: U
         logger.exception("Unexpected error parsing activity CSV")
         raise HTTPException(status_code=400, detail="Could not parse activity CSV")
 
-    # Deduplicate: skip trades that already exist
+    # Deduplicate: skip trades that already exist. Pre-load existing dedup keys
+    # for the dates in this CSV in ONE query (was an N+1: a `.first()` per
+    # parsed row → hundreds of queries on a full statement). Newly inserted
+    # rows are added to the same set so repeated rows within a single upload
+    # still collapse (previously relied on autoflush).
     new_count = 0
     skipped = 0
+    csv_dates = {date.fromisoformat(t["run_date"]) for t in result["trades"]}
+    seen_keys: set = set()
+    if csv_dates:
+        seen_keys = {
+            (r.run_date, r.symbol, r.action)
+            for r in db.query(
+                FidelityTrade.run_date, FidelityTrade.symbol, FidelityTrade.action
+            ).filter(
+                FidelityTrade.user_id == current_user.id,
+                FidelityTrade.run_date.in_(csv_dates),
+            ).all()
+        }
     for t in result["trades"]:
         trade_date = date.fromisoformat(t["run_date"])
-        existing = db.query(FidelityTrade).filter(
-            FidelityTrade.user_id == current_user.id,
-            FidelityTrade.run_date == trade_date,
-            FidelityTrade.symbol == t["symbol"],
-            FidelityTrade.action == t["action"],
-        ).first()
+        key = (trade_date, t["symbol"], t["action"])
 
-        if existing:
+        if key in seen_keys:
             skipped += 1
             continue
+        seen_keys.add(key)
 
         db.add(FidelityTrade(
             user_id=current_user.id,

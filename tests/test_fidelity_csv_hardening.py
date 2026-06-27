@@ -364,15 +364,18 @@ class TestThreat7DedupRace:
         Mitigation deferred — separate session per the brief.
         This test documents the known gap so future migration work can
         target the exact code path."""
-        # Verify the route path that has the race
+        # Verify the route path that still has the race. Dedup is now a
+        # batched pre-load into an in-memory `seen_keys` set (one query instead
+        # of a per-row `.first()`), but it remains check-then-insert: concurrent
+        # uploads share no lock and there is no DB unique constraint, so both
+        # can pass `key in seen_keys` and double-insert.
         import inspect
         src = inspect.getsource(fidelity_routes.upload_fidelity_activity)
-        # Pattern: db.query(FidelityTrade).filter(...).first() followed by db.add()
-        assert "db.query(FidelityTrade)" in src
-        assert "db.add(FidelityTrade(" in src
+        assert "db.query(" in src and "FidelityTrade" in src
+        assert "seen_keys" in src            # in-memory dedup set (check)
+        assert "db.add(FidelityTrade(" in src  # insert, with no unique constraint
         # NOTE: A unique constraint on (user_id, run_date, symbol, action)
-        # would close this — but that's a DB migration deferred past
-        # 2026-06-18 eval window.
+        # would close this — still a deferred DB migration.
 
 
 # ════════════════════════════════════════════════════════════════════
