@@ -160,7 +160,7 @@ export default function BearBase() {
       label: 'CANSLIM',
       align: 'center',
       sortable: true,
-      render: (val) => <ScoreBadge score={val} size="sm" />,
+      render: (val, row) => <ScoreBadge score={val} ticker={row.ticker} size="sm" />,
     },
     {
       key: 'base_type',

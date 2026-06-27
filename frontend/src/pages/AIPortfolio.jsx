@@ -1059,7 +1059,7 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
                   {isMidWindow && <span className="text-dark-500 ml-1">·new</span>}
                 </span>
               </div>
-              <ScoreBadge score={glanceScore} size="sm" className="shrink-0" />
+              <ScoreBadge score={glanceScore} ticker={position.ticker} size="sm" className="shrink-0" />
             </button>
           )
         })}
@@ -2137,7 +2137,7 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
                   </div>
                 </div>
                 <div className="text-right">
-                  <ScoreBadge score={stock.canslim_score} size="sm" />
+                  <ScoreBadge score={stock.canslim_score} ticker={stock.ticker} size="sm" />
                   <div className="text-[10px] text-teal-400 font-data mt-0.5">+{stock.cs_bonus} bonus</div>
                 </div>
               </Link>

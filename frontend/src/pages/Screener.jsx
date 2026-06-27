@@ -130,7 +130,7 @@ function StockRow({ stock, isWatched, onWatched }) {
         </div>
 
         <div className="text-right ml-3 flex flex-col items-end gap-1">
-          <ScoreBadge score={stock.canslim_score} size="md" />
+          <ScoreBadge score={stock.canslim_score} ticker={stock.ticker} size="md" />
           {stock.projected_growth != null && (
             <span className="text-[10px] text-emerald-400 font-data">
               +{stock.projected_growth.toFixed(0)}%

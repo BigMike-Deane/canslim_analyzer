@@ -93,7 +93,7 @@ function JournalEntry({ entry }) {
               {entry.ticker}
             </Link>
             {entry.canslim_score != null && (
-              <ScoreBadge score={entry.canslim_score} size="xs" />
+              <ScoreBadge score={entry.canslim_score} ticker={entry.ticker} size="xs" />
             )}
           </div>
           <span className="text-[10px] text-dark-400 font-data shrink-0">

@@ -115,7 +115,7 @@ function PositionsTable({ positions, cashBalance }) {
                 </td>
                 <td className="text-right py-2 px-2">
                   {effectiveScore != null ? (
-                    <ScoreBadge score={effectiveScore} size="xs" />
+                    <ScoreBadge score={effectiveScore} ticker={p.symbol} size="xs" />
                   ) : (
                     <span className="text-dark-600 text-[10px]">-</span>
                   )}

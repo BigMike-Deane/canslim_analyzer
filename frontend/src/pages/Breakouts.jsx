@@ -72,7 +72,7 @@ function BreakoutRow({ stock }) {
       <div className="text-right">
         <div className="font-data font-semibold text-dark-100">{formatCurrency(stock.current_price)}</div>
         <div className="flex items-center gap-2 justify-end mt-1">
-          <ScoreBadge score={stock.canslim_score} size="sm" />
+          <ScoreBadge score={stock.canslim_score} ticker={stock.ticker} size="sm" />
           {stock.volume_ratio != null && (
             <span className={`text-[10px] font-data ${stock.volume_ratio >= 1.5 ? 'text-emerald-400' : 'text-dark-500'}`}>
               {stock.volume_ratio.toFixed(1)}x vol

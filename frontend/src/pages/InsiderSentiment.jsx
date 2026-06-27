@@ -67,7 +67,7 @@ export default function InsiderSentiment() {
       label: 'Score',
       align: 'center',
       sortable: true,
-      render: (val) => <ScoreBadge score={val} size="xs" />,
+      render: (val, row) => <ScoreBadge score={val} ticker={row.ticker} size="xs" />,
     },
     {
       key: 'current_price',

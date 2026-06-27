@@ -45,7 +45,7 @@ function WatchlistItem({ item, onRemove }) {
           {hasData ? (
             <>
               <span className="font-semibold font-data text-dark-50">{formatCurrency(item.current_price)}</span>
-              <ScoreBadge score={item.canslim_score} size="xs" />
+              <ScoreBadge score={item.canslim_score} ticker={item.ticker} size="xs" />
             </>
           ) : (
             <div className="text-dark-500 text-sm">No data</div>

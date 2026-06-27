@@ -1,6 +1,14 @@
 import { getScoreClass } from '../api'
+import ScorePopover from './ScorePopover'
 
-export function ScoreBadge({ score, size = 'sm', className = '' }) {
+// When `ticker` is supplied the badge becomes an interactive trigger that opens
+// the CANSLIM component breakdown (see ScorePopover). Without it, it's the same
+// plain, presentational badge it has always been — every existing call site is
+// unaffected until it opts in by passing a ticker.
+export function ScoreBadge({ score, size = 'sm', className = '', ticker = null, details = null }) {
+  if (ticker) {
+    return <ScorePopover score={score} ticker={ticker} size={size} className={className} details={details} />
+  }
   const cls = getScoreClass(score)
   const sizes = {
     xs: 'text-[11px] px-1.5 py-0.5',

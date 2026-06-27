@@ -197,7 +197,7 @@ function CoiledSpringSection({ cs }) {
                   {c.days_to_earnings}d
                 </span>
                 <span className="text-[10px] text-dark-500 font-data">{c.beat_streak}x</span>
-                <ScoreBadge score={c.score} size="xs" />
+                <ScoreBadge score={c.score} ticker={c.ticker} size="xs" />
               </div>
             </Link>
           ))}
@@ -259,7 +259,7 @@ const PositionRow = memo(function PositionRow({ p, earningsDays }) {
         )}
       </div>
       <div className="flex items-center gap-3 shrink-0">
-        <ScoreBadge score={p.score} size="xs" />
+        <ScoreBadge score={p.score} ticker={p.ticker} size="xs" />
         <span className={`font-data text-xs w-14 text-right ${p.gain_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
           {p.gain_pct >= 0 ? '+' : ''}{p.gain_pct?.toFixed(1)}%
         </span>
@@ -331,7 +331,7 @@ function CandidateRow({ c, portfolio }) {
         <span className="text-[10px] text-dark-500 truncate max-w-[60px] shrink-0">{c.sector?.split(' ')[0]}</span>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <ScoreBadge score={c.score} size="xs" />
+        <ScoreBadge score={c.score} ticker={c.ticker} size="xs" />
         {c.projected_growth > 0 && (
           <span className="text-emerald-400 text-[10px] font-data shrink-0">
             +{c.projected_growth?.toFixed(0)}%
