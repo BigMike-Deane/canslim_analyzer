@@ -1358,20 +1358,63 @@ class TestCoiledSpring:
         assert count_after >= 3  # All seeded alerts still there
 
     def test_update_outcomes_no_op_when_nothing_eligible(self):
-        """Latent bug: main.py:3091 references bare `config` without
-        importing it from config_loader (scheduler.py:466 does this
-        correctly). The for loop avoids the NameError as long as no alert
-        is eligible for outcome calculation. Our seeded alerts use
-        alert_date 60 and 20 days ago with days_to_earnings=10, so the
-        guard at line 3082 (days_since_alert < days_to_earnings + 1)
-        causes `continue` for the in-window alert and the buggy `config`
-        reference is never reached. Bug captured in memory; fix deferred
-        past 2026-06-18 eval window per brief's freeze rule."""
+        """No-op path: when no alert is eligible (the class-seeded alerts all
+        carry outcomes, and the recent ZS alert is skipped by the earnings
+        guard), the endpoint returns 200 with a clean `updated` count. The
+        eligible path — which used to 500 on an unimported `config` — is
+        covered by test_update_outcomes_computes_outcome_for_eligible_alert."""
+        # Ensure no stray eligible alert lingers from another test's seeding.
+        db = _db()
+        try:
+            db.query(CoiledSpringAlert).filter(
+                CoiledSpringAlert.outcome == None,  # noqa: E711
+                CoiledSpringAlert.price_at_alert == 360.0,
+            ).delete()
+            db.commit()
+        finally:
+            db.close()
         r = client.post("/api/coiled-spring/update-outcomes")
         assert r.status_code == 200
-        # All seeded alerts are old enough that the loop continues past the
-        # config.get reference, so 0 updates is the expected outcome here.
         assert "updated" in r.json()
+
+    def test_update_outcomes_computes_outcome_for_eligible_alert(self):
+        """Regression: the endpoint must resolve config thresholds without a
+        NameError. `config` was referenced unimported, so ANY eligible alert
+        (the only path that reaches the threshold lookup) raised NameError →
+        500; the endpoint returned 200 only when nothing was eligible. Seed
+        one fully-eligible alert + its stock and assert the outcome is written.
+        ANET current 400 vs price_at_alert 360 = +11.1% ⇒ 'win'."""
+        db = _db()
+        try:
+            # Clean any prior copy so the assertion is unambiguous.
+            db.query(CoiledSpringAlert).filter(
+                CoiledSpringAlert.price_at_alert == 360.0,
+            ).delete()
+            db.add(CoiledSpringAlert(
+                ticker="ANET", alert_date=date.today() - timedelta(days=50),
+                days_to_earnings=10, weeks_in_base=18, beat_streak=4,
+                c_score=13, total_score=78, price_at_alert=360.0,
+                base_type="cup", institutional_pct=25, l_score=10,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.post("/api/coiled-spring/update-outcomes")
+        assert r.status_code == 200
+        assert r.json()["updated"] >= 1
+
+        db = _db()
+        try:
+            a = (db.query(CoiledSpringAlert)
+                   .filter(CoiledSpringAlert.price_at_alert == 360.0)
+                   .first())
+            assert a is not None
+            assert a.outcome == "win"
+            assert a.price_after_earnings == 400.0
+            assert a.price_change_pct == round((400.0 - 360.0) / 360.0 * 100, 2)
+        finally:
+            db.close()
 
 
 # ────────────────────────────────────────────────────────────────────

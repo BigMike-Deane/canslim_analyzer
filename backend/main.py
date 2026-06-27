@@ -3218,6 +3218,7 @@ async def update_coiled_spring_outcomes(current_user: User = Depends(get_current
     """
     from backend.database import CoiledSpringAlert
     from datetime import date, datetime
+    from config_loader import config  # bare `config` was undefined here (latent NameError)
 
     # Find alerts without outcomes where earnings should have passed
     alerts = db.query(CoiledSpringAlert).filter(
@@ -3225,10 +3226,22 @@ async def update_coiled_spring_outcomes(current_user: User = Depends(get_current
         CoiledSpringAlert.price_at_alert != None
     ).all()
 
+    # Batch fetch all stocks for these alerts (avoid N+1 queries)
+    alert_tickers = list({a.ticker for a in alerts})
+    stocks_by_ticker = {}
+    if alert_tickers:
+        stocks_by_ticker = {
+            s.ticker: s
+            for s in db.query(Stock).filter(Stock.ticker.in_(alert_tickers)).all()
+        }
+
+    # Outcome thresholds are config-static — read once, not per alert.
+    ot_thresholds = config.get('coiled_spring', {}).get('outcome_tracking', {}).get('thresholds', {})
+
     updated = 0
     for alert in alerts:
         # Get current stock price
-        stock = db.query(Stock).filter(Stock.ticker == alert.ticker).first()
+        stock = stocks_by_ticker.get(alert.ticker)
         if not stock or not stock.current_price:
             continue
 
@@ -3242,9 +3255,7 @@ async def update_coiled_spring_outcomes(current_user: User = Depends(get_current
             continue
         price_change_pct = ((stock.current_price - alert.price_at_alert) / alert.price_at_alert) * 100
 
-        # Use config thresholds (matching scheduler.py's outcome logic)
-        cs_config = config.get('coiled_spring', {})
-        ot_thresholds = cs_config.get('outcome_tracking', {}).get('thresholds', {})
+        # Outcome thresholds resolved once above (config-static).
         if price_change_pct >= ot_thresholds.get('big_win_pct', 15):
             outcome = "big_win"
         elif price_change_pct >= ot_thresholds.get('win_pct', 3):
