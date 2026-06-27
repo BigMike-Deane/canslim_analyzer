@@ -126,20 +126,30 @@ def _ensure_stock(ticker, score=80.0, **kwargs):
 
 
 def _ensure_market_snapshot():
+    # Authoritative upsert: force today's snapshot to the known bullish fixture
+    # (spy 520 > ma50 510) even if another test already wrote today's row from
+    # LIVE data via update_market_snapshot(). The command-center handler reads
+    # `MarketSnapshot ORDER BY date DESC`, so a stale live-valued today row made
+    # the price>ma50 (BUY DAY) contract assertions flake on suite ordering.
     db = _db()
     try:
-        if not db.query(MarketSnapshot).filter_by(date=date.today()).first():
-            db.add(MarketSnapshot(
-                date=date.today(),
-                spy_price=520.0, spy_50_ma=510.0, spy_200_ma=480.0,
-                qqq_price=450.0, qqq_50_ma=440.0,
-                dia_price=380.0, dia_50_ma=375.0,
-                weighted_signal=1.2,
-                spy_signal="bullish",
-                market_score=10.0, market_trend="bullish",
-                created_at=datetime.now(timezone.utc),
-            ))
-            db.commit()
+        snap = db.query(MarketSnapshot).filter_by(date=date.today()).first()
+        if snap is None:
+            snap = MarketSnapshot(date=date.today())
+            db.add(snap)
+        snap.spy_price = 520.0
+        snap.spy_50_ma = 510.0
+        snap.spy_200_ma = 480.0
+        snap.qqq_price = 450.0
+        snap.qqq_50_ma = 440.0
+        snap.dia_price = 380.0
+        snap.dia_50_ma = 375.0
+        snap.weighted_signal = 1.2
+        snap.spy_signal = "bullish"
+        snap.market_score = 10.0
+        snap.market_trend = "bullish"
+        snap.created_at = datetime.now(timezone.utc)
+        db.commit()
     finally:
         db.close()
 
