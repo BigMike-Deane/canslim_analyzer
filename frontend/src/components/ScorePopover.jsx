@@ -154,9 +154,14 @@ export default function ScorePopover({ score, ticker, size = 'sm', className = '
           style={{ top: anchor.top, bottom: anchor.bottom, left: anchor.left, width: PANEL_WIDTH }}
           className="fixed z-[100] bg-dark-900 border border-dark-700 rounded-lg shadow-2xl p-3"
         >
+          {/* Header shows the ticker + a static label only — deliberately NOT
+              the composite score. The trigger badge can carry a context score
+              (e.g. a position's tracked score) that differs from the live
+              stock's freshly-fetched components, so repeating a number here
+              would risk contradicting the bars below it. */}
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[11px] font-semibold tracking-wide text-dark-200">{ticker}</span>
-            <span className={`text-xs font-data font-bold rounded px-1.5 py-0.5 ${cls}`}>{display}</span>
+            <span className="text-[9px] uppercase tracking-wider text-dark-500">CANSLIM</span>
           </div>
 
           {loading && (
