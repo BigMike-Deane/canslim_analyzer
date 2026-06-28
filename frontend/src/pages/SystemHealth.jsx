@@ -1,15 +1,24 @@
 import { useState, useEffect, useRef } from 'react'
 import { api, formatRelativeTime } from '../api'
 import Card, { CardHeader } from '../components/Card'
+import PageHeader from '../components/PageHeader'
+import Spinner from '../components/Spinner'
+import DataTable from '../components/DataTable'
 
 const AUTO_REFRESH_MS = 30_000
 
+// Health-status pill. Palette aligned to the app's design tokens (emerald /
+// amber at /15 + border) — the shared Badge.StatusBadge doesn't know these
+// ops statuses (healthy/degraded/scanning/...), so this stays local but must
+// not drift to off-brand green/yellow.
 function StatusBadge({ status }) {
-  const color = status === 'healthy' ? 'bg-green-500/20 text-green-400'
-    : status === 'degraded' ? 'bg-yellow-500/20 text-yellow-400'
-    : status === 'not configured' ? 'bg-dark-600 text-dark-400'
-    : 'bg-red-500/20 text-red-400'
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${color}`}>{status}</span>
+  const color = status === 'healthy' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20'
+    : status === 'scanning' ? 'bg-primary-500/15 text-primary-400 border-primary-500/20'
+    : status === 'degraded' ? 'bg-amber-500/15 text-amber-400 border-amber-500/20'
+    : status === 'not configured' || status === 'inactive' || status === 'stopped'
+      ? 'bg-dark-600/50 text-dark-400 border-dark-500/30'
+    : 'bg-red-500/15 text-red-400 border-red-500/20'
+  return <span className={`px-2 py-0.5 rounded border text-xs font-medium ${color}`}>{status}</span>
 }
 
 function HealthCard({ title, children, status }) {
@@ -38,7 +47,7 @@ function TimeAgo({ iso }) {
   if (!iso) return <span className="text-dark-500">never</span>
   const d = new Date(iso)
   const mins = Math.round((Date.now() - d.getTime()) / 60000)
-  if (mins < 1) return <span className="text-green-400">just now</span>
+  if (mins < 1) return <span className="text-emerald-400">just now</span>
   if (mins < 60) return <span className="text-dark-200">{mins}m ago</span>
   const hrs = Math.round(mins / 60)
   if (hrs < 24) return <span className="text-dark-300">{hrs}h ago</span>
@@ -109,7 +118,7 @@ export default function SystemHealth() {
 
   if (loading) return (
     <div className="p-6 flex items-center justify-center min-h-[60vh]">
-      <div className="w-6 h-6 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
+      <Spinner size="md" />
     </div>
   )
 
@@ -121,36 +130,33 @@ export default function SystemHealth() {
 
   return (
     <div className="p-4 md:p-6 space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-xl font-bold text-dark-100">System Health</h1>
-          {lastRefreshed && (
-            <p className="text-[11px] text-dark-500 mt-0.5">
-              Updated {formatRelativeTime(lastRefreshed)}
-              {autoRefresh && <span className="text-dark-600"> · auto every 30s</span>}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setAutoRefresh(v => !v)}
-            className={`text-xs px-3 py-1 rounded border transition-colors ${
-              autoRefresh
-                ? 'bg-primary-500/10 text-primary-400 border-primary-500/30'
-                : 'text-dark-400 border-dark-700 hover:border-dark-600'
-            }`}
-            title={autoRefresh ? 'Pause auto-refresh' : 'Resume auto-refresh'}
-          >
-            {autoRefresh ? 'Auto' : 'Paused'}
-          </button>
-          <button
-            onClick={load}
-            className="text-xs text-dark-400 hover:text-dark-200 px-3 py-1 rounded border border-dark-700 hover:border-dark-600"
-          >
-            Refresh
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="System Health"
+        subtitle={lastRefreshed
+          ? `Updated ${formatRelativeTime(lastRefreshed)}${autoRefresh ? ' · auto every 30s' : ''}`
+          : undefined}
+        actions={
+          <>
+            <button
+              onClick={() => setAutoRefresh(v => !v)}
+              className={`text-xs px-3 py-1 rounded border transition-colors ${
+                autoRefresh
+                  ? 'bg-primary-500/10 text-primary-400 border-primary-500/30'
+                  : 'text-dark-400 border-dark-700 hover:border-dark-600'
+              }`}
+              title={autoRefresh ? 'Pause auto-refresh' : 'Resume auto-refresh'}
+            >
+              {autoRefresh ? 'Auto' : 'Paused'}
+            </button>
+            <button
+              onClick={load}
+              className="text-xs text-dark-400 hover:text-dark-200 px-3 py-1 rounded border border-dark-700 hover:border-dark-600"
+            >
+              Refresh
+            </button>
+          </>
+        }
+      />
 
       {/* Running build — confirms which deploy is live (see backend/build_info.py) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -226,13 +232,13 @@ export default function SystemHealth() {
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-dark-300">Scan Failures</span>
-              <span className={scheduler?.consecutive_scan_failures > 0 ? 'text-red-400 font-medium' : 'text-green-400'}>
+              <span className={scheduler?.consecutive_scan_failures > 0 ? 'text-red-400 font-medium' : 'text-emerald-400'}>
                 {scheduler?.consecutive_scan_failures || 0}
               </span>
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-dark-300">Trade Failures</span>
-              <span className={scheduler?.consecutive_trade_failures > 0 ? 'text-red-400 font-medium' : 'text-green-400'}>
+              <span className={scheduler?.consecutive_trade_failures > 0 ? 'text-red-400 font-medium' : 'text-emerald-400'}>
                 {scheduler?.consecutive_trade_failures || 0}
               </span>
             </div>
@@ -263,7 +269,7 @@ export default function SystemHealth() {
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-dark-300">Circuit Breaker</span>
-              <span className={fmp_api?.circuit_open ? 'text-red-400 font-medium' : 'text-green-400'}>
+              <span className={fmp_api?.circuit_open ? 'text-red-400 font-medium' : 'text-emerald-400'}>
                 {fmp_api?.circuit_open ? 'OPEN' : 'Closed'}
               </span>
             </div>
@@ -295,36 +301,23 @@ export default function SystemHealth() {
           </button>
         </div>
 
-        {backups.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-dark-400 text-xs border-b border-dark-700">
-                  <th className="text-left py-2 font-medium">Filename</th>
-                  <th className="text-right py-2 font-medium">Size</th>
-                  <th className="text-right py-2 font-medium">Created</th>
-                  <th className="text-right py-2 font-medium">Type</th>
-                </tr>
-              </thead>
-              <tbody>
-                {backups.map(b => (
-                  <tr key={b.filename} className="border-b border-dark-700/50">
-                    <td className="py-1.5 text-dark-200 font-mono text-xs">{b.filename}</td>
-                    <td className="py-1.5 text-right text-dark-300">{b.size_mb} MB</td>
-                    <td className="py-1.5 text-right"><TimeAgo iso={b.created} /></td>
-                    <td className="py-1.5 text-right">
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${b.is_weekly ? 'bg-purple-500/20 text-purple-400' : 'bg-dark-700 text-dark-400'}`}>
-                        {b.is_weekly ? 'weekly' : 'daily'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-4 text-dark-500 text-sm">No backups yet. Click "Backup Now" to create one.</div>
-        )}
+        <DataTable
+          compact
+          sortable={false}
+          keyField="filename"
+          data={backups}
+          emptyMessage='No backups yet. Click "Backup Now" to create one.'
+          columns={[
+            { key: 'filename', label: 'Filename', className: 'text-dark-200 font-mono text-xs' },
+            { key: 'size_mb', label: 'Size', align: 'right', mobileHide: true, render: v => <span className="text-dark-300">{v} MB</span> },
+            { key: 'created', label: 'Created', align: 'right', render: v => <TimeAgo iso={v} /> },
+            { key: 'is_weekly', label: 'Type', align: 'right', render: v => (
+              <span className={`text-xs px-1.5 py-0.5 rounded ${v ? 'bg-purple-500/20 text-purple-400' : 'bg-dark-700 text-dark-400'}`}>
+                {v ? 'weekly' : 'daily'}
+              </span>
+            ) },
+          ]}
+        />
       </HealthCard>
 
       {/* Recent Errors */}

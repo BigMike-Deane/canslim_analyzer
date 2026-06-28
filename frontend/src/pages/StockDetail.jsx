@@ -7,6 +7,7 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Spinner from '../components/Spinner'
+import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
 import PositionSizingCard from '../components/PositionSizingCard'
 import { computePositionSizing } from '../positionSizing'
@@ -1051,6 +1052,12 @@ export default function StockDetail() {
   // Lightweight piggyback fetch — same endpoint AIPortfolio.jsx uses, so
   // it'll hit the api.js 120s cache on the second view of this page.
   const [aiPortfolio, setAiPortfolio] = useState(null)
+  // Add-to-portfolio modal (replaces the off-brand native prompt() flow —
+  // two prompts were jarring and unusable on a mobile keyboard).
+  const [addOpen, setAddOpen] = useState(false)
+  const [addShares, setAddShares] = useState('')
+  const [addCost, setAddCost] = useState('')
+  const [addBusy, setAddBusy] = useState(false)
 
   // Adjacent tickers from the list page the user came from (Screener,
   // Watchlist, Breakouts). null source = no context (direct URL, etc.),
@@ -1117,20 +1124,30 @@ export default function StockDetail() {
     }
   }
 
-  const handleAddToPortfolio = async () => {
-    const shares = prompt('Number of shares:')
-    const costBasis = prompt('Cost per share:')
-    if (shares && costBasis) {
-      try {
-        await api.addPosition({
-          ticker,
-          shares: parseFloat(shares),
-          cost_basis: parseFloat(costBasis)
-        })
-        toast.success(`${ticker} added to portfolio`)
-      } catch (err) {
-        toast.error(err.message || 'Failed to add to portfolio')
-      }
+  const openAddToPortfolio = () => {
+    // Prefill cost with the latest price when we have it — one less field to type.
+    setAddShares('')
+    setAddCost(stock?.price != null ? String(stock.price) : '')
+    setAddOpen(true)
+  }
+
+  const submitAddToPortfolio = async (e) => {
+    e?.preventDefault()
+    const shares = parseFloat(addShares)
+    const costBasis = parseFloat(addCost)
+    if (!(shares > 0) || !(costBasis > 0)) {
+      toast.error('Enter a positive share count and cost per share')
+      return
+    }
+    setAddBusy(true)
+    try {
+      await api.addPosition({ ticker, shares, cost_basis: costBasis })
+      toast.success(`${ticker} added to portfolio`)
+      setAddOpen(false)
+    } catch (err) {
+      toast.error(err.message || 'Failed to add to portfolio')
+    } finally {
+      setAddBusy(false)
     }
   }
 
@@ -1312,7 +1329,7 @@ export default function StockDetail() {
           <button onClick={handleAddToWatchlist} className="btn-secondary">
             + Watchlist
           </button>
-          <button onClick={handleAddToPortfolio} className="btn-primary">
+          <button onClick={openAddToPortfolio} className="btn-primary">
             + Portfolio
           </button>
         </div>
@@ -1333,6 +1350,56 @@ export default function StockDetail() {
           Last updated: {stock.last_updated ? formatDateTime(stock.last_updated) : 'Never'}
         </div>
       </section>
+
+      {/* Add-to-portfolio modal */}
+      <Modal open={addOpen} onClose={() => !addBusy && setAddOpen(false)} title={`Add ${ticker} to Portfolio`} size="sm">
+        <form onSubmit={submitAddToPortfolio} className="space-y-4">
+          <div>
+            <label className="block text-[10px] font-semibold tracking-wider uppercase text-dark-400 mb-1.5">
+              Number of shares
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              autoFocus
+              value={addShares}
+              onChange={(e) => setAddShares(e.target.value)}
+              placeholder="0"
+              className="w-full font-data"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-semibold tracking-wider uppercase text-dark-400 mb-1.5">
+              Cost per share
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={addCost}
+              onChange={(e) => setAddCost(e.target.value)}
+              placeholder="0.00"
+              className="w-full font-data"
+            />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              disabled={addBusy}
+              className="flex-1 btn-secondary disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button type="submit" disabled={addBusy} className="flex-1 btn-primary disabled:opacity-50">
+              {addBusy ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Adding…</span> : 'Add Position'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       <div className="h-4" />
     </div>
