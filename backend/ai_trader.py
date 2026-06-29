@@ -38,6 +38,7 @@ from backend.trading_utils import (
 from backend.trading_engine import (
     get_trailing_stop_pct,
     apply_pyramid_widening,
+    apply_new_position_guard,
     check_score_stability_from_history,
     get_partial_profit_action,
     calculate_base_quality_bonus,
@@ -1308,18 +1309,18 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
         # ATR-based adaptive stop loss - volatile stocks get wider stops
         position_stop_pct = calculate_atr_stop(position.ticker, position.current_price, effective_stop_loss_pct)
 
-        # F: NEW POSITION GUARD — tighter stop for new positions in first N days
-        guard_config = yaml_config.get('ai_trader.new_position_guard', {})
-        if guard_config.get('enabled', False) and position.purchase_date:
-            guard_days = guard_config.get('guard_days', 21)
-            guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
-            skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
+        # F: NEW POSITION GUARD — tighter stop for new positions in first N days.
+        # Shared decision in trading_engine.apply_new_position_guard (mirrored by
+        # evaluate_sells and backtester._evaluate_sells — keep all three in sync).
+        if position.purchase_date:
             purchase_dt = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
             holding_days = (date.today() - purchase_dt).days
-            pyramid_count = getattr(position, 'pyramid_count', 0) or 0
-            if holding_days <= guard_days:
-                if not (skip_if_pyramided and pyramid_count > 0):
-                    position_stop_pct = min(position_stop_pct, guard_stop_pct)
+            position_stop_pct = apply_new_position_guard(
+                position_stop_pct,
+                guard_config=yaml_config.get('ai_trader.new_position_guard', {}),
+                holding_days=holding_days,
+                pyramid_count=getattr(position, 'pyramid_count', 0) or 0,
+            )
 
         # Market-aware stop loss check (with ATR adaptation)
         if gain_pct <= -position_stop_pct:
@@ -1632,21 +1633,20 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         position_stop_pct = calculate_atr_stop(position.ticker, position.current_price, effective_stop_loss_pct)
 
         # F: NEW POSITION GUARD — tighter stop for new positions in first N days.
-        # MIRROR of _check_and_execute_stop_losses_impl (~1304-1314) and backtester
-        # _evaluate_sells (~2646-2656). Without it, a fast-falling new buy's ATR stop
-        # widens pro-cyclically toward the 20% cap and the intended 8% stop never fires
-        # (jun-09 bug: live FSLR held to -18%, AMD -13.7%). Restores trader<->backtester sync.
-        guard_config = yaml_config.get('ai_trader.new_position_guard', {})
-        if guard_config.get('enabled', False) and position.purchase_date:
-            guard_days = guard_config.get('guard_days', 21)
-            guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
-            skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
+        # Shared decision in trading_engine.apply_new_position_guard, mirrored by
+        # _check_and_execute_stop_losses_impl and backtester._evaluate_sells.
+        # Without it, a fast-falling new buy's ATR stop widens pro-cyclically
+        # toward the 20% cap and the intended 8% stop never fires (jun-09 bug:
+        # live FSLR held to -18%, AMD -13.7%). Restores trader<->backtester sync.
+        if position.purchase_date:
             purchase_dt = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
             holding_days = (date.today() - purchase_dt).days
-            pyramid_count = getattr(position, 'pyramid_count', 0) or 0
-            if holding_days <= guard_days:
-                if not (skip_if_pyramided and pyramid_count > 0):
-                    position_stop_pct = min(position_stop_pct, guard_stop_pct)
+            position_stop_pct = apply_new_position_guard(
+                position_stop_pct,
+                guard_config=yaml_config.get('ai_trader.new_position_guard', {}),
+                holding_days=holding_days,
+                pyramid_count=getattr(position, 'pyramid_count', 0) or 0,
+            )
 
         # Market-aware stop loss (with ATR adaptation)
         if gain_pct <= -position_stop_pct:

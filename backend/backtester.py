@@ -40,6 +40,7 @@ from backend.trading_utils import (
 from backend.trading_engine import (
     get_trailing_stop_pct,
     apply_pyramid_widening,
+    apply_new_position_guard,
     check_score_stability_from_history,
     get_partial_profit_action,
     calculate_base_quality_bonus,
@@ -2727,20 +2728,19 @@ class BacktestEngine:
                     effective_stop_loss_pct = min(effective_stop_loss_pct, max_stop_pct)  # Cap
 
             # F: NEW POSITION GUARD — tighter stop for new positions in first N days.
-            # Profile-overridable (A/B-testable) with YAML fallback, so a sweep can disable
-            # it to measure its value — e.g. simulating the live evaluate_sells() bug where
-            # the guard is missing (see canslim-jun09 stop-loss finding).
-            guard_config = self.profile.get('new_position_guard',
-                                            config.get('ai_trader.new_position_guard', {}))
-            if guard_config.get('enabled', False):
-                guard_days = guard_config.get('guard_days', 21)
-                guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
-                skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
-                holding_days = (current_date - position.purchase_date).days
-                if holding_days <= guard_days:
-                    if not (skip_if_pyramided and position.pyramid_count > 0):
-                        # Use the tighter guard stop instead of the wider ATR-adjusted stop
-                        effective_stop_loss_pct = min(effective_stop_loss_pct, guard_stop_pct)
+            # Shared decision in trading_engine.apply_new_position_guard (mirrored
+            # by the two live ai_trader sites). Profile-overridable (A/B-testable)
+            # with YAML fallback, so a sweep can disable it to measure its value —
+            # e.g. simulating the live evaluate_sells() bug where the guard was
+            # missing (see canslim-jun09 stop-loss finding).
+            effective_stop_loss_pct = apply_new_position_guard(
+                effective_stop_loss_pct,
+                guard_config=self.profile.get(
+                    'new_position_guard',
+                    config.get('ai_trader.new_position_guard', {})),
+                holding_days=(current_date - position.purchase_date).days,
+                pyramid_count=position.pyramid_count,
+            )
 
             # AGING LOSER GUARD (default OFF — exit-redesign A/B lever, 2026-06-09).
             # Positions past the new-position window that never showed a real gain

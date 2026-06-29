@@ -41,6 +41,7 @@ import pytest
 _BACKEND = Path(__file__).resolve().parents[1] / "backend"
 AI_TRADER = _BACKEND / "ai_trader.py"
 BACKTESTER = _BACKEND / "backtester.py"
+TRADING_ENGINE = _BACKEND / "trading_engine.py"
 
 
 def _numeric(node: ast.AST):
@@ -76,6 +77,7 @@ def _numeric_get_fallbacks(path: Path) -> dict[str, set[float]]:
 # Parsed once at import — the source files don't change mid-run.
 _AI_FALLBACKS = _numeric_get_fallbacks(AI_TRADER)
 _BT_FALLBACKS = _numeric_get_fallbacks(BACKTESTER)
+_TE_FALLBACKS = _numeric_get_fallbacks(TRADING_ENGINE)
 
 
 # Exit / stop / sell-risk constants that MUST resolve identically in the live
@@ -84,8 +86,9 @@ EXIT_CRITICAL_KEYS = [
     # Hard stops & stop sizing
     "max_stop_pct",
     "normal_stop_loss_pct",
-    "guard_stop_pct",
-    "guard_days",
+    # NOTE: guard_stop_pct / guard_days are NOT here — they were centralized
+    # into trading_engine.apply_new_position_guard (one source of truth, so
+    # they physically cannot drift). See test_new_position_guard_constants_centralized.
     "stop_loss_days",
     "stop_tighten_factor",
     "atr_multiplier",
@@ -148,3 +151,26 @@ def test_bare_exit_literal_parity(desc, pattern):
     assert re.search(pattern, bt_src), (
         f"backtester.py is missing the exit literal for {desc} ({pattern!r}). "
         f"If the threshold moved, mirror it in ai_trader.py and update this guard.")
+
+
+# Exit constants that were de-duplicated into a single shared helper. Their
+# canonical fallback now lives ONLY in trading_engine.py, so cross-file parity
+# is replaced by single-source-of-truth. This guard makes sure they stay
+# centralized (not silently re-inlined back into the two engines, which is how
+# the original drift bug was born).
+_CENTRALIZED_GUARD_CONSTANTS = {"guard_days": 21.0, "guard_stop_pct": 8.0}
+
+
+@pytest.mark.parametrize("key,expected", list(_CENTRALIZED_GUARD_CONSTANTS.items()))
+def test_new_position_guard_constants_centralized(key, expected):
+    """guard_days / guard_stop_pct live canonically in trading_engine and are
+    NOT re-duplicated into ai_trader.py or backtester.py."""
+    assert _TE_FALLBACKS.get(key) == {expected}, (
+        f"'{key}' should resolve to {expected} in trading_engine."
+        f"apply_new_position_guard; got {_TE_FALLBACKS.get(key)}.")
+    assert key not in _AI_FALLBACKS, (
+        f"'{key}' was re-inlined into ai_trader.py — keep it centralized in "
+        f"trading_engine.apply_new_position_guard so the three stop sites can't drift.")
+    assert key not in _BT_FALLBACKS, (
+        f"'{key}' was re-inlined into backtester.py — keep it centralized in "
+        f"trading_engine.apply_new_position_guard so the three stop sites can't drift.")

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 from backend.trading_engine import (
     apply_pyramid_widening,
+    apply_new_position_guard,
     check_score_stability_from_history,
     calculate_composite_score,
     calculate_position_size_pct,
@@ -44,6 +45,66 @@ class TestApplyPyramidWidening:
 
     def test_caps_at_6pct_extreme(self):
         assert apply_pyramid_widening(18.0, 10) == 24.0
+
+
+# ── New-Position Guard (shared by ai_trader x2 + backtester) ──────────────────
+class TestApplyNewPositionGuard:
+    ON = {"enabled": True}  # guard_days/guard_stop_pct/skip default to 21/8.0/True
+
+    def test_disabled_returns_unchanged(self):
+        # Even inside the window, a disabled guard never tightens.
+        assert apply_new_position_guard(
+            20.0, guard_config={"enabled": False}, holding_days=1, pyramid_count=0
+        ) == 20.0
+
+    def test_missing_enabled_key_treated_as_disabled(self):
+        assert apply_new_position_guard(
+            20.0, guard_config={}, holding_days=1, pyramid_count=0
+        ) == 20.0
+
+    def test_inside_window_tightens_to_guard_stop(self):
+        # 20% ATR stop tightened to the 8% guard stop in the first 21 days.
+        assert apply_new_position_guard(
+            20.0, guard_config=self.ON, holding_days=5, pyramid_count=0
+        ) == 8.0
+
+    def test_boundary_day_is_inside_window(self):
+        # holding_days == guard_days (21) is still guarded (<=).
+        assert apply_new_position_guard(
+            20.0, guard_config=self.ON, holding_days=21, pyramid_count=0
+        ) == 8.0
+
+    def test_past_window_returns_unchanged(self):
+        assert apply_new_position_guard(
+            20.0, guard_config=self.ON, holding_days=22, pyramid_count=0
+        ) == 20.0
+
+    def test_never_widens_a_tighter_existing_stop(self):
+        # min(): a 6% stop already tighter than the 8% guard stays at 6%.
+        assert apply_new_position_guard(
+            6.0, guard_config=self.ON, holding_days=5, pyramid_count=0
+        ) == 6.0
+
+    def test_pyramided_position_skipped_by_default(self):
+        # skip_if_pyramided defaults True -> pyramided new buys are NOT tightened.
+        assert apply_new_position_guard(
+            20.0, guard_config=self.ON, holding_days=5, pyramid_count=1
+        ) == 20.0
+
+    def test_pyramided_tightened_when_skip_disabled(self):
+        cfg = {"enabled": True, "skip_if_pyramided": False}
+        assert apply_new_position_guard(
+            20.0, guard_config=cfg, holding_days=5, pyramid_count=2
+        ) == 8.0
+
+    def test_custom_guard_days_and_stop(self):
+        cfg = {"enabled": True, "guard_days": 10, "guard_stop_pct": 6.5}
+        assert apply_new_position_guard(
+            20.0, guard_config=cfg, holding_days=8, pyramid_count=0
+        ) == 6.5
+        assert apply_new_position_guard(
+            20.0, guard_config=cfg, holding_days=11, pyramid_count=0
+        ) == 20.0
 
 
 # ── Score Stability ───────────────────────────────────────────────────────────

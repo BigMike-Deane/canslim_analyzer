@@ -70,6 +70,45 @@ def apply_pyramid_widening(trailing_stop_pct: float, pyramid_count: int) -> floa
     return trailing_stop_pct
 
 
+def apply_new_position_guard(
+    current_stop_pct: float,
+    *,
+    guard_config: dict,
+    holding_days: int,
+    pyramid_count: int,
+) -> float:
+    """Tighten a new position's stop to ``guard_stop_pct`` during its first
+    ``guard_days``, so a fast-falling fresh buy can't ride a pro-cyclically
+    widening ATR stop toward the 20% cap (jun-09 bug: FSLR held to -18%).
+
+    This is the SHARED DECISION used by the live trader
+    (ai_trader: ``_check_and_execute_stop_losses_impl`` and ``evaluate_sells``)
+    and the simulator (backtester ``_evaluate_sells``). Each caller sources its
+    own inputs — live uses ``date.today()`` and yaml-only config; the
+    backtester uses the simulation ``current_date`` and profile-overridable
+    config — but the threshold/skip/min logic lives here so the three sites
+    cannot drift (which is exactly how the jun-09 parity bug happened).
+
+    Args:
+        current_stop_pct: The stop% computed so far (e.g. the ATR-adjusted stop).
+        guard_config: The ``new_position_guard`` config dict (already sourced).
+        holding_days: Calendar days the position has been held.
+        pyramid_count: How many times the position has been pyramided.
+
+    Returns:
+        The (possibly tightened) stop percentage. Unchanged when the guard is
+        disabled, the position is past the window, or it's a skipped pyramid.
+    """
+    if not guard_config.get('enabled', False):
+        return current_stop_pct
+    guard_days = guard_config.get('guard_days', 21)
+    guard_stop_pct = guard_config.get('guard_stop_pct', 8.0)
+    skip_if_pyramided = guard_config.get('skip_if_pyramided', True)
+    if holding_days <= guard_days and not (skip_if_pyramided and pyramid_count > 0):
+        return min(current_stop_pct, guard_stop_pct)
+    return current_stop_pct
+
+
 def trailing_stops_allowed_now(yaml_config=None, now_et=None) -> bool:
     """Trailing-stop cadence gate (June-19 exit-parity item 2).
 
