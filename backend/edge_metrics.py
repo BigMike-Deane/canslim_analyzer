@@ -494,8 +494,19 @@ def compute_edge_metrics(
         spy_return_pct = round((s_series[-1] / s_series[0] - 1.0) * 100, 2)
         result["spy_return_pct"] = spy_return_pct
         result["spy_max_drawdown_pct"] = _max_drawdown_pct(s_series)
-        if total_return_pct is not None:
-            result["excess_return_pct"] = round(total_return_pct - spy_return_pct, 2)
+        # Measure the PORTFOLIO leg over the same paired window as SPY so
+        # excess/alpha are apples-to-apples. The headline `total_return_pct`
+        # spans the full portfolio series; subtracting the paired-window
+        # `spy_return_pct` from it would bias excess/alpha whenever SPY has a
+        # boundary gap (historical SPY coverage runs ~78-97%) — the two legs
+        # would cover different calendar windows. When SPY coverage is
+        # complete, `port_return_pairs == total_return_pct` and this reduces to
+        # the original formula, so the common case is unchanged.
+        port_return_pairs = (
+            round((p_series[-1] / p_series[0] - 1.0) * 100, 2) if p_series[0] else None
+        )
+        if port_return_pairs is not None:
+            result["excess_return_pct"] = round(port_return_pairs - spy_return_pct, 2)
 
         p_ret = _daily_returns(p_series)
         s_ret = _daily_returns(s_series)
@@ -505,10 +516,11 @@ def compute_edge_metrics(
             if var_s > 0:
                 beta = _covariance(p_ret, s_ret) / var_s
                 result["beta"] = round(beta, 3)
-                # Jensen's alpha over the window (rf=0), NOT annualized:
-                # actual portfolio return minus what beta-exposure to SPY "earned".
-                if total_return_pct is not None and spy_return_pct is not None:
-                    result["alpha_pct"] = round(total_return_pct - beta * spy_return_pct, 2)
+                # Jensen's alpha over the paired window (rf=0), NOT annualized:
+                # paired-window portfolio return minus what beta-exposure to SPY
+                # "earned" over that same window.
+                if port_return_pairs is not None and spy_return_pct is not None:
+                    result["alpha_pct"] = round(port_return_pairs - beta * spy_return_pct, 2)
                 # Edge Validation Phase 1: is that alpha distinguishable from luck?
                 result["alpha_significance"] = _alpha_significance(p_ret, s_ret)
                 # Edge Validation Phase 4: if it IS real, how much more data to prove it?

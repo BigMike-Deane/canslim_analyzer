@@ -75,6 +75,43 @@ class TestReturns:
         assert m["annualized"] is False
 
 
+class TestSpyBoundaryGapAlignment:
+    """Excess/alpha must measure BOTH legs over the same SPY-paired window.
+
+    Regression for the window-misalignment bug: with partial SPY coverage, the
+    portfolio return used for excess/alpha must span the same paired days as
+    the SPY return — not the full portfolio series.
+    """
+
+    def test_excess_uses_paired_window_when_spy_missing_at_start(self):
+        # Portfolio compounds +10%/day over 4 days (full return = 33.1%).
+        # SPY is missing on day 0, so the comparable window is days 1-3, where
+        # the portfolio goes 110 -> 133.1 (+21%) and SPY 100 -> 121 (+21%).
+        port = [100, 110, 121, 133.1]
+        spy = [None, 100, 110, 121]
+        m = compute_edge_metrics(port, spy, [])
+        # Headline portfolio return still spans the full series.
+        assert m["total_return_pct"] == pytest.approx(33.1, abs=0.05)
+        # SPY return over the paired window.
+        assert m["spy_return_pct"] == pytest.approx(21.0, abs=0.05)
+        # Excess measured over the IDENTICAL paired window: 21% - 21% = 0%.
+        # Pre-fix this was total(33.1) - spy(21.0) = 12.1, spuriously crediting
+        # the portfolio's day0->day1 jump that SPY was never measured against.
+        assert m["excess_return_pct"] == pytest.approx(0.0, abs=0.05)
+
+    def test_full_coverage_excess_equals_total_minus_spy(self):
+        # Complete SPY coverage -> paired window == full window, so excess still
+        # equals total - spy exactly (no behavior change in the common case).
+        port = [100, 110, 121]
+        spy = [100, 105, 110.25]  # +5%/day -> +10.25%
+        m = compute_edge_metrics(port, spy, [])
+        assert m["total_return_pct"] == pytest.approx(21.0, abs=0.05)
+        assert m["spy_return_pct"] == pytest.approx(10.25, abs=0.05)
+        assert m["excess_return_pct"] == pytest.approx(
+            m["total_return_pct"] - m["spy_return_pct"], abs=0.01
+        )
+
+
 class TestBetaAndAlpha:
     def test_beta_exactly_two(self):
         # Portfolio moves are exactly 2x SPY's each day -> beta == 2.0.
@@ -157,8 +194,14 @@ class TestSpyAlignment:
         # Only indices 0 and 2 have both port+spy -> spy_return from those.
         m = compute_edge_metrics([100, 110, 121, 133], [100, None, 121, None], [])
         assert m["spy_return_pct"] == 21.0
+        # Headline portfolio return still spans the full series (100 -> 133).
         assert m["total_return_pct"] == 33.0
-        assert m["excess_return_pct"] == 12.0
+        # Excess is measured over the SAME paired window as SPY (day0 -> day2),
+        # where the portfolio also went 100 -> 121 (+21%): excess = 0.0. The
+        # day2 -> day3 portfolio gain (121 -> 133) has no SPY counterpart and
+        # must NOT count as excess. (Pre-window-alignment-fix this asserted
+        # 12.0 = total(33) - spy(21), which credited that uncompared day.)
+        assert m["excess_return_pct"] == 0.0
         assert m["beta"] is None  # only one usable benchmark return
 
 
