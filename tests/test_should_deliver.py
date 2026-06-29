@@ -167,8 +167,8 @@ class TestScoreAlertThreshold:
         assert _should_deliver(u, "breakout", "high", {"score": 85}) is True
 
     def test_alert_without_score_field_passes(self):
-        # System-wide alerts (e.g. spy_gate_change, morning_briefing) don't
-        # carry a 'score' — the threshold must not affect them.
+        # System-wide alerts (e.g. spy_gate_change) don't carry a 'score'
+        # — the threshold must not affect them.
         u = _user(score_threshold=99)
         assert _should_deliver(u, "spy_gate_change", "high", {"ticker": "SPY"}) is True
 

@@ -149,7 +149,7 @@ async def threshold_preview(
     the Settings page's score-threshold preview UI.
 
     Only alerts where `data['score']` is a finite number are returned. System-
-    wide alerts (SPY gate, market turns, morning briefing) carry no score and
+    wide alerts (SPY gate, market turns) carry no score and
     are excluded here because the threshold gate ignores them anyway. Urgent-
     priority alerts (stop losses, circuit breakers) are also excluded because
     `_should_deliver` bypasses the threshold for them — including them would

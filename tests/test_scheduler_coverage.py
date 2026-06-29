@@ -24,9 +24,6 @@ Triage:
       every external coupling stubbed at its source module.
 
   Still intentionally uncovered (separate session if/when prioritised):
-    - send_morning_briefing_if_due (lines 629-808): morning email logic;
-      gated on time-of-day and SystemState dedup; tested via integration
-      elsewhere.
     - send_weekly_performance_email + send_weekly_bear_market_report
       (lines 1737-2103): weekly batch email jobs.
     - send_bear_report_email: helper specific to weekly bear report.
@@ -1573,7 +1570,7 @@ class TestRunContinuousScan:
     Stitches together: market direction → async scan → DB save → market
     snapshot → CS auto-record → CS outcome update → earnings audit →
     industry-group ranks → bear-base (when SPY < 50MA) → AI cycle per
-    user → cleanup → gap-up → watchlist → morning briefing.
+    user → cleanup → gap-up → watchlist.
 
     Covering this orchestrator is the natural follow-on to the auxiliary-
     helper push (commit c879fc0): every helper it calls is now mockable
@@ -1709,7 +1706,6 @@ class TestRunContinuousScan:
         bus.auto_record_cs = MagicMock()
         bus.update_cs_outcomes = MagicMock()
         bus.check_watchlist = MagicMock()
-        bus.morning_briefing = MagicMock()
         bus.cleanup_old_scores = MagicMock()
         bus.cleanup_price = MagicMock()
         monkeypatch.setattr(
@@ -1719,9 +1715,6 @@ class TestRunContinuousScan:
             scheduler_mod, "update_coiled_spring_outcomes", bus.update_cs_outcomes
         )
         monkeypatch.setattr(scheduler_mod, "check_watchlist_alerts", bus.check_watchlist)
-        monkeypatch.setattr(
-            scheduler_mod, "send_morning_briefing_if_due", bus.morning_briefing
-        )
         monkeypatch.setattr(scheduler_mod, "cleanup_old_stock_scores", bus.cleanup_old_scores)
         monkeypatch.setattr(scheduler_mod, "cleanup_price_cache", bus.cleanup_price)
 
@@ -1801,7 +1794,6 @@ class TestRunContinuousScan:
         assert scan_seams.cleanup_price.call_count == 1
         assert scan_seams.find_gapups.call_count == 1
         assert scan_seams.check_watchlist.call_count == 1
-        assert scan_seams.morning_briefing.call_count == 1
 
         # _record_success("scan") fired
         assert scheduler_mod._system_health["consecutive_scan_failures"] == 0
@@ -1980,7 +1972,6 @@ class TestRunContinuousScan:
         scan_seams.cleanup_old_scores.side_effect = _rec("cleanup")
         scan_seams.find_gapups.side_effect = _rec("gapup", [])
         scan_seams.check_watchlist.side_effect = _rec("watchlist")
-        scan_seams.morning_briefing.side_effect = _rec("briefing")
 
         run_continuous_scan()
 
@@ -1993,7 +1984,6 @@ class TestRunContinuousScan:
             "cleanup",
             "gapup",
             "watchlist",
-            "briefing",
         ]
 
     def test_per_user_ai_cycle_exception_isolated(self, scan_seams):
@@ -2236,7 +2226,6 @@ class TestRunContinuousScan:
         scan_seams.cleanup_old_scores.side_effect = RuntimeError("cleanup boom")
         scan_seams.find_gapups.side_effect = RuntimeError("gapup boom")
         scan_seams.check_watchlist.side_effect = RuntimeError("watchlist boom")
-        scan_seams.morning_briefing.side_effect = RuntimeError("briefing boom")
 
         run_continuous_scan()  # Must not raise
 

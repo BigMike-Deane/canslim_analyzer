@@ -2477,57 +2477,6 @@ class TestSignalFactors:
             assert "market_regime" in sf
 
 
-class TestMorningBriefingEmail:
-    """Test morning briefing email generation"""
-
-    def test_send_morning_briefing_generates_html(self):
-        """send_morning_briefing_email should handle valid briefing data"""
-        from backend.email_utils import send_morning_briefing_email
-
-        briefing_data = {
-            "portfolio": {"total_value": 26500, "total_return_pct": 6.0, "cash": 5000},
-            "market_regime": {"regime": "bullish"},
-            "positions": [
-                {"ticker": "AAPL", "price": 180.0, "gain_pct": 12.5, "score": 82},
-                {"ticker": "MSFT", "price": 400.0, "gain_pct": -3.2, "score": 75},
-            ],
-            "top_candidates": [
-                {"ticker": "NVDA", "price": 850.0, "score": 90, "reason": "Breakout 2.1x vol"},
-            ],
-            "market_timing": {"state": "CONFIRMED_UPTREND", "can_buy": True},
-            "portfolio_heat": 8.5,
-        }
-
-        # Won't actually send (no SMTP configured in test), but should not crash
-        # Mock the send_email function to avoid actual SMTP
-        with patch('backend.email_utils.send_email', return_value=True) as mock_send:
-            result = send_morning_briefing_email(briefing_data)
-            assert result is True
-            # Verify send_email was called with expected args
-            assert mock_send.called
-            args = mock_send.call_args[0]
-            assert "Morning Briefing" in args[0]  # subject
-            assert "AAPL" in args[1]  # html_content
-            assert "NVDA" in args[1]  # candidate in html
-
-    def test_briefing_empty_positions(self):
-        """Morning briefing handles empty portfolio gracefully"""
-        from backend.email_utils import send_morning_briefing_email
-
-        briefing_data = {
-            "portfolio": {"total_value": 25000, "total_return_pct": 0, "cash": 25000},
-            "market_regime": {"regime": "neutral"},
-            "positions": [],
-            "top_candidates": [],
-            "market_timing": {"state": "N/A", "can_buy": True},
-            "portfolio_heat": 0,
-        }
-
-        with patch('backend.email_utils.send_email', return_value=True):
-            result = send_morning_briefing_email(briefing_data)
-            assert result is True
-
-
 class TestStrategyProfiles:
     """Test strategy profile loading and application"""
 

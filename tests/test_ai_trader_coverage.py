@@ -37,10 +37,9 @@ Triage:
       seam-call counts, not numerical values, since this is orchestration.
 
   Tier 3 (intentionally NOT covered):
-    - run_ai_trading_cycle bear-base sweep + morning briefing email branches:
-      these only fire on the SPY-just-flipped-bullish edge and at the
-      ~9:30 AM ET market-open instant. Both are background admin
-      side-effects, not part of the live trade decision; they are
+    - run_ai_trading_cycle bear-base sweep branch:
+      only fires on the SPY-just-flipped-bullish edge. It is a background
+      admin side-effect, not part of the live trade decision; it is
       monkeypatched away in TestRunAITradingCycle.
     - initialize_ai_portfolio: one-time setup helper.
     - check_position_correlation: yfinance.download integration — already

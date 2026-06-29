@@ -426,39 +426,6 @@ class TestSpyGateStatePersistence:
         # ai_trader's gate-change branch is gated on `previous_gate is not None`.
 
 
-# ── Morning briefing dedup ────────────────────────────────────────────────────
-
-
-class TestMorningBriefingDedup:
-    """The morning briefing must send exactly once per calendar day, even
-    across container restarts."""
-
-    def test_first_call_of_day_is_eligible(self, db_session):
-        from backend.scheduler import LAST_BRIEFING_DATE_KEY
-        last_sent = get_system_state(db_session, LAST_BRIEFING_DATE_KEY)
-        today_iso = date.today().isoformat()
-        assert last_sent != today_iso  # → would proceed to send
-
-    def test_second_call_same_day_is_skipped(self, db_session):
-        from backend.scheduler import LAST_BRIEFING_DATE_KEY
-        today_iso = date.today().isoformat()
-        set_system_state(db_session, LAST_BRIEFING_DATE_KEY, today_iso)
-        db_session.commit()
-
-        last_sent = get_system_state(db_session, LAST_BRIEFING_DATE_KEY)
-        assert last_sent == today_iso  # → would short-circuit
-
-    def test_next_day_call_is_eligible_again(self, db_session):
-        from backend.scheduler import LAST_BRIEFING_DATE_KEY
-        yesterday_iso = (date.today() - timedelta(days=1)).isoformat()
-        set_system_state(db_session, LAST_BRIEFING_DATE_KEY, yesterday_iso)
-        db_session.commit()
-
-        last_sent = get_system_state(db_session, LAST_BRIEFING_DATE_KEY)
-        today_iso = date.today().isoformat()
-        assert last_sent != today_iso  # → would proceed to send today
-
-
 # ── _get_daily_cap fallbacks ──────────────────────────────────────────────────
 
 

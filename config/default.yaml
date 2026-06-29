@@ -3,7 +3,7 @@
 
 # Email
 email:
-  # Master switch for AUTOMATED emails (watchlist alerts, morning briefing,
+  # Master switch for AUTOMATED emails (watchlist alerts,
   # weekly performance digest, weekly bear-market report). Disabled May 7
   # 2026 because they had been silently failing on port 465 for who knows
   # how long, and the user prefers on-demand session summaries instead.
@@ -862,16 +862,6 @@ scale_in_pullbacks:
   low_volume_ratio: 0.8                # Pullback should be on below-average volume
   add_pct: 30.0                        # Add 30% of original position size
   min_score: 70                        # Score must still be strong
-
-# Morning Briefing Email
-morning_briefing:
-  enabled: false
-  send_time_hour: 8                    # 8 AM Central Time
-  send_time_minute: 0
-  include_positions_at_risk: true      # Positions near stop loss
-  include_approaching_pivots: true     # Stocks approaching breakout pivots
-  include_earnings_this_week: true     # Stocks reporting earnings this week
-  include_market_regime: true          # Current market regime summary
 
 # Intraday Breakout Monitor — DB-backed dedup + daily cap (May 2026)
 # Pre-fix, the monitor's cooldown lived in a Python module-level dict that

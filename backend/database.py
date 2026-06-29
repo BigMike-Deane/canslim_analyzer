@@ -862,9 +862,6 @@ class SystemState(Base):
     Use cases (May 2026):
       - last_spy_gate_state: BULLISH/BEARISH; survives restart so the
         SPY-flip notification only fires on a real state change.
-      - last_briefing_date: ISO date of last morning briefing; survives
-        restart so a redeploy mid-morning doesn't trigger a duplicate
-        briefing.
 
     Keep this lean. If a use case needs more than (key, value, updated_at),
     give it its own table.
@@ -1756,9 +1753,9 @@ class ShadowTrade(Base):
 
 
 # ── SystemState helpers ───────────────────────────────────────────────────────
-# Tiny accessors that hide the ORM boilerplate at every call site. Both the
-# SPY-flip detector (ai_trader) and the morning-briefing dedup (scheduler)
-# use the same two-call pattern (read previous, write current after acting).
+# Tiny accessors that hide the ORM boilerplate at every call site. The
+# SPY-flip detector (ai_trader) uses the two-call pattern (read previous,
+# write current after acting).
 
 def get_system_state(db, key: str, default=None) -> str:
     """Read a SystemState value by key. Returns ``default`` if absent."""

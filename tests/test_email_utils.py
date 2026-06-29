@@ -11,10 +11,8 @@ Focus areas (lines uncovered against 67% baseline as of commit 296013c):
 - broadcast_notification 434-446 (DB + push exception)
 - send_trade_webhook 512-519 (gain >= 0 vs < 0 tag branches)
 - send_risk_alert_webhook 572-589 (each alert_type)
-- send_morning_briefing_push 601-647 (full render + branches)
 - send_scan_completion_push 664-683 (with/without trades)
 - send_spy_gate_change_push 697-714 (bullish + bearish)
-- send_morning_briefing_email 869-914 (alert suffix + earnings_this_week section)
 
 All tests are eval-safe — no scoring writes, no trading, no real network. Push
 delivery (pywebpush.webpush) is patched module-wide so VAPID keys never matter.
@@ -634,53 +632,6 @@ class TestSendCoiledSpringAlertWebhook:
 
 
 # ============================================================================
-# send_morning_briefing_push — full render path
-# ============================================================================
-class TestSendMorningBriefingPush:
-    def test_rendered_payload_contains_value_regime_heat(self):
-        from backend import email_utils
-        briefing = {
-            "portfolio": {"total_value": 27500.0, "total_return_pct": 10.0, "cash": 1500.0},
-            "market_regime": {"regime": "bullish"},
-            "positions": [
-                {"ticker": "AAPL", "gain_pct": 5.0},
-                {"ticker": "MSFT", "gain_pct": -2.0},
-            ],
-            "top_candidates": [{"ticker": "NVDA", "score": 90.0}],
-            "portfolio_heat": 18.0,
-            "near_stop_positions": [{"ticker": "TSLA", "pct_to_stop": 2}],
-            "earnings_warnings": [{"ticker": "META", "days": 3}],
-        }
-        with patch.object(email_utils, "broadcast_notification"), \
-             patch.object(email_utils, "send_webhook_notification",
-                          return_value=True) as mock_wh:
-            ok = email_utils.send_morning_briefing_push(briefing)
-        assert ok is True
-        title, message = mock_wh.call_args.args[0], mock_wh.call_args.args[1]
-        assert "27,500" in title
-        assert "+10.0%" in title
-        assert "BULLISH" in message
-        assert "Heat: 18%" in message
-        assert "NEAR STOP: TSLA" in message
-        assert "EARNINGS: META 3d" in message
-        # Top positions line includes both tickers.
-        assert "Top:" in message and "AAPL" in message and "MSFT" in message
-        assert "Buy:" in message and "NVDA" in message
-
-    def test_bearish_regime_uses_red_circle_tag(self):
-        from backend import email_utils
-        briefing = {
-            "portfolio": {"total_value": 1000.0},
-            "market_regime": {"regime": "bearish"},
-        }
-        with patch.object(email_utils, "broadcast_notification"), \
-             patch.object(email_utils, "send_webhook_notification",
-                          return_value=True) as mock_wh:
-            email_utils.send_morning_briefing_push(briefing)
-        assert "red_circle" in mock_wh.call_args.kwargs["tags"]
-
-
-# ============================================================================
 # send_scan_completion_push
 # ============================================================================
 class TestSendScanCompletionPush:
@@ -815,71 +766,3 @@ class TestBearBaseAndMarketTurn:
         msg = mock_wh.call_args.args[1]
         assert "Ready: AAPL(90)" in msg
         assert "Improving: Semiconductors" in msg
-
-
-# ============================================================================
-# send_morning_briefing_email — alert subject suffix + earnings_this_week
-# ============================================================================
-class TestSendMorningBriefingEmail:
-    def test_alert_suffix_appears_when_near_stop_or_earnings_present(self):
-        """Lines 869, 871 — when near_stop_positions or earnings_warnings is
-        non-empty, subject gets '[1 near stop, 1 earnings]' suffix."""
-        from backend import email_utils
-        briefing = {
-            "portfolio": {"total_value": 25000.0, "total_return_pct": 0.0, "cash": 1000.0},
-            "market_regime": {"regime": "bullish"},
-            "near_stop_positions": [{"ticker": "AAPL", "pct_to_stop": 2}],
-            "earnings_warnings": [
-                {"ticker": "META", "days": 5, "date": "2026-05-12"},
-            ],
-            "positions": [], "top_candidates": [], "earnings_this_week": [],
-            "market_timing": {"state": "GREEN", "can_buy": True},
-            "portfolio_heat": 12.0,
-        }
-        with patch.object(email_utils, "send_email", return_value=True) as mock_send:
-            ok = email_utils.send_morning_briefing_email(briefing)
-        assert ok is True
-        subject = mock_send.call_args.args[0]
-        assert "1 near stop" in subject
-        assert "1 earnings" in subject
-
-    def test_earnings_this_week_section_renders_table(self):
-        """Lines 904-905, 914 — earnings_this_week populated → table rows
-        include ticker, days, beats, gain_pct."""
-        from backend import email_utils
-        briefing = {
-            "portfolio": {"total_value": 25000.0, "total_return_pct": 0.0, "cash": 1000.0},
-            "market_regime": {"regime": "bullish"},
-            "positions": [], "top_candidates": [],
-            "near_stop_positions": [], "earnings_warnings": [],
-            "earnings_this_week": [
-                {"ticker": "AAPL", "days_to_earnings": 3, "beat_streak": 4, "gain_pct": 8.5},
-            ],
-            "market_timing": {"state": "GREEN", "can_buy": True},
-            "portfolio_heat": 0.0,
-        }
-        with patch.object(email_utils, "send_email", return_value=True) as mock_send:
-            email_utils.send_morning_briefing_email(briefing)
-        html_body = mock_send.call_args.args[1]
-        assert "Earnings This Week" in html_body
-        assert "AAPL" in html_body
-        assert "4 beats" in html_body
-        assert "+8.5%" in html_body
-
-    def test_positions_section_renders_only_when_positions_present(self):
-        from backend import email_utils
-        # No positions → no "Current Positions" header.
-        briefing_empty = {
-            "portfolio": {"total_value": 25000.0, "total_return_pct": 0.0, "cash": 0.0},
-            "market_regime": {"regime": "bullish"},
-            "positions": [], "top_candidates": [],
-            "near_stop_positions": [], "earnings_warnings": [],
-            "earnings_this_week": [],
-            "market_timing": {}, "portfolio_heat": 0.0,
-        }
-        with patch.object(email_utils, "send_email", return_value=True) as mock_send:
-            email_utils.send_morning_briefing_email(briefing_empty)
-        html_body = mock_send.call_args.args[1]
-        assert "Current Positions" not in html_body
-        # Empty buy candidates → fallback "No buy candidates today" copy.
-        assert "No buy candidates today" in html_body
