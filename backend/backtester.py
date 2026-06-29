@@ -104,6 +104,7 @@ class SimulatedPosition:
     signal_factors: dict = field(default_factory=dict)  # Trade journal: factors that drove the buy
     is_experimental: bool = False  # True for nibble/V-bottom positions (isolated from circuit breaker)
     prev_peak_price: float = 0.0  # Peak as of the PRIOR day's update (D5 use_prior_peak ordering)
+    realized_gain_to_date: float = 0.0  # Cumulative realized $ from partial sells (for per-position win rate)
 
 
 @dataclass
@@ -308,8 +309,12 @@ class BacktestEngine:
         self.max_drawdown_pct: float = 0.0
         self.daily_returns: List[float] = []
         self.trades_executed: int = 0
-        self.sells_executed: int = 0  # Track sells separately for accurate win rate
-        self.profitable_trades: int = 0
+        # Win rate is computed per CLOSED POSITION (one round-trip), not per
+        # sell execution. Counting every partial profit-take as its own "win"
+        # inflated the rate, because partials are taken almost exclusively on
+        # winners (a single winner sold in 3 partials registered as 3 wins).
+        self.positions_closed: int = 0
+        self.profitable_positions: int = 0
         # Exit/hold ML training capture (default-off lever; see _capture_hold_snapshots).
         self.capture_hold_snapshots: bool = False
         self.hold_snapshot_horizon: int = 15  # forward trading days for the label
@@ -4252,6 +4257,10 @@ class BacktestEngine:
                 trade.shares = position.shares
             position.shares -= trade.shares
             position.partial_profit_taken += trade.sell_pct
+            # Bank this partial's realized $ toward the position's net P&L so
+            # the win-rate (counted once at full close) reflects the whole
+            # round-trip, not just the final tranche.
+            position.realized_gain_to_date += realized_gain
 
             logger.debug(f"PARTIAL SELL {trade.ticker}: {trade.sell_pct}% "
                         f"({trade.shares:.2f} shares), remaining: {position.shares:.2f}")
@@ -4264,6 +4273,13 @@ class BacktestEngine:
             gain_pct = ((trade.price - cost_basis) / cost_basis) * 100 if cost_basis > 0 else 0
             self.recent_trade_outcomes.append(gain_pct)
 
+            # Win rate: count this CLOSED POSITION once, profitable iff its
+            # cumulative realized P&L (all partials + this final sell) is
+            # positive. Partial sells deliberately do NOT touch these counters.
+            self.positions_closed += 1
+            if position.realized_gain_to_date + realized_gain > 0:
+                self.profitable_positions += 1
+
         self._record_trade(
             current_date, trade,
             cost_basis=cost_basis,
@@ -4272,9 +4288,6 @@ class BacktestEngine:
         )
 
         self.trades_executed += 1
-        self.sells_executed += 1  # Track sells for win rate calculation
-        if realized_gain > 0:
-            self.profitable_trades += 1
 
     def _execute_pyramid(self, current_date: date, trade: SimulatedTrade):
         """Execute a pyramid (add to position)"""
@@ -4722,8 +4735,8 @@ class BacktestEngine:
         self.backtest.total_trades = self.trades_executed
 
         # Win rate - calculated from sells only (not all trades including buys)
-        if self.sells_executed > 0:
-            self.backtest.win_rate = (self.profitable_trades / self.sells_executed) * 100
+        if self.positions_closed > 0:
+            self.backtest.win_rate = (self.profitable_positions / self.positions_closed) * 100
         else:
             self.backtest.win_rate = 0
 

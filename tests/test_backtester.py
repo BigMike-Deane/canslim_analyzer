@@ -694,6 +694,73 @@ class TestPartialProfitTaking:
         assert trade.sell_pct == 25.0
 
 
+class TestWinRatePerPosition:
+    """Win rate must count each closed POSITION once (round-trip), not each
+    partial sell — partials happen almost only on winners, so per-sell counting
+    inflated the headline win rate used to compare strategies."""
+
+    @pytest.fixture
+    def engine(self):
+        from backend.backtester import BacktestEngine, SimulatedTrade  # noqa
+        from backend.database import BacktestRun
+
+        mock_session = MagicMock()
+        mock_backtest = BacktestRun(
+            id=1, name="WR", start_date=date.today() - timedelta(days=30),
+            end_date=date.today(), starting_cash=25000.0, stock_universe="sp500",
+            max_positions=8, min_score_to_buy=65, sell_score_threshold=45,
+            stop_loss_pct=8.0, status="pending",
+        )
+        mock_session.get.return_value = mock_backtest
+        mock_session.query.return_value.all.return_value = []
+        eng = BacktestEngine(mock_session, 1)
+        return eng
+
+    def _pos(self, **kw):
+        from backend.backtester import SimulatedPosition
+        base = dict(
+            ticker="AAA", shares=100, cost_basis=100.0, purchase_date=date.today(),
+            purchase_score=80.0, peak_price=150.0, peak_date=date.today(),
+        )
+        base.update(kw)
+        return SimulatedPosition(**base)
+
+    def _sell(self, shares, price, partial, sell_pct=0.0):
+        from backend.backtester import SimulatedTrade
+        return SimulatedTrade(
+            ticker="AAA", action="SELL", shares=shares, price=price,
+            reason="t", is_partial=partial, sell_pct=sell_pct,
+        )
+
+    def test_winner_with_partials_counts_one_win(self, engine):
+        # Buy 100 @ $100. Take two profitable partials, then close the rest at a
+        # SMALL loss vs cost so the FINAL tranche is negative but the position's
+        # net P&L is clearly positive.
+        engine.positions["AAA"] = self._pos()
+        engine._execute_sell(date.today(), self._sell(25, 140.0, True, 25.0))  # +$1000
+        engine._execute_sell(date.today(), self._sell(25, 130.0, True, 25.0))  # +$750
+        engine._execute_sell(date.today(), self._sell(50, 98.0, False))        # -$100 tranche
+
+        # One round-trip, net positive -> exactly one win.
+        assert engine.positions_closed == 1
+        assert engine.profitable_positions == 1
+        # Pre-fix this was 3 sells / 2 "profitable" -> 66.7% from a single name.
+
+    def test_loser_with_one_profitable_partial_counts_one_loss(self, engine):
+        # A small profitable partial, then the position closes at a big net loss.
+        engine.positions["AAA"] = self._pos()
+        engine._execute_sell(date.today(), self._sell(20, 110.0, True, 20.0))  # +$200
+        engine._execute_sell(date.today(), self._sell(80, 70.0, False))        # -$2400 tranche
+        assert engine.positions_closed == 1
+        assert engine.profitable_positions == 0  # net P&L negative -> a loss
+
+    def test_clean_full_sell_unchanged(self, engine):
+        engine.positions["AAA"] = self._pos()
+        engine._execute_sell(date.today(), self._sell(100, 120.0, False))  # +$2000
+        assert engine.positions_closed == 1
+        assert engine.profitable_positions == 1
+
+
 class TestMomentumConfirmation:
     """Tests for momentum confirmation (RS check)"""
 
