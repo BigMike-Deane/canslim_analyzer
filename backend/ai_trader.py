@@ -973,11 +973,22 @@ def get_portfolio_value(db: Session, user_id: int = 1) -> dict:
 
     # Include SPY sweep value
     sweep_value = 0.0
+    sweep_priced = True
     spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
     if spy_sweep_shares > 0:
         spy_price = fetch_live_price('SPY')
         if spy_price:
             sweep_value = spy_sweep_shares * spy_price
+        else:
+            # Live SPY fetch failed (transient outage). We cannot value the
+            # sweep this cycle. Flag it so risk logic — notably the drawdown
+            # circuit breaker — does NOT treat the understated total as a real
+            # drawdown and liquidate the whole portfolio on a price hiccup.
+            sweep_priced = False
+            logger.warning(
+                "get_portfolio_value: SPY sweep held but live price unavailable — "
+                "total_value understated, sweep_priced=False"
+            )
 
     total_value = config.current_cash + positions_value + sweep_value
 
@@ -985,6 +996,7 @@ def get_portfolio_value(db: Session, user_id: int = 1) -> dict:
         "cash": config.current_cash,
         "positions_value": positions_value,
         "sweep_value": sweep_value,
+        "sweep_priced": sweep_priced,
         "total_value": total_value,
         "positions_count": len(positions),
         "starting_cash": config.starting_cash,
@@ -3302,6 +3314,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
         portfolio = get_portfolio_value(db, user_id=user_id)
         total_value = portfolio["total_value"]
+        sweep_priced = portfolio.get("sweep_priced", True)
 
         # Update peak portfolio value
         peak_value = config.peak_portfolio_value or config.starting_cash
@@ -3318,7 +3331,17 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
         recovery_threshold = drawdown_config.get('recovery_pct', 10.0)
         drawdown_halt = False
 
-        if current_drawdown >= liquidate_threshold and position_count > 0:
+        if current_drawdown >= liquidate_threshold and position_count > 0 and not sweep_priced:
+            # The drawdown crossed the liquidate line, but total_value is
+            # understated because the SPY sweep couldn't be priced this cycle.
+            # Do NOT liquidate on a possibly-bogus drawdown — halt new buys
+            # conservatively and re-evaluate next cycle once SPY is priceable.
+            logger.warning(
+                f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown >= {liquidate_threshold}% "
+                f"but SPY sweep is UNPRICED (total_value understated) — SKIPPING liquidation, halting buys"
+            )
+            drawdown_halt = True
+        elif current_drawdown >= liquidate_threshold and position_count > 0:
             logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown >= {liquidate_threshold}% - LIQUIDATING ALL POSITIONS")
             for position in positions:
                 if position.current_price and position.current_price > 0:
@@ -3332,16 +3355,21 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                         realized_gain=position.gain_loss,
                         is_growth_stock=position.is_growth_stock or False,
                         signal_factors={"sell_reason": "CIRCUIT BREAKER", "gain_pct": round(cb_gain_pct, 1), "drawdown_pct": round(current_drawdown, 1)},
+                        is_paper=paper_mode,
                         user_id=user_id,
                         holding_days=_hold_days
                     )
-                    config.current_cash += position.current_value
+                    # Honor paper mode: never mutate real cash/positions on a
+                    # simulated run (mirrors the normal sell path above).
+                    if not paper_mode:
+                        config.current_cash += position.current_value
                     results["sells_executed"].append({
                         "ticker": position.ticker, "shares": position.shares,
                         "price": position.current_price, "gain_loss": position.gain_loss,
                         "reason": f"CIRCUIT BREAKER: Portfolio drawdown {current_drawdown:.1f}%"
                     })
-                    db.delete(position)
+                    if not paper_mode:
+                        db.delete(position)
             db.commit()
             logger.warning(f"CIRCUIT BREAKER: All positions liquidated. Cash: ${config.current_cash:.2f}")
             return results

@@ -3218,6 +3218,56 @@ class TestRunAITradingCycle:
         # Early return → no buys_considered key was set after the CB return path
         assert "buys_considered" not in result or result["buys_considered"] == 0
 
+    def test_drawdown_liquidate_respects_paper_mode(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data,
+    ):
+        """Paper mode: the circuit breaker records the liquidation but must NOT
+        delete real positions or mutate real cash (mirrors the normal sell path)."""
+        from backend.ai_trader import run_ai_trading_cycle
+
+        _seed_config(db_session, current_cash=10000.0, paper_mode=True,
+                     peak_portfolio_value=25000.0, starting_cash=25000.0)
+        _seed_stock(db_session, "PMD")
+        _seed_position(db_session, "PMD", current_value=5000.0,
+                       current_price=50.0, shares=100.0, cost_basis=80.0,
+                       gain_loss=-3000.0)
+
+        result = run_ai_trading_cycle(db_session, user_id=1)
+
+        # Position NOT deleted, real cash unchanged in paper mode.
+        pos = db_session.query(AIPortfolioPosition).filter_by(user_id=1).first()
+        assert pos is not None
+        cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        assert cfg.current_cash == pytest.approx(10000.0)  # not credited
+        # Still recorded as a circuit-breaker action.
+        assert any("CIRCUIT BREAKER" in s["reason"] for s in result["sells_executed"])
+
+    def test_drawdown_does_not_liquidate_when_spy_sweep_unpriced(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """A transient SPY price outage understates total_value; the circuit
+        breaker must NOT liquidate on that bogus drawdown."""
+        import backend.ai_trader as ai_trader
+
+        # Priced sweep (100 sh @ ~$100 = $10k) would make total = $25k = peak
+        # (0% DD). Unpriced, total = $15k -> 40% DD, which previously liquidated.
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda ticker: None)
+        _seed_config(db_session, current_cash=10000.0, spy_sweep_shares=100.0,
+                     peak_portfolio_value=25000.0, starting_cash=25000.0)
+        _seed_stock(db_session, "SWP")
+        _seed_position(db_session, "SWP", current_value=5000.0,
+                       current_price=50.0, shares=100.0, cost_basis=80.0,
+                       gain_loss=-3000.0)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        # Position survives — no liquidation on an unpriced-sweep drawdown.
+        assert db_session.query(AIPortfolioPosition).filter_by(user_id=1).count() == 1
+        assert not any("CIRCUIT BREAKER" in s["reason"]
+                       for s in result.get("sells_executed", []))
+
     def test_drawdown_halt_threshold_skips_pyramids_and_buys(
         self, db_session, reset_cycle_state, silence_cycle_seams,
         disable_atr_http, disable_historical_data, monkeypatch,

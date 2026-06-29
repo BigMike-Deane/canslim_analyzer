@@ -1011,6 +1011,10 @@ class AIPortfolioConfig(Base):
     strategy = Column(String, default="balanced")  # balanced, growth
     peak_portfolio_value = Column(Float, default=0.0)  # Track peak for drawdown circuit breaker
     spy_sweep_shares = Column(Float, default=0.0)  # SPY cash sweep: shares parked in SPY
+    paper_mode = Column(Boolean, default=False)  # Simulate trades without mutating real cash/positions
+    # NOTE: a raw migration (see _MIGRATIONS in this file) also adds this column
+    # to existing prod tables; mapping it here is what makes the ORM actually
+    # load/persist it (otherwise getattr(config,'paper_mode') was always False).
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
