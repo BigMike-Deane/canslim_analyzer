@@ -2,6 +2,7 @@
 Tests for the CANSLIM Backtesting System
 """
 
+import math
 import pytest
 import numpy as np
 from datetime import date, timedelta
@@ -759,6 +760,77 @@ class TestWinRatePerPosition:
         engine._execute_sell(date.today(), self._sell(100, 120.0, False))  # +$2000
         assert engine.positions_closed == 1
         assert engine.profitable_positions == 1
+
+
+class TestSharpeRatio:
+    """Sharpe must come from TRUE day-over-day returns, not diff-of-cumulative
+    (which divides by the fixed start value and invents variance as the book
+    compounds)."""
+
+    def test_helper_constant_returns_zero_sharpe(self):
+        from backend.backtester import _annualized_sharpe_from_returns
+        # A perfectly steady +10%/day stream has zero dispersion -> Sharpe 0.
+        assert _annualized_sharpe_from_returns([10.0, 10.0, 10.0]) == 0.0
+
+    def test_helper_zero_mean_returns_zero_sharpe(self):
+        from backend.backtester import _annualized_sharpe_from_returns
+        assert _annualized_sharpe_from_returns([1.0, -1.0, 1.0, -1.0]) == 0.0
+
+    def test_helper_too_few_returns_zero(self):
+        from backend.backtester import _annualized_sharpe_from_returns
+        assert _annualized_sharpe_from_returns([5.0]) == 0.0
+        assert _annualized_sharpe_from_returns([]) == 0.0
+
+    def test_helper_known_value(self):
+        from backend.backtester import _annualized_sharpe_from_returns
+        # returns [2, 0]: mean 1, population std 1 -> Sharpe = sqrt(252).
+        assert _annualized_sharpe_from_returns([2.0, 0.0]) == pytest.approx(
+            math.sqrt(252), abs=1e-6
+        )
+
+    def test_snapshot_accumulates_true_period_returns(self, mock_db):
+        """A steadily compounding book yields constant TRUE daily returns and a
+        Sharpe of 0 — whereas diff-of-cumulative would manufacture variance."""
+        import numpy as np
+        from backend.backtester import BacktestEngine
+
+        mock_session, _ = mock_db
+        engine = BacktestEngine(mock_session, 1)
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 0.0
+        engine.data_provider.get_spy_price_on_date.return_value = 100.0
+        engine.spy_start_price = 100.0
+        engine.spy_shares = 0
+        engine.spy_sweep_shares = 0
+        engine.positions = {}
+
+        # Cash-only book compounding +10%/day at the starting-cash scale
+        # (25000 -> 27500 -> 30250), so V_{t-1}/V_0 varies meaningfully.
+        for v in (25000.0, 27500.0, 30250.0):
+            engine.cash = v
+            engine._take_snapshot(date.today())
+
+        # True per-day returns are a constant +10% (first snapshot has no prior).
+        assert engine.period_returns == pytest.approx([10.0, 10.0])
+        # Constant TRUE returns -> ~zero dispersion.
+        assert np.std(engine.period_returns) < 1e-9
+        # Contrast: diff-of-cumulative ([0,10,21] -> [10,11]) manufactures real
+        # variance purely from start-value normalization as the book compounds.
+        assert np.std(np.diff(engine.daily_returns)) > 0.4
+
+    @pytest.fixture
+    def mock_db(self):
+        from backend.database import BacktestRun
+        mock_session = MagicMock()
+        mock_backtest = BacktestRun(
+            id=1, name="SR", start_date=date.today() - timedelta(days=30),
+            end_date=date.today(), starting_cash=25000.0, stock_universe="sp500",
+            max_positions=8, min_score_to_buy=65, sell_score_threshold=45,
+            stop_loss_pct=8.0, status="pending",
+        )
+        mock_session.get.return_value = mock_backtest
+        mock_session.query.return_value.all.return_value = []
+        return mock_session, mock_backtest
 
 
 class TestMomentumConfirmation:

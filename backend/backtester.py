@@ -122,6 +122,24 @@ class SimulatedTrade:
     sell_pct: float = 100.0  # Percentage to sell (for partial sells)
 
 
+def _annualized_sharpe_from_returns(period_returns, trading_days_per_year: int = 252) -> float:
+    """Annualized Sharpe (rf=0) from a list of per-period (day-over-day) % returns.
+
+    Returns 0.0 when there are fewer than 2 returns or zero dispersion (a
+    perfectly steady return stream has undefined Sharpe). Inputs must be TRUE
+    period returns V_t/V_{t-1}-1 — feeding diff-of-cumulative here would
+    reintroduce the start-value-normalization bug this replaced.
+    """
+    if len(period_returns) < 2:
+        return 0.0
+    import numpy as np
+    arr = np.asarray(period_returns, dtype=float)
+    std = float(np.std(arr))
+    if std <= 0:
+        return 0.0
+    return float((np.mean(arr) / std) * math.sqrt(trading_days_per_year))
+
+
 def create_backtest_static_snapshot(db: Session, backtest_id: int) -> int:
     """Snapshot every static_data input for every stock at backtest creation.
     Backtester._load_static_data prefers these snapshot rows over the live
@@ -307,7 +325,12 @@ class BacktestEngine:
         # Track metrics
         self.peak_portfolio_value: float = self.backtest.starting_cash
         self.max_drawdown_pct: float = 0.0
-        self.daily_returns: List[float] = []
+        self.daily_returns: List[float] = []  # cumulative return % per snapshot
+        # True day-over-day returns V_t/V_{t-1}-1 (%), one per snapshot after the
+        # first. Used for Sharpe — NOT diff-of-cumulative, which divides by the
+        # fixed start value and manufactures variance as the book compounds.
+        self.period_returns: List[float] = []
+        self.prev_total_value: float = 0.0  # prior snapshot's total_value (exact V_{t-1})
         self.trades_executed: int = 0
         # Win rate is computed per CLOSED POSITION (one round-trip), not per
         # sell execution. Counting every partial profit-take as its own "win"
@@ -4460,13 +4483,17 @@ class BacktestEngine:
         # Calculate returns
         cumulative_return_pct = ((total_value / self.backtest.starting_cash) - 1) * 100
 
-        if self.daily_returns:
-            prev_value = self.backtest.starting_cash * (1 + self.daily_returns[-1] / 100)
-            daily_return_pct = ((total_value / prev_value) - 1) * 100
+        if self.daily_returns and self.prev_total_value > 0:
+            # True day-over-day return off the EXACT prior snapshot value (no
+            # reconstruction from cumulative, which carries float drift).
+            daily_return_pct = ((total_value / self.prev_total_value) - 1) * 100
+            # Accumulate for Sharpe (skip the first snapshot — no prior day).
+            self.period_returns.append(daily_return_pct)
         else:
             daily_return_pct = cumulative_return_pct
 
         self.daily_returns.append(cumulative_return_pct)
+        self.prev_total_value = total_value
 
         # SPY benchmark
         spy_price = self.data_provider.get_spy_price_on_date(current_date)
@@ -4740,19 +4767,9 @@ class BacktestEngine:
         else:
             self.backtest.win_rate = 0
 
-        # Sharpe ratio (simplified - using daily returns)
-        if len(self.daily_returns) > 1:
-            import numpy as np
-            daily_returns_array = np.diff(self.daily_returns)  # Convert cumulative to daily
-            if len(daily_returns_array) > 0 and np.std(daily_returns_array) > 0:
-                avg_return = np.mean(daily_returns_array)
-                std_return = np.std(daily_returns_array)
-                # Annualized Sharpe (assuming 252 trading days)
-                self.backtest.sharpe_ratio = (avg_return / std_return) * math.sqrt(252)
-            else:
-                self.backtest.sharpe_ratio = 0
-        else:
-            self.backtest.sharpe_ratio = 0
+        # Sharpe ratio from TRUE day-over-day returns (period_returns), not
+        # diff-of-cumulative (which divides by the fixed start value).
+        self.backtest.sharpe_ratio = _annualized_sharpe_from_returns(self.period_returns)
 
         # SPY benchmark
         trading_days = self.data_provider.get_trading_days()
