@@ -1998,6 +1998,14 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         'bear_base_bonus_total': 0,
     }
 
+    # SPY snapshot used later for buy-signal context (spy_pct_above_50ma). The
+    # three gate paths below each assign these, but a profile that disables BOTH
+    # the market-state machine AND the legacy regime gate (with score-floor decay
+    # off) would otherwise leave them unbound -> NameError when read at signal
+    # build time. Default to 0 so the no-gate path is safe.
+    spy_px = 0.0
+    spy_50 = 0.0
+
     # MARKET STATE MACHINE: Graduated exposure system (replaces binary regime gate)
     # In bull markets (SPY > 50MA), this is always TRENDING at 100% — identical to before.
     # Read from profile first (nostate_optimized has market_state.enabled: false), fallback to global config

@@ -1066,6 +1066,38 @@ class TestEvaluateBuysRanking:
         assert b["signal_factors"]["entry_type"] == "standard"
         assert b["is_growth_stock"] is False
 
+    def test_no_gate_profile_does_not_nameerror(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+        monkeypatch,
+    ):
+        """Regression: a profile disabling BOTH the market-state machine and the
+        legacy regime gate (with score-floor decay off) leaves spy_px/spy_50
+        otherwise unbound -> NameError at signal-build (spy_pct_above_50ma).
+        With the up-front defaults they're 0 and evaluate_buys completes."""
+        import backend.ai_trader as ai_trader
+        from backend.ai_trader import evaluate_buys, get_strategy_profile
+
+        no_gate = dict(get_strategy_profile("nostate_optimized"))
+        no_gate["market_state"] = {"enabled": False}
+        no_gate["regime_gate"] = {"enabled": False}
+        no_gate["score_floor_decay"] = {"enabled": False}
+        monkeypatch.setattr(ai_trader, "get_strategy_profile", lambda strategy: no_gate)
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "NOG", canslim_score=80.0)
+
+        buys = evaluate_buys(db_session, user_id=1)  # must not raise
+
+        assert len(buys) == 1
+        # SPY context defaulted to 0 -> spy_pct_above_50ma is 0.0, not a crash.
+        assert buys[0]["signal_factors"]["spy_pct_above_50ma"] == 0.0
+
     def test_below_min_score_excluded_from_query(
         self,
         db_session,
