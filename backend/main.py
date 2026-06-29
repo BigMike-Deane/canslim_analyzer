@@ -635,6 +635,14 @@ def update_market_snapshot(db: Session, force_refresh: bool = False):
 
     except Exception as e:
         logger.error(f"Error updating market snapshot: {e}")
+        # Roll back so a failed commit (e.g. IntegrityError racing the daily
+        # MarketSnapshot UNIQUE(date)) doesn't leave the shared request session
+        # in a failed state — otherwise the caller (get_dashboard) 500s with
+        # PendingRollbackError on its very next query.
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 @app.get("/api/market-direction")
@@ -2205,8 +2213,15 @@ def fetch_price_yahoo_chart(ticker: str) -> float | None:
 
 
 @app.post("/api/portfolio/refresh")
-async def refresh_portfolio(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    """Refresh all portfolio positions with current prices and auto-scan missing stocks"""
+def refresh_portfolio(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Refresh all portfolio positions with current prices and auto-scan missing stocks.
+
+    Declared sync (not async) on purpose: the body does blocking network I/O
+    (analyze_stock) and time.sleep per position. As a plain def, FastAPI runs it
+    in its threadpool, so those blocking calls don't stall the event loop for
+    every other concurrent request (which they did as an async def). The body
+    contains no awaits.
+    """
     import time
 
     positions = db.query(PortfolioPosition).filter(PortfolioPosition.user_id == current_user.id).all()

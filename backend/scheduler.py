@@ -764,17 +764,20 @@ def run_continuous_scan():
 
     # Pre-load industry group ranks from DB (from previous scan cycle)
     _industry_group_ranks = {}
+    ig_preload_db = SessionLocal()
     try:
-        ig_preload_db = SessionLocal()
         ig_rows = ig_preload_db.query(Stock.ticker, Stock.industry_group_rank).filter(
             Stock.industry_group_rank != None
         ).all()
         _industry_group_ranks = {t: r for t, r in ig_rows}
-        ig_preload_db.close()
         if _industry_group_ranks:
             logger.info(f"Loaded industry group ranks for {len(_industry_group_ranks)} stocks")
     except Exception as e:
         logger.debug(f"Industry group rank preload failed: {e}")
+    finally:
+        # close() must run even if the query raises, or the scan leaks a
+        # connection per cycle until the pool is exhausted.
+        ig_preload_db.close()
 
     def analyze_stock(ticker: str) -> dict:
         """Analyze a single stock"""
@@ -1515,6 +1518,16 @@ def _refresh_portfolio_prices():
         from backend.database import SessionLocal, AIPortfolioConfig
 
         if not is_market_open():
+            return
+
+        # Skip while a full scan is running. The scan's Phase-3 AI trade cycle
+        # mutates the same AIPortfolioPosition rows this refresh touches, on a
+        # separate session; running both concurrently risks a lost update (this
+        # refresh overwriting — or resurrecting — a position the trade cycle just
+        # changed or sold). The scan refreshes prices itself, so skipping one
+        # 5-min refresh loses nothing.
+        if _scan_config.get("is_scanning"):
+            logger.debug("Portfolio price refresh skipped: scan in progress")
             return
 
         db = SessionLocal()

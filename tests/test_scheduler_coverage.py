@@ -1045,6 +1045,31 @@ class TestRefreshPortfolioPrices:
 
         assert refresh_spy.call_count == 0
 
+    def test_skips_while_scan_in_progress(
+        self, patch_session_local, monkeypatch
+    ):
+        """Lost-update guard: when a scan is running (is_scanning=True), the
+        price refresh must skip — the scan's AI trade cycle owns the positions."""
+        from backend.scheduler import _refresh_portfolio_prices
+        from backend import scheduler as scheduler_mod
+        import backend.ai_trader as ai_trader
+
+        monkeypatch.setattr(ai_trader, "is_market_open", lambda: True)
+        refresh_spy = MagicMock(return_value={"message": "ok"})
+        monkeypatch.setattr(ai_trader, "refresh_ai_portfolio", refresh_spy)
+
+        patch_session_local.add(AIPortfolioConfig(user_id=1, is_active=True))
+        patch_session_local.commit()
+
+        prev = scheduler_mod._scan_config.get("is_scanning")
+        scheduler_mod._scan_config["is_scanning"] = True
+        try:
+            _refresh_portfolio_prices()
+        finally:
+            scheduler_mod._scan_config["is_scanning"] = prev
+
+        assert refresh_spy.call_count == 0  # skipped, no position writes
+
     def test_market_open_refreshes_each_active_user(
         self, patch_session_local, monkeypatch
     ):
