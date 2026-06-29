@@ -1202,7 +1202,11 @@ def run_continuous_scan():
         analysis_results = run_async_scan(tickers, batch_size=100, progress_callback=update_progress)
         fetch_time = time.time() - start_time
 
-        logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({fetch_time/len(analysis_results):.2f}s per stock)")
+        # Guard the per-stock divisor: an empty result set (data-provider
+        # outage) must NOT raise here, or the exception skips the entire rest of
+        # the scan — saving, AI trading, and the stop-loss/exit pass below.
+        per_stock_fetch = fetch_time / len(analysis_results) if analysis_results else 0.0
+        logger.info(f"✓ Async fetching complete: {len(analysis_results)} stocks in {fetch_time:.1f}s ({per_stock_fetch:.2f}s per stock)")
 
         # Phase 2: Saving to database
         _set_phase(
@@ -1257,7 +1261,8 @@ def run_continuous_scan():
         total_time = time.time() - start_time
         _scan_config["stocks_scanned"] = successful
         logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks in {total_time:.1f}s total")
-        logger.info(f"  Fetch: {fetch_time:.0f}s | Save: {save_time:.0f}s | Per stock: {total_time/successful:.2f}s")
+        per_stock_total = total_time / successful if successful else 0.0
+        logger.info(f"  Fetch: {fetch_time:.0f}s | Save: {save_time:.0f}s | Per stock: {per_stock_total:.2f}s")
 
         # Log rate limit stats and cache stats
         try:

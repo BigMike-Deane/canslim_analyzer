@@ -1815,6 +1815,29 @@ class TestRunContinuousScan:
         scores = scan_seams.session.query(StockScore).all()
         assert len(scores) == 1
 
+    def test_empty_scan_results_do_not_abort_pipeline(self, scan_seams):
+        """Regression: a total data-provider outage (run_async_scan returns [])
+        must not raise ZeroDivisionError on the per-stock timing logs
+        (scheduler.py ~1205 `fetch_time/len(analysis_results)` and ~1260
+        `total_time/successful`) and skip the rest of the scan — saving, AI
+        trading, the stop-loss/exit pass, and the post-scan helpers."""
+        from backend.scheduler import run_continuous_scan
+        from backend import scheduler as scheduler_mod
+
+        # Tickers exist, but every fetch fails -> analysis_results == [].
+        scan_seams.run_async_scan.side_effect = lambda *a, **k: []
+
+        run_continuous_scan()  # must not raise
+
+        # Reached the fetch...
+        assert scan_seams.run_async_scan.call_count == 1
+        # ...and got PAST both per-stock divisions to the Phase-4 helpers,
+        # proving the empty result set didn't short-circuit the pipeline.
+        assert scan_seams.cleanup_old_scores.call_count == 1
+        assert scan_seams.check_watchlist.call_count == 1
+        # Scan completed cleanly (finally block ran).
+        assert scheduler_mod._scan_config["is_scanning"] is False
+
     def test_already_scanning_guard_early_returns(self, scan_seams):
         """Branch (b): is_scanning=True at lock-check → immediate return
         without touching the body.
