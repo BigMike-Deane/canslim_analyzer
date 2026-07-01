@@ -1373,8 +1373,11 @@ class GrowthModeScorer:
         if not recent_earnings:
             return True  # No recent earnings data
 
-        # Filter out None values
-        valid_earnings = [e for e in recent_earnings if e is not None]
+        # Filter out None AND NaN values. NaN must be stripped too: `nan <= 0`
+        # is False, so a single NaN quarter would break the "all recent quarters
+        # negative" test below and misroute a genuinely loss-making pre-revenue
+        # stock to CANSLIM (where it scores ~0 on C and is effectively unbuyable).
+        valid_earnings = [e for e in recent_earnings if e is not None and e == e]
         if not valid_earnings:
             return True  # No valid earnings
 

@@ -87,6 +87,29 @@ class TestShouldUseGrowthMode:
         stock = _make_growth_stock(quarterly_earnings=[0, 0, 0, 0])
         assert scorer.should_use_growth_mode(stock) is True
 
+    def test_loss_making_with_nan_quarter_uses_growth_mode(self):
+        """Regression: a NaN quarter must not misroute a genuinely loss-making
+        pre-revenue stock to CANSLIM. `nan <= 0` is False, so before the NaN
+        filter this returned False (CANSLIM) and the stock scored ~0 on C."""
+        scorer = _make_scorer()
+        stock = _make_growth_stock(quarterly_earnings=[float("nan"), -0.5, -0.3, -0.2])
+        assert scorer.should_use_growth_mode(stock) is True
+
+    def test_all_nan_earnings_uses_growth_mode(self):
+        """All-NaN recent quarters => no valid earnings => growth mode."""
+        scorer = _make_scorer()
+        stock = _make_growth_stock(
+            quarterly_earnings=[float("nan"), float("nan"), float("nan"), float("nan")]
+        )
+        assert scorer.should_use_growth_mode(stock) is True
+
+    def test_nan_plus_positive_still_canslim(self):
+        """A NaN alongside a real positive quarter still routes to CANSLIM
+        (the positive quarter means not all-negative)."""
+        scorer = _make_scorer()
+        stock = _make_growth_stock(quarterly_earnings=[float("nan"), 1.2, -0.3, -0.2])
+        assert scorer.should_use_growth_mode(stock) is False
+
 
 class TestRevenueScore:
     """Test R (Revenue Growth) scoring — max 20 pts."""
