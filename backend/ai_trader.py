@@ -1326,7 +1326,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
         # evaluate_sells and backtester._evaluate_sells — keep all three in sync).
         if position.purchase_date:
             purchase_dt = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
-            holding_days = (date.today() - purchase_dt).days
+            holding_days = (datetime.now(timezone.utc).date() - purchase_dt).days
             position_stop_pct = apply_new_position_guard(
                 position_stop_pct,
                 guard_config=yaml_config.get('ai_trader.new_position_guard', {}),
@@ -1388,7 +1388,13 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
             if trailing_stop_pct and pyramid_count > 0:
                 trailing_stop_pct = apply_pyramid_widening(trailing_stop_pct, pyramid_count)
 
-            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct:
+            # Gate on the trailing-stop cadence window, exactly like evaluate_sells
+            # (see the trailing_stops_allowed_now checks at the daily-cycle path).
+            # This intraday fast checker must NOT fire trailing stops outside the
+            # allowed window, or it reintroduces the intraday-churn drag that the
+            # cadence lever exists to remove and diverges from the backtester
+            # (which only trails at the daily close). HARD stops below stay intraday.
+            if trailing_stop_pct and drop_from_peak >= trailing_stop_pct and trailing_stops_allowed_now(yaml_config):
                 stock = ticker_to_stock.get(position.ticker)
                 score = stock.canslim_score if stock else 0
                 growth_score = stock.growth_mode_score if stock else None
@@ -1423,6 +1429,10 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                         holding_days=_hold_days
                     )
 
+                    # Capture the true peak before we reset it below — the
+                    # sells_executed reason string interpolates it, and resetting
+                    # first would report "Peak $X → $X" (peak == current).
+                    _peak_before_reset = position.peak_price
                     # Update position: reduce shares, reset peak
                     position.shares -= shares_to_sell
                     position.current_value = position.shares * position.current_price
@@ -1435,7 +1445,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                         "shares": shares_to_sell,
                         "price": position.current_price,
                         "gain_loss": (position.current_price - position.cost_basis) * shares_to_sell,
-                        "reason": f"PARTIAL TRAILING STOP ({partial_sell_pct_config}%): Peak ${position.peak_price:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)"
+                        "reason": f"PARTIAL TRAILING STOP ({partial_sell_pct_config}%): Peak ${_peak_before_reset:.2f} → ${position.current_price:.2f} (-{drop_from_peak:.1f}%)"
                     })
                 else:
                     # Standard: full sell
@@ -1652,7 +1662,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         # live FSLR held to -18%, AMD -13.7%). Restores trader<->backtester sync.
         if position.purchase_date:
             purchase_dt = position.purchase_date.date() if hasattr(position.purchase_date, 'date') else position.purchase_date
-            holding_days = (date.today() - purchase_dt).days
+            holding_days = (datetime.now(timezone.utc).date() - purchase_dt).days
             position_stop_pct = apply_new_position_guard(
                 position_stop_pct,
                 guard_config=yaml_config.get('ai_trader.new_position_guard', {}),
