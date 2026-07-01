@@ -5755,6 +5755,17 @@ async def get_portfolio_summary(
     profile = app_config.get(f'strategy_profiles.{strategy}', {})
     base_stop = profile.get('stop_loss_pct', 7.0)
     bearish_stop = profile.get('bearish_stop_loss_pct', 6.0)
+    # Match evaluate_sells: when SPY < 50MA the trader tightens to the bearish
+    # stop. Resolve the gate once (cached market call — no extra fetch) so the
+    # displayed hard-stop level and distance-to-stop reflect what the engine
+    # will really enforce, not the looser base stop. (Same pattern as
+    # get_ai_portfolio.) Without this the dashboard understated downside risk in
+    # exactly the regime where the stop matters most.
+    _md = get_cached_market_direction() or {}
+    _spy = _md.get("indexes", {}).get("SPY", {}) if _md.get("success") else {}
+    _spy_price, _spy_ma50 = _spy.get("price", 0), _spy.get("ma_50", 0)
+    is_bearish_market = (_spy_price < _spy_ma50) if (_spy_price and _spy_ma50) else False
+    effective_stop = bearish_stop if is_bearish_market else base_stop
 
     # Portfolio totals
     cash = config.current_cash or 0
@@ -5774,7 +5785,7 @@ async def get_portfolio_summary(
         if trail_pct is not None and p.peak_price:
             stop_price = p.peak_price * (1 - trail_pct / 100)
         else:
-            stop_price = p.cost_basis * (1 - base_stop / 100)
+            stop_price = p.cost_basis * (1 - effective_stop / 100)
 
         # Distance to stop
         pct_to_stop = ((p.current_price - stop_price) / p.current_price * 100) if p.current_price and stop_price else 0
