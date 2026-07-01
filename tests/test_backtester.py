@@ -3747,3 +3747,86 @@ def test_profile_overrides_do_not_leak_across_engines():
     e2 = BacktestEngine(s2, 1)
     assert e2.profile.get("score_floor_exit", {}).get("enabled") is not True, \
         "profile_overrides leaked into a later engine via the shared singleton"
+
+
+class TestSeedSnapshotDedup:
+    """Regression: seeding must not take its own snapshot (callers own it).
+
+    A snapshot inside _seed_initial_positions produced a duplicate
+    backtest_snapshots row per seed/re-seed day AND a spurious ~0% same-day
+    sample in period_returns that diluted the Sharpe ratio.
+    """
+
+    def test_seed_does_not_snapshot(self):
+        from backend.backtester import BacktestEngine
+
+        mock_session, _ = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.profile = {}  # defaults: seed_count=5, seed_pct=10
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 100.0
+        engine.data_provider.get_spy_price_on_date.return_value = None
+        # One qualifying candidate so seeding runs to the END of the method
+        engine._calculate_scores = MagicMock(
+            return_value={"AAPL": {"total_score": 80, "l_score": 10}}
+        )
+        engine._execute_buy = MagicMock()
+        engine._take_snapshot = MagicMock()
+
+        engine._seed_initial_positions(date.today())
+
+        # Reached real seeding (not an early return) ...
+        engine._execute_buy.assert_called()
+        # ... and did NOT snapshot: the caller owns exactly one snapshot per date.
+        engine._take_snapshot.assert_not_called()
+
+
+class TestScoreHistoryClearedOnFullSell:
+    """Regression: a full close must clear score_history so a later re-buy
+    starts a fresh stability window (stale low scores from the prior holding
+    must not seed a premature SCORE CRASH sell right after re-entry)."""
+
+    def test_full_sell_pops_score_history(self):
+        from backend.backtester import BacktestEngine, SimulatedPosition, SimulatedTrade
+
+        mock_session, _ = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.positions["AAPL"] = SimulatedPosition(
+            ticker="AAPL", shares=100, cost_basis=150.0,
+            purchase_date=date.today(), purchase_score=75.0,
+            peak_price=160.0, peak_date=date.today(), sector="Technology",
+        )
+        engine.score_history["AAPL"] = [30.0, 25.0, 20.0]  # stale low history
+
+        trade = SimulatedTrade(
+            ticker="AAPL", action="SELL", shares=100, price=155.0,
+            reason="TEST FULL SELL", score=40.0, priority=0,
+        )
+        engine._execute_sell(date.today(), trade)
+
+        assert "AAPL" not in engine.positions, "position should be fully closed"
+        assert "AAPL" not in engine.score_history, \
+            "score_history must be cleared on full close to avoid stale re-buy window"
+
+    def test_partial_sell_keeps_score_history(self):
+        from backend.backtester import BacktestEngine, SimulatedPosition, SimulatedTrade
+
+        mock_session, _ = make_mock_db()
+        engine = BacktestEngine(mock_session, 1)
+        engine.positions["AAPL"] = SimulatedPosition(
+            ticker="AAPL", shares=100, cost_basis=150.0,
+            purchase_date=date.today(), purchase_score=75.0,
+            peak_price=160.0, peak_date=date.today(), sector="Technology",
+        )
+        engine.score_history["AAPL"] = [70.0, 72.0, 68.0]
+
+        trade = SimulatedTrade(
+            ticker="AAPL", action="SELL", shares=50, price=155.0,
+            reason="TEST PARTIAL SELL", score=70.0, priority=0,
+            is_partial=True, sell_pct=50.0,
+        )
+        engine._execute_sell(date.today(), trade)
+
+        # Still held -> history must persist across the partial.
+        assert "AAPL" in engine.positions
+        assert engine.score_history.get("AAPL") == [70.0, 72.0, 68.0]

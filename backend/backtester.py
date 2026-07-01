@@ -2113,7 +2113,11 @@ class BacktestEngine:
             self._execute_buy(first_day, trade)
             seed_cash_spent += position_value
 
-        self._take_snapshot(first_day)
+        # NOTE: intentionally NO _take_snapshot here. Every caller snapshots the
+        # same date right after (day-1 seed falls through to _simulate_day's
+        # terminal snapshot; each re-seed path calls _take_snapshot then returns).
+        # A snapshot here produced a duplicate row per seed/re-seed day AND a
+        # spurious ~0% same-day sample in period_returns that diluted Sharpe.
 
     def _update_positions(self, current_date: date):
         """Update position prices and track peak for trailing stops"""
@@ -4291,6 +4295,10 @@ class BacktestEngine:
             # FULL SELL - remove position entirely and record for cooldown
             del self.positions[trade.ticker]
             self.recently_sold[trade.ticker] = (current_date, trade.reason)
+            # Clear score history so a later re-buy starts a fresh stability
+            # window — stale scores from the prior holding period must not seed
+            # a premature SCORE CRASH sell right after re-entry.
+            self.score_history.pop(trade.ticker, None)
 
             # Track outcome for buy throttle (full sells only, not partials)
             gain_pct = ((trade.price - cost_basis) / cost_basis) * 100 if cost_basis > 0 else 0
@@ -4463,7 +4471,11 @@ class BacktestEngine:
     def _take_snapshot(self, current_date: date):
         """Take daily portfolio snapshot"""
         positions_value = sum(
-            pos.shares * (self.data_provider.get_price_on_date(pos.ticker, current_date) or 0)
+            # Fall back to cost_basis (not 0) on a missing bar, matching
+            # _get_portfolio_value / exposure cap / sector cap. Valuing a
+            # price-less held position at $0 flashed a false drawdown and a large
+            # spurious negative daily return for that one day.
+            pos.shares * (self.data_provider.get_price_on_date(pos.ticker, current_date) or pos.cost_basis)
             for pos in self.positions.values()
         )
         # Include SPY sweep value
