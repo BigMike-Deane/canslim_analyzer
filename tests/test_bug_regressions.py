@@ -1361,11 +1361,14 @@ class TestDropNACompleteness:
     """Regression: historical data must drop rows with NaN in any OHLCV column."""
 
     def test_dropna_includes_all_ohlcv(self):
-        """dropna must filter on close, high, low, and volume."""
+        """dropna must filter on open, close, high, low, and volume (full OHLCV).
+
+        'open' was added so get_ohlc_on_date never receives a bar with a null
+        open (intraday-stop / peak-watermark consumers)."""
         from pathlib import Path
         source = (Path(__file__).parent.parent / "backend" / "historical_data.py").read_text()
-        assert 'dropna(subset=["close", "high", "low", "volume"])' in source, (
-            "dropna must filter all essential OHLCV columns, not just close"
+        assert 'dropna(subset=["open", "close", "high", "low", "volume"])' in source, (
+            "dropna must filter all essential OHLCV columns, including open"
         )
 
     def test_nan_volume_not_caught_by_not_check(self):

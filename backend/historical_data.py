@@ -259,6 +259,7 @@ class HistoricalDataProvider:
                 adj_open = []
                 adj_high = []
                 adj_low = []
+                adj_volume = []
                 for i in range(len(raw_close)):
                     rc = raw_close[i] if i < len(raw_close) else None
                     ap = adj_prices[i] if i < len(adj_prices) else None
@@ -269,12 +270,27 @@ class HistoricalDataProvider:
                     adj_open.append((raw_open[i] * factor) if i < len(raw_open) and raw_open[i] is not None else None)
                     adj_high.append((raw_high[i] * factor) if i < len(raw_high) and raw_high[i] is not None else None)
                     adj_low.append((raw_low[i] * factor) if i < len(raw_low) and raw_low[i] is not None else None)
+                    # Split-adjust volume to keep it on the SAME share-unit as the
+                    # back-adjusted prices. On a 3:1 split, factor≈1/3 pre-split, so
+                    # dividing multiplies pre-split volume ×3 → converts old-share
+                    # counts to current-share units. Without this, a 50-day avg that
+                    # straddles a split blends raw pre/post-split share counts and
+                    # corrupts volume ratios (spurious breakout confirmations).
+                    # Dividend-only adjustments drift smoothly (≈constant within any
+                    # short window) so they leave ratios unaffected; splits are the
+                    # sharp step this corrects.
+                    rv = raw_volume[i] if i < len(raw_volume) else None
+                    if rv is not None and factor:
+                        adj_volume.append(round(rv / factor))
+                    else:
+                        adj_volume.append(rv)
                 close_prices = adj_prices
             else:
                 close_prices = raw_close
                 adj_open = raw_open
                 adj_high = raw_high
                 adj_low = raw_low
+                adj_volume = raw_volume
 
             df = pd.DataFrame({
                 "date": pd.to_datetime(timestamps, unit="s").date,
@@ -282,11 +298,14 @@ class HistoricalDataProvider:
                 "high": adj_high,
                 "low": adj_low,
                 "close": close_prices,
-                "volume": raw_volume
+                "volume": adj_volume
             })
 
-            # Remove rows with None/NaN in essential OHLCV columns
-            df = df.dropna(subset=["close", "high", "low", "volume"])
+            # Remove rows with None/NaN in essential OHLCV columns. "open" is
+            # included so get_ohlc_on_date (intraday-stop / peak-watermark
+            # consumers) never receives a bar with a null open that would
+            # either raise or surface NaN.
+            df = df.dropna(subset=["open", "close", "high", "low", "volume"])
             df = df.reset_index(drop=True)
 
             return df
@@ -1031,7 +1050,12 @@ class HistoricalDataProvider:
         # Check cache - valid if computed within the same week
         if ticker in self._base_pattern_cache:
             cached_date, cached_pattern = self._base_pattern_cache[ticker]
-            if (as_of_date - cached_date).days < 7:
+            # Require a NON-NEGATIVE age: a query with an earlier as_of_date than
+            # the cached one (negative diff, also < 7) would otherwise return a
+            # pattern computed from FUTURE data — look-ahead. Safe today only
+            # because the backtester iterates dates monotonically; the 0<= guard
+            # makes that invariant explicit.
+            if 0 <= (as_of_date - cached_date).days < 7:
                 return cached_pattern
 
         weekly_data = self.get_weekly_price_history(ticker, as_of_date, weeks=26)

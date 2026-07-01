@@ -797,6 +797,24 @@ class TestBasePatternDetection:
         )
         assert result["type"] == "none"
 
+    def test_detect_base_pattern_ignores_future_cached_entry(self):
+        """Regression (D): a cache entry computed for a LATER date must not be
+        served to an EARLIER-dated query. The old signed `< 7` check treated a
+        negative age as valid and returned a pattern built from future data
+        (look-ahead); the 0<= guard forces a recompute instead."""
+        self.provider._price_cache["AAPL"] = _make_price_df(
+            start=date(2025, 1, 1), days=120, base=100, slope=0.0
+        )
+        later = date(2025, 4, 1)
+        # Seed cache as if we already computed for the later date.
+        self.provider._base_pattern_cache["AAPL"] = (
+            later, {"type": "sentinel", "weeks": 99, "pivot_price": 99.0}
+        )
+        # Query an EARLIER date (negative age): must NOT return the future sentinel.
+        earlier = later - timedelta(days=5)
+        result = self.provider.detect_base_pattern("AAPL", earlier)
+        assert result["type"] != "sentinel"
+
 
 # ============================================================================
 # Accumulation/distribution day count + FTD state machine
@@ -1204,6 +1222,45 @@ class TestFetchPriceHistoryHttp:
         assert list(df["close"]) == closes
         # When no adjclose is present, raw OHLV pass through unchanged
         assert list(df["open"]) == [c - 0.5 for c in closes]
+
+    def test_volume_split_adjusted_with_adjclose(self, monkeypatch):
+        """Regression (B): volume must be split-adjusted onto the SAME
+        share-unit as the back-adjusted prices. A 3:1 split drops raw price 3x
+        and raises raw share volume 3x; after adjustment BOTH sides should be
+        on the post-split unit, so the volume series is flat across the split
+        instead of stepping 1M -> 3M and corrupting windowed averages."""
+        ts = self._ts_range(4)
+        raw_closes = [300.0, 300.0, 100.0, 100.0]      # price divides 3x on split
+        adjcloses = [100.0, 100.0, 100.0, 100.0]       # back-adjusted to post-split
+        raw_volumes = [1_000_000, 1_000_000, 3_000_000, 3_000_000]  # shares 3x post
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=ts, closes=raw_closes, volumes=raw_volumes,
+                adjcloses=adjcloses,
+            )),
+        )
+        df = self.provider._fetch_price_history("AAPL", self.start, self.end)
+        assert df is not None
+        # Close uses adjclose
+        assert list(df["close"]) == adjcloses
+        # Pre-split volume back-adjusted up to the post-split unit (~3M), so the
+        # whole series is consistent — NOT the raw 1M that would sink a 50d avg.
+        assert list(df["volume"]) == [3_000_000, 3_000_000, 3_000_000, 3_000_000]
+
+    def test_volume_passthrough_without_adjclose(self, monkeypatch):
+        """No adjclose branch: raw volume passes through unchanged."""
+        ts = self._ts_range(4)
+        vols = [1_111_111, 2_222_222, 3_333_333, 4_444_444]
+        monkeypatch.setattr(
+            "backend.historical_data.requests.get",
+            lambda *a, **kw: _MockYahooResponse(payload=_yahoo_payload(
+                timestamps=ts, closes=[10.0, 11.0, 12.0, 13.0], volumes=vols,
+            )),
+        )
+        df = self.provider._fetch_price_history("AAPL", self.start, self.end)
+        assert df is not None
+        assert list(df["volume"]) == vols
 
     def test_applies_split_adjustment_when_adjclose_present(self, monkeypatch):
         # adjclose = raw_close / 2 simulates a 2:1 split adjustment
