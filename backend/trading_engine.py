@@ -224,8 +224,14 @@ def check_score_stability_from_history(
     ai_trader fetches from StockScore DB table; backtester uses in-memory history.
 
     Args:
-        recent_scores: List of recent scores (chronological or reverse — both work
-                       since we use full list for avg and reversed() for consecutive)
+        recent_scores: List of recent scores in CHRONOLOGICAL order (oldest first,
+                       most recent last). Order matters: consecutive_low walks
+                       reversed(recent_scores) from the newest, and recent_low_count
+                       takes recent_scores[-recent_low_window:] (the newest N). Passing
+                       reverse-ordered input would count the wrong scans for both the
+                       "consecutive low" and "2 of last 3" gates. Callers must sort
+                       oldest-first (ai_trader reverses DB desc rows; backtester appends
+                       in date order).
         current_score: Current score to evaluate
         threshold: Score threshold below which we consider "low"
 
