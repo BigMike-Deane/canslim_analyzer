@@ -718,7 +718,18 @@ class CANSLIMScorer:
         # Calculate volume ratio with NaN handling
         try:
             if data.current_volume > 0:
-                recent_vol = data.current_volume
+                # current_volume is a partial count while the market is open —
+                # a morning scan sees a fraction of the day's volume and would
+                # understate this component. Same max(today, yesterday) guard
+                # as TechnicalAnalyzer.calculate_volume_ratio (keep in sync).
+                yesterday_vol = 0
+                try:
+                    volumes = data.price_history['Volume'].tolist()
+                    if len(volumes) >= 2 and volumes[-2] and volumes[-2] > 0:
+                        yesterday_vol = float(volumes[-2])
+                except (KeyError, IndexError, TypeError, AttributeError):
+                    pass
+                recent_vol = max(float(data.current_volume), yesterday_vol)
             else:
                 vol_series = data.price_history['Volume'].dropna().iloc[-5:]
                 recent_vol = float(vol_series.mean()) if len(vol_series) > 0 else 0

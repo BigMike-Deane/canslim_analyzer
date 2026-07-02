@@ -3136,3 +3136,72 @@ class TestPreEarningsTighteningConfig:
         source = inspect.getsource(BacktestEngine._evaluate_sells)
         assert "PRE-EARNINGS" in source, "backtester should have pre-earnings sell logic"
         assert "earnings_tighten" in source, "backtester should read earnings_tighten config"
+
+
+# ─── S Score Partial-Day Volume Guard (canslim_scorer.py, Jul-2 audit item H) ──
+# _score_supply_demand used raw current_volume, which is a partial count while
+# the market is open — a morning scan saw ~20% of the day's volume and
+# understated the volume component. Fixed with the same max(today, yesterday)
+# guard TechnicalAnalyzer.calculate_volume_ratio already uses.
+class TestSupplyDemandPartialDayVolume:
+    """Regression: partial-day current_volume must not understate S score."""
+
+    def _make_stock(self, current_volume, yesterday_volume):
+        import pandas as pd
+        from data_fetcher import StockData
+
+        dates = pd.date_range(end="2026-02-26", periods=30, freq="B")
+        closes = [100.0] * 30  # flat: isolates the volume component
+        volumes = [1000000.0] * 30
+        volumes[-2] = yesterday_volume
+        volumes[-1] = current_volume  # today's (possibly partial) bar
+
+        stock = StockData("TEST")
+        stock.current_price = 100.0
+        stock.avg_volume_50d = 1000000
+        stock.current_volume = current_volume
+        stock.price_history = pd.DataFrame({
+            "Close": closes, "Volume": volumes,
+            "Low": [c * 0.99 for c in closes],
+        }, index=dates)
+        return stock
+
+    def test_partial_day_uses_yesterday_full_volume(self):
+        """Morning scan (today 20% of avg) with a 2x-avg yesterday scores 2.0x."""
+        from canslim_scorer import CANSLIMScorer
+
+        scorer = CANSLIMScorer(MagicMock())
+        stock = self._make_stock(current_volume=200000, yesterday_volume=2000000)
+        score, detail = scorer._score_supply_demand(stock)
+        assert "vol 2.0x avg" in detail, f"Expected yesterday's 2.0x ratio, got: {detail}"
+        assert score >= 6, f"Volume component should award 6 pts at 2.0x, got {score}"
+
+    def test_full_day_surge_still_uses_today(self):
+        """Today's volume exceeding yesterday's must win the max()."""
+        from canslim_scorer import CANSLIMScorer
+
+        scorer = CANSLIMScorer(MagicMock())
+        stock = self._make_stock(current_volume=2000000, yesterday_volume=800000)
+        score, detail = scorer._score_supply_demand(stock)
+        assert "vol 2.0x avg" in detail, f"Expected today's 2.0x ratio, got: {detail}"
+
+    def test_nan_yesterday_falls_back_to_today(self):
+        """A NaN yesterday bar must not break the guard (nan > 0 is False)."""
+        from canslim_scorer import CANSLIMScorer
+
+        scorer = CANSLIMScorer(MagicMock())
+        stock = self._make_stock(current_volume=1500000, yesterday_volume=float("nan"))
+        score, detail = scorer._score_supply_demand(stock)
+        assert "vol 1.5x avg" in detail, f"Expected today's 1.5x ratio, got: {detail}"
+
+    def test_matches_calculate_volume_ratio_semantics(self):
+        """The two volume paths must agree on the effective ratio."""
+        from canslim_scorer import CANSLIMScorer, TechnicalAnalyzer
+
+        scorer = CANSLIMScorer(MagicMock())
+        stock = self._make_stock(current_volume=300000, yesterday_volume=1700000)
+        _, detail = scorer._score_supply_demand(stock)
+        ratio = TechnicalAnalyzer.calculate_volume_ratio(stock)
+        assert f"vol {ratio:.1f}x avg" in detail, (
+            f"S-score volume ({detail}) diverged from calculate_volume_ratio ({ratio:.1f}x)"
+        )
