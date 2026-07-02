@@ -447,6 +447,18 @@ ai_trader:
     enabled: false
     scans_per_day: 4                 # ~6.5h market day / 90min scan cadence
 
+  # Backtest delist liquidation (Jul-2 audit C): the data provider's
+  # get_price_on_date falls back to the most recent prior close, so a
+  # delisted/halted ticker "holds" flat at its last print forever — it never
+  # triggers a stop and hogs one of max_positions slots for the rest of the
+  # run. Force-sell at the last known close after max_stale_days consecutive
+  # trading days with no fresh bar. Default ON: this is data correctness, not
+  # a strategy lever. Backtest-only — live delisting is handled by the
+  # DelistedTicker pipeline and the broker.
+  delist_liquidation:
+    enabled: true
+    max_stale_days: 10               # ~2 calendar weeks; halts are shorter, delistings aren't
+
   # Deterministic score boost: bonus to composite for stocks with strong
   # non-FMP scores (N+S+L+I+M). Reduces FMP influence on ranking/sizing.
   deterministic_boost:

@@ -3205,3 +3205,133 @@ class TestSupplyDemandPartialDayVolume:
         assert f"vol {ratio:.1f}x avg" in detail, (
             f"S-score volume ({detail}) diverged from calculate_volume_ratio ({ratio:.1f}x)"
         )
+
+
+# ─── Backtester Delist Liquidation (Jul-2 audit item C) ──────────────────────
+# get_price_on_date falls back to the most recent prior close, so a delisted/
+# halted ticker "held" flat at its last print forever — it could never move,
+# never triggered a stop, and hogged one of max_positions slots for the rest
+# of the run. Fixed: HistoricalDataProvider.get_stale_trading_days() exposes
+# staleness, and _evaluate_sells force-liquidates at the last known close
+# after max_stale_days (default 10) consecutive stale trading days.
+class TestGetStaleTradingDays:
+    """Provider staleness signal used by delist liquidation."""
+
+    def _make_provider(self, bar_days, trading_days):
+        import pandas as pd
+        from backend.historical_data import HistoricalDataProvider
+
+        provider = HistoricalDataProvider([])
+        provider._trading_days = trading_days
+        n = len(bar_days)
+        provider._price_cache["TEST"] = pd.DataFrame({
+            "date": bar_days,
+            "open": [100.0] * n, "high": [101.0] * n,
+            "low": [99.0] * n, "close": [100.0] * n,
+            "volume": [1000000] * n,
+        })
+        return provider
+
+    def _trading_days(self, periods=30):
+        import pandas as pd
+        return [d.date() for d in pd.date_range("2025-01-06", periods=periods, freq="B")]
+
+    def test_fresh_bar_is_zero(self):
+        days = self._trading_days()
+        provider = self._make_provider(days, days)
+        assert provider.get_stale_trading_days("TEST", days[-1]) == 0
+
+    def test_delisted_ticker_counts_stale_days(self):
+        days = self._trading_days()
+        provider = self._make_provider(days[:15], days)  # bars stop after day 15
+        assert provider.get_stale_trading_days("TEST", days[-1]) == 15
+
+    def test_unknown_ticker_is_none(self):
+        days = self._trading_days()
+        provider = self._make_provider(days, days)
+        assert provider.get_stale_trading_days("NOPE", days[-1]) is None
+
+    def test_date_before_first_bar_is_none(self):
+        import datetime
+        days = self._trading_days()
+        provider = self._make_provider(days, days)
+        assert provider.get_stale_trading_days("TEST", days[0] - datetime.timedelta(days=5)) is None
+
+
+class TestDelistLiquidation:
+    """Backtester force-sells positions whose price feed has gone stale."""
+
+    def _make_engine(self, stale_days):
+        from backend.backtester import BacktestEngine, SimulatedPosition
+        from datetime import date, timedelta
+
+        mock_session = MagicMock()
+        mock_backtest = MagicMock()
+        mock_backtest.id = 1
+        mock_backtest.starting_cash = 25000
+        mock_backtest.max_positions = 8
+        mock_backtest.min_score_to_buy = 72
+        mock_backtest.sell_score_threshold = 50
+        mock_backtest.stop_loss_pct = 7.0
+        mock_backtest.strategy = "nostate_optimized"
+        mock_session.get.return_value = mock_backtest
+
+        engine = BacktestEngine(mock_session, 1)
+        # Healthy position: +5% gain, decent score — no other exit rule fires,
+        # so any SELL we observe is the delist path.
+        engine.positions["GONE"] = SimulatedPosition(
+            ticker="GONE", shares=100, cost_basis=100.0,
+            purchase_date=date.today() - timedelta(days=90),
+            purchase_score=80.0, peak_price=106.0,
+            peak_date=date.today() - timedelta(days=30), sector="Technology"
+        )
+        engine.data_provider = MagicMock()
+        engine.data_provider.get_price_on_date.return_value = 105.0
+        engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
+        engine.data_provider.get_atr.return_value = 2.0
+        engine.data_provider.get_vix_proxy.return_value = 18.0
+        engine.data_provider.get_stale_trading_days.return_value = stale_days
+        return engine
+
+    def test_stale_position_liquidated(self):
+        from datetime import date
+
+        engine = self._make_engine(stale_days=15)
+        sells = engine._evaluate_sells(date.today(), {"GONE": {"total_score": 75}})
+        assert len(sells) == 1, f"Expected delist sell, got {sells}"
+        trade = sells[0]
+        assert "DELISTED" in trade.reason
+        assert trade.shares == 100, "Delist must liquidate the FULL position"
+        assert trade.price == 105.0, "Must fill at last known close"
+        assert trade._signal_factors["sell_reason"] == "DELISTED"
+        assert trade._signal_factors["stale_days"] == 15
+
+    def test_fresh_position_not_liquidated(self):
+        from datetime import date
+
+        engine = self._make_engine(stale_days=0)
+        sells = engine._evaluate_sells(date.today(), {"GONE": {"total_score": 75}})
+        assert sells == [], f"Fresh position must not delist-sell, got {sells}"
+
+    def test_below_threshold_not_liquidated(self):
+        from datetime import date
+
+        engine = self._make_engine(stale_days=9)  # threshold is 10
+        sells = engine._evaluate_sells(date.today(), {"GONE": {"total_score": 75}})
+        assert sells == [], f"9 stale days is under the 10-day threshold, got {sells}"
+
+    def test_profile_override_disables(self):
+        from datetime import date
+
+        engine = self._make_engine(stale_days=15)
+        engine.profile['delist_liquidation'] = {"enabled": False}
+        sells = engine._evaluate_sells(date.today(), {"GONE": {"total_score": 75}})
+        assert sells == [], "Profile override must disable delist liquidation"
+
+    def test_mocked_provider_without_int_is_ignored(self):
+        """A non-int staleness (e.g. an unconfigured mock) must never liquidate."""
+        from datetime import date
+
+        engine = self._make_engine(stale_days=MagicMock())
+        sells = engine._evaluate_sells(date.today(), {"GONE": {"total_score": 75}})
+        assert sells == [], "Non-int staleness must be treated as unknown, not stale"

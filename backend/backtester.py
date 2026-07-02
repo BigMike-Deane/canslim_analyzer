@@ -2713,6 +2713,19 @@ class BacktestEngine:
         # — optimistic). Live's true cadence sits between the two.
         low_use_prior_peak = low_config.get('use_prior_peak', False)
 
+        # DELIST LIQUIDATION (Jul-2 audit C): get_price_on_date falls back to
+        # the most recent prior close, so a delisted/halted ticker "holds" at
+        # its last print forever — the position can never move, never triggers
+        # a stop, and hogs one of max_positions slots for the rest of the run.
+        # After max_stale_days consecutive trading days with no fresh bar,
+        # liquidate at the last known close. Backtest-only by design: live
+        # delisting is handled by the DelistedTicker pipeline and the broker,
+        # so there is deliberately no ai_trader mirror for this block.
+        delist_config = self.profile.get('delist_liquidation',
+                                         config.get('ai_trader.delist_liquidation', {}))
+        delist_enabled = delist_config.get('enabled', True)
+        delist_max_stale = int(delist_config.get('max_stale_days', 10))
+
         # VIX-regime stop adjustment (proxy fetched here; math via shared helper)
         vix_config = config.get('vix_stops', {})
         vix_proxy = (
@@ -2741,6 +2754,27 @@ class BacktestEngine:
             gain_pct = ((price - position.cost_basis) / position.cost_basis) * 100
             score_data = scores.get(ticker, {})
             current_score = _nan_safe(score_data.get("total_score", 0))
+
+            # Delist liquidation — checked before every other exit rule: a
+            # stale price is a fallback echo, not a print, so stop/trailing
+            # math on it is meaningless.
+            if delist_enabled:
+                stale_days = self.data_provider.get_stale_trading_days(ticker, current_date)
+                # int-only: None means "unknown", and a forced liquidation on
+                # anything but a definite staleness count would be destructive.
+                if isinstance(stale_days, int) and stale_days >= delist_max_stale:
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=position.shares,
+                        price=price,
+                        reason=f"DELISTED: no price data for {stale_days} trading days - liquidating at last close",
+                        score=current_score,
+                        priority=1
+                    )
+                    trade._signal_factors = {"sell_reason": "DELISTED", "gain_pct": round(gain_pct, 1), "stale_days": stale_days}
+                    sells.append(trade)
+                    continue
 
             # D5: today's open/low for intraday stop checks (lever only)
             day_open = day_low = None

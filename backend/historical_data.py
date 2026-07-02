@@ -5,6 +5,7 @@ Provides point-in-time stock data for historical simulations.
 Key principle: Only use data that would have been available on each historical date.
 """
 
+import bisect
 import logging
 import os
 import sys
@@ -380,6 +381,36 @@ class HistoricalDataProvider:
             return float(prior.iloc[-1]["close"])
 
         return None
+
+    def get_stale_trading_days(self, ticker: str, as_of_date: date) -> Optional[int]:
+        """
+        Trading days elapsed since the ticker's last actual bar on/before
+        as_of_date. 0 means a fresh bar exists on as_of_date.
+
+        Returns None when the ticker has no bar at all on/before as_of_date
+        (not yet trading in-window) — callers must treat None as "unknown",
+        not "fresh".
+
+        Exists because get_price_on_date() silently falls back to the most
+        recent prior close: a delisted/halted ticker keeps returning its last
+        print forever, indistinguishable from a real quote. This method is the
+        staleness signal that lets consumers (backtester delist liquidation)
+        tell the two apart.
+        """
+        df = self._price_cache.get(ticker)
+        if df is None or df.empty:
+            return None
+
+        eligible = df[df["date"] <= as_of_date]
+        if eligible.empty:
+            return None
+        last_bar_date = eligible.iloc[-1]["date"]
+
+        # Count market trading days strictly after the last bar, up to and
+        # including as_of_date — calendar gaps (weekends/holidays) don't count.
+        lo = bisect.bisect_right(self._trading_days, last_bar_date)
+        hi = bisect.bisect_right(self._trading_days, as_of_date)
+        return max(0, hi - lo)
 
     def get_ohlc_on_date(self, ticker: str, as_of_date: date) -> Optional[dict]:
         """
