@@ -697,6 +697,85 @@ class TestCoverageGaps:
         )
         assert mgr.distribution_days == []
 
+
+class TestVBottomConfig:
+    """V-bottom detection thresholds are config-driven (market_state.v_bottom).
+
+    Historically the thresholds were hardcoded with a comment claiming profile
+    config would override them — it never did. Now they read from
+    self.config['v_bottom'] with DEFAULT_CONFIG fallbacks; these tests pin
+    both the default behavior and the override path.
+    """
+
+    def _correction_mgr(self, config=None):
+        """Manager in CORRECTION with a 20% drop from high (500 → 400)."""
+        mgr = MarketStateManager(config)
+        mgr.state = MarketState.CORRECTION
+        mgr.spy_52w_high = 500
+        mgr.correction_low = 400
+        mgr.correction_low_date = date(2024, 1, 1)
+        return mgr
+
+    def test_defaults_unchanged_fires_on_classic_v_bottom(self):
+        # 20% drop (>= 15 default), 10% rally (>= 8 default), 9 days (<= 15).
+        mgr = self._correction_mgr()
+        assert mgr._check_v_bottom(date(2024, 1, 10), spy_close=440) is True
+
+    def test_min_drop_pct_override_blocks_shallow_crash(self):
+        # Same 20% drop no longer qualifies when min_drop_pct raised to 25.
+        mgr = self._correction_mgr({"v_bottom": {"min_drop_pct": 25.0}})
+        assert mgr._check_v_bottom(date(2024, 1, 10), spy_close=440) is False
+
+    def test_min_rally_pct_override_accepts_smaller_rally(self):
+        # 6% rally fails the 8% default but passes with min_rally_pct=5.
+        mgr = self._correction_mgr({"v_bottom": {"min_rally_pct": 5.0}})
+        assert mgr._check_v_bottom(date(2024, 1, 10), spy_close=424) is True
+
+    def test_max_days_override_accepts_slower_rally(self):
+        # 20 days since low fails the 15-day default but passes with 25.
+        mgr = self._correction_mgr({"v_bottom": {"max_days_since_low": 25}})
+        assert mgr._check_v_bottom(date(2024, 1, 21), spy_close=440) is True
+
+    def test_partial_override_keeps_other_defaults(self):
+        # Overriding one key must not disable the other thresholds: with only
+        # min_drop_pct set, the 8% default rally floor still rejects a 5% rally.
+        mgr = self._correction_mgr({"v_bottom": {"min_drop_pct": 10.0}})
+        assert mgr._check_v_bottom(date(2024, 1, 10), spy_close=420) is False
+
+
+class TestInitVsMidRunPressureBoundary:
+    """Pin the INTENTIONAL asymmetry documented on initialize_state:
+    just-below-50MA → PRESSURE at init (no history to confirm with), but an
+    established TRENDING state tolerates the same price until distribution
+    days or a persistent 21EMA breakdown confirm weakness. If either of these
+    tests starts failing, someone 'aligned' the two paths — read the
+    initialize_state docstring before accepting that change.
+    """
+
+    def test_init_just_below_50ma_is_pressure(self):
+        mgr = MarketStateManager()
+        # 1% below 50MA — inside the 3% deep-drop band.
+        mgr.initialize_state(spy_close=475.2, spy_ma50=480, spy_ema21=478)
+        assert mgr.state == MarketState.PRESSURE
+
+    def test_midrun_trending_tolerates_same_price_without_confirmation(self):
+        mgr = MarketStateManager()
+        mgr.initialize_state(spy_close=500, spy_ma50=480, spy_ema21=495)
+        assert mgr.state == MarketState.TRENDING
+
+        # One day at the identical just-below-50MA price: above 21EMA, flat
+        # volume (no distribution day), no prior weakness streak.
+        mgr.update(
+            current_date=date(2025, 3, 3),
+            spy_close=475.2,
+            spy_prev_close=500,
+            spy_volume=900_000,
+            spy_prev_volume=1_000_000,  # volume down → not a distribution day
+            spy_ma50=480,
+            spy_ema21=474,  # still above 21EMA → no weakness streak
+        )
+        assert mgr.state == MarketState.TRENDING
+
     def test_trending_to_pressure_on_21ema_streak_below_50ma(self):
         # 3 days below 21EMA + close below 50MA (but < 3% — too shallow for
         # direct CORRECTION) trips the secondary PRESSURE transition.

@@ -66,6 +66,17 @@ DEFAULT_CONFIG = {
         "pressure_threshold": 5,       # Count that triggers PRESSURE
     },
 
+    # V-bottom detection thresholds (rapid crash-recovery, e.g. COVID 2020).
+    # Detection lives here (market_state config namespace, profile-overridable
+    # via a profile's `market_state.v_bottom` section). The SEEDING response
+    # (enabled/seed_count/seed_pct) is separate: backtester reads it from the
+    # profile's top-level `v_bottom` section.
+    "v_bottom": {
+        "min_drop_pct": 15.0,          # SPY drop from 52w high to qualify as crash
+        "min_rally_pct": 8.0,          # Rally off the correction low to signal recovery
+        "max_days_since_low": 15,      # Calendar days (~10 trading days) for "rapid"
+    },
+
     # State transition thresholds
     "transitions": {
         "correction_below_ma50_pct": 0.0,   # SPY must be below 50MA to enter CORRECTION from PRESSURE
@@ -177,6 +188,14 @@ class MarketStateManager:
         """
         Set initial state based on market conditions at backtest start.
         Ensures day-1 behavior matches the current system.
+
+        INTENTIONAL ASYMMETRY vs mid-run transitions: just-below-50MA maps to
+        PRESSURE here, while an established TRENDING state tolerates the same
+        price (demotion needs confirmation — distribution days or persistent
+        21EMA weakness, see _check_trending_exit). At init there is no history
+        to confirm with, so a price-only conservative prior is used. Do not
+        "align" these two paths: relaxing init loses the safe prior; tightening
+        mid-run reintroduces 50MA whipsaw jitter.
         """
         deep_drop_pct = self.config.get("transitions", {}).get("trending_deep_drop_pct", 3.0)
 
@@ -308,22 +327,25 @@ class MarketStateManager:
         if self.spy_52w_high <= 0 or self.correction_low <= 0:
             return False
 
+        vb = self.config.get("v_bottom", {})
+        defaults = DEFAULT_CONFIG["v_bottom"]
+
         # Check: SPY fell enough from its high
         drop_from_high_pct = ((self.spy_52w_high - self.correction_low) / self.spy_52w_high) * 100
-        min_drop = 15.0  # Will be overridden by profile config in backtester
+        min_drop = vb.get("min_drop_pct", defaults["min_drop_pct"])
         if drop_from_high_pct < min_drop:
             return False
 
         # Check: SPY has rallied enough from the correction low
         rally_from_low_pct = ((spy_close - self.correction_low) / self.correction_low) * 100
-        min_rally = 8.0  # Will be overridden by profile config in backtester
+        min_rally = vb.get("min_rally_pct", defaults["min_rally_pct"])
         if rally_from_low_pct < min_rally:
             return False
 
-        # Check: Rally happened fast enough (within N trading days of the low)
+        # Check: Rally happened fast enough (within N calendar days of the low)
         if self.correction_low_date:
             days_since_low = (current_date - self.correction_low_date).days
-            max_days = 15  # Calendar days (~10 trading days)
+            max_days = vb.get("max_days_since_low", defaults["max_days_since_low"])
             if days_since_low > max_days:
                 return False
 
