@@ -96,10 +96,13 @@ async def refresh_token(req: RefreshRequest, request: Request = None, db: Sessio
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token type")
         user_id = payload.get("sub")
-    except JWTError:
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        user_id = int(user_id)  # non-numeric sub → 401, not 500
+    except (JWTError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    user = db.query(User).filter(User.id == int(user_id), User.is_active == True).first()
+    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
@@ -141,8 +144,14 @@ async def update_my_webhook(
     Pass an empty string to silence notifications for this user.
     """
     url = (req.webhook_url or "").strip()
-    if url and not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(status_code=400, detail="webhook_url must start with http:// or https://")
+    if url:
+        from backend.email_utils import is_safe_webhook_url
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(status_code=400, detail="webhook_url must start with http:// or https://")
+        # Block SSRF: user-supplied URL the server later POSTs to must not
+        # resolve to a private/loopback/link-local/metadata address.
+        if not is_safe_webhook_url(url):
+            raise HTTPException(status_code=400, detail="webhook_url must be a public address")
 
     current_user.webhook_url = url or None
     db.commit()
@@ -166,10 +175,14 @@ async def update_my_webhook(
 async def test_my_webhook(current_user=Depends(get_current_active_user)):
     """Send a test notification to the authenticated user's webhook URL.
     Returns 400 if no URL configured, 200 with sent=true/false otherwise."""
-    from backend.email_utils import send_webhook_notification
+    from backend.email_utils import send_webhook_notification, is_safe_webhook_url
     url = (current_user.webhook_url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="No webhook URL configured")
+    # Re-validate at send time: a URL stored before the SSRF guard existed, or
+    # a host that has since rebound to a private address, must not be POSTed to.
+    if not is_safe_webhook_url(url):
+        raise HTTPException(status_code=400, detail="webhook_url must be a public address")
     sent = send_webhook_notification(
         title="CANSLIM Test",
         message=f"Test notification for {current_user.email}\nIf you see this, routing works.",

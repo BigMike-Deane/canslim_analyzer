@@ -239,6 +239,17 @@ class TestGetCurrentUser:
         assert "Invalid or expired token" in exc.value.detail
         assert exc.value.headers.get("WWW-Authenticate") == "Bearer"
 
+    def test_non_numeric_sub_yields_401_not_500(self):
+        # A validly-signed token with a non-numeric `sub` must 401, not raise
+        # ValueError from int() → unhandled 500 (2026-07-03 audit).
+        from fastapi import HTTPException
+        from backend.auth import get_current_user, create_access_token
+        token = create_access_token(data={"sub": "not-a-number"})
+        with pytest.raises(HTTPException) as exc:
+            get_current_user(token=token, db=_make_mock_db())
+        assert exc.value.status_code == 401
+        assert "Invalid or expired token" in exc.value.detail
+
     def test_rejects_expired_token(self):
         # Sign a token with an exp in the past → jose raises JWTError
         from fastapi import HTTPException

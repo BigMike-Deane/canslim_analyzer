@@ -31,6 +31,13 @@ class TestCleanDollar:
         assert _clean_dollar('') is None
         assert _clean_dollar(None) is None
 
+    def test_parenthesized_negative(self):
+        # Accounting-style negatives from Fidelity/Excel round-trips
+        # (2026-07-03 audit) previously failed float() → silent None,
+        # zeroing a real loss.
+        assert _clean_dollar('($1,234.56)') == -1234.56
+        assert _clean_dollar('($73.00)') == -73.0
+
 
 class TestCleanPercent:
     def test_positive(self):

@@ -4,16 +4,62 @@ Handles watchlist alerts and other email notifications
 """
 
 import html
+import ipaddress
 import smtplib
 import os
 import logging
+import socket
 import requests
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def is_safe_webhook_url(url: str) -> bool:
+    """Reject user-supplied webhook URLs that resolve to private / loopback /
+    link-local / metadata ranges — a blind-SSRF guard. Any authenticated user
+    can set their own webhook_url, and the server POSTs to it from the scheduler
+    and the test endpoint; without this a user could point it at the cloud
+    metadata endpoint (169.254.169.254), internal Redis, or the app's own
+    internal port. DNS is resolved here so a public hostname can't A-record into
+    a private range. Callers must also POST with allow_redirects=False so a
+    302 can't hop into the private range after this check passes.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    try:
+        addrs = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except (socket.gaierror, UnicodeError):
+        return False  # unresolvable → treat as unsafe
+    if not addrs:
+        return False
+    # RFC 6598 shared address space (100.64.0.0/10) is NOT covered by
+    # is_private, but it's exactly where this deploy's internal services live
+    # (the VPS Tailscale IP is 100.104.189.36) — block it explicitly.
+    cgnat = ipaddress.ip_network("100.64.0.0/10")
+    for addr in addrs:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                or ip in cgnat):
+            return False
+    return True
 
 # Load .env file if it exists
 def _load_env():
@@ -213,10 +259,11 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
                 headers["Click"] = click
             if markdown:
                 headers["Markdown"] = "yes"
-            response = requests.post(target_url, data=message.encode('utf-8'), headers=headers, timeout=10)
+            response = requests.post(target_url, data=message.encode('utf-8'),
+                                     headers=headers, timeout=10, allow_redirects=False)
         else:
             # Standard JSON webhook (Pushover, Discord, custom)
-            response = requests.post(target_url, json=payload, timeout=10)
+            response = requests.post(target_url, json=payload, timeout=10, allow_redirects=False)
 
         if response.status_code in (200, 201, 204):
             logger.info(f"Webhook notification sent: {title}")

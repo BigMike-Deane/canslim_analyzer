@@ -826,3 +826,66 @@ class TestBearBaseAndMarketTurn:
         msg = mock_wh.call_args.args[1]
         assert "Ready: AAPL(90)" in msg
         assert "Improving: Semiconductors" in msg
+
+
+class TestWebhookSSRFGuard:
+    """2026-07-03 audit: user-supplied webhook_url is POSTed to by the server;
+    is_safe_webhook_url blocks private/loopback/link-local/metadata targets
+    (blind-SSRF guard) with DNS resolution so a public host can't A-record
+    into a private range."""
+
+    def test_public_host_allowed(self, monkeypatch):
+        from backend import email_utils
+        monkeypatch.setattr(email_utils.socket, "getaddrinfo",
+                            lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
+        assert email_utils.is_safe_webhook_url("https://ntfy.sh/mytopic") is True
+
+    def test_metadata_ip_blocked(self):
+        from backend import email_utils
+        assert email_utils.is_safe_webhook_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_loopback_blocked(self):
+        from backend import email_utils
+        assert email_utils.is_safe_webhook_url("http://127.0.0.1:6379") is False
+
+    def test_private_range_blocked(self):
+        from backend import email_utils
+        assert email_utils.is_safe_webhook_url("http://100.104.189.36:8001/api") is False
+
+    def test_public_hostname_rebinding_to_private_blocked(self, monkeypatch):
+        # A public-looking host that resolves into a private range is unsafe.
+        from backend import email_utils
+        monkeypatch.setattr(email_utils.socket, "getaddrinfo",
+                            lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 0))])
+        assert email_utils.is_safe_webhook_url("https://evil.example.com/hook") is False
+
+    def test_non_http_scheme_blocked(self):
+        from backend import email_utils
+        assert email_utils.is_safe_webhook_url("file:///etc/passwd") is False
+        assert email_utils.is_safe_webhook_url("gopher://x") is False
+
+    def test_unresolvable_host_blocked(self, monkeypatch):
+        from backend import email_utils
+        import socket as _s
+        def _boom(*a, **k):
+            raise _s.gaierror("nope")
+        monkeypatch.setattr(email_utils.socket, "getaddrinfo", _boom)
+        assert email_utils.is_safe_webhook_url("https://nonexistent.invalid/x") is False
+
+    def test_cgnat_tailscale_range_blocked(self):
+        # RFC 6598 100.64.0.0/10 isn't is_private but is the VPS's own range.
+        from backend import email_utils
+        assert email_utils.is_safe_webhook_url("http://100.64.1.1/x") is False
+
+    def test_sender_posts_with_redirects_disabled(self, monkeypatch):
+        # SSRF is validated at the write/test endpoints (ingress); the sender
+        # itself POSTs with allow_redirects=False so a 302 can't hop into a
+        # private range after validation.
+        from backend import email_utils
+        captured = {}
+        def _post(*a, **k):
+            captured.update(k)
+            return MagicMock(status_code=204, text="")
+        monkeypatch.setattr(email_utils.requests, "post", _post)
+        email_utils.send_webhook_notification("T", "B", url="https://ntfy.sh/topic")
+        assert captured.get("allow_redirects") is False

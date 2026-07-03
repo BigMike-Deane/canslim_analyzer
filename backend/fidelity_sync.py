@@ -47,10 +47,15 @@ def _finite(n: Optional[float]) -> Optional[float]:
 
 
 def _clean_dollar(value: str) -> Optional[float]:
-    """Parse Fidelity dollar values like '+$1,234.56' or '-$73.00' or '$6534.41'."""
+    """Parse Fidelity dollar values like '+$1,234.56' or '-$73.00' or '$6534.41'.
+    Handles accounting-style parenthesized negatives '($1,234.56)' that some
+    Fidelity/Excel round-trips emit (previously failed float() → silent None,
+    zeroing a real loss)."""
     if not value or value.strip() in ('', '--', 'n/a'):
         return None
     cleaned = value.strip().replace('$', '').replace(',', '').replace('+', '')
+    if cleaned.startswith('(') and cleaned.endswith(')'):
+        cleaned = '-' + cleaned[1:-1]
     try:
         return _finite(float(cleaned))
     except (ValueError, TypeError):

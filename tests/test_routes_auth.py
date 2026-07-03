@@ -334,10 +334,13 @@ class TestUpdateMyWebhook:
     """Covers backend/routes/auth.py:127-152."""
 
     def test_accepts_https_url(self):
+        # Isolate from DNS: the SSRF guard has its own tests in
+        # test_email_utils; here we verify the endpoint stores an accepted URL.
         user = _make_user(webhook_url=None)
         db = _make_db()
         body = WebhookUpdateRequest(webhook_url="https://hooks.example.com/abc")
-        resp = _run(update_my_webhook(body, current_user=user, db=db))
+        with patch("backend.email_utils.is_safe_webhook_url", return_value=True):
+            resp = _run(update_my_webhook(body, current_user=user, db=db))
         assert user.webhook_url == "https://hooks.example.com/abc"
         assert resp.webhook_url == "https://hooks.example.com/abc"
         db.commit.assert_called_once()
@@ -346,10 +349,21 @@ class TestUpdateMyWebhook:
     def test_accepts_http_url(self):
         user = _make_user(webhook_url="https://old.example.com/x")
         db = _make_db()
-        body = WebhookUpdateRequest(webhook_url="http://internal.host/notify")
-        resp = _run(update_my_webhook(body, current_user=user, db=db))
-        assert user.webhook_url == "http://internal.host/notify"
-        assert resp.webhook_url == "http://internal.host/notify"
+        body = WebhookUpdateRequest(webhook_url="http://hooks.example.com/notify")
+        with patch("backend.email_utils.is_safe_webhook_url", return_value=True):
+            resp = _run(update_my_webhook(body, current_user=user, db=db))
+        assert user.webhook_url == "http://hooks.example.com/notify"
+        assert resp.webhook_url == "http://hooks.example.com/notify"
+
+    def test_rejects_private_address_url(self):
+        # SSRF guard: a scheme-valid but private-resolving URL is 400'd.
+        user = _make_user(webhook_url=None)
+        db = _make_db()
+        body = WebhookUpdateRequest(webhook_url="http://127.0.0.1:6379/x")
+        with pytest.raises(HTTPException) as exc:
+            _run(update_my_webhook(body, current_user=user, db=db))
+        assert exc.value.status_code == 400
+        db.commit.assert_not_called()
 
     def test_empty_string_clears_webhook_to_none(self):
         user = _make_user(webhook_url="https://hooks.example.com/abc")
@@ -415,7 +429,9 @@ class TestTestMyWebhook:
         with patch(
             "backend.email_utils.send_webhook_notification",
             return_value=True,
-        ) as mock_send:
+        ) as mock_send, patch(
+            "backend.email_utils.is_safe_webhook_url", return_value=True,
+        ):
             result = _run(send_test_webhook(current_user=user))
         assert result == {"sent": True, "url_configured": True}
         mock_send.assert_called_once()
@@ -429,6 +445,8 @@ class TestTestMyWebhook:
         with patch(
             "backend.email_utils.send_webhook_notification",
             return_value=False,
+        ), patch(
+            "backend.email_utils.is_safe_webhook_url", return_value=True,
         ):
             result = _run(send_test_webhook(current_user=user))
         assert result == {"sent": False, "url_configured": True}

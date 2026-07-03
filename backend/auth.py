@@ -18,12 +18,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
+_DEV_SECRET_DEFAULT = "dev-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "false").lower() == "true"
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+
+# `... or DEFAULT` (not os.environ.get's default arg): docker-compose.yml wires
+# `JWT_SECRET_KEY=${JWT_SECRET_KEY}`, which interpolates to an EMPTY STRING when
+# the host/.env doesn't set it (.env.template ships it blank). os.environ.get
+# would return "" — a present-but-empty key — and HS256 would happily sign and
+# verify with it, so anyone could forge {"sub":"1"} and take over the owner.
+# Treat blank as unset, and in an auth-required deploy refuse to run on the
+# empty/dev key rather than silently accepting a full auth bypass.
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or _DEV_SECRET_DEFAULT
+if REQUIRE_AUTH and (not os.environ.get("JWT_SECRET_KEY") or SECRET_KEY == _DEV_SECRET_DEFAULT):
+    raise RuntimeError(
+        "REQUIRE_AUTH=true but JWT_SECRET_KEY is empty or the dev default. "
+        "Set a strong JWT_SECRET_KEY in the environment before enabling auth."
+    )
 
 
 # --- Google Sign-In verification ---
@@ -133,14 +147,17 @@ def get_current_user(
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
+        # int() is INSIDE the guard: a validly-signed token with a non-numeric
+        # `sub` would otherwise raise ValueError → unhandled 500 instead of 401.
+        user_id = int(user_id)
+    except (JWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.id == int(user_id), User.is_active == True).first()
+    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if user is None:
         raise HTTPException(status_code=401, detail="User not found or inactive")
     return user
