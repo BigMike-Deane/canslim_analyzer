@@ -71,6 +71,7 @@ DATA_FRESHNESS_INTERVALS = {
     "balance_sheet": 7 * 24 * 3600,   # Once per week (only changes quarterly)
     "key_metrics": 7 * 24 * 3600,     # Once per week (derived from quarterly data)
     "analyst": 24 * 3600,             # Once per day (can change with upgrades/downgrades)
+    "price_target": 24 * 3600,        # Once per day (was missing → interval 0 → refetched every call)
     "earnings_surprise": 7 * 24 * 3600,  # Once per week (only changes quarterly)
     "weekly_history": 24 * 3600,      # Once per day (for base detection)
     "institutional": 14 * 24 * 3600,  # Once per 2 weeks (13F filings are quarterly)
@@ -945,30 +946,6 @@ def fetch_fmp_institutional(ticker: str) -> float:
     return fetch_finviz_institutional(ticker)
 
 
-def fetch_fmp_analyst(ticker: str) -> dict:
-    """Fetch analyst ratings and price targets from FMP"""
-    if not FMP_API_KEY:
-        return {}
-
-    try:
-        url = f"{FMP_BASE_URL}/analyst-estimates?symbol={ticker}&limit=1&apikey={FMP_API_KEY}"
-        resp = _fmp_get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and len(data) > 0:
-                est = data[0]
-                return {
-                    "estimated_eps_avg": est.get("estimatedEpsAvg", 0),
-                    "estimated_eps_high": est.get("estimatedEpsHigh", 0),
-                    "estimated_eps_low": est.get("estimatedEpsLow", 0),
-                    "estimated_revenue_avg": est.get("estimatedRevenueAvg", 0),
-                    "num_analysts": est.get("numberAnalystsEstimatedEps", 0),
-                }
-    except Exception as e:
-        logger.debug(f"FMP analyst error for {ticker}: {e}")
-    return {}
-
-
 def fetch_fmp_price_target(ticker: str) -> dict:
     """Fetch analyst price targets from FMP"""
     if not FMP_API_KEY:
@@ -1798,9 +1775,25 @@ class DataFetcher:
     # Maximum cache size to prevent memory growth
     MAX_CACHE_SIZE = 1000
 
+    # Object-cache TTL. main.py holds ONE DataFetcher for the process
+    # lifetime; without a TTL, get_stock_data returned the first-ever
+    # fetched StockData (frozen price/volume/earnings) forever — the
+    # refresh endpoint and stale-cache background refresh were no-ops by
+    # construction, while save_stock_to_db stamped the stale data "fresh".
+    # 15 min keeps burst efficiency (the tiered fetch_with_cache layer
+    # inside still governs slow-changing data) without freezing prices.
+    CACHE_TTL_SECONDS = 15 * 60
+
     def __init__(self):
         self._cache: OrderedDict[str, StockData] = OrderedDict()
+        self._cache_fetched_at: dict = {}
         self._sp500_history: Optional[pd.DataFrame] = None
+
+    def invalidate(self, ticker: str) -> None:
+        """Drop a ticker's cached StockData so the next get_stock_data
+        refetches (force-refresh semantics)."""
+        self._cache.pop(ticker, None)
+        self._cache_fetched_at.pop(ticker, None)
 
     def get_stock_data(self, ticker: str, retries: int = 2) -> StockData:
         """
@@ -1808,9 +1801,12 @@ class DataFetcher:
         Uses FMP API for earnings/fundamentals, Yahoo chart API for price history.
         """
         if ticker in self._cache:
-            # Move to end (most recently used)
-            self._cache.move_to_end(ticker)
-            return self._cache[ticker]
+            age = time.time() - self._cache_fetched_at.get(ticker, 0.0)
+            if age < self.CACHE_TTL_SECONDS:
+                # Move to end (most recently used)
+                self._cache.move_to_end(ticker)
+                return self._cache[ticker]
+            self.invalidate(ticker)  # expired — refetch below
 
         stock_data = StockData(ticker)
 
@@ -1931,10 +1927,17 @@ class DataFetcher:
                 stock_data.analyst_target_high = price_target.get("target_high", 0)
                 stock_data.analyst_target_low = price_target.get("target_low", 0)
 
-            analyst = fetch_with_cache(ticker, "analyst_estimates", fetch_fmp_analyst, ticker)
+            # SHAPE PARITY: the "analyst_estimates" cache key is shared with
+            # the async P1 path (async_scanner) and persisted into the
+            # StockDataCache eps_estimate_* columns, so the payload cached
+            # here MUST be fetch_fmp_analyst_estimates' shape. The old
+            # fetch_fmp_analyst payload (v3-era field names — all zeros on
+            # /stable/) collided with this key: it suppressed real estimate
+            # revisions for 7 days and its DB persist nulled the P1 columns.
+            analyst = fetch_with_cache(ticker, "analyst_estimates", fetch_fmp_analyst_estimates, ticker)
             if analyst:
                 stock_data.num_analyst_opinions = analyst.get("num_analysts", 0)
-                stock_data.earnings_growth_estimate = analyst.get("estimated_eps_avg", 0)
+                stock_data.earnings_growth_estimate = analyst.get("eps_estimate_current", 0)
 
             # 5b. Get earnings surprise data (for enhanced C score)
             # TIERED: Cache for 24 hours
@@ -1993,7 +1996,9 @@ class DataFetcher:
             ])
             if missing_fields >= 2:  # Only fetch if 2+ fields missing
                 try:
-                    import time
+                    # NOTE: no local `import time` here — that made `time` a
+                    # function-local for the WHOLE body, breaking the module-
+                    # level import used by the cache-TTL check up top.
                     time.sleep(0.3)  # Rate limit protection
                     yf_stock = yf.Ticker(ticker)
                     yf_info = yf_stock.info
@@ -2123,9 +2128,11 @@ class DataFetcher:
 
         # Add to cache with LRU eviction
         self._cache[ticker] = stock_data
+        self._cache_fetched_at[ticker] = time.time()
         if len(self._cache) > self.MAX_CACHE_SIZE:
             # Remove oldest (first) item
-            self._cache.popitem(last=False)
+            evicted, _ = self._cache.popitem(last=False)
+            self._cache_fetched_at.pop(evicted, None)
         return stock_data
 
     def get_price_data_only(self, ticker: str) -> StockData:
@@ -2225,6 +2232,7 @@ class DataFetcher:
     def clear_cache(self):
         """Clear the data cache"""
         self._cache.clear()
+        self._cache_fetched_at.clear()
         self._sp500_history = None
 
 

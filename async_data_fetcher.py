@@ -1338,22 +1338,36 @@ async def get_stock_data_async(
                 stock_data.quarterly_revenue = cached_revenue.get("quarterly_revenue") or cached_revenue.get("quarterly", [])
                 stock_data.annual_revenue = cached_revenue.get("annual_revenue") or cached_revenue.get("annual", [])
 
-    # Apply FMP financials if fetched
-    if financials:
+    # Apply FMP financials only when the fetch produced REAL data.
+    # fetch_fmp_financials_async always returns a pre-populated dict (empty
+    # lists), so the old bare `if financials:` was always truthy — a total FMP
+    # failure (429 storm / outage) with no usable cache overwrote good
+    # DB-cached earnings with [] AND stamped them fresh, so every scan for the
+    # next 7 days scored C/A with zero earnings data.
+    has_financials = bool(financials) and any(
+        financials.get(k) for k in
+        ("quarterly_eps", "annual_eps", "quarterly_revenue", "annual_revenue")
+    )
+    if has_financials:
         stock_data.quarterly_earnings = financials.get("quarterly_eps", [])
         stock_data.annual_earnings = financials.get("annual_eps", [])
         stock_data.quarterly_revenue = financials.get("quarterly_revenue", [])
         stock_data.annual_revenue = financials.get("annual_revenue", [])
-        # Cache earnings and revenue data
-        set_cached_data(ticker, "earnings", {
-            "quarterly": stock_data.quarterly_earnings,
-            "annual": stock_data.annual_earnings
-        }, persist_to_db=True)
-        set_cached_data(ticker, "revenue", {
-            "quarterly": stock_data.quarterly_revenue,
-            "annual": stock_data.annual_revenue
-        }, persist_to_db=True)
-        mark_data_fetched(ticker, "earnings")
+        # Cache earnings and revenue data — but ONLY for a real fetch. A
+        # cache-fallback reuse is not a fetch: re-caching + mark_data_fetched
+        # reset the apparent cache age, so MAX_FALLBACK_CACHE_AGE_DAYS
+        # measured age-since-last-REUSE and chronically-failing tickers could
+        # walk stale data past the cap indefinitely.
+        if not financials.get("used_cache_fallback"):
+            set_cached_data(ticker, "earnings", {
+                "quarterly": stock_data.quarterly_earnings,
+                "annual": stock_data.annual_earnings
+            }, persist_to_db=True)
+            set_cached_data(ticker, "revenue", {
+                "quarterly": stock_data.quarterly_revenue,
+                "annual": stock_data.annual_revenue
+            }, persist_to_db=True)
+            mark_data_fetched(ticker, "earnings")
 
     # STEP 2: Yahoo for everything else (key metrics, balance sheet, analyst, short interest)
     # This is ONE call that gets ALL supplementary data
@@ -1405,12 +1419,17 @@ async def get_stock_data_async(
         if yahoo_info.get("institutional_holders_pct"):
             stock_data.institutional_holders_pct = yahoo_info["institutional_holders_pct"]
 
-        # Cache Yahoo info (use same freshness as key_metrics - 7 days)
-        set_cached_data(ticker, "yahoo_info", yahoo_info, persist_to_db=True)
-        mark_data_fetched(ticker, "yahoo_info")
+        # Cache Yahoo info (use same freshness as key_metrics - 7 days).
+        # Skip when this payload came from the cache fallback: re-caching +
+        # mark_data_fetched would reset the apparent age, letting a
+        # chronically-failing ticker renew month-old data every cycle and
+        # never trip MAX_FALLBACK_CACHE_AGE_DAYS or land in stocks_no_data.
+        if not yahoo_info.get("used_cache_fallback"):
+            set_cached_data(ticker, "yahoo_info", yahoo_info, persist_to_db=True)
+            mark_data_fetched(ticker, "yahoo_info")
 
     # Also cache in the old format for backwards compatibility with other code
-    if yahoo_info and yahoo_info.get("success", False):
+    if yahoo_info and yahoo_info.get("success", False) and not yahoo_info.get("used_cache_fallback"):
         set_cached_data(ticker, "key_metrics", {
             "roe": yahoo_info.get("roe", 0),
             "roa": yahoo_info.get("roa", 0),
@@ -1442,7 +1461,19 @@ async def get_stock_data_async(
     if not stock_data.institutional_holders_pct:
         cached_inst = get_cached_data(ticker, "institutional")
         if cached_inst:
-            stock_data.institutional_holders_pct = cached_inst
+            # The "institutional" cache is dimensionally ambiguous: the FMP
+            # producer stores a raw share COUNT while the Finviz fallback
+            # stores a percent (data_fetcher.py disambiguates the same way).
+            # Assigning a share count (e.g. 3.1e9) directly would inflate the
+            # I score to top tier.
+            if cached_inst > 100:
+                if stock_data.shares_outstanding:
+                    stock_data.institutional_holders_pct = min(
+                        (cached_inst / stock_data.shares_outstanding) * 100, 100)
+                # else: raw share count with unknown float — leave unset
+                # (I score falls back to its no-data neutral tier)
+            else:
+                stock_data.institutional_holders_pct = cached_inst
 
     # Get price history from Yahoo chart API (fast, no rate limit)
     chart_data = fetch_price_from_chart_api(ticker)

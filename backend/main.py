@@ -1638,6 +1638,10 @@ async def get_stock(
             def refresh_stock_background():
                 refresh_db = SessionLocal()
                 try:
+                    # Drop the process-lifetime object cache first, or
+                    # analyze_stock re-serves the frozen StockData and this
+                    # "refresh" re-stamps stale data as fresh.
+                    data_fetcher.invalidate(ticker)
                     analysis = analyze_stock(ticker)
                     if analysis:
                         save_stock_to_db(refresh_db, analysis)
@@ -1816,6 +1820,8 @@ async def refresh_stock(ticker: str, current_user: User = Depends(get_current_ac
     """Force refresh a stock's analysis"""
     ticker = validate_ticker_param(ticker)
 
+    # Force means force: drop the object cache so the fetch below is real.
+    data_fetcher.invalidate(ticker)
     analysis = analyze_stock(ticker)
     if not analysis:
         raise HTTPException(status_code=404, detail=f"Could not analyze stock {ticker}")

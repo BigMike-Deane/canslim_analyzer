@@ -35,6 +35,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import time
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -1138,24 +1139,21 @@ class TestFetchFmpPriceTarget:
         assert result["target_high"] == 300.0
 
 
-class TestFetchFmpAnalyst:
-    def test_returns_empty_without_api_key(self, monkeypatch):
-        monkeypatch.setattr(data_fetcher, "FMP_API_KEY", "")
-        assert data_fetcher.fetch_fmp_analyst("AAPL") == {}
+class TestSyncAnalystEstimatesShapeParity:
+    """2026-07-03 audit: fetch_fmp_analyst (v3-era field names, deleted) was
+    cached under the shared 'analyst_estimates' key — wrong shape suppressed
+    P1 estimate revisions for 7 days and its DB persist NULLed the
+    eps_estimate_* columns. The sync path must cache the P1 shape."""
 
-    def test_extracts_eps_estimates(self, fmp_key, monkeypatch):
-        data = [{
-            "estimatedEpsAvg": 11.0,
-            "estimatedEpsHigh": 12.5,
-            "estimatedEpsLow": 9.5,
-            "estimatedRevenueAvg": 400e9,
-            "numberAnalystsEstimatedEps": 25,
-        }]
-        monkeypatch.setattr(data_fetcher, "_fmp_get",
-                            lambda *a, **k: _mock_response(json_data=data))
-        result = data_fetcher.fetch_fmp_analyst("AAPL")
-        assert result["estimated_eps_avg"] == 11.0
-        assert result["num_analysts"] == 25
+    def test_sync_path_uses_p1_shaped_fetcher(self):
+        import inspect
+        src = inspect.getsource(data_fetcher.DataFetcher.get_stock_data)
+        assert 'fetch_with_cache(ticker, "analyst_estimates", fetch_fmp_analyst_estimates' in src
+        assert "fetch_fmp_analyst," not in src  # deleted fetcher must not return
+
+    def test_fetch_fmp_analyst_is_gone(self):
+        # The misfielded v3-era fetcher must not silently come back.
+        assert not hasattr(data_fetcher, "fetch_fmp_analyst")
 
 
 class TestFetchShortInterest:
@@ -1648,3 +1646,81 @@ class TestLoadCacheFromDbAdditionalFields:
         km = data_fetcher.get_cached_data("FULL", "key_metrics")
         assert km["roe"] == pytest.approx(0.28)
         assert km["trailing_pe"] == pytest.approx(28.0)
+
+
+class TestDataFetcherObjectCacheTTL:
+    """2026-07-03 audit: main.py holds ONE DataFetcher for the process
+    lifetime and get_stock_data early-returned cached StockData with no TTL —
+    the refresh endpoint and stale-cache background refresh were no-ops by
+    construction (frozen price re-stamped as fresh forever)."""
+
+    class _Bypass(Exception):
+        """Raised by the stubbed chart fetch — proves the cache was bypassed
+        (fetch_price_from_chart_api is the first call after the cache check)."""
+
+    def _fetcher_with_entry(self, age_seconds):
+        f = data_fetcher.DataFetcher()
+        sd = data_fetcher.StockData("AAPL")
+        f._cache["AAPL"] = sd
+        f._cache_fetched_at["AAPL"] = time.time() - age_seconds
+        return f, sd
+
+    def test_fresh_entry_served_from_cache(self, monkeypatch):
+        f, sd = self._fetcher_with_entry(age_seconds=60)
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api",
+                            self._raise_bypass)
+        assert f.get_stock_data("AAPL") is sd
+
+    def test_expired_entry_bypasses_cache_and_refetches(self, monkeypatch):
+        f, _ = self._fetcher_with_entry(
+            age_seconds=data_fetcher.DataFetcher.CACHE_TTL_SECONDS + 1)
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api",
+                            self._raise_bypass)
+        with pytest.raises(self._Bypass):
+            f.get_stock_data("AAPL")
+        # Expired entry was dropped, not re-served.
+        assert "AAPL" not in f._cache
+
+    def test_invalidate_forces_refetch(self, monkeypatch):
+        f, _ = self._fetcher_with_entry(age_seconds=0)
+        f.invalidate("AAPL")
+        assert "AAPL" not in f._cache
+        assert "AAPL" not in f._cache_fetched_at
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api",
+                            self._raise_bypass)
+        with pytest.raises(self._Bypass):
+            f.get_stock_data("AAPL")
+
+    @classmethod
+    def _raise_bypass(cls, ticker):
+        raise cls._Bypass(ticker)
+
+
+class TestScanIntegrityGuardsSourcePins:
+    """2026-07-03 audit — pin the inline guards in the async orchestration
+    body (get_stock_data_async is too large to drive end-to-end; same
+    source-pin convention as TestSyncAnalystEstimatesShapeParity)."""
+
+    def _src(self):
+        import inspect
+        import async_data_fetcher
+        return inspect.getsource(async_data_fetcher.get_stock_data_async)
+
+    def test_financials_guard_is_not_bare_truthy(self):
+        # fetch_fmp_financials_async ALWAYS returns a pre-populated dict, so
+        # `if financials:` cached EMPTY earnings as fresh for 7 days on a
+        # total FMP failure and overwrote good DB rows with [].
+        src = self._src()
+        assert "has_financials" in src
+        assert "if financials:\n" not in src
+
+    def test_cache_fallback_reuse_does_not_relaunder_age(self):
+        # Fallback reuse must not re-cache/mark-fetched (age laundering).
+        src = self._src()
+        assert src.count('get("used_cache_fallback")') >= 2
+
+    def test_institutional_fallback_guards_share_counts(self):
+        # The "institutional" cache holds FMP share COUNTS or Finviz percents;
+        # assigning a count as a percent inflates the I score to top tier.
+        src = self._src()
+        assert "cached_inst > 100" in src

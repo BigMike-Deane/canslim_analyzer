@@ -138,11 +138,6 @@ class TestFetcherExceptionHandlers:
         # Even on full failure, the function returns the seeded result dict.
         assert result == {"quarterly_eps": [], "annual_eps": []}
 
-    def test_fetch_fmp_analyst_returns_empty_on_exception(self, fmp_key, monkeypatch):
-        """Branch: data_fetcher.py:928-929 (analyst outer except)."""
-        monkeypatch.setattr(data_fetcher, "_fmp_get", _raises)
-        assert data_fetcher.fetch_fmp_analyst("AAPL") == {}
-
     def test_fetch_fmp_price_target_returns_empty_on_exception(self, fmp_key, monkeypatch):
         """Branch: data_fetcher.py:951-952 (price_target outer except)."""
         monkeypatch.setattr(data_fetcher, "_fmp_get", _raises)
