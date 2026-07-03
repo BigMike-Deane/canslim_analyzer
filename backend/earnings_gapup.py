@@ -155,18 +155,35 @@ def _check_gap_up(stock, min_gap_pct: float) -> dict:
         if earnings_idx is None or earnings_idx == 0:
             return None
 
-        # Gap = open on earnings day vs close of prior day
-        prior_close = closes[earnings_idx - 1]
-        earnings_open = opens[earnings_idx]
-        earnings_volume = volumes[earnings_idx] if earnings_idx < len(volumes) else 0
+        # The reaction gap can land on either day: BMO reporters gap at the
+        # open of day E (vs close E-1), but AMC reporters — the MAJORITY of US
+        # companies — report after E's close, so the gap is the open of E+1
+        # (vs close E). Measuring only day E systematically missed every AMC
+        # beat. Evaluate BOTH candidate days and keep the larger gap.
+        candidates_idx = [earnings_idx]
+        if earnings_idx + 1 < len(opens):
+            candidates_idx.append(earnings_idx + 1)
 
-        if not prior_close or not earnings_open or prior_close <= 0:
+        best = None  # (gap_pct, gap_idx)
+        for gi in candidates_idx:
+            prior_close = closes[gi - 1]
+            gap_open = opens[gi]
+            if not prior_close or not gap_open or prior_close <= 0:
+                continue
+            g = ((gap_open - prior_close) / prior_close) * 100
+            if best is None or g > best[0]:
+                best = (g, gi)
+
+        if best is None:
             return None
 
-        gap_pct = ((earnings_open - prior_close) / prior_close) * 100
+        gap_pct, gap_idx = best
+        earnings_open = opens[gap_idx]
+        prior_close = closes[gap_idx - 1]  # the close the winning gap is measured against
+        earnings_volume = volumes[gap_idx] if gap_idx < len(volumes) else 0
 
-        # Calculate volume ratio (earnings day volume vs average of prior 5 days)
-        prior_volumes = [v for v in volumes[max(0, earnings_idx-5):earnings_idx] if v and v > 0]
+        # Calculate volume ratio (gap-day volume vs average of prior 5 days)
+        prior_volumes = [v for v in volumes[max(0, gap_idx-5):gap_idx] if v and v > 0]
         avg_volume = sum(prior_volumes) / len(prior_volumes) if prior_volumes else 1
         volume_ratio = earnings_volume / avg_volume if avg_volume > 0 and earnings_volume else 1.0
 

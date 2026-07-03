@@ -194,3 +194,55 @@ class TestBearBaseNotifications:
         ])
         assert result is True
         mock_post.assert_called_once()
+
+
+class TestUpdateExistingCandidateTimezone:
+    """2026-07-03 audit: the update-existing path did
+    `(now_aware - rec.first_seen_naive).days`, which raises TypeError on the
+    2nd+ cycle (first_seen comes back naive from the DB) and aborted the whole
+    bear-base update — silently freezing the watchlist for the entire bear
+    market, the only time the feature runs. No prior test hit this path."""
+
+    def _make_db(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from backend.database import Base
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        return sessionmaker(bind=engine)()
+
+    def _seed_qualifying_stock(self, db, ticker="AAPL"):
+        from backend.database import Stock
+        db.add(Stock(
+            ticker=ticker, name=f"{ticker} Inc.", sector="Technology",
+            current_price=100.0, canslim_score=80.0, c_score=13.0,
+            a_score=13.0, l_score=9.0, rs_3m=85.0, rs_12m=85.0,
+            base_type="cup", weeks_in_base=8, atr_pct=2.0,
+            pivot_price=102.0, industry_group_rank=10,
+        ))
+        db.commit()
+
+    def test_second_update_with_naive_first_seen_does_not_crash(self):
+        from datetime import datetime, timezone
+        from backend.bear_base import update_bear_base_candidates
+        from backend.database import BearBaseCandidate
+
+        db = self._make_db()
+        self._seed_qualifying_stock(db)
+
+        # Cycle 1: creates the candidate row.
+        update_bear_base_candidates(db)
+        rec = db.query(BearBaseCandidate).filter_by(ticker="AAPL").first()
+        assert rec is not None
+
+        # Simulate the DB round-trip that makes first_seen tz-NAIVE (SQLite
+        # and Postgres both return naive for a plain DateTime column).
+        rec.first_seen = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+
+        # Cycle 2: hits the update-existing branch. Must NOT raise.
+        result = update_bear_base_candidates(db)
+        assert result is not None
+        rec = db.query(BearBaseCandidate).filter_by(ticker="AAPL").first()
+        assert rec.days_on_list is not None
+        assert rec.days_on_list >= 0

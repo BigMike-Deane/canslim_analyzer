@@ -2263,21 +2263,13 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     buys = []
     bear_exception_candidates = []
 
-    # EARNINGS AUDIT: Batch-fetch latest audit data for all candidates
-    audit_map = {}  # ticker -> {fundamental_confidence, breakdown, ...}
-    try:
-        from backend.earnings_audit import get_latest_audit
-        audit_config = yaml_config.get('ai_trader.earnings_audit', {})
-        if audit_config.get('enabled', True):
-            freshness = audit_config.get('freshness_hours', 24)
-            for stock in candidates:
-                audit = get_latest_audit(db, stock.ticker, max_age_hours=freshness)
-                if audit:
-                    audit_map[stock.ticker] = audit
-            if audit_map:
-                logger.info(f"Earnings audit data loaded for {len(audit_map)} candidates")
-    except Exception as e:
-        logger.warning(f"Earnings audit lookup failed (non-fatal): {e}")
+    # NOTE: the earnings-audit per-candidate fetch loop was removed here
+    # (2026-07-03). Commit e698a12 deleted the scoring bonus it fed but left
+    # the loop, so it ran N DB queries per cycle into an unused dict and
+    # logged "Earnings audit data loaded…" implying an influence on buys that
+    # doesn't exist. get_audit_bonus() has no callers; run_earnings_audit
+    # still feeds the Command Center UI. Do NOT "restore" a backtester mirror
+    # for parity — there is no live behavior to mirror.
 
     # MULTI-SCAN AVERAGING (live-only): Smooth score wobble from FMP rate limits
     # Uses recency-weighted average (50/30/20) to reduce momentum lag while smoothing noise.

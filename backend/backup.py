@@ -133,13 +133,23 @@ def cleanup_old_backups():
         reverse=True,
     )
 
+    # Guard each remove: cleanup runs inside create_backup's try block, so an
+    # unhandled OSError here (bad perms / NFS hiccup on a STALE file) jumped to
+    # the except path, which deletes the just-created VALID backup and alerts
+    # "backup FAILED" — silently draining the retention window to zero.
     for f in daily_files[DAILY_RETENTION:]:
-        logger.info(f"Removing old daily backup: {os.path.basename(f)}")
-        os.remove(f)
+        try:
+            logger.info(f"Removing old daily backup: {os.path.basename(f)}")
+            os.remove(f)
+        except OSError as e:
+            logger.warning(f"Could not remove old daily backup {f}: {e}")
 
     for f in weekly_files[WEEKLY_RETENTION:]:
-        logger.info(f"Removing old weekly backup: {os.path.basename(f)}")
-        os.remove(f)
+        try:
+            logger.info(f"Removing old weekly backup: {os.path.basename(f)}")
+            os.remove(f)
+        except OSError as e:
+            logger.warning(f"Could not remove old weekly backup {f}: {e}")
 
 
 def list_backups() -> list:

@@ -307,6 +307,48 @@ class TestCheckGapUp:
         assert result["earnings_open"] == 110.0
         assert result["prior_close"] == 100.0
 
+    def test_detects_amc_gap_on_day_after_earnings(self):
+        # AMC reporters (the majority) report after day-E close, so the gap is
+        # at open(E+1) vs close(E). Day E is flat; E+1 gaps +12% → must be
+        # detected on E+1 (2026-07-03 audit — previously only day E measured).
+        earnings_d = date.today() - timedelta(days=3)
+        dates = [earnings_d - timedelta(days=i) for i in range(5, 0, -1)] + [
+            earnings_d, earnings_d + timedelta(days=1)
+        ]
+        ts = [_ts_for(d) for d in dates]
+        #        prior 5 days      E       E+1
+        opens = [100.0] * 5 + [100.0, 112.0]   # E open flat, E+1 opens at 112
+        closes = [100.0] * 5 + [100.0, 113.0]  # E closes flat
+        volumes = [1000] * 5 + [1000, 6000]
+        with patch(
+            "requests.get",
+            return_value=_yahoo_response(ts, opens, closes, volumes),
+        ):
+            result = _check_gap_up(self._stock(earnings_date=earnings_d), 5.0)
+        assert result is not None
+        assert result["gap_pct"] == 12.0            # (112-100)/100
+        assert result["earnings_open"] == 112.0     # the E+1 open
+        assert result["volume_ratio"] == 6.0        # E+1 volume vs prior avg
+
+    def test_picks_larger_of_day_e_and_day_after(self):
+        # When both days gap, keep the larger (BMO day-E gap here beats E+1).
+        earnings_d = date.today() - timedelta(days=3)
+        dates = [earnings_d - timedelta(days=i) for i in range(5, 0, -1)] + [
+            earnings_d, earnings_d + timedelta(days=1)
+        ]
+        ts = [_ts_for(d) for d in dates]
+        opens = [100.0] * 5 + [115.0, 116.0]   # E gaps +15%
+        closes = [100.0] * 5 + [114.0, 116.0]  # E+1 gaps only +1.75% vs 114
+        volumes = [1000] * 5 + [5000, 4000]
+        with patch(
+            "requests.get",
+            return_value=_yahoo_response(ts, opens, closes, volumes),
+        ):
+            result = _check_gap_up(self._stock(earnings_date=earnings_d), 5.0)
+        assert result is not None
+        assert result["gap_pct"] == 15.0
+        assert result["earnings_open"] == 115.0
+
     def test_returns_none_on_requests_exception(self):
         with patch("requests.get", side_effect=ConnectionError("network down")):
             assert _check_gap_up(self._stock(), 5.0) is None

@@ -81,6 +81,20 @@ async def _audit_single_ticker(
         return_exceptions=True,
     )
 
+    # If ALL three fetches failed (429 / outage / timeout), a total failure is
+    # indistinguishable from genuinely-weak fundamentals: returning a
+    # zero-filled result gets persisted as a real low-confidence audit row that
+    # then blocks re-auditing this ticker for freshness_hours (24h) even after
+    # FMP recovers, and shows bogus "low confidence" in the Command Center.
+    # Bail so no row is written.
+    all_failed = all(
+        not (isinstance(d, list) and d)
+        for d in (targets_data, metrics_data, earnings_data)
+    )
+    if all_failed:
+        logger.debug(f"{ticker}: all earnings-audit fetches failed, skipping (no row)")
+        return None
+
     result = {"ticker": ticker, "price_at_audit": current_price}
 
     # --- Parse analyst targets ---

@@ -104,7 +104,13 @@ class BacktestQueueManager:
             if backtest_id is None:
                 continue
 
-            # Check if cancelled before starting
+            # Check if cancelled before starting.
+            # NOTE the `except`: a transient DB error here (Postgres restart /
+            # connection blip at dequeue) previously propagated out of the
+            # while loop and KILLED the worker thread permanently — the
+            # dequeued job was already consumed, so every future backtest
+            # queued into a dead worker with no watchdog. Swallow + skip
+            # instead; the startup requeue (main.py) recovers the row.
             db = SessionLocal()
             try:
                 bt = db.get(BacktestRun, backtest_id)
@@ -119,6 +125,9 @@ class BacktestQueueManager:
                 if bt and bt.status not in ("pending", "running"):
                     logger.info(f"Backtest {backtest_id} status is {bt.status}, skipping")
                     continue
+            except Exception as e:
+                logger.error(f"Backtest {backtest_id} pre-run check failed, skipping: {e}")
+                continue
             finally:
                 db.close()
 

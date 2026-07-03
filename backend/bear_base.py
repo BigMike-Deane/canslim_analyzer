@@ -222,7 +222,15 @@ def update_bear_base_candidates(db: Session) -> dict:
             rec.readiness_factors = factors
             rec.last_updated = now
             if rec.first_seen:
-                rec.days_on_list = (now - rec.first_seen).days
+                # first_seen is a naive-UTC DateTime column; Postgres returns
+                # it tz-naive while `now` is aware → subtracting them raises
+                # TypeError and aborts the whole update loop from cycle 2 on
+                # (the feature only runs in a bear market — exactly when it
+                # would be silently frozen). Normalize before subtracting.
+                fs = rec.first_seen
+                if fs.tzinfo is None:
+                    fs = fs.replace(tzinfo=timezone.utc)
+                rec.days_on_list = (now - fs).days
             updated_count += 1
             del existing[stock.ticker]  # Mark as still active
         else:

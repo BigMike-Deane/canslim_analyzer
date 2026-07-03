@@ -4818,6 +4818,13 @@ async def delete_backtest(backtest_id: int, current_user: User = Depends(get_cur
     if not backtest:
         raise HTTPException(404, "Backtest not found")
 
+    # Don't delete a running job out from under the worker: the cascade would
+    # remove rows the worker is still inserting against (FK violations fail the
+    # job) and can block on its open transaction. Require cancel first, mirroring
+    # the rerun guard.
+    if backtest.status == "running":
+        raise HTTPException(400, "Cannot delete a running backtest; cancel it first")
+
     db.delete(backtest)  # Cascade deletes snapshots, trades, positions
     db.commit()
 
