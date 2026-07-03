@@ -3335,3 +3335,52 @@ class TestDelistLiquidation:
         engine = self._make_engine(stale_days=MagicMock())
         sells = engine._evaluate_sells(date.today(), {"GONE": {"total_score": 75}})
         assert sells == [], "Non-int staleness must be treated as unknown, not stale"
+
+
+class TestGrowthProjectorNaNMomentum:
+    """2026-07-03 audit: Yahoo chart arrays contain nulls (halted/glitch days)
+    and reach the projector unsanitized. One NaN close poisoned the least-
+    squares slope, and the max(-50, min(100, x)) clamp maps NaN to the +100%
+    UPPER cap (NaN comparisons are all False) — maximum-bullish momentum from
+    bad data, worth up to +27.5pp of projected growth."""
+
+    def _projector(self):
+        from unittest.mock import Mock
+        from growth_projector import GrowthProjector
+        fetcher = Mock()
+        fetcher.get_price_data_only.return_value = Mock(is_valid=False)
+        return GrowthProjector(fetcher)
+
+    def _stock_with_prices(self, closes):
+        import pandas as pd
+        from unittest.mock import Mock
+        stock = Mock()
+        dates = pd.date_range(end=pd.Timestamp.now(), periods=len(closes), freq='D')
+        stock.price_history = pd.DataFrame(
+            {'Close': closes, 'Volume': [1_000_000] * len(closes)}, index=dates)
+        return stock
+
+    def test_nan_close_does_not_clamp_to_max_bullish(self):
+        proj = self._projector()
+        closes = [100 + i * 0.1 for i in range(252)]
+        closes[200] = float('nan')  # single bad bar inside the 126-day window
+        result = proj._calculate_momentum_projection(self._stock_with_prices(closes))
+        # Must be the trend of the valid bars (~+6%/6mo here), never the 100 cap.
+        assert result < 100
+        assert result == pytest.approx(
+            proj._calculate_momentum_projection(
+                self._stock_with_prices([c for c in closes if c == c])),
+            abs=1.0,
+        )
+
+    def test_all_nan_returns_zero(self):
+        proj = self._projector()
+        result = proj._calculate_momentum_projection(
+            self._stock_with_prices([float('nan')] * 252))
+        assert result == 0.0
+
+    def test_clean_series_unchanged(self):
+        proj = self._projector()
+        closes = [100 + i * 0.5 for i in range(252)]
+        result = proj._calculate_momentum_projection(self._stock_with_prices(closes))
+        assert 0 < result <= 100

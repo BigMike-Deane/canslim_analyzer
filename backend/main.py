@@ -3311,6 +3311,10 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
     from backend.exit_plan import compute_exit_plan
     from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
     from backend.trading_utils import get_strategy_profile
+    from config_loader import config as _yaml_config
+    # Same YAML stops rung the live trader resolves through (parity with
+    # ai_trader.evaluate_sells); exit_plan stays pure by taking it as input.
+    _stops_config = _yaml_config.get('ai_trader.stops', {}) or {}
     _md = get_cached_market_direction() or {}
     _spy = _md.get("indexes", {}).get("SPY", {}) if _md.get("success") else {}
     _spy_price, _spy_ma50 = _spy.get("price", 0), _spy.get("ma_50", 0)
@@ -3386,8 +3390,8 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
                 pyramid_count=p.pyramid_count or 0,
                 strategy=getattr(config, 'strategy', None) or "balanced",
                 sell_score_threshold=config.sell_score_threshold,
-                take_profit_pct=config.take_profit_pct,
                 stop_loss_pct=config.stop_loss_pct,
+                stop_loss_config=_stops_config,
                 is_bearish_market=is_bearish_market,
             ),
             # Insider/Short signals from Stock table
@@ -3665,11 +3669,17 @@ async def get_ai_portfolio_edge(
     port_values = [by_day[d].total_value for d in days_sorted]
     spy_values = [_spy_value_for(d) for d in days_sorted]
 
+    # Window the realized-trade series to the same `days` horizon as the
+    # equity curve. Without this filter, win_rate/closed_trades (and the
+    # verdict's closed_trades gate) were all-time while return/alpha/Sharpe
+    # were windowed — a 30D tab could print a verdict backed by 2 windowed
+    # trades but gated on the all-time count.
     realized_gains = [
         g for (g,) in db.query(AIPortfolioTrade.realized_gain).filter(
             AIPortfolioTrade.user_id == current_user.id,
             AIPortfolioTrade.action == "SELL",
             AIPortfolioTrade.realized_gain.isnot(None),
+            AIPortfolioTrade.executed_at >= start_date,
         ).all()
     ]
 
@@ -3688,6 +3698,7 @@ async def get_ai_portfolio_edge(
         AIPortfolioTrade.user_id == current_user.id,
         AIPortfolioTrade.action == "SELL",
         AIPortfolioTrade.realized_gain.isnot(None),
+        AIPortfolioTrade.executed_at >= start_date,  # same window as equity curve
     ).all()
 
     # SPY lookup wide enough to cover each position's BUY date (sell − hold).

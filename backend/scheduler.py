@@ -528,6 +528,7 @@ def update_coiled_spring_outcomes():
     try:
         # Get thresholds from config
         check_days = outcome_config.get('check_days_after_earnings', 3)
+        reschedule_band_days = outcome_config.get('reschedule_band_days', 21)
         thresholds = outcome_config.get('thresholds', {})
         big_win_pct = thresholds.get('big_win_pct', 15)
         win_pct = thresholds.get('win_pct', 5)
@@ -602,15 +603,28 @@ def update_coiled_spring_outcomes():
             # / surprise reports where the snapshotted DTE is now wrong.
             # Falls back to the snapshotted DTE when next_earnings_date is
             # null (legacy rows / detector ran without earnings data).
+            #
+            # CLAMP to the snapshotted DTE + a reschedule band: once the
+            # catalyst earnings pass, the live feed rolls next_earnings_date
+            # to the NEXT quarter (always >= today), which made days_needed
+            # grow faster than days_since_alert — the alert was never
+            # evaluated and its outcome stayed NULL forever, silently
+            # selection-biasing the CS confidence calibration dataset.
+            # The band trusts real reschedules up to ~3 weeks; anything
+            # beyond that is the feed rolling forward, not a reschedule.
             actual_earnings_date = getattr(stock, 'next_earnings_date', None)
             days_since_alert = (date.today() - alert.alert_date).days
+            snapshot_wait = (alert.days_to_earnings or 7)
             if actual_earnings_date is not None:
                 days_alert_to_earnings = max(
                     0, (actual_earnings_date - alert.alert_date).days
                 )
+                days_alert_to_earnings = min(
+                    days_alert_to_earnings, snapshot_wait + reschedule_band_days
+                )
                 days_needed = days_alert_to_earnings + check_days
             else:
-                days_needed = (alert.days_to_earnings or 7) + check_days
+                days_needed = snapshot_wait + check_days
 
             if days_since_alert < days_needed:
                 # Not enough time has passed

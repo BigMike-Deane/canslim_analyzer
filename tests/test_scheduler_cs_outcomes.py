@@ -234,6 +234,44 @@ class TestActualEarningsDateOverridesSnapshot:
         alert = db_session.query(CoiledSpringAlert).first()
         assert alert.outcome is None  # window not yet satisfied
 
+    def test_rolled_earnings_feed_cannot_starve_alert_forever(
+        self, db_session, cs_config
+    ):
+        # 2026-07-03 starvation fix: once the catalyst earnings pass, the live
+        # feed rolls next_earnings_date to NEXT quarter (always >= today), so
+        # the un-clamped wait grew faster than the alert's age and the outcome
+        # stayed NULL forever (10 live alerts found starved 40-74 days).
+        # The wait must clamp to snapshotted DTE + reschedule band (21d).
+        alert_date = date.today() - timedelta(days=40)
+        rolled_next_quarter = date.today() + timedelta(days=30)
+        _make_alert(db_session, alert_date=alert_date, days_to_earnings=14,
+                    price_at_alert=100.0)
+        _make_stock(db_session, current_price=110.0,
+                    next_earnings_date=rolled_next_quarter)
+
+        scheduler_mod.update_coiled_spring_outcomes()
+
+        alert = db_session.query(CoiledSpringAlert).first()
+        # clamp → min(70, 14+21)=35; needed 38 <= 40 elapsed → evaluated
+        assert alert.outcome == "win"
+
+    def test_genuine_reschedule_within_band_still_waits(
+        self, db_session, cs_config
+    ):
+        # A real reschedule inside the 21-day band must still be honored:
+        # earnings pushed from DTE=7 to alert+15 → wait 15+3=18 > 10 elapsed.
+        alert_date = date.today() - timedelta(days=10)
+        rescheduled = alert_date + timedelta(days=15)
+        _make_alert(db_session, alert_date=alert_date, days_to_earnings=7,
+                    price_at_alert=100.0)
+        _make_stock(db_session, current_price=200.0,
+                    next_earnings_date=rescheduled)
+
+        scheduler_mod.update_coiled_spring_outcomes()
+
+        alert = db_session.query(CoiledSpringAlert).first()
+        assert alert.outcome is None  # window not yet satisfied
+
 
 # ── Fix #4: SPY-relative bucketing with safe fallback ─────────────────────────
 

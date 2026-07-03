@@ -26,7 +26,7 @@ class TestStopLoss:
         # nostate_cs_bear overrides the normal stop to 7% (not the 8% default).
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=110.0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         stop = _by_kind(plan, "stop_loss")
         assert stop is not None
@@ -36,12 +36,12 @@ class TestStopLoss:
     def test_bearish_market_uses_tighter_stop(self):
         normal = compute_exit_plan(
             cost_basis=100.0, current_price=100.0, strategy="balanced",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
             is_bearish_market=False,
         )
         bear = compute_exit_plan(
             cost_basis=100.0, current_price=100.0, strategy="balanced",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
             is_bearish_market=True,
         )
         # Bearish stop sits at a higher price (tighter) than the normal stop.
@@ -50,7 +50,7 @@ class TestStopLoss:
     def test_distance_is_downside_cushion(self):
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=110.0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         # stop 93 vs current 110 → (93/110 - 1) ≈ -15.45% → magnitude 15.5
         assert _by_kind(plan, "stop_loss")["distance_pct"] == pytest.approx(15.5, abs=0.1)
@@ -62,7 +62,7 @@ class TestTrailingStop:
         plan = compute_exit_plan(
             cost_basis=372.73, current_price=374.65, peak_price=379.10,
             pyramid_count=0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         assert "trailing_stop" not in _kinds(plan)
 
@@ -72,7 +72,7 @@ class TestTrailingStop:
         plan = compute_exit_plan(
             cost_basis=682.44, current_price=1005.45, peak_price=1086.77,
             pyramid_count=2, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         trail = _by_kind(plan, "trailing_stop")
         assert trail is not None
@@ -82,7 +82,7 @@ class TestTrailingStop:
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=150.0, peak_price=160.0,
             pyramid_count=0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         trail = _by_kind(plan, "trailing_stop")
         # 60% peak gain → 25% tier → 160 * 0.75 = 120
@@ -93,7 +93,7 @@ class TestTakeProfit:
     def test_target_is_pct_above_entry(self):
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=120.0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         tp = _by_kind(plan, "take_profit")
         assert tp["price"] == pytest.approx(175.0, abs=0.01)
@@ -103,7 +103,7 @@ class TestTakeProfit:
     def test_reached_flag_when_past_target(self):
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=200.0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         assert _by_kind(plan, "take_profit")["reached"] is True
 
@@ -113,7 +113,7 @@ class TestScoreExit:
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=110.0, current_score=78,
             strategy="nostate_cs_bear", sell_score_threshold=60,
-            take_profit_pct=75, stop_loss_pct=8,
+            stop_loss_pct=8,
         )
         score = _by_kind(plan, "score_exit")
         assert score["threshold"] == 60
@@ -126,7 +126,7 @@ class TestNearest:
         # Flat position: stop is much closer than the far-off take-profit target.
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=101.0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         assert plan["nearest_kind"] == "stop_loss"
 
@@ -138,7 +138,7 @@ class TestNearest:
             cost_basis=194.96, current_price=418.37, peak_price=469.05,
             pyramid_count=2, current_score=71, purchase_score=69,
             strategy="nostate_cs_bear", sell_score_threshold=45,
-            take_profit_pct=75, stop_loss_pct=8,
+            stop_loss_pct=8,
         )
         assert _by_kind(plan, "take_profit")["reached"] is True
         assert plan["nearest_kind"] == "trailing_stop"
@@ -148,7 +148,7 @@ class TestNearest:
         plan = compute_exit_plan(
             cost_basis=100.0, current_price=120.0, peak_price=130.0,
             pyramid_count=0, current_score=70, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         assert plan["nearest_kind"] in {"stop_loss", "trailing_stop", "take_profit"}
 
@@ -158,7 +158,7 @@ class TestGuards:
         plan = compute_exit_plan(
             cost_basis=None, current_price=None, current_score=70,
             strategy="nostate_cs_bear", sell_score_threshold=60,
-            take_profit_pct=75, stop_loss_pct=8,
+            stop_loss_pct=8,
         )
         assert _kinds(plan) == {"score_exit"}
         assert plan["nearest_kind"] is None
@@ -166,7 +166,63 @@ class TestGuards:
     def test_zero_cost_basis_is_safe(self):
         plan = compute_exit_plan(
             cost_basis=0.0, current_price=10.0, strategy="nostate_cs_bear",
-            sell_score_threshold=60, take_profit_pct=75, stop_loss_pct=8,
+            sell_score_threshold=60, stop_loss_pct=8,
         )
         # No divide-by-zero; no price triggers emitted.
         assert "stop_loss" not in _kinds(plan)
+
+
+class TestParityWithTrader:
+    """Pin the two parity rules that drifted once (2026-07-03 audit):
+    the take-profit fallback and the score-exit gain gates must mirror
+    ai_trader.evaluate_sells, not the AIPortfolioConfig column defaults."""
+
+    def test_take_profit_falls_back_to_literal_75(self, monkeypatch):
+        # A profile with no take_profit_pct must show the trader's literal
+        # 75% fallback (ai_trader.evaluate_sells), NOT any user-config value.
+        import backend.exit_plan as ep
+        monkeypatch.setattr(ep, "get_strategy_profile", lambda s: {})
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=110.0, strategy="whatever",
+            sell_score_threshold=60, stop_loss_pct=8,
+        )
+        tp = _by_kind(plan, "take_profit")
+        assert tp is not None
+        assert tp["price"] == pytest.approx(175.0, abs=0.01)
+
+    def test_score_exit_paused_in_10_to_20_band(self):
+        # Trader holds a +10..+20% position regardless of score (no WEAK
+        # POSITION below +10, no PROTECT GAINS until +20) — the card must
+        # not claim it "sells if score falls below X" there.
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=115.0, gain_loss_pct=15.0,
+            current_score=50, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8,
+        )
+        se = _by_kind(plan, "score_exit")
+        assert se["active"] is False
+        assert "paused" in se["note"]
+
+    @pytest.mark.parametrize("gain", [-5.0, 9.9, 20.0, 45.0])
+    def test_score_exit_active_outside_hold_band(self, gain):
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=100.0 + gain, gain_loss_pct=gain,
+            current_score=50, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8,
+        )
+        se = _by_kind(plan, "score_exit")
+        assert se["active"] is True
+        assert "sells if score falls below 60" in se["note"]
+
+    def test_stop_loss_config_rung_applies_when_profile_silent(self, monkeypatch):
+        # With no profile stop, the YAML ai_trader.stops rung must be
+        # honored (the trader resolves through it; the display used to
+        # skip straight to the caller default).
+        import backend.exit_plan as ep
+        monkeypatch.setattr(ep, "get_strategy_profile", lambda s: {})
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=100.0, strategy="whatever",
+            sell_score_threshold=60, stop_loss_pct=8,
+            stop_loss_config={"normal_stop_loss_pct": 5.0},
+        )
+        assert _by_kind(plan, "stop_loss")["price"] == pytest.approx(95.0, abs=0.01)

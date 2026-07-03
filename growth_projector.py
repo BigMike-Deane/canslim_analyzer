@@ -73,10 +73,14 @@ class GrowthProjector:
                 # Use price-only fetch for ETFs (avoids yfinance fundamental errors)
                 data = self.fetcher.get_price_data_only(etf)
                 if data.is_valid and not data.price_history.empty:
-                    prices = data.price_history['Close']
+                    # dropna: a NaN at either endpoint makes perf NaN, and
+                    # _calculate_sector_bonus's comparison chain then falls
+                    # through to the -10 penalty for the whole sector.
+                    prices = data.price_history['Close'].dropna()
                     if len(prices) >= 126:  # ~6 months of trading days
                         perf = (prices.iloc[-1] / prices.iloc[-126] - 1) * 100
-                        self.SECTOR_PERFORMANCE[sector] = perf
+                        if np.isfinite(perf):
+                            self.SECTOR_PERFORMANCE[sector] = perf
             except Exception as e:
                 logger.debug(f"Failed to fetch sector performance for {sector}: {e}")
 
@@ -150,9 +154,13 @@ class GrowthProjector:
         Project growth based on price momentum using linear regression.
         Extrapolates 6-month trend forward.
         """
-        prices = data.price_history['Close']
+        # dropna: Yahoo chart-API arrays contain nulls for halted/glitch days
+        # and reach here unsanitized. A single NaN close poisons the least-
+        # squares sums (slope=NaN), and the max/min clamp below maps NaN to
+        # the +100% cap — maximum-bullish momentum from bad data.
+        prices = data.price_history['Close'].dropna()
 
-        if len(prices) < 126:  # Need ~6 months of data
+        if len(prices) < 126:  # Need ~6 months of valid data
             return 0.0
 
         # Use last 6 months for trend
@@ -175,6 +183,11 @@ class GrowthProjector:
             momentum_growth = ((projected_price - current_price) / current_price) * 100
         else:
             momentum_growth = 0
+
+        # Belt-and-braces: NaN slips through max/min to the UPPER cap
+        # (NaN comparisons are all False), so guard before clamping.
+        if not np.isfinite(momentum_growth):
+            return 0.0
 
         # Cap extreme projections
         momentum_growth = max(-50, min(100, momentum_growth))

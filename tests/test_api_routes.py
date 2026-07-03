@@ -1093,6 +1093,50 @@ class TestEdgeReconciliation:
         assert r.status_code == 200
         assert r.json()["status"] == "no_reference_backtest"
 
+
+class TestEdgeScorecardWindowing:
+    """2026-07-03 audit: the `days` param windowed the equity curve but NOT the
+    realized-trade queries, so win_rate/closed_trades (and the verdict's
+    closed_trades gate) were all-time on every tab. Pin the window."""
+
+    def _seed(self):
+        _ensure_user()
+        db = _get_db()
+        try:
+            now = datetime.now(timezone.utc)
+            for exec_at, gain in [
+                (now - timedelta(days=200), 100.0),   # outside a 30d window
+                (now - timedelta(days=5), -50.0),     # inside it
+            ]:
+                db.add(AIPortfolioTrade(
+                    user_id=1, ticker="EDGW", action="SELL", shares=10.0,
+                    price=110.0, total_value=1000.0, reason="TRAILING STOP",
+                    cost_basis=100.0, realized_gain=gain, holding_days=10,
+                    executed_at=exec_at,
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+    def _cleanup(self):
+        db = _get_db()
+        try:
+            db.query(AIPortfolioTrade).filter_by(user_id=1, ticker="EDGW").delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_days_param_windows_closed_trades(self):
+        self._seed()
+        try:
+            wide = client.get("/api/ai-portfolio/edge?days=365").json()
+            narrow = client.get("/api/ai-portfolio/edge?days=30").json()
+            assert wide["closed_trades"] >= 2
+            # The 200-day-old win must not leak into the 30-day window.
+            assert narrow["closed_trades"] == wide["closed_trades"] - 1
+        finally:
+            self._cleanup()
+
     def test_since_filters_live_exits(self):
         # `since` drops live exits executed before the cutoff (e.g. to isolate
         # post-parity-fix behavior) while leaving the reference backtest intact.

@@ -52,8 +52,8 @@ def compute_exit_plan(
     pyramid_count: int = 0,
     strategy: str = "balanced",
     sell_score_threshold: Optional[float] = None,
-    take_profit_pct: Optional[float] = None,
     stop_loss_pct: Optional[float] = None,
+    stop_loss_config: Optional[dict] = None,
     is_bearish_market: bool = False,
 ) -> dict:
     """Derive the active sell triggers for one position.
@@ -87,7 +87,11 @@ def compute_exit_plan(
     if has_price:
         stop_pct = select_effective_stop_loss_pct(
             profile=profile,
-            stop_loss_config={},
+            # YAML ai_trader.stops, passed in by the caller (kept as a param
+            # so this module stays pure). The live trader resolves through
+            # this same rung (ai_trader.py evaluate_sells/check_stop_losses);
+            # omitting it here skipped one level of the resolution chain.
+            stop_loss_config=stop_loss_config or {},
             default_normal_pct=stop_loss_pct if stop_loss_pct is not None else 8.0,
             is_bearish_market=is_bearish_market,
             vix_proxy=None,
@@ -129,7 +133,12 @@ def compute_exit_plan(
             })
 
     # ── 3. Take-profit target ────────────────────────────────────────
-    tp_pct = profile.get("take_profit_pct", take_profit_pct)
+    # Literal 75.0 fallback mirrors ai_trader.py evaluate_sells (and the
+    # backtester): the trader deliberately does NOT fall back to the user's
+    # AIPortfolioConfig.take_profit_pct column (stale default 25.0), so
+    # neither can the displayed plan — that was exactly the drift this
+    # module promises not to have.
+    tp_pct = profile.get("take_profit_pct", 75.0)
     if has_price and tp_pct:
         tp_price = cost_basis * (1 + tp_pct / 100.0)
         # If already past the target, it does NOT auto-sell — the full-profit
@@ -153,7 +162,15 @@ def compute_exit_plan(
         })
 
     # ── 4. Score exit (condition, not a price) ───────────────────────
+    # The trader only acts on score < threshold when the position is below
+    # +10% (WEAK POSITION) or at/above +20% (PROTECT GAINS) — a position
+    # sitting in the +10–20% band is HELD regardless of score
+    # (ai_trader.evaluate_sells gain gates). Surface that so the card
+    # doesn't predict a sale the trader would never make.
     if sell_score_threshold is not None:
+        in_hold_band = (
+            gain_loss_pct is not None and 10 <= gain_loss_pct < 20
+        )
         triggers.append({
             "kind": "score_exit",
             "label": "Score exit",
@@ -162,8 +179,13 @@ def compute_exit_plan(
             "distance_pct": None,
             "threshold": round(sell_score_threshold, 0),
             "current_score": round(current_score, 0) if current_score is not None else None,
+            "active": not in_hold_band,
             "note": (
-                f"sells if score falls below {sell_score_threshold:.0f}"
+                (
+                    f"paused while +10–20% — holds even below {sell_score_threshold:.0f}"
+                    if in_hold_band
+                    else f"sells if score falls below {sell_score_threshold:.0f}"
+                )
                 + (f" (now {current_score:.0f})" if current_score is not None else "")
             ),
         })
