@@ -410,16 +410,35 @@ class TestBuySellPairing:
         assert rows[0]["total_score"] == 80
         assert rows[0]["gain_pct"] == 5.0
 
-    def test_partial_sell_keeps_buy_open(self):
+    def test_partial_sell_keeps_buy_open_and_labels_final_outcome(self):
+        # Production records partials as action="SELL" with "PARTIAL" in the
+        # reason (there is no PARTIAL_SELL action). The partial must NOT close
+        # the position; the buy stays open so the TRUE FINAL exit (+20%) is the
+        # single labeled row — not the partial (+10%). Pre-fix, the partial
+        # popped the buy and the real close was skipped as an orphan
+        # (2026-07-03 audit).
         trades = [
             _make_trade(action="BUY", ticker="AAPL"),
-            _make_trade(action="PARTIAL_SELL", ticker="AAPL", realized_gain_pct=10.0, holding_days=15),
-            _make_trade(action="SELL", ticker="AAPL", realized_gain_pct=20.0, holding_days=30),
+            _make_trade(action="SELL", ticker="AAPL", realized_gain_pct=10.0,
+                        holding_days=15, reason="TRAILING STOP (PARTIAL 25%): peak"),
+            _make_trade(action="SELL", ticker="AAPL", realized_gain_pct=20.0,
+                        holding_days=30, reason="TRAILING STOP: full exit"),
         ]
         rows = _pair_buy_sell_trades(trades)
-        assert len(rows) == 2
-        assert rows[0]["gain_pct"] == 10.0
-        assert rows[1]["gain_pct"] == 20.0
+        assert len(rows) == 1
+        assert rows[0]["gain_pct"] == 20.0
+        assert rows[0]["holding_days"] == 30
+
+    def test_partial_only_position_still_open_emits_nothing(self):
+        # A position that has only taken a partial and hasn't fully closed
+        # yet must not produce a training row at all.
+        trades = [
+            _make_trade(action="BUY", ticker="AAPL"),
+            _make_trade(action="SELL", ticker="AAPL", realized_gain_pct=10.0,
+                        holding_days=15, reason="PARTIAL PROFIT: locking gains"),
+        ]
+        rows = _pair_buy_sell_trades(trades)
+        assert len(rows) == 0
 
     def test_different_backtests_isolated(self):
         trades = [
@@ -437,6 +456,37 @@ class TestBuySellPairing:
         trades[0].signal_factors = None
         rows = _pair_buy_sell_trades(trades)
         assert len(rows) == 0
+
+
+class TestCombinedDedupLivePriority:
+    """2026-07-03 audit: on a (ticker, date) collision between a live trade
+    (backtest_id=-1) and a simulated backtest trade, the REAL outcome must
+    win. The dedup sorted ascending=False → live sorted last → keep='first'
+    kept the backtest, the opposite of the documented intent."""
+
+    def test_live_row_wins_over_backtest_on_collision(self):
+        from unittest.mock import patch
+        import ml.feature_extractor as fe
+
+        cols = {c: 0.0 for c in FEATURE_COLUMNS}
+        bt_df = pd.DataFrame([{
+            **cols, "win": 0, "gain_pct": -5.0, "ticker": "AAPL",
+            "date": "2026-06-01", "backtest_id": 1001, "holding_days": 10,
+            "sell_reason": "sim",
+        }])
+        live_df = pd.DataFrame([{
+            **cols, "win": 1, "gain_pct": 22.0, "ticker": "AAPL",
+            "date": "2026-06-01", "backtest_id": -1, "holding_days": 30,
+            "sell_reason": "live",
+        }])
+        with patch.object(fe, "extract_training_data", return_value=(bt_df, {})), \
+             patch.object(fe, "extract_live_trade_data", return_value=live_df):
+            combined, stats = fe.extract_combined_training_data(MagicMock())
+
+        assert len(combined) == 1
+        # The LIVE outcome (+22%, real) survived — not the sim's -5%.
+        assert combined.iloc[0]["backtest_id"] == -1
+        assert combined.iloc[0]["gain_pct"] == 22.0
 
 
 class TestExtractTrainingData:

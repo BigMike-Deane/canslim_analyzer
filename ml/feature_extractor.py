@@ -302,26 +302,30 @@ def _pair_buy_sell_trades(trades) -> list:
                 buy_queue[key] = []
             buy_queue[key].append(trade)
 
-        elif trade.action in ("SELL", "PARTIAL_SELL"):
+        elif trade.action == "SELL":
             if key not in buy_queue or not buy_queue[key]:
                 continue  # Orphan sell — skip
 
-            # Match to oldest pending buy (FIFO)
-            buy_trade = buy_queue[key][0]
-            features = _extract_features(buy_trade)
-            if features is None:
-                buy_queue[key].pop(0)
+            # PARTIALS: recorded as action="SELL" with "PARTIAL" in the reason
+            # (there is no PARTIAL_SELL action). A partial does NOT close the
+            # position — the buy must stay open so the true FINAL exit becomes
+            # the labeled row. The old code popped the buy on the partial and
+            # then skipped the real closing sell as an orphan, so every
+            # partial-taking winner (the high-gain class the model most needs)
+            # trained on its partial gain and lost its final outcome. Mirror
+            # ml_backfill's is-partial idiom.
+            if "PARTIAL" in (trade.reason or "").upper():
                 continue
 
-            # Compute outcome from sell trade
+            # Match to oldest pending buy (FIFO)
+            buy_trade = buy_queue[key].pop(0)
+            features = _extract_features(buy_trade)
+            if features is None:
+                continue
+
             gain_pct = _nan_safe(trade.realized_gain_pct, 0.0)
             holding_days = trade.holding_days or 0
             sell_reason = trade.reason or ""
-
-            # If this sell closes the position, pop the buy
-            # For partial sells, keep the buy open until a full SELL comes
-            if trade.action == "SELL":
-                buy_queue[key].pop(0)
 
             rows.append({
                 **features,
@@ -415,6 +419,10 @@ def extract_live_trade_data(db: Session) -> pd.DataFrame:
         if trade.action == "BUY":
             buy_queue.setdefault(trade.ticker, []).append(trade)
         elif trade.action == "SELL" and trade.ticker in buy_queue and buy_queue[trade.ticker]:
+            # Partials don't close the position — keep the buy open so the
+            # final exit is the labeled row (same fix as the backtest path).
+            if "PARTIAL" in (trade.reason or "").upper():
+                continue
             buy = buy_queue[trade.ticker].pop(0)
             sf = buy.signal_factors if isinstance(buy.signal_factors, dict) else {}
             if not sf:
@@ -510,8 +518,11 @@ def extract_combined_training_data(
     else:
         # Combine, then deduplicate by (ticker, date) keeping live trades preference
         combined = pd.concat([bt_df, live_df], ignore_index=True)
-        # Live trades (backtest_id=-1) take priority over backtester trades
-        combined = combined.sort_values("backtest_id", ascending=False)
+        # Live trades (backtest_id=-1) take priority over backtester trades.
+        # ascending=TRUE puts -1 FIRST so keep="first" keeps the live row — the
+        # old ascending=False put live LAST and silently kept the backtest
+        # (simulated) outcome over the real one, the opposite of the intent.
+        combined = combined.sort_values("backtest_id", ascending=True)
         combined = combined.drop_duplicates(subset=["ticker", "date"], keep="first")
         combined = combined.sort_values("date").reset_index(drop=True)
         stats["combined_total"] = len(combined)

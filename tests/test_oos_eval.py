@@ -53,6 +53,28 @@ class _StubModelNoFeatureNames:
         return np.column_stack([1 - col1, col1])
 
 
+class _StubRegressor:
+    """A regressor: has predict() but NO predict_proba (like XGBRegressor).
+    Pre-fix, positive_class_scores callers did model.predict_proba directly →
+    AttributeError → swallowed → decile-WR gate hard fail, making regression
+    models structurally un-promotable (2026-07-03 audit)."""
+    feature_names_in_ = None
+
+    def predict(self, X):
+        # Predicted gain correlated with the first feature so ranking works.
+        return np.asarray(X.iloc[:, 0]) * 8.0
+
+
+def test_positive_class_scores_regressor_has_no_predict_proba():
+    from ml.oos_eval import positive_class_scores
+    reg = _StubRegressor()
+    X = pd.DataFrame({"a": np.linspace(-2, 2, 10), "b": np.zeros(10)})
+    scores = positive_class_scores(reg, X)
+    assert scores.shape == (10,)
+    assert np.all((scores >= 0) & (scores <= 1))       # sigmoid range
+    assert np.all(np.diff(scores) >= 0)                # monotonic in gain → rank preserved
+
+
 def _make_holdout_df(feature_cols, n=50, gain_split=0.5, seed=7):
     """Synthetic holdout DataFrame with feature columns + gain_pct + win label."""
     rng = np.random.RandomState(seed)

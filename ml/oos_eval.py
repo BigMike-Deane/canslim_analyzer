@@ -55,6 +55,25 @@ def _load_model_payload(model_path: Union[str, Path]) -> dict:
     return payload
 
 
+# Sigmoid scale matching ml.model._GAIN_SIGMOID_SCALE — keep in sync.
+_GAIN_SIGMOID_SCALE = 10.0
+
+
+def positive_class_scores(model, X) -> np.ndarray:
+    """Return a [0,1] positive-class score for each row, regardless of model
+    type. Classifiers use predict_proba; REGRESSORS (XGBRegressor) have no
+    predict_proba — calling it raised AttributeError that got swallowed and
+    treated as a hard gate failure, making regression models (the default
+    /train mode) structurally un-promotable. Regressors map predicted gain
+    through the same sigmoid ml.model uses at serve time; rank ordering (all
+    decile-WR needs) is preserved and the 0.5 threshold stays meaningful.
+    """
+    if hasattr(model, "predict_proba"):
+        return np.asarray(model.predict_proba(X)[:, 1], dtype=float)
+    predicted_gain = np.asarray(model.predict(X), dtype=float)
+    return 1.0 / (1.0 + np.exp(-predicted_gain / _GAIN_SIGMOID_SCALE))
+
+
 def evaluate_model_on_trades(
     model_path: Union[str, Path],
     df: pd.DataFrame,
@@ -103,7 +122,7 @@ def evaluate_model_on_trades(
             "win_rate": float(y.mean()),
         }
 
-    proba = model.predict_proba(X)[:, 1]
+    proba = positive_class_scores(model, X)
     pred = (proba >= 0.5).astype(int)
 
     # Top-decile WR: WR among the top 10% by predicted probability. This is
@@ -182,7 +201,7 @@ def top_n_wr_at_count(
 
     X = df[feature_cols].copy().fillna(0)
     y = (df["gain_pct"] > min_gain_pct).astype(int).values
-    proba = model.predict_proba(X)[:, 1]
+    proba = positive_class_scores(model, X)
 
     top_idx = np.argsort(proba)[-n_picks:]
     return {

@@ -39,7 +39,7 @@ import pandas as pd
 from scipy.stats import spearmanr
 
 from ml.feature_extractor import FEATURE_COLUMNS
-from ml.oos_eval import _load_model_payload
+from ml.oos_eval import _load_model_payload, positive_class_scores
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,10 @@ def score_holdout_with_models(
             )
             continue
         X = df[feature_cols].copy().fillna(0)
-        proba = payload["model"].predict_proba(X)[:, 1]
+        # Regressors (default /train mode) have no predict_proba — the old
+        # direct call raised AttributeError → swallowed → decile-WR gate hard
+        # fail, making regression candidates structurally un-promotable.
+        proba = positive_class_scores(payload["model"], X)
         out[label] = np.asarray(proba, dtype=float)
     return out
 
