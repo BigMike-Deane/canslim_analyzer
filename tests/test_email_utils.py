@@ -468,21 +468,36 @@ class TestSendWebPushRouting:
 # broadcast_notification — fan-out + fail-soft
 # ============================================================================
 class TestBroadcastNotification:
+    """2026-07-03: push fan-out is per-user through _should_deliver — the old
+    blanket send_web_push_broadcast bypassed mute_kinds/quiet_hours/threshold,
+    making the Settings mute checkboxes placebos for broadcast-only kinds."""
+
+    @staticmethod
+    def _user_row(uid, mute=None, threshold=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=uid, mute_kinds=mute or [],
+            quiet_hours_start=None, quiet_hours_end=None,
+            score_alert_threshold=threshold,
+        )
+
     def test_db_exception_does_not_raise(self):
-        """DB exception path 434-435 — broadcast still returns and the push
-        fan-out fires (push happens regardless of DB)."""
+        """DB exception — broadcast still returns without raising."""
         from backend import email_utils
         with patch("backend.database.SessionLocal", side_effect=RuntimeError("db")), \
-             patch.object(email_utils, "send_web_push_broadcast", return_value=0):
+             patch.object(email_utils, "send_web_push_to_user", return_value=0):
             inserted = email_utils.broadcast_notification("system", "T", "B")
         assert inserted == 0  # nothing was written
 
     def test_push_fanout_exception_swallowed(self):
         from backend import email_utils
         fake_db = MagicMock()
-        fake_db.query.return_value.filter.return_value.all.return_value = [(1,), (2,)]
+        fake_db.query.return_value.filter.return_value.all.side_effect = [
+            [(1,), (2,)],                                  # insert step: user ids
+            [self._user_row(1), self._user_row(2)],        # push step: user rows
+        ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
-             patch.object(email_utils, "send_web_push_broadcast",
+             patch.object(email_utils, "send_web_push_to_user",
                           side_effect=RuntimeError("push")):
             inserted = email_utils.broadcast_notification("system", "T", "B",
                                                           data={"ticker": "AAPL"})
@@ -492,11 +507,56 @@ class TestBroadcastNotification:
     def test_url_defaults_to_notifications_without_ticker(self):
         from backend import email_utils
         fake_db = MagicMock()
-        fake_db.query.return_value.filter.return_value.all.return_value = []
+        fake_db.query.return_value.filter.return_value.all.side_effect = [
+            [(1,)],
+            [self._user_row(1)],
+        ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
-             patch.object(email_utils, "send_web_push_broadcast", return_value=0) as mock_push:
+             patch.object(email_utils, "send_web_push_to_user", return_value=0) as mock_push:
             email_utils.broadcast_notification("system", "T", "B")
         assert mock_push.call_args.kwargs["data"]["url"] == "/notifications"
+
+    def test_muted_user_gets_no_push_but_db_row_is_written(self):
+        from backend import email_utils
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.all.side_effect = [
+            [(1,), (2,)],
+            [self._user_row(1, mute=["breakout"]), self._user_row(2)],
+        ]
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user", return_value=1) as mock_push:
+            inserted = email_utils.broadcast_notification(
+                "breakout", "T", "B", data={"ticker": "AAPL"})
+        assert inserted == 2  # in-app rows are unconditional
+        # Only the unmuted user (id=2) got a push.
+        pushed_ids = [c.args[0] for c in mock_push.call_args_list]
+        assert pushed_ids == [2]
+
+    def test_score_threshold_filters_broadcast_push(self):
+        from backend import email_utils
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.all.side_effect = [
+            [(1,), (2,)],
+            [self._user_row(1, threshold=80), self._user_row(2)],
+        ]
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user", return_value=1) as mock_push:
+            email_utils.broadcast_notification(
+                "breakout", "T", "B", data={"ticker": "AAPL", "score": 72})
+        pushed_ids = [c.args[0] for c in mock_push.call_args_list]
+        assert pushed_ids == [2]  # score 72 < user 1's threshold 80
+
+    def test_urgent_priority_bypasses_mutes(self):
+        from backend import email_utils
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.all.side_effect = [
+            [(1,)],
+            [self._user_row(1, mute=["risk_alert"])],
+        ]
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user", return_value=1) as mock_push:
+            email_utils.broadcast_notification("risk_alert", "T", "B", priority="urgent")
+        assert [c.args[0] for c in mock_push.call_args_list] == [1]
 
 
 # ============================================================================

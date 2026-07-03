@@ -20,7 +20,7 @@ const KIND_META = {
   market_turn:        { label: 'Market Turn',  cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
   bear_base_update:   { label: 'Bear Bases',   cls: 'bg-dark-700/40 text-dark-300 border-dark-600' },
   bear_market_report: { label: 'Bear Report',  cls: 'bg-dark-700/40 text-dark-300 border-dark-600' },
-  morning_briefing:   { label: 'Briefing',     cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' },
+  watchlist:          { label: 'Watchlist',    cls: 'bg-accent-500/10 text-accent-500 border-accent-500/30' },
 }
 
 function KindBadge({ kind }) {

@@ -199,7 +199,7 @@ class NotificationPrefsRequest(BaseModel):
 _VALID_KINDS = {
     "trade", "stop_loss", "score_crash", "breakout", "coiled_spring",
     "risk_alert", "spy_gate_change", "market_turn",
-    "bear_base_update", "bear_market_report",
+    "bear_base_update", "bear_market_report", "watchlist",
 }
 
 

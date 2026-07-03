@@ -330,6 +330,17 @@ def check_watchlist_alerts():
         stocks = db.query(Stock).filter(Stock.ticker.in_(item_tickers)).all()
         stocks_by_ticker = {s.ticker: s for s in stocks}
 
+        # Watchlist rows are per-user: route each alert to ITS owner (email +
+        # in-app), never the global recipient inbox.
+        from backend.database import User
+        owner_ids = {item.user_id for item in items if item.user_id}
+        emails_by_user = {}
+        if owner_ids:
+            emails_by_user = {
+                uid: email for uid, email in
+                db.query(User.id, User.email).filter(User.id.in_(owner_ids)).all()
+            }
+
         for item in items:
             stock = stocks_by_ticker.get(item.ticker)
             if not stock or not stock.current_price:
@@ -368,19 +379,42 @@ def check_watchlist_alerts():
 
                 # Send the alert
                 try:
-                    from backend.email_utils import send_watchlist_alert_email
+                    from backend.email_utils import (
+                        send_watchlist_alert_email, create_notification,
+                    )
 
                     # Record trigger time before sending to prevent retry storms
                     item.alert_triggered_at = datetime.now(timezone.utc)
                     item.alert_sent = True
 
+                    # In-app notification bell + web push. This is the delivery
+                    # channel that makes the trigger visible: with the email
+                    # gate below off (May 7 2026 opt-out), the feature was
+                    # otherwise a complete silent no-op — the trigger was
+                    # consumed (alert_sent/last_check_price written) with no
+                    # notification of any kind. NOTE: no "score" key in data —
+                    # a watchlist alert is explicit per-ticker user intent, so
+                    # the score_alert_threshold filter must not suppress it.
+                    create_notification(
+                        user_id=item.user_id, kind="watchlist",
+                        title=f"Watchlist: {item.ticker}",
+                        body="; ".join(reasons),
+                        priority="high",
+                        tags=["watchlist"],
+                        data={"ticker": item.ticker,
+                              "price": stock.current_price},
+                    )
+                    alerts_sent += 1
+
                     # Gate on email.automated_enabled (May 7 2026 — user opted out
-                    # of routine emails; in-app notification bell still records
+                    # of routine emails; the in-app notification above records
                     # the trigger, so signal isn't lost).
                     if not config.get('email.automated_enabled', False):
                         logger.debug(f"Watchlist alert for {item.ticker} skipped: email.automated_enabled=false")
-                    elif send_watchlist_alert_email(item, stock, reasons):
-                        alerts_sent += 1
+                    elif send_watchlist_alert_email(
+                        item, stock, reasons,
+                        recipient=emails_by_user.get(item.user_id),
+                    ):
                         logger.info(f"Watchlist alert sent for {item.ticker}: {', '.join(reasons)}")
                     else:
                         logger.warning(f"Failed to send watchlist alert email for {item.ticker}")

@@ -17,7 +17,9 @@ const MUTABLE_KINDS = [
   { key: 'market_turn',        label: 'Market turns' },
   { key: 'bear_base_update',   label: 'Bear bases update' },
   { key: 'bear_market_report', label: 'Bear market report' },
-  { key: 'morning_briefing',   label: 'Morning briefing' },
+  // NOTE: no 'morning_briefing' — no backend producer exists for that kind,
+  // and _VALID_KINDS rejects unknown kinds (the checkbox 400'd the save).
+  { key: 'watchlist',          label: 'Watchlist alerts' },
 ]
 
 // Hour 0-23 in America/Chicago, matching the timezone backend/email_utils.py

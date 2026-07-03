@@ -182,6 +182,15 @@ def check_intraday_breakouts():
                     f"({pct_from_pivot:+.1f}%)\n"
                     f"{base_info} | {stock.sector or ''}"
                 )
+                # COMMIT the cooldown row BEFORE any push leaves the building:
+                # pushes fired first, and a failed end-of-cycle commit rolled
+                # the cooldown rows back → the same ticker re-alerted every
+                # 5-min tick until a commit succeeded (the exact spam loop the
+                # DB-backed cooldown was built to prevent). A committed row
+                # with a failed push loses one alert once — the right trade.
+                _record_alert(db, stock.ticker, label, stock.pivot_price,
+                              price, vol_ratio, now)
+                db.commit()
                 # In-app: broadcast to every active user (system event, not portfolio-scoped).
                 broadcast_notification(
                     kind="breakout", title=title, body=message,
@@ -198,8 +207,6 @@ def check_intraday_breakouts():
                 # ntfy push (legacy global URL — phone alerts).
                 send_webhook_notification(title=title, message=message,
                                           priority=priority, tags=tags)
-                _record_alert(db, stock.ticker, label, stock.pivot_price,
-                              price, vol_ratio, now)
                 alerts_sent += 1
 
             # Update the stock's current price in DB while we have fresh data
@@ -222,20 +229,26 @@ def check_intraday_breakouts():
 def _fetch_quick_quotes(tickers: list) -> dict:
     """Fetch current prices for a list of tickers via yfinance (fast batch)."""
     try:
+        import pandas as pd
         import yfinance as yf
         data = yf.download(tickers, period="1d", interval="1m", progress=False, group_by='ticker')
         prices = {}
-        if len(tickers) == 1:
-            if not data.empty:
-                prices[tickers[0]] = float(data['Close'].dropna().iloc[-1])
-        else:
-            for ticker in tickers:
-                try:
-                    col = data[ticker]['Close'].dropna()
-                    if not col.empty:
-                        prices[ticker] = float(col.iloc[-1])
-                except (KeyError, IndexError):
-                    pass
+        if data is None or data.empty:
+            return prices
+        # yfinance >= ~0.2.51 returns MultiIndex (TICKER, field) columns even
+        # for a single ticker (multi_level_index default flipped). The old
+        # len(tickers)==1 special case did data['Close'] → KeyError, swallowed
+        # below → {} → the monitor was a silent no-op whenever exactly one
+        # stock sat near pivot. Branch on the actual column shape instead.
+        is_multi = isinstance(data.columns, pd.MultiIndex)
+        for ticker in tickers:
+            try:
+                series = data[ticker]['Close'] if is_multi else data['Close']
+                col = series.dropna()
+                if not col.empty:
+                    prices[ticker] = float(col.iloc[-1])
+            except (KeyError, IndexError):
+                pass
         return prices
     except Exception as e:
         logger.error(f"Quick quote fetch failed: {e}")

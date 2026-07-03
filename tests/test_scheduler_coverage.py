@@ -2573,3 +2573,89 @@ class TestRunContinuousScan:
         run_continuous_scan()
 
         assert scheduler_mod._system_health["last_successful_scan"] is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2026-07-03 audit — watchlist delivery fixes
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestWatchlistInAppNotification:
+    """With email.automated_enabled=false (May-7 opt-out), the watchlist
+    feature was a complete silent no-op: the trigger was consumed
+    (alert_sent/last_check_price written) with NO delivery of any kind, and
+    the gate's comment falsely claimed the notification bell recorded it.
+    Now it actually does."""
+
+    def test_trigger_creates_in_app_notification(
+        self, patch_session_local, stub_config, silence_emails, monkeypatch
+    ):
+        from backend.scheduler import check_watchlist_alerts
+        import backend.email_utils as email_utils
+
+        note_spy = MagicMock(return_value=True)
+        monkeypatch.setattr(email_utils, "create_notification", note_spy)
+        stub_config({"email.automated_enabled": False})
+
+        _seed_watchlist_item(patch_session_local, "TEST",
+                             target_price=50.0, user_id=7)
+        _seed_stock(patch_session_local, "TEST", current_price=60.0)
+
+        check_watchlist_alerts()
+
+        assert note_spy.call_count == 1
+        kwargs = note_spy.call_args.kwargs
+        assert kwargs["user_id"] == 7
+        assert kwargs["kind"] == "watchlist"
+        # Email path stayed gated off.
+        assert silence_emails.call_count == 0
+
+    def test_notification_data_has_no_score_key(
+        self, patch_session_local, stub_config, silence_emails, monkeypatch
+    ):
+        # A watchlist alert is explicit per-ticker user intent — the
+        # score_alert_threshold push filter must not be able to suppress it.
+        from backend.scheduler import check_watchlist_alerts
+        import backend.email_utils as email_utils
+
+        note_spy = MagicMock(return_value=True)
+        monkeypatch.setattr(email_utils, "create_notification", note_spy)
+        stub_config({"email.automated_enabled": False})
+
+        _seed_watchlist_item(patch_session_local, "TEST",
+                             target_price=50.0, user_id=7)
+        _seed_stock(patch_session_local, "TEST", current_price=60.0,
+                    canslim_score=55.0)
+
+        check_watchlist_alerts()
+
+        assert "score" not in (note_spy.call_args.kwargs["data"] or {})
+
+
+class TestWatchlistEmailRouting:
+    """Watchlist rows are per-user; the alert email (with private notes) went
+    to the global RECIPIENT_EMAIL inbox for every user. Route to the owner."""
+
+    def test_email_recipient_is_item_owner(
+        self, patch_session_local, stub_config, silence_emails, monkeypatch
+    ):
+        from backend.scheduler import check_watchlist_alerts
+        import backend.email_utils as email_utils
+        from backend.database import User
+
+        monkeypatch.setattr(email_utils, "create_notification",
+                            MagicMock(return_value=True))
+        stub_config({"email.automated_enabled": True})
+
+        owner = User(id=7, email="owner-b@example.com", hashed_password="x")
+        patch_session_local.add(owner)
+        patch_session_local.commit()
+
+        _seed_watchlist_item(patch_session_local, "TEST",
+                             target_price=50.0, user_id=7)
+        _seed_stock(patch_session_local, "TEST", current_price=60.0)
+
+        check_watchlist_alerts()
+
+        assert silence_emails.call_count == 1
+        assert silence_emails.call_args.kwargs["recipient"] == "owner-b@example.com"

@@ -713,3 +713,82 @@ class TestFetchQuickQuotes:
         result = bm._fetch_quick_quotes(["AAPL", "MSFT"])
         # AAPL still came through; MSFT silently dropped
         assert result == {"AAPL": 201.0}
+
+
+# ── 2026-07-03 audit: quote-fetch column shapes + push/commit ordering ────────
+
+
+class TestFetchQuickQuotesColumnShapes:
+    """yfinance >= ~0.2.51 returns MultiIndex (TICKER, field) columns even for
+    a single ticker. The old len(tickers)==1 branch did data['Close'] →
+    KeyError → swallowed → {} → the monitor was a silent no-op whenever
+    exactly ONE stock sat near pivot."""
+
+    @staticmethod
+    def _df(tickers, multi):
+        import pandas as pd
+        idx = pd.date_range("2026-07-01 14:30", periods=3, freq="min")
+        if multi:
+            data = {
+                (t, f): [10.0, 11.0, 12.0 + i]
+                for i, t in enumerate(tickers) for f in ("Open", "Close")
+            }
+            df = pd.DataFrame(data, index=idx)
+            df.columns = pd.MultiIndex.from_tuples(df.columns)
+            return df
+        return pd.DataFrame(
+            {"Open": [10.0] * 3, "Close": [10.0, 11.0, 12.0]}, index=idx)
+
+    def test_single_ticker_multiindex_columns(self, monkeypatch):
+        monkeypatch.setattr(
+            "yfinance.download", lambda *a, **k: self._df(["AAPL"], multi=True))
+        prices = breakout_monitor._fetch_quick_quotes(["AAPL"])
+        assert prices == {"AAPL": 12.0}
+
+    def test_single_ticker_flat_columns_legacy(self, monkeypatch):
+        monkeypatch.setattr(
+            "yfinance.download", lambda *a, **k: self._df(["AAPL"], multi=False))
+        prices = breakout_monitor._fetch_quick_quotes(["AAPL"])
+        assert prices == {"AAPL": 12.0}
+
+    def test_multi_ticker_multiindex_columns(self, monkeypatch):
+        monkeypatch.setattr(
+            "yfinance.download",
+            lambda *a, **k: self._df(["AAPL", "MSFT"], multi=True))
+        prices = breakout_monitor._fetch_quick_quotes(["AAPL", "MSFT"])
+        assert prices == {"AAPL": 12.0, "MSFT": 13.0}
+
+
+class TestCooldownCommittedBeforePush:
+    """Pushes used to fire BEFORE the cooldown row was committed; a failed
+    end-of-cycle commit rolled the rows back and the same ticker re-alerted
+    every 5-min tick (spam loop). The cooldown row must be durable in the DB
+    by the time any push goes out."""
+
+    def test_cooldown_row_visible_to_new_session_at_push_time(
+        self, db_session, stub_market_open, yf_quotes, monkeypatch
+    ):
+        committed_counts = []
+
+        def _capture_broadcast(**kwargs):
+            import backend.database as db_mod
+            s = db_mod.SessionLocal()
+            try:
+                committed_counts.append(s.query(BreakoutAlert).count())
+            finally:
+                s.close()
+            return 1
+
+        monkeypatch.setattr(
+            "backend.email_utils.broadcast_notification", _capture_broadcast)
+        monkeypatch.setattr(
+            "backend.email_utils.send_webhook_notification", lambda **k: True)
+
+        _make_breaking_stock(db_session, "BRKC")
+        yf_quotes["BRKC"] = 101.0  # crosses the 100.0 pivot
+
+        breakout_monitor.check_intraday_breakouts()
+
+        # Exactly one alert fired, and its cooldown row was already
+        # committed (visible to a separate session) when the push went out.
+        assert committed_counts == [1]

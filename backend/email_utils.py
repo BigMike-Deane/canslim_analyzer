@@ -81,13 +81,17 @@ def send_email(subject: str, html_content: str, text_content: str,
         return False
 
 
-def send_watchlist_alert_email(item, stock, reasons: list) -> bool:
+def send_watchlist_alert_email(item, stock, reasons: list,
+                               recipient: str = None) -> bool:
     """Send email when watchlist alert triggers
 
     Args:
         item: Watchlist model instance
         stock: Stock model instance
         reasons: List of reason strings
+        recipient: The watchlist OWNER's email. Watchlist rows are per-user;
+            without this, every user's alert (including private notes) landed
+            in the global RECIPIENT_EMAIL inbox — a cross-user leak.
 
     Returns:
         True if email sent successfully, False otherwise
@@ -150,7 +154,7 @@ CANSLIM Score: {(stock.canslim_score or 0):.0f}
 {f'Your Notes: {item.notes}' if item.notes else ''}
 """
 
-    return send_email(subject, html_content, text_content)
+    return send_email(subject, html_content, text_content, recipient=recipient)
 
 
 # Webhook configuration
@@ -495,13 +499,35 @@ def broadcast_notification(kind: str, title: str, body: str,
         logger.warning(f"Failed to broadcast notification ({kind}): {e}")
 
     # Independent push fan-out — fire even if the DB insert failed.
+    # Per-user, gated by _should_deliver: the blanket send_web_push_broadcast
+    # bypassed mute_kinds/quiet_hours/score-threshold, making every mute
+    # checkbox for broadcast-only kinds (breakout, coiled_spring, ...) a
+    # placebo. In-app DB rows above stay unconditional (documented contract);
+    # only outbound push honors the user's filters.
     try:
         urgency = "high" if priority in ("high", "urgent") else "normal"
         push_data = {"kind": kind, **(data or {})}
         if "url" not in push_data:
             ticker = (data or {}).get("ticker")
             push_data["url"] = f"/stock/{ticker}" if ticker else "/notifications"
-        send_web_push_broadcast(title=title, body=body, data=push_data, urgency=urgency)
+
+        from backend.database import SessionLocal, User
+        db = SessionLocal()
+        try:
+            # Column tuples (not ORM instances): usable after close, and
+            # attribute access matches what _should_deliver reads.
+            users = db.query(
+                User.id, User.mute_kinds,
+                User.quiet_hours_start, User.quiet_hours_end,
+                User.score_alert_threshold,
+            ).filter(User.is_active == True).all()
+        finally:
+            db.close()
+
+        for user in users:
+            if _should_deliver(user, kind, priority, data):
+                send_web_push_to_user(user.id, title=title, body=body,
+                                      data=push_data, urgency=urgency)
     except Exception as e:
         logger.warning(f"Web push broadcast ({kind}) failed: {e}")
     return inserted
