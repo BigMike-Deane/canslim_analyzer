@@ -287,7 +287,10 @@ def run_migrations():
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
                 logger.info(f"Migration: Added {table}.{column}")
             except Exception as e:
-                pass  # Expected: column already exists
+                # The columns_cache pre-check already skips existing columns,
+                # so reaching here means a REAL failure (lock, disk, syntax) —
+                # a missing column surfaces later as confusing runtime errors.
+                logger.warning(f"Migration: failed to add {table}.{column}: {e}")
 
     # Fix: Remove unique constraint on ai_portfolio_snapshots.date (SQLite only)
     is_sqlite = DATABASE_URL.startswith("sqlite")
@@ -308,6 +311,9 @@ def run_migrations():
             if needs_rebuild:
                 logger.info("Rebuilding ai_portfolio_snapshots table to remove unique constraint on date")
                 try:
+                    # NOTE: schema must include EVERY column later migrations
+                    # add (user_id!) — this rebuild predated multi-user and
+                    # silently dropped user_id values on legacy dev DBs.
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS ai_portfolio_snapshots_new (
                             id INTEGER PRIMARY KEY,
@@ -321,7 +327,8 @@ def run_migrations():
                             prev_value FLOAT,
                             value_change FLOAT,
                             value_change_pct FLOAT,
-                            date DATE
+                            date DATE,
+                            user_id INTEGER
                         )
                     ''')
 
@@ -329,7 +336,8 @@ def run_migrations():
                     old_cols = [row[1] for row in cursor.fetchall()]
 
                     new_cols = ['id', 'timestamp', 'total_value', 'cash', 'positions_value', 'positions_count',
-                                'total_return', 'total_return_pct', 'prev_value', 'value_change', 'value_change_pct', 'date']
+                                'total_return', 'total_return_pct', 'prev_value', 'value_change', 'value_change_pct',
+                                'date', 'user_id']
                     common_cols = [c for c in new_cols if c in old_cols]
                     cols_str = ', '.join(common_cols)
 

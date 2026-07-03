@@ -11,6 +11,7 @@ Key Optimizations:
 """
 
 import asyncio
+import math
 import aiohttp
 import pandas as pd
 from datetime import datetime, timedelta
@@ -971,6 +972,22 @@ _yahoo_semaphore = asyncio.Semaphore(5)
 _yahoo_delay = 0.3
 _yahoo_max_retries = 2
 
+def _yf_num(val, default=0.0):
+    """Coerce a Yahoo `info` field to float. Yahoo intermittently returns
+    numerics as STRINGS (seen live 2026-07-03: BILL failed every scan with
+    \"'>' not supported between instances of 'str' and 'int'\") — one bad
+    field threw in the comparison chain, the broad except discarded the
+    whole info payload, and the ticker went chronically stale. Non-numeric
+    and non-finite values coerce to `default`."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
     """
     Fetch ALL supplementary data from Yahoo Finance in ONE call.
@@ -1027,57 +1044,62 @@ async def fetch_yahoo_info_comprehensive_async(ticker: str) -> dict:
                 # ticker universe whenever Yahoo crumb-rotates a 401 storm.
                 return result
 
+            # All numeric fields go through _yf_num — Yahoo intermittently
+            # returns them as strings, and one raw comparison throwing
+            # TypeError used to discard the entire payload (see _yf_num).
+
             # Key metrics - store as decimal (e.g., 0.05 = 5%) for consistency with FMP
-            roe = info.get('returnOnEquity')
+            roe = _yf_num(info.get('returnOnEquity'))
             result["roe"] = roe if roe and roe > -10 else 0
 
-            roa = info.get('returnOnAssets')
+            roa = _yf_num(info.get('returnOnAssets'))
             result["roa"] = roa if roa and roa > -10 else 0
 
             # ROIC not directly available, estimate from ROE and debt ratio
             result["roic"] = result["roe"] * 0.8 if result["roe"] > 0 else 0
 
             # Earnings/FCF yield
-            trailing_pe = info.get('trailingPE')
+            trailing_pe = _yf_num(info.get('trailingPE'))
             if trailing_pe and trailing_pe > 0:
                 result["earnings_yield"] = 1 / trailing_pe
 
-            fcf = info.get('freeCashflow', 0) or 0
-            market_cap = info.get('marketCap', 0) or 0
+            fcf = _yf_num(info.get('freeCashflow'))
+            market_cap = _yf_num(info.get('marketCap'))
             if market_cap > 0 and fcf:
                 result["fcf_yield"] = fcf / market_cap
             # Store market_cap as fallback data
             result["market_cap"] = market_cap
 
             # Balance sheet data
-            result["cash_and_equivalents"] = info.get('totalCash', 0) or 0
-            result["total_debt"] = info.get('totalDebt', 0) or 0
+            result["cash_and_equivalents"] = _yf_num(info.get('totalCash'))
+            result["total_debt"] = _yf_num(info.get('totalDebt'))
 
             # Analyst data
-            result["analyst_target_price"] = info.get('targetMeanPrice', 0) or info.get('targetMedianPrice', 0) or 0
-            result["analyst_target_high"] = info.get('targetHighPrice', 0) or 0
-            result["analyst_target_low"] = info.get('targetLowPrice', 0) or 0
-            result["num_analyst_opinions"] = info.get('numberOfAnalystOpinions', 0) or 0
+            result["analyst_target_price"] = (_yf_num(info.get('targetMeanPrice'))
+                                              or _yf_num(info.get('targetMedianPrice')))
+            result["analyst_target_high"] = _yf_num(info.get('targetHighPrice'))
+            result["analyst_target_low"] = _yf_num(info.get('targetLowPrice'))
+            result["num_analyst_opinions"] = int(_yf_num(info.get('numberOfAnalystOpinions')))
 
             # Earnings growth estimate
             # Yahoo returns as decimal (0.25 = 25%) - convert to percentage
-            growth = info.get('earningsQuarterlyGrowth') or info.get('earningsGrowth')
+            growth = _yf_num(info.get('earningsQuarterlyGrowth')) or _yf_num(info.get('earningsGrowth'))
             if growth:
                 # If absolute value <= 1, it's likely a decimal (e.g., 0.25 = 25%)
                 result["earnings_growth_estimate"] = growth * 100 if abs(growth) <= 1 else growth
 
             # Short interest
-            short_pct = info.get('shortPercentOfFloat', 0) or 0
+            short_pct = _yf_num(info.get('shortPercentOfFloat'))
             # Yahoo returns as decimal (0.15 = 15%). Can exceed 1.0 for heavily shorted stocks.
             if 0 < short_pct < 3.0:
                 short_pct = short_pct * 100
             result["short_interest_pct"] = short_pct
-            result["short_ratio"] = info.get('shortRatio', 0) or 0
+            result["short_ratio"] = _yf_num(info.get('shortRatio'))
 
             # Institutional ownership
             # Yahoo returns decimal (0.65 = 65%, 1.00002 = 100.002%)
             # Convert to percentage if value looks like a decimal (< 3.0 = 300%)
-            inst_pct = info.get('heldPercentInstitutions', 0) or 0
+            inst_pct = _yf_num(info.get('heldPercentInstitutions'))
             result["institutional_holders_pct"] = (inst_pct * 100) if 0 < inst_pct < 3.0 else inst_pct
 
             result["success"] = True

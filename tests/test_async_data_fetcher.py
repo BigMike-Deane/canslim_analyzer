@@ -1330,6 +1330,48 @@ class TestFetchYahooInfoComprehensiveAsync:
         assert result["short_interest_pct"] == pytest.approx(5.0)
         assert result["institutional_holders_pct"] == pytest.approx(65.0)
 
+    async def test_string_typed_numerics_do_not_discard_payload(
+        self, monkeypatch, primitives, no_delist
+    ):
+        # Live regression 2026-07-03: Yahoo intermittently returns numeric
+        # info fields as STRINGS (BILL failed every scan with "'>' not
+        # supported between instances of 'str' and 'int'") — one bad field
+        # threw in the comparison chain and the broad except discarded the
+        # ENTIRE payload. All numerics now coerce via _yf_num.
+        monkeypatch.setattr(async_data_fetcher.asyncio, "sleep", AsyncMock())
+        info = {
+            "regularMarketPrice": 150.0,
+            "returnOnEquity": "0.25",           # string decimal
+            "returnOnAssets": "N/A",            # garbage → 0
+            "trailingPE": "20.0",
+            "freeCashflow": "1000000000",
+            "marketCap": 2e10,
+            "totalCash": "Infinity",            # non-finite → 0
+            "totalDebt": None,
+            "targetMeanPrice": "175.0",
+            "targetHighPrice": 200, "targetLowPrice": 150,
+            "numberOfAnalystOpinions": "25",
+            "earningsQuarterlyGrowth": "0.30",
+            "shortPercentOfFloat": "0.05",
+            "shortRatio": "2.5",
+            "heldPercentInstitutions": "0.65",
+        }
+        monkeypatch.setattr(async_data_fetcher, "yf_safe_call",
+                            lambda *_a, **_k: info)
+
+        result = await async_data_fetcher.fetch_yahoo_info_comprehensive_async("BILL")
+        assert result["success"] is True          # payload NOT discarded
+        assert result["roe"] == pytest.approx(0.25)
+        assert result["roa"] == 0                 # garbage coerced to default
+        assert result["earnings_yield"] == pytest.approx(1 / 20.0)
+        assert result["fcf_yield"] == pytest.approx(1e9 / 2e10)
+        assert result["cash_and_equivalents"] == 0  # Infinity → default
+        assert result["analyst_target_price"] == 175.0
+        assert result["num_analyst_opinions"] == 25
+        assert result["earnings_growth_estimate"] == pytest.approx(30.0)
+        assert result["short_interest_pct"] == pytest.approx(5.0)
+        assert result["institutional_holders_pct"] == pytest.approx(65.0)
+
     async def test_short_pct_above_3_left_alone(self, monkeypatch, primitives, no_delist):
         # Yahoo can return >3.0 for heavily-shorted (already pct, not decimal).
         # The conditional `if 0 < short_pct < 3.0` MUST NOT touch these.
