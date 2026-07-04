@@ -110,6 +110,35 @@ def _raises(*_a, **_k):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class TestSafeFloat:
+    """2026-07-04 hardening: providers return numerics as strings; safe_float
+    coerces at the read boundary so one bad field can't throw in a downstream
+    comparison and make the broad except drop the rest of the block. Mirrors
+    async_data_fetcher._yf_num for the sync on-demand fetch path."""
+
+    def test_numeric_passthrough(self):
+        assert data_fetcher.safe_float(20.0) == 20.0
+        assert data_fetcher.safe_float(0) == 0.0
+
+    def test_string_numeric_coerced(self):
+        assert data_fetcher.safe_float("0.65") == 0.65
+        assert data_fetcher.safe_float("20.0") == 20.0
+
+    def test_garbage_returns_default(self):
+        assert data_fetcher.safe_float("N/A") == 0.0
+        assert data_fetcher.safe_float("", default=-1) == -1
+        assert data_fetcher.safe_float(None) == 0.0
+
+    def test_non_finite_returns_default(self):
+        assert data_fetcher.safe_float("Infinity") == 0.0
+        assert data_fetcher.safe_float(float("nan")) == 0.0
+
+    def test_string_does_not_raise_in_comparison(self):
+        # The exact shape that broke the sync yahoo block: `0 < x < 3.0`.
+        x = data_fetcher.safe_float("0.65")
+        assert (x * 100) if 0 < x < 3.0 else x  # no TypeError
+
+
 class TestFetcherExceptionHandlers:
     """Tier 1: every FMP fetcher must swallow exceptions and return {} so a
     transient API hiccup doesn't poison the in-memory cache or crash the scan."""

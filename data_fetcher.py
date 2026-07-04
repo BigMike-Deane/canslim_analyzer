@@ -35,6 +35,27 @@ import logging
 # Setup logging
 logger = logging.getLogger(__name__)
 
+
+def safe_float(val, default=0.0):
+    """Coerce an external-API field to a finite float. Providers (Yahoo `info`,
+    FMP) intermittently return numerics as STRINGS; a raw comparison on one
+    (e.g. `0 < inst_pct < 3.0`) then raises TypeError, and the broad except
+    around these fetch blocks silently drops the rest of the block's data for
+    that ticker. Coercing at the read boundary keeps one bad field from
+    poisoning the others. Non-numeric / non-finite → `default`.
+
+    Mirrors async_data_fetcher._yf_num — the async live-scan path was hardened
+    first (2026-07-03, ticker BILL failed every scan); this is the sync
+    on-demand path (individual stock views + /refresh)."""
+    import math
+    if val is None:
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
 # Import Redis cache (lazy loaded to allow fallback)
 try:
     from redis_cache import redis_cache
@@ -2016,13 +2037,13 @@ class DataFetcher:
                             stock_data.analyst_recommendation = yf_info.get('recommendationKey', '') or ''
                         # P/E ratio fallback
                         if not stock_data.trailing_pe:
-                            stock_data.trailing_pe = yf_info.get('trailingPE', 0) or 0
+                            stock_data.trailing_pe = safe_float(yf_info.get('trailingPE'))
                         # PEG ratio fallback
                         if not stock_data.peg_ratio:
-                            stock_data.peg_ratio = yf_info.get('pegRatio', 0) or 0
+                            stock_data.peg_ratio = safe_float(yf_info.get('pegRatio'))
                         # Earnings growth estimate fallback
                         if not stock_data.earnings_growth_estimate:
-                            growth = yf_info.get('earningsQuarterlyGrowth', 0) or yf_info.get('earningsGrowth', 0)
+                            growth = safe_float(yf_info.get('earningsQuarterlyGrowth')) or safe_float(yf_info.get('earningsGrowth'))
                             stock_data.earnings_growth_estimate = growth or 0
                 except (KeyError, TypeError, ValueError, AttributeError):
                     pass  # Silent fallback failure - FMP data is primary
@@ -2041,7 +2062,10 @@ class DataFetcher:
                     if not stock_data.shares_outstanding:
                         stock_data.shares_outstanding = info.get('sharesOutstanding', 0)
                     if not stock_data.institutional_holders_pct:
-                        inst_pct = info.get('heldPercentInstitutions', 0) or 0
+                        # safe_float: a string here previously threw at the
+                        # `0 < inst_pct < 3.0` comparison and the block's broad
+                        # except silently dropped ROE + adjusted-EPS below.
+                        inst_pct = safe_float(info.get('heldPercentInstitutions'))
                         # Convert decimal to percentage (Yahoo returns 0.65 = 65%, 1.00002 = 100.002%).
                         # Clamp at 100 — Yahoo occasionally returns >100% from inst-shares ÷ shares-outstanding
                         # rounding artifacts (103 stocks affected in May 2026 audit). Score tier (>85 → 4) is
@@ -2051,8 +2075,7 @@ class DataFetcher:
                     # Get ROE (critical for A score quality check)
                     # Store as decimal (e.g., 0.05 = 5%) - same format as FMP
                     if not stock_data.roe:
-                        roe = info.get('returnOnEquity')
-                        stock_data.roe = roe if roe else 0
+                        stock_data.roe = safe_float(info.get('returnOnEquity'))
 
                     # Get adjusted EPS from Yahoo - this is what analysts track (matches Fidelity)
                     # FMP returns GAAP EPS which includes stock-based comp and distorts growth metrics
