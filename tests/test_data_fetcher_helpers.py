@@ -159,13 +159,12 @@ class TestFetcherExceptionHandlers:
         assert data_fetcher.fetch_fmp_key_metrics("AAPL") == {}
 
     def test_fetch_fmp_earnings_swallows_quarterly_exception(self, fmp_key, monkeypatch):
-        """Branch: data_fetcher.py:850-852/863-864 — both quarterly AND annual
-        try/except blocks must independently swallow, returning the default
-        empty-list result dict."""
+        """Both quarterly AND annual try/except blocks swallow independently.
+        2026-07-04: on TOTAL failure the function now returns {} (falsy),
+        matching every sibling FMP fetcher, so fetch_with_cache's `if data:`
+        guard won't cache empty-as-fresh or null good DB earnings."""
         monkeypatch.setattr(data_fetcher, "_fmp_get", _raises)
-        result = data_fetcher.fetch_fmp_earnings("AAPL")
-        # Even on full failure, the function returns the seeded result dict.
-        assert result == {"quarterly_eps": [], "annual_eps": []}
+        assert data_fetcher.fetch_fmp_earnings("AAPL") == {}
 
     def test_fetch_fmp_price_target_returns_empty_on_exception(self, fmp_key, monkeypatch):
         """Branch: data_fetcher.py:951-952 (price_target outer except)."""
@@ -188,11 +187,11 @@ class TestFetcherExceptionHandlers:
         assert data_fetcher.fetch_fmp_analyst_estimates("AAPL") == {}
 
     def test_fetch_fmp_revenue_swallows_both_branches(self, fmp_key, monkeypatch):
-        """Branch: data_fetcher.py:1192-1193/1203-1204 — quarterly AND annual
-        wrapped independently. Returns the empty seed dict on full failure."""
+        """Quarterly AND annual wrapped independently. 2026-07-04: total
+        failure returns {} (falsy) so it isn't cached-as-fresh / doesn't null
+        good DB revenue (matches sibling FMP fetchers)."""
         monkeypatch.setattr(data_fetcher, "_fmp_get", _raises)
-        result = data_fetcher.fetch_fmp_revenue("AAPL")
-        assert result == {"quarterly_revenue": [], "annual_revenue": []}
+        assert data_fetcher.fetch_fmp_revenue("AAPL") == {}
 
     def test_fetch_fmp_balance_sheet_returns_empty_on_exception(self, fmp_key, monkeypatch):
         """Branch: data_fetcher.py:1227-1228 (balance_sheet outer except)."""
@@ -1055,33 +1054,29 @@ class TestFetchFmpEarningsResponseBranches:
     is covered by the round-1 suite; the other two land in logger.debug()
     bodies (lines 848 and 850) that are currently uncovered."""
 
-    def test_quarterly_empty_200_response_logs_and_returns_empty_lists(
+    def test_quarterly_empty_200_response_returns_empty_dict(
         self, fmp_key, monkeypatch
     ):
-        """Branch: 847-848 — `if data: ... else: logger.debug("empty
-        response")`. Empty payload must NOT crash and result must remain
-        the seeded {quarterly_eps: [], annual_eps: []}."""
+        """Empty 200 payload (no rows) → no real data → {} (2026-07-04
+        contract: don't cache empty-as-fresh)."""
         monkeypatch.setattr(
             data_fetcher, "_fmp_get",
             lambda *a, **k: _mock_response(status_code=200, json_data=[]),
         )
-        result = data_fetcher.fetch_fmp_earnings("AAPL")
-        assert result == {"quarterly_eps": [], "annual_eps": []}
+        assert data_fetcher.fetch_fmp_earnings("AAPL") == {}
 
-    def test_quarterly_non_200_response_logs_error_text(
+    def test_quarterly_non_200_response_returns_empty_dict(
         self, fmp_key, monkeypatch
     ):
-        """Branch: 849-850 — non-200 path reads `resp.text[:200]` for the
-        debug log. A regression that strips the text attribute would crash
-        the wrapper instead of silently returning empty."""
+        """non-200 path reads resp.text[:200] for the debug log then, with no
+        rows obtained, returns {} (must not crash, must not cache empty)."""
         monkeypatch.setattr(
             data_fetcher, "_fmp_get",
             lambda *a, **k: _mock_response(
                 status_code=500, text="upstream broke"
             ),
         )
-        result = data_fetcher.fetch_fmp_earnings("AAPL")
-        assert result == {"quarterly_eps": [], "annual_eps": []}
+        assert data_fetcher.fetch_fmp_earnings("AAPL") == {}
 
 
 class TestSaveTickerInstitutionalNumeric:

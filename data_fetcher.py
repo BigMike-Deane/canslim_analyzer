@@ -924,6 +924,15 @@ def fetch_fmp_earnings(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"FMP annual earnings error for {ticker}: {e}")
 
+    # Restore the falsy-{}-on-failure contract that fetch_with_cache's `if data:`
+    # guard depends on. This dict is pre-initialized non-empty (truthy), so on a
+    # TOTAL failure (429 storm / outage) the old `return result` passed the guard
+    # → cached [] as FRESH for 7d AND nulled prior good DB earnings. Sync mirror
+    # of the async has_financials fix. No real rows → return {} so nothing is
+    # cached or persisted and the next call retries.
+    if not (result["quarterly_eps"] or result["annual_eps"]):
+        logger.warning(f"FMP earnings fetch for {ticker} returned no data — not caching")
+        return {}
     return result
 
 
@@ -1240,6 +1249,11 @@ def fetch_fmp_revenue(ticker: str) -> dict:
     except Exception as e:
         logger.debug(f"FMP annual revenue error for {ticker}: {e}")
 
+    # Falsy-{}-on-failure contract (see fetch_fmp_earnings) — a total FMP
+    # failure must not cache empty revenue as fresh or null good DB rows.
+    if not (result["quarterly_revenue"] or result["annual_revenue"]):
+        logger.warning(f"FMP revenue fetch for {ticker} returned no data — not caching")
+        return {}
     return result
 
 
@@ -2203,7 +2217,11 @@ class DataFetcher:
 
     def get_sp500_history(self) -> pd.DataFrame:
         """Fetch S&P 500 index price history for relative strength calculation"""
-        if self._sp500_history is not None:
+        # `not empty`: a prior TOTAL SPY-fetch failure must not be cached as an
+        # empty frame and served for the process lifetime. SPY always has data,
+        # so an empty frame here always means "fetch failed", not "no data" —
+        # leave the cache unset so the next call retries.
+        if self._sp500_history is not None and not self._sp500_history.empty:
             return self._sp500_history
 
         # Try Yahoo chart API first (more reliable from servers)
@@ -2223,10 +2241,19 @@ class DataFetcher:
             spy = yf.Ticker("SPY")
             end_date = datetime.now()
             start_date = end_date - timedelta(days=365)
-            self._sp500_history = spy.history(start=start_date, end=end_date)
-        except Exception:
-            self._sp500_history = pd.DataFrame()
+            hist = spy.history(start=start_date, end=end_date)
+        except Exception as e:
+            logger.warning(f"SPY history fetch failed (yfinance): {e} — will retry next call")
+            hist = pd.DataFrame()
 
+        if hist is None or hist.empty:
+            # Don't cache the failure — leave _sp500_history None so the next
+            # call retries. get_market_direction returns its bullish default
+            # for THIS call, but the next one isn't stuck with an empty frame.
+            logger.warning("SPY history unavailable from both chart API and yfinance — not caching")
+            return pd.DataFrame()
+
+        self._sp500_history = hist
         return self._sp500_history
 
     def get_market_direction(self) -> tuple[bool, float, float]:

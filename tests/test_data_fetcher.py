@@ -383,6 +383,76 @@ class TestFetchFmpEarningsSurprise:
         assert result["latest_surprise_pct"] == 0
 
 
+class TestFetchFmpEarningsRevenueFailureContract:
+    """2026-07-04 (swallow-and-serve-stale sweep): fetch_fmp_earnings/revenue
+    pre-initialize a non-empty (truthy) result dict, so on TOTAL failure the
+    old `return result` passed fetch_with_cache's `if data:` guard → cached []
+    as FRESH for 7d AND nulled prior good DB earnings. Must return {} on
+    failure so nothing is cached and the next call retries. Sync mirror of the
+    async has_financials fix."""
+
+    def test_earnings_returns_empty_dict_on_total_failure(self, fmp_key, monkeypatch):
+        monkeypatch.setattr(data_fetcher, "_fmp_get",
+                            lambda *a, **k: _mock_response(status_code=429))
+        assert data_fetcher.fetch_fmp_earnings("AAPL") == {}
+
+    def test_earnings_returns_empty_dict_on_exception(self, fmp_key, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("network")
+        monkeypatch.setattr(data_fetcher, "_fmp_get", _boom)
+        assert data_fetcher.fetch_fmp_earnings("AAPL") == {}
+
+    def test_earnings_returns_data_on_success(self, fmp_key, monkeypatch):
+        rows = [{"eps": 1.5, "netIncome": 1e9}, {"eps": 1.4, "netIncome": 9e8}]
+        monkeypatch.setattr(data_fetcher, "_fmp_get",
+                            lambda *a, **k: _mock_response(json_data=rows))
+        result = data_fetcher.fetch_fmp_earnings("AAPL")
+        assert result != {}
+        assert result["quarterly_eps"][:2] == [1.5, 1.4]
+
+    def test_revenue_returns_empty_dict_on_total_failure(self, fmp_key, monkeypatch):
+        monkeypatch.setattr(data_fetcher, "_fmp_get",
+                            lambda *a, **k: _mock_response(status_code=500))
+        assert data_fetcher.fetch_fmp_revenue("AAPL") == {}
+
+    def test_revenue_returns_data_on_success(self, fmp_key, monkeypatch):
+        rows = [{"revenue": 5e10}, {"revenue": 4.8e10}]
+        monkeypatch.setattr(data_fetcher, "_fmp_get",
+                            lambda *a, **k: _mock_response(json_data=rows))
+        result = data_fetcher.fetch_fmp_revenue("AAPL")
+        assert result != {}
+        assert result["quarterly_revenue"][:2] == [5e10, 4.8e10]
+
+
+class TestGetSp500HistoryFailureRetry:
+    """2026-07-04: a total SPY fetch failure must NOT cache an empty frame and
+    serve it for the process lifetime (SPY always has data, so empty = failure,
+    not no-data). The cache must stay unset so the next call retries."""
+
+    def test_failure_does_not_cache_empty_frame(self, monkeypatch):
+        f = data_fetcher.DataFetcher()
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api", lambda t: {})
+        class _BoomTicker:
+            def history(self, *a, **k):
+                raise RuntimeError("yf down")
+        monkeypatch.setattr(data_fetcher.yf, "Ticker", lambda t: _BoomTicker())
+        out = f.get_sp500_history()
+        assert out.empty
+        # Critical: the failure was NOT cached — a retry is still possible.
+        assert f._sp500_history is None
+
+    def test_empty_yfinance_result_not_cached(self, monkeypatch):
+        import pandas as pd
+        f = data_fetcher.DataFetcher()
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api", lambda t: {})
+        class _EmptyTicker:
+            def history(self, *a, **k):
+                return pd.DataFrame()
+        monkeypatch.setattr(data_fetcher.yf, "Ticker", lambda t: _EmptyTicker())
+        f.get_sp500_history()
+        assert f._sp500_history is None  # empty result treated as failure
+
+
 class TestFetchFmpEarningsCalendar:
     """Tier 1: fetch_fmp_earnings_calendar — next earnings date, beat streak,
     latest_surprise_pct (Approach 2 input). The ±200% clamp at line 1078 is

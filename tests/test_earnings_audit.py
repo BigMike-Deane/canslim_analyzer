@@ -267,3 +267,57 @@ class TestGetLatestAudit:
 
         result = get_latest_audit(mock_db, "AAPL")
         assert result is None
+
+
+class TestAuditSingleTicker:
+    """Coverage backfill (2026-07-04): _audit_single_ticker was the largest
+    untested block. Pins the all-failed guard (2026-07-03 fix — a total FMP
+    failure must return None so no zero-filled row is persisted) and the
+    per-source parse paths. _fetch_json is patched so no network happens."""
+
+    async def _run(self, targets, metrics, earnings, price=100.0):
+        import backend.earnings_audit as ea
+        from unittest.mock import AsyncMock, patch
+        # Return each source in order for the three gathered calls.
+        seq = [targets, metrics, earnings]
+        calls = {"i": 0}
+        async def _fake(session, url, timeout=15):
+            v = seq[calls["i"]]; calls["i"] += 1
+            if isinstance(v, Exception):
+                raise v
+            return v
+        with patch.object(ea, "FMP_API_KEY", "test-key"), \
+             patch.object(ea, "_fetch_json", _fake):
+            return await ea._audit_single_ticker(AsyncMock(), "AAPL", price)
+
+    async def test_all_sources_failed_returns_none(self):
+        # 2026-07-03 guard: all None → None (no zero-filled row persisted).
+        assert await self._run(None, None, None) is None
+
+    async def test_all_sources_exception_returns_none(self):
+        assert await self._run(RuntimeError("x"), RuntimeError("y"), RuntimeError("z")) is None
+
+    async def test_partial_data_returns_result(self):
+        # Only analyst targets present → still returns a result (not None).
+        targets = [{"targetConsensus": 150.0, "targetHigh": 180, "targetLow": 120,
+                    "numberOfAnalysts": 12}]
+        res = await self._run(targets, None, None, price=100.0)
+        assert res is not None
+        assert res["analyst_avg_target"] == 150.0
+        assert res["analyst_upside_pct"] == pytest.approx(50.0)  # (150-100)/100
+        assert res["roe"] == 0  # missing metrics default to 0
+
+    async def test_full_data_parses_all_sources(self):
+        targets = [{"targetConsensus": 120.0, "numberOfAnalysts": 8}]
+        metrics = [{"returnOnEquity": 0.25, "debtToEquity": 0.4,
+                    "freeCashFlowPerShare": 6.0, "currentRatio": 2.0}]
+        earnings = [
+            {"estimatedEarning": 1.0, "actualEarningResult": 1.2},   # beat
+            {"estimatedEarning": 1.0, "actualEarningResult": 1.1},   # beat
+            {"estimatedEarning": 1.0, "actualEarningResult": 0.9},   # miss → stop
+        ]
+        res = await self._run(targets, metrics, earnings, price=100.0)
+        assert res is not None
+        assert res["roe"] == 0.25
+        assert res["beat_streak"] == 2
+        assert res["analyst_upside_pct"] == pytest.approx(20.0)
