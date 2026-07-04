@@ -1076,17 +1076,30 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
     ml_signal:
-      # Graduated from log-only Apr 29 2026. Backtest matrix #547-550 (4yr endurance,
-      # 2022-01-01 → 2026-04-28) showed full activation = +66.5pp return, -4pp DD,
-      # +0.78 Sharpe vs log-only baseline. Veto path drives most of the lift; the
-      # bonus path adds ~12pp on top. AUC remains modest (~0.51-0.61 depending on
-      # data slice) but trading lift is reproducible.
+      # DEMOTED BACK TO LOG-ONLY + veto-off, 2026-07-04. The Apr-29 graduation
+      # (matrix #547-550, claimed +66.5pp) was LOOKAHEAD-INFLATED: the backtester
+      # scores historical trades with the global active model (backtester.py:435),
+      # which was trained on outcomes from that SAME 2022-2026 window — the model
+      # had already seen the trades it was "predicting". A 2026-07-04 signal-analysis
+      # loop confirmed no transferable edge: winner-task AUC 0.55 with a FLAT
+      # learning curve (signal ceiling, not a data-quantity ceiling), and the
+      # best downside task collapses from 0.68 random-CV to 0.52 out-of-time
+      # (top-risk quartile fails at 1.00x the base rate — zero forward
+      # discrimination). ML adds nothing over `total_score` alone. So the veto
+      # was skipping CANSLIM-qualified buys on noise. See canslim-jul04-ml-verdict.
+      #
+      # enabled stays TRUE so ml_confidence is still computed + logged for
+      # observability / future re-evaluation, but BOTH trade-affecting paths are
+      # off: log_only=true (bonus off) AND min_confidence=0 (veto off — the veto
+      # is min_confidence-gated, INDEPENDENT of log_only; see ai_trader.py:3040).
+      # Do NOT re-graduate on a backtest — it can't honestly evaluate this (frozen
+      # scores + train/test overlap). Only the live strategy-ab-eval harness can.
       enabled: true
-      weight: 20             # composite_score bonus = (confidence - 0.5) * weight
-      min_roc_auc: 0.55      # Model must exceed at training time to activate
-      log_only: false        # Bonus path on — model modulates composite_score
-      min_confidence: 0.30   # Veto path on — skip buys with predicted P(win) < 0.30
-      veto_action: "skip"    # "skip" or "reduce" (half position)
+      weight: 20             # inert while log_only=true
+      min_roc_auc: 0.55      # inert
+      log_only: true         # Bonus path OFF — model no longer modulates composite_score
+      min_confidence: 0.0    # Veto path OFF — no confidence-based skip (was 0.30 → noise veto)
+      veto_action: "skip"    # inert while min_confidence=0
 
   # Experimental: same as nostate_optimized but with earnings_avoidance_days=3
   # (default 5). Drives the avoidance-gate-too-conservative test from the

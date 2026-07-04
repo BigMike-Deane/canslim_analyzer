@@ -1514,22 +1514,52 @@ class TestEvaluateBuysRanking:
         silence_webhooks,
         monkeypatch,
     ):
-        """Branch: ML veto path. nostate_optimized has min_confidence=0.30
-        and veto_action='skip'. A 0.20 prediction triggers the veto and
-        the candidate gets dropped before reaching the buys list. Pinned
-        per canslim-ml-graduation-apr29.md (graduated Apr 29, drives most
-        of the +66.5pp lift)."""
+        """Branch: ML veto path (min_confidence>0, veto_action='skip'). A 0.20
+        prediction triggers the veto and the candidate is dropped. Uses
+        nostate_optimized_avoid3 (still full-D config) because the champion
+        nostate_optimized had its veto turned OFF 2026-07-04 (no-edge model,
+        see test_nostate_optimized_ml_is_log_only_no_veto). The veto CODE PATH
+        is still live for profiles that opt in, so keep covering it."""
         from backend.ai_trader import evaluate_buys
         import ml.model as ml_model
 
         # Override default (None) to force veto
         monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: 0.20)
 
-        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_config(db_session, strategy="nostate_optimized_avoid3")
         _seed_growth_projection_stock(db_session, "VETOED", canslim_score=82.0)
 
         buys = evaluate_buys(db_session, user_id=1)
         assert buys == []
+
+    def test_champion_no_longer_vetoes_but_still_logs_confidence(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+        monkeypatch,
+    ):
+        """2026-07-04: on the champion nostate_optimized a low ML confidence
+        (0.20) must NOT veto the buy (min_confidence=0), and no bonus is
+        applied (log_only=true), but ml_confidence is still recorded for
+        observability. Guards the demotion end-to-end through evaluate_buys."""
+        from backend.ai_trader import evaluate_buys
+        import ml.model as ml_model
+
+        monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: 0.20)
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "NOTVETOED", canslim_score=82.0)
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1                      # veto OFF — buy goes through
+        sf = buys[0]["signal_factors"]
+        assert sf.get("ml_confidence") == pytest.approx(0.20, abs=0.001)  # still logged
+        assert sf.get("ml_bonus") == pytest.approx(0.0, abs=0.001)        # bonus OFF
+        assert not sf.get("ml_vetoed")
 
     def test_ml_high_confidence_bonus_increases_composite(
         self,
@@ -1541,17 +1571,17 @@ class TestEvaluateBuysRanking:
         silence_webhooks,
         monkeypatch,
     ):
-        """Branch: ML bonus path on nostate_optimized (D config, log_only=false).
-        ml_bonus = (confidence - 0.5) * weight = (0.95 - 0.5) * 20 = +9.0
-        added to composite. Sanity-check that the bonus is recorded in
-        signal_factors (the trade journal). Pinned regression for the
-        D-config bonus formula."""
+        """Branch: ML bonus path (log_only=false). ml_bonus = (confidence -
+        0.5) * weight = (0.95 - 0.5) * 20 = +9.0 added to composite. Uses
+        nostate_optimized_avoid3 (still log_only=false) — the champion's bonus
+        path was turned OFF 2026-07-04 (no-edge model). The bonus CODE PATH is
+        still live for opt-in profiles, so keep covering the formula."""
         from backend.ai_trader import evaluate_buys
         import ml.model as ml_model
 
         monkeypatch.setattr(ml_model, "get_ml_prediction", lambda **kw: 0.95)
 
-        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        _seed_config(db_session, strategy="nostate_optimized_avoid3", current_cash=20000.0)
         _seed_growth_projection_stock(db_session, "MLWIN", canslim_score=80.0)
 
         buys = evaluate_buys(db_session, user_id=1)
@@ -1799,18 +1829,24 @@ class TestStrategyMLSignalConfig:
             "cs_bear's ml_signal.min_confidence MUST be > 0 to enable the veto path"
         )
 
-    def test_nostate_optimized_is_full_d_config(self):
-        """nostate_optimized D config: log_only=false (bonus on) AND min_confidence>0 (veto on)."""
+    def test_nostate_optimized_ml_is_log_only_no_veto(self):
+        """2026-07-04: ML demoted to observability-only on the champion. The
+        Apr-29 +66.5pp graduation was lookahead-inflated (backtester scores
+        history with a model trained on that history); a signal-analysis loop
+        found no transferable edge (winner AUC 0.55 flat; downside 0.68 CV →
+        0.52 out-of-time). BOTH trade-affecting paths must stay off — bonus
+        (log_only=true) AND veto (min_confidence=0, which is what actually
+        gates the skip, independent of log_only). enabled stays true so
+        ml_confidence is still logged. Do NOT re-enable without a LIVE A/B."""
         from backend.trading_utils import get_strategy_profile
 
         profile = get_strategy_profile("nostate_optimized")
         ml = profile.get("ml_signal", {})
-        assert ml.get("enabled") is True
-        assert ml.get("log_only") is False, (
-            "nostate_optimized's ml_signal.log_only MUST be false (bonus path on, "
-            "graduated Apr 29 — see canslim-ml-graduation-apr29.md)"
+        assert ml.get("enabled") is True, "keep enabled for ml_confidence logging"
+        assert ml.get("log_only") is True, "bonus path must be OFF (no-edge model)"
+        assert ml.get("min_confidence", 0) == 0, (
+            "veto path must be OFF — min_confidence>0 re-enables the no-edge skip"
         )
-        assert ml.get("min_confidence", 0) > 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
