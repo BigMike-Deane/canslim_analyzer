@@ -3,6 +3,12 @@ class ResponseCache {
   constructor() {
     this.cache = new Map()
     this.timers = new Map()
+    // Bumped on every invalidate()/clear(). A GET that was already in flight
+    // when a mutation invalidated the cache must NOT write its now-stale
+    // response back: request() snapshots this before fetch and skips the
+    // cache.set if it changed. Prevents an in-flight poll from resurrecting
+    // pre-mutation data for a full TTL after a PATCH/POST.
+    this.generation = 0
   }
 
   getCacheKey(endpoint, params = {}) {
@@ -42,12 +48,14 @@ class ResponseCache {
   }
 
   invalidate(endpointPrefix) {
+    this.generation++
     for (const key of this.cache.keys()) {
       if (key.startsWith(endpointPrefix)) this.delete(key)
     }
   }
 
   clear() {
+    this.generation++
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.cache.clear()
     this.timers.clear()

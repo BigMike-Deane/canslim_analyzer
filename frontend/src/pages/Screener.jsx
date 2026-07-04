@@ -209,7 +209,10 @@ export default function Screener() {
 
   useEffect(() => {
     api.getWatchlist()
-      .then(items => setWatchedTickers(new Set((items || []).map(i => i.ticker))))
+      // Endpoint returns {items, as_of} — the old code mapped over the object
+      // itself (undefined .map → TypeError → silently caught), so hydration
+      // never populated and every already-watched row showed "+ Watch".
+      .then(data => setWatchedTickers(new Set((data?.items || []).map(i => i.ticker))))
       .catch(err => console.error('Failed to load watchlist for hydration:', err))
   }, [])
 

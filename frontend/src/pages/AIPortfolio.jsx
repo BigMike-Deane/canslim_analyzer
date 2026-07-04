@@ -2394,8 +2394,13 @@ export default function AIPortfolio() {
   const fetchData = async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true)
+      // A background refresh (showLoading=false, i.e. the 15s/5s pollers)
+      // bypasses the 120s TTL for the price/cash-sensitive portfolio fetch —
+      // otherwise the "waiting for trades" cash-change detector can't observe
+      // a trade that executes inside the cache window.
+      const portfolioOpts = showLoading ? undefined : { noCache: true }
       const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo, edgeData, reconData] = await Promise.all([
-        api.getAIPortfolio(),
+        api.getAIPortfolio(portfolioOpts),
         api.getAIPortfolioHistory(90),
         api.getAIPortfolioTrades(50),
         api.getCoiledSpringCandidates().catch(() => ({ candidates: [] })),

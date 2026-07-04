@@ -63,8 +63,15 @@ async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`
   const method = options.method || 'GET'
 
-  // Only cache GET requests
-  if (method === 'GET') {
+  // Snapshot the cache generation BEFORE we start the network request. If a
+  // mutation invalidates the cache while this GET is in flight, the generation
+  // changes and we must not write the stale response back (see cache.js).
+  const genAtStart = cache.generation
+
+  // Only cache GET requests. `options.noCache` bypasses the READ (pollers pass
+  // it so a 2s progress poll isn't served the same cached object for a 600s
+  // TTL) while still refreshing the cache below.
+  if (method === 'GET' && !options.noCache) {
     const cached = cache.get(endpoint)
     if (cached) {
       console.debug(`[Cache HIT] ${endpoint}`)
@@ -136,10 +143,16 @@ async function request(endpoint, options = {}) {
 
   const data = await response.json()
 
-  // Cache GET responses
+  // Cache GET responses — but only if no invalidate()/clear() happened while
+  // this request was in flight. Writing a pre-mutation response after a
+  // mutation already cleared the cache would poison it for a full TTL.
   if (method === 'GET') {
-    cache.set(endpoint, {}, data, getCacheTTL(endpoint))
-    console.debug(`[Cache SET] ${endpoint} (TTL: ${getCacheTTL(endpoint)}s)`)
+    if (cache.generation === genAtStart) {
+      cache.set(endpoint, {}, data, getCacheTTL(endpoint))
+      console.debug(`[Cache SET] ${endpoint} (TTL: ${getCacheTTL(endpoint)}s)`)
+    } else {
+      console.debug(`[Cache SKIP] ${endpoint} — invalidated in flight`)
+    }
   }
 
   return data
@@ -383,7 +396,7 @@ export const api = {
   },
 
   // AI Portfolio
-  getAIPortfolio: () => request('/api/ai-portfolio'),
+  getAIPortfolio: (opts) => request('/api/ai-portfolio', opts),
 
   getAIPortfolioHistory: (days = 30) => request(`/api/ai-portfolio/history?days=${days}`),
 
@@ -450,7 +463,7 @@ export const api = {
   getCoiledSpringHistory: (page = 1, pageSize = 50) => request(`/api/coiled-spring/history?page=${page}&page_size=${pageSize}`),
 
   // Backtesting
-  getBacktests: () => request('/api/backtests'),
+  getBacktests: (opts) => request('/api/backtests', opts),
 
   createBacktest: async (config) => {
     const result = await request('/api/backtests', {
@@ -511,7 +524,7 @@ export const api = {
   getPortfolioRisk: () => request('/api/ai-portfolio/risk'),
 
   // Command Center
-  getCommandCenter: () => request('/api/command-center'),
+  getCommandCenter: (opts) => request('/api/command-center', opts),
 
   // Earnings Audit
   getEarningsAudits: (limit = 30, minConfidence = 0) =>

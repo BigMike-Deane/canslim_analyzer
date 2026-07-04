@@ -51,6 +51,11 @@ export default function QuickSearch() {
   // Search stocks when query changes
   useEffect(() => {
     if (!query || query.length < 1) {
+      // Abort any in-flight search: otherwise a slow response for the
+      // just-deleted query lands with signal.aborted=false and repopulates
+      // "Stocks" results under an empty query (Enter would then navigate to a
+      // stock the user never asked for).
+      if (abortRef.current) abortRef.current.abort()
       setResults([])
       setSelected(0)
       return

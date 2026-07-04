@@ -33,11 +33,16 @@ const bgColors = {
   warning: 'border-amber-500/30',
 }
 
+let _toastSeq = 0
+
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
   const addToast = useCallback((message, type = 'info', duration = 3000) => {
-    const id = Date.now()
+    // Monotonic counter, not Date.now(): two toasts in the same millisecond
+    // (e.g. a synchronous error+info batch) got identical ids → duplicate
+    // React keys, and the first timeout's filter removed BOTH.
+    const id = ++_toastSeq
     setToasts(prev => [...prev, { id, message, type }])
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))

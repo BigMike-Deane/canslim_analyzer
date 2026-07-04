@@ -767,9 +767,9 @@ export default function Backtest() {
   const pollingRef = useRef(null)
   const toast = useToast()
 
-  const fetchBacktests = useCallback(async () => {
+  const fetchBacktests = useCallback(async (opts) => {
     try {
-      const data = await api.getBacktests()
+      const data = await api.getBacktests(opts)
       setBacktests(data)
       return data
     } catch (err) {
@@ -789,7 +789,9 @@ export default function Backtest() {
 
     if (hasRunning && !pollingRef.current) {
       pollingRef.current = setInterval(async () => {
-        const data = await fetchBacktests()
+        // noCache: the 600s TTL would otherwise serve the same cached list
+        // every 2s tick, freezing the progress bar until the TTL expired.
+        const data = await fetchBacktests({ noCache: true })
         const stillRunning = data.some(b => b.status === 'running' || b.status === 'pending')
         if (!stillRunning && pollingRef.current) {
           clearInterval(pollingRef.current)
