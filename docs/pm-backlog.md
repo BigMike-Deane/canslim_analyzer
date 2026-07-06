@@ -35,13 +35,21 @@ Constraints (from auto-memory, do not relitigate):
       isFund=false misclassification, scored ~78. Contained: manual
       DelistedTicker block + stocks rows score-zeroed; nothing was bought.
 
+- [x] 2026-07-06 `e00b66c` (iter 4) — Security-type guard SHIPPED+DEPLOYED.
+      Key discoveries: (1) BOTH providers' type flags call CEFs equities
+      (Yahoo quoteType=EQUITY for HQH!); working signal = desc mentions
+      closed-end AND zero employees. (2) clear_delisted_ticker's
+      self-healing DELETED the manual HQH/HQL blocks on next good fetch —
+      added PROTECTED_BLOCK_SOURCES + block_ticker_permanently().
+      (3) Manual DelistedTicker rows with count<3/no recheck_after never
+      actually gated (get_delisted_tickers needs count>=3 AND recheck
+      future). Retro-sweep flagged 7 CEFs total (HQH, HQL, ZTR 63.2,
+      RMT 59.9, NXP, EIC, FSCO) — all blocked + zeroed. Suite 3403.
+
 ## Next up (ranked by expected returns impact)
-1. **Systemic security-type guard (fund/ETF/CEF leakage).** FMP's
-   isEtf/isFund flags miss closed-end funds (HQH/HQL proof). Add a
-   structural check in the scan path — Yahoo quoteType != EQUITY →
-   auto-blocklist (source='security_type') — so misclassified funds can
-   never reach the buy pool. Also sweep existing new names below the buy
-   zone for fund-like rows (harmless but waste scan calls).
+1. **Warm-cycle timing measurement** — the 17:22 warm cycle was cut by the
+   iter-4 deploy; capture the next clean completion line. If > ~70 min,
+   tighten scanner.universe.fmp_screener filters via config.
 2. **Dead-code cleanup: Yahoo IWM top_holdings path** in
    get_russell2000_tickers — can never pass its >500 gate (top_holdings is
    ~10 rows), wastes a rate-limited call + warning every cache refresh.
