@@ -253,6 +253,43 @@ class TestStocksList:
         r = client.get("/api/stocks?sort_by=current_price&sort_dir=asc")
         assert r.status_code == 200
 
+    def test_stale_rows_hidden_from_ranked_list_by_default(self):
+        """Scanner-abandoned rows (universe churn: renames, index exits) keep
+        frozen scores forever — they must not rank on the dashboard. The dead
+        BK row held 71.6 for six weeks after the BNY ticker rename."""
+        _ensure_stock("STALEROW", score=95.0)
+        db = _get_db()
+        try:
+            db.query(Stock).filter_by(ticker="STALEROW").update(
+                {"last_updated": datetime.now(timezone.utc) - timedelta(days=30)})
+            db.commit()
+        finally:
+            db.close()
+
+        tickers = [s["ticker"] for s in client.get("/api/stocks?limit=200").json()["stocks"]]
+        assert "STALEROW" not in tickers
+
+        # Escape hatch: explicit opt-in still surfaces them
+        tickers = [s["ticker"] for s in
+                   client.get("/api/stocks?limit=200&include_stale=true").json()["stocks"]]
+        assert "STALEROW" in tickers
+
+    def test_stale_breakout_flags_hidden(self):
+        """A frozen is_breaking_out flag on an abandoned row is noise."""
+        _ensure_stock("STALEBRK", score=80.0)
+        db = _get_db()
+        try:
+            db.query(Stock).filter_by(ticker="STALEBRK").update(
+                {"is_breaking_out": True,
+                 "last_updated": datetime.now(timezone.utc) - timedelta(days=30)})
+            db.commit()
+        finally:
+            db.close()
+
+        tickers = [s["ticker"] for s in
+                   client.get("/api/stocks/breaking-out?limit=50").json()["stocks"]]
+        assert "STALEBRK" not in tickers
+
 
 class TestSingleStock:
     def test_existing_stock_returns_200(self):

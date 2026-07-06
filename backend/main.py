@@ -341,6 +341,22 @@ def adjust_score_for_market(stock, current_m_score: float) -> Optional[float]:
     return round(stock.canslim_score - stored_m + current_m_score, 1)
 
 
+def stale_row_cutoff() -> datetime:
+    """
+    Cutoff for hiding scanner-abandoned rows from ranked list endpoints.
+
+    Universe churn (renames, index exits, delistings) leaves stocks rows the
+    scanner never touches again; their frozen scores would otherwise rank on
+    the dashboard indefinitely (live example: the dead BK row held a 71.6
+    score for six weeks after BNY Mellon's ticker rename). Search endpoints
+    intentionally do NOT use this — an explicit ticker lookup should resolve,
+    with the freshness chip telling the story.
+    """
+    from config_loader import config as yaml_config
+    hours = yaml_config.get('api.stale_row_max_hours', 72)
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+
+
 def get_data_freshness(last_updated: datetime) -> dict:
     """
     Calculate data freshness information for display.
@@ -1256,7 +1272,8 @@ async def get_stocks(
     max_price: Optional[float] = None,
     min_price: Optional[float] = None,
     limit: int = Query(50, le=200),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    include_stale: bool = Query(False, description="Include scanner-abandoned rows with frozen scores")
 ):
     """Get filtered and sorted stock list"""
     # Get current market M score for dynamic adjustment
@@ -1264,6 +1281,10 @@ async def get_stocks(
     current_m_score = latest_market.market_score if latest_market else 0
 
     query = db.query(Stock).filter(Stock.canslim_score != None)
+
+    # Hide scanner-abandoned rows from rankings (see stale_row_cutoff)
+    if not include_stale:
+        query = query.filter(Stock.last_updated >= stale_row_cutoff())
 
     # Apply filters
     if sector:
@@ -1432,7 +1453,9 @@ async def get_breaking_out_stocks(
     breakout_stocks = db.query(Stock).filter(
         Stock.is_breaking_out == True,
         Stock.canslim_score >= 50,  # Lowered threshold
-        Stock.current_price > 0
+        Stock.current_price > 0,
+        # A breakout flag frozen on a scanner-abandoned row is pure noise
+        Stock.last_updated >= stale_row_cutoff()
     ).order_by(
         # Prioritize stocks WITH base patterns first, then by score
         desc(Stock.base_type != 'none'),

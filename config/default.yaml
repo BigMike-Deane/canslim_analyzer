@@ -735,6 +735,11 @@ universe:
 
 # API Rate Limits
 api:
+  # Ranked list endpoints (/api/stocks, /api/stocks/breaking-out) hide rows
+  # the scanner hasn't updated in this many hours — universe churn leaves
+  # frozen scores that would otherwise rank forever. Search is unaffected.
+  stale_row_max_hours: 72
+
   fmp:
     rate_limit: 300          # FMP plan limit (calls per minute)
     target_rate: 250         # Our target (leave headroom)
