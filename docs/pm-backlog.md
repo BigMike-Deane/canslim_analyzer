@@ -26,8 +26,23 @@ Constraints (from auto-memory, do not relitigate):
       ▶ WATCH: scan-cycle freshness for a few days (stocks_stale_1h) — if it
       degrades, tighten screener filters via config (no redeploy).
 
+- [x] 2026-07-06 (iter 3, verification-only) — First expanded scan cycle
+      VERDICT: 3471/3471 in 78.7 min (cold cache), 0 FMP 429s over ~9.5k
+      calls, API responsive throughout, no interval change needed (90-min
+      holds with ~11 min worst-case headroom; warm cycle expected faster).
+      Payoff: 44 new names >= 72, 79 >= 67, 113 >= 64 (ELMD 87.6, ITIC 87.2,
+      OPY 86.3, TSM 82.6). Leak found: HQH/HQL closed-end funds passed FMP
+      isFund=false misclassification, scored ~78. Contained: manual
+      DelistedTicker block + stocks rows score-zeroed; nothing was bought.
+
 ## Next up (ranked by expected returns impact)
-1. **Dead-code cleanup: Yahoo IWM top_holdings path** in
+1. **Systemic security-type guard (fund/ETF/CEF leakage).** FMP's
+   isEtf/isFund flags miss closed-end funds (HQH/HQL proof). Add a
+   structural check in the scan path — Yahoo quoteType != EQUITY →
+   auto-blocklist (source='security_type') — so misclassified funds can
+   never reach the buy pool. Also sweep existing new names below the buy
+   zone for fund-like rows (harmless but waste scan calls).
+2. **Dead-code cleanup: Yahoo IWM top_holdings path** in
    get_russell2000_tickers — can never pass its >500 gate (top_holdings is
    ~10 rows), wastes a rate-limited call + warning every cache refresh.
    4 tests mock it with unrealistic data; update them. Low returns impact,
