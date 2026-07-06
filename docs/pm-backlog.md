@@ -56,19 +56,26 @@ Constraints (from auto-memory, do not relitigate):
       **COMMITTED, NOT YET DEPLOYED** — rides with next deploy to avoid
       another mid-cycle scan restart. Suite 3404.
 
+- [x] 2026-07-06 (iter 7, verification-only) — Exit Plan card VERIFIED
+      accurate: imports the trader's own get_trailing_stop_pct /
+      apply_pyramid_widening (no drift by construction); live MU output
+      exact (trail $881.16 = peak × 0.71; TP $1194.28; SL $634.67).
+      Frontend renders ExitPlanChip (card) + ExitPlanSection (modal).
+      Sector caps VERIFIED on live data: per-user FS counts 3/4/2 (cap 4),
+      user-2 FS value ≈39% (cap 50%). The "7 FS rows" alarm was
+      cross-user summing — caps are per-user and correct.
+
 ## Next up (ranked by expected returns impact)
 1. **Warm-cycle timing measurement** — capture the next clean completion
    line (monitor armed). If > ~70 min, tighten
-   scanner.universe.fmp_screener filters via config.
-2. **UI: position risk visibility.** Per-position Exit Plan card already
-   exists (backend/exit_plan.py, jun-04) — VERIFY it reflects the real
-   trailing tiers incl. pyramid widening (MU: 25%+4% = 29% trail), fix if
-   drifted. Then confirm it renders on AIPortfolio cards in the browser
-   (no-sudo headless recipe in canslim-jun23 memory).
-3. **Sector concentration check.** Live portfolio is heavy Financial
-   Services (7 of 24 position rows). max_sector_allocation=0.50 /
-   max_stocks_per_sector=4 are per-user; verify enforcement is working as
-   intended on live data.
+   scanner.universe.fmp_screener filters via config. Also deploy pending
+   `8ee3b28` (IWM dead-code removal) with the next natural deploy window.
+2. **Fresh candidate-flow observation** — after a few cycles with the
+   expanded universe, check whether any of the 44 new above-floor names
+   generate entry signals (breakout/pre-breakout) and whether buys look
+   sane. This is the payoff measurement for the whole day.
+3. **(idea pool)** From live results: entry-rate re-check late July (ML
+   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
 
 ## Monitoring clocks (no action until due)
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).
