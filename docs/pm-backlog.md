@@ -16,16 +16,23 @@ Constraints (from auto-memory, do not relitigate):
       evaluate_buys excluded 134 scanner-abandoned rows (some frozen since
       March, several scoring 70-80) from the live buy pool.
       Config: `ai_trader.buy_candidates.max_staleness_hours: 48`.
+- [x] 2026-07-06 `bd760e7` — FMP company-screener universe supplement.
+      Small-cap sources had silently degraded (IWM rate-limited + its >500
+      gate can never pass; Finviz 403) → scanner blind to ~1,367 active
+      names (ONON, MNDY, FROG, IOT). Universe 2,081 → 3,474, live-verified.
+      Config: `scanner.universe.fmp_screener`. Root-cause findings: most
+      "missing large caps" were LEGIT index exits (BK→BNY rename, TEAM off
+      N100, HOLX/MASI off S&P500) — iter-1 freshness gate handles their rows.
+      ▶ WATCH: scan-cycle freshness for a few days (stocks_stale_1h) — if it
+      degrades, tighten screener filters via config (no redeploy).
 
 ## Next up (ranked by expected returns impact)
-1. **Scan-universe coverage loss (root cause of the stale rows).**
-   Real, liquid large-caps are absent from the scan universe: TEAM stale
-   since Apr-21, BK since May-22, HOLX/MASI/ONON/MNDY/NTR/IOT/FROG since
-   Jul-01 (~110 rows all last touched 2026-07-01 15:04 UTC — universe
-   shrank that day). Missing names = missed buy signals, not just stale
-   data. Investigate sp500_tickers.py universe build + FMP screener
-   criteria; decide rescan vs. prune per ticker. Zombies (SBNY, ABMD,
-   FLT→CPAY, IIVI→COHR, sub-$1 husks) should be marked delisted/pruned.
+1. **Dead-code cleanup: Yahoo IWM top_holdings path** in
+   get_russell2000_tickers — can never pass its >500 gate (top_holdings is
+   ~10 rows), wastes a rate-limited call + warning every cache refresh.
+   4 tests mock it with unrealistic data; update them. Low returns impact,
+   pure hygiene. Consider whether the whole Russell chain is redundant now
+   that the screener supplement covers it.
 2. **Stale rows in user-facing lists.** /api/stocks (dashboard ranking),
    screener, breaking-out lists — check whether scanner-abandoned rows
    appear with frozen scores; exclude or visibly flag. FLXS-80 at the top
