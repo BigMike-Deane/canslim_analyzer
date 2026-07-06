@@ -142,6 +142,13 @@ market:
 
 # AI Trader Settings
 ai_trader:
+  # Buy-candidate data hygiene
+  buy_candidates:
+    # Rows the scanner hasn't touched in this many hours are excluded from the
+    # buy pool. Guards against universe churn leaving stale high-score rows
+    # (frozen score/price/breakout flags) in the stocks table forever.
+    max_staleness_hours: 48
+
   # Portfolio allocation limits
   allocation:
     min_cash_reserve_pct: 0.10    # Default cash reserve (overridden by dynamic regime-based reserves)

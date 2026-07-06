@@ -1066,6 +1066,42 @@ class TestEvaluateBuysRanking:
         assert b["signal_factors"]["entry_type"] == "standard"
         assert b["is_growth_stock"] is False
 
+    def test_stale_rows_excluded_from_candidates(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Branch: freshness gate. Universe churn leaves rows the scanner no
+        longer updates; their frozen scores/prices must not enter the buy
+        pool. A NULL last_updated (pre-default legacy row) is equally stale.
+        Live example (2026-07-06): rows frozen since March-May still scored
+        70-80 and sat in the candidate pool."""
+        from backend.ai_trader import evaluate_buys
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        _seed_growth_projection_stock(
+            db_session, "FRESH", canslim_score=80.0, last_updated=now)
+        _seed_growth_projection_stock(
+            db_session, "STALE", canslim_score=95.0,
+            last_updated=now - timedelta(days=30))
+        _seed_growth_projection_stock(db_session, "NOSTAMP", canslim_score=95.0)
+        # Constructor kwargs of None trigger the column default, so NULL must
+        # be forced with a post-insert UPDATE to model a true legacy row.
+        db_session.query(Stock).filter(Stock.ticker == "NOSTAMP").update(
+            {"last_updated": None})
+        db_session.commit()
+
+        buys = evaluate_buys(db_session, user_id=1)
+        tickers = [b["stock"].ticker for b in buys]
+        assert "STALE" not in tickers
+        assert "NOSTAMP" not in tickers
+        assert tickers == ["FRESH"]
+
     def test_no_gate_profile_does_not_nameerror(
         self,
         db_session,

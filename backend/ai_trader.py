@@ -2214,11 +2214,23 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     stability_enabled = stability_config.get('enabled', False)
     stable_min_for_override = stability_config.get('stable_min_for_override', 55)
 
+    # DATA FRESHNESS GATE: only consider rows the scanner still updates.
+    # The scan universe churns (screener drops, renames, delistings); rows left
+    # behind keep their last-scanned score/price/breakout flags forever, so a
+    # stale high score would otherwise sit in the candidate pool indefinitely
+    # (live example: rows frozen for weeks-to-months still scoring 70-80).
+    # NULL last_updated fails the >= comparison and is excluded by design.
+    # No backtester mirror needed: backtest candidates are computed
+    # point-in-time from historical data, so staleness cannot occur there.
+    max_staleness_hours = yaml_config.get('ai_trader.buy_candidates.max_staleness_hours', 48)
+    freshness_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=max_staleness_hours)
+
     # Get traditional CANSLIM stocks (widened to include soft zone)
     canslim_candidates = db.query(Stock).filter(
         Stock.canslim_score >= canslim_query_floor,
         Stock.current_price > 0,
         Stock.projected_growth != None,  # Must have growth projection
+        Stock.last_updated >= freshness_cutoff,
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
     ).all()
 
@@ -2227,8 +2239,20 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         Stock.growth_mode_score >= growth_query_floor,
         Stock.is_growth_stock == True,
         Stock.current_price > 0,
+        Stock.last_updated >= freshness_cutoff,
         ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
     ).all()
+
+    # Observability: how many would-be candidates were dropped for staleness
+    stale_excluded = db.query(Stock).filter(
+        Stock.canslim_score >= canslim_query_floor,
+        Stock.current_price > 0,
+        Stock.projected_growth != None,
+        (Stock.last_updated == None) | (Stock.last_updated < freshness_cutoff),
+        ~Stock.ticker.in_(excluded_tickers) if excluded_tickers else True
+    ).count()
+    if stale_excluded:
+        logger.info(f"Freshness gate: excluded {stale_excluded} stale candidates (last_updated > {max_staleness_hours}h old)")
 
     # Combine candidates, avoiding duplicates
     seen_tickers = set()
