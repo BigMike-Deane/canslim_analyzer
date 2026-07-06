@@ -37,12 +37,14 @@ def _reset_ticker_cache():
     sp500_tickers._ticker_cache = {
         'sp500': None, 'nasdaq100': None, 'dowjones': None,
         'midcap400': None, 'smallcap600': None, 'russell2000': None,
+        'fmp_screener': None,
         'last_fetch': {},
     }
     yield
     sp500_tickers._ticker_cache = {
         'sp500': None, 'nasdaq100': None, 'dowjones': None,
         'midcap400': None, 'smallcap600': None, 'russell2000': None,
+        'fmp_screener': None,
         'last_fetch': {},
     }
 
@@ -707,6 +709,80 @@ class TestGetRussell2000Tickers:
 # ── get_all_tickers ────────────────────────────────────────────────────
 
 
+class TestGetFmpScreenerTickers:
+    """Covers get_fmp_screener_tickers — the FMP company-screener universe
+    supplement added 2026-07-06 after the IWM/Finviz small-cap sources
+    degraded (rate-limit / 403) and silently shrank the scan universe."""
+
+    def _mock_rows(self, n=600, exchange="NYSE"):
+        return [{"symbol": f"T{i}", "exchangeShortName": exchange} for i in range(n)]
+
+    def test_cache_hit_returns_cached_without_network(self):
+        sp500_tickers._ticker_cache['fmp_screener'] = ['CACHED']
+        sp500_tickers._ticker_cache['last_fetch'] = {'fmp_screener': datetime.now()}
+        with patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_fmp_screener_tickers()
+        assert result == ['CACHED']
+        mock_get.assert_not_called()
+
+    def test_happy_path_filters_exchanges_and_caches(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        rows = self._mock_rows(600) + [
+            {"symbol": "LSE1", "exchangeShortName": "LSE"},   # non-US: dropped
+            {"symbol": None, "exchangeShortName": "NYSE"},     # no symbol: dropped
+        ]
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = rows
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_fmp_screener_tickers()
+        assert len(result) == 600
+        assert "LSE1" not in result
+        assert sp500_tickers._ticker_cache['fmp_screener'] == result
+
+    def test_tiny_result_rejected_and_not_cached(self, monkeypatch):
+        """A crippled pull (endpoint change, throttling) must not poison the
+        24h cache — next cycle should retry."""
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = self._mock_rows(10)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp):
+            result = sp500_tickers.get_fmp_screener_tickers()
+        assert result == []
+        assert sp500_tickers._ticker_cache['fmp_screener'] is None
+
+    def test_network_failure_returns_empty_and_not_cached(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        with patch(
+            "sp500_tickers.requests.get",
+            side_effect=ConnectionError("network down"),
+        ):
+            result = sp500_tickers.get_fmp_screener_tickers()
+        assert result == []
+        assert sp500_tickers._ticker_cache['fmp_screener'] is None
+
+    def test_no_api_key_returns_empty_without_network(self, monkeypatch):
+        monkeypatch.delenv("FMP_API_KEY", raising=False)
+        monkeypatch.setattr(sp500_tickers, "FMP_API_KEY", "")
+        with patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_fmp_screener_tickers()
+        assert result == []
+        mock_get.assert_not_called()
+
+    def test_disabled_via_config_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        from config_loader import config as yaml_config
+        with patch.object(
+            yaml_config, "get",
+            side_effect=lambda key, default=None: {"enabled": False}
+            if key == "scanner.universe.fmp_screener" else default,
+        ), patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_fmp_screener_tickers()
+        assert result == []
+        mock_get.assert_not_called()
+
+
 class TestGetAllTickers:
     """Covers sp500_tickers.py:69-132."""
 
@@ -734,6 +810,9 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_russell2000_tickers",
             return_value=["MYPORT"],  # dup with portfolio
+        ), patch(
+            "sp500_tickers.get_fmp_screener_tickers",
+            return_value=["SCREENR"],
         ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value=set(),
@@ -772,6 +851,9 @@ class TestGetAllTickers:
             "sp500_tickers.get_russell2000_tickers",
             return_value=[],
         ), patch(
+            "sp500_tickers.get_fmp_screener_tickers",
+            return_value=[],
+        ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value={"DEADCO"},
         ):
@@ -799,6 +881,8 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_russell2000_tickers", return_value=[],
         ), patch(
+            "sp500_tickers.get_fmp_screener_tickers", return_value=[],
+        ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value={"GONESTOCK"},  # marked delisted
         ):
@@ -824,6 +908,8 @@ class TestGetAllTickers:
             "sp500_tickers.get_sp600_smallcap_tickers", return_value=[],
         ), patch(
             "sp500_tickers.get_russell2000_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_fmp_screener_tickers", return_value=[],
         ), patch(
             "data_fetcher.get_delisted_tickers"
         ) as mock_delisted:
@@ -851,6 +937,8 @@ class TestGetAllTickers:
             "sp500_tickers.get_sp600_smallcap_tickers", return_value=[],
         ), patch(
             "sp500_tickers.get_russell2000_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_fmp_screener_tickers", return_value=[],
         ), patch(
             "data_fetcher.get_delisted_tickers",
             side_effect=RuntimeError("db error"),

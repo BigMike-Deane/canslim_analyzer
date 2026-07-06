@@ -13,6 +13,19 @@ email:
 
 # Scanner Settings
 scanner:
+  # Universe supplement: FMP /stable/company-screener adds actively-trading
+  # US-listed names no tracked index covers (recent IPOs, foreign-domiciled
+  # listings like ONON/FROG, Russell members the degraded IWM/Finviz sources
+  # miss). Measured +1,367 tickers on 2026-07-06. Tighten filters here if
+  # scan-cycle freshness degrades — no redeploy needed.
+  universe:
+    fmp_screener:
+      enabled: true
+      market_cap_more_than: 150000000   # $150M floor — below this, too illiquid
+      volume_more_than: 50000           # shares/day floor
+      price_more_than: 1                # skip sub-$1 husks
+      limit: 10000
+      exchanges: [NYSE, NASDAQ, AMEX]
   workers: 8
   delay_min: 0.5  # seconds between API calls (min)
   delay_max: 1.0  # seconds between API calls (max)

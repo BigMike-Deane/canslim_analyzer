@@ -27,6 +27,7 @@ _ticker_cache = {
     'midcap400': None,
     'smallcap600': None,
     'russell2000': None,
+    'fmp_screener': None,
     'last_fetch': {}  # Track last fetch time per key
 }
 CACHE_DURATION_HOURS = 24  # Refresh lists once per day
@@ -77,6 +78,8 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     - Nasdaq 100 (tech-heavy) - from FMP
     - Russell 2000 (small cap) - from ETF holdings or curated
     - Dow Jones 30 (blue chips) - from FMP
+    - FMP company screener (broad supplement: non-index names, recent IPOs,
+      foreign-domiciled US listings)
     - Portfolio tickers (always scanned first)
 
     Args:
@@ -107,6 +110,7 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     midcap400 = get_sp400_midcap_tickers()
     smallcap600 = get_sp600_smallcap_tickers()
     russell2000 = get_russell2000_tickers()
+    fmp_screener = get_fmp_screener_tickers()
 
     # Add index tickers
     combined.extend(sp500)
@@ -115,6 +119,7 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     combined.extend(midcap400)
     combined.extend(smallcap600)
     combined.extend(russell2000)
+    combined.extend(fmp_screener)
 
     # Remove duplicates while preserving order (portfolio first)
     # Also filter out delisted tickers (but keep portfolio tickers)
@@ -130,6 +135,70 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
                 unique.append(ticker)
 
     return unique
+
+
+def get_fmp_screener_tickers() -> list[str]:
+    """
+    Fetch the broad US-listed universe from the FMP /stable/company-screener.
+
+    Supplements the index lists with actively-trading names that belong to no
+    tracked index: recent IPOs not yet added, foreign-domiciled US listings
+    (ONON, FROG, MNDY — a country filter would drop these, so none is used),
+    and Russell members the degraded IWM/Finviz sources miss. Live measurement
+    2026-07-06: +1,367 tickers over the index-list union.
+
+    Returns [] on any failure WITHOUT caching, so the next scan cycle retries
+    (never cache a failure — the empty-cache-forever lesson).
+    """
+    if _is_cache_valid('fmp_screener'):
+        return _ticker_cache['fmp_screener']
+
+    try:
+        from config_loader import config as yaml_config
+        screener_cfg = yaml_config.get('scanner.universe.fmp_screener', {}) or {}
+    except Exception:
+        screener_cfg = {}
+
+    if not screener_cfg.get('enabled', True):
+        return []
+
+    api_key = os.environ.get('FMP_API_KEY', '') or FMP_API_KEY
+    if not api_key:
+        logger.debug("FMP screener skipped: no FMP_API_KEY")
+        return []
+
+    try:
+        url = "https://financialmodelingprep.com/stable/company-screener"
+        params = {
+            'marketCapMoreThan': screener_cfg.get('market_cap_more_than', 150_000_000),
+            'volumeMoreThan': screener_cfg.get('volume_more_than', 50_000),
+            'priceMoreThan': screener_cfg.get('price_more_than', 1),
+            'isActivelyTrading': 'true',
+            'isEtf': 'false',
+            'isFund': 'false',
+            'limit': screener_cfg.get('limit', 10000),
+            'apikey': api_key,
+        }
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        exchanges = set(screener_cfg.get('exchanges', ['NYSE', 'NASDAQ', 'AMEX']))
+        tickers = [row['symbol'] for row in data
+                   if row.get('symbol') and row.get('exchangeShortName') in exchanges]
+
+        # Sanity floor: a broad-market pull should be large. A tiny result
+        # means the endpoint changed or the account was throttled — better to
+        # lean on the index lists than to cache a crippled supplement.
+        if len(tickers) >= 500:
+            logger.info(f"Fetched {len(tickers)} tickers from FMP company screener")
+            _update_cache('fmp_screener', tickers)
+            return tickers
+        logger.warning(f"FMP screener returned only {len(tickers)} tickers; ignoring as unreliable")
+    except Exception as e:
+        logger.warning(f"FMP company screener fetch failed: {e}")
+
+    return []
 
 
 def get_portfolio_tickers() -> list[str]:
