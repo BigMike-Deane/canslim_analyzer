@@ -74,6 +74,15 @@ Constraints (from auto-memory, do not relitigate):
       between-cycles window. Guard live catches this cycle: AINV, NCDL,
       OXLC, DXYZ, TYG, MFIC, PSUS (7).
 
+- [x] 2026-07-06 (verify-loop iter 1) — END-TO-END VERIFICATION of the
+      day's ships + universe-shrink alarm (`14913e1`, deployed).
+      Verified live: freshness gate fires ("excluded 8 stale candidates"),
+      buy pool 642 unique (487 CANSLIM + 184 growth), HTTP /api/stocks
+      serves 3,812 fresh rows with zombies absent and new names (ELMD,
+      TBLA, ITIC, OPY) on top. New: scan start compares universe size to
+      SystemSetting baseline; >10% drop → warning log + high-priority
+      webhook. Suite 3410.
+
 ## Next up (ranked by expected returns impact)
 1. **Fresh candidate-flow observation** — after a few cycles with the
    expanded universe, check whether any of the 44 new above-floor names
