@@ -46,25 +46,26 @@ Constraints (from auto-memory, do not relitigate):
       future). Retro-sweep flagged 7 CEFs total (HQH, HQL, ZTR 63.2,
       RMT 59.9, NXP, EIC, FSCO) — all blocked + zeroed. Suite 3403.
 
+- [x] 2026-07-06 `061ea02` (iter 5) — Stale rows hidden from ranked lists.
+      /api/stocks + /api/stocks/breaking-out exclude rows >
+      api.stale_row_max_hours (72h); include_stale=true opts in; search
+      untouched. Live-verified: 68 zombies hidden (FLXS 80, BK 71.6 top).
+      DEPLOYED. Note: FLXS is legitimately outside the screener (volume
+      < 50k floor) — not a coverage bug.
+- [x] 2026-07-06 `8ee3b28` (iter 6) — Dead Yahoo IWM path removed.
+      **COMMITTED, NOT YET DEPLOYED** — rides with next deploy to avoid
+      another mid-cycle scan restart. Suite 3404.
+
 ## Next up (ranked by expected returns impact)
-1. **Warm-cycle timing measurement** — the 17:22 warm cycle was cut by the
-   iter-4 deploy; capture the next clean completion line. If > ~70 min,
-   tighten scanner.universe.fmp_screener filters via config.
-2. **Dead-code cleanup: Yahoo IWM top_holdings path** in
-   get_russell2000_tickers — can never pass its >500 gate (top_holdings is
-   ~10 rows), wastes a rate-limited call + warning every cache refresh.
-   4 tests mock it with unrealistic data; update them. Low returns impact,
-   pure hygiene. Consider whether the whole Russell chain is redundant now
-   that the screener supplement covers it.
-2. **Stale rows in user-facing lists.** /api/stocks (dashboard ranking),
-   screener, breaking-out lists — check whether scanner-abandoned rows
-   appear with frozen scores; exclude or visibly flag. FLXS-80 at the top
-   of a dashboard misleads.
-3. **UI: position risk visibility.** Surface per-position trailing-stop
-   distance (peak, tier %, exit price) on AIPortfolio cards — the data
-   exists (exit_plan.py); confirm it's rendered and accurate; MU sitting
-   -19% off peak within its 29% tier looks alarming without that context.
-4. **Sector concentration check.** Live portfolio is heavy Financial
+1. **Warm-cycle timing measurement** — capture the next clean completion
+   line (monitor armed). If > ~70 min, tighten
+   scanner.universe.fmp_screener filters via config.
+2. **UI: position risk visibility.** Per-position Exit Plan card already
+   exists (backend/exit_plan.py, jun-04) — VERIFY it reflects the real
+   trailing tiers incl. pyramid widening (MU: 25%+4% = 29% trail), fix if
+   drifted. Then confirm it renders on AIPortfolio cards in the browser
+   (no-sudo headless recipe in canslim-jun23 memory).
+3. **Sector concentration check.** Live portfolio is heavy Financial
    Services (7 of 24 position rows). max_sector_allocation=0.50 /
    max_stocks_per_sector=4 are per-user; verify enforcement is working as
    intended on live data.
