@@ -719,6 +719,37 @@ def update_coiled_spring_outcomes():
         db.close()
 
 
+def _check_universe_shrink(current_size: int) -> None:
+    """Alert when the scan universe shrinks materially cycle-over-cycle.
+
+    The 2026-07-01 incident: ticker sources silently degraded (IWM
+    rate-limited, Finviz 403) and the universe shrank with every fallback
+    "succeeding" — nothing alerted, and the coverage loss was only found
+    five days later via stale rows. The baseline persists in SystemSetting
+    so container restarts don't reset it. Growth and first-run are silent;
+    only a drop beyond scanner.universe.shrink_alert_pct fires.
+    """
+    try:
+        from backend.database import get_system_setting, set_system_setting
+        from config_loader import config as yaml_config
+
+        threshold_pct = yaml_config.get('scanner.universe.shrink_alert_pct', 10)
+        prev = get_system_setting('scan_universe_size', None)
+        set_system_setting('scan_universe_size', current_size)
+
+        if prev and current_size < prev * (1 - threshold_pct / 100.0):
+            msg = (f"Scan universe shrank {prev} -> {current_size} "
+                   f"(-{(1 - current_size / prev) * 100:.1f}%). A ticker source may "
+                   f"have silently degraded (index fetch, FMP screener, delist flood). "
+                   f"Fallbacks always return SOMETHING — check sp500_tickers logs.")
+            logger.warning(f"UNIVERSE SHRINK ALERT: {msg}")
+            from backend.email_utils import send_webhook_notification
+            send_webhook_notification("Scan universe shrank", msg, priority="high")
+    except Exception as e:
+        # Telemetry must never block the scan itself
+        logger.debug(f"universe shrink check failed: {e}")
+
+
 def run_continuous_scan():
     """Execute a scan of the configured stock universe"""
     from backend.database import SessionLocal, Stock
@@ -779,6 +810,7 @@ def run_continuous_scan():
 
     _scan_config["total_stocks"] = len(tickers)
     logger.info(f"Scanning {len(tickers)} stocks...")
+    _check_universe_shrink(len(tickers))
 
     # Import here to avoid circular imports
     import sys

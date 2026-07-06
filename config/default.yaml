@@ -19,6 +19,11 @@ scanner:
   # miss). Measured +1,367 tickers on 2026-07-06. Tighten filters here if
   # scan-cycle freshness degrades — no redeploy needed.
   universe:
+    # Alert (log + webhook) when the universe shrinks more than this percent
+    # vs the previous cycle — silent source degradation is how ~1,400 names
+    # went invisible before 2026-07-06.
+    shrink_alert_pct: 10
+
     fmp_screener:
       enabled: true
       market_cap_more_than: 150000000   # $150M floor — below this, too illiquid

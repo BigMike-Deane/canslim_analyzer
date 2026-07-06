@@ -2659,3 +2659,63 @@ class TestWatchlistEmailRouting:
 
         assert silence_emails.call_count == 1
         assert silence_emails.call_args.kwargs["recipient"] == "owner-b@example.com"
+
+
+# ── _check_universe_shrink ────────────────────────────────────────────────────
+
+
+class TestUniverseShrinkAlert:
+    """_check_universe_shrink — cycle-over-cycle universe telemetry.
+
+    Origin: 2026-07-01 silent degradation (IWM rate-limited, Finviz 403) —
+    every source fallback 'succeeded' so the ~100-name loss surfaced only via
+    stale rows five days later. The alarm makes shrink loud."""
+
+    def _run(self, monkeypatch, prev, current):
+        import backend.database as db_mod
+        import backend.email_utils as email_mod
+        from backend import scheduler
+
+        saved = {}
+        alerts = []
+        monkeypatch.setattr(db_mod, "get_system_setting", lambda k, d=None: prev)
+        monkeypatch.setattr(
+            db_mod, "set_system_setting", lambda k, v: saved.update({k: v}) or True)
+        monkeypatch.setattr(
+            email_mod, "send_webhook_notification",
+            lambda title, msg, **kw: alerts.append((title, msg)) or True)
+        scheduler._check_universe_shrink(current)
+        return saved, alerts
+
+    def test_material_shrink_fires_alert(self, monkeypatch):
+        saved, alerts = self._run(monkeypatch, prev=3700, current=2100)
+        assert len(alerts) == 1
+        assert "3700" in alerts[0][1] and "2100" in alerts[0][1]
+
+    def test_baseline_always_persisted(self, monkeypatch):
+        saved, _ = self._run(monkeypatch, prev=3700, current=2100)
+        assert saved.get("scan_universe_size") == 2100
+
+    def test_small_dip_below_threshold_is_silent(self, monkeypatch):
+        # 5% dip < 10% default threshold
+        _, alerts = self._run(monkeypatch, prev=3700, current=3520)
+        assert alerts == []
+
+    def test_growth_is_silent(self, monkeypatch):
+        _, alerts = self._run(monkeypatch, prev=2100, current=3700)
+        assert alerts == []
+
+    def test_first_run_without_baseline_is_silent(self, monkeypatch):
+        saved, alerts = self._run(monkeypatch, prev=None, current=3700)
+        assert alerts == []
+        assert saved.get("scan_universe_size") == 3700
+
+    def test_telemetry_failure_never_raises(self, monkeypatch):
+        """The check must never block the scan itself."""
+        import backend.database as db_mod
+        from backend import scheduler
+
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr(db_mod, "get_system_setting", _boom)
+        scheduler._check_universe_shrink(3700)  # must not raise
