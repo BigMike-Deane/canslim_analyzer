@@ -65,16 +65,21 @@ Constraints (from auto-memory, do not relitigate):
       user-2 FS value ≈39% (cap 50%). The "7 FS rows" alarm was
       cross-user summing — caps are per-user and correct.
 
+- [x] 2026-07-06 — Warm-cycle VERDICT + OWNER DECISION: 78.9 min for
+      3,718/3,724 (same as cold — floor is structural: per-stock live
+      price + always-on Yahoo adjusted-EPS at ~1.3s/stock; cache saves
+      FMP calls, not wall-clock). 90-min interval holds w/ ~11 min
+      headroom. **Owner chose: KEEP FULL COVERAGE, no filter tightening,
+      no interval change.** `8ee3b28` (IWM cleanup) deployed in the
+      between-cycles window. Guard live catches this cycle: AINV, NCDL,
+      OXLC, DXYZ, TYG, MFIC, PSUS (7).
+
 ## Next up (ranked by expected returns impact)
-1. **Warm-cycle timing measurement** — capture the next clean completion
-   line (monitor armed). If > ~70 min, tighten
-   scanner.universe.fmp_screener filters via config. Also deploy pending
-   `8ee3b28` (IWM dead-code removal) with the next natural deploy window.
-2. **Fresh candidate-flow observation** — after a few cycles with the
+1. **Fresh candidate-flow observation** — after a few cycles with the
    expanded universe, check whether any of the 44 new above-floor names
    generate entry signals (breakout/pre-breakout) and whether buys look
    sane. This is the payoff measurement for the whole day.
-3. **(idea pool)** From live results: entry-rate re-check late July (ML
+2. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
 
 ## Monitoring clocks (no action until due)
