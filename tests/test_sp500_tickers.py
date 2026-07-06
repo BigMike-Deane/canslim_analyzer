@@ -619,91 +619,49 @@ class TestGetRussell2000FromSectorEtfs:
 
 
 class TestGetRussell2000Tickers:
-    """Covers sp500_tickers.py:553-612."""
+    """Covers get_russell2000_tickers. The Yahoo IWM top-holdings path was
+    REMOVED 2026-07-06: it returned ~10 rows against a >500 acceptance gate
+    (could never succeed) and burned a rate-limited call per cache refresh.
+    Sources are now: cache → sector-ETF aggregate → curated fallback."""
 
     def test_cache_hit_short_circuits(self):
         sp500_tickers._ticker_cache['russell2000'] = ['CACHED_RUSSELL']
         sp500_tickers._ticker_cache['last_fetch'] = {
             'russell2000': datetime.now()
         }
-        with patch("yfinance.Ticker") as mock_ticker:
+        with patch("sp500_tickers.get_russell2000_from_sector_etfs") as mock_etfs:
             result = sp500_tickers.get_russell2000_tickers()
         assert result == ['CACHED_RUSSELL']
-        mock_ticker.assert_not_called()
+        mock_etfs.assert_not_called()
 
-    def test_yahoo_finance_happy_path_returns_holdings(self):
-        """Branch: yfinance.Ticker.funds_data.top_holdings populated."""
-        # Build a non-empty pandas-like holdings DataFrame
-        mock_holdings = MagicMock()
-        mock_holdings.empty = False
-        # Generate >500 tickers so the gate at line 590 passes
-        mock_holdings.index.tolist.return_value = [f"R{i}" for i in range(501)]
-
-        mock_funds_data = MagicMock()
-        mock_funds_data.top_holdings = mock_holdings
-
-        mock_ticker = MagicMock()
-        mock_ticker.funds_data = mock_funds_data
-
-        with patch("yfinance.Ticker", return_value=mock_ticker):
-            result = sp500_tickers.get_russell2000_tickers()
-        assert len(result) > 500
-        assert result[0] == "R0"
-
-    def test_yahoo_empty_holdings_falls_through_to_sector_etfs(self):
-        """Branch: holdings empty → try sector ETFs path."""
-        mock_holdings = MagicMock()
-        mock_holdings.empty = True
-
-        mock_funds_data = MagicMock()
-        mock_funds_data.top_holdings = mock_holdings
-
-        mock_ticker = MagicMock()
-        mock_ticker.funds_data = mock_funds_data
-        mock_ticker.info = {}
-
-        with patch("yfinance.Ticker", return_value=mock_ticker), \
-             patch(
-                "sp500_tickers.get_russell2000_from_sector_etfs",
-                return_value=[f"S{i}" for i in range(1500)],
+    def test_sector_etf_aggregate_is_primary_source(self):
+        """Branch: sector-ETF aggregate large enough (>1000) → accepted."""
+        with patch(
+            "sp500_tickers.get_russell2000_from_sector_etfs",
+            return_value=[f"S{i}" for i in range(1500)],
         ):
             result = sp500_tickers.get_russell2000_tickers()
-        # Sector ETF path supplies result (>1000 → accepted)
         assert len(result) >= 1000
+        assert sp500_tickers._ticker_cache['russell2000'] == result
+
+    def test_small_sector_etf_result_falls_through_to_curated(self):
+        """Branch: aggregate too small (<=1000) → curated fallback."""
+        with patch(
+            "sp500_tickers.get_russell2000_from_sector_etfs",
+            return_value=["ONLY", "AFEW"],
+        ):
+            result = sp500_tickers.get_russell2000_tickers()
+        assert len(result) > 200  # curated list, not the 2-element aggregate
 
     def test_all_sources_fail_uses_curated_fallback(self):
-        """Branch: all paths fail → fallback list (608-612)."""
+        """Branch: sector-ETF path raises → curated fallback."""
         with patch(
-            "yfinance.Ticker",
-            side_effect=Exception("yfinance unavailable"),
-        ), patch(
             "sp500_tickers.get_russell2000_from_sector_etfs",
             side_effect=Exception("sector etfs failed"),
         ):
             result = sp500_tickers.get_russell2000_tickers()
-        # Curated list returned
         assert isinstance(result, list)
         assert len(result) > 200
-
-    def test_yahoo_funds_data_extraction_exception_swallowed(self):
-        """Branch: hasattr passes but top_holdings access raises (577-579)."""
-        # Make funds_data.top_holdings raise on access
-        mock_funds_data = MagicMock()
-        type(mock_funds_data).top_holdings = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError("bad attr"))
-        )
-
-        mock_ticker = MagicMock()
-        mock_ticker.funds_data = mock_funds_data
-        mock_ticker.info = {}
-
-        with patch("yfinance.Ticker", return_value=mock_ticker), \
-             patch(
-                "sp500_tickers.get_russell2000_from_sector_etfs",
-                return_value=[f"X{i}" for i in range(1500)],
-        ):
-            result = sp500_tickers.get_russell2000_tickers()
-        assert len(result) >= 1000  # falls back to sector ETFs
 
 
 # ── get_all_tickers ────────────────────────────────────────────────────

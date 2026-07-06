@@ -621,48 +621,20 @@ def get_fallback_smallcap_tickers() -> list[str]:
 
 def get_russell2000_tickers() -> list[str]:
     """
-    Fetch Russell 2000 tickers from multiple sources:
-    1. FMP ETF Holdings API (IWM)
-    2. Yahoo Finance IWM holdings
-    3. Curated fallback list
+    Fetch Russell 2000 tickers from small-cap sources:
+    1. Aggregated small-cap lists (S&P 600 + Finviz + curated)
+    2. Curated fallback list
 
-    Falls back to curated list if all fetches fail.
+    Falls back to curated list if all fetches fail. Note: since 2026-07-06
+    the FMP company-screener supplement (get_fmp_screener_tickers) is the
+    primary small-cap coverage source; this list is a belt-and-braces union
+    member. A Yahoo IWM top-holdings path was removed the same day — it
+    returned ~10 rows against a >500 acceptance gate, so it could never
+    succeed and only burned a rate-limited call per cache refresh.
     """
     # Check cache first (prevents redundant API calls on every scan cycle)
     if _is_cache_valid('russell2000'):
         return _ticker_cache['russell2000']
-
-    # FMP /api/v3/etf-holder requires higher tier — skip to Yahoo/sector ETFs
-
-    # Try Yahoo Finance for IWM holdings
-    try:
-        import yfinance as yf
-        etf = yf.Ticker("IWM")
-
-        # Try to get holdings from fund_holding_info
-        holdings = None
-        if hasattr(etf, 'funds_data'):
-            try:
-                holdings = etf.funds_data.top_holdings
-            except Exception as e:
-                logger.debug(f"ETF holdings extraction failed: {e}")
-
-        # Alternative: Try institutional holders as proxy (limited but better than nothing)
-        if holdings is None or holdings.empty:
-            # Try to get from info dict
-            info = etf.info
-            # Yahoo doesn't expose full ETF holdings easily, but we can try
-            pass
-
-        if holdings is not None and not holdings.empty:
-            tickers = holdings.index.tolist()
-            if len(tickers) > 500:
-                logger.info(f"Fetched {len(tickers)} Russell 2000 tickers from Yahoo Finance IWM")
-                _update_cache('russell2000', tickers)
-                return tickers
-
-    except Exception as e:
-        logger.warning(f"Yahoo Finance IWM holdings fetch failed: {e}")
 
     # Try fetching from multiple Russell 2000 sector ETFs to build comprehensive list
     try:
