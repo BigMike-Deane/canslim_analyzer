@@ -483,6 +483,8 @@ class TestFetchFmpSingleProfile:
             "companyName": "Apple Inc.", "sector": "Technology", "industry": "Consumer Electronics",
             "mktCap": 3e12, "price": 150.0, "range": "100.50-200.75",
             "sharesOutstanding": 16e9,
+            "description": "Apple designs consumer electronics.",
+            "fullTimeEmployees": "164000",
         }]
         session = MockSession([(200, profile_data)])
         result = await async_data_fetcher.fetch_fmp_single_profile(session, "AAPL")
@@ -491,6 +493,21 @@ class TestFetchFmpSingleProfile:
         assert result["high_52w"] == 200.75
         assert result["low_52w"] == 100.50
         assert result["market_cap"] == 3e12
+        # Security-type guard inputs must pass through
+        assert result["description"] == "Apple designs consumer electronics."
+        assert result["full_time_employees"] == "164000"
+
+    async def test_profile_missing_guard_fields_defaults_safely(self, fmp_key, primitives):
+        """Older/partial FMP payloads without description/employees must not
+        break the guard inputs — empty description means 'not a CEF'."""
+        profile_data = [{
+            "companyName": "Bare Co", "sector": "X", "industry": "Y",
+            "mktCap": 1e9, "price": 10.0, "sharesOutstanding": 1e8,
+        }]
+        session = MockSession([(200, profile_data)])
+        result = await async_data_fetcher.fetch_fmp_single_profile(session, "BARE")
+        assert result["description"] == ""
+        assert result["full_time_employees"] is None
 
     async def test_malformed_range_gracefully_zeroed(self, fmp_key, primitives):
         profile_data = [{

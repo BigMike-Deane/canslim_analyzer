@@ -1091,6 +1091,111 @@ class TestDelistedTickerLifecycle:
         assert db_session.query(DelistedTicker).filter_by(ticker="REVIVED").first() is None
         assert "REVIVED" not in data_fetcher._known_delisted_cache
 
+    @pytest.mark.parametrize("source", ["manual", "security_type_guard"])
+    def test_clear_preserves_protected_policy_blocks(self, db_session, source):
+        """Regression (2026-07-06): manual HQH/HQL blocks were auto-deleted by
+        the self-healing path on the very next successful fetch — a CEF trades
+        fine, so 'fetch works' must never erase a policy block."""
+        db_session.add(DelistedTicker(
+            ticker="CEFX", failure_count=3, source=source,
+            reason="closed_end_fund_not_equity"))
+        db_session.commit()
+        data_fetcher.refresh_delisted_cache()
+
+        data_fetcher.clear_delisted_ticker("CEFX")
+
+        db_session.expire_all()
+        row = db_session.query(DelistedTicker).filter_by(ticker="CEFX").first()
+        assert row is not None, f"policy block (source={source}) must survive self-healing"
+        assert "CEFX" in data_fetcher._known_delisted_cache
+
+    def test_clear_still_deletes_null_source_legacy_rows(self, db_session):
+        """NULL-source rows are legacy transient entries — must stay clearable
+        (~IN() on NULL is NULL in SQL, so the filter needs the explicit
+        IS NULL branch)."""
+        db_session.add(DelistedTicker(ticker="OLDROW", failure_count=4, source=None))
+        db_session.commit()
+        data_fetcher.refresh_delisted_cache()
+
+        data_fetcher.clear_delisted_ticker("OLDROW")
+
+        db_session.expire_all()
+        assert db_session.query(DelistedTicker).filter_by(ticker="OLDROW").first() is None
+
+
+class TestBlockTickerPermanently:
+    """block_ticker_permanently — definitive policy blocks for securities that
+    trade fine but must never be scanned (CEFs, misclassified funds)."""
+
+    def test_creates_definitive_row_that_actually_excludes(self, db_session):
+        """The block must satisfy get_delisted_tickers' criteria IMMEDIATELY
+        (failure_count >= 3 AND recheck_after in the future) — the 2026-07-06
+        manual rows failed both and never actually gated the universe."""
+        assert data_fetcher.block_ticker_permanently(
+            "HQXX", reason="closed_end_fund_not_equity") is True
+
+        db_session.expire_all()
+        row = db_session.query(DelistedTicker).filter_by(ticker="HQXX").first()
+        assert row.failure_count >= 3
+        assert row.source == "security_type_guard"
+        assert row.source in data_fetcher.PROTECTED_BLOCK_SOURCES
+        assert (row.recheck_after - datetime.now()).days > 3000
+        assert "HQXX" in data_fetcher.get_delisted_tickers()
+
+    def test_hardens_existing_transient_row(self, db_session):
+        """An existing failure-tracking row gets upgraded in place, not duplicated."""
+        db_session.add(DelistedTicker(
+            ticker="SOFT", failure_count=1, source="async_fetcher", reason="no_yahoo_data"))
+        db_session.commit()
+
+        assert data_fetcher.block_ticker_permanently("SOFT", reason="closed_end_fund_not_equity")
+
+        db_session.expire_all()
+        rows = db_session.query(DelistedTicker).filter_by(ticker="SOFT").all()
+        assert len(rows) == 1
+        assert rows[0].failure_count >= 3
+        assert rows[0].source == "security_type_guard"
+        assert "SOFT" in data_fetcher.get_delisted_tickers()
+
+    def test_returns_false_without_db(self, monkeypatch):
+        monkeypatch.setattr(data_fetcher, "_get_db_session", lambda: None)
+        assert data_fetcher.block_ticker_permanently("X", reason="r") is False
+
+
+class TestIsNonEquityProfile:
+    """is_non_equity_profile — CEF detection. Both providers' type flags call
+    CEFs plain equities (HQH/HQL verified live 2026-07-06), so detection is
+    description-mentions-closed-end AND no-employees."""
+
+    def test_cef_profile_detected(self):
+        assert data_fetcher.is_non_equity_profile(
+            "Tekla Healthcare Investors is a closed-end fund...", None) is True
+
+    def test_closed_end_without_hyphen_detected(self):
+        assert data_fetcher.is_non_equity_profile(
+            "A closed end management investment company.", 0) is True
+
+    def test_asset_manager_mentioning_cefs_is_not_flagged(self):
+        """BlackRock's description mentions closed-end funds (it manages them)
+        but it has employees — the conjunction must clear it."""
+        assert data_fetcher.is_non_equity_profile(
+            "BlackRock manages open-end and closed-end funds worldwide.", 24900) is False
+
+    def test_employees_as_string_cleared(self):
+        assert data_fetcher.is_non_equity_profile(
+            "A closed-end fund.", "521") is False
+
+    def test_garbage_employees_treated_as_zero(self):
+        assert data_fetcher.is_non_equity_profile(
+            "A closed-end fund.", "N/A") is True
+
+    def test_regular_company_not_flagged(self):
+        assert data_fetcher.is_non_equity_profile(
+            "Investors Title Company provides title insurance.", 521) is False
+
+    def test_none_description_not_flagged(self):
+        assert data_fetcher.is_non_equity_profile(None, None) is False
+
 
 class TestFmpConfirmsDelisted:
     """Tier 2: _fmp_confirms_delisted — verification gate before 30-day exclusion."""

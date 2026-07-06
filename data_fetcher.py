@@ -627,6 +627,14 @@ def _fmp_get(url: str, **kwargs) -> requests.Response:
 
 # ============== DELISTED TICKER TRACKING ==============
 
+# Sources whose DelistedTicker rows are POLICY BLOCKS, not fetch-failure
+# evidence. The self-healing path (clear_delisted_ticker) must never delete
+# them: a blocked security that still trades (e.g. a closed-end fund) fetches
+# successfully every cycle, so "fetch works" is not proof the block is wrong.
+# Live incident 2026-07-06: manual HQH/HQL blocks were auto-cleared by the
+# very next scan because this distinction didn't exist.
+PROTECTED_BLOCK_SOURCES = {"manual", "security_type_guard"}
+
 # In-memory cache of tickers currently tracked in delisted_tickers (any
 # failure_count). Populated by refresh_delisted_cache() at scan start.
 # Used to short-circuit clear_delisted_ticker for tickers that were never
@@ -746,6 +754,79 @@ def _fmp_confirms_delisted(ticker: str) -> bool:
         return True  # Can't reach FMP, err on side of caution
 
 
+def block_ticker_permanently(ticker: str, reason: str, source: str = "security_type_guard") -> bool:
+    """
+    Create (or harden) a POLICY BLOCK for a ticker — a definitive exclusion,
+    not fetch-failure evidence. Used for securities that trade fine but must
+    never be scanned/bought (closed-end funds, misclassified ETFs).
+
+    Differs from mark_ticker_as_delisted in three ways: it takes effect
+    immediately (failure_count starts at the exclusion threshold), it never
+    expires (recheck_after is ~10 years out), and it skips the FMP
+    isActivelyTrading verification — the whole point is that these tickers
+    ARE actively trading. `source` must stay within PROTECTED_BLOCK_SOURCES
+    or the self-healing path will delete the block on the next good fetch.
+
+    Returns True if the block is in place.
+    """
+    db = _get_db_session()
+    if not db:
+        logger.warning(f"Could not block {ticker} - no DB connection")
+        return False
+    try:
+        from backend.database import DelistedTicker
+        from datetime import timedelta
+
+        far_future = _db_now() + timedelta(days=3650)
+        existing = db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).first()
+        if existing:
+            existing.failure_count = max(existing.failure_count, 3)
+            existing.reason = reason
+            existing.source = source
+            existing.recheck_after = far_future
+            existing.last_failed_at = _db_now()
+        else:
+            db.add(DelistedTicker(
+                ticker=ticker,
+                reason=reason,
+                source=source,
+                failure_count=3,
+                recheck_after=far_future,
+            ))
+            _known_delisted_cache.add(ticker)
+        db.commit()
+        logger.info(f"Permanently blocked {ticker}: {reason} (source={source})")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to block {ticker}: {e}")
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+
+def is_non_equity_profile(description, full_time_employees) -> bool:
+    """
+    Detect a closed-end fund masquerading as an equity in provider data.
+
+    Neither FMP (isEtf/isFund) nor Yahoo (quoteType) structurally classifies
+    CEFs — both called HQH/HQL plain equities (verified live 2026-07-06). The
+    discriminating signal is the CONJUNCTION of:
+      1. profile description mentions 'closed-end'/'closed end', AND
+      2. no employee count — funds have no staff.
+    The conjunction matters: BlackRock's description also says 'closed-end
+    funds' (it manages them) but it has 24,900 employees.
+    """
+    desc = (description or "").lower()
+    if "closed-end" not in desc and "closed end" not in desc:
+        return False
+    try:
+        employees = int(full_time_employees or 0)
+    except (ValueError, TypeError):
+        employees = 0
+    return employees == 0
+
+
 def get_delisted_tickers() -> set:
     """
     Get set of tickers that should be excluded from scans.
@@ -794,7 +875,16 @@ def clear_delisted_ticker(ticker: str):
 
     try:
         from backend.database import DelistedTicker
-        deleted = db.query(DelistedTicker).filter(DelistedTicker.ticker == ticker).delete()
+        from sqlalchemy import or_
+        # Policy blocks (PROTECTED_BLOCK_SOURCES) survive self-healing: a
+        # successful fetch proves the ticker trades, not that it's an equity
+        # we should scan. NULL-source rows are legacy transient entries and
+        # stay clearable.
+        deleted = db.query(DelistedTicker).filter(
+            DelistedTicker.ticker == ticker,
+            or_(DelistedTicker.source == None,  # noqa: E711
+                ~DelistedTicker.source.in_(PROTECTED_BLOCK_SOURCES)),
+        ).delete(synchronize_session=False)
         db.commit()
         if deleted:
             _known_delisted_cache.discard(ticker)

@@ -27,7 +27,7 @@ from data_fetcher import (
     fetch_price_from_chart_api, fetch_weekly_price_history,
     REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
     load_cache_from_db, mark_ticker_as_delisted, clear_delisted_ticker,
-    refresh_delisted_cache,
+    refresh_delisted_cache, block_ticker_permanently, is_non_equity_profile,
 )
 import fmp_rate_limiter
 
@@ -462,6 +462,9 @@ async def fetch_fmp_single_profile(session: aiohttp.ClientSession, ticker: str) 
             "high_52w": high_52w,
             "low_52w": low_52w,
             "shares_outstanding": profile.get("sharesOutstanding", 0) or 0,
+            # Security-type guard inputs (see is_non_equity_profile)
+            "description": profile.get("description", ""),
+            "full_time_employees": profile.get("fullTimeEmployees"),
         }
     return None
 
@@ -1302,6 +1305,7 @@ async def get_stock_data_async(
         else:
             logger.warning(f"{ticker}: FMP quote returned None")
 
+    profile = None
     if batch_profiles and ticker in batch_profiles:
         profile = batch_profiles[ticker]
         stock_data.name = profile.get("name") or stock_data.name or ticker
@@ -1334,6 +1338,22 @@ async def get_stock_data_async(
                 stock_data.low_52w = profile.get("low_52w", 0) or 0
             if not stock_data.market_cap:
                 stock_data.market_cap = profile.get("market_cap", 0) or 0
+
+    # SECURITY-TYPE GUARD: closed-end funds slip through every provider's
+    # type flags (FMP isFund and Yahoo quoteType both called HQH/HQL plain
+    # equities). Detect them from the profile and permanently block BEFORE
+    # any score can be written — a fresh high score in the stocks table is a
+    # live buy candidate regardless of universe exclusions. Profile is only
+    # fetched for first-seen tickers, so this costs nothing on warm rescans;
+    # existing rows are handled by the one-time sweep (see
+    # scripts/sweep note in docs/pm-backlog.md).
+    if profile and is_non_equity_profile(
+            profile.get("description"), profile.get("full_time_employees")):
+        block_ticker_permanently(ticker, reason="closed_end_fund_not_equity")
+        stock_data.is_valid = False
+        stock_data.error_message = "Non-equity security (closed-end fund) — blocked"
+        logger.info(f"{ticker}: security-type guard — closed-end fund, blocked from universe")
+        return stock_data
 
     # ============== HYBRID DATA FETCHING ==============
     # Strategy: FMP for earnings/revenue (rate-limited), Yahoo for everything else (more lenient)
