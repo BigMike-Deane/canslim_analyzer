@@ -750,6 +750,57 @@ def _check_universe_shrink(current_size: int) -> None:
         logger.debug(f"universe shrink check failed: {e}")
 
 
+def _check_component_wipe(scan_cutoff: datetime) -> None:
+    """Alert when a scan cycle zeroes C-scores on an abnormal share of stocks.
+
+    The 2026-07-08 incident: memory-cache eviction desync served empty
+    earnings as fresh and 424 stocks lost their C-scores over two days —
+    silently, because a single-component wipe (≤15 pts) stays under the
+    save-path blip guard and nothing watched the aggregate. C is the canary:
+    it collapses to exactly 0 whenever quarterly earnings data goes missing.
+    The zero-share baseline persists in SystemSetting so restarts don't reset
+    it; only a jump beyond scanner.integrity.c_wipe_alert_pct percentage
+    points fires. Falling/steady share just updates the baseline.
+    """
+    try:
+        from backend.database import SessionLocal, Stock, get_system_setting, set_system_setting
+        from config_loader import config as yaml_config
+
+        threshold_pp = yaml_config.get('scanner.integrity.c_wipe_alert_pct', 5)
+        db = SessionLocal()
+        try:
+            scanned = db.query(Stock).filter(
+                Stock.last_updated >= scan_cutoff,
+                Stock.canslim_score.isnot(None),
+            ).count()
+            if scanned < 100:
+                return  # partial/aborted cycle — a share over a sliver is noise
+            zero_c = db.query(Stock).filter(
+                Stock.last_updated >= scan_cutoff,
+                Stock.canslim_score.isnot(None),
+                Stock.c_score <= 0,
+            ).count()
+        finally:
+            db.close()
+
+        pct = zero_c / scanned * 100
+        prev_pct = get_system_setting('scan_zero_c_pct', None)
+        set_system_setting('scan_zero_c_pct', round(pct, 2))
+
+        if prev_pct is not None and pct - float(prev_pct) > threshold_pp:
+            msg = (f"C-score zero-share jumped {float(prev_pct):.1f}% -> {pct:.1f}% "
+                   f"of {scanned} freshly-scanned stocks. Earnings data may be "
+                   f"getting wiped upstream (cache eviction desync, FMP outage, "
+                   f"provider payload change) — single-component wipes stay under "
+                   f"the save-path blip guard, so nothing else will alert.")
+            logger.warning(f"COMPONENT WIPE ALERT: {msg}")
+            from backend.email_utils import send_webhook_notification
+            send_webhook_notification("C-score wipe detected", msg, priority="high")
+    except Exception as e:
+        # Telemetry must never block the scan itself
+        logger.debug(f"component wipe check failed: {e}")
+
+
 def run_continuous_scan():
     """Execute a scan of the configured stock universe"""
     from backend.database import SessionLocal, Stock
@@ -1285,6 +1336,7 @@ def run_continuous_scan():
 
         # Fetch and analyze all stocks asynchronously (this is the fast part!)
         start_time = time.time()
+        scan_started_at = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC, matches last_updated
         analysis_results = run_async_scan(tickers, batch_size=100, progress_callback=update_progress)
         fetch_time = time.time() - start_time
 
@@ -1570,6 +1622,9 @@ def run_continuous_scan():
             check_watchlist_alerts()
         except Exception as e:
             logger.error(f"Watchlist alert check failed: {e}")
+
+        # Phase 5.5: Score-integrity telemetry (mass component-wipe detector)
+        _check_component_wipe(scan_started_at)
 
         # Phase 6: Scan completion logging
         post_scan_time = time.time() - phase_start

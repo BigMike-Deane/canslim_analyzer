@@ -31,6 +31,15 @@ scanner:
       price_more_than: 1                # skip sub-$1 husks
       limit: 10000
       exchanges: [NYSE, NASDAQ, AMEX]
+
+  # Score-integrity telemetry: alert (log + webhook) when the share of
+  # freshly-scanned stocks with c_score=0 jumps more than this many
+  # percentage points cycle-over-cycle. C collapses to exactly 0 whenever
+  # earnings data goes missing, so it's the canary for silent data wipes —
+  # 424 stocks lost C-scores over two days before 2026-07-08 with nothing
+  # alerting (single-component wipes stay under the save-path blip guard).
+  integrity:
+    c_wipe_alert_pct: 5
   workers: 8
   delay_min: 0.5  # seconds between API calls (min)
   delay_max: 1.0  # seconds between API calls (max)

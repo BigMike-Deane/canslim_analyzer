@@ -111,12 +111,24 @@ Constraints (from auto-memory, do not relitigate):
       restores scores. Sync fetch_with_cache was never affected (already
       handled None).
 
+- [x] 2026-07-08 (iter: C-score wipe alarm) — Score-integrity telemetry
+      SHIPPED, mirroring the universe-shrink alarm: `_check_component_wipe`
+      runs at scan end (Phase 5.5), tracks the share of freshly-scanned
+      stocks with c_score=0 cycle-over-cycle (baseline in SystemSetting
+      `scan_zero_c_pct`), fires a high-priority webhook when it jumps more
+      than `scanner.integrity.c_wipe_alert_pct` (default 5pp). C is the
+      canary: it collapses to exactly 0 when earnings data goes missing, and
+      a single-component wipe stays under the save-path blip guard — the
+      Jul-8 wipe ran silent for 2 days. Skips partial cycles (<100 rows).
+
 ## Next up (ranked by expected returns impact)
 1. **Verify C-score recovery post-deploy** — after the first full scan with
    the fix, confirm the 424 wiped stocks recover C>0 (spot-check ELMD, CBL,
    FRAF) and the desync warning stops appearing in logs.
 2. **(idea pool)** From live results: entry-rate re-check late July (ML
-   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
+   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept. Papercut:
+   test_bug_regressions.py circular-import flake when run standalone
+   (backend.routes.fidelity; green in full-suite order).
 
 ## Monitoring clocks (no action until due)
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).

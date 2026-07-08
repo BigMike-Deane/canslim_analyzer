@@ -2719,3 +2719,96 @@ class TestUniverseShrinkAlert:
             raise RuntimeError("db down")
         monkeypatch.setattr(db_mod, "get_system_setting", _boom)
         scheduler._check_universe_shrink(3700)  # must not raise
+
+
+# ── _check_component_wipe ─────────────────────────────────────────────────────
+
+
+class TestComponentWipeAlert:
+    """_check_component_wipe — cycle-over-cycle C-score-zero-share telemetry.
+
+    Origin: 2026-07-08 mass C-score wipe (cache eviction desync served empty
+    earnings as fresh) — 424 stocks lost their C-scores over two days with
+    nothing alerting, because a ≤15-pt single-component wipe stays under the
+    save-path blip guard."""
+
+    def _run(self, monkeypatch, patch_session_local, prev_pct, zero_c,
+             total=120, extra_stale_zero_c=0):
+        from datetime import datetime, timezone, timedelta
+        import backend.database as db_mod
+        import backend.email_utils as email_mod
+        from backend import scheduler
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        for i in range(total):
+            _seed_stock(patch_session_local, f"T{i:04d}",
+                        c_score=0.0 if i < zero_c else 10.0,
+                        last_updated=now)
+        # Rows from BEFORE this cycle must not pollute the share.
+        for i in range(extra_stale_zero_c):
+            _seed_stock(patch_session_local, f"OLD{i:04d}",
+                        c_score=0.0, last_updated=now - timedelta(days=2))
+
+        saved = {}
+        alerts = []
+        monkeypatch.setattr(db_mod, "get_system_setting", lambda k, d=None: prev_pct)
+        monkeypatch.setattr(
+            db_mod, "set_system_setting", lambda k, v: saved.update({k: v}) or True)
+        monkeypatch.setattr(
+            email_mod, "send_webhook_notification",
+            lambda title, msg, **kw: alerts.append((title, msg)) or True)
+        scheduler._check_component_wipe(now - timedelta(minutes=5))
+        return saved, alerts
+
+    def test_zero_share_jump_fires_alert(self, monkeypatch, patch_session_local):
+        # prev 1% → 25% (30/120): far past the 5pp default threshold.
+        saved, alerts = self._run(monkeypatch, patch_session_local,
+                                  prev_pct=1.0, zero_c=30)
+        assert len(alerts) == 1
+        assert "25.0%" in alerts[0][1]
+
+    def test_baseline_always_persisted(self, monkeypatch, patch_session_local):
+        saved, _ = self._run(monkeypatch, patch_session_local,
+                             prev_pct=1.0, zero_c=30)
+        assert saved.get("scan_zero_c_pct") == 25.0
+
+    def test_small_rise_below_threshold_is_silent(self, monkeypatch, patch_session_local):
+        # 22% → 25% is a 3pp rise, under the 5pp default threshold.
+        _, alerts = self._run(monkeypatch, patch_session_local,
+                              prev_pct=22.0, zero_c=30)
+        assert alerts == []
+
+    def test_improvement_is_silent(self, monkeypatch, patch_session_local):
+        _, alerts = self._run(monkeypatch, patch_session_local,
+                              prev_pct=50.0, zero_c=0)
+        assert alerts == []
+
+    def test_first_run_without_baseline_is_silent(self, monkeypatch, patch_session_local):
+        saved, alerts = self._run(monkeypatch, patch_session_local,
+                                  prev_pct=None, zero_c=30)
+        assert alerts == []
+        assert saved.get("scan_zero_c_pct") == 25.0
+
+    def test_partial_cycle_is_skipped(self, monkeypatch, patch_session_local):
+        # Under 100 freshly-scanned rows: no baseline update, no alert —
+        # a share computed over a sliver of the universe is noise.
+        saved, alerts = self._run(monkeypatch, patch_session_local,
+                                  prev_pct=1.0, zero_c=30, total=50)
+        assert alerts == []
+        assert saved == {}
+
+    def test_stale_rows_do_not_pollute_the_share(self, monkeypatch, patch_session_local):
+        # 50 old zero-C rows outside the cycle window must not count.
+        _, alerts = self._run(monkeypatch, patch_session_local,
+                              prev_pct=0.0, zero_c=0, extra_stale_zero_c=50)
+        assert alerts == []
+
+    def test_telemetry_failure_never_raises(self, monkeypatch):
+        from datetime import datetime
+        import backend.database as db_mod
+        from backend import scheduler
+
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr(db_mod, "SessionLocal", _boom)
+        scheduler._check_component_wipe(datetime(2026, 7, 8))  # must not raise
