@@ -83,11 +83,38 @@ Constraints (from auto-memory, do not relitigate):
       SystemSetting baseline; >10% drop → warning log + high-priority
       webhook. Suite 3410.
 
+- [x] 2026-07-08 (iter: candidate-flow payoff + freshness watch) — BOTH
+      VERIFIED. Universe payoff CONFIRMED: Jul-6 user-3 initial fill bought
+      3 new-universe names (ELMD 87.6, ITIC 87.2, OPY 86.3) out of 8 buys —
+      new names outcompeted the incumbent pool. Buys sane (pre-breakout cup,
+      0-2% below pivot, ITIC vol 3.3x). Users 1/2 didn't participate: fully
+      invested (cash $803/$1,684 < position size), not a bug. Freshness
+      HEALTHY: 3,915/4,000 rows <24h, cycle completed on schedule. WATCH
+      item closed.
+
+- [x] 2026-07-08 (iter: mass C-score wipe) — **CRITICAL BUG found via the
+      payoff check itself: 424 stocks lost C-scores Jul-6→8** (ELMD 87.6→70.6,
+      CBL — both LIVE positions understated ~13 pts; phantom score-crash sell
+      risk). Root cause chain: universe 2,081→3,724 exceeded
+      MAX_CACHED_TICKERS=2500 → set_cached_data evicted data entries but NOT
+      freshness stamps → async fetcher saw is_data_fresh=True +
+      get_cached_data=None (77,106 warnings/30h in VPS logs), skipped the
+      refetch, scored with [] → save_stock_to_db persisted the wipe (blip
+      guard can't catch ≤15-pt single-component wipes; C max is 15 < the
+      25-pt threshold). DB cache layer (stock_data_cache) still had GOOD
+      data throughout — only the memory layer misread. 3-layer fix:
+      (1) cap 2500→6000 + eviction now clears freshness stamps too,
+      (2) new _apply_cached_financials: fresh-but-missing/empty cache falls
+      through to real FMP fetch, (3) save_stock_to_db keeps existing
+      earnings/revenue lists when scan produced none. Self-healing on
+      deploy: restart rehydrates memory from intact DB cache → next scan
+      restores scores. Sync fetch_with_cache was never affected (already
+      handled None).
+
 ## Next up (ranked by expected returns impact)
-1. **Fresh candidate-flow observation** — after a few cycles with the
-   expanded universe, check whether any of the 44 new above-floor names
-   generate entry signals (breakout/pre-breakout) and whether buys look
-   sane. This is the payoff measurement for the whole day.
+1. **Verify C-score recovery post-deploy** — after the first full scan with
+   the fix, confirm the 424 wiped stocks recover C>0 (spot-check ELMD, CBL,
+   FRAF) and the desync warning stops appearing in logs.
 2. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
 

@@ -1140,6 +1140,29 @@ class TestGhostFieldWrites:
         assert "stock.confidence " not in source
 
 
+# ─── Empty-List Earnings Wipe (scheduler.py) ──────────────────────────────
+# Bug (Jul 2026): save_stock_to_db wrote analysis["quarterly_earnings"]
+# unconditionally. When the memory cache evicted an entry but kept its
+# freshness stamp, the scan produced [] for earnings and the save overwrote
+# good DB data — 424 stocks lost their C-scores in two days, including live
+# positions (ELMD, CBL) understated by ~13 points each. The >25-point blip
+# guard can't catch it: a pure C-wipe costs at most 15 points.
+# Fix: empty scan output preserves the existing row value (matches the
+# adjacent "only overwrite with non-None" idiom for price/name/sector).
+
+
+class TestEarningsWipeGuard:
+    """Regression: a scan that produced no earnings must not erase the row's
+    existing earnings history."""
+
+    def test_scheduler_preserves_earnings_when_scan_returns_empty(self):
+        from pathlib import Path
+        source = (Path(__file__).parent.parent / "backend" / "scheduler.py").read_text()
+        assert 'analysis.get("quarterly_earnings") or stock.quarterly_earnings' in source
+        assert 'analysis.get("annual_earnings") or stock.annual_earnings' in source
+        assert 'analysis.get("quarterly_revenue") or stock.quarterly_revenue' in source
+
+
 # ─── Watchlist Alert Cooldown Bug (scheduler.py) ─────────────────────────
 # Bug: alert_sent flag was checked BEFORE cooldown, creating a permanent
 # block that prevented alerts from ever re-firing after the first send.

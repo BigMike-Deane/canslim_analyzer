@@ -107,7 +107,9 @@ DATA_FRESHNESS_INTERVALS = {
 # Cached data storage (stores the actual fetched data)
 _cached_data = {}
 _cached_data_lock = threading.Lock()
-MAX_CACHED_TICKERS = 2500  # Limit cache size (2500 tickers × ~10 data types = 25,000 entries)
+MAX_CACHED_TICKERS = 6000  # Limit cache size (~10 data types per ticker); must exceed the
+# scan universe or the cache thrashes: the FMP screener supplement (Jul 2026) grew the
+# universe to ~3,700 tickers, and the old 2,500 cap caused constant eviction churn
 
 # DB-backed cache flag
 _db_cache_loaded = False
@@ -443,16 +445,27 @@ def get_cached_data(ticker: str, data_type: str):
 
 def set_cached_data(ticker: str, data_type: str, data, persist_to_db: bool = True):
     """Store data in cache (memory + optionally DB)"""
+    evicted_keys = []
     with _cached_data_lock:
         # Enforce cache size limit
         if len(_cached_data) >= MAX_CACHED_TICKERS * 10:  # ~10 data types per ticker
             # Remove oldest 20% of entries
-            keys_to_remove = list(_cached_data.keys())[:int(len(_cached_data) * 0.2)]
-            for key in keys_to_remove:
+            evicted_keys = list(_cached_data.keys())[:int(len(_cached_data) * 0.2)]
+            for key in evicted_keys:
                 del _cached_data[key]
 
         key = f"{ticker}:{data_type}"
         _cached_data[key] = data
+
+    # Evicted data MUST also lose its freshness stamp, or is_data_fresh() keeps
+    # returning True for entries that no longer exist — readers then skip the
+    # re-fetch and score with empty data (mass C-score wipe, Jul 2026).
+    if evicted_keys:
+        with _freshness_lock:
+            for key in evicted_keys:
+                evicted_ticker, _, evicted_type = key.partition(":")
+                if evicted_ticker in _data_freshness_cache:
+                    _data_freshness_cache[evicted_ticker].pop(evicted_type, None)
 
     # Persist to DB for survival across restarts (async to not slow down)
     if persist_to_db and data_type in ["earnings", "revenue", "balance_sheet", "analyst", "institutional", "key_metrics", "yahoo_info",

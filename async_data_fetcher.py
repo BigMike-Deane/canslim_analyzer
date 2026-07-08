@@ -1261,6 +1261,36 @@ async def fetch_yahoo_supplement_async(ticker: str, stock_data: StockData) -> No
     await loop.run_in_executor(None, _fetch_yahoo)
 
 
+def _apply_cached_financials(ticker: str, stock_data: StockData) -> bool:
+    """Apply fresh cached FMP earnings (+revenue) to stock_data.
+
+    Returns True only when the cache actually contained quarterly EPS. A
+    freshness stamp with no data behind it (memory-cache eviction desync) or
+    an empty payload returns False so the caller performs a real fetch —
+    trusting it would mean scoring C/A with zero earnings and persisting the
+    wipe to the stocks table (mass C-score wipe, Jul 2026).
+    """
+    if not is_data_fresh(ticker, "earnings"):
+        logger.info(f"{ticker}: Earnings not fresh, fetching from FMP")
+        return False
+    cached_earnings = get_cached_data(ticker, "earnings")
+    quarterly = None
+    if cached_earnings:
+        quarterly = cached_earnings.get("quarterly_eps") or cached_earnings.get("quarterly")
+    if not quarterly:
+        logger.warning(f"{ticker}: fresh earnings cache entry has no EPS data - refetching from FMP")
+        return False
+
+    stock_data.quarterly_earnings = quarterly
+    stock_data.annual_earnings = cached_earnings.get("annual_eps") or cached_earnings.get("annual", [])
+    logger.info(f"{ticker}: CACHE HIT - quarterly={len(stock_data.quarterly_earnings)}, annual={len(stock_data.annual_earnings)}")
+    cached_revenue = get_cached_data(ticker, "revenue")
+    if cached_revenue:
+        stock_data.quarterly_revenue = cached_revenue.get("quarterly_revenue") or cached_revenue.get("quarterly", [])
+        stock_data.annual_revenue = cached_revenue.get("annual_revenue") or cached_revenue.get("annual", [])
+    return True
+
+
 async def get_stock_data_async(
     ticker: str,
     session: aiohttp.ClientSession,
@@ -1362,23 +1392,8 @@ async def get_stock_data_async(
     # STEP 1: FMP for earnings and revenue only (the most reliable source for this data)
     financials = {}
     if FMP_API_KEY:
-        earnings_fresh = is_data_fresh(ticker, "earnings")
-        if not earnings_fresh:
-            logger.info(f"{ticker}: Earnings not fresh, fetching from FMP")
+        if not _apply_cached_financials(ticker, stock_data):
             financials = await fetch_fmp_financials_async(session, ticker)
-        else:
-            # Load from cache
-            cached_earnings = get_cached_data(ticker, "earnings")
-            cached_revenue = get_cached_data(ticker, "revenue")
-            if cached_earnings:
-                stock_data.quarterly_earnings = cached_earnings.get("quarterly_eps") or cached_earnings.get("quarterly", [])
-                stock_data.annual_earnings = cached_earnings.get("annual_eps") or cached_earnings.get("annual", [])
-                logger.info(f"{ticker}: CACHE HIT - quarterly={len(stock_data.quarterly_earnings)}, annual={len(stock_data.annual_earnings)}")
-            else:
-                logger.warning(f"{ticker}: is_data_fresh=True but get_cached_data returned None")
-            if cached_revenue:
-                stock_data.quarterly_revenue = cached_revenue.get("quarterly_revenue") or cached_revenue.get("quarterly", [])
-                stock_data.annual_revenue = cached_revenue.get("annual_revenue") or cached_revenue.get("annual", [])
 
     # Apply FMP financials only when the fetch produced REAL data.
     # fetch_fmp_financials_async always returns a pre-populated dict (empty

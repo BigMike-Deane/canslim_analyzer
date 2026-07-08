@@ -1159,9 +1159,12 @@ def run_continuous_scan():
         stock.eps_acceleration = analysis.get("eps_acceleration")
         stock.earnings_surprise_pct = analysis.get("earnings_surprise_pct")
         stock.revenue_growth_pct = analysis.get("revenue_growth_pct")
-        stock.quarterly_earnings = analysis.get("quarterly_earnings")
-        stock.annual_earnings = analysis.get("annual_earnings")
-        stock.quarterly_revenue = analysis.get("quarterly_revenue")
+        # Keep existing earnings/revenue history when this scan produced none —
+        # an empty list here means the fetch failed or the cache was evicted,
+        # not that the company's reported quarters vanished
+        stock.quarterly_earnings = analysis.get("quarterly_earnings") or stock.quarterly_earnings
+        stock.annual_earnings = analysis.get("annual_earnings") or stock.annual_earnings
+        stock.quarterly_revenue = analysis.get("quarterly_revenue") or stock.quarterly_revenue
 
         # Technical analysis
         stock.volume_ratio = analysis.get("volume_ratio")

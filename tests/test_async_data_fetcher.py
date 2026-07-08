@@ -707,6 +707,78 @@ class TestFetchFmpFinancialsAsync:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Tier 1 — _apply_cached_financials (fresh-but-missing cache must force a fetch)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestApplyCachedFinancials:
+    """Regression (Jul 2026 mass C-score wipe): _apply_cached_financials must
+    return False — forcing a real FMP fetch — whenever the fresh-looking cache
+    can't actually supply quarterly EPS. The original inline branch trusted
+    is_data_fresh() alone; after memory-cache eviction desync that meant
+    scoring 400+ stocks with empty earnings and persisting the wipe."""
+
+    def test_fresh_cache_with_eps_applies_and_returns_true(self):
+        data_fetcher.set_cached_data(
+            "CACHED", "earnings",
+            {"quarterly_eps": [1.2, 1.0], "annual_eps": [4.0]},
+            persist_to_db=False,
+        )
+        data_fetcher.set_cached_data(
+            "CACHED", "revenue",
+            {"quarterly_revenue": [10, 9], "annual_revenue": [40]},
+            persist_to_db=False,
+        )
+        data_fetcher.mark_data_fetched("CACHED", "earnings")
+
+        sd = async_data_fetcher.StockData("CACHED")
+        assert async_data_fetcher._apply_cached_financials("CACHED", sd) is True
+        assert sd.quarterly_earnings == [1.2, 1.0]
+        assert sd.annual_earnings == [4.0]
+        assert sd.quarterly_revenue == [10, 9]
+        assert sd.annual_revenue == [40]
+
+    def test_fresh_stamp_with_missing_entry_returns_false(self):
+        # The desync itself: freshness says fresh, data entry was evicted.
+        data_fetcher.mark_data_fetched("GONE", "earnings")
+        sd = async_data_fetcher.StockData("GONE")
+        assert async_data_fetcher._apply_cached_financials("GONE", sd) is False
+        assert sd.quarterly_earnings == []
+
+    def test_fresh_entry_with_empty_eps_returns_false(self):
+        # Poisoned entry: fresh stamp, payload present, but no EPS behind it.
+        data_fetcher.set_cached_data(
+            "EMPTY", "earnings", {"quarterly_eps": [], "annual_eps": []},
+            persist_to_db=False,
+        )
+        data_fetcher.mark_data_fetched("EMPTY", "earnings")
+        sd = async_data_fetcher.StockData("EMPTY")
+        assert async_data_fetcher._apply_cached_financials("EMPTY", sd) is False
+
+    def test_not_fresh_returns_false_even_with_data(self):
+        data_fetcher.set_cached_data(
+            "STALE", "earnings", {"quarterly_eps": [1.0]}, persist_to_db=False,
+        )
+        # No mark_data_fetched → not fresh → must fetch.
+        sd = async_data_fetcher.StockData("STALE")
+        assert async_data_fetcher._apply_cached_financials("STALE", sd) is False
+
+    def test_legacy_quarterly_key_supported(self):
+        # set_cached_data at fetch time writes {"quarterly": ..., "annual": ...};
+        # DB hydration writes {"quarterly_eps": ..., "annual_eps": ...}. Both
+        # shapes must count as usable.
+        data_fetcher.set_cached_data(
+            "LEGACY", "earnings", {"quarterly": [0.5, 0.4], "annual": [2.0]},
+            persist_to_db=False,
+        )
+        data_fetcher.mark_data_fetched("LEGACY", "earnings")
+        sd = async_data_fetcher.StockData("LEGACY")
+        assert async_data_fetcher._apply_cached_financials("LEGACY", sd) is True
+        assert sd.quarterly_earnings == [0.5, 0.4]
+        assert sd.annual_earnings == [2.0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Tier 1 — fetch_fmp_key_metrics / balance_sheet / analyst (NaN guards)
 # ═══════════════════════════════════════════════════════════════════════════════
 

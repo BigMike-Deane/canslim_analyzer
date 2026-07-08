@@ -143,6 +143,45 @@ class TestFreshnessPrimitives:
         assert data_fetcher.get_cached_data("AAPL", "earnings") is None
 
 
+class TestEvictionFreshnessDesync:
+    """Regression (Jul 2026 mass C-score wipe): when set_cached_data evicts
+    entries to enforce MAX_CACHED_TICKERS, the evicted entries' freshness
+    stamps must be dropped too. Otherwise is_data_fresh() stays True for data
+    that no longer exists, readers skip the re-fetch, and stocks get scored
+    (and persisted) with empty earnings."""
+
+    def test_eviction_clears_freshness_for_evicted_entries(self, monkeypatch):
+        # Cap the cache at 1 ticker (×10 = 10 entries) to force eviction.
+        monkeypatch.setattr(data_fetcher, "MAX_CACHED_TICKERS", 1)
+
+        # Fill to the cap. Insertion order == eviction order.
+        for i in range(10):
+            t = f"TICK{i}"
+            data_fetcher.set_cached_data(t, "earnings", {"quarterly_eps": [1.0]}, persist_to_db=False)
+            data_fetcher.mark_data_fetched(t, "earnings")
+
+        assert data_fetcher.is_data_fresh("TICK0", "earnings") is True
+
+        # This write exceeds the cap → oldest 20% (TICK0, TICK1) evicted.
+        data_fetcher.set_cached_data("NEW", "earnings", {"quarterly_eps": [2.0]}, persist_to_db=False)
+        data_fetcher.mark_data_fetched("NEW", "earnings")
+
+        # Evicted entries: data gone AND freshness gone → callers re-fetch.
+        assert data_fetcher.get_cached_data("TICK0", "earnings") is None
+        assert data_fetcher.is_data_fresh("TICK0", "earnings") is False
+        assert data_fetcher.get_cached_data("TICK1", "earnings") is None
+        assert data_fetcher.is_data_fresh("TICK1", "earnings") is False
+
+        # Survivors keep both data and freshness.
+        assert data_fetcher.get_cached_data("TICK9", "earnings") is not None
+        assert data_fetcher.is_data_fresh("TICK9", "earnings") is True
+
+    def test_max_cached_tickers_covers_scan_universe(self):
+        """The cap must exceed the live scan universe (~3,700 tickers after the
+        Jul 2026 FMP screener supplement) or the cache thrashes on every scan."""
+        assert data_fetcher.MAX_CACHED_TICKERS >= 4000
+
+
 class TestFetchWithCache:
     """Tier 1: fetch_with_cache — 4-tier hierarchy (Memory → Redis → DB → API)."""
 
