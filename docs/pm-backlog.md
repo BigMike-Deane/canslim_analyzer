@@ -171,9 +171,31 @@ Constraints (from auto-memory, do not relitigate):
       CEFs (iter 4), isFund false-positive for REITs (this) — only isEtf
       + industry taxonomy + desc/employees conjunction are trustworthy.**
 
+- [x] 2026-07-09 (iter: universe time-of-day oscillation) — Screener
+      volume floor REMOVED; universe now stable. The post-deploy cycle
+      scanned 2,879 vs 3,620 (-20%) which led to the discovery: **FMP
+      volumeMoreThan filters on TODAY'S cumulative intraday volume**, so
+      universe size was a function of cycle start time (live-probed:
+      1,786 names at 9:57 ET → 2,292 by 11 ET → ~3,500 evening; vol>10M
+      returns 18 rows mid-morning) — a silent daily oscillation since the
+      Jul-6 supplement shipped (its "3,474 verified" was an evening
+      measurement). averageVolumeMoreThan is silently IGNORED by
+      /stable/company-screener (4,101 rows even at a 10M threshold).
+      Fix: omit the param unless config sets volume_more_than > 0;
+      default.yaml documents the semantics. Stable universe = 4,101
+      screener rows (~+480 names ≈ +10 min warm cycle — consistent with
+      owner's keep-full-coverage call; FRAF's wiped frozen row self-heals
+      by re-entering). Note: the intermediate container's logs (incl. the
+      shrink alarm that likely fired) were destroyed by docker-compose
+      down — alarms that only log+webhook leave no trace across deploys.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
-   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
+   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept. New: screener
+   sends isFund=false, which excludes non-index REITs from the supplement
+   (FMP marks REIT trusts isFund=true — same quirk as the hotfix); decide
+   if small-cap REIT coverage is worth letting isFund=true rows in now
+   that the security-type guard blocks CEFs at profile fetch.
 
 ## Monitoring clocks (no action until due)
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).

@@ -728,6 +728,35 @@ class TestGetFmpScreenerTickers:
         assert result == []
         mock_get.assert_not_called()
 
+    def test_volume_floor_not_sent_by_default(self, monkeypatch):
+        """FMP volumeMoreThan filters on TODAY'S cumulative intraday volume,
+        making universe size a function of cycle start time (2026-07-09:
+        1,786 names at 9:57 ET vs ~3,500 by evening). Default must omit it."""
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = self._mock_rows(600)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("sp500_tickers.requests.get", return_value=mock_resp) as mock_get:
+            sp500_tickers.get_fmp_screener_tickers()
+        params = mock_get.call_args.kwargs.get("params") or mock_get.call_args.args[1]
+        assert "volumeMoreThan" not in params
+
+    def test_volume_floor_sent_when_configured_nonzero(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        from config_loader import config as yaml_config
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = self._mock_rows(600)
+        mock_resp.raise_for_status = MagicMock()
+        with patch.object(
+            yaml_config, "get",
+            side_effect=lambda key, default=None:
+            {"enabled": True, "volume_more_than": 75000}
+            if key == "scanner.universe.fmp_screener" else default,
+        ), patch("sp500_tickers.requests.get", return_value=mock_resp) as mock_get:
+            sp500_tickers.get_fmp_screener_tickers()
+        params = mock_get.call_args.kwargs.get("params") or mock_get.call_args.args[1]
+        assert params["volumeMoreThan"] == 75000
+
     def test_disabled_via_config_returns_empty(self, monkeypatch):
         monkeypatch.setenv("FMP_API_KEY", "test-key")
         from config_loader import config as yaml_config

@@ -171,7 +171,6 @@ def get_fmp_screener_tickers() -> list[str]:
         url = "https://financialmodelingprep.com/stable/company-screener"
         params = {
             'marketCapMoreThan': screener_cfg.get('market_cap_more_than', 150_000_000),
-            'volumeMoreThan': screener_cfg.get('volume_more_than', 50_000),
             'priceMoreThan': screener_cfg.get('price_more_than', 1),
             'isActivelyTrading': 'true',
             'isEtf': 'false',
@@ -179,6 +178,15 @@ def get_fmp_screener_tickers() -> list[str]:
             'limit': screener_cfg.get('limit', 10000),
             'apikey': api_key,
         }
+        # volumeMoreThan filters on TODAY'S cumulative intraday volume, so
+        # sending it makes the universe a function of the cycle's start time
+        # (live 2026-07-09: 1,786 names at 9:57 ET, ~3,500 by evening — a
+        # silent daily oscillation since the supplement shipped). FMP ignores
+        # averageVolumeMoreThan on this endpoint entirely. Only send a floor
+        # if explicitly configured non-zero.
+        volume_floor = screener_cfg.get('volume_more_than', 0)
+        if volume_floor:
+            params['volumeMoreThan'] = volume_floor
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()

@@ -27,7 +27,12 @@ scanner:
     fmp_screener:
       enabled: true
       market_cap_more_than: 150000000   # $150M floor — below this, too illiquid
-      volume_more_than: 50000           # shares/day floor
+      # No volume floor: FMP volumeMoreThan filters on TODAY'S cumulative
+      # intraday volume, so the universe size depended on what time the
+      # cycle started (live 2026-07-09: 1,786 names at 9:57 ET vs ~3,500
+      # by evening) — and averageVolumeMoreThan is silently ignored by
+      # /stable/company-screener. Set > 0 only if FMP fixes the semantics.
+      volume_more_than: 0
       price_more_than: 1                # skip sub-$1 husks
       limit: 10000
       exchanges: [NYSE, NASDAQ, AMEX]
