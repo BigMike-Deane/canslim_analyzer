@@ -14,10 +14,7 @@ from backend.database import (
     PortfolioPosition,
 )
 from backend.auth import get_current_active_user
-# Late import: backend.main imports this module at the end of its load,
-# so by the time we reach this line backend.main is partially loaded but
-# has already defined these two names (lines 244 and 296).
-from backend.main import expand_tickers_with_duplicates, DUPLICATE_TICKERS
+from backend.ticker_utils import expand_tickers_with_duplicates, DUPLICATE_TICKERS
 
 logger = logging.getLogger(__name__)
 

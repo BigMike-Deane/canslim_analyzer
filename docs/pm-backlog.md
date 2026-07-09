@@ -134,11 +134,21 @@ Constraints (from auto-memory, do not relitigate):
       contained by the 48h buy-freshness gate + 72h stale-row filter, and
       self-repair if they ever re-enter the universe.
 
+- [x] 2026-07-09 (iter: circular-import papercut) — main↔fidelity import
+      cycle BROKEN, not papered over: fidelity.py's module-level
+      `from backend.main import ...` only survived when backend.main was
+      already fully loaded (broke cold under top-level `main`, i.e.
+      test_bug_regressions.py standalone). DUPLICATE_TICKERS /
+      expand_tickers_with_duplicates / filter_duplicate_stocks moved to new
+      leaf module `backend/ticker_utils.py` (imports nothing → can't cycle);
+      main.py re-exports for existing importers. Zero behavior change.
+      Suite 3426. **COMMITTED, NOT DEPLOYED — pure refactor, rides with
+      next deploy (iter-6 precedent: don't restart containers mid-cycle
+      for no-behavior changes).**
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
-   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept. Papercut:
-   test_bug_regressions.py circular-import flake when run standalone
-   (backend.routes.fidelity; green in full-suite order).
+   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
 
 ## Monitoring clocks (no action until due)
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).
