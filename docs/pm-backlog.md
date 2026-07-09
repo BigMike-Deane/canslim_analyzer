@@ -182,10 +182,11 @@ Constraints (from auto-memory, do not relitigate):
       measurement). averageVolumeMoreThan is silently IGNORED by
       /stable/company-screener (4,101 rows even at a 10M threshold).
       Fix: omit the param unless config sets volume_more_than > 0;
-      default.yaml documents the semantics. Stable universe = 4,101
-      screener rows (~+480 names ≈ +10 min warm cycle — consistent with
-      owner's keep-full-coverage call; FRAF's wiped frozen row self-heals
-      by re-entering). Note: the intermediate container's logs (incl. the
+      default.yaml documents the semantics. **DEPLOYED + LIVE-VERIFIED:
+      screener fetches 4,103, scan universe 4,317, stable at any start
+      time** (~+480 names ≈ +10 min warm cycle — consistent with owner's
+      keep-full-coverage call; FRAF's wiped frozen row self-heals by
+      re-entering). Note: the intermediate container's logs (incl. the
       shrink alarm that likely fired) were destroyed by docker-compose
       down — alarms that only log+webhook leave no trace across deploys.
 
