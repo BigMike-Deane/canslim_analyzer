@@ -1274,10 +1274,17 @@ class TestNonEquityReason:
             "name": "Some Fund", "is_etf": True,
         }) == "etf_or_fund_not_equity"
 
-    def test_fund_flag_detected(self):
+    def test_reit_with_fmp_isfund_flag_not_flagged(self):
+        """FMP sets isFund=true for REIT trust structures (FRT, RLJ —
+        live-verified 2026-07-09; 4 REITs were wrongly blocked for ~20 min).
+        REITs are legitimate CANSLIM candidates; is_fund must never block."""
         assert data_fetcher.non_equity_reason({
-            "name": "Some Fund", "is_fund": True,
-        }) == "etf_or_fund_not_equity"
+            "name": "Federal Realty Investment Trust",
+            "industry": "REIT - Retail",
+            "description": "A real estate investment trust.",
+            "full_time_employees": 300,
+            "is_fund": True,
+        }) is None
 
     def test_etf_name_token_detected_without_flags(self):
         """ETFs that arrived via legacy universe sources carry no flags —

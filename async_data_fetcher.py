@@ -465,8 +465,9 @@ async def fetch_fmp_single_profile(session: aiohttp.ClientSession, ticker: str) 
             # Security-type guard inputs (see non_equity_reason)
             "description": profile.get("description", ""),
             "full_time_employees": profile.get("fullTimeEmployees"),
+            # isFund deliberately NOT mapped: FMP sets it for REIT trusts
+            # (FRT, RLJ) — see non_equity_reason.
             "is_etf": bool(profile.get("isEtf")),
-            "is_fund": bool(profile.get("isFund")),
         }
     return None
 

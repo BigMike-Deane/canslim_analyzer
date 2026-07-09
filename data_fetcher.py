@@ -859,9 +859,11 @@ def non_equity_reason(profile: dict) -> Optional[str]:
         (live: CEPV scored 69.8, three points under the buy threshold).
         A permanent block is safe: a completed deSPAC lists under a new
         ticker, which arrives first-seen and is scanned normally.
-      - ETFs: FMP isEtf/isFund are reliable for true ETFs (they lie only
-        for CEFs, caught above); the name token catches ETFs that arrived
-        through legacy universe sources without flags.
+      - ETFs: FMP isEtf is reliable for true ETFs (SPY/NANC true; verified
+        live 2026-07-09); the name token catches ETFs that arrived through
+        legacy universe sources without flags. isFund must NOT be used:
+        FMP sets it for REIT trust structures (FRT, RLJ — live-verified),
+        which are legitimate CANSLIM candidates.
     """
     if not profile:
         return None
@@ -870,7 +872,7 @@ def non_equity_reason(profile: dict) -> Optional[str]:
         return "closed_end_fund_not_equity"
     if (profile.get("industry") or "").strip() == "Shell Companies":
         return "spac_shell_not_operating_company"
-    if profile.get("is_etf") or profile.get("is_fund"):
+    if profile.get("is_etf"):
         return "etf_or_fund_not_equity"
     if _ETF_NAME_TOKEN.search(profile.get("name") or ""):
         return "etf_or_fund_not_equity"
