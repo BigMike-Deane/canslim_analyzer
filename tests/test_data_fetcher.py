@@ -1236,6 +1236,74 @@ class TestIsNonEquityProfile:
         assert data_fetcher.is_non_equity_profile(None, None) is False
 
 
+class TestNonEquityReason:
+    """non_equity_reason — unified security-type classifier. Extends the CEF
+    conjunction with SPAC shells (FMP industry 'Shell Companies'; live 2026-07-09:
+    CEPV scored 69.8, 3 pts under the buy threshold) and ETFs (isEtf/isFund
+    flags or the name token, for ETFs from legacy sources without flags)."""
+
+    def test_operating_company_returns_none(self):
+        assert data_fetcher.non_equity_reason({
+            "name": "Investors Title Company", "industry": "Insurance - Specialty",
+            "description": "Provides title insurance.", "full_time_employees": 521,
+        }) is None
+
+    def test_empty_profile_returns_none(self):
+        assert data_fetcher.non_equity_reason(None) is None
+        assert data_fetcher.non_equity_reason({}) is None
+
+    def test_cef_still_detected_with_original_reason(self):
+        assert data_fetcher.non_equity_reason({
+            "name": "Tekla Healthcare Investors",
+            "description": "A closed-end fund.", "full_time_employees": 0,
+        }) == "closed_end_fund_not_equity"
+
+    def test_spac_shell_industry_detected(self):
+        assert data_fetcher.non_equity_reason({
+            "name": "Cantor Equity Partners V, Inc.",
+            "industry": "Shell Companies",
+            "description": "A blank check company.", "full_time_employees": 0,
+        }) == "spac_shell_not_operating_company"
+
+    def test_shell_industry_whitespace_tolerated(self):
+        assert data_fetcher.non_equity_reason(
+            {"industry": " Shell Companies "}) == "spac_shell_not_operating_company"
+
+    def test_etf_flag_detected(self):
+        assert data_fetcher.non_equity_reason({
+            "name": "Some Fund", "is_etf": True,
+        }) == "etf_or_fund_not_equity"
+
+    def test_fund_flag_detected(self):
+        assert data_fetcher.non_equity_reason({
+            "name": "Some Fund", "is_fund": True,
+        }) == "etf_or_fund_not_equity"
+
+    def test_etf_name_token_detected_without_flags(self):
+        """ETFs that arrived via legacy universe sources carry no flags —
+        the name token is the only signal (live: NANC, BETZ, DIVI)."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Unusual Whales Subversive Democratic Trading ETF",
+        }) == "etf_or_fund_not_equity"
+
+    def test_netflix_embedded_etf_not_flagged(self):
+        """Case-sensitive word match: 'Netflix' contains 'etf' but must not trip."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Netflix, Inc.", "industry": "Entertainment",
+            "description": "Streaming.", "full_time_employees": 14000,
+        }) is None
+
+    def test_asset_manager_of_etfs_not_flagged(self):
+        """Real asset managers (industry 'Asset Management') are legitimate
+        CANSLIM candidates — only the ETF token/flags/shell industry block."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Apollo Global Management, Inc.",
+            "industry": "Asset Management",
+            "description": "Manages funds including ETFs.",
+            "full_time_employees": 5000,
+        }) is None
+
+
 class TestFmpConfirmsDelisted:
     """Tier 2: _fmp_confirms_delisted — verification gate before 30-day exclusion."""
 

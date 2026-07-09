@@ -146,6 +146,23 @@ Constraints (from auto-memory, do not relitigate):
       next deploy (iter-6 precedent: don't restart containers mid-cycle
       for no-behavior changes).**
 
+- [x] 2026-07-09 (iter: SPAC/ETF universe leak) — Security-type guard
+      EXTENDED to SPAC shells + ETFs. Found via live log sweep (DATA GAPS
+      roster read like a SPAC prospectus): the FMP screener universe admits
+      blank-check shells — trust interest gives them small positive EPS
+      (huge growth %), the $10 band mimics a flat base, and **CEPV scored
+      69.8, three points under the buy threshold**; 50 shells + 5 ETFs
+      (NANC, BETZ, DIVI...) live in the stocks table. New
+      `non_equity_reason(profile)` classifier in data_fetcher.py: CEF
+      conjunction (unchanged reason) → FMP industry 'Shell Companies'
+      (structural, reliable — unlike CEF flags) → isEtf/isFund flags (now
+      mapped from FMP profile) → case-sensitive \bETF\b name token (legacy-
+      source ETFs carry no flags; 'Netflix' must not trip). Permanent block
+      is safe for shells: a completed deSPAC lists under a NEW ticker,
+      which arrives first-seen and gets scanned normally. Retro-sweep
+      blocked + score-zeroed the 55 existing rows (guard only fires on
+      first-seen profile fetch).
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.

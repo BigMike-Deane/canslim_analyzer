@@ -26,6 +26,7 @@ def _db_now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 from typing import Optional
 from collections import OrderedDict
+import re
 import time
 import requests
 import os
@@ -838,6 +839,42 @@ def is_non_equity_profile(description, full_time_employees) -> bool:
     except (ValueError, TypeError):
         employees = 0
     return employees == 0
+
+
+# Case-sensitive word match: 'Netflix' must not trip on its embedded 'etf'.
+_ETF_NAME_TOKEN = re.compile(r"\bETF\b")
+
+
+def non_equity_reason(profile: dict) -> Optional[str]:
+    """
+    Classify a provider profile as a non-equity/non-operating security.
+    Returns a block-reason string for block_ticker_permanently, or None for
+    a plain operating company.
+
+    Beyond the CEF conjunction (is_non_equity_profile), two classes leak in
+    via the FMP screener universe (found live 2026-07-09):
+      - SPAC shells: FMP's industry taxonomy labels blank-check companies
+        'Shell Companies' structurally — trust interest gives them small
+        positive EPS (huge growth %) and the $10 band mimics a flat base
+        (live: CEPV scored 69.8, three points under the buy threshold).
+        A permanent block is safe: a completed deSPAC lists under a new
+        ticker, which arrives first-seen and is scanned normally.
+      - ETFs: FMP isEtf/isFund are reliable for true ETFs (they lie only
+        for CEFs, caught above); the name token catches ETFs that arrived
+        through legacy universe sources without flags.
+    """
+    if not profile:
+        return None
+    if is_non_equity_profile(
+            profile.get("description"), profile.get("full_time_employees")):
+        return "closed_end_fund_not_equity"
+    if (profile.get("industry") or "").strip() == "Shell Companies":
+        return "spac_shell_not_operating_company"
+    if profile.get("is_etf") or profile.get("is_fund"):
+        return "etf_or_fund_not_equity"
+    if _ETF_NAME_TOKEN.search(profile.get("name") or ""):
+        return "etf_or_fund_not_equity"
+    return None
 
 
 def get_delisted_tickers() -> set:
