@@ -162,6 +162,14 @@ Constraints (from auto-memory, do not relitigate):
       which arrives first-seen and gets scanned normally. Retro-sweep
       blocked + score-zeroed the 55 existing rows (guard only fires on
       first-seen profile fetch).
+      **⚠️ HOTFIX `e8fce41` 20 min later: isFund must NOT block — FMP sets
+      isFund=true for REIT trust structures** (live: FRT, RLJ, KREF, RPT,
+      ILPT, CPT wrongly perma-blocked as the scan ran; raw payloads
+      confirmed isFund=true/isEtf=false for all six, SPY/NANC isEtf=true).
+      Dropped the isFund check + mapping, deleted the 6 wrong blocks,
+      redeployed. **Provider-flag lie ledger: isEtf false-negative for
+      CEFs (iter 4), isFund false-positive for REITs (this) — only isEtf
+      + industry taxonomy + desc/employees conjunction are trustworthy.**
 
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
