@@ -121,11 +121,21 @@ Constraints (from auto-memory, do not relitigate):
       a single-component wipe stays under the save-path blip guard — the
       Jul-8 wipe ran silent for 2 days. Skips partial cycles (<100 rows).
 
+- [x] 2026-07-09 (iter: verify C-score recovery) — **VERIFIED HEALTHY.**
+      ELMD c=13.0 (87.8) and CBL c=13.0 (77.9) restored; desync warning
+      ("is_data_fresh=True but get_cached_data returned None") 0 hits/24h
+      (was 77k/30h); new refetch-fallback path also 0 hits (cap 6000 means
+      no eviction at all — fallback is an unused safety net); wipe alarm
+      silent. Of 875 fresh rows at c=0, 787 have earnings data (legit
+      zeros); 88 empty-earnings are preferreds/ADRs/warrants/fresh-IPOs
+      with no FMP coverage. RESIDUE (accepted, no action): 38 rows wiped
+      during the incident then dropped from the scan universe (e.g. FRAF,
+      under the screener volume floor) stay frozen with understated C —
+      contained by the 48h buy-freshness gate + 72h stale-row filter, and
+      self-repair if they ever re-enter the universe.
+
 ## Next up (ranked by expected returns impact)
-1. **Verify C-score recovery post-deploy** — after the first full scan with
-   the fix, confirm the 424 wiped stocks recover C>0 (spot-check ELMD, CBL,
-   FRAF) and the desync warning stops appearing in logs.
-2. **(idea pool)** From live results: entry-rate re-check late July (ML
+1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept. Papercut:
    test_bug_regressions.py circular-import flake when run standalone
    (backend.routes.fidelity; green in full-suite order).
