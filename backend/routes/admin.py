@@ -749,6 +749,16 @@ async def run_strategy_ab_comparison(
     }
 
 
+def _trade_scope_id(t):
+    """Scope ID that disambiguates "the same ticker held by a different
+    account" in prior-BUY maps: user_id for AIPortfolioTrade rows,
+    shadow_strategy_id for ShadowTrade rows (which have no user_id — shadow
+    trades belong to a strategy, not a user). Shared by the dashboard
+    endpoint and ab_eval_email so the two paths can't drift."""
+    sid = getattr(t, 'user_id', None)
+    return sid if sid is not None else getattr(t, 'shadow_strategy_id', None)
+
+
 def _serialize_trade_row(t, prior_buys_by_ticker_user: dict) -> dict:
     """Shape one AIPortfolioTrade row for the per-trade endpoint.
 
@@ -775,14 +785,7 @@ def _serialize_trade_row(t, prior_buys_by_ticker_user: dict) -> dict:
         except Exception:
             pass
 
-    # Scope key for the prior-BUY map. AIPortfolioTrade rows scope by
-    # (ticker, user_id); ShadowTrade rows scope by (ticker, shadow_strategy_id).
-    # Either way the scope ID is what disambiguates "the same ticker held by a
-    # different account" so a SELL doesn't accidentally pair with another
-    # account's BUY for hold_days math.
-    scope_id = getattr(t, 'user_id', None)
-    if scope_id is None:
-        scope_id = getattr(t, 'shadow_strategy_id', None)
+    scope_id = _trade_scope_id(t)
 
     hold_days = None
     if t.action == 'SELL':
@@ -887,12 +890,9 @@ async def run_strategy_ab_trades(
     post_end = win['post_end']
 
     # Build a (ticker, scope_id) → most-recent-prior-BUY map for hold_days
-    # fallback. scope_id = user_id for live, shadow_strategy_id for shadow.
-    # Walk ALL trades chronologically (pre + post) so a SELL in post can
-    # match a BUY that landed in pre.
-    def _scope_id(t):
-        sid = getattr(t, 'user_id', None)
-        return sid if sid is not None else getattr(t, 'shadow_strategy_id', None)
+    # fallback. Walk ALL trades chronologically (pre + post) so a SELL in
+    # post can match a BUY that landed in pre.
+    _scope_id = _trade_scope_id
 
     prior_buy_map: dict = {}
     serialized_pre: list = []

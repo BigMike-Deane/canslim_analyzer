@@ -26,6 +26,7 @@ from backend.routes.admin import (
     _resolve_ab_window,
     _serialize_trade_row,
     _summarize_window,
+    _trade_scope_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,15 +162,17 @@ def build_ab_eval_snapshot_html(
 
     # Per-trade rows for the best/worst tables — same path the dashboard uses,
     # via the shared serializer so realized_pct / hold_days math stays identical.
+    # Key on _trade_scope_id, not t.user_id — ShadowTrade rows have no
+    # user_id column and scope by shadow_strategy_id instead.
     prior_buy_map: dict = {}
     for t in pre_trades:
         if t.action == 'BUY':
-            prior_buy_map[(t.ticker, t.user_id)] = t
+            prior_buy_map[(t.ticker, _trade_scope_id(t))] = t
     serialized_post = []
     for t in post_trades:
         serialized_post.append(_serialize_trade_row(t, prior_buy_map))
         if t.action == 'BUY':
-            prior_buy_map[(t.ticker, t.user_id)] = t
+            prior_buy_map[(t.ticker, _trade_scope_id(t))] = t
 
     sells = [r for r in serialized_post if r['action'] == 'SELL' and r['realized_pct'] is not None]
     best_trades = sorted(sells, key=lambda r: r['realized_pct'], reverse=True)[:5]

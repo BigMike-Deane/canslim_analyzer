@@ -471,21 +471,37 @@ class TestShadowSourceSnapshot:
         db.add(ss)
         db.commit()
         db.refresh(ss)
+        # Each SELL gets a same-day prior BUY, like a real shadow stack.
+        # ShadowTrade has no user_id column, so any BUY in the window
+        # exercises the _trade_scope_id path in the prior-BUY map —
+        # regression for the 2026-07-13 scheduler crash (AttributeError:
+        # 'ShadowTrade' object has no attribute 'user_id'), which a
+        # SELL-only fixture could never hit.
         # 6 pre-cutoff modest mixed SELLs
         pre_gains = [5.0, -3.0, 4.0, 6.0, -2.0, 3.0]
         for i, g in enumerate(pre_gains):
             db.add(_make_shadow_trade(
+                strategy_id=ss.id, action="BUY", shares=10.0,
+                ticker=f"PRE{i}",
+                executed_at=datetime(2026, 4, 1 + i, 10, tzinfo=timezone.utc),
+            ))
+            db.add(_make_shadow_trade(
                 strategy_id=ss.id, action="SELL", shares=10.0, cost_basis=10.0,
                 realized_gain=g, ticker=f"PRE{i}",
-                executed_at=datetime(2026, 4, 1 + i, tzinfo=timezone.utc),
+                executed_at=datetime(2026, 4, 1 + i, 15, tzinfo=timezone.utc),
             ))
         # 6 post-cutoff strong winners
         post_gains = [25.0, 30.0, -5.0, 20.0, 18.0, 22.0]
         for i, g in enumerate(post_gains):
             db.add(_make_shadow_trade(
+                strategy_id=ss.id, action="BUY", shares=10.0,
+                ticker=f"POST{i}",
+                executed_at=datetime(2026, 4, 16 + i, 10, tzinfo=timezone.utc),
+            ))
+            db.add(_make_shadow_trade(
                 strategy_id=ss.id, action="SELL", shares=10.0, cost_basis=10.0,
                 realized_gain=g, ticker=f"POST{i}",
-                executed_at=datetime(2026, 4, 16 + i, tzinfo=timezone.utc),
+                executed_at=datetime(2026, 4, 16 + i, 15, tzinfo=timezone.utc),
                 reason="Take profit (40% trail)",
             ))
         db.commit()
@@ -545,6 +561,28 @@ class TestShadowSourceSnapshot:
                 pre_window_days=14, post_window_days=14, source="shadow",
             )
             assert snap['text'].startswith("[Shadow] ")
+        finally:
+            db.close()
+
+    def test_shadow_buys_key_prior_map_by_strategy_id(self):
+        """Regression for the 2026-07-13 weekly-email crash: the snapshot
+        builder's prior-BUY map keyed on t.user_id, which ShadowTrade rows
+        don't have. With BUYs in the fixture the builder must not raise,
+        and a post SELL with no persisted holding_days must pair with its
+        prior BUY via (ticker, shadow_strategy_id) for hold_days."""
+        db = self._shadow_db_session()
+        try:
+            self._seed_active_shadow_with_post_winners(db)
+            from backend.ab_eval_email import build_ab_eval_snapshot_html
+            snap = build_ab_eval_snapshot_html(
+                "shadow_baseline", "2026-04-15", db,
+                pre_window_days=14, post_window_days=14, source="shadow",
+            )
+            # Fixture SELLs land 5h after their BUY, so the fallback diff
+            # is 0 days — the pairing worked iff hold_days rendered as 0d
+            # (an unpaired SELL renders the placeholder instead).
+            assert snap['post_sell_count'] == 6
+            assert '>0d</td>' in snap['html']
         finally:
             db.close()
 
