@@ -263,12 +263,36 @@ Constraints (from auto-memory, do not relitigate):
       header; also covers close-then-reopen). Same family as QuickSearch's
       existing abort-token idiom. Frontend build green; backend untouched.
 
+- [x] 2026-07-13 (iter: live-results reads + ML cohort endpoint) — Early
+      reads on both monitoring clocks, one methodology fix shipped.
+      **Exit-recon early read (owner acct, since=2026-06-18): 6 post-fix
+      exits, HEALTHY shape** — TRAILING 62.7d hold / 66.7% WR / +19.3% avg
+      (modeled 81d/76%; pre-fix pathology was 9.2d/50%), PARTIAL PROFIT
+      +40% @ 84d. Accumulating ~1 exit/4d → the ≥10-exit poller likely
+      fires ~Aug-1, earlier than the ~Sept estimate. Today's LQDA stop
+      loss: 8.0% trigger, −9.2% realized = 1.2pp cadence slippage
+      (documented class, fine).
+      **ML entry-rate clock is DOUBLY CONFOUNDED** — all 3 users pinned at
+      8/8 max_positions with cash < one position size (entry rate is
+      mechanically capped), and the pre-period had the veto active. Direct
+      read instead: 9 of 10 post-demotion BUYs carried ml_confidence under
+      the old 0.30 threshold (cluster 0.16–0.25) — the veto would have
+      blocked user-3's ENTIRE Jul-6 initial fill; demotion un-froze the
+      buy pipeline. SHIPPED `/api/admin/ml-demotion-cohort`: splits
+      post-demotion BUYs into would_veto vs passed cohorts, outcomes
+      blended open (mark-to-market) + closed (realized). Verdict rule:
+      demotion vindicated if would_veto performs no worse once closed_n
+      accumulates; if it clearly underperforms, model had edge →
+      re-graduation via LIVE A/B only.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
 
 ## Monitoring clocks (no action until due)
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).
-- ~late Jul: ML-demotion entry-rate re-check (baseline 0.367/day,
-  cutoff 2026-07-04; expect entry_rate to RISE if veto was filtering).
+- ~late Jul: ML-demotion re-check — USE /api/admin/ml-demotion-cohort
+  (entry-rate metric is confounded: portfolios pinned at max_positions +
+  pre-period had veto active). Verdict: would_veto cohort no worse than
+  passed = demotion vindicated.
 - ~Sept: exit-reconciliation poller fires at ≥10 post-fix exits.

@@ -1315,3 +1315,118 @@ async def get_audit_log(
         "total": len(events),
         "buffer_size": buffer_size(),
     }
+
+
+# ---------------------------------------------------------------------------
+# ML-demotion cohort report
+#
+# The 2026-07-04 demotion (283b33c) turned the ml_confidence veto off but
+# kept logging the confidence on every BUY. The planned "entry-rate rises
+# if the veto was filtering" re-check turned out to be doubly confounded
+# (all users pinned at max_positions with cash under one position size, and
+# the pre-period had the veto active) — measured live 2026-07-13, where
+# 9 of the 10 post-demotion buys carried confidence under the old 0.30
+# threshold. This endpoint gives the direct causal read instead: split
+# post-demotion buys into would-have-been-vetoed vs would-have-passed
+# cohorts and compare their outcomes. If the vetoed cohort performs no
+# worse, the demotion is vindicated; if it clearly underperforms, the model
+# had edge and re-graduation (via LIVE A/B only) is worth revisiting.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ml-demotion-cohort")
+@limiter.limit("30/minute")
+async def ml_demotion_cohort(
+    cutoff_date: str = Query(default="2026-07-04", description="Demotion date — BUYs after this are cohorted"),
+    threshold: float = Query(default=0.30, ge=0.0, le=1.0, description="The old veto threshold: conf below this = would-have-been-vetoed"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Would-the-veto-have-blocked-it cohort comparison. 100% read-only."""
+    # Bypass for direct (non-FastAPI) invocation — Query() defaults arrive
+    # as Query objects outside the resolver (see cap-delta-diagnostics).
+    if not isinstance(cutoff_date, str):
+        cutoff_date = "2026-07-04"
+    if not isinstance(threshold, (int, float)):
+        threshold = 0.30
+
+    try:
+        cutoff = datetime.strptime(cutoff_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="cutoff_date must be YYYY-MM-DD")
+
+    from backend.database import AIPortfolioPosition
+
+    buys = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.action == 'BUY',
+        AIPortfolioTrade.executed_at > cutoff,
+    ).order_by(AIPortfolioTrade.executed_at).all()
+
+    rows = []
+    for t in buys:
+        # Legacy rows store signal_factors as a JSON string — decode like
+        # _summarize_trades does.
+        sf = t.signal_factors
+        if isinstance(sf, str):
+            try:
+                sf = json.loads(sf)
+            except Exception:
+                sf = None
+        conf = sf.get('ml_confidence') if isinstance(sf, dict) else None
+        if conf is None:
+            continue
+        pos = db.query(AIPortfolioPosition).filter(
+            AIPortfolioPosition.ticker == t.ticker,
+            AIPortfolioPosition.user_id == t.user_id,
+        ).first()
+        if pos is not None:
+            status, gain_pct = 'open', pos.gain_loss_pct
+        else:
+            # Position closed — realize the buy against its later SELLs.
+            sells = db.query(AIPortfolioTrade).filter(
+                AIPortfolioTrade.action == 'SELL',
+                AIPortfolioTrade.ticker == t.ticker,
+                AIPortfolioTrade.user_id == t.user_id,
+                AIPortfolioTrade.executed_at > t.executed_at,
+            ).all()
+            cost = (t.price or 0) * (t.shares or 0)
+            gain = sum((s.realized_gain or 0) for s in sells)
+            status = 'closed' if sells else 'unknown'
+            gain_pct = round(gain / cost * 100, 2) if (sells and cost > 0) else None
+        rows.append({
+            'ticker': t.ticker,
+            'user_id': t.user_id,
+            'executed_at': t.executed_at.isoformat() if t.executed_at else None,
+            'ml_confidence': conf,
+            'cohort': 'would_veto' if conf < threshold else 'passed',
+            'status': status,
+            'gain_pct': gain_pct,
+        })
+
+    def _agg(cohort_rows):
+        gains = [r['gain_pct'] for r in cohort_rows if r['gain_pct'] is not None]
+        return {
+            'n': len(cohort_rows),
+            'open_n': sum(1 for r in cohort_rows if r['status'] == 'open'),
+            'closed_n': sum(1 for r in cohort_rows if r['status'] == 'closed'),
+            'avg_gain_pct': round(sum(gains) / len(gains), 2) if gains else None,
+            'win_rate': round(
+                sum(1 for g in gains if g > 0) / len(gains) * 100, 1) if gains else None,
+        }
+
+    vetoed = [r for r in rows if r['cohort'] == 'would_veto']
+    passed = [r for r in rows if r['cohort'] == 'passed']
+    return {
+        'cutoff_date': cutoff_date,
+        'threshold': threshold,
+        'would_veto': _agg(vetoed),
+        'passed': _agg(passed),
+        'trades': rows,
+        'note': (
+            'Gains blend open (mark-to-market) and closed (realized) rows — '
+            'read avg_gain_pct as an early directional signal, not a verdict. '
+            'The demotion is vindicated if would_veto performs no worse than '
+            'passed once closed_n accumulates.'
+        ),
+    }
