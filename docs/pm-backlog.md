@@ -236,13 +236,26 @@ Constraints (from auto-memory, do not relitigate):
       Also verified in the same sweep: 0 desync/96h, 4,211/4,382 rows
       fresh <24h, 0 stale high-scores, universe stable.
 
+- [x] 2026-07-13 (iter: REIT-trust supplement) — isFund-REIT decision made
+      with live data. Measured: isFund=true at our filters = 3,624 rows of
+      which 98.7% are actual funds/CEFs — letting them all in would flood
+      the guard, so NOT dropping the isFund param. Instead a second NARROW
+      screener pull: isFund=true + sector='Real Estate' (27 rows live,
+      ~22 real REITs). Coverage math: 20/21 of those REITs were ALREADY
+      scanned via index lists (WSR fresh 66.1) — the real hole is the
+      non-index tail (CLDT today; future Russell drops + REIT IPOs), so
+      this is a small structural fix, not a payoff play. Contaminant
+      handling: mutual-fund share classes (TCREX/VRSGX/JERNX, 5-letter
+      X-suffix NASDAQ convention) dropped at source; MITN/RVI fund-trusts
+      blocked by the guard at first profile fetch. Hard cap 200 rows: if
+      FMP ever silently ignores the sector filter (the volumeMoreThan
+      lesson), an uncapped merge would pour 3,624 funds into the universe —
+      oversized results are discarded uncached. Config:
+      `scanner.universe.fmp_screener.reit_trust_supplement`.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
-   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept. New: screener
-   sends isFund=false, which excludes non-index REITs from the supplement
-   (FMP marks REIT trusts isFund=true — same quirk as the hotfix); decide
-   if small-cap REIT coverage is worth letting isFund=true rows in now
-   that the security-type guard blocks CEFs at profile fetch.
+   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
 
 ## Monitoring clocks (no action until due)
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).

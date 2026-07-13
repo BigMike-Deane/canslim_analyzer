@@ -9,6 +9,7 @@ Fetches stock tickers from multiple sources:
 - Portfolio: Always included in scans
 """
 
+import re
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -28,6 +29,7 @@ _ticker_cache = {
     'smallcap600': None,
     'russell2000': None,
     'fmp_screener': None,
+    'fmp_reit_trusts': None,
     'last_fetch': {}  # Track last fetch time per key
 }
 CACHE_DURATION_HOURS = 24  # Refresh lists once per day
@@ -111,6 +113,7 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     smallcap600 = get_sp600_smallcap_tickers()
     russell2000 = get_russell2000_tickers()
     fmp_screener = get_fmp_screener_tickers()
+    reit_trusts = get_fmp_reit_trust_tickers()
 
     # Add index tickers
     combined.extend(sp500)
@@ -120,6 +123,7 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     combined.extend(smallcap600)
     combined.extend(russell2000)
     combined.extend(fmp_screener)
+    combined.extend(reit_trusts)
 
     # Remove duplicates while preserving order (portfolio first)
     # Also filter out delisted tickers (but keep portfolio tickers)
@@ -205,6 +209,87 @@ def get_fmp_screener_tickers() -> list[str]:
         logger.warning(f"FMP screener returned only {len(tickers)} tickers; ignoring as unreliable")
     except Exception as e:
         logger.warning(f"FMP company screener fetch failed: {e}")
+
+    return []
+
+
+# NASDAQ symbol convention: 5-letter symbols ending in X are mutual-fund
+# share classes (live in the isFund=true Real-Estate pull: TCREX, VRSGX,
+# JERNX). They are not intraday-tradeable equities — drop at source.
+_MUTUAL_FUND_SYMBOL = re.compile(r"^[A-Z]{4}X$")
+
+
+def get_fmp_reit_trust_tickers() -> list[str]:
+    """
+    REIT-trust supplement to the company-screener universe.
+
+    FMP marks REIT trust structures isFund=true (FRT, RLJ — the same quirk
+    the 2026-07-09 guard hotfix documented), so the main screener's
+    isFund=false filter excludes every REIT organized as a trust. Index
+    REITs still arrive via the S&P/Russell lists; this call recovers the
+    NON-INDEX tail (live 2026-07-13: 27 rows, ~22 real REITs, e.g. CLDT).
+
+    Contaminants are bounded by construction: mutual-fund share classes are
+    dropped here by symbol convention, and the remaining fund-trusts /
+    rate-securities (RVI, MITN) are blocked at first profile fetch by the
+    security-type guard. The result cap protects against FMP silently
+    ignoring the sector filter someday (the volumeMoreThan lesson) — an
+    uncapped merge would pour ~3,600 isFund=true funds into the universe.
+
+    Returns [] on any failure WITHOUT caching, so the next cycle retries.
+    """
+    if _is_cache_valid('fmp_reit_trusts'):
+        return _ticker_cache['fmp_reit_trusts']
+
+    try:
+        from config_loader import config as yaml_config
+        screener_cfg = yaml_config.get('scanner.universe.fmp_screener', {}) or {}
+    except Exception:
+        screener_cfg = {}
+
+    if not screener_cfg.get('enabled', True):
+        return []
+    if not screener_cfg.get('reit_trust_supplement', True):
+        return []
+
+    api_key = os.environ.get('FMP_API_KEY', '') or FMP_API_KEY
+    if not api_key:
+        return []
+
+    try:
+        url = "https://financialmodelingprep.com/stable/company-screener"
+        params = {
+            'marketCapMoreThan': screener_cfg.get('market_cap_more_than', 150_000_000),
+            'priceMoreThan': screener_cfg.get('price_more_than', 1),
+            'isActivelyTrading': 'true',
+            'isEtf': 'false',
+            'isFund': 'true',
+            'sector': 'Real Estate',
+            'limit': 1000,
+            'apikey': api_key,
+        }
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        exchanges = set(screener_cfg.get('exchanges', ['NYSE', 'NASDAQ', 'AMEX']))
+        tickers = [row['symbol'] for row in data
+                   if row.get('symbol')
+                   and row.get('exchangeShortName') in exchanges
+                   and not _MUTUAL_FUND_SYMBOL.match(row['symbol'])]
+
+        # Sanity CAP (not floor): this is a narrow pull (~27 live). A large
+        # result means FMP stopped honoring the sector filter — merging it
+        # would flood the universe with funds, so ignore and don't cache.
+        if len(tickers) <= 200:
+            logger.info(f"Fetched {len(tickers)} REIT-trust tickers from FMP screener")
+            _update_cache('fmp_reit_trusts', tickers)
+            return tickers
+        logger.warning(
+            f"FMP REIT-trust screener returned {len(tickers)} rows — sector "
+            f"filter likely ignored; discarding as unreliable")
+    except Exception as e:
+        logger.warning(f"FMP REIT-trust screener fetch failed: {e}")
 
     return []
 

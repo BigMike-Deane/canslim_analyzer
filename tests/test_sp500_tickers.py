@@ -37,14 +37,14 @@ def _reset_ticker_cache():
     sp500_tickers._ticker_cache = {
         'sp500': None, 'nasdaq100': None, 'dowjones': None,
         'midcap400': None, 'smallcap600': None, 'russell2000': None,
-        'fmp_screener': None,
+        'fmp_screener': None, 'fmp_reit_trusts': None,
         'last_fetch': {},
     }
     yield
     sp500_tickers._ticker_cache = {
         'sp500': None, 'nasdaq100': None, 'dowjones': None,
         'midcap400': None, 'smallcap600': None, 'russell2000': None,
-        'fmp_screener': None,
+        'fmp_screener': None, 'fmp_reit_trusts': None,
         'last_fetch': {},
     }
 
@@ -770,6 +770,84 @@ class TestGetFmpScreenerTickers:
         mock_get.assert_not_called()
 
 
+class TestGetFmpReitTrustTickers:
+    """Covers get_fmp_reit_trust_tickers — the isFund=true + sector=Real
+    Estate supplement (2026-07-13). FMP marks REIT trusts isFund=true, so
+    the main screener excludes every non-index REIT (live hole: CLDT)."""
+
+    def _mock_resp(self, rows):
+        resp = MagicMock()
+        resp.json.return_value = rows
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def test_happy_path_filters_and_caches(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        rows = [
+            {"symbol": "CLDT", "exchangeShortName": "NYSE"},
+            {"symbol": "WSR", "exchangeShortName": "NYSE"},
+            {"symbol": "TCREX", "exchangeShortName": "NASDAQ"},  # mutual-fund class
+            {"symbol": "VRSGX", "exchangeShortName": "NYSE"},    # mutual-fund class
+            {"symbol": "LSE9", "exchangeShortName": "LSE"},      # non-US
+            {"symbol": None, "exchangeShortName": "NYSE"},
+        ]
+        with patch("sp500_tickers.requests.get", return_value=self._mock_resp(rows)) as mock_get:
+            result = sp500_tickers.get_fmp_reit_trust_tickers()
+        assert result == ["CLDT", "WSR"]
+        assert sp500_tickers._ticker_cache['fmp_reit_trusts'] == ["CLDT", "WSR"]
+        params = mock_get.call_args.kwargs.get("params") or mock_get.call_args.args[1]
+        assert params["isFund"] == "true"
+        assert params["sector"] == "Real Estate"
+
+    def test_four_letter_x_ticker_not_dropped(self, monkeypatch):
+        """The mutual-fund convention is FIVE letters ending in X — a
+        4-letter ticker ending in X (e.g. a normal equity) must survive."""
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        rows = [{"symbol": "REXX", "exchangeShortName": "NYSE"}]
+        with patch("sp500_tickers.requests.get", return_value=self._mock_resp(rows)):
+            result = sp500_tickers.get_fmp_reit_trust_tickers()
+        assert result == ["REXX"]
+
+    def test_oversized_result_rejected_and_not_cached(self, monkeypatch):
+        """The cap protects against FMP silently ignoring the sector filter
+        (the volumeMoreThan lesson) — merging thousands of isFund=true rows
+        would flood the universe with funds."""
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        rows = [{"symbol": f"F{i}", "exchangeShortName": "NYSE"} for i in range(500)]
+        with patch("sp500_tickers.requests.get", return_value=self._mock_resp(rows)):
+            result = sp500_tickers.get_fmp_reit_trust_tickers()
+        assert result == []
+        assert sp500_tickers._ticker_cache['fmp_reit_trusts'] is None
+
+    def test_network_failure_returns_empty_and_not_cached(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        with patch("sp500_tickers.requests.get", side_effect=ConnectionError("down")):
+            result = sp500_tickers.get_fmp_reit_trust_tickers()
+        assert result == []
+        assert sp500_tickers._ticker_cache['fmp_reit_trusts'] is None
+
+    def test_cache_hit_skips_network(self):
+        sp500_tickers._ticker_cache['fmp_reit_trusts'] = ['CACHED']
+        sp500_tickers._ticker_cache['last_fetch'] = {'fmp_reit_trusts': datetime.now()}
+        with patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_fmp_reit_trust_tickers()
+        assert result == ['CACHED']
+        mock_get.assert_not_called()
+
+    def test_disabled_via_supplement_flag(self, monkeypatch):
+        monkeypatch.setenv("FMP_API_KEY", "test-key")
+        from config_loader import config as yaml_config
+        with patch.object(
+            yaml_config, "get",
+            side_effect=lambda key, default=None:
+            {"enabled": True, "reit_trust_supplement": False}
+            if key == "scanner.universe.fmp_screener" else default,
+        ), patch("sp500_tickers.requests.get") as mock_get:
+            result = sp500_tickers.get_fmp_reit_trust_tickers()
+        assert result == []
+        mock_get.assert_not_called()
+
+
 class TestGetAllTickers:
     """Covers sp500_tickers.py:69-132."""
 
@@ -800,6 +878,9 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_fmp_screener_tickers",
             return_value=["SCREENR"],
+        ), patch(
+            "sp500_tickers.get_fmp_reit_trust_tickers",
+            return_value=["REITSUP"],
         ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value=set(),
@@ -870,6 +951,8 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_fmp_screener_tickers", return_value=[],
         ), patch(
+            "sp500_tickers.get_fmp_reit_trust_tickers", return_value=[],
+        ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value={"GONESTOCK"},  # marked delisted
         ):
@@ -897,6 +980,8 @@ class TestGetAllTickers:
             "sp500_tickers.get_russell2000_tickers", return_value=[],
         ), patch(
             "sp500_tickers.get_fmp_screener_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_fmp_reit_trust_tickers", return_value=[],
         ), patch(
             "data_fetcher.get_delisted_tickers"
         ) as mock_delisted:
@@ -926,6 +1011,8 @@ class TestGetAllTickers:
             "sp500_tickers.get_russell2000_tickers", return_value=[],
         ), patch(
             "sp500_tickers.get_fmp_screener_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_fmp_reit_trust_tickers", return_value=[],
         ), patch(
             "data_fetcher.get_delisted_tickers",
             side_effect=RuntimeError("db error"),

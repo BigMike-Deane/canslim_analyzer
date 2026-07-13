@@ -36,6 +36,13 @@ scanner:
       price_more_than: 1                # skip sub-$1 husks
       limit: 10000
       exchanges: [NYSE, NASDAQ, AMEX]
+      # FMP marks REIT trust structures isFund=true (FRT, RLJ — the Jul-09
+      # hotfix quirk), so the isFund=false pull above excludes non-index
+      # REITs. A second narrow pull (isFund=true + sector=Real Estate,
+      # ~27 rows live) recovers them; mutual-fund share classes dropped by
+      # symbol convention, residual fund-trusts blocked by the security-type
+      # guard at first profile fetch.
+      reit_trust_supplement: true
 
   # Score-integrity telemetry: alert (log + webhook) when the share of
   # freshly-scanned stocks with c_score=0 jumps more than this many
