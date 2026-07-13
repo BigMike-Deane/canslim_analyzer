@@ -214,6 +214,19 @@ Constraints (from auto-memory, do not relitigate):
       25 staff) deliberately NOT blocked: relaxing the CEF zero-employee
       conjunction risks FPs, and it scores 17. Retro-sweep blocked+zeroed
       existing rows (guard fires first-seen only).
+      (3) **Shadow-trader geometric partial-sell loop** (found while
+      verifying fix 1: 4,282 SELLs vs 90 BUYs per stack): shadow positions
+      are rebuilt each cycle by FIFO-replaying the ShadowTrade log, and the
+      rebuild hard-coded partial_profit_taken=0 — so the 25% tier re-fired
+      EVERY cycle on 25% of the remainder (PANW alone: 1,381 geometric
+      partial SELLs). Fix: the replay now reconstructs the accumulator from
+      partial-SELL reason strings (the "PARTIAL PROFIT {target}%" target
+      equals the live accumulator after the sell since take_pct = target −
+      already_taken), resetting on full close. ⚠️ Both stacks' trade
+      histories before 2026-07-13 are polluted by the loop — shadow A/B
+      summary stats (post_sell_count ~4,246) are garbage until stacks are
+      reset or windows exclude the polluted span. OWNER DECISION pending on
+      reset.
       Also verified in the same sweep: 0 desync/96h, 4,211/4,382 rows
       fresh <24h, 0 stale high-scores, universe stable.
 

@@ -52,6 +52,7 @@ Limitations (v1):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Iterable, List, Optional
@@ -81,6 +82,13 @@ SHADOW_USER_ID = -100
 # Models for which the wrapper substitutes synthetic in-memory state. Queries
 # and writes against any other model fall through to the sandbox session.
 _AI_MODELS = (AIPortfolioPosition, AIPortfolioConfig, AIPortfolioTrade, AIPortfolioSnapshot)
+
+# Target pct embedded in partial-profit sell reasons by
+# trading_engine.get_partial_profit_action ("PARTIAL PROFIT 25%: Up ...").
+# After a partial executes, live ai_trader's accumulator equals that TARGET
+# (take_pct = target - already_taken), so replaying the most recent match
+# reconstructs partial_profit_taken exactly.
+_PARTIAL_TARGET_RE = re.compile(r"PARTIAL PROFIT (\d+(?:\.\d+)?)%")
 
 
 # ── Synthetic ORM-shaped objects ──────────────────────────────────────────────
@@ -287,6 +295,7 @@ class ShadowSession:
         # canslim_score, is_growth_stock, signal_factors}
         from collections import defaultdict, deque
         open_buys = defaultdict(deque)
+        partial_taken = defaultdict(float)
         cash = self._synthetic_config.current_cash
 
         for t in trades:
@@ -312,6 +321,18 @@ class ShadowSession:
                     else:
                         head["shares"] -= shares_to_sell
                         shares_to_sell = 0
+                # Rebuild partial_profit_taken from the sell log. Without
+                # this the rebuilt position always claimed 0% taken and the
+                # 25% tier re-fired EVERY cycle, selling 25% of the remainder
+                # forever (live 2026-07-13: PANW emitted 1,381 geometric
+                # partial SELLs; 4,282 SELLs vs 90 BUYs per stack).
+                m = _PARTIAL_TARGET_RE.search(t.reason or "")
+                if m:
+                    partial_taken[t.ticker] = max(
+                        partial_taken[t.ticker], float(m.group(1)))
+                if not queue:
+                    # Full close — the next BUY starts a fresh position.
+                    partial_taken[t.ticker] = 0.0
 
         self._synthetic_config.current_cash = cash
 
@@ -360,7 +381,7 @@ class ShadowSession:
                 peak_price=max(weighted_cost, current_price),
                 peak_date=first_entry["executed_at"],
                 pyramid_count=max(0, len(entries) - 1),
-                partial_profit_taken=0,
+                partial_profit_taken=partial_taken.get(ticker, 0.0),
                 user_id=SHADOW_USER_ID,
             )
             self._synthetic_positions.append(position)

@@ -222,6 +222,65 @@ class TestSyntheticPositionDerivation:
         assert p.shares == 15
         assert p.pyramid_count == 1
 
+    def test_partial_profit_taken_rebuilt_from_sell_log(self, db_session):
+        """Regression for the 2026-07-13 geometric partial-sell loop: the
+        rebuilt position hard-coded partial_profit_taken=0, so the 25% tier
+        re-fired every cycle on 25% of the REMAINDER (live: PANW emitted
+        1,381 partial SELLs; 4,282 SELLs vs 90 BUYs per stack). The target
+        pct in the reason string equals the live accumulator after the sell
+        (take_pct = target - already_taken), so the replay restores it."""
+        strategy = _make_strategy(db_session)
+        t0 = datetime.now(timezone.utc) - timedelta(days=10)
+        _add_shadow_trade(db_session, strategy.id, "PANW", "BUY", 10, 200.0,
+                          executed_at=t0)
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 2.5, 260.0,
+            reason="PARTIAL PROFIT 25%: Up 25.2%, score 80 still strong",
+            executed_at=t0 + timedelta(days=5))
+        ss = ShadowSession(db_session, strategy, [])
+        assert len(ss._synthetic_positions) == 1
+        assert ss._synthetic_positions[0].partial_profit_taken == 25.0
+
+    def test_partial_profit_taken_keeps_highest_tier(self, db_session):
+        """A later 40-tier sell (target 50%) supersedes the 25% record."""
+        strategy = _make_strategy(db_session)
+        t0 = datetime.now(timezone.utc) - timedelta(days=10)
+        _add_shadow_trade(db_session, strategy.id, "PANW", "BUY", 10, 200.0,
+                          executed_at=t0)
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 2.5, 260.0,
+            reason="PARTIAL PROFIT 25%: Up 25.2%, score 80 still strong",
+            executed_at=t0 + timedelta(days=5))
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 2.5, 290.0,
+            reason="PARTIAL PROFIT 50%: Up 42.0%, score 78 still strong",
+            executed_at=t0 + timedelta(days=7))
+        ss = ShadowSession(db_session, strategy, [])
+        assert ss._synthetic_positions[0].partial_profit_taken == 50.0
+
+    def test_partial_profit_taken_resets_after_full_close(self, db_session):
+        """Full close ends the lot: a re-entry BUY must start at 0% taken,
+        and non-partial SELL reasons must not set the accumulator."""
+        strategy = _make_strategy(db_session)
+        t0 = datetime.now(timezone.utc) - timedelta(days=10)
+        _add_shadow_trade(db_session, strategy.id, "PANW", "BUY", 10, 200.0,
+                          executed_at=t0)
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 2.5, 260.0,
+            reason="PARTIAL PROFIT 25%: Up 25.2%, score 80 still strong",
+            executed_at=t0 + timedelta(days=5))
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 7.5, 250.0,
+            reason="TRAILING STOP (18%): peak $290.00",
+            executed_at=t0 + timedelta(days=6))
+        _add_shadow_trade(db_session, strategy.id, "PANW", "BUY", 8, 240.0,
+                          executed_at=t0 + timedelta(days=8))
+        ss = ShadowSession(db_session, strategy, [])
+        assert len(ss._synthetic_positions) == 1
+        p = ss._synthetic_positions[0]
+        assert p.shares == 8
+        assert p.partial_profit_taken == 0.0
+
 
 # ── ShadowSession: query / add / delete intercepts ────────────────────────────
 
