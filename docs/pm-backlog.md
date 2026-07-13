@@ -253,6 +253,16 @@ Constraints (from auto-memory, do not relitigate):
       oversized results are discarded uncached. Config:
       `scanner.universe.fmp_screener.reit_trust_supplement`.
 
+- [x] 2026-07-13 (iter: frontend race guards) — Closed the LAST deferred
+      item from the Jul-03 audit: out-of-order response guards on the four
+      flagged spots (`ce9d69c`). EdgeScorecard window switch + Screener
+      filter/slider + Notifications filter/paging get a monotonic fetchSeq
+      ref (a slower earlier response is dropped, its finally doesn't clear
+      the newer fetch's spinner); PositionDetailModal gets the effect-scoped
+      stale flag (tap A → tap B: A's late resolve must not render under B's
+      header; also covers close-then-reopen). Same family as QuickSearch's
+      existing abort-token idiom. Frontend build green; backend untouched.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
