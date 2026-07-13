@@ -1718,7 +1718,7 @@ _SCANNER_SETTING_KEY = "scanner.config"
 
 
 def load_persisted_scanner_config(default_source: str = "all",
-                                  default_interval: int = 35) -> tuple[str, int]:
+                                  default_interval: int = 90) -> tuple[str, int]:
     """Return (source, interval_minutes) from the DB-persisted scanner config.
 
     Falls back to the supplied defaults when no row exists or the row is

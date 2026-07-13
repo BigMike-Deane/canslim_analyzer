@@ -285,6 +285,18 @@ Constraints (from auto-memory, do not relitigate):
       accumulates; if it clearly underperforms, model had edge →
       re-graduation via LIVE A/B only.
 
+- [x] 2026-07-13 (iter: scan cadence honesty) — Scanner interval was
+      STILL 35 min (persisted May-13, sized for the pre-expansion
+      ~28.5-min cycle). Against the post-Jul-6 ~79-min structural cycle,
+      the 35-min tick just skip-fired (overlap guard held — no bug) into
+      an accidental 105-min cadence with a misleading "35" UI label; the
+      Jul-06 "90-min holds w/ ~11-min headroom" verdict was written
+      believing the interval WAS 90. Set 90 everywhere: persisted DB row
+      (UPDATE applied), boot default 35→90 in main.py/scheduler.py.
+      Effective cadence 105→90 min (~+2 cycles/day; Jul-06 verified 0
+      FMP 429s at this load). Tail case: a cycle >90 min skips one firing
+      → 180-min gap, rare and trivial vs the 48h freshness gate.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.

@@ -217,18 +217,22 @@ async def lifespan(app: FastAPI):
                 from backend.scheduler import (
                     start_continuous_scanning, load_persisted_scanner_config,
                 )
-                # Round 1+2 fetcher tuning brought full-universe scan to
-                # ~28.5 min (was ~58 min). 35 min gives a 22% buffer over
-                # observed wall-clock — robust to normal Yahoo/FMP variance
-                # while keeping near-real-time freshness. If a scan ever
-                # exceeds 35 min APScheduler skips one firing → that cycle
-                # falls back to 70 min (max_instances=1).
+                # 90 min matches the owner's documented cadence (CLAUDE.md)
+                # and the 2026-07-06 full-coverage decision: the expanded
+                # ~4k universe scans in ~79 min structurally (per-stock live
+                # price + Yahoo adjusted-EPS), so 90 leaves the ~11-min
+                # headroom that verdict was written around. The previous 35
+                # was sized for the pre-expansion ~28.5-min cycle; against a
+                # 79-min cycle it just skip-fired to an accidental 105-min
+                # cadence with a misleading UI label. If a cycle ever runs
+                # past 90, APScheduler skips one firing → that cycle falls
+                # back to 180 min — rare and well inside freshness gates.
                 source, interval = load_persisted_scanner_config(
-                    default_source="all", default_interval=35,
+                    default_source="all", default_interval=90,
                 )
                 logger.info(
                     f"Auto-starting scanner: source={source}, interval={interval} minutes"
-                    f"{' (from persisted config)' if (source, interval) != ('all', 35) else ''}"
+                    f"{' (from persisted config)' if (source, interval) != ('all', 90) else ''}"
                 )
                 start_continuous_scanning(source=source, interval_minutes=interval)
                 logger.info("Scanner auto-started successfully")
