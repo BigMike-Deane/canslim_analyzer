@@ -844,6 +844,12 @@ def is_non_equity_profile(description, full_time_employees) -> bool:
 # Case-sensitive word match: 'Netflix' must not trip on its embedded 'etf'.
 _ETF_NAME_TOKEN = re.compile(r"\bETF\b")
 
+# Coupon-rate token in the security NAME — preferred shares, baby bonds, and
+# listed notes carry their rate in the listing name ("Saratoga Investment
+# Corp 7.50%", "Ellington Credit Co. 8.5% 30-MAR-2031"; both live 2026-07-13).
+# No operating company's common stock has a percent token in its name.
+_RATE_NAME_TOKEN = re.compile(r"\b\d{1,2}(?:\.\d+)?\s*%")
+
 
 def non_equity_reason(profile: dict) -> Optional[str]:
     """
@@ -864,6 +870,13 @@ def non_equity_reason(profile: dict) -> Optional[str]:
         legacy universe sources without flags. isFund must NOT be used:
         FMP sets it for REIT trust structures (FRT, RLJ — live-verified),
         which are legitimate CANSLIM candidates.
+
+    Two more classes found live 2026-07-13 in the recurring DATA-GAPS list:
+      - SPAC shells FMP does NOT label 'Shell Companies' (they arrive as
+        'Financial - Conglomerates' / 'Asset Management') — caught by their
+        self-description ("blank check" / "special purpose acquisition").
+      - Preferred shares / baby bonds / listed notes — caught by the coupon
+        rate in the listing name ("Saratoga Investment Corp 7.50%").
     """
     if not profile:
         return None
@@ -872,6 +885,26 @@ def non_equity_reason(profile: dict) -> Optional[str]:
         return "closed_end_fund_not_equity"
     if (profile.get("industry") or "").strip() == "Shell Companies":
         return "spac_shell_not_operating_company"
+    # FMP's industry taxonomy only labels SOME shells 'Shell Companies' — a
+    # second live cohort (2026-07-13: OHAC, GUAC, HCACU + ~40 more DATA-GAP
+    # tickers) arrives as 'Financial - Conglomerates' or 'Asset Management'.
+    # The self-description is the stable signal: shells call themselves a
+    # "blank check" company or "special purpose acquisition" company.
+    # Conjunction with a small headcount (shells: 0-3 live; missing counts
+    # read as 0) so a SPAC SPONSOR whose description mentions the blank-check
+    # companies it sponsors can't trip a permanent block — same design as the
+    # CEF conjunction above (deSPACs verified clean: DKNG/LCID descriptions
+    # carry no SPAC history).
+    desc = (profile.get("description") or "").lower()
+    if "blank check" in desc or "special purpose acquisition" in desc:
+        try:
+            employees = int(profile.get("full_time_employees") or 0)
+        except (ValueError, TypeError):
+            employees = 0
+        if employees < 50:
+            return "spac_shell_not_operating_company"
+    if _RATE_NAME_TOKEN.search(profile.get("name") or ""):
+        return "preferred_or_debt_series_not_equity"
     if profile.get("is_etf"):
         return "etf_or_fund_not_equity"
     if _ETF_NAME_TOKEN.search(profile.get("name") or ""):

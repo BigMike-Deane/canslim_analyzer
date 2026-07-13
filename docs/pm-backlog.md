@@ -190,6 +190,33 @@ Constraints (from auto-memory, do not relitigate):
       shrink alarm that likely fired) were destroyed by docker-compose
       down — alarms that only log+webhook leave no trace across deploys.
 
+- [x] 2026-07-13 (iter: live anomaly sweep) — Two fixes from the 96h
+      log sweep.
+      (1) **Shadow A/B eval email crash**: the 2026-07-13 Monday 9:00 UTC
+      run sent the live verdict fine but crashed for BOTH shadow stacks —
+      ab_eval_email's prior-BUY map keyed on t.user_id, which ShadowTrade
+      rows don't have (they scope by shadow_strategy_id; the dashboard
+      endpoint already used a _scope_id helper, the email path never got
+      it). Hoisted _trade_scope_id to module level in routes/admin.py,
+      shared by both paths. Tests missed it because the shadow fixture
+      seeded only SELLs — BUYs added + explicit regression test.
+      (2) **Security-type guard round 3**: the recurring DATA-GAPS 90 in
+      the logs decomposed into (a) SPAC shells FMP does NOT label 'Shell
+      Companies' — they arrive as 'Financial - Conglomerates' / 'Asset
+      Management' (OHAC "Blank check SPAC", GUAC, HCACU "special purpose
+      acquisition company"); caught by description-phrase + <50-employee
+      conjunction (sponsor-safe; DKNG/LCID descriptions verified clean of
+      SPAC history), (b) preferred/baby-bond series with the coupon in the
+      listing name ("Saratoga Investment Corp 7.50%", "Ellington Credit
+      Co. 8.5% 30-MAR-2031"); caught by a rate-token regex on the name
+      ('Capstone Energy+' must not trip), (c) legit data-poor micro caps
+      (AIBZ) — correctly left alone. BOT-class (self-described CEF with
+      25 staff) deliberately NOT blocked: relaxing the CEF zero-employee
+      conjunction risks FPs, and it scores 17. Retro-sweep blocked+zeroed
+      existing rows (guard fires first-seen only).
+      Also verified in the same sweep: 0 desync/96h, 4,211/4,382 rows
+      fresh <24h, 0 stale high-scores, universe stable.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept. New: screener

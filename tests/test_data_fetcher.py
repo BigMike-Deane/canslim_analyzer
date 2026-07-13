@@ -1310,6 +1310,71 @@ class TestNonEquityReason:
             "full_time_employees": 5000,
         }) is None
 
+    # ── 2026-07-13 extensions: shells FMP mislabels + preferred/debt series ──
+    # Fixtures below are verbatim live FMP profiles from the recurring
+    # DATA-GAPS cohort that dodged every Jul-09 signal.
+
+    def test_blank_check_description_detected(self):
+        """OHAC live: industry 'Financial - Conglomerates', not 'Shell
+        Companies' — the self-description is the only shell signal."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Oceanhawk Acquisition Corp. Class A Ordinary Shares",
+            "industry": "Financial - Conglomerates",
+            "description": "Blank check SPAC incorporated in the Cayman Islands.",
+            "full_time_employees": "2",
+        }) == "spac_shell_not_operating_company"
+
+    def test_spac_description_detected(self):
+        """HCACU live: says 'special purpose acquisition company', never
+        'blank check' — both phrases must trigger."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Hall Chadwick Acquisition Corp.",
+            "industry": "Asset Management",
+            "description": "Functions as a special purpose acquisition "
+                           "company (SPAC), established with the primary goal "
+                           "of executing a business combination.",
+            "full_time_employees": "3",
+        }) == "spac_shell_not_operating_company"
+
+    def test_spac_sponsor_with_staff_not_flagged(self):
+        """Employee conjunction: an asset manager whose description mentions
+        the blank check companies it SPONSORS is an operating company."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Cantor Fitzgerald, Inc.",
+            "industry": "Asset Management",
+            "description": "Sponsors blank check companies and manages "
+                           "special purpose acquisition vehicles.",
+            "full_time_employees": 12000,
+        }) is None
+
+    def test_preferred_series_rate_name_detected(self):
+        """SAV live: preferred series list with the coupon in the name."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Saratoga Investment Corp 7.50%",
+            "industry": "Asset Management",
+            "description": "A business development firm.",
+            "full_time_employees": "34",
+        }) == "preferred_or_debt_series_not_equity"
+
+    def test_baby_bond_rate_name_detected(self):
+        """ELLA live: listed note with rate + maturity in the name."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Ellington Credit Co. 8.5% 30-MAR-2031",
+            "industry": "Asset Management",
+            "description": "Operates as a real estate investment trust.",
+            "full_time_employees": None,
+        }) == "preferred_or_debt_series_not_equity"
+
+    def test_operating_company_with_symbol_in_name_not_flagged(self):
+        """CEPL live: '+' in the name must not read as a rate token, and a
+        data-poor operating company must stay scannable."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Capstone Energy+, Inc.",
+            "industry": "Electrical Equipment & Parts",
+            "description": "Provides behind-the-meter energy solutions.",
+            "full_time_employees": "100",
+        }) is None
+
 
 class TestFmpConfirmsDelisted:
     """Tier 2: _fmp_confirms_delisted — verification gate before 30-day exclusion."""
