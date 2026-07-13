@@ -213,7 +213,13 @@ Constraints (from auto-memory, do not relitigate):
       (AIBZ) — correctly left alone. BOT-class (self-described CEF with
       25 staff) deliberately NOT blocked: relaxing the CEF zero-employee
       conjunction risks FPs, and it scores 17. Retro-sweep blocked+zeroed
-      existing rows (guard fires first-seen only).
+      existing rows (guard fires first-seen only); follow-ups same session:
+      Units?/Warrants?$ name-suffix signal (XCBEU-class, 17 more blocked
+      incl. NOVTU tangible-equity units) and block_ticker_permanently now
+      zeroes the stocks row (32 zombie scores found). Guard blocks ~328.
+      Sweep recipe: MUST pace FMP calls (0.4s) + retry unresolved — an
+      unpaced sweep trips the 429 circuit and silently classifies the rest
+      of the list against empty profiles.
       (3) **Shadow-trader geometric partial-sell loop** (found while
       verifying fix 1: 4,282 SELLs vs 90 BUYs per stack): shadow positions
       are rebuilt each cycle by FIFO-replaying the ShadowTrade log, and the
@@ -225,8 +231,8 @@ Constraints (from auto-memory, do not relitigate):
       already_taken), resetting on full close. ⚠️ Both stacks' trade
       histories before 2026-07-13 are polluted by the loop — shadow A/B
       summary stats (post_sell_count ~4,246) are garbage until stacks are
-      reset or windows exclude the polluted span. OWNER DECISION pending on
-      reset.
+      reset or windows exclude the polluted span. RESET DONE (user-approved): 8,744 rows wiped, both stacks
+      restarted clean at $25k on 2026-07-13.
       Also verified in the same sweep: 0 desync/96h, 4,211/4,382 rows
       fresh <24h, 0 stale high-scores, universe stable.
 
