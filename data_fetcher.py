@@ -808,6 +808,17 @@ def block_ticker_permanently(ticker: str, reason: str, source: str = "security_t
                 recheck_after=far_future,
             ))
             _known_delisted_cache.add(ticker)
+        # Zero any existing stocks row: a block excludes the ticker from all
+        # future scans, so a leftover score would freeze forever as a zombie
+        # (live 2026-07-13: 32 blocked tickers still carried scores, e.g.
+        # EMIS 45.8 blocked first-seen that morning with its old row intact).
+        from backend.database import Stock
+        row = db.query(Stock).filter(Stock.ticker == ticker).first()
+        if row:
+            for col in ("canslim_score", "previous_score", "score_change",
+                        "c_score", "a_score", "n_score", "s_score",
+                        "l_score", "i_score", "m_score", "growth_mode_score"):
+                setattr(row, col, 0)
         db.commit()
         logger.info(f"Permanently blocked {ticker}: {reason} (source={source})")
         return True
@@ -850,6 +861,13 @@ _ETF_NAME_TOKEN = re.compile(r"\bETF\b")
 # No operating company's common stock has a percent token in its name.
 _RATE_NAME_TOKEN = re.compile(r"\b\d{1,2}(?:\.\d+)?\s*%")
 
+# Unit / warrant listing classes, named as such at the END of the security
+# name ("X3 Acquisition Corp. Ltd. Unit", "RRE Ventures Acquisition Corp.
+# Units", "Churchill Capital Corp XI Warrants"). These are share+warrant
+# bundles or bare warrants — never common equity, regardless of issuer.
+# Anchored at the end so "United" / "Unit Corporation of X" don't match.
+_UNIT_WARRANT_NAME_SUFFIX = re.compile(r"\b(?:Units?|Warrants?)\s*$")
+
 
 def non_equity_reason(profile: dict) -> Optional[str]:
     """
@@ -877,6 +895,9 @@ def non_equity_reason(profile: dict) -> Optional[str]:
         self-description ("blank check" / "special purpose acquisition").
       - Preferred shares / baby bonds / listed notes — caught by the coupon
         rate in the listing name ("Saratoga Investment Corp 7.50%").
+      - Unit / warrant listing classes — caught by the Units?/Warrants?
+        name suffix ("X3 Acquisition Corp. Ltd. Unit"; its description says
+        neither 'blank check' nor 'special purpose acquisition').
     """
     if not profile:
         return None
@@ -905,6 +926,8 @@ def non_equity_reason(profile: dict) -> Optional[str]:
             return "spac_shell_not_operating_company"
     if _RATE_NAME_TOKEN.search(profile.get("name") or ""):
         return "preferred_or_debt_series_not_equity"
+    if _UNIT_WARRANT_NAME_SUFFIX.search(profile.get("name") or ""):
+        return "unit_or_warrant_not_common_equity"
     if profile.get("is_etf"):
         return "etf_or_fund_not_equity"
     if _ETF_NAME_TOKEN.search(profile.get("name") or ""):

@@ -1200,6 +1200,34 @@ class TestBlockTickerPermanently:
         monkeypatch.setattr(data_fetcher, "_get_db_session", lambda: None)
         assert data_fetcher.block_ticker_permanently("X", reason="r") is False
 
+    def test_block_zeroes_existing_stocks_row(self, db_session):
+        """A block excludes the ticker from all future scans, so a leftover
+        score freezes forever as a zombie (live 2026-07-13: 32 blocked
+        tickers still carried scores — first-seen guard blocks never touched
+        pre-existing rows). Blocking must zero the row in the same call."""
+        from backend.database import Stock
+        db_session.add(Stock(ticker="ZMBI", name="Zombie Shell Corp.",
+                             canslim_score=45.8, c_score=13.0, a_score=9.0,
+                             growth_mode_score=22.0))
+        db_session.commit()
+
+        assert data_fetcher.block_ticker_permanently(
+            "ZMBI", reason="spac_shell_not_operating_company") is True
+
+        db_session.expire_all()
+        row = db_session.query(Stock).filter_by(ticker="ZMBI").first()
+        assert row.canslim_score == 0
+        assert row.c_score == 0
+        assert row.a_score == 0
+        assert row.growth_mode_score == 0
+
+    def test_block_without_stocks_row_still_succeeds(self, db_session):
+        """First-seen tickers have no stocks row yet — zeroing must be a
+        no-op, not a failure."""
+        assert data_fetcher.block_ticker_permanently(
+            "NOROW", reason="spac_shell_not_operating_company") is True
+        assert "NOROW" in data_fetcher.get_delisted_tickers()
+
 
 class TestIsNonEquityProfile:
     """is_non_equity_profile — CEF detection. Both providers' type flags call
@@ -1373,6 +1401,43 @@ class TestNonEquityReason:
             "industry": "Electrical Equipment & Parts",
             "description": "Provides behind-the-meter energy solutions.",
             "full_time_employees": "100",
+        }) is None
+
+    def test_spac_unit_name_suffix_detected(self):
+        """XCBEU live: a SPAC unit whose description says NEITHER 'blank
+        check' NOR 'special purpose acquisition' — the ' Unit' name suffix
+        is the only signal (units are share+warrant bundles, never common
+        equity, regardless of issuer)."""
+        assert data_fetcher.non_equity_reason({
+            "name": "X3 Acquisition Corp. Ltd. Unit",
+            "industry": "Financial - Conglomerates",
+            "description": "Primarily focuses on facilitating business "
+                           "combinations with other companies.",
+            "full_time_employees": None,
+        }) == "unit_or_warrant_not_common_equity"
+
+    def test_warrant_name_suffix_detected(self):
+        assert data_fetcher.non_equity_reason({
+            "name": "Churchill Capital Corp XI Warrants",
+            "industry": "Financial - Conglomerates",
+            "description": "Warrants of Churchill Capital Corp XI.",
+            "full_time_employees": None,
+        }) == "unit_or_warrant_not_common_equity"
+
+    def test_unit_prefix_company_name_not_flagged(self):
+        """The suffix anchor matters: Unit Corporation (oil driller) STARTS
+        with 'Unit' and 'United'-style names embed it — neither may trip."""
+        assert data_fetcher.non_equity_reason({
+            "name": "Unit Corporation",
+            "industry": "Oil & Gas Drilling",
+            "description": "Contract drilling of onshore oil and gas wells.",
+            "full_time_employees": "500",
+        }) is None
+        assert data_fetcher.non_equity_reason({
+            "name": "United Airlines Holdings, Inc.",
+            "industry": "Airlines",
+            "description": "Provides air transportation services.",
+            "full_time_employees": "103000",
         }) is None
 
 
