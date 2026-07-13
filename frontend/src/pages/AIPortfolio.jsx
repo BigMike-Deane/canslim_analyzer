@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatDateTime, formatTime } from '../api'
 import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
@@ -491,6 +491,9 @@ function EdgeScorecard({ edge }) {
   const [range, setRange] = useState('all')
   const [data, setData] = useState(edge)
   const [loading, setLoading] = useState(false)
+  // Monotonic request id: rapid window clicks fire overlapping fetches, and
+  // a slower earlier response must not clobber the window selected last.
+  const fetchSeq = useRef(0)
 
   // Re-sync to the parent's all-window edge when it loads/changes, but only
   // while viewing `all` — don't clobber a narrower window the user selected.
@@ -501,15 +504,17 @@ function EdgeScorecard({ edge }) {
   async function selectRange(next) {
     if (next === range) return
     setRange(next)
+    const seq = ++fetchSeq.current
     if (next === 'all') { setData(edge); return }
     setLoading(true)
     try {
       const win = EDGE_WINDOWS.find(w => w.value === next)
-      setData(await api.getAIPortfolioEdge(win.days))
+      const result = await api.getAIPortfolioEdge(win.days)
+      if (seq === fetchSeq.current) setData(result)
     } catch {
       // Keep the prior window's numbers rather than blanking the card.
     } finally {
-      setLoading(false)
+      if (seq === fetchSeq.current) setLoading(false)
     }
   }
 
@@ -1494,6 +1499,10 @@ function PositionDetailModal({ position, onClose }) {
 
   useEffect(() => {
     if (!position) { setTrades(null); setScoreHistory(null); return }
+    // Stale-effect guard: tapping position A then quickly position B (or
+    // closing the modal) leaves A's fetch in flight — its late resolve must
+    // not render A's trades/score history under B's header.
+    let stale = false
     setLoading(true)
     // Fetch trades + stock (for score_history) in parallel — both keyed on ticker.
     Promise.all([
@@ -1504,8 +1513,9 @@ function PositionDetailModal({ position, onClose }) {
         .then(s => s?.score_history || null)
         .catch(() => null),
     ])
-      .then(([t, sh]) => { setTrades(t); setScoreHistory(sh) })
-      .finally(() => setLoading(false))
+      .then(([t, sh]) => { if (!stale) { setTrades(t); setScoreHistory(sh) } })
+      .finally(() => { if (!stale) setLoading(false) })
+    return () => { stale = true }
   }, [position?.id, position?.ticker])
 
   if (!position) return null

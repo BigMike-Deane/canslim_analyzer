@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime, formatDateTime } from '../api'
 import { useToast } from '../components/Toast'
@@ -43,7 +43,13 @@ export default function Notifications() {
   const navigate = useNavigate()
   const toast = useToast()
 
+  // Monotonic request id: toggling filters (or paging) fires overlapping
+  // getNotifications calls, and a slower earlier response must not render
+  // another filter's items under the one selected last.
+  const fetchSeq = useRef(0)
+
   const load = useCallback(async () => {
+    const seq = ++fetchSeq.current
     setLoading(true)
     try {
       const data = await api.getNotifications({
@@ -52,11 +58,12 @@ export default function Notifications() {
         limit: PAGE_SIZE,
         offset,
       })
+      if (seq !== fetchSeq.current) return // superseded by a newer request
       setItems(data.items || [])
       setTotal(data.total || 0)
       setUnreadCount(data.unread_count || 0)
     } finally {
-      setLoading(false)
+      if (seq === fetchSeq.current) setLoading(false)
     }
   }, [unreadOnly, kindFilter, offset])
 

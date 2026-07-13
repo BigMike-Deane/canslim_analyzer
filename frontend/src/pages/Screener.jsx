@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
@@ -224,10 +224,17 @@ export default function Screener() {
     })
   }, [])
 
+  // Monotonic request id: per-keystroke/slider filter changes fire
+  // overlapping getStocks calls, and a slower earlier response must not
+  // render its rows/total under the filters selected last.
+  const fetchSeq = useRef(0)
+
   const fetchStocks = useCallback(async () => {
+    const seq = ++fetchSeq.current
     try {
       setLoading(true)
       const data = await api.getStocks(filters)
+      if (seq !== fetchSeq.current) return // superseded by a newer request
       setStocks(data.stocks || [])
       setTotal(data.total || 0)
       setError(null)
@@ -241,10 +248,11 @@ export default function Screener() {
         })
       }
     } catch (err) {
+      if (seq !== fetchSeq.current) return
       console.error('Failed to fetch stocks:', err)
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (seq === fetchSeq.current) setLoading(false)
     }
   }, [filters])
 
