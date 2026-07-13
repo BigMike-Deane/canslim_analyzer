@@ -86,9 +86,16 @@ _AI_MODELS = (AIPortfolioPosition, AIPortfolioConfig, AIPortfolioTrade, AIPortfo
 # Target pct embedded in partial-profit sell reasons by
 # trading_engine.get_partial_profit_action ("PARTIAL PROFIT 25%: Up ...").
 # After a partial executes, live ai_trader's accumulator equals that TARGET
-# (take_pct = target - already_taken), so replaying the most recent match
-# reconstructs partial_profit_taken exactly.
+# (take_pct = target - already_taken, and execute adds sell_pct=take_pct),
+# so replaying the most recent match reconstructs partial_profit_taken
+# exactly.
 _PARTIAL_TARGET_RE = re.compile(r"PARTIAL PROFIT (\d+(?:\.\d+)?)%")
+
+# Partial trailing stops ("PARTIAL TRAILING STOP (50%): Peak ...") ADD their
+# configured pct to the live accumulator each time they fire (peak resets,
+# so the tier can fire again on a fresh run-up) — additive, unlike the
+# set-to-target profit tiers.
+_PARTIAL_TRAILING_RE = re.compile(r"PARTIAL TRAILING STOP \((\d+(?:\.\d+)?)%\)")
 
 
 # ── Synthetic ORM-shaped objects ──────────────────────────────────────────────
@@ -330,6 +337,9 @@ class ShadowSession:
                 if m:
                     partial_taken[t.ticker] = max(
                         partial_taken[t.ticker], float(m.group(1)))
+                m = _PARTIAL_TRAILING_RE.search(t.reason or "")
+                if m:
+                    partial_taken[t.ticker] += float(m.group(1))
                 if not queue:
                     # Full close — the next BUY starts a fresh position.
                     partial_taken[t.ticker] = 0.0

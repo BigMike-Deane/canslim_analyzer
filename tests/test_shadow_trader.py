@@ -258,6 +258,26 @@ class TestSyntheticPositionDerivation:
         ss = ShadowSession(db_session, strategy, [])
         assert ss._synthetic_positions[0].partial_profit_taken == 50.0
 
+    def test_partial_trailing_stop_accumulates_additively(self, db_session):
+        """PARTIAL TRAILING STOP adds its pct each firing (live resets the
+        peak, so the tier can re-fire on a fresh run-up) — additive, unlike
+        the set-to-target profit tiers. 25%-profit then 50%-trailing = 75."""
+        strategy = _make_strategy(db_session)
+        t0 = datetime.now(timezone.utc) - timedelta(days=10)
+        _add_shadow_trade(db_session, strategy.id, "PANW", "BUY", 10, 200.0,
+                          executed_at=t0)
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 2.5, 260.0,
+            reason="PARTIAL PROFIT 25%: Up 25.2%, score 80 still strong",
+            executed_at=t0 + timedelta(days=5))
+        _add_shadow_trade(
+            db_session, strategy.id, "PANW", "SELL", 3.75, 250.0,
+            reason="PARTIAL TRAILING STOP (50%): Peak $290.00 → $250.00 (-13.8%)",
+            executed_at=t0 + timedelta(days=7))
+        ss = ShadowSession(db_session, strategy, [])
+        assert len(ss._synthetic_positions) == 1
+        assert ss._synthetic_positions[0].partial_profit_taken == 75.0
+
     def test_partial_profit_taken_resets_after_full_close(self, db_session):
         """Full close ends the lot: a re-entry BUY must start at 0% taken,
         and non-partial SELL reasons must not set the accumulator."""
