@@ -297,6 +297,16 @@ Constraints (from auto-memory, do not relitigate):
       FMP 429s at this load). Tail case: a cycle >90 min skips one firing
       → 180-min gap, rare and trivial vs the 48h freshness gate.
 
+- [x] 2026-07-13 (iter: Screener max-price filter) — Owner's documented
+      primary use case ("stocks under $25 that fit CANSLIM") had no product
+      surface: /api/stocks supported max_price since forever (live-verified
+      200) but the Screener UI never exposed it. Added a Max Price preset
+      select (Any/$10/$25/$50/$100) wired through api.js and URL
+      persistence (shareable/bookmarkable like the other filters).
+      Non-bug note: FilterBar's "Market Cap" sort looked like a 422 (not in
+      the API's Query enum=) but FastAPI's enum= kwarg is documentation-
+      only, not validation — probed live, 200, sorts fine. Don't re-flag.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.

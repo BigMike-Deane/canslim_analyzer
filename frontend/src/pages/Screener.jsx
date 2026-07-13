@@ -34,6 +34,19 @@ function FilterBar({ filters, onFilterChange, sectors }) {
             <option value="projected_growth">Growth Potential</option>
             <option value="market_cap">Market Cap</option>
           </select>
+
+          <select
+            value={filters.max_price || ''}
+            onChange={(e) => onFilterChange({ ...filters, max_price: e.target.value ? Number(e.target.value) : null })}
+            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
+            aria-label="Maximum share price"
+          >
+            <option value="">Any Price</option>
+            <option value="10">Under $10</option>
+            <option value="25">Under $25</option>
+            <option value="50">Under $50</option>
+            <option value="100">Under $100</option>
+          </select>
         </div>
 
         <div className="flex gap-2 items-center">
@@ -191,10 +204,15 @@ export default function Screener() {
     const m = Number(searchParams.get('min_score'))
     return searchParams.get('min_score') != null && Number.isFinite(m) ? m : 0
   })()
+  const initialMaxPrice = (() => {
+    const p = Number(searchParams.get('max_price'))
+    return searchParams.get('max_price') != null && Number.isFinite(p) && p > 0 ? p : null
+  })()
   const [page, setPage] = useState(initialPage)
   const [filters, setFilters] = useState({
     sector: searchParams.get('sector') || null,
     min_score: initialMinScore,
+    max_price: initialMaxPrice,
     sort_by: searchParams.get('sort_by') || 'canslim_score',
     limit: pageSize,
     offset: (initialPage - 1) * pageSize
@@ -275,6 +293,9 @@ export default function Screener() {
     if (filters.min_score && filters.min_score !== 0) next.set('min_score', String(filters.min_score))
     else next.delete('min_score')
 
+    if (filters.max_price) next.set('max_price', String(filters.max_price))
+    else next.delete('max_price')
+
     if (filters.sort_by && filters.sort_by !== 'canslim_score') next.set('sort_by', filters.sort_by)
     else next.delete('sort_by')
 
@@ -284,7 +305,7 @@ export default function Screener() {
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true })
     }
-  }, [filters.sector, filters.min_score, filters.sort_by, page, searchParams, setSearchParams])
+  }, [filters.sector, filters.min_score, filters.max_price, filters.sort_by, page, searchParams, setSearchParams])
 
   // Surface the current visible-stock order to StockDetail so its prev/next
   // ticker buttons can walk through this exact filter+sort+page combination.

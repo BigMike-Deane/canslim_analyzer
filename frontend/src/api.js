@@ -255,6 +255,7 @@ export const api = {
     const searchParams = new URLSearchParams()
     if (params.sector) searchParams.set('sector', params.sector)
     if (params.min_score != null) searchParams.set('min_score', params.min_score)
+    if (params.max_price != null) searchParams.set('max_price', params.max_price)
     if (params.sort_by) searchParams.set('sort_by', params.sort_by)
     if (params.limit) searchParams.set('limit', params.limit)
     if (params.offset != null && params.offset > 0) searchParams.set('offset', params.offset)
