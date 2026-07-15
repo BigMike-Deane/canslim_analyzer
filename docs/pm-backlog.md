@@ -329,6 +329,17 @@ Constraints (from auto-memory, do not relitigate):
       parked to late July), CS-alert "limits reached" log line is normal cap
       behavior, stock_scores retention healthy (30d full / 90d sparse tiers).
 
+- [x] 2026-07-15 (iter: alarm persistence) — Fired system alarms now survive
+      redeploys. The Jul-9 lesson ("the intermediate container's logs — incl.
+      the shrink alarm that likely fired — were destroyed by docker-compose
+      down") closed: new `_fire_system_alarm(title, msg, priority, tags)` in
+      scheduler.py delivers webhook + a persisted owner Notification row
+      (user_id=1, kind='system_alarm' — surfaces in the bell/Notifications
+      page). Wired into _check_universe_shrink, _check_component_wipe, and
+      _record_failure (consecutive scan/trade-cycle failure alerts). Anomaly
+      sweeps can now query `notifications WHERE kind='system_alarm'` for
+      alarm history regardless of container lifecycle.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.

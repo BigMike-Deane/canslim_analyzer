@@ -1491,15 +1491,19 @@ class TestSystemHealthHelpers:
 
         monkeypatch.setattr(scheduler_mod, "_persist_health_to_redis", lambda: None)
         alert_spy = MagicMock()
+        note_spy = MagicMock()
         monkeypatch.setattr(email_utils, "send_webhook_notification", alert_spy)
+        monkeypatch.setattr(email_utils, "create_notification", note_spy)
 
         scheduler_mod._system_health["consecutive_scan_failures"] = 0
         scheduler_mod._system_health["errors_today"].clear()
 
         _record_failure("scan", "kaboom")
 
-        # First failure → alert fires.
+        # First failure → alert fires on both channels (webhook + persisted
+        # owner notification — logs don't survive docker-compose down).
         assert alert_spy.call_count == 1
+        assert note_spy.call_count == 1
         assert scheduler_mod._system_health["consecutive_scan_failures"] == 1
         assert len(scheduler_mod._system_health["errors_today"]) == 1
 
@@ -1511,6 +1515,7 @@ class TestSystemHealthHelpers:
         monkeypatch.setattr(scheduler_mod, "_persist_health_to_redis", lambda: None)
         alert_spy = MagicMock()
         monkeypatch.setattr(email_utils, "send_webhook_notification", alert_spy)
+        monkeypatch.setattr(email_utils, "create_notification", MagicMock())
 
         scheduler_mod._system_health["consecutive_scan_failures"] = 2
         _record_failure("scan", "still broken")
@@ -1776,6 +1781,8 @@ class TestRunContinuousScan:
         # ── Webhook silencing (used by _record_failure) ──
         bus.send_webhook = MagicMock()
         monkeypatch.setattr(email_utils, "send_webhook_notification", bus.send_webhook)
+        bus.create_notification = MagicMock()
+        monkeypatch.setattr(email_utils, "create_notification", bus.create_notification)
 
         # ── Redis silencing ──
         monkeypatch.setattr(redis_cache, "get_redis_client", lambda: None)
@@ -2678,35 +2685,51 @@ class TestUniverseShrinkAlert:
 
         saved = {}
         alerts = []
+        notes = []
         monkeypatch.setattr(db_mod, "get_system_setting", lambda k, d=None: prev)
         monkeypatch.setattr(
             db_mod, "set_system_setting", lambda k, v: saved.update({k: v}) or True)
         monkeypatch.setattr(
             email_mod, "send_webhook_notification",
             lambda title, msg, **kw: alerts.append((title, msg)) or True)
+        monkeypatch.setattr(
+            email_mod, "create_notification",
+            lambda user_id, **kw: notes.append((user_id, kw)) or True)
         scheduler._check_universe_shrink(current)
-        return saved, alerts
+        return saved, alerts, notes
 
     def test_material_shrink_fires_alert(self, monkeypatch):
-        saved, alerts = self._run(monkeypatch, prev=3700, current=2100)
+        saved, alerts, _ = self._run(monkeypatch, prev=3700, current=2100)
         assert len(alerts) == 1
         assert "3700" in alerts[0][1] and "2100" in alerts[0][1]
 
+    def test_alert_persists_owner_notification(self, monkeypatch):
+        """Webhook + log alone don't survive docker-compose down (the
+        2026-07-09 shrink alarm left no trace across the deploy that
+        followed) — a fired alarm must also write an owner Notification."""
+        _, _, notes = self._run(monkeypatch, prev=3700, current=2100)
+        assert len(notes) == 1
+        user_id, kw = notes[0]
+        assert user_id == 1
+        assert kw["kind"] == "system_alarm"
+        assert "3700" in kw["body"]
+
     def test_baseline_always_persisted(self, monkeypatch):
-        saved, _ = self._run(monkeypatch, prev=3700, current=2100)
+        saved, _, _ = self._run(monkeypatch, prev=3700, current=2100)
         assert saved.get("scan_universe_size") == 2100
 
     def test_small_dip_below_threshold_is_silent(self, monkeypatch):
         # 5% dip < 10% default threshold
-        _, alerts = self._run(monkeypatch, prev=3700, current=3520)
+        _, alerts, notes = self._run(monkeypatch, prev=3700, current=3520)
         assert alerts == []
+        assert notes == []
 
     def test_growth_is_silent(self, monkeypatch):
-        _, alerts = self._run(monkeypatch, prev=2100, current=3700)
+        _, alerts, _ = self._run(monkeypatch, prev=2100, current=3700)
         assert alerts == []
 
     def test_first_run_without_baseline_is_silent(self, monkeypatch):
-        saved, alerts = self._run(monkeypatch, prev=None, current=3700)
+        saved, alerts, _ = self._run(monkeypatch, prev=None, current=3700)
         assert alerts == []
         assert saved.get("scan_universe_size") == 3700
 
@@ -2751,56 +2774,71 @@ class TestComponentWipeAlert:
 
         saved = {}
         alerts = []
+        notes = []
         monkeypatch.setattr(db_mod, "get_system_setting", lambda k, d=None: prev_pct)
         monkeypatch.setattr(
             db_mod, "set_system_setting", lambda k, v: saved.update({k: v}) or True)
         monkeypatch.setattr(
             email_mod, "send_webhook_notification",
             lambda title, msg, **kw: alerts.append((title, msg)) or True)
+        monkeypatch.setattr(
+            email_mod, "create_notification",
+            lambda user_id, **kw: notes.append((user_id, kw)) or True)
         scheduler._check_component_wipe(now - timedelta(minutes=5))
-        return saved, alerts
+        return saved, alerts, notes
 
     def test_zero_share_jump_fires_alert(self, monkeypatch, patch_session_local):
         # prev 1% → 25% (30/120): far past the 5pp default threshold.
-        saved, alerts = self._run(monkeypatch, patch_session_local,
-                                  prev_pct=1.0, zero_c=30)
+        saved, alerts, _ = self._run(monkeypatch, patch_session_local,
+                                     prev_pct=1.0, zero_c=30)
         assert len(alerts) == 1
         assert "25.0%" in alerts[0][1]
 
+    def test_alert_persists_owner_notification(self, monkeypatch, patch_session_local):
+        """A fired wipe alarm must survive a redeploy — owner Notification
+        row alongside the webhook."""
+        _, _, notes = self._run(monkeypatch, patch_session_local,
+                                prev_pct=1.0, zero_c=30)
+        assert len(notes) == 1
+        user_id, kw = notes[0]
+        assert user_id == 1
+        assert kw["kind"] == "system_alarm"
+
     def test_baseline_always_persisted(self, monkeypatch, patch_session_local):
-        saved, _ = self._run(monkeypatch, patch_session_local,
-                             prev_pct=1.0, zero_c=30)
+        saved, _, _ = self._run(monkeypatch, patch_session_local,
+                                prev_pct=1.0, zero_c=30)
         assert saved.get("scan_zero_c_pct") == 25.0
 
     def test_small_rise_below_threshold_is_silent(self, monkeypatch, patch_session_local):
         # 22% → 25% is a 3pp rise, under the 5pp default threshold.
-        _, alerts = self._run(monkeypatch, patch_session_local,
-                              prev_pct=22.0, zero_c=30)
+        _, alerts, notes = self._run(monkeypatch, patch_session_local,
+                                     prev_pct=22.0, zero_c=30)
         assert alerts == []
+        assert notes == []
 
     def test_improvement_is_silent(self, monkeypatch, patch_session_local):
-        _, alerts = self._run(monkeypatch, patch_session_local,
-                              prev_pct=50.0, zero_c=0)
+        _, alerts, _ = self._run(monkeypatch, patch_session_local,
+                                 prev_pct=50.0, zero_c=0)
         assert alerts == []
 
     def test_first_run_without_baseline_is_silent(self, monkeypatch, patch_session_local):
-        saved, alerts = self._run(monkeypatch, patch_session_local,
-                                  prev_pct=None, zero_c=30)
+        saved, alerts, _ = self._run(monkeypatch, patch_session_local,
+                                     prev_pct=None, zero_c=30)
         assert alerts == []
         assert saved.get("scan_zero_c_pct") == 25.0
 
     def test_partial_cycle_is_skipped(self, monkeypatch, patch_session_local):
         # Under 100 freshly-scanned rows: no baseline update, no alert —
         # a share computed over a sliver of the universe is noise.
-        saved, alerts = self._run(monkeypatch, patch_session_local,
-                                  prev_pct=1.0, zero_c=30, total=50)
+        saved, alerts, _ = self._run(monkeypatch, patch_session_local,
+                                     prev_pct=1.0, zero_c=30, total=50)
         assert alerts == []
         assert saved == {}
 
     def test_stale_rows_do_not_pollute_the_share(self, monkeypatch, patch_session_local):
         # 50 old zero-C rows outside the cycle window must not count.
-        _, alerts = self._run(monkeypatch, patch_session_local,
-                              prev_pct=0.0, zero_c=0, extra_stale_zero_c=50)
+        _, alerts, _ = self._run(monkeypatch, patch_session_local,
+                                 prev_pct=0.0, zero_c=0, extra_stale_zero_c=50)
         assert alerts == []
 
     def test_telemetry_failure_never_raises(self, monkeypatch):

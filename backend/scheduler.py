@@ -133,8 +133,6 @@ def _record_success(task_name: str):
 
 def _record_failure(task_name: str, error: str):
     """Record a task failure and alert if consecutive failures exceed threshold."""
-    from backend.email_utils import send_webhook_notification as _send_alert
-
     now = datetime.now(timezone.utc).isoformat()
     error_entry = {"task": task_name, "error": error[:200], "timestamp": now}
 
@@ -156,9 +154,9 @@ def _record_failure(task_name: str, error: str):
 
     # Alert on first failure and every 3rd consecutive failure
     if failures == 1 or failures % 3 == 0:
-        _send_alert(
+        _fire_system_alarm(
             title=f"CANSLIM {task_name.replace('_', ' ').title()} Failed",
-            message=f"Error ({failures}x consecutive): {error[:150]}",
+            msg=f"Error ({failures}x consecutive): {error[:150]}",
             priority="high" if failures >= 3 else "default",
             tags=["warning", "chart_with_downwards_trend"],
         )
@@ -719,6 +717,26 @@ def update_coiled_spring_outcomes():
         db.close()
 
 
+def _fire_system_alarm(title: str, msg: str, priority: str = "high",
+                       tags: list = None) -> None:
+    """Deliver a system alarm on every durable channel.
+
+    Log + webhook alone proved insufficient: docker-compose down destroys
+    container logs, so the 2026-07-09 universe-shrink alarm (which almost
+    certainly fired mid-incident) left no trace across the deploy that
+    followed it. The Notification row persists in the DB and surfaces in
+    the owner's bell/Notifications page, so post-hoc sweeps can see which
+    alarms fired and when.
+    """
+    from backend.email_utils import send_webhook_notification, create_notification
+    send_webhook_notification(title, msg, priority=priority, tags=tags)
+    try:
+        create_notification(1, kind="system_alarm",  # user 1 = owner
+                            title=title, body=msg, priority=priority, tags=tags)
+    except Exception as e:
+        logger.debug(f"system-alarm notification persist failed: {e}")
+
+
 def _check_universe_shrink(current_size: int) -> None:
     """Alert when the scan universe shrinks materially cycle-over-cycle.
 
@@ -743,8 +761,7 @@ def _check_universe_shrink(current_size: int) -> None:
                    f"have silently degraded (index fetch, FMP screener, delist flood). "
                    f"Fallbacks always return SOMETHING — check sp500_tickers logs.")
             logger.warning(f"UNIVERSE SHRINK ALERT: {msg}")
-            from backend.email_utils import send_webhook_notification
-            send_webhook_notification("Scan universe shrank", msg, priority="high")
+            _fire_system_alarm("Scan universe shrank", msg)
     except Exception as e:
         # Telemetry must never block the scan itself
         logger.debug(f"universe shrink check failed: {e}")
@@ -794,8 +811,7 @@ def _check_component_wipe(scan_cutoff: datetime) -> None:
                    f"provider payload change) — single-component wipes stay under "
                    f"the save-path blip guard, so nothing else will alert.")
             logger.warning(f"COMPONENT WIPE ALERT: {msg}")
-            from backend.email_utils import send_webhook_notification
-            send_webhook_notification("C-score wipe detected", msg, priority="high")
+            _fire_system_alarm("C-score wipe detected", msg)
     except Exception as e:
         # Telemetry must never block the scan itself
         logger.debug(f"component wipe check failed: {e}")
