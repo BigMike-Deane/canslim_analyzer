@@ -705,6 +705,53 @@ class TestFetchFmpFinancialsAsync:
         assert result["quarterly_eps"] == []
         assert ticker in async_data_fetcher._fallback_tracker["stocks_no_data"]
 
+    async def test_authoritative_empty_sets_negative_cache_and_skips_refetch(
+            self, fmp_key, primitives):
+        """HTTP 200 + [] on both endpoints = FMP definitively has no
+        financials (the ~40-name BOT/BXDC/CEPL roster) → the next scan
+        cycle must not reburn 2 calls on the same answer."""
+        ticker = "NOFINRA"
+        async_data_fetcher._no_financials_until.pop(ticker, None)
+        session = MockSession([(200, []), (200, [])])
+        result = await async_data_fetcher.fetch_fmp_financials_async(session, ticker)
+        assert result["quarterly_eps"] == []
+        assert ticker in async_data_fetcher._no_financials_until
+        assert len(session.calls) == 2
+
+        # Within TTL: zero HTTP traffic, gap still tracked for DATA GAPS.
+        async_data_fetcher._fallback_tracker["stocks_no_data"].discard(ticker)
+        session2 = MockSession([(200, [{"eps": 1.0}]), (200, [])])
+        result2 = await async_data_fetcher.fetch_fmp_financials_async(session2, ticker)
+        assert session2.calls == []
+        assert result2["quarterly_eps"] == []
+        assert ticker in async_data_fetcher._fallback_tracker["stocks_no_data"]
+
+    async def test_transient_failure_never_negative_cached(self, fmp_key, primitives):
+        """None (circuit open / 429 / 5xx / timeout) must NOT enter the
+        negative cache — a tripped circuit breaker would otherwise poison
+        every ticker it skipped for days (the empty-cache-forever lesson)."""
+        ticker = "NEVERSEEN2"
+        async_data_fetcher._no_financials_until.pop(ticker, None)
+        session = MockSession([(500, None), (500, None), (500, None),
+                               (500, None), (500, None), (500, None)])
+        with patch.object(async_data_fetcher.asyncio, "sleep", new_callable=AsyncMock):
+            await async_data_fetcher.fetch_fmp_financials_async(session, ticker)
+        assert ticker not in async_data_fetcher._no_financials_until
+
+    async def test_negative_cache_expiry_reprobes(self, fmp_key, primitives):
+        """Past the TTL the ticker is re-fetched, so a name that starts
+        reporting earnings (fresh IPO maturing) is picked up."""
+        ticker = "NOFINEXP"
+        async_data_fetcher._no_financials_until[ticker] = (
+            datetime.now() - timedelta(seconds=1))
+        session = MockSession([
+            (200, [{"eps": 2.0, "revenue": 5, "netIncome": 1}]), (200, [])])
+        result = await async_data_fetcher.fetch_fmp_financials_async(session, ticker)
+        assert len(session.calls) == 2
+        assert result["quarterly_eps"] == [2.0]
+        # Data exists now — must not be re-marked empty.
+        assert not (async_data_fetcher._no_financials_until[ticker] > datetime.now())
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier 1 — _apply_cached_financials (fresh-but-missing cache must force a fetch)

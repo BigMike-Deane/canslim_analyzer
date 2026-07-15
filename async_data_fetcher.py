@@ -181,6 +181,16 @@ _fallback_lock = asyncio.Lock()
 # Maximum age for fallback data (7 days) - older data is considered too stale
 MAX_FALLBACK_CACHE_AGE_DAYS = 7
 
+# Known-empty financials negative cache: tickers where BOTH income-statement
+# endpoints answered authoritatively empty (HTTP 200 + `[]` — NOT a transient
+# failure, which fetch_json_async surfaces as None and must never be cached;
+# the empty-cache-forever lesson). ~40 data-poor names (BOT/BXDC/CEPL class)
+# otherwise reburn 2 FMP calls every cycle forever. Memory-only: a restart
+# just costs one refetch cycle. Expiry re-probes, so a ticker that starts
+# reporting earnings is picked up within the TTL.
+_no_financials_until: Dict[str, datetime] = {}
+NO_FINANCIALS_TTL_DAYS = 3
+
 
 def get_cache_age_days(ticker: str, data_type: str) -> float:
     """Get how old the cached data is in days. Returns 999 if unknown."""
@@ -552,6 +562,15 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
         "used_cache_fallback": False
     }
 
+    # Known-empty ticker inside its negative-cache TTL: skip both calls.
+    # Outcome is identical to refetching (empty result), so scoring is
+    # unaffected; the tracker still records the gap so the scan-end
+    # DATA GAPS report stays accurate.
+    until = _no_financials_until.get(ticker)
+    if until and datetime.now() < until:
+        _fallback_tracker["stocks_no_data"].add(ticker)
+        return result
+
     # Fetch quarterly and annual in parallel (but only 2 calls total, not 4)
     quarterly_url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&period=quarter&limit=24&apikey={FMP_API_KEY}"
     annual_url = f"{FMP_BASE_URL}/income-statement?symbol={ticker}&limit=10&apikey={FMP_API_KEY}"
@@ -577,6 +596,11 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
 
     # LAST RESORT: If both API calls failed, use cached data if not too old
     if not got_quarterly and not got_annual:
+        # `[]` with HTTP 200 is FMP definitively answering "no data" —
+        # distinct from None (circuit open / 429 / 5xx / timeout), which
+        # must never enter the negative cache.
+        definitive_empty = (isinstance(quarterly_data, list) and not quarterly_data
+                            and isinstance(annual_data, list) and not annual_data)
         cached_earnings = get_cached_data(ticker, "earnings")
         cached_revenue = get_cached_data(ticker, "revenue")
         cache_age = get_cache_age_days(ticker, "earnings")
@@ -597,8 +621,15 @@ async def fetch_fmp_financials_async(session: aiohttp.ClientSession, ticker: str
             else:
                 logger.warning(f"{ticker}: FMP cached data too old ({cache_age:.1f} days) - not using stale fallback")
                 _fallback_tracker["stocks_no_data"].add(ticker)
+                if definitive_empty:
+                    _no_financials_until[ticker] = datetime.now() + timedelta(days=NO_FINANCIALS_TTL_DAYS)
         else:
-            logger.warning(f"{ticker}: FMP financials failed and no cache available")
+            if definitive_empty:
+                logger.info(f"{ticker}: FMP has no financials (authoritative empty) - "
+                            f"skipping refetch for {NO_FINANCIALS_TTL_DAYS}d")
+                _no_financials_until[ticker] = datetime.now() + timedelta(days=NO_FINANCIALS_TTL_DAYS)
+            else:
+                logger.warning(f"{ticker}: FMP financials failed and no cache available")
             _fallback_tracker["stocks_no_data"].add(ticker)
 
     return result

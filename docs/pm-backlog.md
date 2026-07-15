@@ -345,6 +345,30 @@ Constraints (from auto-memory, do not relitigate):
       sweeps can now query `notifications WHERE kind='system_alarm'` for
       alarm history regardless of container lifecycle.
 
+- [x] 2026-07-15 (loop 2 iter: position-state invariant audit) —
+      VERIFICATION-ONLY, all clean. The shadow Zeno bug (Jul-13) was a
+      position-state-drift class; the live portfolio got the same audit:
+      all 24 positions' shares reconcile against FIFO trade-net to 4
+      decimals; stored gain% matches price math; every partial_profit_taken
+      accumulator consistent with trade-reason history under the correct
+      semantics (PARTIAL PROFIT sets-to-target: CARE 50, DELL 75, u2-MU
+      trailing-50→profit-75; PARTIAL TRAILING adds: u1-MU 50+50+50=150);
+      MU-u1 sitting 26.6% off peak is NOT a missed 25% trail — pyramid
+      widening ×2 puts the stop at peak×0.71=$881.16, matching the Jun-04
+      verified exit plan exactly. All 3 users at 8/8 positions.
+
+- [x] 2026-07-15 (loop 2 iter: no-financials negative cache) — The ~40-name
+      data-poor roster (BOT/BXDC/CEPL class) reburned 2 FMP income-statement
+      calls EVERY cycle (~1,300 calls/day) on an answer that never changes.
+      fetch_fmp_financials_async now negative-caches tickers where BOTH
+      endpoints answered authoritatively empty (HTTP 200 + `[]`) for 3 days.
+      Safety: fetch_json_async returns None for ALL transient failures
+      (circuit open / 429 / 5xx / timeout) and None is never cached — a
+      tripped circuit breaker cannot poison the cache (empty-cache-forever
+      lesson respected). Memory-only (restart = one refetch cycle); tracker
+      still records gaps so the DATA GAPS report stays accurate; TTL expiry
+      re-probes so maturing IPOs get picked up.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
