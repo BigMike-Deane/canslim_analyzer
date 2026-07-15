@@ -399,7 +399,8 @@ export const api = {
   // AI Portfolio
   getAIPortfolio: (opts) => request('/api/ai-portfolio', opts),
 
-  getAIPortfolioHistory: (days = 30) => request(`/api/ai-portfolio/history?days=${days}`),
+  getAIPortfolioHistory: (days = 30, resolution = 'full') =>
+    request(`/api/ai-portfolio/history?days=${days}&resolution=${resolution}`),
 
   getAIPortfolioWindowReturns: (window = 'all') =>
     request(`/api/ai-portfolio/window-returns?window=${window}`),

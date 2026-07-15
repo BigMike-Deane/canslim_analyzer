@@ -2411,7 +2411,12 @@ export default function AIPortfolio() {
       const portfolioOpts = showLoading ? undefined : { noCache: true }
       const [portfolioData, historyData, tradesData, csData, earningsData, riskInfo, edgeData, reconData] = await Promise.all([
         api.getAIPortfolio(portfolioOpts),
-        api.getAIPortfolioHistory(90),
+        // Since-inception fetch: 90 silently broke the chart's "All" range
+        // once the portfolio outlived the window (start slid to ~Apr-15 at
+        // $24.8k instead of the true $25k Mar-09 inception). resolution=auto
+        // keeps the payload small: intraday for the trailing 7d (the 1d
+        // view), last-snapshot-per-day beyond.
+        api.getAIPortfolioHistory(3650, 'auto'),
         api.getAIPortfolioTrades(50),
         api.getCoiledSpringCandidates().catch(() => ({ candidates: [] })),
         api.getEarningsCalendar().catch(() => null),

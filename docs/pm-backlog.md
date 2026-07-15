@@ -369,6 +369,20 @@ Constraints (from auto-memory, do not relitigate):
       still records gaps so the DATA GAPS report stays accurate; TTL expiry
       re-probes so maturing IPOs get picked up.
 
+- [x] 2026-07-15 (iter: performance-chart "All" range, owner report) —
+      Owner: "graph shows a different starting date/position — should start
+      at 25k". Root cause: AIPortfolio.jsx hardcoded a 90-day history fetch,
+      and the chart's range buttons (incl. "All") only filter WITHIN the
+      fetched window — so "All" silently became "last 90 days" once the
+      portfolio outlived it (owner inception 2026-03-09 @ exactly $25,000;
+      chart start had slid to ~Apr-15 @ ~$24.8k). Data was always intact
+      (6,930 snapshots). Fix: endpoint days cap 365→3650 + new
+      `resolution=auto` (intraday for trailing 7d, last-snapshot-per-day
+      older — a year stays ~a few hundred rows, not ~16/day); page fetches
+      (3650, 'auto'). The deliberate leading-flat-day trim is kept: "All"
+      starts at the first BUY (≈$25k) with the Start reference line at
+      exactly 25k. Query(pattern=) used for validation (enum= is doc-only).
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.

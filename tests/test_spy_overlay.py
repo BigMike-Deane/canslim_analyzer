@@ -396,3 +396,57 @@ class TestSpyIntradayWriter:
         finally:
             db.close()
             self._wipe()
+
+
+class TestAutoResolution:
+    """resolution=auto — since-inception fetches without ~16-rows/day
+    payloads. Origin (2026-07-15): the page's fixed 90-day fetch silently
+    broke the chart's 'All' range once a portfolio outlived the window —
+    the owner's chart 'started' at ~$24.8k on Apr-15 instead of the true
+    $25k inception on Mar-09."""
+
+    def _seed_days(self):
+        """Old day (-20): 3 intraday snapshots; recent day (-1): 2."""
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=20)
+        _seed_snapshot_at(old.replace(hour=9, minute=0), 25000.0)
+        _seed_snapshot_at(old.replace(hour=12, minute=0), 25100.0)
+        _seed_snapshot_at(old.replace(hour=16, minute=0), 25200.0)
+        recent = now - timedelta(days=1)
+        _seed_snapshot_at(recent.replace(hour=10, minute=0), 26000.0)
+        _seed_snapshot_at(recent.replace(hour=15, minute=0), 26500.0)
+        return (old.date().isoformat(), recent.date().isoformat())
+
+    def test_auto_collapses_old_days_keeps_recent_intraday(self):
+        _wipe_window()
+        old_day, recent_day = self._seed_days()
+        r = client.get("/api/ai-portfolio/history?days=30&resolution=auto")
+        assert r.status_code == 200
+        rows = r.json()
+        old_rows = [x for x in rows if x["date"] == old_day]
+        # Collapsed to the day's LAST snapshot
+        assert len(old_rows) == 1
+        assert old_rows[0]["total_value"] == 25200.0
+        # Trailing-7d intraday granularity preserved (1d chart view)
+        assert len([x for x in rows if x["date"] == recent_day]) == 2
+
+    def test_default_full_resolution_preserves_all_rows(self):
+        _wipe_window()
+        old_day, recent_day = self._seed_days()
+        r = client.get("/api/ai-portfolio/history?days=30")
+        assert r.status_code == 200
+        rows = r.json()
+        assert len([x for x in rows if x["date"] == old_day]) == 3
+        assert len([x for x in rows if x["date"] == recent_day]) == 2
+
+    def test_invalid_resolution_rejected(self):
+        # Query(pattern=...) IS validated (unlike enum=, which is doc-only)
+        r = client.get("/api/ai-portfolio/history?days=30&resolution=hourly")
+        assert r.status_code == 422
+
+    def test_since_inception_days_accepted(self):
+        _wipe_window()
+        self._seed_days()
+        r = client.get("/api/ai-portfolio/history?days=3650&resolution=auto")
+        assert r.status_code == 200
+        assert len(r.json()) >= 3

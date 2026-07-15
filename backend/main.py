@@ -3421,7 +3421,8 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
 
 @app.get("/api/ai-portfolio/history")
 async def get_ai_portfolio_history(
-    days: int = Query(30, le=365),
+    days: int = Query(30, le=3650),
+    resolution: str = Query("full", pattern="^(full|auto)$"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -3431,6 +3432,16 @@ async def get_ai_portfolio_history(
     user's starting cash would have if it had been invested in SPY on the
     date of the first snapshot. Sourced from the daily MarketSnapshot table
     (NOT historical_data.py, which is on the eval-window blocklist).
+
+    resolution=auto downsamples long windows: every intraday snapshot is
+    kept for the trailing 7 days (the 1d/7d chart views need per-scan
+    granularity) while older days collapse to their LAST snapshot — a
+    since-inception fetch stays a few hundred rows instead of ~16/day
+    forever. resolution=full preserves the historical behavior. NOTE: the
+    days cap was 365 and the page fetched 90, which silently broke the
+    chart's "All" range once a portfolio outlived the window (found
+    2026-07-15: owner's chart "started" at ~$24.8k on Apr-15 instead of
+    the true $25k inception on Mar-09).
     """
     from datetime import timedelta, datetime as dt, timezone
     from sqlalchemy import or_
@@ -3459,6 +3470,22 @@ async def get_ai_portfolio_history(
         return dt.min
 
     snapshots = sorted(snapshots, key=sort_key)
+
+    # resolution=auto: intraday granularity for the trailing 7 days, last
+    # snapshot per calendar day before that. Runs BEFORE the SPY anchor is
+    # picked; the first day survives (as its last snapshot), so base_value
+    # still anchors at inception.
+    if resolution == "auto" and snapshots:
+        intraday_cutoff = dt.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+        daily_last = {}
+        recent = []
+        for s in snapshots:
+            key_ts = sort_key(s)
+            if key_ts >= intraday_cutoff:
+                recent.append(s)
+            else:
+                daily_last[key_ts.date()] = s  # ascending input → last wins
+        snapshots = list(daily_last.values()) + recent
 
     # Build a date → spy_price lookup from MarketSnapshot for the window.
     # MarketSnapshot.date is unique, so this is a one-row-per-day map.
