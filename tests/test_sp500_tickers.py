@@ -848,6 +848,72 @@ class TestGetFmpReitTrustTickers:
         mock_get.assert_not_called()
 
 
+class TestGetStickyHighScoreTickers:
+    """Covers get_sticky_high_score_tickers — universe hysteresis
+    (2026-07-15). Live motivation: HURC's market cap flapping 0.2% under
+    the screener's $150M floor and FMP marking TBRG isActivelyTrading=false
+    while it trades 300k shares/day. Both froze at high scores silently."""
+
+    TICKERS = ("STKYHI", "STKYLO", "STKYOLD", "STKYGRW")
+
+    def _db(self):
+        sys.path.insert(0, str(Path(sp500_tickers.__file__).parent / "backend"))
+        from database import SessionLocal, Stock
+        return SessionLocal(), Stock
+
+    def _cleanup(self, db, Stock):
+        db.query(Stock).filter(Stock.ticker.in_(self.TICKERS)).delete(
+            synchronize_session=False)
+        db.commit()
+
+    def test_returns_recent_high_scorers_only(self):
+        from datetime import timezone
+        db, Stock = self._db()
+        try:
+            self._cleanup(db, Stock)
+            now = datetime.now(timezone.utc)
+            db.add(Stock(ticker="STKYHI", name="Sticky High",
+                         canslim_score=70.0,
+                         last_updated=now - timedelta(days=2)))
+            db.add(Stock(ticker="STKYLO", name="Sticky Low",
+                         canslim_score=50.0,
+                         last_updated=now - timedelta(days=2)))
+            db.add(Stock(ticker="STKYOLD", name="Sticky Stale",
+                         canslim_score=70.0,
+                         last_updated=now - timedelta(days=40)))
+            db.add(Stock(ticker="STKYGRW", name="Sticky Growth",
+                         canslim_score=10.0, growth_mode_score=70.0,
+                         last_updated=now - timedelta(days=2)))
+            db.commit()
+
+            result = sp500_tickers.get_sticky_high_score_tickers()
+
+            assert "STKYHI" in result       # fresh + high CANSLIM score
+            assert "STKYGRW" in result      # qualifies via growth score
+            assert "STKYLO" not in result   # below min_score
+            assert "STKYOLD" not in result  # beyond max_age_days
+        finally:
+            self._cleanup(db, Stock)
+            db.close()
+
+    def test_disabled_via_config_returns_empty(self):
+        from config_loader import config as yaml_config
+        with patch.object(
+            yaml_config, "get",
+            side_effect=lambda key, default=None: {"enabled": False}
+            if key == "scanner.universe.stickiness" else default,
+        ):
+            assert sp500_tickers.get_sticky_high_score_tickers() == []
+
+    def test_db_failure_returns_empty(self, monkeypatch):
+        """Stickiness is a supplement, never a gate — DB down must not
+        break universe assembly."""
+        fake_db = MagicMock()
+        fake_db.SessionLocal = MagicMock(side_effect=RuntimeError("DB down"))
+        monkeypatch.setitem(sys.modules, "database", fake_db)
+        assert sp500_tickers.get_sticky_high_score_tickers() == []
+
+
 class TestGetAllTickers:
     """Covers sp500_tickers.py:69-132."""
 
@@ -881,6 +947,9 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_fmp_reit_trust_tickers",
             return_value=["REITSUP"],
+        ), patch(
+            "sp500_tickers.get_sticky_high_score_tickers",
+            return_value=[],
         ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value=set(),
@@ -922,6 +991,9 @@ class TestGetAllTickers:
             "sp500_tickers.get_fmp_screener_tickers",
             return_value=[],
         ), patch(
+            "sp500_tickers.get_sticky_high_score_tickers",
+            return_value=[],
+        ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value={"DEADCO"},
         ):
@@ -953,6 +1025,8 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_fmp_reit_trust_tickers", return_value=[],
         ), patch(
+            "sp500_tickers.get_sticky_high_score_tickers", return_value=[],
+        ), patch(
             "data_fetcher.get_delisted_tickers",
             return_value={"GONESTOCK"},  # marked delisted
         ):
@@ -982,6 +1056,8 @@ class TestGetAllTickers:
             "sp500_tickers.get_fmp_screener_tickers", return_value=[],
         ), patch(
             "sp500_tickers.get_fmp_reit_trust_tickers", return_value=[],
+        ), patch(
+            "sp500_tickers.get_sticky_high_score_tickers", return_value=[],
         ), patch(
             "data_fetcher.get_delisted_tickers"
         ) as mock_delisted:
@@ -1014,6 +1090,8 @@ class TestGetAllTickers:
         ), patch(
             "sp500_tickers.get_fmp_reit_trust_tickers", return_value=[],
         ), patch(
+            "sp500_tickers.get_sticky_high_score_tickers", return_value=[],
+        ), patch(
             "data_fetcher.get_delisted_tickers",
             side_effect=RuntimeError("db error"),
         ):
@@ -1022,6 +1100,42 @@ class TestGetAllTickers:
             )
         # Endpoint completed; all tickers preserved
         assert "A" in result
+
+    def _patch_sources(self, sticky, delisted=frozenset()):
+        """All sources empty except sp500=[AAPL]; sticky + delisted as given."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for src in ("get_portfolio_tickers", "get_nasdaq100_tickers",
+                    "get_dowjones_tickers", "get_sp400_midcap_tickers",
+                    "get_sp600_smallcap_tickers", "get_russell2000_tickers",
+                    "get_fmp_screener_tickers", "get_fmp_reit_trust_tickers"):
+            stack.enter_context(patch(f"sp500_tickers.{src}", return_value=[]))
+        stack.enter_context(patch(
+            "sp500_tickers.get_sp500_tickers", return_value=["AAPL"]))
+        stack.enter_context(patch(
+            "sp500_tickers.get_sticky_high_score_tickers", return_value=sticky))
+        stack.enter_context(patch(
+            "data_fetcher.get_delisted_tickers", return_value=set(delisted)))
+        return stack
+
+    def test_sticky_names_appended_and_deduped(self):
+        """Universe hysteresis: sticky names enter the universe; ones already
+        provided by a source don't duplicate."""
+        with self._patch_sources(sticky=["STICKME", "AAPL"]):
+            result = sp500_tickers.get_all_tickers(
+                include_portfolio=True, exclude_delisted=True,
+            )
+        assert "STICKME" in result
+        assert result.count("AAPL") == 1
+
+    def test_sticky_names_still_filtered_by_delisted(self):
+        """Stickiness must not resurrect blocked/delisted tickers — it is
+        appended before the delisted filter."""
+        with self._patch_sources(sticky=["BLOCKED1"], delisted={"BLOCKED1"}):
+            result = sp500_tickers.get_all_tickers(
+                include_portfolio=True, exclude_delisted=True,
+            )
+        assert "BLOCKED1" not in result
 
 
 # ── _load_env ──────────────────────────────────────────────────────────

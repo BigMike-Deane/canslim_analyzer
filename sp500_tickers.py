@@ -82,6 +82,8 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     - Dow Jones 30 (blue chips) - from FMP
     - FMP company screener (broad supplement: non-index names, recent IPOs,
       foreign-domiciled US listings)
+    - Sticky high scorers (hysteresis: recently-scanned names ≥ min_score
+      retained after all sources drop them — cap-floor flapping, flag lies)
     - Portfolio tickers (always scanned first)
 
     Args:
@@ -124,6 +126,21 @@ def get_all_tickers(include_portfolio: bool = True, exclude_delisted: bool = Tru
     combined.extend(russell2000)
     combined.extend(fmp_screener)
     combined.extend(reit_trusts)
+
+    # Universe hysteresis: recently-scanned high scorers stay in even when
+    # every source above drops them (screener cap-floor flapping, provider
+    # flag lies). Appended AFTER the sources so the delisted/blocked filter
+    # below still applies to them; logged so log sweeps can see it working.
+    sticky = get_sticky_high_score_tickers()
+    if sticky:
+        source_set = set(combined)
+        retained = [t for t in sticky if t not in source_set]
+        if retained:
+            shown = ', '.join(retained[:15]) + ('...' if len(retained) > 15 else '')
+            logger.info(
+                f"Universe stickiness retained {len(retained)} high-score "
+                f"names dropped by all sources: {shown}")
+            combined.extend(retained)
 
     # Remove duplicates while preserving order (portfolio first)
     # Also filter out delisted tickers (but keep portfolio tickers)
@@ -292,6 +309,64 @@ def get_fmp_reit_trust_tickers() -> list[str]:
         logger.warning(f"FMP REIT-trust screener fetch failed: {e}")
 
     return []
+
+
+def get_sticky_high_score_tickers() -> list[str]:
+    """
+    Universe hysteresis: retain recently-scanned high scorers even after
+    every ticker source stops listing them.
+
+    Two live drop mechanisms motivated this (2026-07-15): HURC's market cap
+    flapping 0.2% under the screener's $150M floor, and FMP marking TBRG
+    isActivelyTrading=false while it trades 300k shares/day (stuck since the
+    CPSI→TruBridge rename — third provider-flag lie after isEtf/CEF and
+    isFund/REIT). Both froze at scores the owner would want to see (70.6,
+    66.5) with no alarm.
+
+    Score-anchored retention is self-limiting: a retained name keeps being
+    scanned, which keeps its row fresh, so it stays exactly as long as its
+    score holds the bar; when the score decays below min_score the row goes
+    stale and ages out via max_age_days. Truly dead tickers exit through the
+    delisted counter regardless (fetch failures accumulate), and permanently
+    blocked tickers are score-zeroed so they can never qualify.
+
+    Returns [] on any failure — stickiness is a supplement, never a gate.
+    """
+    try:
+        from config_loader import config as yaml_config
+        cfg = yaml_config.get('scanner.universe.stickiness', {}) or {}
+    except Exception:
+        cfg = {}
+
+    if not cfg.get('enabled', True):
+        return []
+    min_score = cfg.get('min_score', 65)
+    max_age_days = cfg.get('max_age_days', 21)
+
+    try:
+        import sys
+        from pathlib import Path
+        from datetime import datetime, timedelta, timezone
+        sys.path.insert(0, str(Path(__file__).parent / "backend"))
+        from database import SessionLocal, Stock
+        from sqlalchemy import or_
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(Stock.ticker)
+                .filter(Stock.last_updated >= cutoff)
+                .filter(or_(Stock.canslim_score >= min_score,
+                            Stock.growth_mode_score >= min_score))
+                .all()
+            )
+            return sorted(r.ticker for r in rows if r.ticker)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"Universe stickiness skipped: {e}")
+        return []
 
 
 def get_portfolio_tickers() -> list[str]:

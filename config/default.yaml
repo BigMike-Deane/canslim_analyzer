@@ -44,6 +44,18 @@ scanner:
       # guard at first profile fetch.
       reit_trust_supplement: true
 
+    # Universe hysteresis: keep recently-scanned high scorers in the scan
+    # universe after every source drops them. Live holes this closes
+    # (2026-07-15): HURC's cap flapping 0.2% under the screener's $150M
+    # floor, and FMP marking TBRG isActivelyTrading=false while it trades
+    # 300k shares/day (flag stuck since its 2024 rename). Self-limiting:
+    # a retained name stays only while its score holds min_score — once it
+    # decays, the row goes stale and ages out via max_age_days.
+    stickiness:
+      enabled: true
+      min_score: 65        # retain names whose CANSLIM or growth score >= this
+      max_age_days: 21     # ...scanned within this many days
+
   # Score-integrity telemetry: alert (log + webhook) when the share of
   # freshly-scanned stocks with c_score=0 jumps more than this many
   # percentage points cycle-over-cycle. C collapses to exactly 0 whenever

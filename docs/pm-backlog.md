@@ -307,6 +307,28 @@ Constraints (from auto-memory, do not relitigate):
       the API's Query enum=) but FastAPI's enum= kwarg is documentation-
       only, not validation — probed live, 200, sorts fine. Don't re-flag.
 
+- [x] 2026-07-15 (iter: universe stickiness) — High-score coverage-loss hole
+      CLOSED. The 48h sweep was clean (0 tracebacks, alarms silent, shadow
+      stacks 9 BUYs/0 SELLs post-reset, C-zero share stable 21.5%, interval=90
+      live, retention pruning healthy) EXCEPT: TBRG 70.6 and HURC 66.5 frozen
+      stale — both silently dropped from the scan universe. Two mechanisms:
+      (a) HURC market cap $149.76M flapping 0.16% under the screener's $150M
+      floor; (b) **FMP marks TBRG isActivelyTrading=false while it trades
+      300k shares/day** (stuck since the 2024 CPSI→TruBridge rename —
+      THIRD provider-flag lie: isEtf/CEF, isFund/REIT, now this). Fix:
+      score-anchored universe hysteresis — get_sticky_high_score_tickers()
+      retains recently-scanned names with CANSLIM or growth score >= 65
+      (scanned <= 21d), appended BEFORE the delisted/blocked filter so blocks
+      still apply; self-limiting (retention keeps the row fresh only while
+      the score holds the bar; decayed names age out; dead tickers exit via
+      the delisted counter). Logged at scan time ("Universe stickiness
+      retained N...") so log sweeps see it working. BK zombie correctly
+      excluded (54d stale). Config: `scanner.universe.stickiness`.
+      Also confirmed no-action items: ml-demotion-cohort early read
+      (would_veto n=9 avg −1.77% vs passed n=1 +1.05%, closed_n=1 — still
+      parked to late July), CS-alert "limits reached" log line is normal cap
+      behavior, stock_scores retention healthy (30d full / 90d sparse tiers).
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
