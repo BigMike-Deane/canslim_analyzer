@@ -328,6 +328,11 @@ Constraints (from auto-memory, do not relitigate):
       (would_veto n=9 avg −1.77% vs passed n=1 +1.05%, closed_n=1 — still
       parked to late July), CS-alert "limits reached" log line is normal cap
       behavior, stock_scores retention healthy (30d full / 90d sparse tiers).
+      **VERIFIED end-to-end same day**: first post-deploy cycle rescanned
+      both (TBRG 70.6→68.6, HURC 66.5→56.1); next boot retained ONLY TBRG —
+      HURC's fresh score fell under the 65 bar and it self-released after
+      one corrective rescan. The frozen 66.5 was stale-high; stickiness
+      repriced it and let go. Don't re-flag HURC leaving the universe.
 
 - [x] 2026-07-15 (iter: alarm persistence) — Fired system alarms now survive
       redeploys. The Jul-9 lesson ("the intermediate container's logs — incl.
