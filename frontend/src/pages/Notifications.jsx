@@ -21,6 +21,7 @@ const KIND_META = {
   bear_base_update:   { label: 'Bear Bases',   cls: 'bg-dark-700/40 text-dark-300 border-dark-600' },
   bear_market_report: { label: 'Bear Report',  cls: 'bg-dark-700/40 text-dark-300 border-dark-600' },
   watchlist:          { label: 'Watchlist',    cls: 'bg-accent-500/10 text-accent-500 border-accent-500/30' },
+  system_alarm:       { label: 'System Alarm', cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
 }
 
 function KindBadge({ kind }) {
