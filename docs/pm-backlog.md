@@ -398,6 +398,23 @@ Constraints (from auto-memory, do not relitigate):
       cohorts); age stats make the late-Jul verdict read honest.
       **COMMITTED, NOT DEPLOYED — rides next deploy/between-cycles window.**
 
+- [x] 2026-07-20 (iter 2-4: deploys + owner reports) — `c3d791d` cohort age
+      stats DEPLOYED + live-verified (avg_age_days 13.2 vs 5.2 — vintage gap
+      quantified). Negative cache END-TO-END VERIFIED: cycle 1 populated 49
+      tickers, cycle 2 re-fetched ZERO (count held at 49, DATA GAPS report
+      intact, cycle 45 min vs 55). OWNER REPORTS both fixed (`4210ab8`,
+      deployed): (1) CS alerts "Conf 8900%" — frontend scaled 0-100
+      confidence as 0-1 (×100); color tiers had the same wrong-scale bug
+      (everything rendered "strong"); now Math.round(conf)% with 70/50
+      tiers, modal shows N/100. (2) Live vs Backtest Exits blended
+      pre-parity-fix exits into its verdict — now defaults
+      since=2026-06-18 (Post-fix/All-time toggle, ref-mirrored for the
+      polling closure + out-of-order guard), footer explains young-
+      portfolio structural gaps. Post-fix window: 9 live exits, remaining
+      flags are presence/hold-days youth artifacts (footer contextualizes;
+      real verdict = recon poller ~Aug-1). Also `b6c6cb2` docs: champion
+      config lists the 5-10%: 4% trail tier (GS false-alarm prevention).
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
