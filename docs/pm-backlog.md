@@ -383,6 +383,21 @@ Constraints (from auto-memory, do not relitigate):
       starts at the first BUY (≈$25k) with the Start reference line at
       exactly 25k. Query(pattern=) used for validation (enum= is doc-only).
 
+- [x] 2026-07-20 (iter: gap-week sweep + deploy backlog cleared) — Tailscale
+      restored; deployed the two pending commits (`2b35e2a` perf-chart All
+      + `84f26ff` negative cache). Perf chart LIVE-VERIFIED: 253 downsampled
+      points, first point 2026-03-09 @ exactly $25,000; portfolio $30,608
+      (+22.4%) vs SPY +10.0%. 5-day-gap sweep ALL CLEAN: 0 persisted system
+      alarms (first real use of Jul-15 alarm persistence), shadow stacks
+      25 BUY/3 SELL each (no Zeno), C-zero 21.4% vs 21.5% baseline, trades
+      sane. GS trailing at -4.9% is NOT a bug — undocumented-in-CLAUDE.md
+      gain_5_to_10 tier trails at 4%. MU exits -31.7% vs 29% widened trail
+      = 2.7pp cadence slippage (documented class). SHIPPED `c3d791d`:
+      ml-demotion-cohort age stats (age_days/avg_age_days) — Jul-20 read
+      (would_veto -3.74% vs passed -0.41%) is VINTAGE-CONFOUNDED (14d vs 4d
+      cohorts); age stats make the late-Jul verdict read honest.
+      **COMMITTED, NOT DEPLOYED — rides next deploy/between-cycles window.**
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
