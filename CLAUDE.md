@@ -46,7 +46,7 @@ Key sections: `scanner`, `cache`, `scoring.canslim`, `scoring.growth_mode`, `mar
 7 profiles in YAML, configurable via API and frontend.
 **Winner**: `nostate_optimized` — market state DISABLED, binary SPY gate only (SPY < 50MA = no buys).
 
-Champion config: min_score=72, max_positions=8, stop_loss=7%, take_profit=75%, seed_count=4, trailing stops (50+: 25%, 30-50: 18%, 20-30: 12%, 10-20: 8%)
+Champion config: min_score=72, max_positions=8, stop_loss=7%, take_profit=75%, seed_count=4, trailing stops (50+: 25%, 30-50: 18%, 20-30: 12%, 10-20: 8%, 5-10: 4%)
 
 Key finding: 5-state market state machine HURTS over full cycles. NoState's binary gate is crude but far more effective (8.6x better over 4yr).
 
