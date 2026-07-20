@@ -1363,6 +1363,7 @@ async def ml_demotion_cohort(
         AIPortfolioTrade.executed_at > cutoff,
     ).order_by(AIPortfolioTrade.executed_at).all()
 
+    now_utc = datetime.now(timezone.utc)
     rows = []
     for t in buys:
         # Legacy rows store signal_factors as a JSON string — decode like
@@ -1394,10 +1395,17 @@ async def ml_demotion_cohort(
             gain = sum((s.realized_gain or 0) for s in sells)
             status = 'closed' if sells else 'unknown'
             gain_pct = round(gain / cost * 100, 2) if (sells and cost > 0) else None
+        age_days = None
+        if t.executed_at is not None:
+            exec_at = t.executed_at
+            if exec_at.tzinfo is None:
+                exec_at = exec_at.replace(tzinfo=timezone.utc)
+            age_days = max((now_utc - exec_at).days, 0)
         rows.append({
             'ticker': t.ticker,
             'user_id': t.user_id,
             'executed_at': t.executed_at.isoformat() if t.executed_at else None,
+            'age_days': age_days,
             'ml_confidence': conf,
             'cohort': 'would_veto' if conf < threshold else 'passed',
             'status': status,
@@ -1405,12 +1413,19 @@ async def ml_demotion_cohort(
         })
 
     def _agg(cohort_rows):
-        gains = [r['gain_pct'] for r in cohort_rows if r['gain_pct'] is not None]
+        # avg_age_days is computed over the SAME rows that feed avg_gain_pct:
+        # a mark-to-market gain grows with holding time, so cohorts of
+        # different vintages (Jul-6 fill vs Jul-16 buys) aren't comparable
+        # without knowing each side's age.
+        scored = [r for r in cohort_rows if r['gain_pct'] is not None]
+        gains = [r['gain_pct'] for r in scored]
+        ages = [r['age_days'] for r in scored if r['age_days'] is not None]
         return {
             'n': len(cohort_rows),
             'open_n': sum(1 for r in cohort_rows if r['status'] == 'open'),
             'closed_n': sum(1 for r in cohort_rows if r['status'] == 'closed'),
             'avg_gain_pct': round(sum(gains) / len(gains), 2) if gains else None,
+            'avg_age_days': round(sum(ages) / len(ages), 1) if ages else None,
             'win_rate': round(
                 sum(1 for g in gains if g > 0) / len(gains) * 100, 1) if gains else None,
         }
@@ -1426,7 +1441,10 @@ async def ml_demotion_cohort(
         'note': (
             'Gains blend open (mark-to-market) and closed (realized) rows — '
             'read avg_gain_pct as an early directional signal, not a verdict. '
-            'The demotion is vindicated if would_veto performs no worse than '
-            'passed once closed_n accumulates.'
+            'Compare avg_age_days between cohorts first: mark-to-market gains '
+            'grow with holding time, so a large age gap biases the comparison '
+            'toward the older cohort in a trending tape. The demotion is '
+            'vindicated if would_veto performs no worse than passed once '
+            'closed_n accumulates.'
         ),
     }

@@ -177,6 +177,38 @@ class TestOutcomes:
         assert out["passed"]["win_rate"] == 100.0
 
 
+class TestCohortAge:
+    def test_row_age_days_from_executed_at(self, db_session):
+        _buy(db_session, "AGED", 0.20,
+             executed_at=datetime.now(timezone.utc) - timedelta(days=14))
+        _position(db_session, "AGED", gain_loss_pct=5.0)
+        db_session.commit()
+        out = _call(db_session)
+        assert out["trades"][0]["age_days"] == 14
+
+    def test_naive_executed_at_does_not_crash(self, db_session):
+        """Live DB rows store naive-UTC executed_at; age math must not raise
+        on the naive/aware mix."""
+        _buy(db_session, "NAIVE", 0.20,
+             executed_at=datetime.utcnow() - timedelta(days=3))
+        db_session.commit()
+        out = _call(db_session)
+        assert out["trades"][0]["age_days"] == 3
+
+    def test_avg_age_days_only_over_gain_scored_rows(self, db_session):
+        """avg_age_days must qualify avg_gain_pct, so 'unknown' rows (no
+        position, no sells → gain_pct None) are excluded from the average."""
+        _buy(db_session, "SCORED", 0.20,
+             executed_at=datetime.now(timezone.utc) - timedelta(days=10))
+        _position(db_session, "SCORED", gain_loss_pct=5.0)
+        _buy(db_session, "UNKNOWN", 0.20,
+             executed_at=datetime.now(timezone.utc) - timedelta(days=2))
+        db_session.commit()
+        out = _call(db_session)
+        assert out["would_veto"]["avg_age_days"] == 10.0
+        assert out["would_veto"]["n"] == 2
+
+
 class TestValidation:
     def test_bad_cutoff_422(self, db_session):
         with pytest.raises(HTTPException) as exc:
