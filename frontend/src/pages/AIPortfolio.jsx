@@ -768,7 +768,13 @@ const RECON_FLAG_LABEL = {
   presence: 'one side only',
 }
 
-function ExitReconciliation({ reconciliation: rec }) {
+// Live exits before this date carry the pre-parity-fix pathology (short
+// pathological holds, missing stop clamp — fixed by the Jun-18 exit-parity
+// queue, 6a93c7c). The card defaults to post-fix exits so old debt doesn't
+// read as current drift; "All time" opts back in.
+const PARITY_FIX_DATE = '2026-06-18'
+
+function ExitReconciliation({ reconciliation: rec, allTime, onWindowChange }) {
   if (!rec) return null
 
   if (rec.status === 'no_reference_backtest') {
@@ -805,7 +811,7 @@ function ExitReconciliation({ reconciliation: rec }) {
     <Card variant="glass" className="mb-4">
       <CardHeader title="Live vs Backtest Exits" subtitle="Do live exits behave like the model? Divergence = drift." />
 
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
         <span
           className={`inline-flex items-center gap-1.5 text-[11px] font-semibold rounded-md border px-2 py-1 ${
             aligned
@@ -819,6 +825,27 @@ function ExitReconciliation({ reconciliation: rec }) {
         <span className="text-[10px] text-dark-500">
           {rec.live_exit_count} live vs {rec.backtest_exit_count} backtest exits
         </span>
+        {onWindowChange && (
+          <div className="flex gap-1 ml-auto" role="group" aria-label="Live exit window">
+            {[
+              { v: false, label: 'Post-fix' },
+              { v: true, label: 'All time' },
+            ].map((o) => (
+              <button
+                key={o.label}
+                onClick={() => onWindowChange(o.v)}
+                aria-pressed={allTime === o.v}
+                className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                  allTime === o.v
+                    ? 'text-primary-300 bg-primary-500/10 border-primary-500/30'
+                    : 'text-dark-400 border-dark-700/50 hover:text-dark-200'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -851,10 +878,16 @@ function ExitReconciliation({ reconciliation: rec }) {
       </div>
 
       <div className="border-t border-dark-700/50 mt-3 pt-2 text-[10px] text-dark-500">
-        vs {ref.name || `backtest #${ref.id}`}
-        {ref.strategy && ` (${ref.strategy})`}
-        {ref.start_date && ref.end_date && ` · ${ref.start_date} → ${ref.end_date}`}
-        {' · '}fingerprint = count · avg hold · win rate · avg realized
+        <div>
+          Live exits {allTime ? 'since inception (includes pre-parity-fix pathology before Jun 18)' : `since ${PARITY_FIX_DATE} (post parity-fix)`}
+          {' · '}vs {ref.name || `backtest #${ref.id}`}
+          {ref.strategy && ` (${ref.strategy})`}
+          {ref.start_date && ref.end_date && ` · ${ref.start_date} → ${ref.end_date}`}
+        </div>
+        <div className="mt-0.5">
+          fingerprint = count · avg hold · win rate · avg realized
+          {' · '}young portfolio vs multi-year backtest: hold-day and one-side-only gaps are partly structural (long-hold exits like TAKE PROFIT can't have occurred live yet)
+        </div>
       </div>
     </Card>
   )
@@ -1224,7 +1257,7 @@ function BuySignalFactors({ factors }) {
             {csDetail.days != null && <div>Earnings: {csDetail.days}d</div>}
             {csDetail.inst != null && <div>Inst: {csDetail.inst.toFixed(1)}%</div>}
             {csDetail.rank != null && <div>Quality rank: {csDetail.rank}</div>}
-            {csDetail.conf != null && <div>Confidence: {csDetail.conf.toFixed(2)}</div>}
+            {csDetail.conf != null && <div>Confidence: {Math.round(csDetail.conf)}/100</div>}
           </div>
         </div>
       )}
@@ -2108,9 +2141,10 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
             const entryLabel = stock.entry_status
               ? stock.entry_status.replace('_', ' ').toLowerCase()
               : null
-            // confidence is 0-1; >= 0.7 = strong, >= 0.5 = moderate
-            const confColor = (stock.confidence ?? 0) >= 0.7 ? 'text-emerald-400'
-              : (stock.confidence ?? 0) >= 0.5 ? 'text-amber-400'
+            // confidence is 0-100 (CSConfidenceBadge titles it `${confidence}/100`;
+            // backend thresholds live on the same scale, e.g. min_confidence: 30)
+            const confColor = (stock.confidence ?? 0) >= 70 ? 'text-emerald-400'
+              : (stock.confidence ?? 0) >= 50 ? 'text-amber-400'
               : 'text-dark-500'
             return (
               <Link
@@ -2139,8 +2173,8 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
                     {stock.confidence != null && (
                       <>
                         <span className="text-dark-600">{'\u00B7'}</span>
-                        <span className={confColor} title="Coiled Spring confidence (0-1) \u2014 backend signal overlap score">
-                          conf {(stock.confidence * 100).toFixed(0)}%
+                        <span className={confColor} title="Coiled Spring confidence (0-100) \u2014 backend signal overlap score">
+                          conf {Math.round(stock.confidence)}%
                         </span>
                       </>
                     )}
@@ -2400,6 +2434,23 @@ export default function AIPortfolio() {
   const [windowReturnsLoading, setWindowReturnsLoading] = useState(false)
   const [edge, setEdge] = useState(null)
   const [reconciliation, setReconciliation] = useState(null)
+  // Window for the reconciliation card's LIVE exit set. Default post-fix
+  // (since PARITY_FIX_DATE). Ref mirrors state so the polling fetchData
+  // closure reads the CURRENT choice, not the one captured at effect setup.
+  const [reconAllTime, setReconAllTime] = useState(false)
+  const reconAllTimeRef = useRef(false)
+
+  const reconSinceParam = (allTime) => (allTime ? null : PARITY_FIX_DATE)
+
+  const handleReconWindowChange = async (allTime) => {
+    setReconAllTime(allTime)
+    reconAllTimeRef.current = allTime
+    const data = await api
+      .getAIPortfolioEdgeReconciliation(null, reconSinceParam(allTime))
+      .catch(() => null)
+    // Only apply if the user hasn't toggled again while this was in flight.
+    if (reconAllTimeRef.current === allTime) setReconciliation(data)
+  }
 
   const fetchData = async (showLoading = true) => {
     try {
@@ -2422,7 +2473,7 @@ export default function AIPortfolio() {
         api.getEarningsCalendar().catch(() => null),
         api.getPortfolioRisk().catch(() => null),
         api.getAIPortfolioEdge(EDGE_ALL_DAYS).catch(() => null),
-        api.getAIPortfolioEdgeReconciliation().catch(() => null),
+        api.getAIPortfolioEdgeReconciliation(null, reconSinceParam(reconAllTimeRef.current)).catch(() => null),
       ])
       setPortfolio(portfolioData)
       setHistory(historyData)
@@ -2786,7 +2837,11 @@ export default function AIPortfolio() {
 
           <EdgeAttribution edge={edge} />
 
-          <ExitReconciliation reconciliation={reconciliation} />
+          <ExitReconciliation
+            reconciliation={reconciliation}
+            allTime={reconAllTime}
+            onWindowChange={handleReconWindowChange}
+          />
 
           <SectorAllocationChart
             riskData={riskData}
