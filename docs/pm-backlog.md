@@ -439,6 +439,24 @@ Constraints (from auto-memory, do not relitigate):
       Op-note: cold pass ~2h/window after universe expansion (one-time
       historical fetch for ~2k new tickers); warm ~25 min.
 
+- [x] 2026-07-21 (owner pick: DR + web push audit — "exists but might have
+      broken") — `0c3d5a1` DEPLOYED. Backups: daily 2AM pg_dump job HEALTHY
+      (7d+4w rotation, never missed) but never restore-tested and all
+      on-box. Shipped: (1) verify_latest_backup() + Sun 3:30 UTC job —
+      scratch-DB restore + row-count floors, system alarm on failure;
+      manual proof: Jul-21 dump → 4,401 stocks / 2.43M scores clean.
+      (2) scripts/pull_backup.sh off-box leg (Tailscale→Windows, keep 4);
+      first copy pulled to C:\Users\bayer\canslim_backups.
+      Web push: whole stack healthy (VAPID in .env+container, endpoints
+      200, sw.js/manifest fine, pywebpush installed) — push_subscriptions
+      EMPTY because iOS only exposes PushManager inside an installed PWA;
+      Settings dead-ended with "not supported". Shipped: iOS
+      add-to-home-screen onboarding steps + real 180x180
+      apple-touch-icon.png (iOS ignores SVG). ntfy leg confirmed live
+      (BUY: FTI push delivered same day). ▶ OWNER ACTION: install PWA
+      from Safari (Share → Add to Home Screen) then Enable Push in
+      Settings; run scripts/pull_backup.sh weekly for the off-box leg.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
