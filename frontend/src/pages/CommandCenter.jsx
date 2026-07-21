@@ -245,6 +245,14 @@ function ImprovingRadarSection({ radar }) {
               title={`Score ${s.prior_score} → ${s.score} over ${radar.lookback_days}d`}>
           {s.prior_score} → {s.score} (+{s.velocity})
         </span>
+        {s.driver === 'fund_led' && (
+          <span
+            className="text-[9px] uppercase tracking-wide text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded px-1 py-0.5 shrink-0"
+            title="Rise driven by a fresh earnings report (C+A jump) — these historically stall for ~4 weeks (+1.7% vs +3.6% for momentum-led rises)"
+          >
+            EPS pop
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {s.spark?.length > 1 && (

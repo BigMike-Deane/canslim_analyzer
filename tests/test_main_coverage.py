@@ -386,10 +386,10 @@ class TestImprovingRadar:
     rising >= 8; fast_risers = 75+ rising >= 10 (chase-risk caution).
     """
 
-    RADAR_TICKERS = ("IRAD1", "IRAD2", "IRAD3", "IRAD4")
+    RADAR_TICKERS = ("IRAD1", "IRAD2", "IRAD3", "IRAD4", "IRAD5", "IRAD6")
 
     @classmethod
-    def _seed_prior(cls, ticker, prior_score, days_ago=14):
+    def _seed_prior(cls, ticker, prior_score, days_ago=14, **components):
         db = _db()
         try:
             stk = db.query(Stock).filter_by(ticker=ticker).first()
@@ -398,6 +398,7 @@ class TestImprovingRadar:
                 timestamp=datetime.now(timezone.utc) - timedelta(days=days_ago),
                 date=date.today() - timedelta(days=days_ago),
                 total_score=prior_score,
+                **components,
             ))
             db.commit()
         finally:
@@ -427,6 +428,15 @@ class TestImprovingRadar:
         # Rising but no prior row inside the window → excluded entirely
         _ensure_stock("IRAD4", score=60.0)
         cls._seed_prior("IRAD4", 40.0, days_ago=30)
+        # Fund-led rise: C+A jumped (2+1 -> defaults 12+11 = +20), L+M flat
+        # (defaults 11+10 unchanged) → driver 'fund_led' (EPS-pop flag)
+        _ensure_stock("IRAD5", score=58.0)
+        cls._seed_prior("IRAD5", 45.0, c_score=2.0, a_score=1.0,
+                        l_score=11.0, m_score=10.0)
+        # Price-led rise: L+M jumped (1+0 -> 11+10 = +20), C+A flat
+        _ensure_stock("IRAD6", score=58.0)
+        cls._seed_prior("IRAD6", 45.0, c_score=12.0, a_score=11.0,
+                        l_score=1.0, m_score=0.0)
 
     def test_radar_splits_and_filters(self):
         r = client.get("/api/stocks/improving-radar")
@@ -450,6 +460,15 @@ class TestImprovingRadar:
         row = next(s for s in r.json()["radar"] if s["ticker"] == "IRAD1")
         assert row["spark"], "sparkline series missing"
         assert row["spark"][0] == 45.0
+
+    def test_driver_classification(self):
+        """Component attribution: C+A-led rise = 'fund_led' (EPS-pop stall
+        class), L+M-led = 'price_led'; missing prior components = None."""
+        r = client.get("/api/stocks/improving-radar")
+        rows = {s["ticker"]: s for s in r.json()["radar"]}
+        assert rows["IRAD5"]["driver"] == "fund_led"
+        assert rows["IRAD6"]["driver"] == "price_led"
+        assert rows["IRAD1"]["driver"] is None  # prior row has no components
 
     def test_stale_rows_excluded(self):
         db = _db()

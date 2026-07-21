@@ -1635,11 +1635,16 @@ async def get_improving_radar(
     rows = db.execute(text("""
         SELECT s.id, s.ticker, s.name AS company_name, s.sector, s.current_price,
                s.canslim_score, p.prior_score,
-               s.canslim_score - p.prior_score AS velocity
+               s.canslim_score - p.prior_score AS velocity,
+               s.c_score, s.a_score, s.l_score, s.m_score,
+               p.prior_c, p.prior_a, p.prior_l, p.prior_m
         FROM stocks s
         JOIN (
-            SELECT stock_id, prior_score FROM (
+            SELECT stock_id, prior_score, prior_c, prior_a, prior_l, prior_m
+            FROM (
                 SELECT ss.stock_id, ss.total_score AS prior_score,
+                       ss.c_score AS prior_c, ss.a_score AS prior_a,
+                       ss.l_score AS prior_l, ss.m_score AS prior_m,
                        ROW_NUMBER() OVER (
                            PARTITION BY ss.stock_id
                            ORDER BY ss.date DESC, ss.timestamp DESC
@@ -1689,6 +1694,24 @@ async def get_improving_radar(
         for sr in spark_rows:
             sparks.setdefault(sr.stock_id, []).append(round(sr.total_score, 1))
 
+    def _driver(r):
+        """Classify what drove the rise. Component attribution study
+        (2026-07-21, <65 band, 28d fwd): fund-led rises (C+A jump = a fresh
+        earnings report) STALL (+1.7% flat 14d->28d) while mixed/price-led
+        rises keep compounding (+3.6%). Margin of 3 pts avoids noise ties.
+        None when either side's components are missing (legacy rows)."""
+        vals = (r.c_score, r.a_score, r.l_score, r.m_score,
+                r.prior_c, r.prior_a, r.prior_l, r.prior_m)
+        if any(v is None for v in vals):
+            return None
+        d_fund = (r.c_score + r.a_score) - (r.prior_c + r.prior_a)
+        d_price = (r.l_score + r.m_score) - (r.prior_l + r.prior_m)
+        if d_fund >= d_price + 3:
+            return "fund_led"
+        if d_price >= d_fund + 3:
+            return "price_led"
+        return "mixed"
+
     def _row(r):
         return {
             "ticker": r.ticker,
@@ -1698,6 +1721,7 @@ async def get_improving_radar(
             "score": round(r.canslim_score, 1),
             "prior_score": round(r.prior_score, 1),
             "velocity": round(r.velocity, 1),
+            "driver": _driver(r),
             "spark": sparks.get(r.id, []),
         }
 
