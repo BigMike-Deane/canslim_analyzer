@@ -1590,6 +1590,124 @@ async def get_insider_sentiment(
     }
 
 
+@app.get("/api/stocks/improving-radar")
+async def get_improving_radar(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(15, le=50),
+):
+    """Score-velocity discovery surface (Improving Radar).
+
+    Backed by the 2026-07-21 event study on stock_scores history (113k
+    events, level-controlled): rising scores at LOW levels lead their
+    static peers by ~1.1pp over the next 14d (sub-55 band: +2.6% vs +1.5%
+    avg), while FAST risers at 75+ went NEGATIVE (-1.1%) — a rapid rise at
+    the top is usually the price run-up itself feeding the momentum
+    components, i.e. extension, not emergence. Hence two lists:
+
+    - radar: stocks UNDER the screener's radar (default 40-65) whose score
+      climbed >= min_velocity over lookback_days — tomorrow's candidates.
+    - fast_risers: 75+ names with a fast score rise — chase-risk caution,
+      NOT a buy list.
+
+    Read-only; velocity comes from the stored point-in-time StockScore
+    history (no lookahead by construction).
+    """
+    from sqlalchemy import text
+    from config_loader import config as yaml_config
+
+    lookback = int(yaml_config.get('api.improving_radar.lookback_days', 14))
+    min_velocity = float(yaml_config.get('api.improving_radar.min_velocity', 8))
+    radar_min = float(yaml_config.get('api.improving_radar.radar_min_score', 40))
+    radar_max = float(yaml_config.get('api.improving_radar.radar_max_score', 65))
+    caution_min_score = float(yaml_config.get('api.improving_radar.caution_min_score', 75))
+    caution_min_velocity = float(yaml_config.get('api.improving_radar.caution_min_velocity', 10))
+
+    # Prior score: the newest stored daily row inside a +/-3d window around
+    # (today - lookback), so weekend/sparse-tier gaps don't drop stocks.
+    # Window functions + Python-computed date bounds keep this portable
+    # across Postgres (live) and SQLite (test suite) — no DISTINCT ON,
+    # no DB-side date arithmetic.
+    from datetime import timedelta as _td
+    target = date.today() - _td(days=lookback)
+    win_lo, win_hi = target - _td(days=3), target + _td(days=3)
+
+    rows = db.execute(text("""
+        SELECT s.id, s.ticker, s.name AS company_name, s.sector, s.current_price,
+               s.canslim_score, p.prior_score,
+               s.canslim_score - p.prior_score AS velocity
+        FROM stocks s
+        JOIN (
+            SELECT stock_id, prior_score FROM (
+                SELECT ss.stock_id, ss.total_score AS prior_score,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ss.stock_id
+                           ORDER BY ss.date DESC, ss.timestamp DESC
+                       ) AS rn
+                FROM stock_scores ss
+                WHERE ss.date BETWEEN :lo AND :hi
+            ) ranked WHERE rn = 1
+        ) p ON p.stock_id = s.id
+        WHERE s.last_updated >= :cutoff
+          AND s.current_price > 1
+          AND s.canslim_score IS NOT NULL
+          AND (
+                (s.canslim_score >= :rmin AND s.canslim_score < :rmax
+                 AND s.canslim_score - p.prior_score >= :minv)
+             OR (s.canslim_score >= :cmin
+                 AND s.canslim_score - p.prior_score >= :cminv)
+          )
+        ORDER BY velocity DESC
+    """), {
+        "lo": win_lo, "hi": win_hi, "cutoff": stale_row_cutoff(),
+        "rmin": radar_min, "rmax": radar_max, "minv": min_velocity,
+        "cmin": caution_min_score, "cminv": caution_min_velocity,
+    }).fetchall()
+
+    radar = [r for r in rows if r.canslim_score < radar_max][:limit]
+    fast_risers = [r for r in rows if r.canslim_score >= caution_min_score][:5]
+
+    # Sparklines only for returned rows: last 30d of daily scores.
+    spark_ids = [r.id for r in radar + fast_risers]
+    sparks = {}
+    if spark_ids:
+        from sqlalchemy import bindparam
+        spark_stmt = text("""
+            SELECT stock_id, date, total_score FROM (
+                SELECT stock_id, date, total_score,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY stock_id, date ORDER BY timestamp DESC
+                       ) AS rn
+                FROM stock_scores
+                WHERE stock_id IN :ids AND date >= :since
+            ) ranked WHERE rn = 1
+            ORDER BY stock_id, date
+        """).bindparams(bindparam("ids", expanding=True))
+        spark_rows = db.execute(spark_stmt, {
+            "ids": spark_ids, "since": date.today() - _td(days=30),
+        }).fetchall()
+        for sr in spark_rows:
+            sparks.setdefault(sr.stock_id, []).append(round(sr.total_score, 1))
+
+    def _row(r):
+        return {
+            "ticker": r.ticker,
+            "company_name": r.company_name,
+            "sector": r.sector,
+            "current_price": r.current_price,
+            "score": round(r.canslim_score, 1),
+            "prior_score": round(r.prior_score, 1),
+            "velocity": round(r.velocity, 1),
+            "spark": sparks.get(r.id, []),
+        }
+
+    return {
+        "radar": [_row(r) for r in radar],
+        "fast_risers": [_row(r) for r in fast_risers],
+        "lookback_days": lookback,
+    }
+
+
 # ============== Single Stock Analysis ==============
 
 @app.get("/api/stocks/{ticker}")

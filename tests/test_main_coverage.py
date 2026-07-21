@@ -378,6 +378,95 @@ class TestBacktestPostValidation:
         assert r.status_code == 200
 
 
+class TestImprovingRadar:
+    """GET /api/stocks/improving-radar — score-velocity discovery surface.
+
+    Velocity = live canslim_score minus the newest StockScore row inside a
+    +/-3d window around (today - lookback_days). Radar list = 40-65 band
+    rising >= 8; fast_risers = 75+ rising >= 10 (chase-risk caution).
+    """
+
+    RADAR_TICKERS = ("IRAD1", "IRAD2", "IRAD3", "IRAD4")
+
+    @classmethod
+    def _seed_prior(cls, ticker, prior_score, days_ago=14):
+        db = _db()
+        try:
+            stk = db.query(Stock).filter_by(ticker=ticker).first()
+            db.add(StockScore(
+                stock_id=stk.id,
+                timestamp=datetime.now(timezone.utc) - timedelta(days=days_ago),
+                date=date.today() - timedelta(days=days_ago),
+                total_score=prior_score,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    @classmethod
+    def setup_class(cls):
+        db = _db()
+        try:
+            for t in cls.RADAR_TICKERS:
+                stk = db.query(Stock).filter_by(ticker=t).first()
+                if stk:
+                    db.query(StockScore).filter_by(stock_id=stk.id).delete()
+                    db.delete(stk)
+            db.commit()
+        finally:
+            db.close()
+        # Rising under the bar: 45 -> 58 (+13) → radar
+        _ensure_stock("IRAD1", score=58.0)
+        cls._seed_prior("IRAD1", 45.0)
+        # Static under the bar: 55 -> 56 (+1) → excluded
+        _ensure_stock("IRAD2", score=56.0)
+        cls._seed_prior("IRAD2", 55.0)
+        # Fast riser at the top: 68 -> 80 (+12) → fast_risers, NOT radar
+        _ensure_stock("IRAD3", score=80.0)
+        cls._seed_prior("IRAD3", 68.0)
+        # Rising but no prior row inside the window → excluded entirely
+        _ensure_stock("IRAD4", score=60.0)
+        cls._seed_prior("IRAD4", 40.0, days_ago=30)
+
+    def test_radar_splits_and_filters(self):
+        r = client.get("/api/stocks/improving-radar")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        radar_tickers = [s["ticker"] for s in body["radar"]]
+        caution_tickers = [s["ticker"] for s in body["fast_risers"]]
+        assert "IRAD1" in radar_tickers
+        assert "IRAD2" not in radar_tickers          # velocity +1 < 8
+        assert "IRAD4" not in radar_tickers          # prior outside window
+        assert "IRAD3" in caution_tickers            # 75+ fast riser
+        assert "IRAD3" not in radar_tickers          # never in both lists
+        row = next(s for s in body["radar"] if s["ticker"] == "IRAD1")
+        assert row["velocity"] == 13.0
+        assert row["prior_score"] == 45.0
+
+    def test_spark_series_returned_for_rows(self):
+        """The prior-score row doubles as sparkline history — series present
+        and chronological for returned tickers."""
+        r = client.get("/api/stocks/improving-radar")
+        row = next(s for s in r.json()["radar"] if s["ticker"] == "IRAD1")
+        assert row["spark"], "sparkline series missing"
+        assert row["spark"][0] == 45.0
+
+    def test_stale_rows_excluded(self):
+        db = _db()
+        try:
+            stk = db.query(Stock).filter_by(ticker="IRAD1").first()
+            orig = stk.last_updated
+            stk.last_updated = datetime.now(timezone.utc) - timedelta(days=10)
+            db.commit()
+            r = client.get("/api/stocks/improving-radar")
+            assert "IRAD1" not in [s["ticker"] for s in r.json()["radar"]]
+            stk = db.query(Stock).filter_by(ticker="IRAD1").first()
+            stk.last_updated = orig
+            db.commit()
+        finally:
+            db.close()
+
+
 class TestBacktestRead:
     """Tier 1 — GET /api/backtests/{id} + status + queue + presets + compare."""
 

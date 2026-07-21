@@ -10,6 +10,7 @@ const CACHE_TTL = {
   '/api/stocks': 300,              // 5 min (list)
   '/api/stocks/': 600,             // 10 min (individual stock)
   '/api/stocks/breaking-out': 300,
+  '/api/stocks/improving-radar': 300,
   '/api/top-growth-stocks': 300,
   '/api/portfolio': 300,
   '/api/portfolio/gameplan': 300,
@@ -461,6 +462,7 @@ export const api = {
   getTopGrowthStocks: (limit = 10) => request(`/api/top-growth-stocks?limit=${limit}`),
 
   getBreakingOutStocks: (limit = 10) => request(`/api/stocks/breaking-out?limit=${limit}`),
+  getImprovingRadar: () => request('/api/stocks/improving-radar'),
 
   // Coiled Spring Alerts
   getCoiledSpringAlerts: (days = 7) => request(`/api/coiled-spring/alerts?days=${days}`),

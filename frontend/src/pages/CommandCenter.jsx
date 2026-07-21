@@ -223,6 +223,70 @@ function CoiledSpringSection({ cs }) {
   )
 }
 
+// Improving Radar — score-velocity discovery. Backed by the 2026-07-21
+// event study on point-in-time StockScore history: sub-65 stocks with a
+// fast-rising score lead their static peers by ~1.1pp over the next 14d,
+// while FAST risers already at 75+ went negative (extension, not
+// emergence) — hence the separate chase-risk block.
+function ImprovingRadarSection({ radar }) {
+  if (!radar) return null
+  const rising = radar.radar || []
+  const cautions = radar.fast_risers || []
+  if (rising.length === 0 && cautions.length === 0) return null
+
+  const Row = ({ s, caution }) => (
+    <Link
+      to={`/stock/${s.ticker}`}
+      className="flex items-center justify-between gap-2 py-1.5 px-2 -mx-2 rounded hover:bg-dark-750/50 transition-colors border-b border-dark-700/30 last:border-0"
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="font-medium text-dark-100 text-xs">{s.ticker}</span>
+        <span className={`text-[10px] font-data ${caution ? 'text-amber-400' : 'text-emerald-400'}`}
+              title={`Score ${s.prior_score} → ${s.score} over ${radar.lookback_days}d`}>
+          {s.prior_score} → {s.score} (+{s.velocity})
+        </span>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {s.spark?.length > 1 && (
+          <Sparkline data={s.spark} width={56} height={18} color={caution ? '#f59e0b' : undefined} />
+        )}
+        <span className="text-[10px] font-data text-dark-400 w-14 text-right">
+          {formatCurrency(s.current_price)}
+        </span>
+      </div>
+    </Link>
+  )
+
+  return (
+    <Card as="section" aria-labelledby="cc-radar-heading" variant="accent" accent="purple" className="bg-purple-500/[0.03]">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span id="cc-radar-heading" className="text-sm font-semibold text-purple-300">Improving Radar</span>
+          <TagBadge color="purple">SCORE Δ{radar.lookback_days}D</TagBadge>
+        </div>
+      </div>
+      <div className="text-[10px] text-dark-400 mb-2">
+        Scores climbing fast while still under the buy bar — tomorrow's candidates, surfaced early.
+      </div>
+      {rising.length === 0 ? (
+        <EmptyState bare compact message="No fast risers under the bar right now" />
+      ) : (
+        <div className="max-h-64 overflow-y-auto -mx-1 px-1">
+          {rising.map(s => <Row key={s.ticker} s={s} />)}
+        </div>
+      )}
+      {cautions.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-dark-700/40">
+          <div className="text-[10px] text-amber-400/90 mb-1" title="High-score fast risers underperformed over the next 14d in the event study — a rapid score rise at the top usually reflects the price run-up itself (extension risk)">
+            ⚠ Fast risers at 75+ — historically chase risk, not entries
+          </div>
+          {cautions.map(s => <Row key={s.ticker} s={s} caution />)}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 const PositionRow = memo(function PositionRow({ p, earningsDays }) {
   const stopDist = p.stop_distance
   const stopColor =
@@ -386,10 +450,16 @@ export default function CommandCenter() {
   const toast = useToast()
   const { matchesPrefs } = useOwnerPrefs()
 
+  const [radar, setRadar] = useState(null)
+
   const fetchData = useCallback(async () => {
     try {
-      const main = await api.getCommandCenter()
+      const [main, radarData] = await Promise.all([
+        api.getCommandCenter(),
+        api.getImprovingRadar().catch(() => null),
+      ])
       setData(main)
+      setRadar(radarData)
       setLastUpdate(new Date())
       setError(null)
     } catch (e) {
@@ -764,6 +834,11 @@ export default function CommandCenter() {
           {/* Coiled Spring */}
           <div className="animate-fade-in-up opacity-0 stagger-3">
             <CoiledSpringSection cs={coiled_spring} />
+          </div>
+
+          {/* Improving Radar — score-velocity discovery */}
+          <div className="animate-fade-in-up opacity-0 stagger-4">
+            <ImprovingRadarSection radar={radar} />
           </div>
 
           {/* Earnings Countdown */}
