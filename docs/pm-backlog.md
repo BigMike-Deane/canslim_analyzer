@@ -415,6 +415,30 @@ Constraints (from auto-memory, do not relitigate):
       real verdict = recon poller ~Aug-1). Also `b6c6cb2` docs: champion
       config lists the 5-10%: 4% trail tier (GS false-alarm prevention).
 
+- [x] 2026-07-21 (impact loop: max_positions capacity sweep — VERDICT: KEEP 8)
+      Motivation: 36 fresh >=72 unbought, all users pinned 8/8. Full grid
+      (nostate_optimized, all-universe, $25k, W1-W4), baselines 897-908 +
+      variants 909-916 via profile_overrides:
+      | W       | mp8          | mp10         | mp12         |
+      | W1 chop | +7.4 /11.1  | +7.4 /11.1  | +7.4 /11.0  |
+      | W2 chop | -13.7/15.5  | -13.4/15.1  | -14.2/15.9  |
+      | W3 trend| +42.5/ 8.0  | +36.2/11.4  | +37.7/ 9.1  |
+      | W4 trend| +110.0/11.1 | +96.6/13.1  | +93.8/12.6  |
+      GATE FAILS BOTH STRONG WINDOWS (limit 3pp): W3 -6.3/-4.8pp, W4
+      -13.4/-16.2pp, DD worse everywhere it binds; chop untouched (cap never
+      binds there — peak 5 positions). CONCENTRATION IS THE ALPHA — wider
+      books add churn (W4: 217/244 trades vs 171, WR down) and dilute
+      winners. max_positions stays 8; the unbought high-scorers are the
+      price of concentration, not free money. DON'T RE-SWEEP position count.
+      BUG FOUND EN ROUTE, FIXED+DEPLOYED `7dfed59`: BacktestCreate's
+      explicit max_positions/min_score_to_buy/stop_loss_pct were silently
+      ignored for profile-defined strategies (backtester resolves
+      profile-first; creation pads row with defaults). Sweep 1 (897-908) ran
+      12x mp8. Creation now folds explicit scalars into profile_overrides
+      (setdefault; power path wins; untouched requests stay NULL).
+      Op-note: cold pass ~2h/window after universe expansion (one-time
+      historical fetch for ~2k new tickers); warm ~25 min.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
