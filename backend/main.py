@@ -4431,6 +4431,22 @@ async def create_backtest(
     default_min_score = yaml_config.get('ai_trader.allocation.min_score_to_buy', 72)
     default_stop_loss = yaml_config.get('ai_trader.stops.normal_stop_loss_pct', 10.0)
 
+    # Fold explicitly-supplied scalar fields into profile_overrides so they
+    # actually apply. The backtester resolves these profile-first
+    # (self.profile.get(key, row_value)), and the row value below is padded
+    # with generic defaults — so for any strategy whose profile defines the
+    # key (every tuned profile does), an explicit max_positions=12 in the
+    # request was silently ignored. setdefault keeps an existing
+    # profile_overrides key winning: that's the sweep-rig power path, and a
+    # caller passing both meant the override.
+    effective_overrides = dict(config.profile_overrides or {})
+    if config.max_positions is not None:
+        effective_overrides.setdefault('max_positions', config.max_positions)
+    if config.min_score_to_buy is not None:
+        effective_overrides.setdefault('min_score', config.min_score_to_buy)
+    if config.stop_loss_pct is not None:
+        effective_overrides.setdefault('stop_loss_pct', config.stop_loss_pct)
+
     # Create backtest run record
     strategy_label = f" [{config.strategy.upper()}]" if config.strategy != "balanced" else ""
     backtest = BacktestRun(
@@ -4446,7 +4462,7 @@ async def create_backtest(
         stop_loss_pct=config.stop_loss_pct or default_stop_loss,
         force_refresh=config.force_refresh,
         status="pending",
-        profile_overrides=config.profile_overrides,
+        profile_overrides=effective_overrides or None,
         user_id=current_user.id
     )
     db.add(backtest)

@@ -306,6 +306,66 @@ class TestBacktestPostValidation:
         finally:
             db.close()
 
+    def test_explicit_scalar_fields_fold_into_profile_overrides(self):
+        """max_positions/min_score_to_buy/stop_loss_pct are silently ignored
+        by the backtester unless they reach the profile (it resolves
+        profile-first and the row value is padded with defaults). Creation
+        must fold explicit fields into profile_overrides — jul-21 mp-sweep
+        regression: 12 runs at max_positions=10/12 all executed as 8."""
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01", "end_date": "2024-06-01",
+                "starting_cash": 25000.0, "strategy": "nostate_optimized",
+                "max_positions": 12, "min_score_to_buy": 68,
+                "stop_loss_pct": 9.0,
+            })
+        assert r.status_code == 200, r.text
+        db = _db()
+        try:
+            bt = db.get(BacktestRun, r.json()["id"])
+            assert bt.profile_overrides["max_positions"] == 12
+            assert bt.profile_overrides["min_score"] == 68
+            assert bt.profile_overrides["stop_loss_pct"] == 9.0
+        finally:
+            db.close()
+
+    def test_explicit_fields_do_not_clobber_profile_overrides(self):
+        """A caller passing BOTH the scalar field and a profile_overrides key
+        meant the override — the power path wins."""
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01", "end_date": "2024-06-01",
+                "starting_cash": 25000.0, "strategy": "nostate_optimized",
+                "max_positions": 12,
+                "profile_overrides": {"max_positions": 10},
+            })
+        assert r.status_code == 200, r.text
+        db = _db()
+        try:
+            bt = db.get(BacktestRun, r.json()["id"])
+            assert bt.profile_overrides["max_positions"] == 10
+        finally:
+            db.close()
+
+    def test_no_explicit_fields_stores_null_overrides(self):
+        """Untouched requests must keep profile_overrides NULL so the
+        strategy profile stays authoritative (no phantom overrides)."""
+        with patch("backend.backtest_queue.backtest_queue.enqueue"), \
+             patch("backend.backtester.create_backtest_static_snapshot"):
+            r = client.post("/api/backtests", json={
+                "start_date": "2024-01-01", "end_date": "2024-06-01",
+                "starting_cash": 25000.0, "strategy": "nostate_optimized",
+            })
+        assert r.status_code == 200, r.text
+        db = _db()
+        try:
+            bt = db.get(BacktestRun, r.json()["id"])
+            assert bt.profile_overrides is None
+        finally:
+            db.close()
+
     def test_post_snapshot_failure_does_not_block_creation(self):
         """Snapshot is best-effort; backtest creation must still succeed."""
         with patch("backend.backtest_queue.backtest_queue.enqueue"), \
