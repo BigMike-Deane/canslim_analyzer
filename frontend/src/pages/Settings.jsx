@@ -80,6 +80,16 @@ function urlBase64ToUint8Array(base64String) {
 const PUSH_SUPPORTED = typeof window !== 'undefined' &&
   'serviceWorker' in navigator && 'PushManager' in window
 
+// iOS only exposes PushManager inside an installed (Home Screen) PWA — in
+// plain Safari the API is absent, which reads as "unsupported" when the
+// real fix is installing the app first.
+const IS_IOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent)
+const IS_STANDALONE = typeof window !== 'undefined' && (
+  window.matchMedia?.('(display-mode: standalone)')?.matches ||
+  window.navigator.standalone === true
+)
+const IOS_NEEDS_INSTALL = IS_IOS && !IS_STANDALONE && !PUSH_SUPPORTED
+
 export default function Settings() {
   const { user } = useAuth()
   const [webhookUrl, setWebhookUrl] = useState('')
@@ -588,9 +598,23 @@ export default function Settings() {
         </p>
 
         {pushPermission === 'unsupported' && (
-          <div className="text-sm text-amber-400">
-            This browser doesn't support Web Push.
-          </div>
+          IOS_NEEDS_INSTALL ? (
+            <div className="text-sm text-dark-300 space-y-1.5">
+              <div className="text-amber-400 font-medium">
+                On iPhone/iPad, push requires installing the app first:
+              </div>
+              <ol className="list-decimal list-inside space-y-0.5 text-dark-400">
+                <li>Tap the <span className="text-dark-200">Share</span> button in Safari</li>
+                <li>Choose <span className="text-dark-200">Add to Home Screen</span></li>
+                <li>Open CANSLIM from the Home Screen icon</li>
+                <li>Return here and tap Enable Push</li>
+              </ol>
+            </div>
+          ) : (
+            <div className="text-sm text-amber-400">
+              This browser doesn't support Web Push.
+            </div>
+          )
         )}
 
         {pushPermission !== 'unsupported' && (

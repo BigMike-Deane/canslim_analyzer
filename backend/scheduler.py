@@ -2313,8 +2313,37 @@ def _run_scheduled_backup():
         _record_failure("backup", str(e))
 
 
+def _run_backup_verify():
+    """Weekly restore-verification with alarm on failure.
+
+    Restores the newest dump into a scratch DB and checks row-count floors —
+    catches silently-unrestorable backups (the dumps had never been restored
+    until 2026-07-21). Failure fires a persisted system alarm so it survives
+    redeploys and shows in the Notifications bell.
+    """
+    try:
+        from backend.backup import verify_latest_backup
+        result = verify_latest_backup()
+        if result["status"] == "success":
+            _record_success("backup_verify")
+        else:
+            _record_failure("backup_verify", result.get("error", "unknown"))
+            _fire_system_alarm(
+                "Backup restore-verify FAILED",
+                f"{result.get('file', '?')}: {result.get('error', 'unknown')[:300]}",
+                priority="urgent",
+            )
+    except Exception as e:
+        logger.error(f"Backup verify job failed: {e}")
+        _record_failure("backup_verify", str(e))
+        _fire_system_alarm("Backup restore-verify FAILED", str(e)[:300],
+                           priority="urgent")
+
+
 def start_backup_job():
-    """Schedule daily database backup at 2 AM UTC."""
+    """Schedule daily database backup at 2 AM UTC + weekly restore-verify
+    Sunday 3:30 AM UTC (after the 2 AM backup, before the 90-min scan's
+    heavy phases collide with a ~2 GB scratch restore)."""
     from apscheduler.triggers.cron import CronTrigger
 
     job_id = "daily_database_backup"
@@ -2329,10 +2358,22 @@ def start_backup_job():
         replace_existing=True,
     )
 
+    verify_id = "weekly_backup_verify"
+    if scheduler.get_job(verify_id):
+        scheduler.remove_job(verify_id)
+
+    scheduler.add_job(
+        _run_backup_verify,
+        CronTrigger(day_of_week="sun", hour=3, minute=30),
+        id=verify_id,
+        name="Weekly Backup Restore-Verify",
+        replace_existing=True,
+    )
+
     if not scheduler.running:
         scheduler.start()
 
-    logger.info("Daily backup job scheduled (2 AM UTC)")
+    logger.info("Daily backup job scheduled (2 AM UTC) + weekly restore-verify (Sun 3:30 AM UTC)")
 
 
 def _run_ml_backfill():

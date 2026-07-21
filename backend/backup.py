@@ -172,6 +172,105 @@ def list_backups() -> list:
     return result
 
 
+VERIFY_DB = "restore_verify"
+# Conservative floors — a structurally-empty restore must fail loudly, but
+# normal growth/pruning must never trip these.
+VERIFY_MIN_ROWS = {
+    "stocks": 1000,
+    "ai_portfolio_trades": 1,
+    "stock_scores": 1000,
+}
+
+
+def _admin_conn():
+    """Autocommit psycopg2 connection for CREATE/DROP DATABASE (which cannot
+    run inside a transaction block)."""
+    import psycopg2
+    params = _parse_database_url()
+    conn = psycopg2.connect(
+        host=params["host"], port=params["port"], user=params["user"],
+        password=params["password"], dbname=params["dbname"],
+    )
+    conn.autocommit = True
+    return conn
+
+
+def verify_latest_backup() -> dict:
+    """Restore the newest dump into a scratch DB and sanity-check row counts.
+
+    An unverified backup is a hope, not a backup: pg_dump exits 0 even when
+    a future schema/version drift would make the file unrestorable, and the
+    2026-07-21 manual check was the first time any dump had ever been
+    restored. This automates that check. The scratch DB is dropped in all
+    paths; the live DB is never touched (pg_restore targets VERIFY_DB only).
+    """
+    import psycopg2
+
+    backups = list_backups()
+    if not backups:
+        return {"status": "failed", "error": "no backups on disk"}
+    newest = backups[0]["filename"]
+    filepath = os.path.join(BACKUP_DIR, newest)
+
+    params = _parse_database_url()
+    env = os.environ.copy()
+    env["PGPASSWORD"] = params["password"]
+
+    conn = None
+    try:
+        conn = _admin_conn()
+        with conn.cursor() as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS {VERIFY_DB}')
+            cur.execute(f'CREATE DATABASE {VERIFY_DB}')
+
+        result = subprocess.run(
+            ["pg_restore", "-h", params["host"], "-p", params["port"],
+             "-U", params["user"], "-d", VERIFY_DB, "--no-owner", filepath],
+            env=env, capture_output=True, text=True, timeout=1800,
+        )
+        # pg_restore returns 1 on ignorable errors (e.g. SET options from a
+        # newer client). Trust the row counts below, not the exit code —
+        # but surface stderr if the counts then fail.
+
+        counts = {}
+        vconn = psycopg2.connect(
+            host=params["host"], port=params["port"], user=params["user"],
+            password=params["password"], dbname=VERIFY_DB,
+        )
+        try:
+            with vconn.cursor() as cur:
+                for table, floor in VERIFY_MIN_ROWS.items():
+                    cur.execute(f"SELECT count(*) FROM {table}")
+                    counts[table] = cur.fetchone()[0]
+        finally:
+            vconn.close()
+
+        short = {t: c for t, c in counts.items() if c < VERIFY_MIN_ROWS[t]}
+        if short:
+            return {
+                "status": "failed", "file": newest, "counts": counts,
+                "error": f"row-count floors not met: {short}; "
+                         f"pg_restore stderr tail: {result.stderr.strip()[-300:]}",
+            }
+        logger.info(f"Backup verify OK: {newest} restored, counts={counts}")
+        return {"status": "success", "file": newest, "counts": counts}
+
+    except Exception as e:
+        logger.error(f"Backup verify failed: {e}")
+        return {"status": "failed", "file": newest, "error": str(e)}
+    finally:
+        try:
+            if conn is None:
+                conn = _admin_conn()
+            with conn.cursor() as cur:
+                cur.execute(f'DROP DATABASE IF EXISTS {VERIFY_DB}')
+        except Exception as e:
+            logger.warning(f"Could not drop {VERIFY_DB}: {e}")
+        finally:
+            if conn is not None:
+                conn.close()
+
+
 def get_backup_status() -> dict:
     """Return current backup status for health dashboard."""
     backups = list_backups()
