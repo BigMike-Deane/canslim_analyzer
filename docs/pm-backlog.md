@@ -457,6 +457,23 @@ Constraints (from auto-memory, do not relitigate):
       from Safari (Share → Add to Home Screen) then Enable Push in
       Settings; run scripts/pull_backup.sh weekly for the off-box leg.
 
+- [x] 2026-07-21 (owner ask: "something original") — **Improving Radar
+      SHIPPED `96b83c1` + DEPLOYED.** First innovation mined from our own
+      2.4M-row point-in-time StockScore history. Event study (113k events,
+      level-controlled, May-Jul, no lookahead by construction): rising
+      scores at LOW levels lead static peers ~+1.1pp/14d (sub-55: +2.6% vs
+      +1.5% avg); **fast risers at 75+ went NEGATIVE (−1.1%)** — rapid
+      score rise at the top = the price run-up feeding momentum components
+      (extension, not emergence). Product: /api/stocks/improving-radar +
+      CommandCenter panel — radar list (40-65 band, +8/14d, sparklines) +
+      75+ chase-risk caution block. Live first read: AMC +23.1, RPC +20,
+      HOG +19.2, MMM +18.2 on radar; DSGR/UTZ +29s flagged as chase risk.
+      Caveats recorded: single 2.5-mo trending regime, overlapping event
+      windows, not SPY-adjusted. Config api.improving_radar.*.
+      ▶ WATCH (~Sept): re-run the event study with 2 more months of
+      history incl. the radar's own picks — does the sub-65 velocity edge
+      hold out-of-sample?
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
