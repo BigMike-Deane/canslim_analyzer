@@ -1,7 +1,8 @@
 # Real-Money Deployment Gates
 
-**Status: DRAFT — pending owner approval.** Written 2026-07-22 at the
-owner's direction ("not ready for real money until we prove we beat SPY").
+**Status: APPROVED by owner 2026-07-22 — these thresholds are binding.**
+Written 2026-07-22 at the owner's direction ("not ready for real money
+until we prove we beat SPY").
 These criteria are **pre-registered**: they are written *before* the
 evidence arrives, so the decision can never be retro-fitted to a hopeful
 reading of the data. Editing a gate after its evidence starts accumulating
