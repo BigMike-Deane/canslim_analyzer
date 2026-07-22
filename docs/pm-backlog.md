@@ -545,6 +545,20 @@ Constraints (from auto-memory, do not relitigate):
       unless evidence demands. Watch: exit poller (7/10), chop shadow,
       trend-day clock (~136 trend days), Gate-1 checkboxes.**
 
+- [x] 2026-07-22 (owner: UI audit/overhaul, full approval) — `18a6520` +
+      `38793da` DEPLOYED. Retired signal-dead surfaces (evidence = same-day
+      signal audit): InsiderSentiment, SectorRotation, Breadth (A/D + NH/NL
+      salvaged onto CommandCenter market card), DecisionLog (duplicate
+      endpoint), Backtest ML-Matrix tab, CommandCenter MarketStateBadge.
+      Consolidated: TradeJournal → Analytics 'Journal' tab (embedded prop;
+      /trade-journal redirects); /portfolio + /portfolio-summary →
+      /ai-portfolio; Admin ML section gets unmissable DEMOTED banner
+      (SystemHealth = the single ML status readout). Follow-through:
+      scanner.fetch_insider_short gated OFF (per-cycle fetch fed only the
+      retired page). Sidebar 18→13, bundle 516→490kB, −1,083 LOC.
+      KEPT deliberately: BearBase + CorrelationMatrix (both still drive
+      trading), Breakouts, CS History, ABEval.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
