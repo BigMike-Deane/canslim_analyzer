@@ -44,7 +44,7 @@ from __future__ import annotations
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -2850,3 +2850,47 @@ class TestComponentWipeAlert:
             raise RuntimeError("db down")
         monkeypatch.setattr(db_mod, "SessionLocal", _boom)
         scheduler._check_component_wipe(datetime(2026, 7, 8))  # must not raise
+
+
+class TestIntradayStopCheck:
+    """_run_intraday_stop_check (Jul 2026): the fast stop checker existed
+    but was never scheduled — stops only enforced at 90-min scan cadence
+    (May-era slippage up to 5.6pp) or on page loads. Now every 15 min
+    during market hours for every active portfolio."""
+
+    def test_noop_when_market_closed(self):
+        from backend import scheduler as sched
+        with patch("backend.ai_trader.is_market_open", return_value=False), \
+             patch("backend.ai_trader.check_and_execute_stop_losses") as mock_check:
+            sched._run_intraday_stop_check()
+        mock_check.assert_not_called()
+
+    def test_checks_each_active_user_when_open(self):
+        from backend import scheduler as sched
+        rows = [(1,), (2,), (3,)]
+        query = MagicMock()
+        query.filter.return_value.all.return_value = rows
+        session = MagicMock()
+        session.query.return_value = query
+        with patch("backend.ai_trader.is_market_open", return_value=True), \
+             patch("backend.ai_trader.check_and_execute_stop_losses",
+                   return_value={"sells_executed": []}) as mock_check, \
+             patch("backend.database.SessionLocal", return_value=session):
+            sched._run_intraday_stop_check()
+        assert mock_check.call_count == 3
+        called_users = sorted(c.kwargs.get("user_id") for c in mock_check.call_args_list)
+        assert called_users == [1, 2, 3]
+
+    def test_one_user_failure_does_not_block_others(self):
+        from backend import scheduler as sched
+        rows = [(1,), (2,)]
+        query = MagicMock()
+        query.filter.return_value.all.return_value = rows
+        session = MagicMock()
+        session.query.return_value = query
+        with patch("backend.ai_trader.is_market_open", return_value=True), \
+             patch("backend.ai_trader.check_and_execute_stop_losses",
+                   side_effect=[RuntimeError("boom"), {"sells_executed": []}]) as mock_check, \
+             patch("backend.database.SessionLocal", return_value=session):
+            sched._run_intraday_stop_check()  # must not raise
+        assert mock_check.call_count == 2

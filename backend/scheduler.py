@@ -1832,7 +1832,13 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     try:
         start_breakout_monitor_job()
     except Exception as e:
-        logger.warning(f"Failed to start breakout monitor: {e}")
+        logger.warning(f"Failed to start breakout monitor job: {e}")
+
+    # Intraday stop-loss enforcement (Jul 2026 — was page-load-only before)
+    try:
+        start_intraday_stop_check_job()
+    except Exception as e:
+        logger.warning(f"Failed to start intraday stop check job: {e}")
 
     # Start weekly A/B eval snapshot email (Mon 9 AM UTC)
     try:
@@ -2515,6 +2521,67 @@ def start_ab_eval_email_job():
         scheduler.start()
 
     logger.info("Weekly A/B eval email scheduled (Mon 9 AM UTC)")
+
+
+def _run_intraday_stop_check():
+    """Every 15 min during market hours: enforce stop losses at intraday
+    cadence instead of the 90-min scan cadence.
+
+    check_stop_losses was BUILT for this (live-price refresh, trading-cycle
+    lock, trailing-stop cadence guards for parity) but was never scheduled —
+    it only fired when a user happened to load the AI Portfolio page. On the
+    scan cadence alone, May-era stops slipped up to 5.6pp past their
+    triggers (HRTG); July's 0.1-1.2pp was partly page-load luck. This bounds
+    the slippage window structurally at ~15 min. Gap-downs through the stop
+    still execute at the gap — no cadence can fix an overnight gap.
+    """
+    try:
+        from backend.ai_trader import is_market_open, check_and_execute_stop_losses
+        from backend.database import SessionLocal, AIPortfolioConfig
+
+        if not is_market_open():
+            return
+
+        db = SessionLocal()
+        try:
+            user_ids = [uid for (uid,) in db.query(AIPortfolioConfig.user_id).filter(
+                AIPortfolioConfig.is_active == True).all()]
+        finally:
+            db.close()
+
+        for uid in user_ids:
+            db = SessionLocal()
+            try:
+                result = check_and_execute_stop_losses(db, user_id=uid)
+                sells = result.get("sells_executed") or []
+                if sells:
+                    logger.info(f"Intraday stop check (user {uid}): {len(sells)} stop(s) executed")
+            except Exception as e:
+                logger.error(f"Intraday stop check failed for user {uid}: {e}")
+            finally:
+                db.close()
+    except Exception as e:
+        logger.error(f"Intraday stop check job failed: {e}")
+
+
+def start_intraday_stop_check_job():
+    """Schedule the intraday stop-loss enforcement every 15 minutes."""
+    job_id = "intraday_stop_check"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_intraday_stop_check,
+        IntervalTrigger(minutes=15),
+        id=job_id,
+        name="Intraday Stop-Loss Check",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Intraday stop-loss check scheduled (every 15 min, market hours only)")
 
 
 def start_breakout_monitor_job():
