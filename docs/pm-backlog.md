@@ -522,6 +522,29 @@ Constraints (from auto-memory, do not relitigate):
       of mixed-regime data accumulate — DON'T promote to a real user
       before then.
 
+- [x] 2026-07-22 (owner: "proceed with all, audit, then patience") —
+      three ships + audit-caught fixes, ALL DEPLOYED:
+      (1) REGIME RESEARCH: tested 6 chop classifiers on 72 live days —
+      winner is the app's own weighted_signal: ws<2.0 days bleed
+      −73 bps/d (11d) vs +31 on ws=2.0 days; ONLY classifier robust
+      across sample halves (spread 131/102). RECORDED as chop-damper v2
+      cut — NOT acted on (72d sample; patience directive).
+      (2) STOP-SLIPPAGE `2b88bfc`: check_and_execute_stop_losses was
+      built for intraday use but NEVER SCHEDULED (page-load only) —
+      May-era slippage up to 5.6pp (HRTG). Now every 15 min in market
+      hours, all users, per-user error isolation.
+      (3) AUDIT CATCH `e8b380b`: shadow_chop_damper's first cycle bought
+      76 names/$127.7k on $25k — evaluate_buys returns a ranked DECISION
+      list, live executes top-N, shadow harness persisted ALL (invisible
+      while stacks held full books; fresh stack exposed it). Fixed:
+      slot+cash guard in translation loop (partial last fill). ALSO
+      direct-DB shadow registration gets soft-archived by the YAML sync —
+      registered properly in shadow_strategy_profiles; 76 bogus rows
+      wiped; stack restarted clean at $25k. 3 shadows active.
+      **▶ NOW IN PATIENCE MODE (owner directive): no new experiments
+      unless evidence demands. Watch: exit poller (7/10), chop shadow,
+      trend-day clock (~136 trend days), Gate-1 checkboxes.**
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
