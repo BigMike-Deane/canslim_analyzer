@@ -352,7 +352,7 @@ function HoldDurationBreakdown({ data }) {
   )
 }
 
-export default function Analytics() {
+function AnalyticsOverview() {
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -502,6 +502,48 @@ export default function Analytics() {
       <HoldDurationBreakdown data={by_hold_duration} />
 
       <div className="h-4" />
+    </div>
+  )
+}
+
+
+// ── Tabbed shell (2026-07-22 UI consolidation) ───────────────────────
+// Trade Journal was a separate page duplicating this page's subject
+// (post-hoc trade analysis) with its own nav slot. It now lives here as
+// a tab; /trade-journal redirects to /analytics. Journal keeps its URL
+// filter params (?days=&ticker=...) — same router context, same page.
+import TradeJournal from './TradeJournal'
+
+const ANALYTICS_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'journal', label: 'Journal' },
+]
+
+export default function Analytics() {
+  const [tab, setTab] = useState('overview')
+  return (
+    <div>
+      <div className="flex gap-1 px-4 md:px-6 pt-4 max-w-4xl mx-auto">
+        {ANALYTICS_TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            aria-pressed={tab === t.key}
+            className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+              tab === t.key
+                ? 'bg-primary-500/15 text-primary-300 border-primary-500/30'
+                : 'text-dark-400 border-dark-700/50 hover:text-dark-200'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'overview' ? <AnalyticsOverview /> : (
+        <div className="max-w-4xl mx-auto px-4 py-4">
+          <TradeJournal embedded />
+        </div>
+      )}
     </div>
   )
 }

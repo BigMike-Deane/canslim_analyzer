@@ -556,6 +556,14 @@ export default function Admin() {
 
       {/* ML Signal Layer */}
       <div className="mt-8" id="ml-signal-layer">
+        {/* Demotion notice (2026-07-04 verdict, UI audit 2026-07-22): keep the
+            machinery for a future LIVE-A/B re-graduation attempt, but make the
+            demoted state unmissable so nobody reads these metrics as live. */}
+        <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-1.5 mb-3">
+          ML is DEMOTED to log-only (Jul 4, 2026): confidence is recorded for observability, but the
+          bonus and veto paths are OFF — nothing below affects trading. Re-graduation requires the live
+          A/B harness, not a backtest.
+        </div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-dark-100">ML Signal Layer</h2>
           <div className="flex items-center gap-2">

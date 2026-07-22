@@ -12,7 +12,6 @@ import Spinner from '../components/Spinner'
 import EmptyState from '../components/EmptyState'
 import { tooltipStyle } from '../components/chartTheme'
 import BacktestCompareView from '../components/BacktestCompareView'
-import MLMatrixView from '../components/MLMatrixView'
 import { useToast } from '../components/Toast'
 
 function PerformanceChart({ data, startingCash }) {
@@ -736,12 +735,10 @@ const TABS = [
   { key: 'run', label: 'Run' },
   { key: 'list', label: 'List' },
   { key: 'compare', label: 'Compare' },
-  { key: 'ml-matrix', label: 'ML Matrix' },
 ]
 
 function defaultTabFromPath(pathname) {
   if (pathname.endsWith('/backtest/compare')) return 'compare'
-  if (pathname.endsWith('/backtest/ml-matrix')) return 'ml-matrix'
   return 'run'
 }
 
@@ -966,7 +963,6 @@ export default function Backtest() {
 
       {activeTab === 'compare' && <BacktestCompareView />}
 
-      {activeTab === 'ml-matrix' && <MLMatrixView />}
     </div>
   )
 }

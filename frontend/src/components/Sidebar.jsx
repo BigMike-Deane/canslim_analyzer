@@ -11,9 +11,7 @@ const navGroups = [
     items: [
       { to: '/', icon: 'terminal', label: 'Command Center', end: true },
       { to: '/ai-portfolio', icon: 'brain', label: 'AI Portfolio' },
-      { to: '/decision-log', icon: 'book', label: 'Decision Log' },
       { to: '/analytics', icon: 'chart', label: 'Analytics' },
-      { to: '/trade-journal', icon: 'book', label: 'Trade Journal' },
       { to: '/correlation', icon: 'activity', label: 'Correlation' },
     ],
   },
@@ -23,10 +21,7 @@ const navGroups = [
       { to: '/screener', icon: 'filter', label: 'Screener' },
       { to: '/breakouts', icon: 'trending', label: 'Breakouts' },
       { to: '/coiled-spring/history', icon: 'zap', label: 'Coiled Spring' },
-      { to: '/insider-sentiment', icon: 'users', label: 'Insider Sent.' },
-      { to: '/breadth', icon: 'activity', label: 'Breadth' },
       { to: '/bear-base', icon: 'shield', label: 'Bear Bases' },
-      { to: '/sector-rotation', icon: 'trending', label: 'Rotation' },
     ],
   },
   {

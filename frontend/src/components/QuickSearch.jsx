@@ -12,7 +12,6 @@ const PAGES = [
   { label: 'Analytics', path: '/analytics', keywords: 'trades performance' },
   { label: 'Watchlist', path: '/watchlist', keywords: 'watch alerts' },
   { label: 'Coiled Spring', path: '/coiled-spring/history', keywords: 'earnings catalyst' },
-  { label: 'Insider Sentiment', path: '/insider-sentiment', keywords: 'insiders smart money' },
   { label: 'Documentation', path: '/docs', keywords: 'help canslim guide' },
 ]
 

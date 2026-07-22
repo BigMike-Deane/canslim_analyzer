@@ -37,24 +37,6 @@ function useMarketRefresh(callback, intervalMs = 60000) {
   }, [callback, intervalMs])
 }
 
-const MARKET_STATE_CFG = {
-  TRENDING:   { label: 'Trending',   color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', dot: 'bg-emerald-400' },
-  PRESSURE:   { label: 'Pressure',   color: 'text-amber-400',   bg: 'bg-amber-500/10 border-amber-500/20',   dot: 'bg-amber-400' },
-  CORRECTION: { label: 'Correction', color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',       dot: 'bg-red-400' },
-  RECOVERY:   { label: 'Recovery',   color: 'text-stone-300',   bg: 'bg-stone-500/10 border-stone-500/25',   dot: 'bg-stone-300' },
-  CONFIRMED:  { label: 'Confirmed',  color: 'text-teal-400',    bg: 'bg-teal-500/10 border-teal-500/20',     dot: 'bg-teal-400' },
-}
-
-function MarketStateBadge({ state }) {
-  const cfg = MARKET_STATE_CFG[state] || { label: state || '---', color: 'text-dark-400', bg: 'bg-dark-700 border-dark-600', dot: 'bg-dark-400' }
-  return (
-    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-wider px-2.5 py-1 rounded-md border ${cfg.bg}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
-      <span className={cfg.color}>{cfg.label}</span>
-    </span>
-  )
-}
-
 // Binary SPY-vs-50MA gate. The winning strategy (`nostate_optimized` /
 // live `nostate_cs_bear`) disables the 5-state machine and gates buys on
 // this single signal, so it deserves the dominant header pill.
@@ -460,6 +442,14 @@ export default function CommandCenter() {
   const { matchesPrefs } = useOwnerPrefs()
 
   const [radar, setRadar] = useState(null)
+  // Breadth salvage (UI audit 2026-07-22): the Breadth PAGE is retired —
+  // these two glances (A/D ratio, new highs/lows) move here. Fetched once
+  // per visit; the endpoint aggregates all Stock rows so it stays off the
+  // 60s market-hours poll.
+  const [breadth, setBreadth] = useState(null)
+  useEffect(() => {
+    api.getMarketBreadth().then(setBreadth).catch(() => null)
+  }, [])
 
   const fetchData = useCallback(async () => {
     try {
@@ -549,7 +539,6 @@ export default function CommandCenter() {
   }
 
   const { market, portfolio, sparkline, positions, candidates, risk, earnings, trades, scanner, coiled_spring } = data || {}
-  const marketState = market?.market_state || market?.regime?.toUpperCase()
   const spy = market?.spy
   const buyDayActive = (spy?.price != null && spy?.ma50 != null)
     ? spy.price > spy.ma50
@@ -577,9 +566,6 @@ export default function CommandCenter() {
           <div className="flex items-center gap-2">
             {portfolio?.paper_mode && <TagBadge color="amber">PAPER</TagBadge>}
             <BuyDayPill active={buyDayActive} />
-            <span className="hidden md:inline-flex">
-              <MarketStateBadge state={marketState} />
-            </span>
           </div>
         </div>
         <div className="flex items-center gap-2 md:gap-3 shrink-0">
@@ -689,6 +675,15 @@ export default function CommandCenter() {
               <IndexRow label="QQQ" data={market?.qqq} />
               <IndexRow label="DIA" data={market?.dia} />
             </div>
+            {breadth && (
+              <div className="mt-2 pt-2 border-t border-dark-700/30 flex items-center justify-between text-[10px]"
+                   title="Market breadth: advancers/decliners ratio and 52-week new highs vs new lows across the scanned universe (formerly the Breadth page)">
+                <span className="text-dark-500">Breadth</span>
+                <span className="font-data text-dark-300">
+                  A/D {breadth.ad_ratio ?? '—'} · NH {breadth.new_highs ?? '—'} / NL {breadth.new_lows ?? '—'}
+                </span>
+              </div>
+            )}
             {market?.weighted_signal != null && (
               <div className="mt-2 pt-2 border-t border-dark-700/30 flex items-center justify-between">
                 <span className="text-[10px] text-dark-500">Signal</span>

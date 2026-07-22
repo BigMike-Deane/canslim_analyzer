@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useState } from 'react'
 import { AuthProvider, useAuth } from './auth'
 import { ToastProvider } from './components/Toast'
@@ -16,19 +16,14 @@ import Breakouts from './pages/Breakouts'
 import Backtest from './pages/Backtest'
 import Analytics from './pages/Analytics'
 import CoiledSpringHistory from './pages/CoiledSpringHistory'
-import InsiderSentiment from './pages/InsiderSentiment'
 import FidelitySync from './pages/FidelitySync'
-import Breadth from './pages/Breadth'
 import Admin from './pages/Admin'
-import TradeJournal from './pages/TradeJournal'
 import BearBase from './pages/BearBase'
 import CorrelationMatrix from './pages/CorrelationMatrix'
-import SectorRotation from './pages/SectorRotation'
 import SystemHealth from './pages/SystemHealth'
 import ABEval from './pages/ABEval'
 import Settings from './pages/Settings'
 import Notifications from './pages/Notifications'
-import DecisionLog from './pages/DecisionLog'
 
 function AppContent() {
   const { user, loading } = useAuth()
@@ -61,29 +56,25 @@ function AppContent() {
             <Route path="/" element={<CommandCenter />} />
             <Route path="/screener" element={<Screener />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
-            <Route path="/portfolio" element={<AIPortfolio />} />
+            <Route path="/portfolio" element={<Navigate to="/ai-portfolio" replace />} />
             <Route path="/ai-portfolio" element={<AIPortfolio />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/breakouts" element={<Breakouts />} />
             <Route path="/docs" element={<Documentation />} />
             <Route path="/backtest/compare" element={<Backtest />} />
-            <Route path="/backtest/ml-matrix" element={<Backtest />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />
-            <Route path="/insider-sentiment" element={<InsiderSentiment />} />
             <Route path="/fidelity" element={<FidelitySync />} />
-            <Route path="/breadth" element={<Breadth />} />
-            <Route path="/trade-journal" element={<TradeJournal />} />
+            <Route path="/trade-journal" element={<Navigate to="/analytics" replace />} />
             <Route path="/bear-base" element={<BearBase />} />
             <Route path="/correlation" element={<CorrelationMatrix />} />
-            <Route path="/sector-rotation" element={<SectorRotation />} />
-            <Route path="/portfolio-summary" element={<AIPortfolio />} />
+            <Route path="/portfolio-summary" element={<Navigate to="/ai-portfolio" replace />} />
             <Route path="/system-health" element={<SystemHealth />} />
             <Route path="/admin/ab-eval" element={<ABEval />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/notifications" element={<Notifications />} />
-            <Route path="/decision-log" element={<DecisionLog />} />
+            <Route path="/decision-log" element={<Navigate to="/ai-portfolio" replace />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </div>

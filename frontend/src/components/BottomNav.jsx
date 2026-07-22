@@ -38,13 +38,10 @@ function UnreadBadge({ count }) {
 
 const moreItems = [
   { to: '/notifications', label: 'Notifications', icon: 'bell' },
-  { to: '/decision-log', label: 'Decision Log', icon: 'book' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
   { to: '/screener', label: 'Screener', icon: 'filter' },
   { to: '/breakouts', label: 'Breakouts', icon: 'trending' },
   { to: '/coiled-spring/history', label: 'Coiled Spring', icon: 'zap' },
-  { to: '/insider-sentiment', label: 'Insiders', icon: 'users' },
-  { to: '/trade-journal', label: 'Journal', icon: 'book' },
   { to: '/bear-base', label: 'Bear Bases', icon: 'shield' },
   { to: '/analytics', label: 'Analytics', icon: 'chart' },
   { to: '/watchlist', label: 'Watchlist', icon: 'eye' },

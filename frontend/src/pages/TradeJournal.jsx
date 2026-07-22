@@ -488,7 +488,7 @@ function JournalStats({ entries }) {
 }
 
 // ── Main page ────────────────────────────────────────────────────────
-export default function TradeJournal() {
+export default function TradeJournal({ embedded = false }) {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [entries, setEntries] = useState([])
@@ -558,13 +558,15 @@ export default function TradeJournal() {
   }, [days, debouncedTicker, action, effectiveIncludeVetoed])
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
-      <PageHeader
-        title="Trade Journal"
-        subtitle={`${total} trade decision${total !== 1 ? 's' : ''} in the last ${days} days`}
-        backTo="/"
-        backLabel="Command Center"
-      />
+    <div className={embedded ? '' : 'max-w-4xl mx-auto px-4 py-6'}>
+      {!embedded && (
+        <PageHeader
+          title="Trade Journal"
+          subtitle={`${total} trade decision${total !== 1 ? 's' : ''} in the last ${days} days`}
+          backTo="/"
+          backLabel="Command Center"
+        />
+      )}
 
       {/* Filters */}
       <FilterBar
