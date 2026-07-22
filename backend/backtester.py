@@ -48,6 +48,7 @@ from backend.trading_engine import (
     calculate_composite_score,
     calculate_position_size_pct,
     apply_position_size_multipliers,
+    chop_damper_multiplier,
     get_tightened_trailing_stop,
     evaluate_score_crash,
     sanitize_signal_factors,
@@ -3842,6 +3843,16 @@ class BacktestEngine:
             soft_zone_mult = score_data.get("_soft_zone_multiplier", 1.0)
             if soft_zone_mult < 1.0:
                 position_pct *= soft_zone_mult
+
+            # Chop damper (profile-gated, default OFF — shadow A/B lever;
+            # MIRRORS ai_trader.evaluate_buys per the parity rule).
+            if self.profile.get('chop_damper', {}).get('enabled', False) and self.data_provider:
+                try:
+                    _spy_chop = self.data_provider.get_spy_daily_data(current_date)
+                    position_pct *= chop_damper_multiplier(
+                        _spy_chop.get("close", 0), _spy_chop.get("ma50", 0), self.profile)
+                except Exception:
+                    pass  # market data unavailable — fail open, size normally
 
             # Cap at profile max or market regime max AFTER all multipliers (matches live trader)
             profile_max_pct = self.profile.get('max_single_position_pct', 25)

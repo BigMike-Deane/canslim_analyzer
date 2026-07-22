@@ -599,6 +599,31 @@ def calculate_position_size_pct(
     return position_pct
 
 
+def chop_damper_multiplier(spy_price: float, spy_ma50: float, profile: dict) -> float:
+    """Position-size damper for CHOP days — SPY above its 50MA by less than
+    band_pct (below-MA days are the binary gate's job, not ours).
+
+    Motivation (live regime attribution, 2026-07-22, 73 trading days): ALL
+    of the portfolio's outperformance came from strong-trend days (+20.4pp
+    over SPY across 52 days); chop days hugging the MA cost -7.9pp across
+    20 days. June's BACKTESTED chop levers all failed (traded trend alpha
+    for chop relief), so this lever ships default-OFF and is evaluated via
+    live shadow A/B only — the champion profile never enables it.
+
+    Returns a multiplier for position_pct (1.0 = no effect).
+    """
+    cfg = profile.get('chop_damper', {})
+    if not cfg.get('enabled', False):
+        return 1.0
+    if not spy_price or not spy_ma50 or spy_ma50 <= 0:
+        return 1.0  # missing market data — fail open, size normally
+    dist_pct = (spy_price - spy_ma50) / spy_ma50 * 100.0
+    band = cfg.get('band_pct', 1.5)
+    if 0 <= dist_pct < band:
+        return cfg.get('position_multiplier', 0.5)
+    return 1.0
+
+
 def apply_position_size_multipliers(
     position_pct: float,
     pre_breakout_bonus: float,

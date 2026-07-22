@@ -572,11 +572,29 @@ function EdgeScorecard({ edge }) {
         <>
           {verdict && (
             <div
-              className={`text-sm font-semibold mb-3 ${
+              className={`text-sm font-semibold mb-1 ${
                 excess >= 0 ? 'text-emerald-400' : 'text-red-400'
               }`}
             >
               {verdict}
+            </div>
+          )}
+          {/* Verdict clock — promoted to headline (owner ask, Jul-22): the
+              single question is "do we beat SPY, and when will we KNOW?".
+              Yellow = counting; green = statistically confirmed. */}
+          {range === 'all' && data.alpha_significance?.significant_95 && (
+            <div className="text-[11px] font-medium text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-md px-2.5 py-1.5 mb-3">
+              ✓ Alpha statistically confirmed at 95% confidence.
+            </div>
+          )}
+          {range === 'all' && !data.alpha_significance?.significant_95 && data.power?.additional_days_needed != null && (
+            <div
+              className="text-[11px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-1.5 mb-3"
+              title="At the current alpha and volatility, how many more trading days of live data are needed before the edge over SPY is statistically provable (95% confidence, 80% power). Assumes the edge persists — this is a clock, not a promise."
+            >
+              ⏳ Verdict clock: ≈{data.power.additional_days_needed} trading days
+              {data.power.est_additional_months != null && ` (~${data.power.est_additional_months} mo)`} until the
+              edge vs SPY is statistically provable. {data.power.current_days}/{data.power.required_days} collected.
             </div>
           )}
           {/* Small-sample caveat: return-vs-SPY is valid on any window, but the

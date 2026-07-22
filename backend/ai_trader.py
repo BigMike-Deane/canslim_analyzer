@@ -46,6 +46,7 @@ from backend.trading_engine import (
     calculate_composite_score,
     calculate_position_size_pct,
     apply_position_size_multipliers,
+    chop_damper_multiplier,
     categorize_sell_reason,
     get_tightened_trailing_stop,
     evaluate_score_crash,
@@ -2883,6 +2884,10 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             profile=profile,
             yaml_config=yaml_config,
         )
+
+        # Chop damper (profile-gated, default OFF — shadow A/B lever only;
+        # see trading_engine.chop_damper_multiplier). MIRRORED in backtester.
+        position_pct *= chop_damper_multiplier(spy_px, spy_50, profile)
 
         # Cap at profile max or market regime max (varies by market conditions)
         # Note: apply_position_size_multipliers caps at profile max, but also need regime max

@@ -193,6 +193,17 @@ market:
 
 # AI Trader Settings
 ai_trader:
+  # Chop damper — PROFILE-LEVEL research lever, default OFF everywhere.
+  # Halves (position_multiplier) new-buy position sizes on days when SPY sits
+  # 0..band_pct% above its 50MA (the "chop zone"; below-MA days are already
+  # blocked by the binary gate). Motivation: live regime attribution
+  # (2026-07-22, 73 trading days) — all outperformance came from strong-trend
+  # days (+20.4pp vs SPY in 52d) while chop days cost −7.9pp in 20d. June's
+  # backtested chop levers all failed (traded trend alpha for chop relief),
+  # so this one is evaluated via LIVE SHADOW A/B only ('nostate_chop_damper'
+  # stack); the champion profile never enables it. Set inside a strategy
+  # profile as: chop_damper: {enabled: true, band_pct: 1.5, position_multiplier: 0.5}
+
   # Buy-candidate data hygiene
   buy_candidates:
     # Rows the scanner hasn't touched in this many hours are excluded from the
