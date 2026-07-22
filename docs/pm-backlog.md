@@ -500,6 +500,28 @@ Constraints (from auto-memory, do not relitigate):
       (legacy NULL falls back) + empty-window return=None + explicit
       membership-drift warning.
 
+- [x] 2026-07-22 (owner directive: "prove we beat SPY before real money")
+      — REGIME ATTRIBUTION (73 live trading days): ALL outperformance from
+      strong-trend days (+20.4pp vs SPY, 52d); chop days (SPY 0-1.5% over
+      50MA) cost −7.9pp in 20d; live confirmation of the W1/W2 backtest
+      signature. Owner's caution quantified. Two ships (`93ce40d`+
+      `70f5e82`, DEPLOYED):
+      (1) chop_damper lever (trading_engine.chop_damper_multiplier —
+      half-size buys in the 0-1.5%-over-MA band; profile-gated DEFAULT
+      OFF; ai_trader + backtester mirrored) + hidden profile
+      nostate_chop_damper + **ShadowStrategy 'shadow_chop_damper'
+      registered on live (id=3)** — the honest live-A/B evaluation June's
+      backtest levers never got. Champion untouched.
+      (2) Verdict clock promoted to Edge card headline: "≈N trading days
+      (~X mo) until edge vs SPY statistically provable" (existing power
+      analysis, was a buried footnote); green banner at significance.
+      ⚠️ Ops lesson: scripted whole-file rewrites on /mnt/c clobber CRLF
+      endings (8.7k-line phantom diff) — patched byte-exactly in
+      `8308618`; use binary-mode edits for import insertions.
+      ▶ shadow_chop_damper verdict via ABEval (shadow source) once weeks
+      of mixed-regime data accumulate — DON'T promote to a real user
+      before then.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
