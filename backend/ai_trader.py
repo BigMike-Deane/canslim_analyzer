@@ -1501,6 +1501,17 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   user_id: int = 1, holding_days: int = None):
     """Record a trade in the database with detailed logging"""
     signal_factors = sanitize_signal_factors(signal_factors)
+    # Stamp the strategy ACTIVE AT EXECUTION so A/B attribution survives
+    # later strategy switches (before this, /strategy-ab-eval resolved
+    # users by their current config — reassigning a user silently moved
+    # their whole trade history to the new strategy's cohort).
+    strategy_at_execution = None
+    try:
+        cfg = db.query(AIPortfolioConfig).filter(
+            AIPortfolioConfig.user_id == user_id).first()
+        strategy_at_execution = cfg.strategy if cfg else None
+    except Exception:
+        pass  # attribution stamp is best-effort; never block a trade
     trade = AIPortfolioTrade(
         ticker=ticker,
         action=action,
@@ -1516,7 +1527,8 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
         holding_days=holding_days,
         executed_at=get_cst_now(),  # Use CST timezone
         signal_factors=signal_factors,  # Trade journal: what drove this decision
-        user_id=user_id
+        user_id=user_id,
+        strategy=strategy_at_execution,
     )
     # Set is_paper if column exists
     if hasattr(trade, 'is_paper'):

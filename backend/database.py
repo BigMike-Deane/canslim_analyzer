@@ -283,6 +283,10 @@ def run_migrations():
         # the new spread bounds for the range bar.
         ("stock_data_cache", "analyst_target_high", "FLOAT"),
         ("stock_data_cache", "analyst_target_low", "FLOAT"),
+        # Strategy active at execution time (Jul 2026 — A/B attribution was
+        # by CURRENT config membership, so strategy switches retroactively
+        # reshuffled trade history; see AIPortfolioTrade.strategy comment).
+        ("ai_portfolio_trades", "strategy", "VARCHAR"),
     ]
 
     # Build a cache of existing columns per table
@@ -1136,6 +1140,13 @@ class AIPortfolioTrade(Base):
 
     # Trade Journal / Performance Attribution
     signal_factors = Column(JSON)  # {"entry_type": "pre-breakout", "market_regime": "bullish", ...}
+
+    # Strategy active at execution time (Jul 2026). Before this column, A/B
+    # attribution resolved users from their CURRENT config — so switching a
+    # user's strategy retroactively reshuffled historical trade attribution
+    # (live incident: nostate_optimized's June baseline vanished after users
+    # 1+2 moved to nostate_cs_bear). NULL on legacy rows.
+    strategy = Column(String, nullable=True)
 
     executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 

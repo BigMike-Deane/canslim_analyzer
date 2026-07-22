@@ -2825,6 +2825,49 @@ class TestExecuteTrade:
         rows = db_session.query(AIPortfolioTrade).filter_by(ticker="TEST").all()
         assert len(rows) == 1
 
+    def test_stamps_strategy_active_at_execution(self, db_session, silence_webhooks):
+        """A/B attribution fix (Jul 2026): the trade row must carry the
+        strategy the user was on WHEN the trade executed, so later strategy
+        switches can't retroactively reshuffle historical attribution."""
+        from backend.ai_trader import execute_trade
+        from backend.database import AIPortfolioConfig
+
+        cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        if cfg is None:
+            cfg = AIPortfolioConfig(user_id=1, strategy="nostate_optimized")
+            db_session.add(cfg)
+        else:
+            cfg.strategy = "nostate_optimized"
+        db_session.commit()
+
+        trade = execute_trade(
+            db=db_session, ticker="STAMP", action="BUY", shares=10.0,
+            price=20.0, reason="test", score=75.0, user_id=1,
+        )
+        db_session.commit()
+        assert trade.strategy == "nostate_optimized"
+
+        # Later reassignment must NOT touch the stamped row
+        cfg.strategy = "nostate_cs_bear"
+        db_session.commit()
+        row = db_session.query(AIPortfolioTrade).filter_by(ticker="STAMP").first()
+        assert row.strategy == "nostate_optimized"
+
+    def test_stamp_none_when_no_config(self, db_session, silence_webhooks):
+        """No config row for the user → stamp stays None (legacy fallback
+        scoping applies to it), and the trade still records."""
+        from backend.ai_trader import execute_trade
+        from backend.database import AIPortfolioConfig
+
+        db_session.query(AIPortfolioConfig).filter_by(user_id=77).delete()
+        db_session.commit()
+        trade = execute_trade(
+            db=db_session, ticker="NOCFG", action="BUY", shares=1.0,
+            price=10.0, reason="test", score=50.0, user_id=77,
+        )
+        db_session.commit()
+        assert trade.strategy is None
+
     def test_sell_records_realized_gain(self, db_session, silence_webhooks):
         from backend.ai_trader import execute_trade
 

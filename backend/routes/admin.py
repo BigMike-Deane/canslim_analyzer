@@ -372,9 +372,13 @@ def _summarize_window(trades: list, days: int, starting_value: float) -> dict:
     if total_cost > 0:
         capital_efficiency_pct = round((total_realized_gain / total_cost) * 100, 2)
 
-    # Total return relative to the strategy's reference capital.
+    # Total return relative to the strategy's reference capital. An EMPTY
+    # window must stay None, not 0.0 — a phantom 0% baseline makes every
+    # delta look meaningful when the real story is "no trades attributed"
+    # (live incident: strategy reassignment emptied the pre window and the
+    # UI compared post returns against a fabricated flat baseline).
     total_return_pct = None
-    if starting_value > 0:
+    if starting_value > 0 and trades:
         total_return_pct = round((total_realized_gain / starting_value) * 100, 2)
 
     # Per-trade Sharpe-ish: mean / std of per-trade pct returns. Not
@@ -526,6 +530,14 @@ def _build_warnings(pre_window: dict, post_window: dict, pre: dict, post: dict) 
             f"Pre window ({pre_window['days']}d) and post window ({post_window['days']}d) "
             f"differ by >50% — comparison less direct."
         )
+    if (pre.get('total_trades') or 0) == 0:
+        warnings.append(
+            "Pre window has ZERO attributed trades — the baseline is not "
+            "comparable. Likely cause: strategy membership changed after the "
+            "cutoff (attribution for legacy trades follows the users' CURRENT "
+            "strategy). Trades stamped after Jul 2026 carry their "
+            "execution-time strategy and are immune to this."
+        )
     return warnings
 
 
@@ -566,7 +578,15 @@ def _build_trade_query(db: Session, source: str, strategy: str):
 
     user_ids = [row.user_id for row in user_rows]
     starting_value = sum((row.starting_cash or 25000.0) for row in user_rows)
-    base = db.query(AIPortfolioTrade).filter(AIPortfolioTrade.user_id.in_(user_ids))
+    # Attribution: prefer the strategy STAMPED AT EXECUTION (Jul 2026 —
+    # immune to later strategy switches); legacy NULL-stamped rows fall back
+    # to current-membership scoping, which is the old (drifting) behavior.
+    from sqlalchemy import or_, and_
+    base = db.query(AIPortfolioTrade).filter(or_(
+        AIPortfolioTrade.strategy == strategy,
+        and_(AIPortfolioTrade.strategy.is_(None),
+             AIPortfolioTrade.user_id.in_(user_ids)),
+    ))
     return base, starting_value, user_ids
 
 

@@ -98,7 +98,10 @@ class TestSummarizeWindow:
         from backend.routes.admin import _summarize_window
         s = _summarize_window([], days=14, starting_value=25000.0)
         assert s['total_trades'] == 0
-        assert s['total_return_pct'] == 0.0
+        # None, not 0.0 (changed Jul-22): an empty window has NO baseline —
+        # returning 0.0 let the UI compute deltas against a phantom flat
+        # baseline when strategy reassignment emptied the pre window.
+        assert s['total_return_pct'] is None
         assert s['capital_efficiency_pct'] is None  # no SELLs → undefined
         assert s['sharpe_per_trade'] is None
         assert s['realized_max_drawdown_pct'] is None

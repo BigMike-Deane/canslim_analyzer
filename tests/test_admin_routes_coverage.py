@@ -274,6 +274,32 @@ def _mock_trade(**kw):
     return t
 
 
+class TestABEvalPhantomBaseline:
+    """Jul-22 audit fixes: an empty window must not fabricate a 0.0% return
+    baseline, and a zero-trade pre window must warn about membership drift."""
+
+    def test_empty_window_total_return_is_none(self):
+        from backend.routes.admin import _summarize_window
+        out = _summarize_window([], days=30, starting_value=25000.0)
+        assert out["total_return_pct"] is None
+
+    def test_nonempty_window_total_return_computed(self):
+        from backend.routes.admin import _summarize_window
+        t = _mock_trade(action='SELL', signal_factors=None, reason='TAKE PROFIT',
+                        realized_gain=500.0, cost_basis=100.0, shares=10)
+        out = _summarize_window([t], days=30, starting_value=25000.0)
+        assert out["total_return_pct"] == pytest.approx(2.0)
+
+    def test_zero_trade_pre_window_warns_membership_drift(self):
+        from backend.routes.admin import _build_warnings
+        warnings = _build_warnings(
+            pre_window={'days': 30}, post_window={'days': 30},
+            pre={'total_trades': 0, 'realized_sell_pct': {'n': 0}},
+            post={'total_trades': 11, 'realized_sell_pct': {'n': 3}},
+        )
+        assert any('ZERO attributed trades' in w for w in warnings)
+
+
 class TestSummarizeTradesEdgeBranches:
     """Covers backend/routes/admin.py:144-145 (exception swallow during
     realized_pct math) and line 161 (SCORE_CRASH exit-reason bucket)."""
