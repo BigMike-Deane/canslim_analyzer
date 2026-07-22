@@ -451,7 +451,9 @@ export default function Settings() {
           <p className="text-[11px] text-dark-500 mt-1.5">
             {scoreThreshold == null
               ? 'No threshold — every alert passes through.'
-              : `Suppressing alerts with score < ${scoreThreshold}.`}
+              : scoreThreshold === 0
+                ? 'Threshold 0 has no effect — every score passes. Raise it to filter, or Clear it.'
+                : `Suppressing alerts with score < ${scoreThreshold}.`}
           </p>
           {(() => {
             // Live preview against the user's last 7 days of per-stock alerts.

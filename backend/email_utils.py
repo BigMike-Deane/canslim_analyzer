@@ -315,8 +315,9 @@ def _should_deliver(user, kind: str, priority: str, data: dict = None) -> bool:
     if not user:
         return True  # be permissive on missing user row
 
-    mute = user.mute_kinds or []
-    if isinstance(mute, list) and kind in mute:
+    from backend.database import coerce_json_list
+    mute = coerce_json_list(getattr(user, "mute_kinds", None))
+    if kind in mute:
         return False
 
     qs, qe = user.quiet_hours_start, user.quiet_hours_end

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from backend.database import get_db, User
+from backend.database import get_db, User, coerce_json_list
 from backend.auth import (
     verify_google_token, create_access_token,
     create_refresh_token, Token, UserResponse,
@@ -122,7 +122,7 @@ async def get_me(current_user=Depends(get_current_active_user)):
         is_admin=current_user.is_admin,
         is_active=current_user.is_active,
         webhook_url=current_user.webhook_url,
-        mute_kinds=current_user.mute_kinds or [],
+        mute_kinds=coerce_json_list(current_user.mute_kinds),
         quiet_hours_start=current_user.quiet_hours_start,
         quiet_hours_end=current_user.quiet_hours_end,
         score_alert_threshold=current_user.score_alert_threshold,
@@ -164,7 +164,7 @@ async def update_my_webhook(
         is_admin=current_user.is_admin,
         is_active=current_user.is_active,
         webhook_url=current_user.webhook_url,
-        mute_kinds=current_user.mute_kinds or [],
+        mute_kinds=coerce_json_list(current_user.mute_kinds),
         quiet_hours_start=current_user.quiet_hours_start,
         quiet_hours_end=current_user.quiet_hours_end,
         score_alert_threshold=current_user.score_alert_threshold,
@@ -264,7 +264,7 @@ async def update_notification_prefs(
         is_admin=current_user.is_admin,
         is_active=current_user.is_active,
         webhook_url=current_user.webhook_url,
-        mute_kinds=current_user.mute_kinds or [],
+        mute_kinds=coerce_json_list(current_user.mute_kinds),
         quiet_hours_start=current_user.quiet_hours_start,
         quiet_hours_end=current_user.quiet_hours_end,
         score_alert_threshold=current_user.score_alert_threshold,

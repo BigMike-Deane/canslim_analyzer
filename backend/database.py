@@ -85,6 +85,22 @@ def init_db():
     run_migrations()
 
 
+def coerce_json_list(value):
+    """Return a JSON-column value as a list, decoding legacy TEXT-column
+    strings. Columns ALTER-added as TEXT on Postgres read back as raw JSON
+    strings (the driver only auto-decodes real json/jsonb columns) — the
+    run_migrations jsonb repair fixes the schema, this guards any straggler
+    row or pre-migration read so a string can never 500 a response model."""
+    if isinstance(value, str):
+        try:
+            import json
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, list) else []
+        except Exception:
+            return []
+    return value or []
+
+
 def run_migrations():
     """Add any missing columns to existing tables and fix constraints.
     Uses SQLAlchemy inspect() for database-agnostic migrations (SQLite + PostgreSQL).
@@ -291,6 +307,34 @@ def run_migrations():
                 # so reaching here means a REAL failure (lock, disk, syntax) —
                 # a missing column surfaces later as confusing runtime errors.
                 logger.warning(f"Migration: failed to add {table}.{column}: {e}")
+
+    # Fix (Jul 2026): JSON-model columns that were ALTER-added as TEXT.
+    # On Postgres, SQLAlchemy's JSON type serializes on write but relies on
+    # psycopg2 to deserialize on read — which only happens for real
+    # json/jsonb columns. A TEXT column therefore reads back as a raw
+    # string, and UserResponse(mute_kinds=<str>) 500s every /api/auth/me
+    # after the user's FIRST prefs save (live incident 2026-07-22).
+    # SQLite never showed it: its dialect json.loads on read.
+    if not DATABASE_URL.startswith("sqlite"):
+        jsonb_repairs = [("users", "mute_kinds"),
+                         ("backtest_runs", "overlay_stats")]
+        with engine.begin() as conn:
+            for table, column in jsonb_repairs:
+                if table not in existing_tables:
+                    continue
+                try:
+                    cur_type = conn.execute(text(
+                        "SELECT data_type FROM information_schema.columns "
+                        "WHERE table_name = :t AND column_name = :c"
+                    ), {"t": table, "c": column}).scalar()
+                    if cur_type in ("text", "character varying"):
+                        conn.execute(text(
+                            f"ALTER TABLE {table} ALTER COLUMN {column} "
+                            f"TYPE JSONB USING NULLIF({column}, '')::jsonb"
+                        ))
+                        logger.info(f"Migration: {table}.{column} TEXT -> JSONB")
+                except Exception as e:
+                    logger.warning(f"Migration: jsonb repair {table}.{column} failed: {e}")
 
     # Fix: Remove unique constraint on ai_portfolio_snapshots.date (SQLite only)
     is_sqlite = DATABASE_URL.startswith("sqlite")
