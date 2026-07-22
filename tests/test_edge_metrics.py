@@ -408,3 +408,60 @@ class TestAttributeReturns:
         out = attribute_returns(positions, starting_equity=10000.0)
         assert out["positions"][0]["excess_gain"] is None
         assert out["total_excess_gain"] is None  # no excess values at all
+
+
+class TestRegimeConditionalEdge:
+    """regime_conditional_edge — trend/chop split of daily excess returns
+    (owner ask 2026-07-22: the decision-relevant, faster-provable clock)."""
+
+    def _series(self, excesses, dists, spy_ret=0.001):
+        """Build port/spy value series producing the given daily excess
+        returns, with spy_dist_pct classifying each return day."""
+        spy = [100.0]
+        port = [100.0]
+        for e in excesses:
+            spy.append(spy[-1] * (1 + spy_ret))
+            port.append(port[-1] * (1 + spy_ret + e))
+        return port, spy, [0.0] + list(dists)
+
+    def test_splits_by_threshold(self):
+        from backend.edge_metrics import regime_conditional_edge
+        # 5 trend days (mean +50 bps excess), 5 chop days (mean -30 bps) —
+        # values varied: zero within-bucket variance is (correctly) rejected
+        excesses = [0.004, 0.006, 0.005, 0.003, 0.007,
+                    -0.002, -0.004, -0.003, -0.001, -0.005]
+        dists = [2.0] * 5 + [0.5] * 5
+        port, spy, dist = self._series(excesses, dists)
+        out = regime_conditional_edge(port, spy, dist)
+        assert out["trend"]["n_days"] == 5
+        assert out["chop"]["n_days"] == 5
+        assert abs(out["trend"]["mean_daily_excess_bps"] - 50.0) < 1.0
+        assert abs(out["chop"]["mean_daily_excess_bps"] + 30.0) < 1.0
+
+    def test_positive_mean_gets_required_days(self):
+        from backend.edge_metrics import regime_conditional_edge
+        import random
+        rng = random.Random(7)
+        excesses = [0.003 + rng.uniform(-0.01, 0.01) for _ in range(40)]
+        dists = [2.5] * 40
+        port, spy, dist = self._series(excesses, dists)
+        out = regime_conditional_edge(port, spy, dist)
+        assert out["trend"]["required_days"] > 0
+        assert out["trend"]["additional_days_needed"] >= 0
+        assert out["chop"] is None  # no chop days seeded
+
+    def test_none_dist_days_skipped_and_small_sample_none(self):
+        from backend.edge_metrics import regime_conditional_edge
+        port, spy, dist = self._series([0.005, 0.004, -0.002], [2.0, None, 2.0])
+        out = regime_conditional_edge(port, spy, dist)
+        # Only 2 usable trend days (< 3) and 0 chop → whole result None
+        assert out is None
+
+    def test_below_ma_lands_in_chop(self):
+        from backend.edge_metrics import regime_conditional_edge
+        excesses = [-0.002] * 4
+        dists = [-1.0] * 4  # below the 50MA
+        port, spy, dist = self._series(excesses, dists)
+        out = regime_conditional_edge(port, spy, dist)
+        assert out["chop"]["n_days"] == 4
+        assert out["trend"] is None

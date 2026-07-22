@@ -3810,12 +3810,15 @@ async def get_ai_portfolio_edge(
     # Build SPY benchmark rebased to the portfolio's starting equity, aligned
     # 1:1 with the daily portfolio points (carry-forward over weekends/gaps).
     spy_by_date = {}
+    spy_ma_by_date = {}
     if days_sorted:
         for ms in db.query(MarketSnapshot).filter(
             MarketSnapshot.date >= start_date_only - timedelta(days=7),
             MarketSnapshot.spy_price.isnot(None),
         ).all():
             spy_by_date[ms.date] = ms.spy_price
+            if ms.spy_50_ma:
+                spy_ma_by_date[ms.date] = ms.spy_50_ma
 
     spy_anchor = None
     base_value = None
@@ -3859,6 +3862,29 @@ async def get_ai_portfolio_edge(
     metrics = compute_edge_metrics(port_values, spy_values, realized_gains)
     metrics["inception_date"] = days_sorted[0].isoformat() if days_sorted else None
     metrics["as_of"] = days_sorted[-1].isoformat() if days_sorted else None
+
+    # Regime-conditional edge (owner ask 2026-07-22): the unconditional alpha
+    # clock is diluted by mixing +trend and −chop days; the trend-day edge is
+    # the provable-soon question. Distance = SPY % above its 50MA per day
+    # (carry-forward like the price series).
+    from backend.edge_metrics import regime_conditional_edge
+
+    def _spy_dist_for(day):
+        price = spy_by_date.get(day)
+        ma = spy_ma_by_date.get(day)
+        if price is None or ma is None:
+            earlier_p = [d for d in spy_by_date if d <= day]
+            earlier_m = [d for d in spy_ma_by_date if d <= day]
+            if not earlier_p or not earlier_m:
+                return None
+            price = spy_by_date[max(earlier_p)]
+            ma = spy_ma_by_date[max(earlier_m)]
+        if not ma:
+            return None
+        return (price - ma) / ma * 100.0
+
+    spy_dist = [_spy_dist_for(d) for d in days_sorted]
+    metrics["regime_edge"] = regime_conditional_edge(port_values, spy_values, spy_dist)
 
     # Edge Validation Phase 3: per-position return/alpha attribution. Pull the
     # full SELL rows (not just realized_gain) and price each position's SPY

@@ -589,12 +589,33 @@ function EdgeScorecard({ edge }) {
           )}
           {range === 'all' && !data.alpha_significance?.significant_95 && data.power?.additional_days_needed != null && (
             <div
-              className="text-[11px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-1.5 mb-3"
-              title="At the current alpha and volatility, how many more trading days of live data are needed before the edge over SPY is statistically provable (95% confidence, 80% power). Assumes the edge persists — this is a clock, not a promise."
+              className="text-[11px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-1.5 mb-1.5"
+              title="At the current alpha and volatility, how many more trading days of live data are needed before the edge over SPY is statistically provable (95% confidence, 80% power). Assumes the edge persists — this is a clock, not a promise. This is the UNCONDITIONAL question — see the trend-day clock below for the regime-aware one."
             >
-              ⏳ Verdict clock: ≈{data.power.additional_days_needed} trading days
+              ⏳ Verdict clock (all days): ≈{data.power.additional_days_needed} trading days
               {data.power.est_additional_months != null && ` (~${data.power.est_additional_months} mo)`} until the
               edge vs SPY is statistically provable. {data.power.current_days}/{data.power.required_days} collected.
+            </div>
+          )}
+          {/* Regime-conditional edge: the strategy is regime-dependent (all live
+              outperformance came from trend days), so the trend-day clock is
+              the decision-relevant one — it runs ~10x faster than the blended
+              clock above because conditioning un-dilutes the effect. */}
+          {range === 'all' && data.regime_edge?.trend && (
+            <div
+              className={`text-[11px] font-medium rounded-md px-2.5 py-1.5 mb-3 border ${
+                data.regime_edge.trend.significant_95
+                  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25'
+                  : 'text-sky-300 bg-sky-500/10 border-sky-500/25'
+              }`}
+              title={`Excess return vs SPY computed only on days SPY sat more than ${data.regime_edge.threshold_pct}% above its 50MA (trend regime). Chop days: ${data.regime_edge.chop ? `${data.regime_edge.chop.mean_daily_excess_bps} bps/day (p=${data.regime_edge.chop.p_value})` : 'insufficient data'}. Same persistence caveat as the clock above.`}
+            >
+              {data.regime_edge.trend.significant_95 ? '✓' : '📈'} Trend-day edge: {data.regime_edge.trend.mean_daily_excess_bps > 0 ? '+' : ''}
+              {data.regime_edge.trend.mean_daily_excess_bps} bps/day over SPY
+              {' '}(p={data.regime_edge.trend.p_value}, {data.regime_edge.trend.n_days} days)
+              {!data.regime_edge.trend.significant_95 && data.regime_edge.trend.additional_days_needed != null &&
+                ` — provable in ≈${data.regime_edge.trend.additional_days_needed} more trend days`}
+              {data.regime_edge.trend.significant_95 && ' — statistically confirmed'}
             </div>
           )}
           {/* Small-sample caveat: return-vs-SPY is valid on any window, but the

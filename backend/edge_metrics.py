@@ -543,3 +543,74 @@ def _win_rate(realized_gains: Sequence[float]) -> Optional[float]:
         return None
     wins = sum(1 for g in gains if g > 0)
     return round(wins / len(gains) * 100, 1)
+
+
+def regime_conditional_edge(
+    port_values: Sequence[float],
+    spy_values: Sequence[Optional[float]],
+    spy_dist_pct: Sequence[Optional[float]],
+    trend_threshold_pct: float = 1.5,
+) -> Optional[dict]:
+    """Regime-conditional daily excess-return test (owner ask, 2026-07-22).
+
+    The unconditional alpha clock is honest but answers the slowest possible
+    question: this strategy's edge is REGIME-DEPENDENT (live attribution:
+    trend days +33 bps/day over SPY, chop days -30), so the blended daily
+    signal is tiny relative to noise and takes ~9 years to prove. Splitting
+    by regime un-dilutes both effects: the trend-day edge alone reached
+    p=0.14 in one summer and is provable ~10x sooner.
+
+    Day i's regime comes from spy_dist_pct[i] — SPY's % distance above its
+    50MA on the RETURN day: trend when > trend_threshold_pct, chop otherwise
+    (below-MA days land in chop; the binary gate makes them rare and flat).
+    Excess = raw daily portfolio return minus SPY return (not beta-adjusted —
+    the deployment question is "would this money have done better in SPY",
+    which is the raw comparison).
+
+    Returns {'trend': {...}, 'chop': {...}, 'threshold_pct'} or None when
+    there aren't enough aligned days. Each bucket: n, mean_daily_excess_bps,
+    t_stat, p_value, significant_95, and for a positive mean the z-based
+    required/additional day counts at 95%/80% (same formula and caveats as
+    _power_analysis — assumes the effect persists, iid days).
+    """
+    n = min(len(port_values), len(spy_values), len(spy_dist_pct))
+    if n < 3:
+        return None
+    buckets: dict[str, list[float]] = {"trend": [], "chop": []}
+    for i in range(1, n):
+        pv0, pv1 = port_values[i - 1], port_values[i]
+        sv0, sv1 = spy_values[i - 1], spy_values[i]
+        dist = spy_dist_pct[i]
+        if not pv0 or not pv1 or not sv0 or not sv1 or dist is None:
+            continue
+        excess = (pv1 / pv0 - 1.0) - (sv1 / sv0 - 1.0)
+        buckets["trend" if dist > trend_threshold_pct else "chop"].append(excess)
+
+    def _bucket_stats(xs: list[float]) -> Optional[dict]:
+        if len(xs) < 3:
+            return None
+        m = statistics.fmean(xs)
+        sd = statistics.stdev(xs)
+        if sd <= 0:
+            return None
+        t = m / (sd / math.sqrt(len(xs)))
+        p = 2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(t) / math.sqrt(2.0))))
+        out = {
+            "n_days": len(xs),
+            "mean_daily_excess_bps": round(m * 1e4, 1),
+            "t_stat": round(t, 2),
+            "p_value": round(p, 4),
+            "significant_95": bool(p < 0.05),
+        }
+        if m > 0:
+            required = math.ceil(((1.96 + 0.8416) / (m / sd)) ** 2)
+            out["required_days"] = required
+            out["additional_days_needed"] = max(0, required - len(xs))
+        return out
+
+    trend = _bucket_stats(buckets["trend"])
+    chop = _bucket_stats(buckets["chop"])
+    if trend is None and chop is None:
+        return None
+    return {"trend": trend, "chop": chop,
+            "threshold_pct": trend_threshold_pct}
