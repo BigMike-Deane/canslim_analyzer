@@ -232,10 +232,16 @@ async def analyze_stocks_async(tickers: List[str], batch_size: int = 100, progre
     p1_data = {}
 
     if valid_tickers:
-        # Signal start of insider/short phase
-        if progress_callback:
-            progress_callback(0, len(valid_tickers), "insider_short")
-        insider_short_data = await fetch_insider_short_batch_async(valid_tickers, progress_callback)
+        # Insider/short fetch is config-gated OFF by default (2026-07-22 UI
+        # audit): the signals were removed from trading in May and the
+        # InsiderSentiment page is retired, so the per-cycle fetch fed
+        # nothing. Flip scanner.fetch_insider_short: true to resume
+        # collecting (the columns and fetcher remain intact).
+        from config_loader import config as _cfg
+        if _cfg.get('scanner.fetch_insider_short', False):
+            if progress_callback:
+                progress_callback(0, len(valid_tickers), "insider_short")
+            insider_short_data = await fetch_insider_short_batch_async(valid_tickers, progress_callback)
 
         # P1 Features: Fetch earnings calendar and analyst estimates
         try:

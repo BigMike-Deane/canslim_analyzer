@@ -13,6 +13,12 @@ email:
 
 # Scanner Settings
 scanner:
+  # Insider/short-interest fetching (2026-07-22): OFF by default. The
+  # signals were removed from trading (May) and the InsiderSentiment page
+  # is retired; the per-cycle fetch fed nothing. Flip true to resume
+  # collecting - fetcher and DB columns remain intact.
+  fetch_insider_short: false
+
   # Universe supplement: FMP /stable/company-screener adds actively-trading
   # US-listed names no tracked index covers (recent IPOs, foreign-domiciled
   # listings like ONON/FROG, Russell members the degraded IWM/Finviz sources
