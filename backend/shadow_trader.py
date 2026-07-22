@@ -877,7 +877,20 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             logger.error(f"shadow evaluate_buys failed for {strategy.name}: {e}", exc_info=True)
             buys = []
 
+        # Execution guard (2026-07-22): evaluate_buys returns a ranked DECISION
+        # list; the LIVE cycle executes top-N until slots and cash run out,
+        # but this loop used to persist EVERY decision. Harmless while stacks
+        # held full books (0-1 slots open); a FRESH stack with a wide
+        # candidate pool exploded — shadow_chop_damper's first cycle bought
+        # 76 names / $127.7k on a $25k stack. Mirror live execution: consume
+        # slots and cash in rank order, stop when either runs out.
+        cfg = shadow_session._synthetic_config
+        open_positions = len(shadow_session._synthetic_positions or [])
+        remaining_slots = max(0, int(getattr(cfg, "max_positions", 8) or 8) - open_positions)
+        remaining_cash = float(getattr(cfg, "current_cash", 0) or 0)
         for buy in buys:
+            if remaining_slots <= 0 or remaining_cash <= 0:
+                break
             stock = buy.get("stock") if isinstance(buy, dict) else None
             if stock is None:
                 continue
@@ -886,6 +899,12 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             price = getattr(stock, "current_price", None) or 0
             if not ticker or value <= 0 or price <= 0:
                 continue
+            if value > remaining_cash:
+                value = remaining_cash  # partial last fill, matches live cash exhaustion
+                if value / price <= 0:
+                    continue
+            remaining_slots -= 1
+            remaining_cash -= value
             shares = value / price
             shadow_session.emit_shadow_buy(
                 ticker=ticker,

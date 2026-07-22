@@ -23,6 +23,7 @@ Covers:
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -628,3 +629,58 @@ class TestSchedulerHook:
         # Confirm the except logs a shadow-specific failure
         nearby = src[idx_try: idx_try + next_except + 200]
         assert "Shadow paper-trading failed" in nearby
+
+
+class TestBuyExecutionGuard:
+    """2026-07-22 incident: evaluate_buys returns a ranked DECISION list and
+    the translation loop persisted ALL of it — shadow_chop_damper's first
+    cycle (fresh stack, wide candidate pool) bought 76 names / $127.7k on a
+    $25k stack. The loop must mirror live execution: consume slots and cash
+    in rank order, stop when either runs out."""
+
+    @staticmethod
+    def _buy_decision(ticker, value=2500.0, price=50.0):
+        stock = SimpleNamespace(ticker=ticker, current_price=price,
+                                canslim_score=80.0)
+        return {"stock": stock, "value": value, "reason": "test buy",
+                "signal_factors": None, "is_growth_stock": False}
+
+    def test_fresh_stack_capped_at_slots_and_cash(self, db_session, monkeypatch):
+        from backend import shadow_trader
+        from backend import ai_trader
+        strategy = _make_strategy(db_session, name="guard_test")
+
+        # 40 qualifying decisions of $2.5k each = $100k demanded on a $25k
+        # stack with 8 slots. Guard must persist at most 8 buys and at most
+        # $25k of total value.
+        decisions = [self._buy_decision(f"T{i:02d}") for i in range(40)]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: decisions)
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).all()
+        assert 0 < len(rows) <= 8, f"expected <=8 buys, got {len(rows)}"
+        assert sum(r.total_value for r in rows) <= 25000.0 + 1e-6
+
+    def test_cash_exhaustion_partial_last_fill(self, db_session, monkeypatch):
+        from backend import shadow_trader
+        from backend import ai_trader
+        strategy = _make_strategy(db_session, name="guard_cash_test")
+
+        # 3 decisions of $12k each on $25k: full, full, then $1k partial.
+        decisions = [self._buy_decision(f"C{i}", value=12000.0) for i in range(3)]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: decisions)
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        rows = sorted(db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).all(),
+            key=lambda r: r.id)
+        assert len(rows) == 3
+        assert rows[0].total_value == pytest.approx(12000.0)
+        assert rows[1].total_value == pytest.approx(12000.0)
+        assert rows[2].total_value == pytest.approx(1000.0)
+        assert sum(r.total_value for r in rows) == pytest.approx(25000.0)

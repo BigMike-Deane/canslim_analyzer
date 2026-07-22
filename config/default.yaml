@@ -1775,3 +1775,12 @@ shadow_strategy_profiles:
     description: "Approach-2 control arm: pre-cap C scoring (Shadow Step 7)"
     scorer_overrides:
       disable_excellence_cap: true
+  # Chop-damper live A/B (2026-07-22): champion clone + half-size buys while
+  # SPY sits 0-1.5% above its 50MA. See docs/real-money-gates.md Gate 2 and
+  # the nostate_chop_damper profile. Registered HERE (not direct DB insert —
+  # the sync soft-archives any active shadow this section doesn't declare).
+  shadow_chop_damper:
+    parent_strategy: nostate_chop_damper
+    starting_value: 25000
+    description: "Champion + chop damper (half-size buys while SPY hugs its 50MA) — live A/B for the Jul-22 regime-attribution chop bleed"
+    scorer_overrides: {}
