@@ -1175,6 +1175,41 @@ strategy_profiles:
       min_confidence: 0.0    # Veto path OFF — no confidence-based skip (was 0.30 → noise veto)
       veto_action: "skip"    # inert while min_confidence=0
 
+  # Shadow-A/B lever profile (2026-07-22): champion clone + chop damper ON.
+  # Halves new-buy sizes when SPY sits 0..1.5% above its 50MA. Motivation:
+  # live regime attribution — all outperformance came from trend days
+  # (+20.4pp/52d) while chop days cost −7.9pp/20d. Evaluated ONLY via the
+  # 'shadow_chop_damper' ShadowStrategy stack (live A/B); never assign to a
+  # real user until the shadow verdict is in. Hidden from the picker.
+  nostate_chop_damper:
+    hidden: true
+    label: "NoState Chop Damper (shadow)"
+    description: "nostate_optimized + half-size buys while SPY hugs its 50MA (live shadow A/B)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    chop_damper: { enabled: true, band_pct: 1.5, position_multiplier: 0.5 }
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true
+      min_confidence: 0.0
+      veto_action: "skip"
+
   # Experimental: same as nostate_optimized but with earnings_avoidance_days=3
   # (default 5). Drives the avoidance-gate-too-conservative test from the
   # canslim-livescan-churn-investigation loose threads. The C→B path on
