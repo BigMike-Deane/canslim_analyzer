@@ -1606,7 +1606,11 @@ async def get_improving_radar(
     components, i.e. extension, not emergence. Hence two lists:
 
     - radar: stocks UNDER the screener's radar (default 40-65) whose score
-      climbed >= min_velocity over lookback_days — tomorrow's candidates.
+      climbed >= min_velocity over lookback_days. This is a SHORT-HORIZON
+      MOMENTUM lens, not a candidate pipeline: the 30d conversion funnel
+      (level-controlled) showed fast risers reach 72+ LESS often than
+      stable near-bar names (55-65 band: 17.0% vs 28.6%) — scores
+      mean-revert after a spike even while prices keep outperforming.
     - fast_risers: 75+ names with a fast score rise — chase-risk caution,
       NOT a buy list.
 

@@ -273,8 +273,9 @@ function ImprovingRadarSection({ radar }) {
           <TagBadge color="purple">SCORE Δ{radar.lookback_days}D</TagBadge>
         </div>
       </div>
-      <div className="text-[10px] text-dark-400 mb-2">
-        Scores climbing fast while still under the buy bar — tomorrow's candidates, surfaced early.
+      <div className="text-[10px] text-dark-400 mb-2"
+           title="Event-study backed: these beat static peers by ~1-2pp over the next 2-4 weeks. They are NOT a candidate pipeline — fast risers reach the 72+ buy bar LESS often than stable near-bar names (17% vs 29% within 30d); scores mean-revert even while prices run.">
+        Score momentum igniting under the buy bar — historically outperforms for 2–4 weeks. Momentum lens, not a candidate pipeline.
       </div>
       {rising.length === 0 ? (
         <EmptyState bare compact message="No fast risers under the bar right now" />
