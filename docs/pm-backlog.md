@@ -474,6 +474,32 @@ Constraints (from auto-memory, do not relitigate):
       history incl. the radar's own picks — does the sub-65 velocity edge
       hold out-of-sample?
 
+- [x] 2026-07-22 (owner directive: full signal-vs-noise audit, 4 parallel
+      agents) — VERDICTS (single-regime May-Jul caveat applies):
+      SIGNAL: A (only monotone-positive letter, ~0.6-0.75pp tercile gap
+      both bands); C hump-shaped (mid best, top stalls = EPS-pop class);
+      score-velocity at low levels (radar, validated Jul-21).
+      INVERTED at 14d: L/S/N — high price-momentum components within a
+      score band mean-revert (top-tercile L NEGATIVE both bands). NOT a
+      defect: entry discipline (pre-breakout ≤ pivot) structurally avoids
+      buying extended moments — components + rules are coherent.
+      NOISE: I (5-bucket coarse, non-monotone, 40% tied at 4.0).
+      REGIME DIAL: M (per-day constant, zero cross-sectional info; makes
+      absolute score thresholds implicitly market-adaptive — by design).
+      COHERENCE: no letter-pair |r|>0.38 (no redundancy); breakout vs
+      coiled-spring surfaces complementary (2/45 overlap in 7d).
+      HYGIENE: app already pruned AD-bonus/insider/sector-rotation/ML/
+      market-state from trading (audit-flagged inert: get_audit_bonus
+      dead code). NO scoring changes without live A/B (standing rule) —
+      findings are observability. ▶ Re-test L/S/N inversion on a weak
+      tape before ever acting on it.
+      A/B TAB BUG FIXED+DEPLOYED `e3dcb50`: live-source cohort resolved
+      from CURRENT config → strategy switches retroactively reshuffled
+      history (June baseline vanished; UI compared vs phantom 0.0%).
+      Fix: strategy stamped on trades at execution + stamp-first query
+      (legacy NULL falls back) + empty-window return=None + explicit
+      membership-drift warning.
+
 ## Next up (ranked by expected returns impact)
 1. **(idea pool)** From live results: entry-rate re-check late July (ML
    demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
