@@ -790,7 +790,7 @@ class TestBearBaseAndMarketTurn:
         assert "42 candidates" in title
         assert "AAPL(88)" in msg
 
-    def test_market_turn_ready_uses_urgent_priority_and_markdown(self):
+    def test_market_turn_ready_uses_high_priority_and_markdown(self):
         from backend import email_utils
         with patch.object(email_utils, "broadcast_notification"), \
              patch.object(email_utils, "send_webhook_notification",
@@ -801,7 +801,11 @@ class TestBearBaseAndMarketTurn:
                 spy_price=455.0, spy_ma50=440.0,
             )
         kwargs = mock_wh.call_args.kwargs
-        assert kwargs["priority"] == "urgent"
+        # "high", not "urgent" (changed 2026-07-22): urgent bypasses the
+        # owner mute gate BY DESIGN (stops/circuit breakers only) and a
+        # market-turn heads-up is informational — riding the urgent lane
+        # made the market_turn mute a no-op.
+        assert kwargs["priority"] == "high"
         assert kwargs["markdown"] is True
 
     def test_bear_market_report_with_no_data_renders_fallback_message(self):

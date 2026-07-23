@@ -866,7 +866,7 @@ def send_score_crash_warning_push(ticker: str, purchase_score: float, current_sc
 
     url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="high",
-                                     tags=tags, url=url)
+                                     tags=tags, url=url, kind="score_crash")
 
 
 def send_bear_base_update_push(total: int, top_candidates: list) -> bool:
@@ -889,7 +889,7 @@ def send_bear_base_update_push(total: int, top_candidates: list) -> bool:
     broadcast_notification(kind="bear_base_update", title=title, body=message,
                            priority="default", tags=tags,
                            data={"total": total, "top": top_candidates[:5]})
-    return send_webhook_notification(title, message, priority="default", tags=tags)
+    return send_webhook_notification(title, message, priority="default", tags=tags, kind="bear_base_update")
 
 
 def send_market_turn_ready_push(candidates: list, spy_price: float, spy_ma50: float) -> bool:
@@ -915,8 +915,8 @@ def send_market_turn_ready_push(candidates: list, spy_price: float, spy_ma50: fl
                            data={"spy_price": spy_price, "spy_ma50": spy_ma50,
                                  "candidate_count": len(candidates),
                                  "top": candidates[:5]})
-    return send_webhook_notification(title, message, priority="urgent",
-                                     tags=tags, markdown=True)
+    return send_webhook_notification(title, message, priority="high",
+                                     tags=tags, markdown=True, kind="market_turn")
 
 
 def send_bear_market_report_push(report_data: dict) -> bool:
@@ -945,4 +945,4 @@ def send_bear_market_report_push(report_data: dict) -> bool:
     broadcast_notification(kind="bear_market_report", title=title, body=message,
                            priority="default", tags=tags,
                            data={"bases_forming": bases})
-    return send_webhook_notification(title, message, priority="default", tags=tags)
+    return send_webhook_notification(title, message, priority="default", tags=tags, kind="bear_market_report")
