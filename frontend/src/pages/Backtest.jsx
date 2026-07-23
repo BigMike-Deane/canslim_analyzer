@@ -10,7 +10,7 @@ import DataTable from '../components/DataTable'
 import PageHeader from '../components/PageHeader'
 import Spinner from '../components/Spinner'
 import EmptyState from '../components/EmptyState'
-import { tooltipStyle } from '../components/chartTheme'
+import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 import BacktestCompareView from '../components/BacktestCompareView'
 import { useToast } from '../components/Toast'
 
@@ -27,8 +27,8 @@ function PerformanceChart({ data, startingCash }) {
   const finalSpy = data[data.length - 1]?.spy_return_pct || 0
   const isPositive = finalReturn >= 0
   const beatsSpy = finalReturn >= finalSpy
-  const strokeColor = isPositive ? '#34d399' : '#f87171'
-  const spyColor = '#f59e0b' // Amber — high contrast on dark bg
+  const strokeColor = isPositive ? chartColors.pnlUpSoft : chartColors.pnlDownSoft
+  const spyColor = chartColors.spy // benchmark teal — hue-separated from brand amber
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null
@@ -48,7 +48,7 @@ function PerformanceChart({ data, startingCash }) {
         <div className="flex items-center gap-2 text-xs">
           <span className="w-2 h-2 rounded-full" style={{ background: spyColor }} />
           <span className="text-dark-300">SPY</span>
-          <span className="font-data ml-auto text-amber-400">{sv >= 0 ? '+' : ''}{sv.toFixed(1)}%</span>
+          <span className="font-data ml-auto text-teal-300">{sv >= 0 ? '+' : ''}{sv.toFixed(1)}%</span>
         </div>
         <div className="border-t border-dark-700/40 mt-1.5 pt-1.5 flex items-center gap-2 text-xs">
           <span className="text-dark-500">vs SPY</span>
@@ -101,20 +101,20 @@ function PerformanceChart({ data, startingCash }) {
               fill="url(#portGrad)"
               dot={false}
             />
-            <ReferenceLine y={0} stroke="#473538" strokeWidth={1} />
+            <ReferenceLine y={0} stroke={chartAxis.reference} strokeWidth={1} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#8c7479' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick }}
               tickFormatter={(d) => {
                 const date = new Date(d)
                 return `${date.getMonth()+1}/${date.getDate()}`
               }}
               interval="preserveStartEnd"
-              axisLine={{ stroke: '#2f2225' }}
+              axisLine={{ stroke: chartAxis.axisLine }}
               tickLine={false}
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#8c7479' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick }}
               tickFormatter={(v) => `${v.toFixed(0)}%`}
               domain={['dataMin - 5', 'dataMax + 5']}
               axisLine={false}
@@ -265,11 +265,11 @@ function ComparisonView({ comparison, onClose }) {
                   </linearGradient>
                 ))}
                 <linearGradient id="compSpyGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.10} />
-                  <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+                  <stop offset="0%" stopColor={chartColors.spy} stopOpacity={0.10} />
+                  <stop offset="100%" stopColor={chartColors.spy} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <Area type="monotone" dataKey="spy_return" name="SPY" stroke="#f59e0b" strokeWidth={2} fill="url(#compSpyGrad)" dot={false} connectNulls />
+              <Area type="monotone" dataKey="spy_return" name="SPY" stroke={chartColors.spy} strokeWidth={2} fill="url(#compSpyGrad)" dot={false} connectNulls />
               {backtests.map((bt, i) => (
                 <Area
                   key={bt.id}
@@ -283,12 +283,12 @@ function ComparisonView({ comparison, onClose }) {
                   connectNulls
                 />
               ))}
-              <ReferenceLine y={0} stroke="#473538" strokeWidth={1} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8c7479' }} tickFormatter={(d) => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }} interval="preserveStartEnd" axisLine={{ stroke: '#2f2225' }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: '#8c7479' }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
+              <ReferenceLine y={0} stroke={chartAxis.reference} strokeWidth={1} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: chartAxis.tick }} tickFormatter={(d) => { const p = d.split('-'); return p.length >= 3 ? `${p[1]}/${p[2]}` : d }} interval="preserveStartEnd" axisLine={{ stroke: chartAxis.axisLine }} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: chartAxis.tick }} tickFormatter={(v) => `${v?.toFixed(0)}%`} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={tooltipStyle}
-                labelStyle={{ color: '#8c7479', fontSize: 11 }}
+                labelStyle={tooltipLabelStyle}
                 formatter={(v, n) => [`${v?.toFixed(2)}%`, n]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />

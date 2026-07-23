@@ -2,14 +2,16 @@ import { useState, useEffect } from 'react'
 import { api } from '../api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import Card, { CardHeader } from './Card'
+import { chartAxis, chartColors } from './chartTheme'
 
 // A = emerald (green for "candidate that may win"); B = brand amber (was red);
-// SPY = warm muted gray. Stays distinct from raw P&L green/red because B is
-// hue-distant from P&L red-400 and is paired with a dedicated label.
+// SPY = canonical benchmark teal from chartTheme. Stays distinct from raw
+// P&L green/red because B is hue-distant from P&L red-400 and is paired
+// with a dedicated label.
 const COLORS = {
   btA: '#22c55e',
-  btB: '#f59e0b',
-  spy: '#a89499',
+  btB: chartColors.brand,
+  spy: chartColors.spy,
 }
 
 const STAT_ROWS = [
@@ -78,10 +80,10 @@ function ComparisonChart({ chartData, backtests }) {
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#2f2225" />
+            <CartesianGrid strokeDasharray="3 3" stroke={chartAxis.grid} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(d) => {
                 const parts = d.split('-')
                 return parts.length >= 2 ? `${parts[0]}-${parts[1]}` : d
@@ -89,7 +91,7 @@ function ComparisonChart({ chartData, backtests }) {
               interval="preserveStartEnd"
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => `${v.toFixed(0)}%`}
             />
             <Tooltip content={<CustomTooltip />} />

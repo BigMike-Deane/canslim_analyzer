@@ -5,7 +5,7 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
-import { tooltipStyle as TOOLTIP_STYLE } from '../components/chartTheme'
+import { tooltipStyle as TOOLTIP_STYLE, chartAxis, chartColors } from '../components/chartTheme'
 import { buildCsv, downloadCsv } from '../csv'
 
 const CSV_COLUMNS = [
@@ -20,10 +20,10 @@ function downloadTradesCsv(trades) {
 }
 
 const SELL_REASON_COLORS = {
-  'STOP LOSS': '#ef4444',
-  'TRAILING STOP': '#f59e0b',
+  'STOP LOSS': chartColors.pnlDown,
+  'TRAILING STOP': chartColors.brand,
   'PARTIAL TRAILING': '#eab308',
-  'TAKE PROFIT': '#10b981',
+  'TAKE PROFIT': chartColors.pnlUp,
   'PARTIAL PROFIT': '#22c55e',
   'SCORE CRASH': '#f43f5e',
   'PROTECT GAINS': '#22d3ee',
@@ -58,13 +58,13 @@ function CumulativePnLChart({ data }) {
           <AreaChart data={data}>
             <defs>
               <linearGradient id="cumGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
-                <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+                <stop offset="0%" stopColor={chartColors.pnlUp} stopOpacity={0.3} />
+                <stop offset="100%" stopColor={chartColors.pnlUp} stopOpacity={0} />
               </linearGradient>
             </defs>
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(d) => {
                 const parts = d.split('-')
                 return parts.length >= 2 ? `${parts[1]}/${parts[2]}` : d
@@ -72,10 +72,10 @@ function CumulativePnLChart({ data }) {
               interval="preserveStartEnd"
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => `$${v.toFixed(0)}`}
             />
-            <ReferenceLine y={0} stroke="#473538" strokeWidth={1} />
+            <ReferenceLine y={0} stroke={chartAxis.reference} strokeWidth={1} />
             <Tooltip
               contentStyle={TOOLTIP_STYLE}
               formatter={(value, name) => {
@@ -93,7 +93,7 @@ function CumulativePnLChart({ data }) {
             <Area
               type="monotone"
               dataKey="cumulative"
-              stroke="#10b981"
+              stroke={chartColors.pnlUp}
               strokeWidth={2}
               fill="url(#cumGrad)"
               dot={false}
@@ -116,14 +116,14 @@ function MonthlyPnLChart({ data }) {
           <BarChart data={data}>
             <XAxis
               dataKey="month"
-              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(m) => {
                 const parts = m.split('-')
                 return parts.length >= 2 ? `${parts[1]}/${parts[0].slice(2)}` : m
               }}
             />
             <YAxis
-              tick={{ fontSize: 10, fill: '#8c7479', fontFamily: 'JetBrains Mono' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => `$${v.toFixed(0)}`}
             />
             <Tooltip
@@ -132,7 +132,7 @@ function MonthlyPnLChart({ data }) {
             />
             <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
               {data.map((entry, i) => (
-                <Cell key={i} fill={entry.pnl >= 0 ? '#10b981' : '#ef4444'} />
+                <Cell key={i} fill={entry.pnl >= 0 ? chartColors.pnlUp : chartColors.pnlDown} />
               ))}
             </Bar>
           </BarChart>
