@@ -205,7 +205,7 @@ def check_intraday_breakouts():
                           "label": label},
                 )
                 # ntfy push (legacy global URL — phone alerts).
-                send_webhook_notification(title=title, message=message,
+                send_webhook_notification(title=title, message=message, kind="breakout",
                                           priority=priority, tags=tags)
                 alerts_sent += 1
 

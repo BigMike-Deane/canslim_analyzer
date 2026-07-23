@@ -210,7 +210,7 @@ WEBHOOK_URL = os.environ.get('CANSLIM_WEBHOOK_URL', '')
 def send_webhook_notification(title: str, message: str, priority: str = "default",
                               data: dict = None, tags: list = None,
                               click: str = None, markdown: bool = False,
-                              url: str = None) -> bool:
+                              url: str = None, kind: str = None) -> bool:
     """Send push notification via webhook (e.g., ntfy.sh, Pushover, or custom).
 
     Args:
@@ -231,6 +231,29 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
     if not target_url:
         logger.debug("Webhook URL not configured, skipping notification")
         return False
+
+    # Owner-mute gate for the GLOBAL legacy webhook (2026-07-22 owner
+    # report): the global CANSLIM_WEBHOOK_URL is de-facto the owner's phone,
+    # but this path predates per-user prefs and bypassed mute_kinds — a
+    # muted kind still pinged via ntfy even though the per-user broadcast
+    # path correctly suppressed it. When a `kind` is supplied AND we're
+    # firing the global URL (not an explicit per-user `url` override), run
+    # the same _should_deliver gate the broadcast path uses for user 1.
+    # Urgent priority bypasses by design; kind=None (ops/backup messages)
+    # keeps legacy behavior.
+    if kind and url is None and priority != "urgent":
+        try:
+            from backend.database import SessionLocal, User
+            _db = SessionLocal()
+            try:
+                owner = _db.query(User).filter(User.id == 1).first()
+            finally:
+                _db.close()
+            if owner is not None and not _should_deliver(owner, kind, priority, data):
+                logger.info(f"Global webhook suppressed by owner prefs (kind={kind}): {title}")
+                return False
+        except Exception:
+            pass  # pref lookup failure must never block a notification
 
     payload = {
         "title": title,
@@ -618,7 +641,8 @@ def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
     tags = ["cyclone", "chart_with_upwards_trend"]
     broadcast_notification(kind="coiled_spring", title=title, body=message,
                            priority="high", tags=tags, data=data)
-    return send_webhook_notification(title, message, priority="high", data=data, tags=tags)
+    return send_webhook_notification(title, message, priority="high", data=data, tags=tags,
+                                     kind="coiled_spring")
 
 
 def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
@@ -659,7 +683,8 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
     )
 
     url = get_user_webhook_url(user_id) if user_id is not None else None
-    return send_webhook_notification(title, message, priority="high", tags=tags, url=url)
+    return send_webhook_notification(title, message, priority="high", tags=tags, url=url,
+                                     kind="trade")
 
 
 def send_stop_loss_webhook(ticker: str, shares: float, price: float,
@@ -733,7 +758,8 @@ def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
     broadcast_notification(kind="risk_alert", title=title, body=details,
                            priority="high", tags=tags,
                            data={"alert_type": alert_type})
-    return send_webhook_notification(title, details, priority="high", tags=tags)
+    return send_webhook_notification(title, details, priority="high", tags=tags,
+                                     kind="risk_alert")
 
 
 def send_scan_completion_push(stocks_scanned: int, total: int, scan_time: float,
@@ -800,7 +826,8 @@ def send_spy_gate_change_push(new_state: str, spy_price: float, spy_ma50: float)
                            priority="high", tags=tags,
                            data={"new_state": new_state, "spy_price": spy_price,
                                  "spy_ma50": spy_ma50, "diff_pct": diff_pct})
-    return send_webhook_notification(title, message, priority="high", tags=tags)
+    return send_webhook_notification(title, message, priority="high", tags=tags,
+                                     kind="spy_gate_change")
 
 
 def send_score_crash_warning_push(ticker: str, purchase_score: float, current_score: float,

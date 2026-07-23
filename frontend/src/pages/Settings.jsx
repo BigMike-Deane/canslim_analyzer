@@ -330,14 +330,14 @@ export default function Settings() {
       <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">
         <h2 className="text-lg font-medium text-white mb-1">Notification preferences</h2>
         <p className="text-sm text-dark-400 mb-4">
-          Mute specific kinds and silence push during quiet hours.{' '}
+          <span className="text-dark-200">Checked = delivered to your devices.</span>{' '}
+          Unchecked kinds are silenced (still recorded in-app).{' '}
           <span className="text-amber-400">Urgent alerts</span>{' '}
-          (stop losses, circuit breakers) always come through. In-app
-          notifications are always recorded — only push delivery is gated.
+          (stop losses, circuit breakers) always come through regardless.
         </p>
 
         <div className="mb-4">
-          <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">MUTE KINDS</div>
+          <div className="text-xs font-semibold tracking-wide text-dark-400 mb-2">NOTIFY ME ABOUT</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
             {MUTABLE_KINDS.map(({ key, label }) => {
               const muted = mutedKinds.has(key)
@@ -351,7 +351,7 @@ export default function Settings() {
                 >
                   <input
                     type="checkbox"
-                    checked={muted}
+                    checked={!muted}
                     onChange={() => toggleMute(key)}
                     className="accent-primary-500"
                   />

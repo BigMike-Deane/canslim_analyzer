@@ -889,3 +889,84 @@ class TestWebhookSSRFGuard:
         monkeypatch.setattr(email_utils.requests, "post", _post)
         email_utils.send_webhook_notification("T", "B", url="https://ntfy.sh/topic")
         assert captured.get("allow_redirects") is False
+
+
+class TestGlobalWebhookOwnerMuteGate:
+    """2026-07-22 owner report: a muted kind still pinged the phone via the
+    LEGACY GLOBAL webhook (CANSLIM_WEBHOOK_URL) — that path predates
+    per-user prefs and bypassed mute_kinds. send_webhook_notification now
+    runs the owner's _should_deliver gate when a `kind` is supplied and the
+    global URL is in play. Urgent bypasses; kind=None keeps legacy behavior;
+    explicit per-user url= overrides skip the gate (routed upstream)."""
+
+    def _owner(self, mutes):
+        u = MagicMock()
+        u.mute_kinds = mutes
+        u.quiet_hours_start = None
+        u.quiet_hours_end = None
+        u.score_alert_threshold = None
+        return u
+
+    def _db_returning(self, owner):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = owner
+        return db
+
+    @patch("backend.email_utils.requests.post")
+    def test_muted_kind_suppresses_global_send(self, mock_post):
+        from backend import email_utils
+        with patch.object(email_utils, "WEBHOOK_URL", "https://ntfy.sh/global"), \
+             patch("backend.database.SessionLocal",
+                   return_value=self._db_returning(self._owner(["coiled_spring"]))):
+            ok = email_utils.send_webhook_notification(
+                "CS", "msg", priority="high", kind="coiled_spring")
+        assert ok is False
+        mock_post.assert_not_called()
+
+    @patch("backend.email_utils.requests.post")
+    def test_unmuted_kind_sends(self, mock_post):
+        from backend import email_utils
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+        with patch.object(email_utils, "WEBHOOK_URL", "https://ntfy.sh/global"), \
+             patch("backend.database.SessionLocal",
+                   return_value=self._db_returning(self._owner(["trade"]))):
+            ok = email_utils.send_webhook_notification(
+                "CS", "msg", priority="high", kind="coiled_spring")
+        assert ok is True
+        mock_post.assert_called_once()
+
+    @patch("backend.email_utils.requests.post")
+    def test_urgent_bypasses_mute(self, mock_post):
+        from backend import email_utils
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+        with patch.object(email_utils, "WEBHOOK_URL", "https://ntfy.sh/global"), \
+             patch("backend.database.SessionLocal",
+                   return_value=self._db_returning(self._owner(["stop_loss"]))):
+            ok = email_utils.send_webhook_notification(
+                "STOP", "msg", priority="urgent", kind="stop_loss")
+        assert ok is True
+
+    @patch("backend.email_utils.requests.post")
+    def test_kind_none_keeps_legacy_behavior(self, mock_post):
+        from backend import email_utils
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+        with patch.object(email_utils, "WEBHOOK_URL", "https://ntfy.sh/global"), \
+             patch("backend.database.SessionLocal") as mock_sl:
+            ok = email_utils.send_webhook_notification("Backup", "msg")
+        assert ok is True
+        mock_sl.assert_not_called()
+
+    @patch("backend.email_utils.requests.post")
+    def test_explicit_user_url_skips_owner_gate(self, mock_post):
+        """A per-user url= override is routed/muted upstream — the OWNER's
+        mute list must not suppress another user's delivery."""
+        from backend import email_utils
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+        with patch.object(email_utils, "WEBHOOK_URL", "https://ntfy.sh/global"), \
+             patch("backend.database.SessionLocal",
+                   return_value=self._db_returning(self._owner(["trade"]))) as mock_sl:
+            ok = email_utils.send_webhook_notification(
+                "T", "msg", priority="high", kind="trade",
+                url="https://ntfy.sh/user2-topic")
+        assert ok is True
+        mock_sl.assert_not_called()
