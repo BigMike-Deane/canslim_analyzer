@@ -2434,6 +2434,7 @@ export default function AIPortfolio() {
   const [activeTab, setActiveTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [portfolio, setPortfolio] = useState(null)
+  const [error, setError] = useState(null)
   const [history, setHistory] = useState([])
   const [trades, setTrades] = useState([])
   const [lastUpdated, setLastUpdated] = useState(null)
@@ -2523,6 +2524,7 @@ export default function AIPortfolio() {
       setEdge(edgeData)
       setReconciliation(reconData)
       setLastUpdated(new Date())
+      setError(null)
 
       // Check if data changed while waiting for trades
       if (waitingForTrades && waitingCash !== null) {
@@ -2537,6 +2539,7 @@ export default function AIPortfolio() {
       return portfolioData
     } catch (err) {
       console.error('Failed to fetch AI Portfolio:', err)
+      setError(err?.message || 'Failed to load portfolio data')
     } finally {
       setLoading(false)
     }
@@ -2733,6 +2736,22 @@ export default function AIPortfolio() {
         <div className="skeleton h-48 rounded-xl mb-4" />
         <div className="skeleton h-32 rounded-xl mb-4" />
         <div className="skeleton h-48 rounded-xl" />
+      </div>
+    )
+  }
+
+  // ── Error state (only when we have no data at all to show — a failed
+  // background poll on a populated page keeps rendering the stale data,
+  // covered by the Data/Prices timestamps in the header) ──────────────
+  if (error && !portfolio) {
+    return (
+      <div className="p-4 md:p-6">
+        <Card variant="glass" className="text-center py-8">
+          <div className="text-4xl mb-3">!</div>
+          <div className="font-semibold text-dark-50 mb-2">Failed to Load Portfolio</div>
+          <p className="text-dark-400 text-sm mb-4">{error}</p>
+          <button onClick={() => fetchData()} className="btn-primary">Retry</button>
+        </Card>
       </div>
     )
   }

@@ -1153,7 +1153,7 @@ export default function StockDetail() {
           <div className="font-semibold text-dark-50 mb-2">Failed to Load</div>
           <p className="text-dark-400 text-sm mb-4">{error}</p>
           <div className="flex gap-3 justify-center">
-            <button onClick={fetchStock} className="btn-primary">Retry</button>
+            <button onClick={() => fetchStock()} className="btn-primary">Retry</button>
             <button onClick={() => navigate(-1)} className="btn-secondary">Go Back</button>
           </div>
         </Card>
