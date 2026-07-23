@@ -237,17 +237,20 @@ export default function Watchlist() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState([])
   const [asOf, setAsOf] = useState(null)
+  const [error, setError] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const toast = useToast()
 
   const fetchWatchlist = async () => {
     try {
       setLoading(true)
+      setError(null)
       const data = await api.getWatchlist()
       setItems(data.items || [])
       setAsOf(data.as_of || null)
     } catch (err) {
       console.error('Failed to fetch watchlist:', err)
+      setError(err.message || 'Failed to load watchlist')
     } finally {
       setLoading(false)
     }
@@ -350,7 +353,18 @@ export default function Watchlist() {
         }
       />
 
-      {items.length === 0 ? (
+      {/* Failed load with nothing cached — show a retryable error card
+          instead of masquerading as an empty watchlist. If items are
+          already loaded (e.g. a background refetch failed), keep showing
+          the data. */}
+      {error && items.length === 0 ? (
+        <Card variant="glass" className="text-center py-8">
+          <div className="text-4xl mb-3">!</div>
+          <div className="font-semibold text-dark-50 mb-2">Failed to Load</div>
+          <p className="text-dark-400 text-sm mb-4">{error}</p>
+          <button onClick={fetchWatchlist} className="btn-primary">Retry</button>
+        </Card>
+      ) : items.length === 0 ? (
         <Card variant="glass" className="text-center py-10">
           <div className="text-3xl mb-3 text-dark-500">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-dark-500">

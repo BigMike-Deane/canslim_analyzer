@@ -278,6 +278,87 @@ function ImprovingRadarSection({ radar }) {
   )
 }
 
+// Industry Group Rotation — where money is rotating. Backed by
+// /api/industry-groups: rotation.improving / rotation.deteriorating are
+// groups whose 3-month RS meaningfully diverges from their 12-month RS
+// (|rs_diff| > 0.05). RS values are ratios vs SPY (~1.0 = market-perform),
+// so rs_diff is shown ×100 as "RS points" to keep one-decimal legibility.
+// Hidden entirely when the one-shot fetch fails or returns nothing.
+function GroupRotationSection({ data }) {
+  const improving = data?.rotation?.improving || []
+  const deteriorating = data?.rotation?.deteriorating || []
+  if (improving.length === 0 && deteriorating.length === 0) return null
+
+  const fmtDiff = (d) => {
+    const v = (d ?? 0) * 100
+    return `${v >= 0 ? '+' : ''}${v.toFixed(1)}`
+  }
+
+  const GroupRow = ({ g, tone }) => (
+    <div className="flex items-center justify-between gap-2 py-1 border-b border-dark-700/20 last:border-0">
+      <span
+        className="text-[11px] text-dark-300 truncate min-w-0"
+        title={`${g.industry} — group rank ${g.rank}/100 · 3m RS ${g.avg_rs_3m?.toFixed?.(2) ?? g.avg_rs_3m} vs 12m RS ${g.avg_rs_12m?.toFixed?.(2) ?? g.avg_rs_12m}`}
+      >
+        {g.industry}
+      </span>
+      <span className="flex items-center gap-1.5 shrink-0">
+        <span className={`text-[10px] font-data font-medium ${tone}`}>{fmtDiff(g.rs_diff)}</span>
+        <span className="text-[9px] font-data text-dark-500" title={`${g.stock_count} stocks in group`}>
+          ({g.stock_count})
+        </span>
+      </span>
+    </div>
+  )
+
+  return (
+    <Card as="section" aria-labelledby="cc-group-rotation-heading" variant="glass">
+      <CollapsibleSection
+        title="Group Rotation"
+        titleId="cc-group-rotation-heading"
+        badge={data?.as_of ? (
+          <span className="text-[9px] font-data text-dark-500" title={data.as_of}>
+            as of {formatRelativeTime(data.as_of)}
+          </span>
+        ) : undefined}
+      >
+        <div
+          className="text-[10px] text-dark-400 mb-2"
+          title="3-month group RS minus 12-month group RS (×100). Positive = the group is outperforming its own longer-term trend — money rotating in. IBD: ~37% of a stock's move comes from its industry group."
+        >
+          3m vs 12m group relative strength — where money is rotating.
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400 mb-1.5">
+              Money Flowing In
+            </div>
+            {improving.length === 0 ? (
+              <div className="text-[10px] text-dark-500 py-1">None</div>
+            ) : (
+              improving.slice(0, 8).map(g => (
+                <GroupRow key={g.industry} g={g} tone="text-emerald-400" />
+              ))
+            )}
+          </div>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-red-400 mb-1.5">
+              Money Flowing Out
+            </div>
+            {deteriorating.length === 0 ? (
+              <div className="text-[10px] text-dark-500 py-1">None</div>
+            ) : (
+              deteriorating.slice(0, 8).map(g => (
+                <GroupRow key={g.industry} g={g} tone="text-red-400" />
+              ))
+            )}
+          </div>
+        </div>
+      </CollapsibleSection>
+    </Card>
+  )
+}
+
 const PositionRow = memo(function PositionRow({ p, earningsDays }) {
   const stopDist = p.stop_distance
   const stopColor =
@@ -449,6 +530,13 @@ export default function CommandCenter() {
   const [breadth, setBreadth] = useState(null)
   useEffect(() => {
     api.getMarketBreadth().then(setBreadth).catch(() => null)
+  }, [])
+  // Industry group rotation — same one-shot pattern as breadth: the endpoint
+  // recomputes group rankings across all Stock rows, so it deliberately stays
+  // off the 60s market-hours poll. Section hides itself when this stays null.
+  const [industryGroups, setIndustryGroups] = useState(null)
+  useEffect(() => {
+    api.getIndustryGroups().then(setIndustryGroups).catch(() => null)
   }, [])
 
   const fetchData = useCallback(async () => {
@@ -843,6 +931,11 @@ export default function CommandCenter() {
           {/* Improving Radar — score-velocity discovery */}
           <div className="animate-fade-in-up opacity-0 stagger-4">
             <ImprovingRadarSection radar={radar} />
+          </div>
+
+          {/* Industry Group Rotation — one-shot fetch, hidden when unavailable */}
+          <div className="animate-fade-in-up opacity-0 stagger-4">
+            <GroupRotationSection data={industryGroups} />
           </div>
 
           {/* Earnings Countdown */}

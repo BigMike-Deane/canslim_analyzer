@@ -8,13 +8,14 @@ import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import CollapsibleSection from '../components/CollapsibleSection'
 import Sparkline from '../components/Sparkline'
-import { tooltipStyle } from '../components/chartTheme'
+import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
 import { buildCsv, downloadCsv } from '../csv'
 import Modal from '../components/Modal'
 import PortfolioDetailView from '../components/PortfolioDetailView'
 import EmptyState from '../components/EmptyState'
 import PositionHealthChip from '../components/PositionHealthChip'
+import DataTable from '../components/DataTable'
 
 // ── Performance Chart ───────────────────────────────────────────────
 // `timeRange` is now controlled by the page-level WindowReturnsBar so the
@@ -168,12 +169,12 @@ function PerformanceChart({ history, startingCash, timeRange }) {
             <Area
               type="monotone"
               dataKey="spy_value"
-              stroke="#8c7479"
+              stroke={chartColors.spy}
               strokeWidth={1.25}
               strokeDasharray="4 3"
               fill="none"
               dot={false}
-              activeDot={{ r: 3, fill: '#8c7479' }}
+              activeDot={{ r: 3, fill: chartColors.spy }}
               isAnimationActive={false}
               connectNulls
             />
@@ -188,18 +189,18 @@ function PerformanceChart({ history, startingCash, timeRange }) {
             />
             <ReferenceLine
               y={startingCash}
-              stroke="#666"
+              stroke={chartAxis.reference}
               strokeDasharray="3 3"
               label={{
                 value: `Start ${formatYTick(startingCash)}`,
                 position: 'insideTopLeft',
-                fill: '#666',
+                fill: chartAxis.tick,
                 fontSize: 10,
               }}
             />
             <Tooltip
               contentStyle={tooltipStyle}
-              labelStyle={{ color: '#8c7479' }}
+              labelStyle={tooltipLabelStyle}
               formatter={(value, name) => {
                 if (value == null) return [null, null]
                 const label = name === 'spy_value' ? 'SPY' : 'Portfolio'
@@ -215,7 +216,7 @@ function PerformanceChart({ history, startingCash, timeRange }) {
             <XAxis
               dataKey="timestamp"
               tickFormatter={formatXTick}
-              tick={{ fill: '#8c7479', fontSize: 10 }}
+              tick={{ fill: chartAxis.tick, fontSize: 10 }}
               axisLine={false}
               tickLine={false}
               minTickGap={36}
@@ -224,7 +225,7 @@ function PerformanceChart({ history, startingCash, timeRange }) {
               orientation="right"
               domain={['dataMin - 500', 'dataMax + 500']}
               tickFormatter={formatYTick}
-              tick={{ fill: '#8c7479', fontSize: 10 }}
+              tick={{ fill: chartAxis.tick, fontSize: 10 }}
               axisLine={false}
               tickLine={false}
               width={42}
@@ -603,12 +604,14 @@ function EdgeScorecard({ edge }) {
               clock above because conditioning un-dilutes the effect. */}
           {range === 'all' && data.regime_edge?.trend && (
             <div
-              className={`text-[11px] font-medium rounded-md px-2.5 py-1.5 mb-3 border ${
+              className={`text-[11px] font-medium rounded-md px-2.5 py-1.5 border ${
+                data.regime_edge.chop ? 'mb-1.5' : 'mb-3'
+              } ${
                 data.regime_edge.trend.significant_95
                   ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25'
                   : 'text-sky-300 bg-sky-500/10 border-sky-500/25'
               }`}
-              title={`Excess return vs SPY computed only on days SPY sat more than ${data.regime_edge.threshold_pct}% above its 50MA (trend regime). Chop days: ${data.regime_edge.chop ? `${data.regime_edge.chop.mean_daily_excess_bps} bps/day (p=${data.regime_edge.chop.p_value})` : 'insufficient data'}. Same persistence caveat as the clock above.`}
+              title={`Excess return vs SPY computed only on days SPY sat more than ${data.regime_edge.threshold_pct}% above its 50MA (trend regime). Same persistence caveat as the clock above.`}
             >
               {data.regime_edge.trend.significant_95 ? '✓' : '📈'} Trend-day edge: {data.regime_edge.trend.mean_daily_excess_bps > 0 ? '+' : ''}
               {data.regime_edge.trend.mean_daily_excess_bps} bps/day over SPY
@@ -616,6 +619,24 @@ function EdgeScorecard({ edge }) {
               {!data.regime_edge.trend.significant_95 && data.regime_edge.trend.additional_days_needed != null &&
                 ` — provable in ≈${data.regime_edge.trend.additional_days_needed} more trend days`}
               {data.regime_edge.trend.significant_95 && ' — statistically confirmed'}
+            </div>
+          )}
+          {/* Chop-day edge — first-class line (owner ask, Jul-23): the mirror
+              bucket of the trend line above. All live underperformance
+              concentrates on chop days, so it renders in the down/red tone
+              when negative instead of hiding in the trend line's tooltip. */}
+          {range === 'all' && data.regime_edge?.chop && (
+            <div
+              className={`text-[11px] font-medium rounded-md px-2.5 py-1.5 mb-3 border ${
+                data.regime_edge.chop.mean_daily_excess_bps < 0
+                  ? 'text-red-300 bg-red-500/10 border-red-500/25'
+                  : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25'
+              }`}
+              title={`Excess return vs SPY computed only on days SPY sat within ${data.regime_edge.threshold_pct}% of its 50MA or below it (chop regime). Same persistence caveat as the trend line above.`}
+            >
+              {data.regime_edge.chop.mean_daily_excess_bps < 0 ? '⚠' : '✓'} Chop-day edge: {data.regime_edge.chop.mean_daily_excess_bps > 0 ? '+' : ''}
+              {data.regime_edge.chop.mean_daily_excess_bps} bps/day over SPY
+              {' '}(p={data.regime_edge.chop.p_value}, {data.regime_edge.chop.n_days} days)
             </div>
           )}
           {/* Small-sample caveat: return-vs-SPY is valid on any window, but the
@@ -1101,6 +1122,13 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           const isPos = (pct ?? 0) >= 0
           const isMidWindow = winRow?.notes?.includes('opened mid-window')
           const glanceScore = position.is_growth_stock ? position.current_growth_score : position.current_score
+          // Trailing-stop risk fields (may be absent: null below the +5%
+          // activation tier, or on older payloads) — degrade to nothing.
+          const ts = position.trailing_stop
+          const offPeak = ts?.drop_from_peak_pct
+          const offPeakTone = ts?.near_stop
+            ? 'text-red-400'
+            : (offPeak ?? 0) > 5 ? 'text-amber-400' : 'text-dark-500'
           return (
             <button
               key={position.id}
@@ -1115,6 +1143,16 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
                 <div className="flex items-center gap-2 min-w-0">
                   <PositionHealthChip position={position} compact />
                   <span className="font-medium text-dark-100 shrink-0">{position.ticker}</span>
+                  {ts?.near_stop && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-red-400 bg-red-500/10 border border-red-500/30 rounded px-1 py-px shrink-0"
+                      title={`Within 70% of the trailing-stop threshold${ts.threshold_pct != null ? ` (${ts.drop_from_peak_pct}% off peak vs ${ts.threshold_pct}% stop)` : ''}`}
+                      aria-label="Near trailing stop"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                      stop
+                    </span>
+                  )}
                   {position.sector && (
                     <span className="text-[10px] text-dark-500 truncate" title={position.sector}>
                       {position.sector.split(' ')[0]}
@@ -1123,6 +1161,14 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
                 </div>
                 <div className="text-dark-400 text-[10px] font-data mt-0.5">
                   {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
+                  {offPeak != null && offPeak > 0 && (
+                    <span
+                      className={`${offPeakTone}`}
+                      title={`Peak ${ts.peak_price != null ? formatCurrency(ts.peak_price) : '—'}${ts.peak_date ? ` on ${new Date(ts.peak_date).toLocaleDateString()}` : ''}${ts.threshold_pct != null ? ` · trailing stop at −${ts.threshold_pct}%` : ''}`}
+                    >
+                      {' '}· ↓{offPeak.toFixed(1)}% off peak
+                    </span>
+                  )}
                   <ExitPlanChip plan={position.exit_plan} />
                 </div>
               </div>
@@ -1564,6 +1610,42 @@ function ExitPlanChip({ plan }) {
 }
 
 // ── Position Detail Modal ───────────────────────────────────────────
+// Column spec for the per-ticker trade-history DataTable inside the modal.
+// Mirrors the old hand-rolled <table> (Date/Action/Shares/Price/Total/Reason,
+// Reason hidden on mobile) but every column is now click-to-sort.
+const POSITION_TRADE_COLUMNS = [
+  {
+    key: 'executed_at', label: 'Date', sortable: true,
+    sortValue: (t) => t.executed_at ? new Date(t.executed_at).getTime() : null,
+    render: (v) => <span className="whitespace-nowrap">{formatDateTime(v)}</span>,
+    className: 'text-xs text-dark-300',
+  },
+  {
+    key: 'action', label: 'Action', sortable: true,
+    render: (v) => <ActionBadge action={v} />,
+  },
+  {
+    key: 'shares', label: 'Shares', align: 'right', sortable: true, mono: true,
+    render: (v) => v?.toFixed(4),
+    className: 'text-xs text-dark-200',
+  },
+  {
+    key: 'price', label: 'Price', align: 'right', sortable: true, mono: true,
+    render: (v) => formatCurrency(v),
+    className: 'text-xs text-dark-200',
+  },
+  {
+    key: 'total_value', label: 'Total', align: 'right', sortable: true, mono: true,
+    render: (v) => formatCurrency(v),
+    className: 'text-xs text-dark-200',
+  },
+  {
+    key: 'reason', label: 'Reason', mobileHide: true,
+    render: (v) => v || '-',
+    className: 'text-xs text-dark-400',
+  },
+]
+
 function PositionDetailModal({ position, onClose }) {
   const [trades, setTrades] = useState(null)
   const [scoreHistory, setScoreHistory] = useState(null)
@@ -1608,10 +1690,9 @@ function PositionDetailModal({ position, onClose }) {
   const scoreDelta = (purchaseScore != null && currentScore != null) ? (currentScore - purchaseScore) : null
   const gainPositive = (position.gain_loss ?? 0) >= 0
 
-  // Sort trades oldest → newest for chronological reading
-  const orderedTrades = trades ? [...trades].sort((a, b) =>
-    new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
-  ) : []
+  // Ordering is owned by the sortable DataTable below (default: newest
+  // first; every column header click re-sorts client-side).
+  const orderedTrades = trades || []
 
   return (
     <Modal
@@ -1742,33 +1823,16 @@ function PositionDetailModal({ position, onClose }) {
             <div className="text-dark-400 text-xs mt-2 py-3 text-center">No trades found for this ticker.</div>
           )}
           {!loading && orderedTrades.length > 0 && (
-            <div className="bg-dark-850 rounded-lg mt-1.5 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-dark-400 text-[10px] uppercase tracking-wider">
-                      <th className="text-left px-3 py-2">Date</th>
-                      <th className="text-left px-3 py-2">Action</th>
-                      <th className="text-right px-3 py-2">Shares</th>
-                      <th className="text-right px-3 py-2">Price</th>
-                      <th className="text-right px-3 py-2">Total</th>
-                      <th className="text-left px-3 py-2 hidden md:table-cell">Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orderedTrades.map(t => (
-                      <tr key={t.id} className="border-t border-dark-700/30">
-                        <td className="px-3 py-2 text-dark-300 whitespace-nowrap">{formatDateTime(t.executed_at)}</td>
-                        <td className="px-3 py-2"><ActionBadge action={t.action} /></td>
-                        <td className="px-3 py-2 text-right font-data text-dark-200">{t.shares?.toFixed(4)}</td>
-                        <td className="px-3 py-2 text-right font-data text-dark-200">{formatCurrency(t.price)}</td>
-                        <td className="px-3 py-2 text-right font-data text-dark-200">{formatCurrency(t.total_value)}</td>
-                        <td className="px-3 py-2 text-dark-400 hidden md:table-cell">{t.reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            <div className="bg-dark-850 rounded-lg mt-1.5 overflow-hidden px-2">
+              <DataTable
+                columns={POSITION_TRADE_COLUMNS}
+                data={orderedTrades}
+                keyField="id"
+                compact
+                defaultSort="executed_at"
+                defaultSortDir="desc"
+                emptyMessage="No trades found for this ticker."
+              />
             </div>
           )}
         </div>
@@ -1795,6 +1859,53 @@ const AI_TRADE_CSV_COLUMNS = [
   'executed_at', 'ticker', 'action', 'shares', 'price', 'total_value',
   'cost_basis', 'realized_gain', 'holding_days', 'canslim_score',
   'growth_mode_score', 'is_growth_stock', 'entry_type', 'sell_reason', 'reason',
+]
+
+// Column spec for the Recent Trades DataTable. Preserves the old list's
+// content (action badge + G tag, ticker, shares @ price, colored realized
+// P&L, reason) but sortable; Date/Reason drop off on mobile to keep the
+// row width close to the old compact list.
+const RECENT_TRADE_COLUMNS = [
+  {
+    key: 'executed_at', label: 'Date', sortable: true, mobileHide: true,
+    sortValue: (t) => t.executed_at ? new Date(t.executed_at).getTime() : null,
+    render: (v) => <span className="whitespace-nowrap">{formatDateTime(v)}</span>,
+    className: 'text-xs text-dark-300',
+  },
+  {
+    key: 'action', label: 'Action', sortable: true,
+    render: (v, t) => (
+      <span className="inline-flex items-center gap-1.5">
+        <ActionBadge action={v} />
+        {t.is_growth_stock && <TagBadge color="purple">G</TagBadge>}
+      </span>
+    ),
+  },
+  {
+    key: 'ticker', label: 'Ticker', sortable: true,
+    render: (v) => <span className="font-medium text-dark-100">{v}</span>,
+  },
+  {
+    key: 'shares', label: 'Shares @ Price', align: 'right', mono: true,
+    render: (v, t) => `${v?.toFixed(2)} @ ${formatCurrency(t.price)}`,
+    className: 'text-xs text-dark-200 whitespace-nowrap',
+  },
+  {
+    key: 'realized_gain', label: 'P&L', align: 'right', sortable: true, mono: true,
+    render: (v) => v == null ? <span className="text-dark-600">-</span> : (
+      <span className={v >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+        {v >= 0 ? '+' : ''}{formatCurrency(v)}
+      </span>
+    ),
+    className: 'text-xs',
+  },
+  {
+    key: 'reason', label: 'Reason', mobileHide: true,
+    render: (v) => (
+      <span className="block truncate max-w-[180px]" title={v}>{v || '-'}</span>
+    ),
+    className: 'text-xs text-dark-400',
+  },
 ]
 
 function TradeHistory({ trades }) {
@@ -1843,34 +1954,19 @@ function TradeHistory({ trades }) {
           </button>
         }
       />
-      {/* No inner max-height: let the list grow to ~20 rows; outer page
-          scroll handles overflow. Removes scroll-in-scroll on mobile. */}
-      <div className="space-y-1">
-        {trades.slice(0, 20).map(trade => (
-          <div
-            key={trade.id}
-            onClick={() => setSelectedTrade(trade)}
-            className="flex justify-between items-center py-2 border-b border-dark-700/30 last:border-0 text-sm cursor-pointer hover:bg-dark-750/50 rounded px-2 -mx-2 transition-colors"
-          >
-            <div className="flex items-center gap-2">
-              <ActionBadge action={trade.action} />
-              <span className="font-medium text-dark-100">{trade.ticker}</span>
-              {trade.is_growth_stock && <TagBadge color="purple">G</TagBadge>}
-            </div>
-            <div className="text-right">
-              <div className="font-data text-dark-200">
-                {trade.shares.toFixed(2)} @ {formatCurrency(trade.price)}
-              </div>
-              <div className="text-dark-400 text-[10px] truncate max-w-[150px]">{trade.reason}</div>
-            </div>
-            {trade.realized_gain != null && (
-              <span className={`ml-2 text-xs font-data ${trade.realized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {trade.realized_gain >= 0 ? '+' : ''}{formatCurrency(trade.realized_gain)}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
+      {/* No inner max-height: let the table grow to ~20 rows; outer page
+          scroll handles overflow. Removes scroll-in-scroll on mobile.
+          Row click still opens the TradeDetailModal below. */}
+      <DataTable
+        columns={RECENT_TRADE_COLUMNS}
+        data={trades.slice(0, 20)}
+        keyField="id"
+        compact
+        defaultSort="executed_at"
+        defaultSortDir="desc"
+        onRowClick={setSelectedTrade}
+        emptyMessage="No trades yet"
+      />
 
       {/* Trade Detail Modal */}
       <TradeDetailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />
@@ -1883,7 +1979,7 @@ function TradeHistory({ trades }) {
 // brand amber + deep copper, fills out with emerald/teal/rose/etc. to stay
 // readable against the warm-dark surface. Avoids cool blues/violets that
 // clashed with the rebrand.
-const SECTOR_COLORS = ['#f59e0b', '#b45309', '#10b981', '#fb923c', '#f43f5e',
+const SECTOR_COLORS = [chartColors.brand, '#b45309', '#10b981', '#fb923c', '#f43f5e',
   '#fbbf24', '#22d3ee', '#a855f7', '#22c55e', '#fde68a']
 
 function SectorAllocationChart({ riskData, cashPct }) {
@@ -1925,7 +2021,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
                 labelLine={false}
               >
                 {chartData.map((entry, i) => (
-                  <Cell key={i} fill={entry.name === 'Cash' ? '#6b5559' : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
+                  <Cell key={i} fill={entry.name === 'Cash' ? chartColors.muted : SECTOR_COLORS[i % SECTOR_COLORS.length]} />
                 ))}
               </Pie>
               <Tooltip
@@ -1939,7 +2035,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
           {chartData.map((entry, i) => (
             <div key={entry.name} className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: entry.name === 'Cash' ? '#6b5559' : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
+                style={{ backgroundColor: entry.name === 'Cash' ? chartColors.muted : SECTOR_COLORS[i % SECTOR_COLORS.length] }} />
               <span className="text-dark-300 truncate">{entry.name}</span>
               <span className="text-dark-400 ml-auto font-data">{entry.value.toFixed(0)}%</span>
             </div>

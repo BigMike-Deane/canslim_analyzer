@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
@@ -327,11 +327,24 @@ export default function Screener() {
 
   const totalPages = Math.ceil(total / pageSize)
 
+  // Page-level freshness stamp. /api/stocks has no as_of field, so derive it
+  // from the newest per-row last_updated in the current page of results.
+  // ISO-8601 strings with a uniform Z suffix compare correctly lexically.
+  const scoresAsOf = useMemo(() => {
+    let max = null
+    for (const s of stocks) {
+      if (s.last_updated && (!max || s.last_updated > max)) max = s.last_updated
+    }
+    return max
+  }, [stocks])
+
   return (
     <div className="p-4 md:p-6">
       <PageHeader
         title="Stock Screener"
-        subtitle={`${total} stocks found`}
+        subtitle={scoresAsOf
+          ? `${total} stocks found · Scores updated ${formatRelativeTime(scoresAsOf)}`
+          : `${total} stocks found`}
       />
 
       <FilterBar

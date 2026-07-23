@@ -4,9 +4,12 @@ import { getAdjacentTickers } from '../stockListContext'
 import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { api, formatScore, getScoreClass, getScoreLabel, getScoreHex, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
+import { chartAxis, chartColors } from '../components/chartTheme'
 import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Spinner from '../components/Spinner'
+import Modal from '../components/Modal'
+import CollapsibleSection from '../components/CollapsibleSection'
 import { useToast } from '../components/Toast'
 import PositionSizingCard from '../components/PositionSizingCard'
 import { computePositionSizing } from '../positionSizing'
@@ -567,7 +570,7 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
       <div className="text-dark-500 mb-1">{displayLabel}</div>
       <div className="flex items-center gap-3 mb-1">
         {/* Brand amber for score, pale gold for price — was red/gold pre-rebrand. */}
-        <span style={{ color: '#f59e0b' }}>Score: <b>{formatScore(d.total_score)}</b></span>
+        <span style={{ color: chartColors.brand }}>Score: <b>{formatScore(d.total_score)}</b></span>
         {d.price != null && <span style={{ color: '#fde68a' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
       </div>
       {topMover && (
@@ -713,13 +716,13 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             <defs>
               <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
                 {/* Brand amber gradient for the score area — was red #dc2626. */}
-                <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.18} />
-                <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+                <stop offset="0%" stopColor={chartColors.brand} stopOpacity={0.18} />
+                <stop offset="100%" stopColor={chartColors.brand} stopOpacity={0} />
               </linearGradient>
             </defs>
             <XAxis
               dataKey={xKey}
-              tick={{ fontSize: 10, fill: '#6b5559' }}
+              tick={{ fontSize: 10, fill: chartAxis.tick }}
               tickFormatter={d => {
                 if (!d) return ''
                 if (isPerScan) {
@@ -737,7 +740,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             <YAxis
               yAxisId="score"
               domain={[0, 100]}
-              tick={{ fontSize: 10, fill: '#f59e0b' }}
+              tick={{ fontSize: 10, fill: chartColors.brand }}
               axisLine={false}
               tickLine={false}
               width={28}
@@ -761,7 +764,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               yAxisId="score"
               type="monotone"
               dataKey="total_score"
-              stroke="#f59e0b"
+              stroke={chartColors.brand}
               strokeWidth={2}
               fill="url(#scoreGrad)"
               dot={false}
@@ -1036,6 +1039,258 @@ function TechnicalAnalysis({ stock }) {
   )
 }
 
+/* ─── Add-to-Portfolio Form (modal body) ───────────────────────────── */
+
+function AddPositionForm({ ticker, currentPrice, onClose }) {
+  const toast = useToast()
+  const [shares, setShares] = useState('')
+  // Prefill cost basis with the loaded price — most adds are "I just bought
+  // at market", and a prefilled field is one less mobile keyboard round-trip.
+  const [costBasis, setCostBasis] = useState(
+    currentPrice != null ? String(Number(currentPrice.toFixed(2))) : ''
+  )
+  const [errors, setErrors] = useState({})
+  const [submitting, setSubmitting] = useState(false)
+
+  const validate = () => {
+    const next = {}
+    const sharesNum = parseFloat(shares)
+    const costNum = parseFloat(costBasis)
+    if (!shares.trim() || !Number.isFinite(sharesNum) || sharesNum <= 0) {
+      next.shares = 'Enter a number of shares greater than 0'
+    }
+    if (!costBasis.trim() || !Number.isFinite(costNum) || costNum <= 0) {
+      next.costBasis = 'Enter a cost per share greater than 0'
+    }
+    setErrors(next)
+    return Object.keys(next).length === 0
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (submitting) return
+    if (!validate()) return
+    setSubmitting(true)
+    try {
+      await api.addPosition({
+        ticker,
+        shares: parseFloat(shares),
+        cost_basis: parseFloat(costBasis),
+      })
+      toast.success(`${ticker} added to portfolio`)
+      onClose()
+    } catch (err) {
+      toast.error(err.message || 'Failed to add to portfolio')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+      <div>
+        <label htmlFor="add-pos-shares" className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">
+          Shares
+        </label>
+        <input
+          id="add-pos-shares"
+          type="number"
+          inputMode="decimal"
+          step="any"
+          min="0"
+          value={shares}
+          onChange={(e) => {
+            setShares(e.target.value)
+            setErrors(prev => ({ ...prev, shares: null }))
+          }}
+          placeholder="10"
+          className="w-full mt-1"
+          autoFocus
+        />
+        {errors.shares && (
+          <p className="text-red-400 text-xs mt-1">{errors.shares}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="add-pos-cost" className="text-[10px] uppercase tracking-wider text-dark-400 font-semibold">
+          Cost Basis (per share)
+        </label>
+        <input
+          id="add-pos-cost"
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min="0"
+          value={costBasis}
+          onChange={(e) => {
+            setCostBasis(e.target.value)
+            setErrors(prev => ({ ...prev, costBasis: null }))
+          }}
+          placeholder="25.00"
+          className="w-full mt-1"
+        />
+        {errors.costBasis && (
+          <p className="text-red-400 text-xs mt-1">{errors.costBasis}</p>
+        )}
+        {currentPrice != null && (
+          <p className="text-dark-500 text-[11px] mt-1">
+            Current price: {formatCurrency(currentPrice)}
+          </p>
+        )}
+      </div>
+
+      <button type="submit" disabled={submitting} className="w-full btn-primary disabled:opacity-50">
+        {submitting ? (
+          <span className="inline-flex items-center gap-2"><Spinner size="xs" inline />Adding…</span>
+        ) : (
+          `Add ${ticker} to Portfolio`
+        )}
+      </button>
+    </form>
+  )
+}
+
+/* ─── Fundamental Audit (AI buy-gate view) ─────────────────────────── */
+
+function FundamentalAudit({ audit }) {
+  // No audit for this ticker (404 / fetch failure) → render nothing.
+  if (!audit) return null
+
+  const pnlColor = (v) =>
+    v == null ? 'text-dark-300' : v >= 0 ? 'text-emerald-400' : 'text-red-400'
+  const fmtPct = (v) => (v != null ? `${v >= 0 ? '+' : ''}${v.toFixed(1)}%` : '-')
+
+  const confidence = audit.fundamental_confidence
+  const confidenceColor =
+    confidence == null ? 'text-dark-300' :
+    confidence >= 70 ? 'text-emerald-400' :
+    confidence >= 50 ? 'text-amber-400' : 'text-red-400'
+
+  // confidence_breakdown is a JSON column — defensively handle dict vs string.
+  const breakdown = audit.confidence_breakdown
+  const breakdownEntries =
+    breakdown && typeof breakdown === 'object' && !Array.isArray(breakdown)
+      ? Object.entries(breakdown)
+      : null
+
+  return (
+    <Card as="section" aria-labelledby="sd-audit-heading" variant="glass" className="mb-4">
+      <CollapsibleSection
+        title="Fundamental Audit"
+        titleId="sd-audit-heading"
+        defaultOpen={false}
+        badge={
+          confidence != null && (
+            <span className={`text-xs font-data font-semibold ${confidenceColor}`}>
+              {confidence.toFixed(0)} confidence
+            </span>
+          )
+        }
+      >
+        <p className="text-dark-500 text-xs mb-3">
+          What the AI's buy gate sees for {audit.ticker} — fundamentals, analyst targets,
+          earnings track record, and estimate revisions.
+        </p>
+
+        {/* Balance-sheet / quality stats */}
+        <StatGrid
+          columns={4}
+          className="mb-4"
+          stats={[
+            {
+              label: 'ROE',
+              value: audit.roe != null ? `${audit.roe.toFixed(1)}%` : '-',
+              color: audit.roe == null ? undefined : audit.roe >= 17 ? 'text-emerald-400' : audit.roe >= 10 ? 'text-amber-400' : 'text-red-400',
+            },
+            {
+              label: 'Debt / Equity',
+              value: audit.debt_to_equity != null ? audit.debt_to_equity.toFixed(2) : '-',
+            },
+            {
+              label: 'FCF / Share',
+              value: audit.free_cash_flow_per_share != null ? formatCurrency(audit.free_cash_flow_per_share) : '-',
+              color: audit.free_cash_flow_per_share == null ? undefined : pnlColor(audit.free_cash_flow_per_share),
+            },
+            {
+              label: 'Current Ratio',
+              value: audit.current_ratio != null ? audit.current_ratio.toFixed(2) : '-',
+            },
+          ]}
+        />
+
+        {/* Analyst targets */}
+        <SectionLabel>Analyst Targets</SectionLabel>
+        <StatGrid
+          columns={4}
+          className="mb-4"
+          stats={[
+            { label: 'Low', value: audit.analyst_low_target != null ? formatCurrency(audit.analyst_low_target) : '-' },
+            { label: 'Average', value: audit.analyst_avg_target != null ? formatCurrency(audit.analyst_avg_target) : '-' },
+            { label: 'High', value: audit.analyst_high_target != null ? formatCurrency(audit.analyst_high_target) : '-' },
+            {
+              label: 'Upside',
+              value: fmtPct(audit.analyst_upside_pct),
+              sublabel: audit.analyst_num ? `${audit.analyst_num} analyst${audit.analyst_num === 1 ? '' : 's'}` : undefined,
+              color: pnlColor(audit.analyst_upside_pct),
+            },
+          ]}
+        />
+
+        {/* Earnings track record + revisions */}
+        <SectionLabel>Earnings &amp; Revisions</SectionLabel>
+        <StatGrid
+          columns={3}
+          className="mb-1"
+          stats={[
+            {
+              label: 'Beat Streak',
+              value: audit.beat_streak != null ? `${audit.beat_streak}Q` : '-',
+              color: (audit.beat_streak || 0) >= 4 ? 'text-emerald-400' : undefined,
+            },
+            { label: 'Avg Beat', value: fmtPct(audit.avg_beat_magnitude), color: pnlColor(audit.avg_beat_magnitude) },
+            { label: 'Last Beat', value: fmtPct(audit.last_beat_pct), color: pnlColor(audit.last_beat_pct) },
+            { label: 'EPS Revision', value: fmtPct(audit.eps_revision_pct), color: pnlColor(audit.eps_revision_pct) },
+            { label: 'Rev Revision', value: fmtPct(audit.revenue_revision_pct), color: pnlColor(audit.revenue_revision_pct) },
+            {
+              label: 'Insider Cluster Buys',
+              value: audit.insider_cluster_buys ?? '-',
+              color: (audit.insider_cluster_buys || 0) > 0 ? 'text-emerald-400' : undefined,
+            },
+          ]}
+        />
+
+        {/* Confidence breakdown */}
+        {(breakdownEntries?.length || typeof breakdown === 'string') && (
+          <div className="mt-3 pt-3 border-t border-dark-700/50">
+            <SectionLabel>Confidence Breakdown</SectionLabel>
+            {breakdownEntries ? (
+              <div className="space-y-0.5">
+                {breakdownEntries.map(([k, v]) => (
+                  <StatRow
+                    key={k}
+                    label={k.replace(/_/g, ' ')}
+                    value={typeof v === 'number' ? v.toFixed(1) : String(v)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-dark-400 text-xs">{breakdown}</p>
+            )}
+          </div>
+        )}
+
+        {audit.audited_at && (
+          <div className="text-dark-500 text-[10px] mt-3">
+            Audited {formatDateTime(audit.audited_at)}
+            {audit.price_at_audit != null ? ` · price ${formatCurrency(audit.price_at_audit)}` : ''}
+          </div>
+        )}
+      </CollapsibleSection>
+    </Card>
+  )
+}
+
 /* ─── Main Page Component ──────────────────────────────────────────── */
 
 export default function StockDetail() {
@@ -1051,6 +1306,11 @@ export default function StockDetail() {
   // Lightweight piggyback fetch — same endpoint AIPortfolio.jsx uses, so
   // it'll hit the api.js 120s cache on the second view of this page.
   const [aiPortfolio, setAiPortfolio] = useState(null)
+  // Add-to-Portfolio modal (replaces the old chained window.prompt() flow).
+  const [showAddPositionModal, setShowAddPositionModal] = useState(false)
+  // Latest earnings audit for this ticker — best-effort; null (404 or any
+  // failure) hides the Fundamental Audit section entirely.
+  const [audit, setAudit] = useState(null)
 
   // Adjacent tickers from the list page the user came from (Screener,
   // Watchlist, Breakouts). null source = no context (direct URL, etc.),
@@ -1088,6 +1348,19 @@ export default function StockDetail() {
       .catch(() => setAiPortfolio(null))
   }, [])
 
+  // Fetch the fundamental audit best-effort. Keyed on ticker (this page is
+  // reused across tickers via prev/next nav) and cleared first so a slow
+  // response never shows the previous ticker's audit. Many tickers have no
+  // audit — the 404 lands in .catch and the section stays hidden.
+  useEffect(() => {
+    let cancelled = false
+    setAudit(null)
+    api.getEarningsAudit(ticker)
+      .then(data => { if (!cancelled) setAudit(data) })
+      .catch(() => null)
+    return () => { cancelled = true }
+  }, [ticker])
+
   // Scroll to top when the ticker changes — without this, clicking the
   // prev/next nav from the page header leaves the viewport at the bottom
   // of the previous page (same component, same route pattern, so React
@@ -1103,6 +1376,7 @@ export default function StockDetail() {
       await fetchStock(scoreResolution)
     } catch (err) {
       console.error('Failed to refresh:', err)
+      toast.error(err.message || 'Failed to refresh analysis')
     } finally {
       setRefreshing(false)
     }
@@ -1117,22 +1391,7 @@ export default function StockDetail() {
     }
   }
 
-  const handleAddToPortfolio = async () => {
-    const shares = prompt('Number of shares:')
-    const costBasis = prompt('Cost per share:')
-    if (shares && costBasis) {
-      try {
-        await api.addPosition({
-          ticker,
-          shares: parseFloat(shares),
-          cost_basis: parseFloat(costBasis)
-        })
-        toast.success(`${ticker} added to portfolio`)
-      } catch (err) {
-        toast.error(err.message || 'Failed to add to portfolio')
-      }
-    }
-  }
+  const handleAddToPortfolio = () => setShowAddPositionModal(true)
 
   if (loading) {
     return (
@@ -1296,6 +1555,8 @@ export default function StockDetail() {
 
       <InsiderShortSection stock={stock} />
 
+      <FundamentalAudit audit={audit} />
+
       <CANSLIMDetail stock={stock} />
 
       <ScoreHistory
@@ -1333,6 +1594,19 @@ export default function StockDetail() {
           Last updated: {stock.last_updated ? formatDateTime(stock.last_updated) : 'Never'}
         </div>
       </section>
+
+      <Modal
+        open={showAddPositionModal}
+        onClose={() => setShowAddPositionModal(false)}
+        title={`Add ${ticker} to Portfolio`}
+        size="sm"
+      >
+        <AddPositionForm
+          ticker={ticker}
+          currentPrice={stock.current_price}
+          onClose={() => setShowAddPositionModal(false)}
+        />
+      </Modal>
 
       <div className="h-4" />
     </div>
