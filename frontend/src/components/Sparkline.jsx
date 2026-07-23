@@ -66,33 +66,3 @@ export default function Sparkline({
     </svg>
   )
 }
-
-export function SparklineBar({ data, width = 80, height = 24, className = '' }) {
-  if (!data || data.length === 0) return null
-
-  const values = data.map(d => typeof d === 'number' ? d : d?.value ?? 0)
-  const max = Math.max(...values.map(Math.abs)) || 1
-  const barWidth = width / values.length - 1
-
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className={className}>
-      {values.map((v, i) => {
-        const barH = (Math.abs(v) / max) * (height - 2)
-        const x = i * (width / values.length) + 0.5
-        const color = v >= 0 ? '#10b981' : '#ef4444'
-        return (
-          <rect
-            key={i}
-            x={x}
-            y={height - barH - 1}
-            width={Math.max(barWidth, 2)}
-            height={barH}
-            fill={color}
-            opacity={0.8}
-            rx={1}
-          />
-        )
-      })}
-    </svg>
-  )
-}

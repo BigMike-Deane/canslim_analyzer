@@ -110,10 +110,6 @@ select {
   @apply bg-dark-700 hover:bg-dark-600 text-dark-200 font-medium px-4 py-2 rounded-lg transition-all duration-200 border border-dark-600 text-sm;
 }
 
-.btn-ghost {
-  @apply text-dark-300 hover:text-dark-100 hover:bg-dark-700/50 px-3 py-1.5 rounded-lg transition-all duration-200 text-sm;
-}
-
 /* ─── Monospace Data ─── */
 .font-data {
   font-family: 'JetBrains Mono', monospace;
@@ -131,7 +127,7 @@ select {
 .stagger-8 { animation-delay: 0.40s; }
 
 /* ─── Glow Effects ─── */
-/* Kept green/red glow for P&L semantics; renamed cyan glow → brand. */
+/* Kept green/red glow for P&L semantics. */
 .glow-green {
   text-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
 }
@@ -140,37 +136,9 @@ select {
   text-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
 }
 
-.glow-cyan {
-  /* Backwards-compat alias — now glows brand amber (rgb 245,158,11). */
-  text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
-}
-
-.glow-brand {
-  text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
-}
-
-/* ─── Accent Lines ─── */
-.accent-line-left {
-  @apply border-l-2 border-primary-500/40 pl-3;
-}
-
-.accent-line-top {
-  position: relative;
-}
-
-.accent-line-top::before {
-  content: '';
-  @apply absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-transparent via-primary-500/30 to-transparent;
-}
-
 /* ─── Safe Area Padding ─── */
 .pb-safe {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
-}
-
-/* ─── Table Styles ─── */
-.table-row-alt:nth-child(even) {
-  @apply bg-dark-800/30;
 }
 
 /* ─── Recharts Overrides ─── */
@@ -195,10 +163,4 @@ select {
 .recharts-tooltip-item {
   font-family: 'JetBrains Mono', monospace !important;
   font-size: 12px !important;
-}
-
-/* ─── Transition Utilities ─── */
-.transition-height {
-  transition: max-height 0.3s ease, opacity 0.3s ease;
-  overflow: hidden;
 }
