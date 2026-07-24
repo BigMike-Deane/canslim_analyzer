@@ -1216,6 +1216,49 @@ strategy_profiles:
       min_confidence: 0.0
       veto_action: "skip"
 
+  # Exit-lab candidate (2026-07-24): champion clone with trailing bands
+  # widened x1.5. Counterfactual replay over 151 backtest episodes (W1-W4
+  # 2018-2026) + 62 live episodes ranked x1.5 bands +8.2pp/episode pooled
+  # (paired bootstrap, significant), positive-or-neutral in every regime
+  # window incl. 2020-22 bear. Live shadow A/B is the promotion gate;
+  # replay has no capital recycling so the edge must reconfirm here.
+  # Pre-registered criteria: paired vs shadow_baseline across >=1 full
+  # mixed-regime cycle (trend AND chop weeks), >=15 completed exits, no
+  # early promotion. Backtest A/B runs 917-920 are the recycling-aware
+  # cross-check. See exit_lab.py module docs.
+  nostate_wide_trail:
+    hidden: true
+    label: "NoState Wide Trail (shadow)"
+    description: "nostate_cs_bear + trailing bands x1.5 (exit-lab jul-24 live shadow A/B)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 37.5, gain_30_to_50: 27, gain_20_to_30: 18, gain_10_to_20: 9, gain_5_to_10: 6 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Experimental: same as nostate_optimized but with earnings_avoidance_days=3
   # (default 5). Drives the avoidance-gate-too-conservative test from the
   # canslim-livescan-churn-investigation loose threads. The C→B path on
@@ -1789,4 +1832,12 @@ shadow_strategy_profiles:
     parent_strategy: nostate_chop_damper
     starting_value: 25000
     description: "Champion + chop damper (half-size buys while SPY hugs its 50MA) — live A/B for the Jul-22 regime-attribution chop bleed"
+    scorer_overrides: {}
+  # Exit-lab wide-trail A/B (2026-07-24): cs_bear clone with trailing bands
+  # x1.5. Promotion criteria pre-registered on the nostate_wide_trail profile
+  # comment — paired vs shadow_baseline, >=15 exits, mixed-regime, no early call.
+  shadow_wide_trail:
+    parent_strategy: nostate_wide_trail
+    starting_value: 25000
+    description: "cs_bear + trailing bands x1.5 — exit-lab jul-24 candidate (replay +8.2pp/episode pooled across 2018-2026 windows; shadow A/B is the promotion gate)"
     scorer_overrides: {}
