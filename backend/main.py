@@ -1923,6 +1923,15 @@ async def get_stock(
         "short_ratio": stock.short_ratio,
         "short_updated_at": (stock.short_updated_at.isoformat() + "Z") if stock.short_updated_at else None,
 
+        # Relative strength / estimate revisions / group leadership — scanner
+        # populates these Stock columns but they were never surfaced (Jul-23
+        # UI audit residual). rs_* are ratios vs SPY (1.0 = market-neutral).
+        "rs_3m": stock.rs_3m,
+        "rs_12m": stock.rs_12m,
+        "eps_estimate_revision_pct": stock.eps_estimate_revision_pct,
+        "industry_group_rank": stock.industry_group_rank,
+        "volume_dry_up_score": stock.volume_dry_up_score,
+
         # Analyst consensus (from StockDataCache L2 cache; upside is computed
         # vs current price, null-safe when there's no coverage)
         "analyst_target_price": analyst_target_price,
@@ -5812,12 +5821,18 @@ async def get_exit_quality_analysis(
     if not sells:
         return {"trades": [], "summary": {}, "alt_configs": []}
 
-    # Alternative trailing stop configs to compare
+    # Alternative trailing stop configs to compare. Same-peak approximation:
+    # each trailing exit is re-priced as if the band were scaled but the peak
+    # unchanged. That makes tighter rows OPTIMISTIC upper bounds (a tighter
+    # band may really have fired on an earlier dip, before the peak existed)
+    # and wider rows PESSIMISTIC floors (a wider band's real benefit — peaks
+    # growing later — is invisible to trade-log data). Bias is stamped per
+    # row; path-accurate replay lives in Exit Lab (scripts/run_exit_lab.py).
     alt_configs = [
-        {"label": "Tighter (80%)", "multiplier": 0.80},
-        {"label": "Current", "multiplier": 1.0},
-        {"label": "Wider (120%)", "multiplier": 1.20},
-        {"label": "Much Wider (150%)", "multiplier": 1.50},
+        {"label": "Tighter (80%)", "multiplier": 0.80, "bias": "upper_bound"},
+        {"label": "Current", "multiplier": 1.0, "bias": "actual"},
+        {"label": "Wider (120%)", "multiplier": 1.20, "bias": "lower_bound"},
+        {"label": "Much Wider (150%)", "multiplier": 1.50, "bias": "lower_bound"},
     ]
 
     trade_analyses = []
@@ -5843,6 +5858,8 @@ async def get_exit_quality_analysis(
             "actual_pnl": round(actual_pnl, 2),
             "shares": t.shares,
             "cost_basis": round(cost_per_share, 2),
+            "drop_from_peak": round(drop_from_peak, 1),
+            "price": t.price,
         })
 
     # Aggregate stats
@@ -5865,9 +5882,43 @@ async def get_exit_quality_analysis(
         "avg_exit_gain": round(sum(t["gain_pct"] for t in trade_analyses) / max(1, len(trade_analyses)), 1),
     }
 
+    # What-if per config, over trailing-family exits only (they're the trades
+    # the band actually governed; hard stops / take-profits have their own
+    # levers). Requires a real drop_from_peak stamp — trades without one are
+    # excluded from the what-if but still counted in the summary above.
+    whatif_trades = [
+        t for t in trade_analyses
+        if "TRAILING" in (t["sell_reason"] or "").upper() and t["drop_from_peak"] > 0
+    ]
+    actual_trailing_pnl = sum(t["actual_pnl"] for t in whatif_trades)
+    for cfg in alt_configs:
+        delta_total = 0.0
+        for t in whatif_trades:
+            dfp = t["drop_from_peak"]
+            denom = 1 - dfp / 100.0
+            if denom <= 0:
+                continue
+            # Exit re-priced from the SAME peak, derived exactly from the
+            # actual exit price: exit' = exit × (1 − m·drop)/(1 − drop).
+            # Multiplier 1.0 gives ratio 1 → delta 0 by construction.
+            scaled_drop = min(cfg["multiplier"] * dfp, 100.0)
+            ratio = (1 - scaled_drop / 100.0) / denom
+            delta_total += (t["shares"] or 0) * (t["price"] or 0) * (ratio - 1)
+        cfg["trades"] = len(whatif_trades)
+        cfg["delta_vs_current"] = round(delta_total, 2)
+        cfg["est_trailing_pnl"] = round(actual_trailing_pnl + delta_total, 2)
+
     return {
         "trades": trade_analyses[:50],  # Last 50
         "summary": summary,
+        "alt_configs": alt_configs,
+        "alt_configs_note": (
+            "Same-peak approximation over trailing-family exits only. Tighter rows are "
+            "optimistic upper bounds (assumes the position still reached the same peak); "
+            "wider rows are pessimistic floors (peaks growing later is invisible to "
+            "trade-log data). Path-accurate replay (Exit Lab, Jul-24) ranked wider bands "
+            "+2.9pp/episode — treat it as the authority."
+        ),
     }
 
 

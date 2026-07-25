@@ -221,6 +221,47 @@ export default function PortfolioDetailView() {
             </Card>
           </div>
 
+          {exitQuality.alt_configs?.length > 0 && exitQuality.alt_configs.some(c => c.trades > 0) && (
+            <Card>
+              <CardHeader title="Stop-Width What-If (trailing exits)" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-dark-400 text-xs border-b border-dark-700">
+                      <th className="text-left py-2 font-medium">Config</th>
+                      <th className="text-right py-2 font-medium">Est. Trailing P&L</th>
+                      <th className="text-right py-2 font-medium">vs Current</th>
+                      <th className="text-right py-2 font-medium">Estimate Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exitQuality.alt_configs.map((c, i) => (
+                      <tr key={i} className={`border-b border-dark-700/50 ${c.bias === 'actual' ? 'bg-dark-800/50' : ''}`}>
+                        <td className="py-1.5 text-dark-200 font-medium">{c.label}</td>
+                        <td className="py-1.5 text-right"><PnlText value={c.est_trailing_pnl} prefix="$" /></td>
+                        <td className="py-1.5 text-right">
+                          {c.bias === 'actual' ? <span className="text-dark-500">—</span> : <PnlText value={c.delta_vs_current} prefix="$" />}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            c.bias === 'actual' ? 'bg-dark-700 text-dark-300'
+                              : c.bias === 'upper_bound' ? 'bg-yellow-900/40 text-yellow-400'
+                              : 'bg-blue-900/40 text-blue-400'
+                          }`}>
+                            {c.bias === 'actual' ? 'actual' : c.bias === 'upper_bound' ? 'optimistic ceiling' : 'pessimistic floor'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {exitQuality.alt_configs_note && (
+                <p className="text-xs text-dark-500 mt-2">{exitQuality.alt_configs_note}</p>
+              )}
+            </Card>
+          )}
+
           <Card>
             <CardHeader title="Recent Exits" />
             <div className="overflow-x-auto">

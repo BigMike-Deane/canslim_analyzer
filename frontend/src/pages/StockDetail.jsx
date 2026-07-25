@@ -826,8 +826,15 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
 function InsiderShortSection({ stock }) {
   const hasInsider = stock.insider_sentiment || stock.insider_buy_count > 0 || stock.insider_sell_count > 0
   const hasShort = stock.short_interest_pct != null
+  const hasStrength = stock.rs_3m != null || stock.rs_12m != null
+    || stock.eps_estimate_revision_pct != null || stock.industry_group_rank != null
 
-  if (!hasInsider && !hasShort) return null
+  if (!hasInsider && !hasShort && !hasStrength) return null
+
+  // rs_* are return ratios vs SPY ((1+stock)/(1+spy), capped 3.0): 1.0 = market-neutral
+  const rsColor = (rs) => rs >= 1.05 ? 'text-emerald-400' : rs <= 0.95 ? 'text-red-400' : 'text-dark-300'
+  const rsLabel = (rs) => rs == null ? '-' : `${rs.toFixed(2)}x SPY`
+  const groupRankColor = (r) => r >= 80 ? 'text-emerald-400' : r >= 50 ? 'text-amber-400' : 'text-red-400'
 
   const getSentimentColor = (sentiment) => {
     if (sentiment === 'bullish') return 'green'
@@ -887,6 +894,40 @@ function InsiderShortSection({ stock }) {
           </>
         )}
       </div>
+
+      {hasStrength && (
+        <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 ${(hasInsider || hasShort) ? 'mt-3 pt-3 border-t border-dark-700/50' : ''}`}>
+          <div>
+            <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Rel Strength 3M</div>
+            <span className={`font-data text-sm font-semibold ${rsColor(stock.rs_3m)}`}>
+              {rsLabel(stock.rs_3m)}
+            </span>
+          </div>
+          <div>
+            <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Rel Strength 12M</div>
+            <span className={`font-data text-sm font-semibold ${rsColor(stock.rs_12m)}`}>
+              {rsLabel(stock.rs_12m)}
+            </span>
+          </div>
+          <div>
+            <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Est. Revisions</div>
+            <span className={`font-data text-sm font-semibold ${
+              stock.eps_estimate_revision_pct > 0 ? 'text-emerald-400'
+                : stock.eps_estimate_revision_pct < 0 ? 'text-red-400' : 'text-dark-300'
+            }`}>
+              {stock.eps_estimate_revision_pct != null
+                ? `${stock.eps_estimate_revision_pct > 0 ? '+' : ''}${stock.eps_estimate_revision_pct.toFixed(1)}%`
+                : '-'}
+            </span>
+          </div>
+          <div>
+            <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Group Rank</div>
+            <span className={`font-data text-sm font-semibold ${stock.industry_group_rank != null ? groupRankColor(stock.industry_group_rank) : 'text-dark-400'}`}>
+              {stock.industry_group_rank != null ? `${stock.industry_group_rank} / 100` : '-'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Warning for high short interest */}
       {stock.short_interest_pct >= 20 && (

@@ -20,6 +20,7 @@ const navGroups = [
     items: [
       { to: '/screener', icon: 'filter', label: 'Screener' },
       { to: '/breakouts', icon: 'trending', label: 'Breakouts' },
+      { to: '/gapups', icon: 'trending', label: 'Earnings Gap-Ups' },
       { to: '/coiled-spring/history', icon: 'zap', label: 'Coiled Spring' },
       { to: '/bear-base', icon: 'shield', label: 'Bear Bases' },
     ],

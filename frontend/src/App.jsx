@@ -24,6 +24,7 @@ const CoiledSpringHistory = lazy(() => import('./pages/CoiledSpringHistory'))
 const FidelitySync = lazy(() => import('./pages/FidelitySync'))
 const Admin = lazy(() => import('./pages/Admin'))
 const BearBase = lazy(() => import('./pages/BearBase'))
+const EarningsGapups = lazy(() => import('./pages/EarningsGapups'))
 const CorrelationMatrix = lazy(() => import('./pages/CorrelationMatrix'))
 const SystemHealth = lazy(() => import('./pages/SystemHealth'))
 const ABEval = lazy(() => import('./pages/ABEval'))
@@ -82,6 +83,7 @@ function AppContent() {
             <Route path="/fidelity" element={<FidelitySync />} />
             <Route path="/trade-journal" element={<Navigate to="/analytics" replace />} />
             <Route path="/bear-base" element={<BearBase />} />
+            <Route path="/gapups" element={<EarningsGapups />} />
             <Route path="/correlation" element={<CorrelationMatrix />} />
             <Route path="/portfolio-summary" element={<Navigate to="/ai-portfolio" replace />} />
             <Route path="/system-health" element={<SystemHealth />} />

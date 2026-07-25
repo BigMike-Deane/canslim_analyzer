@@ -633,6 +633,7 @@ export const api = {
 
   // Bear Base Watchlist
   getBearBaseCandidates: (limit = 50) => request(`/api/bear-base?limit=${limit}`),
+  getEarningsGapups: (days = 7, minGapPct = 5) => request(`/api/earnings-gapups?days=${days}&min_gap_pct=${minGapPct}`),
 
   // Trade Journal
   getTradeJournal: (days = 90, ticker = '', action = '', includeVetoed = false) => {

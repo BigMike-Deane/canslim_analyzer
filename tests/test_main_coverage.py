@@ -2501,6 +2501,42 @@ class TestExitQualityAnalytics:
         # gain_pct default = 0 because signal_factors was None
         assert nofac_rows[0]["gain_pct"] == 0.0
 
+    def test_alt_configs_whatif_payload(self):
+        """alt_configs rows: same-peak what-if over trailing exits only.
+
+        Current row is delta 0 by construction; tighter multiplier raises
+        the counterfactual exit price (positive delta), wider lowers it
+        (negative delta) — the bias field labels these as ceiling/floor."""
+        _ensure_sell_trade("ALTQ1", reason="TRAILING STOP",
+                           shares=10.0, price=120.0, cost_basis=100.0,
+                           realized_gain=200.0,
+                           signal_factors={"gain_pct": 20.0, "drop_from_peak": 10.0,
+                                           "sell_reason": "TRAILING STOP"})
+        r = client.get("/api/analytics/exit-quality")
+        assert r.status_code == 200
+        d = r.json()
+        cfgs = d["alt_configs"]
+        assert [c["label"] for c in cfgs] == [
+            "Tighter (80%)", "Current", "Wider (120%)", "Much Wider (150%)"]
+        by_label = {c["label"]: c for c in cfgs}
+        current = by_label["Current"]
+        assert current["bias"] == "actual"
+        assert current["delta_vs_current"] == 0
+        assert current["trades"] >= 1
+        # Same peak ⇒ tighter band exits higher, wider band exits lower.
+        assert by_label["Tighter (80%)"]["delta_vs_current"] > 0
+        assert by_label["Tighter (80%)"]["bias"] == "upper_bound"
+        assert by_label["Wider (120%)"]["delta_vs_current"] < 0
+        assert by_label["Much Wider (150%)"]["delta_vs_current"] < \
+            by_label["Wider (120%)"]["delta_vs_current"]
+        assert by_label["Wider (120%)"]["bias"] == "lower_bound"
+        assert "alt_configs_note" in d and "Exit Lab" in d["alt_configs_note"]
+        # est_trailing_pnl is anchored on ACTUAL trailing pnl + delta
+        assert current["est_trailing_pnl"] == pytest.approx(
+            sum(t["actual_pnl"] for t in d["trades"]
+                if "TRAILING" in (t["sell_reason"] or "").upper()
+                and t["drop_from_peak"] > 0), abs=0.05)
+
 
 # ────────────────────────────────────────────────────────────────────
 # Tier 3: /api/portfolio-summary — read-only AI portfolio aggregation
