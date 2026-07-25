@@ -1819,6 +1819,34 @@ class ShadowTrade(Base):
     )
 
 
+class ShadowPositionPeak(Base):
+    """Persisted peak-price state for open shadow positions.
+
+    The FIFO rebuild in shadow_trader derives positions from the trade log
+    alone, so peaks collapsed to max(cost_basis, current_price) every tick —
+    above water drop-from-peak was ~0, underwater peak_gain was 0 (below the
+    lowest trailing tier), so shadow trailing stops could NEVER fire
+    (verified live 2026-07-25: zero trailing exits in 2.5 months of shadow
+    history vs ~20 on the lead book). This table ratchets the peak forward
+    across ticks, keyed by position generation (strategy, ticker, opened_at).
+    Rows are deleted when the position fully closes.
+    """
+    __tablename__ = "shadow_position_peaks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shadow_strategy_id = Column(Integer, ForeignKey("shadow_strategies.id"), nullable=False, index=True)
+    ticker = Column(String, nullable=False)
+    opened_at = Column(DateTime, nullable=False)
+    peak_price = Column(Float, nullable=False)
+    peak_date = Column(DateTime)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index('ix_shadow_peaks_strategy_ticker', 'shadow_strategy_id', 'ticker'),
+    )
+
+
 # ── SystemState helpers ───────────────────────────────────────────────────────
 # Tiny accessors that hide the ORM boilerplate at every call site. The
 # SPY-flip detector (ai_trader) uses the two-call pattern (read previous,

@@ -59,11 +59,15 @@ from backend.shadow_trader import (
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
+from backend.database import ShadowPositionPeak
+
+
 @pytest.fixture
 def db_session():
     init_db()
     db = SessionLocal()
     # Clean shadow tables — they accumulate across tests if not cleared.
+    db.query(ShadowPositionPeak).delete()
     db.query(ShadowTrade).delete()
     db.query(ShadowStrategy).delete()
     db.query(AIPortfolioTrade).delete()
@@ -74,6 +78,7 @@ def db_session():
     try:
         yield db
     finally:
+        db.query(ShadowPositionPeak).delete()
         db.query(ShadowTrade).delete()
         db.query(ShadowStrategy).delete()
         db.query(AIPortfolioTrade).delete()

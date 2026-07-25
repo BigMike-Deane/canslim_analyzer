@@ -36,10 +36,12 @@ Side-effect containment:
     which we do not call — shadow_trader writes ShadowTrade directly).
 
 Limitations (v1):
-  - peak_price is approximated as max(cost_basis, current_price) when re-deriving
-    positions — the trade log alone cannot reconstruct intraday peaks. Trailing-stop
-    decisions for shadow may diverge slightly from live until shadow accumulates
-    a few weeks of forward state. Acceptable for forward-only telemetry.
+  - peak_price: the FIFO rebuild alone collapses peak to max(cost_basis,
+    current_price), under which trailing stops can NEVER fire (above water
+    drop-from-peak ~0; underwater peak_gain 0 → below the lowest tier).
+    FIXED 2026-07-25 via ShadowPositionPeak: peaks are ratcheted forward
+    across ticks and initialized from daily highs on first sight — see
+    _apply_persisted_peaks / _persist_peaks.
   - Pyramid (action="PYRAMID") is not yet emitted by shadow — pyramids are evaluated
     in run_ai_trading_cycle's outer loop, not in evaluate_buys. Step 3+ will mirror
     pyramid evaluation.
@@ -53,7 +55,8 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+import threading
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Iterable, List, Optional
 
@@ -65,11 +68,42 @@ from backend.database import (
     AIPortfolioSnapshot,
     AIPortfolioTrade,
     SessionLocal,
+    ShadowPositionPeak,
     ShadowStrategy,
     ShadowTrade,
 )
 
 logger = logging.getLogger(__name__)
+
+# Serializes shadow runs: the scan-tick run_shadow_strategies and the 15-min
+# intraday stop pass both derive positions from the ShadowTrade log and write
+# back to it. Concurrent runs could each derive the same open position and
+# emit duplicate SELLs (over-selling the FIFO book). Scan path acquires
+# blocking (it must never skip); the intraday pass acquires non-blocking and
+# skips the tick if a scan run is mid-flight.
+_shadow_run_lock = threading.Lock()
+
+
+def _as_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    """Normalize aware/naive datetimes for comparison. ShadowTrade.executed_at
+    is written tz-aware but reads back naive from a `timestamp` column, so
+    generation matching must not trust tzinfo equality."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _same_generation(a: Optional[datetime], b: Optional[datetime],
+                     tolerance_seconds: float = 5.0) -> bool:
+    """True when two opened_at stamps identify the same position generation.
+    Tolerance absorbs micro drift between in-memory and round-tripped stamps."""
+    a = _as_utc_naive(a)
+    b = _as_utc_naive(b)
+    if a is None or b is None:
+        return False
+    return abs((a - b).total_seconds()) <= tolerance_seconds
 
 
 # Sentinel user_id passed through to evaluate_buys/sells. Synthetic state is
@@ -257,6 +291,7 @@ class ShadowSession:
         self._shadow_trade_view: List[ShadowTrade] = []
         self._pending_shadow_trades: List[ShadowTrade] = []
         self._derive_synthetic_positions()
+        self._apply_persisted_peaks()
 
     # ── Initialisation helpers ───────────────────────────────────────────────
 
@@ -395,6 +430,71 @@ class ShadowSession:
                 user_id=SHADOW_USER_ID,
             )
             self._synthetic_positions.append(position)
+
+    def _apply_persisted_peaks(self):
+        """Overlay ratcheted peaks (ShadowPositionPeak) onto FIFO-derived
+        positions. The trade log alone collapses peak to max(cost, current) —
+        drop-from-peak ~0 above water, peak_gain 0 underwater — so trailing
+        stops could never fire without this. First sight of a position (no
+        row, or a stale row from a prior generation of the same ticker)
+        initializes the peak from daily highs since entry, mirroring live
+        update_position_prices' peak init.
+        """
+        try:
+            rows = self._db.query(ShadowPositionPeak).filter(
+                ShadowPositionPeak.shadow_strategy_id == self.shadow_strategy.id
+            ).all()
+        except Exception as e:
+            logger.warning(
+                f"shadow[{self.shadow_strategy.name}]: peak overlay query failed: {e}")
+            rows = []
+        by_ticker = {r.ticker: r for r in rows}
+        for pos in self._synthetic_positions:
+            row = by_ticker.get(pos.ticker)
+            if row is not None and _same_generation(row.opened_at, pos.purchase_date):
+                if (row.peak_price or 0) > (pos.peak_price or 0):
+                    pos.peak_price = row.peak_price
+                    pos.peak_date = row.peak_date or pos.peak_date
+            else:
+                self._init_peak_from_history(pos)
+
+    def _init_peak_from_history(self, pos: "_SyntheticPosition"):
+        """Backfill a first-seen position's peak from daily highs since entry.
+        Runs once per position lifetime — the tick's peak persistence writes a
+        row, so subsequent derivations take the overlay path. Best-effort: on
+        any failure the max(cost, current) approximation stands and the ratchet
+        still starts forward from this tick.
+        """
+        try:
+            pd_date = pos.purchase_date.date() if hasattr(pos.purchase_date, "date") else None
+            if pd_date is not None and pd_date >= date.today():
+                return  # opened today — no prior days to backfill
+        except Exception:
+            pass
+        try:
+            from backend.historical_data import HistoricalDataProvider
+        except Exception:
+            return
+        try:
+            start = pos.purchase_date.date() if hasattr(pos.purchase_date, "date") \
+                else date.today() - timedelta(days=30)
+            end = date.today()
+            provider = HistoricalDataProvider([pos.ticker])
+            provider.preload_data(start, end)
+            best = max(pos.peak_price or 0, pos.cost_basis or 0)
+            d = start
+            while d <= end:
+                p = provider.get_price(pos.ticker, d)
+                if p and (p.get("high") or 0) > best:
+                    best = p["high"]
+                d += timedelta(days=1)
+            if best > (pos.peak_price or 0):
+                logger.info(
+                    f"shadow[{self.shadow_strategy.name}]: {pos.ticker} peak "
+                    f"initialized to ${best:.2f} from daily highs since entry")
+                pos.peak_price = best
+        except Exception as e:
+            logger.debug(f"shadow peak history init failed for {pos.ticker}: {e}")
 
     # ── Session API surface ──────────────────────────────────────────────────
 
@@ -601,6 +701,10 @@ class ShadowSession:
         in-memory state only. No webhooks, no live price fetches.
         """
         total_value = shares * price
+        # One shared stamp: purchase_date is the position-generation key for
+        # peak persistence and must equal the BUY's executed_at exactly, or
+        # the next FIFO rebuild (which reads executed_at) orphans the peak row.
+        now = datetime.now(timezone.utc)
         st = ShadowTrade(
             shadow_strategy_id=self.shadow_strategy.id,
             ticker=ticker,
@@ -614,7 +718,7 @@ class ShadowSession:
             realized_gain=None,
             holding_days=None,
             signal_factors=signal_factors or {},
-            executed_at=datetime.now(timezone.utc),
+            executed_at=now,
         )
         self._pending_shadow_trades.append(st)
         # Update synthetic state
@@ -623,7 +727,7 @@ class ShadowSession:
             ticker=ticker,
             shares=shares,
             cost_basis=price,
-            purchase_date=datetime.now(timezone.utc),
+            purchase_date=now,
             purchase_score=canslim_score,
             current_price=price,
             current_value=total_value,
@@ -758,6 +862,79 @@ def _patch_sandbox_stocks_disable_cap(sandbox: Session, analysis_results: List[d
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
 
+def _emit_sell_decisions(shadow_session: "ShadowSession", sells: list) -> int:
+    """Translate evaluate_sells decision dicts into ShadowTrade SELLs.
+
+    Shared by the scan-tick run and the intraday stop pass. Honors the
+    decision's reset_peak flag (partial trailing stop) by snapping the
+    in-memory peak to the current price, exactly like live execution — the
+    tick's peak persistence then stores the reset so the tier can re-arm on
+    a fresh run-up instead of re-firing forever off the old peak.
+    """
+    n = 0
+    for sell in sells:
+        position = sell.get("position") if isinstance(sell, dict) else None
+        if position is None or position.current_price is None:
+            continue
+        is_partial = bool(sell.get("is_partial", False)) if isinstance(sell, dict) else False
+        sell_pct = float(sell.get("sell_pct", 100)) if isinstance(sell, dict) else 100.0
+        shares_to_sell = (position.shares or 0)
+        if is_partial:
+            shares_to_sell = max(0, (position.shares or 0) * (sell_pct / 100.0))
+            if shares_to_sell <= 0:
+                continue
+        shadow_session.emit_shadow_sell(
+            position=position,
+            shares=shares_to_sell,
+            price=position.current_price,
+            reason=sell.get("reason", "shadow sell") if isinstance(sell, dict) else "shadow sell",
+            is_partial=is_partial,
+        )
+        if is_partial and isinstance(sell, dict) and sell.get("reset_peak"):
+            position.peak_price = position.current_price
+            position.peak_date = datetime.now(timezone.utc)
+        n += 1
+    return n
+
+
+def _persist_peaks(persist: Session, strategy_id: int,
+                   shadow_session: "ShadowSession") -> None:
+    """Upsert ratcheted peaks for the strategy's open positions and drop rows
+    whose positions closed. Must run EVERY tick (not just trade-emitting
+    ones) — the ratchet is what carries highs across ticks. Writes the
+    in-memory value unconditionally: it already reflects max(stored, live)
+    from the overlay, and a lower value is an intentional partial-trailing
+    reset. Commits the persist session (flushing any pending ShadowTrades
+    the caller added first).
+    """
+    open_positions = list(shadow_session._synthetic_positions or [])
+    rows = persist.query(ShadowPositionPeak).filter(
+        ShadowPositionPeak.shadow_strategy_id == strategy_id).all()
+    by_ticker = {r.ticker: r for r in rows}
+    seen = set()
+    for pos in open_positions:
+        if not pos.ticker or pos.peak_price is None:
+            continue
+        seen.add(pos.ticker)
+        row = by_ticker.get(pos.ticker)
+        if row is None:
+            persist.add(ShadowPositionPeak(
+                shadow_strategy_id=strategy_id,
+                ticker=pos.ticker,
+                opened_at=pos.purchase_date,
+                peak_price=pos.peak_price,
+                peak_date=pos.peak_date,
+            ))
+        else:
+            row.opened_at = pos.purchase_date  # re-keys on reopen generations
+            row.peak_price = pos.peak_price
+            row.peak_date = pos.peak_date
+    for r in rows:
+        if r.ticker not in seen:
+            persist.delete(r)
+    persist.commit()
+
+
 def run_shadow_strategies(real_db: Session, analysis_results: List[dict]) -> dict:
     """Run all active shadow strategies for one scan tick.
 
@@ -779,17 +956,20 @@ def run_shadow_strategies(real_db: Session, analysis_results: List[dict]) -> dic
 
     logger.info(f"Shadow paper-trading: running {len(active)} active strategy(ies)")
 
-    for strategy in active:
-        try:
-            n_trades = _run_one_strategy(strategy.id, analysis_results)
-            summary["strategies_run"] += 1
-            summary["total_shadow_trades"] += n_trades
-        except Exception as e:
-            summary["errors"] += 1
-            logger.error(
-                f"Shadow strategy {strategy.name} (id={strategy.id}) failed: {e}",
-                exc_info=True,
-            )
+    # Blocking acquire: the scan-tick run must never skip. The intraday stop
+    # pass yields (non-blocking acquire) so waits here are ≤ one pass.
+    with _shadow_run_lock:
+        for strategy in active:
+            try:
+                n_trades = _run_one_strategy(strategy.id, analysis_results)
+                summary["strategies_run"] += 1
+                summary["total_shadow_trades"] += n_trades
+            except Exception as e:
+                summary["errors"] += 1
+                logger.error(
+                    f"Shadow strategy {strategy.name} (id={strategy.id}) failed: {e}",
+                    exc_info=True,
+                )
 
     if summary["total_shadow_trades"]:
         logger.info(
@@ -844,24 +1024,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             logger.error(f"shadow evaluate_sells failed for {strategy.name}: {e}", exc_info=True)
             sells = []
 
-        for sell in sells:
-            position = sell.get("position") if isinstance(sell, dict) else None
-            if position is None or position.current_price is None:
-                continue
-            is_partial = bool(sell.get("is_partial", False)) if isinstance(sell, dict) else False
-            sell_pct = float(sell.get("sell_pct", 100)) if isinstance(sell, dict) else 100.0
-            shares_to_sell = (position.shares or 0)
-            if is_partial:
-                shares_to_sell = max(0, (position.shares or 0) * (sell_pct / 100.0))
-                if shares_to_sell <= 0:
-                    continue
-            shadow_session.emit_shadow_sell(
-                position=position,
-                shares=shares_to_sell,
-                price=position.current_price,
-                reason=sell.get("reason", "shadow sell") if isinstance(sell, dict) else "shadow sell",
-                is_partial=is_partial,
-            )
+        _emit_sell_decisions(shadow_session, sells)
 
         # ── BUY phase ────────────────────────────────────────────────────────
         # ftd_penalty_active / heat_penalty_active default False — see module
@@ -935,7 +1098,135 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 f"persisted {n_persisted} virtual trade(s)"
             )
 
+        # Peak ratchet persists EVERY tick, trade or no trade — carrying the
+        # session high forward is the whole point (see ShadowPositionPeak).
+        try:
+            _persist_peaks(persist, strategy_id, shadow_session)
+        except Exception as e:
+            logger.error(f"shadow peak persistence failed (id={strategy_id}): {e}", exc_info=True)
+
         return n_persisted
+    finally:
+        try:
+            sandbox.rollback()
+        except Exception:
+            pass
+        sandbox.close()
+        persist.close()
+
+
+# ── Intraday stop pass (2026-07-25) ──────────────────────────────────────────
+# The 15-min intraday stop job (scheduler, 2b88bfc) gave the LEAD book intraday
+# hard stops and reliable close-window trailing, while shadow stacks still
+# exited only when a scan tick happened to run. Verdicts are shadow-vs-shadow,
+# so no A/B was biased — but shadow stops slipped past their triggers the way
+# lead stops did pre-2b88bfc, and trailing only fired when a scan tick landed
+# inside the 15:00-16:00 ET window. This pass runs the live evaluate_sells on
+# each stack and emits ONLY stop-family decisions, matching the lead intraday
+# checker's scope: score / take-profit / pre-earnings sells stay on scan
+# cadence, exactly as they do for the lead.
+
+_STOP_FAMILY_PREFIXES = ("STOP LOSS", "TRAILING STOP", "PARTIAL TRAILING STOP")
+
+
+def is_stop_family_reason(reason: Optional[str]) -> bool:
+    """True for the sell reasons the lead intraday checker also evaluates.
+    PRE-EARNINGS STOP is deliberately excluded — the lead checker does not
+    evaluate earnings tightening intraday either."""
+    return bool(reason) and str(reason).startswith(_STOP_FAMILY_PREFIXES)
+
+
+def run_shadow_stop_checks() -> dict:
+    """Intraday stop-cadence parity for shadow stacks.
+
+    Called from the scheduler's 15-min intraday stop job after the lead
+    users' check. Skips the tick entirely (non-blocking lock) if a scan-tick
+    shadow run is mid-flight — the scan run will evaluate the same stops.
+    """
+    summary = {"strategies_run": 0, "stop_sells": 0, "errors": 0, "skipped": False}
+    if not _shadow_run_lock.acquire(blocking=False):
+        summary["skipped"] = True
+        logger.info("Shadow intraday stop check skipped — scan-tick shadow run in progress")
+        return summary
+    try:
+        listing = SessionLocal()
+        try:
+            active_ids = [
+                s.id for s in listing.query(ShadowStrategy)
+                .filter(ShadowStrategy.archived_at.is_(None)).all()
+            ]
+        finally:
+            listing.close()
+
+        for sid in active_ids:
+            try:
+                summary["stop_sells"] += _run_one_stop_check(sid)
+                summary["strategies_run"] += 1
+            except Exception as e:
+                summary["errors"] += 1
+                logger.error(
+                    f"Shadow intraday stop check failed for strategy id={sid}: {e}",
+                    exc_info=True,
+                )
+    finally:
+        _shadow_run_lock.release()
+
+    if summary["stop_sells"]:
+        logger.info(f"Shadow intraday stop check: {summary['stop_sells']} stop sell(s) emitted")
+    return summary
+
+
+def _run_one_stop_check(strategy_id: int) -> int:
+    """Stops-only intraday evaluation for one shadow stack.
+
+    Same sandbox/persist lifecycle as _run_one_strategy, but: empty
+    analysis_results (prices come from a live refresh instead), sells only,
+    and only stop-family decisions execute.
+    """
+    sandbox = SessionLocal()
+    persist = SessionLocal()
+    try:
+        strategy = sandbox.query(ShadowStrategy).filter(
+            ShadowStrategy.id == strategy_id).first()
+        if not strategy or strategy.archived_at is not None:
+            return 0
+
+        shadow_session = ShadowSession(sandbox, strategy, [])
+        if not shadow_session._synthetic_positions:
+            _persist_peaks(persist, strategy_id, shadow_session)  # prune closed rows
+            return 0
+
+        # Lazy import (module-load circularity, same as _run_one_strategy).
+        from backend.ai_trader import evaluate_sells, update_position_prices
+
+        # Live-quote refresh against synthetic positions (query intercept):
+        # sets current_price/gain_loss_pct, ratchets peaks on new highs, and
+        # fills current_score from the Stock table for the partial gate.
+        update_position_prices(shadow_session, use_live_prices=True, user_id=SHADOW_USER_ID)
+
+        try:
+            sells = evaluate_sells(shadow_session, user_id=SHADOW_USER_ID)
+        except Exception as e:
+            logger.error(
+                f"shadow intraday evaluate_sells failed for {strategy.name}: {e}",
+                exc_info=True,
+            )
+            sells = []
+
+        stop_sells = [
+            s for s in sells
+            if isinstance(s, dict) and is_stop_family_reason(s.get("reason"))
+        ]
+        n = _emit_sell_decisions(shadow_session, stop_sells)
+
+        pending = shadow_session.drain_pending_shadow_trades()
+        for st in pending:
+            persist.add(st)
+        _persist_peaks(persist, strategy_id, shadow_session)  # commits trades too
+
+        if n:
+            logger.info(f"shadow[{strategy.name}]: intraday pass emitted {n} stop sell(s)")
+        return n
     finally:
         try:
             sandbox.rollback()

@@ -2560,6 +2560,20 @@ def _run_intraday_stop_check():
                 logger.error(f"Intraday stop check failed for user {uid}: {e}")
             finally:
                 db.close()
+
+        # Shadow stacks get the same intraday stop cadence as the lead book
+        # (stop-family sells only; skips itself if a scan-tick shadow run is
+        # mid-flight). Without this, shadow stops slip past triggers at scan
+        # cadence and shadow trailing only fires when a scan tick happens to
+        # land inside the close window.
+        try:
+            from backend.shadow_trader import run_shadow_stop_checks
+            shadow_summary = run_shadow_stop_checks()
+            if shadow_summary.get("stop_sells"):
+                logger.info(
+                    f"Intraday stop check (shadow): {shadow_summary['stop_sells']} stop sell(s)")
+        except Exception as e:
+            logger.error(f"Shadow intraday stop check failed: {e}")
     except Exception as e:
         logger.error(f"Intraday stop check job failed: {e}")
 
