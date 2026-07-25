@@ -1818,12 +1818,14 @@ shadow_strategy_profiles:
     starting_value: 25000
     description: "Forward-only parity check against live cs_bear baseline"
     scorer_overrides: {}
-  shadow_no_excellence_cap:
-    parent_strategy: nostate_cs_bear
-    starting_value: 25000
-    description: "Approach-2 control arm: pre-cap C scoring (Shadow Step 7)"
-    scorer_overrides:
-      disable_excellence_cap: true
+  # shadow_no_excellence_cap ARCHIVED 2026-07-25 (removal here soft-archives
+  # the DB row; ShadowTrade history stays attached to id=2). VERDICT: no-op —
+  # 2.5 months live (May-9 -> Jul-25), 33 trades, bit-identical to
+  # shadow_baseline throughout; disable_excellence_cap never changed a single
+  # executed buy. The excellence cap does not affect what actually gets
+  # bought. Don't re-test this lever via shadow; a divergence would need a
+  # candidate that scores near the cap boundary, which the buy path never
+  # surfaces.
   # Chop-damper live A/B (2026-07-22): champion clone + half-size buys while
   # SPY sits 0-1.5% above its 50MA. See docs/real-money-gates.md Gate 2 and
   # the nostate_chop_damper profile. Registered HERE (not direct DB insert —
