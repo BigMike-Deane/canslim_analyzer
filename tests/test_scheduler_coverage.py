@@ -2341,11 +2341,14 @@ class TestRunContinuousScan:
         """Branch (a-supplemental): if find_earnings_gapups returns a
         non-empty list, send_gapup_alert is invoked (scheduler.py:
         1561-1564). Default fixture returns []; this test flips it
-        to drive the alert path."""
+        to drive the alert path. earnings_date must be within the 3-day
+        alert window — older gap-ups are cache-warming only, no alert."""
+        from datetime import date
         from backend.scheduler import run_continuous_scan
 
         scan_seams.find_gapups.return_value = [
-            {"ticker": "TEST", "gap_pct": 8.5, "date": "2026-05-07"}
+            {"ticker": "TEST", "gap_pct": 8.5,
+             "earnings_date": date.today().isoformat()}
         ]
 
         run_continuous_scan()

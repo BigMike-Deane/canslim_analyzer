@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 _recent_gapup_alerts: dict = {}
 GAPUP_COOLDOWN_HOURS = 24
 
+# Per-ticker gap-check cache: (ticker, earnings_date) -> (fetched_at, raw gap data).
+# Stores threshold-free results so any min_gap_pct query reuses them; only
+# successful fetches are cached (a failed Yahoo call is never cached as empty).
+# The scheduler's scan-cycle run pre-warms this for the UI.
+_gap_check_cache: dict = {}
+GAP_CACHE_TTL_HOURS = 6
+GAP_FETCH_WORKERS = 8
+
 
 def find_earnings_gapups(
     db: Session,
@@ -64,12 +72,26 @@ def find_earnings_gapups(
     if not stocks:
         return []
 
+    # Fetch gap data concurrently — one Yahoo call per uncached ticker. Done
+    # sequentially this took 30s+ for a typical earnings week; the endpoint
+    # handler must stay a sync `def` so this runs in FastAPI's threadpool
+    # rather than on the event loop.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _safe_check(stock):
+        try:
+            return _check_gap_up_cached(stock)
+        except Exception as e:
+            logger.debug(f"Gap-up check failed for {stock.ticker}: {e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(GAP_FETCH_WORKERS, len(stocks))) as pool:
+        gap_results = list(pool.map(_safe_check, stocks))
+
     gapups = []
 
-    for stock in stocks:
+    for stock, gap_data in zip(stocks, gap_results):
         try:
-            # Get price data around the earnings date
-            gap_data = _check_gap_up(stock, min_gap_pct)
             if gap_data and gap_data['gap_pct'] >= min_gap_pct:
                 gapups.append({
                     'ticker': stock.ticker,
@@ -103,6 +125,32 @@ def find_earnings_gapups(
                     f"(>={min_gap_pct}%, last {days_lookback}d)")
 
     return gapups
+
+
+def _check_gap_up_cached(stock) -> dict:
+    """
+    TTL-cached wrapper around _check_gap_up, keyed by (ticker, earnings_date).
+
+    Calls the fetcher with -inf so the cached result is threshold-free (raw
+    gap_pct, even negative); callers apply their own min_gap_pct. None results
+    (fetch failure / unusable data) are not cached, so transient Yahoo errors
+    retry on the next request.
+    """
+    key = (stock.ticker, stock.next_earnings_date)
+    now = datetime.now(timezone.utc)
+
+    hit = _gap_check_cache.get(key)
+    if hit and (now - hit[0]) < timedelta(hours=GAP_CACHE_TTL_HOURS):
+        return hit[1]
+
+    gap_data = _check_gap_up(stock, float("-inf"))
+    if gap_data is not None:
+        _gap_check_cache[key] = (now, gap_data)
+        # Prune expired entries so the dict stays bounded by recent-earnings names
+        cutoff = now - timedelta(hours=GAP_CACHE_TTL_HOURS)
+        for k in [k for k, (ts, _) in _gap_check_cache.items() if ts < cutoff]:
+            del _gap_check_cache[k]
+    return gap_data
 
 
 def _check_gap_up(stock, min_gap_pct: float) -> dict:

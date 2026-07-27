@@ -5356,7 +5356,7 @@ async def get_portfolio_correlation(
 # ============== Post-Earnings Gap-Up Detector ==============
 
 @app.get("/api/earnings-gapups")
-async def get_earnings_gapups(
+def get_earnings_gapups(
     days: int = Query(7, ge=1, le=30),
     min_gap_pct: float = Query(5.0, ge=2.0, le=20.0),
     current_user: User = Depends(get_current_active_user),
@@ -5365,6 +5365,10 @@ async def get_earnings_gapups(
     """
     Detect stocks that gapped up significantly after earnings.
     These are high-probability CANSLIM entries when accompanied by strong fundamentals.
+
+    Sync handler on purpose: the per-ticker Yahoo fetches inside
+    find_earnings_gapups are blocking, and running them on the event loop
+    stalled every other request for 30s+ on a cold cache.
     """
     from backend.earnings_gapup import find_earnings_gapups
     gapups = find_earnings_gapups(db, days_lookback=days, min_gap_pct=min_gap_pct)

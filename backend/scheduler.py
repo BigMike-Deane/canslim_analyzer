@@ -1622,10 +1622,19 @@ def run_continuous_scan():
             from backend.earnings_gapup import find_earnings_gapups, send_gapup_alert
             gu_db = SessionLocal()
             try:
-                gapups = find_earnings_gapups(gu_db, days_lookback=3, min_gap_pct=5.0)
+                # 7d lookback pre-warms the per-ticker gap cache for the UI's
+                # default view (/gapups); alerts still fire only for gap-ups
+                # with earnings in the last 3 days (prior behavior).
+                from datetime import date as _date, timedelta as _timedelta
+                gapups = find_earnings_gapups(gu_db, days_lookback=7, min_gap_pct=5.0)
                 if gapups:
-                    send_gapup_alert(gapups)
-                    logger.info(f"Post-earnings gap-ups: {len(gapups)} found")
+                    alert_cutoff = (_date.today() - _timedelta(days=3)).isoformat()
+                    recent = [g for g in gapups
+                              if g.get('earnings_date') and g['earnings_date'] >= alert_cutoff]
+                    if recent:
+                        send_gapup_alert(recent)
+                    logger.info(f"Post-earnings gap-ups: {len(gapups)} found "
+                                f"({len(recent)} within alert window)")
             finally:
                 gu_db.close()
         except Exception as e:

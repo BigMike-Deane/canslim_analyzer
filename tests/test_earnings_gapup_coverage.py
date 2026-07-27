@@ -31,6 +31,15 @@ from backend.database import Base, Stock
 # ── Fixtures / helpers ────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _clear_gap_check_cache():
+    """The per-ticker gap cache is module-level; clear it around every test so
+    mocked _check_gap_up results from one test never leak into the next."""
+    earnings_gapup._gap_check_cache.clear()
+    yield
+    earnings_gapup._gap_check_cache.clear()
+
+
 @pytest.fixture
 def db_session():
     engine = create_engine("sqlite:///:memory:")
@@ -369,6 +378,55 @@ class TestCheckGapUp:
             result = _check_gap_up(self._stock(earnings_date=earnings_d), 5.0)
         assert result is not None
         assert result["gap_pct"] == 10.0
+
+
+# ── _check_gap_up_cached ──────────────────────────────────────────────────────
+
+
+class TestCheckGapUpCached:
+    """Per-ticker TTL cache: successful fetches cached threshold-free,
+    failures never cached, expired entries pruned."""
+
+    def test_second_call_hits_cache_without_refetch(self, db_session):
+        _seed_stock(db_session)
+        gap = {"gap_pct": 8.5, "volume_ratio": 2.0, "earnings_open": 0, "prior_close": 0}
+        with patch.object(earnings_gapup, "_check_gap_up", return_value=gap) as fetch:
+            find_earnings_gapups(db_session)
+            find_earnings_gapups(db_session)
+        assert fetch.call_count == 1
+
+    def test_cached_raw_data_serves_any_threshold(self, db_session):
+        # Cache stores raw gap data; a stricter min_gap_pct on the second
+        # request filters the same cached entry without a refetch.
+        _seed_stock(db_session)
+        gap = {"gap_pct": 6.0, "volume_ratio": 2.0, "earnings_open": 0, "prior_close": 0}
+        with patch.object(earnings_gapup, "_check_gap_up", return_value=gap) as fetch:
+            assert len(find_earnings_gapups(db_session, min_gap_pct=5.0)) == 1
+            assert find_earnings_gapups(db_session, min_gap_pct=10.0) == []
+        assert fetch.call_count == 1
+
+    def test_failed_fetch_not_cached_and_retried(self, db_session):
+        _seed_stock(db_session)
+        with patch.object(earnings_gapup, "_check_gap_up", return_value=None) as fetch:
+            find_earnings_gapups(db_session)
+            find_earnings_gapups(db_session)
+        assert fetch.call_count == 2
+
+    def test_expired_entry_refetched_and_pruned(self, db_session):
+        stock = _seed_stock(db_session)
+        stale_ts = datetime.now(timezone.utc) - timedelta(
+            hours=earnings_gapup.GAP_CACHE_TTL_HOURS + 1
+        )
+        stale_gap = {"gap_pct": 3.0, "volume_ratio": 1.0, "earnings_open": 0, "prior_close": 0}
+        key = (stock.ticker, stock.next_earnings_date)
+        earnings_gapup._gap_check_cache[key] = (stale_ts, stale_gap)
+
+        fresh_gap = {"gap_pct": 9.0, "volume_ratio": 2.0, "earnings_open": 0, "prior_close": 0}
+        with patch.object(earnings_gapup, "_check_gap_up", return_value=fresh_gap):
+            result = find_earnings_gapups(db_session)
+        assert len(result) == 1
+        assert result[0]["gap_pct"] == 9.0
+        assert earnings_gapup._gap_check_cache[key][1] == fresh_gap
 
 
 # ── _is_actionable ────────────────────────────────────────────────────────────
