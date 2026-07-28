@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime, formatDateTime } from '../api'
 import { useToast } from '../components/Toast'
 import Spinner from '../components/Spinner'
+import useApi from '../hooks/useApi'
 
 const PAGE_SIZE = 50
 
@@ -34,55 +35,45 @@ function KindBadge({ kind }) {
 }
 
 export default function Notifications() {
-  const [items, setItems] = useState([])
-  const [total, setTotal] = useState(0)
-  const [unreadCount, setUnreadCount] = useState(0)
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [kindFilter, setKindFilter] = useState('')
   const [offset, setOffset] = useState(0)
-  const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
   const toast = useToast()
 
-  // Monotonic request id: toggling filters (or paging) fires overlapping
-  // getNotifications calls, and a slower earlier response must not render
-  // another filter's items under the one selected last.
-  const fetchSeq = useRef(0)
-
-  const load = useCallback(async () => {
-    const seq = ++fetchSeq.current
-    setLoading(true)
-    try {
-      const data = await api.getNotifications({
-        unread_only: unreadOnly,
-        kind: kindFilter || undefined,
-        limit: PAGE_SIZE,
-        offset,
-      })
-      if (seq !== fetchSeq.current) return // superseded by a newer request
-      setItems(data.items || [])
-      setTotal(data.total || 0)
-      setUnreadCount(data.unread_count || 0)
-    } finally {
-      if (seq === fetchSeq.current) setLoading(false)
-    }
-  }, [unreadOnly, kindFilter, offset])
-
-  useEffect(() => { load() }, [load])
+  // useApi's internal request seq guards the filter/paging races: toggling
+  // filters fires overlapping getNotifications calls, and a slower earlier
+  // response must not render another filter's items under the one selected
+  // last.
+  const { data, loading, setData } = useApi(
+    () => api.getNotifications({
+      unread_only: unreadOnly,
+      kind: kindFilter || undefined,
+      limit: PAGE_SIZE,
+      offset,
+    }),
+    [unreadOnly, kindFilter, offset]
+  )
+  const items = data?.items || []
+  const total = data?.total || 0
+  const unreadCount = data?.unread_count || 0
 
   // Reset to page 1 when either filter toggles
   useEffect(() => { setOffset(0) }, [unreadOnly, kindFilter])
 
+  // Optimistic updates go through setData's functional form: if the user
+  // fires multiple actions quickly, each handler closes over a different
+  // snapshot, and `prev =>` reads the latest committed state instead.
   async function handleMarkRead(n) {
     if (n.read_at) return
     try {
       await api.markNotificationRead(n.id)
-      // Functional form: if the user fires multiple actions quickly, each
-      // closes over a different `items` snapshot and the later setItems
-      // overwrites the earlier one's change. Using `prev =>` reads the
-      // latest committed state instead.
-      setItems(prev => prev.map(i => i.id === n.id ? { ...i, read_at: new Date().toISOString() } : i))
-      setUnreadCount(c => Math.max(0, c - 1))
+      const now = new Date().toISOString()
+      setData(prev => prev && {
+        ...prev,
+        items: (prev.items || []).map(i => i.id === n.id ? { ...i, read_at: now } : i),
+        unread_count: Math.max(0, (prev.unread_count || 0) - 1),
+      })
     } catch (err) {
       toast.error(err?.message || 'Failed to mark as read')
     }
@@ -92,9 +83,14 @@ export default function Notifications() {
     e.stopPropagation()
     try {
       await api.deleteNotification(n.id)
-      setItems(prev => prev.filter(i => i.id !== n.id))
-      setTotal(t => Math.max(0, t - 1))
-      if (!n.read_at) setUnreadCount(c => Math.max(0, c - 1))
+      setData(prev => prev && {
+        ...prev,
+        items: (prev.items || []).filter(i => i.id !== n.id),
+        total: Math.max(0, (prev.total || 0) - 1),
+        unread_count: n.read_at
+          ? prev.unread_count
+          : Math.max(0, (prev.unread_count || 0) - 1),
+      })
     } catch (err) {
       toast.error(err?.message || 'Failed to delete')
     }
@@ -103,9 +99,12 @@ export default function Notifications() {
   async function handleMarkAllRead() {
     try {
       await api.markAllNotificationsRead()
-      setUnreadCount(0)
       const now = new Date().toISOString()
-      setItems(prev => prev.map(i => i.read_at ? i : { ...i, read_at: now }))
+      setData(prev => prev && {
+        ...prev,
+        unread_count: 0,
+        items: (prev.items || []).map(i => i.read_at ? i : { ...i, read_at: now }),
+      })
     } catch (err) {
       toast.error(err?.message || 'Failed to mark all as read')
     }

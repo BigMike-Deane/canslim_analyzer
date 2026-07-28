@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import useApi from '../hooks/useApi'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
@@ -189,9 +190,6 @@ function StockRow({ stock, isWatched, onWatched }) {
 
 export default function Screener() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [stocks, setStocks] = useState([])
   const [sectors, setSectors] = useState([])
   const pageSize = 50
   // Hydrate page/filters from the URL on mount so a shared/bookmarked link
@@ -217,7 +215,13 @@ export default function Screener() {
     limit: pageSize,
     offset: (initialPage - 1) * pageSize
   })
-  const [total, setTotal] = useState(0)
+
+  // useApi's internal request seq supersedes the old hand-rolled fetchSeq:
+  // per-keystroke/slider filter changes fire overlapping getStocks calls, and
+  // a slower earlier response must not render under the filters selected last.
+  const { data, error, loading } = useApi(() => api.getStocks(filters), [filters])
+  const stocks = data?.stocks || []
+  const total = data?.total || 0
   // Set of tickers currently in the user's watchlist. Hydrated on mount so
   // rows that the user already added render as "✓ Watching" instead of
   // "+ Watch" after a page reload (previously component-local-only state
@@ -242,41 +246,17 @@ export default function Screener() {
     })
   }, [])
 
-  // Monotonic request id: per-keystroke/slider filter changes fire
-  // overlapping getStocks calls, and a slower earlier response must not
-  // render its rows/total under the filters selected last.
-  const fetchSeq = useRef(0)
-
-  const fetchStocks = useCallback(async () => {
-    const seq = ++fetchSeq.current
-    try {
-      setLoading(true)
-      const data = await api.getStocks(filters)
-      if (seq !== fetchSeq.current) return // superseded by a newer request
-      setStocks(data.stocks || [])
-      setTotal(data.total || 0)
-      setError(null)
-
-      // Extract unique sectors
-      if (data.stocks?.length > 0) {
-        const uniqueSectors = [...new Set(data.stocks.map(s => s.sector).filter(Boolean))]
-        setSectors(prev => {
-          const combined = [...new Set([...prev, ...uniqueSectors])]
-          return combined.sort()
-        })
-      }
-    } catch (err) {
-      if (seq !== fetchSeq.current) return
-      console.error('Failed to fetch stocks:', err)
-      setError(err.message)
-    } finally {
-      if (seq === fetchSeq.current) setLoading(false)
-    }
-  }, [filters])
-
+  // Accumulate the union of sectors seen across fetches so narrowing to a
+  // sector doesn't collapse the dropdown to just that sector's options.
   useEffect(() => {
-    fetchStocks()
-  }, [fetchStocks])
+    if (data?.stocks?.length > 0) {
+      const uniqueSectors = [...new Set(data.stocks.map(s => s.sector).filter(Boolean))]
+      setSectors(prev => {
+        const combined = [...new Set([...prev, ...uniqueSectors])]
+        return combined.sort()
+      })
+    }
+  }, [data])
 
   // Persist the active filter/sort/page combo to the URL query string so the
   // view is shareable/bookmarkable and survives back/forward. Mirrors the
@@ -355,7 +335,7 @@ export default function Screener() {
 
       {error && !loading && stocks.length === 0 && (
         <Card variant="glass" className="text-center py-8 text-red-400 mb-4">
-          Failed to load stocks: {error}
+          Failed to load stocks: {error.message}
         </Card>
       )}
 

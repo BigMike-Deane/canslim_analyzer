@@ -96,6 +96,26 @@ Key finding: 5-state market state machine HURTS over full cycles. NoState's bina
 - `api.js` - API client with TTL-based caching
 - `App.jsx` - Main application router
 
+#### Frontend data fetching: use the `useApi` hook
+New fetch-and-render code uses `hooks/useApi.js` instead of hand-rolling
+`loading`/`error` state + effects. It bakes in the correctness guards this
+codebase kept re-implementing per page (out-of-order response guard from
+`ce9d69c`, unmount safety, spinner-free background polling):
+
+```javascript
+const { data, error, loading, refetch, setData } = useApi(
+  () => api.getStocks(filters),   // inline arrow is fine — no useCallback needed
+  [filters],                      // deps decide when to re-fetch
+  { pollMs: 30000 }               // optional background polling
+)
+```
+
+Optimistic updates after mutations go through `setData(prev => ...)`.
+Migrated exemplars: Breakouts (one-shot), Screener (deps-driven filters),
+Notifications (optimistic updates + paging). Complex multi-fetch
+orchestration (AIPortfolio, Backtest) still hand-rolls — migrate
+opportunistically, not wholesale.
+
 #### setState: use the functional form when reading prior state
 When a handler computes the next state from the current state, use the
 functional form `setX(prev => next)` — never `setX(items.map(...))` that

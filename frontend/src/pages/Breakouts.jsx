@@ -5,6 +5,7 @@ import { saveStockListContext } from '../stockListContext'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, TagBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
+import useApi from '../hooks/useApi'
 
 const SORT_OPTIONS = [
   { value: 'canslim_score', label: 'Score' },
@@ -86,10 +87,9 @@ function BreakoutRow({ stock }) {
 
 export default function Breakouts() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [loading, setLoading] = useState(true)
-  const [stocks, setStocks] = useState([])
-  const [asOf, setAsOf] = useState(null)
-  const [error, setError] = useState(null)
+  const { data, error, loading } = useApi(() => api.getBreakingOutStocks(50), [])
+  const stocks = data?.stocks || []
+  const asOf = data?.as_of || null
   // Seed filter + sort state from the URL so links/back-button restore the view.
   const [sortBy, setSortBy] = useState(() => {
     const s = searchParams.get('sort')
@@ -116,24 +116,6 @@ export default function Breakouts() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortBy, baseType, sector])
-
-  useEffect(() => {
-    const fetchBreakouts = async () => {
-      try {
-        setLoading(true)
-        const data = await api.getBreakingOutStocks(50) // Get up to 50
-        setStocks(data.stocks || [])
-        setAsOf(data.as_of || null)
-        setError(null)
-      } catch (err) {
-        console.error('Failed to fetch breakouts:', err)
-        setError(err.message || 'Failed to load breakouts')
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchBreakouts()
-  }, [])
 
   // Distinct sectors present in the fetched set
   const sectors = useMemo(() => {
@@ -297,7 +279,7 @@ export default function Breakouts() {
         {error ? (
           <div className="text-center py-8">
             <div className="text-red-400 text-sm mb-2">Failed to load breakouts</div>
-            <div className="text-dark-500 text-xs">{error}</div>
+            <div className="text-dark-500 text-xs">{error.message || 'Failed to load breakouts'}</div>
           </div>
         ) : stocks.length === 0 ? (
           <div className="text-center py-8">
