@@ -559,14 +559,39 @@ Constraints (from auto-memory, do not relitigate):
       KEPT deliberately: BearBase + CorrelationMatrix (both still drive
       trading), Breakouts, CS History, ABEval.
 
+- [x] 2026-07-28 (iter: due monitoring reads, verification-only) —
+      (1) **Exit-recon poller dry-run**: live_exit_count=10 ⇒ gate MET,
+      Aug-1 poller will email a verdict; STOP LOSS post-fix avg −8.07%
+      (n=1) vs bt −8.97% ⇒ poller renders FIX WORKED. TRAILING STOP
+      diverges in the GOOD direction (live +13.52% n=6 vs bt −0.05%);
+      remaining diverged_reasons (PROTECT GAINS/SCORE CRASH/WEAK
+      POSITION) are bt-only young-book coverage (bt holds 150–370d vs
+      ~4.5mo live book). Poller token expires 2026-08-10 → after the
+      Aug-1 verdict, retire (or re-mint) trig_01Y29DKPkgoE6ZQ4HFxhbV1B.
+      (2) **ML-demotion cohort late-Jul read: STILL CONFOUNDED, parked to
+      ~late-Aug.** Blended read (would_veto n=9 avg −5.15% WR 22% vs
+      passed n=7 avg +2.07% WR 71%) LOOKS like the model had edge, but:
+      passed closed_n=0 (its losers not yet culled; would_veto's 6 closed
+      are mostly stops — closed-mix asymmetry), and the cohort split is
+      ~perfectly vintage-confounded (8/9 would_veto = user-3's Jul-6
+      same-minute fill; passed = Jul-16+ buys; confidence clusters track
+      the calendar: 0.16–0.25 Jul-6 vs 0.32–0.43 Jul-16+ — confidence may
+      partly encode regime). Verdict rule unchanged: wait for closed_n on
+      BOTH cohorts; no ML re-enable without LIVE A/B regardless.
+
 ## Next up (ranked by expected returns impact)
-1. **(idea pool)** From live results: entry-rate re-check late July (ML
-   demotion), H-fix A/B mid-Aug, exit-reconciliation ~Sept.
+1. **useApi hook refactor** — last Jul-23 UI-audit residual (alt_configs /
+   RS fields / gapups page cleared by `509c2ad`). Zero strategy risk,
+   fits patience mode.
 
 ## Monitoring clocks (no action until due)
+- **Aug-1 14:00 UTC**: exit-recon poller EMAILS verdict (gate met Jul-28;
+  expect FIX WORKED). Afterwards: retire or re-mint the poller (its JWT
+  dies 2026-08-10).
 - ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).
-- ~late Jul: ML-demotion re-check — USE /api/admin/ml-demotion-cohort
-  (entry-rate metric is confounded: portfolios pinned at max_positions +
-  pre-period had veto active). Verdict: would_veto cohort no worse than
-  passed = demotion vindicated.
-- ~Sept: exit-reconciliation poller fires at ≥10 post-fix exits.
+- ~late-Aug: ML-demotion cohort re-read — wait for passed closed_n > 0;
+  read avg_age_days + closed-mix BEFORE gains (Jul-28 read confounded,
+  see above).
+- Ongoing: shadow_chop_damper (id=3) + shadow_wide_trail (id=4) A/Bs —
+  no promotion until they survive mixed-regime/chop weeks.
+- ~Sept: Improving Radar out-of-sample re-validation.
