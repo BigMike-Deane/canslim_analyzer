@@ -284,6 +284,48 @@ class TestSyntheticPositionDerivation:
         assert len(ss._synthetic_positions) == 1
         assert ss._synthetic_positions[0].partial_profit_taken == 75.0
 
+    def test_pre_earnings_partial_sets_accumulator_to_25(self, db_session):
+        """Regression for the 2026-07-29 pre-earnings Zeno loop: the reason
+        format ("PRE-EARNINGS PARTIAL: 5d to earnings, up 12.1% ...") matched
+        neither rebuild regex, so the accumulator rebuilt to 0 and the rule
+        re-fired every scan, selling 25% of the remainder (live: GEF/SLDE,
+        one duplicate fire each before the fix). ai_trader tops the
+        accumulator up to exactly 25 (take_pct = 25 − taken, gated < 25),
+        so max-to-25 reconstructs it — and duplicate logged fires self-heal
+        to the same 25, not 50."""
+        strategy = _make_strategy(db_session)
+        t0 = datetime.now(timezone.utc) - timedelta(days=10)
+        _add_shadow_trade(db_session, strategy.id, "GEF", "BUY", 10, 76.0,
+                          executed_at=t0)
+        _add_shadow_trade(
+            db_session, strategy.id, "GEF", "SELL", 2.5, 85.29,
+            reason="PRE-EARNINGS PARTIAL: 5d to earnings, up 12.1% - protecting gains",
+            executed_at=t0 + timedelta(days=5))
+        _add_shadow_trade(
+            db_session, strategy.id, "GEF", "SELL", 1.875, 85.68,
+            reason="PRE-EARNINGS PARTIAL: 5d to earnings, up 12.6% - protecting gains",
+            executed_at=t0 + timedelta(days=5, hours=2))
+        ss = ShadowSession(db_session, strategy, [])
+        assert len(ss._synthetic_positions) == 1
+        assert ss._synthetic_positions[0].partial_profit_taken == 25.0
+
+    def test_partial_trailing_keep_format_accumulates(self, db_session):
+        """evaluate_sells emits the complement format ("..., keeping 50%")
+        with no parenthesized pct; the accumulator must add 100 − keep, and
+        the regex must anchor on "keeping" — the drop-from-peak pct earlier
+        in the string (-5.3%) must not be the captured number."""
+        strategy = _make_strategy(db_session)
+        t0 = datetime.now(timezone.utc) - timedelta(days=10)
+        _add_shadow_trade(db_session, strategy.id, "FTI", "BUY", 10, 70.0,
+                          executed_at=t0)
+        _add_shadow_trade(
+            db_session, strategy.id, "FTI", "SELL", 5, 72.66,
+            reason="PARTIAL TRAILING STOP: Peak $76.75 → $72.66 (-5.3%), keeping 50%",
+            executed_at=t0 + timedelta(days=5))
+        ss = ShadowSession(db_session, strategy, [])
+        assert len(ss._synthetic_positions) == 1
+        assert ss._synthetic_positions[0].partial_profit_taken == 50.0
+
     def test_partial_profit_taken_resets_after_full_close(self, db_session):
         """Full close ends the lot: a re-entry BUY must start at 0% taken,
         and non-partial SELL reasons must not set the accumulator."""

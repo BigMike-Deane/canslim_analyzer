@@ -125,11 +125,25 @@ _AI_MODELS = (AIPortfolioPosition, AIPortfolioConfig, AIPortfolioTrade, AIPortfo
 # exactly.
 _PARTIAL_TARGET_RE = re.compile(r"PARTIAL PROFIT (\d+(?:\.\d+)?)%")
 
-# Partial trailing stops ("PARTIAL TRAILING STOP (50%): Peak ...") ADD their
-# configured pct to the live accumulator each time they fire (peak resets,
-# so the tier can fire again on a fresh run-up) — additive, unlike the
-# set-to-target profit tiers.
+# Partial trailing stops ADD their configured pct to the live accumulator
+# each time they fire (peak resets, so the tier can fire again on a fresh
+# run-up) — additive, unlike the set-to-target profit tiers. Live emits TWO
+# formats: the intraday stop pass embeds the pct directly
+# ("PARTIAL TRAILING STOP (50%): Peak ..."), while evaluate_sells embeds the
+# complement ("PARTIAL TRAILING STOP: Peak ..., keeping 50%" → pct = 100−keep).
+# The keep-regex must anchor on "keeping" — a lazy .*(\d+)% would grab the
+# drop-from-peak pct instead.
 _PARTIAL_TRAILING_RE = re.compile(r"PARTIAL TRAILING STOP \((\d+(?:\.\d+)?)%\)")
+_PARTIAL_TRAILING_KEEP_RE = re.compile(
+    r"PARTIAL TRAILING STOP:.*keeping (\d+(?:\.\d+)?)%")
+
+# Pre-earnings partials ("PRE-EARNINGS PARTIAL: 3d to earnings, up 12.1% ...")
+# embed no pct, but ai_trader's rule is take_pct = 25 − already_taken, gated
+# on already_taken < 25 — the accumulator is exactly 25 after any fire, so
+# max-to-25 reconstructs it (and self-heals stacks that logged duplicates
+# while this pattern was missing: live 2026-07-29, GEF/SLDE re-fired every
+# 90-min scan, selling 25% of the remainder each cycle).
+_PRE_EARNINGS_PARTIAL_RE = re.compile(r"PRE-EARNINGS PARTIAL")
 
 
 # ── Synthetic ORM-shaped objects ──────────────────────────────────────────────
@@ -375,6 +389,11 @@ class ShadowSession:
                 m = _PARTIAL_TRAILING_RE.search(t.reason or "")
                 if m:
                     partial_taken[t.ticker] += float(m.group(1))
+                m = _PARTIAL_TRAILING_KEEP_RE.search(t.reason or "")
+                if m:
+                    partial_taken[t.ticker] += 100.0 - float(m.group(1))
+                if _PRE_EARNINGS_PARTIAL_RE.search(t.reason or ""):
+                    partial_taken[t.ticker] = max(partial_taken[t.ticker], 25.0)
                 if not queue:
                     # Full close — the next BUY starts a fresh position.
                     partial_taken[t.ticker] = 0.0
