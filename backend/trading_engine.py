@@ -293,7 +293,8 @@ def get_partial_profit_action(
     gain_pct: float,
     current_score: float,
     partial_taken: float,
-    yaml_config=None
+    yaml_config=None,
+    profile: dict | None = None,
 ) -> dict | None:
     """
     Evaluate whether a position qualifies for partial profit taking.
@@ -304,6 +305,10 @@ def get_partial_profit_action(
         current_score: Current effective score
         partial_taken: Cumulative percentage already taken as partial profits
         yaml_config: Config object (defaults to global config)
+        profile: Strategy profile dict; its optional `partial_profits` section
+            overrides the global tiers per threshold key (shallow-merged, so a
+            profile can retune one tier without restating the others). First
+            consumer: nostate_cap50 (threshold_50pct sell_pct=100, min_score=0).
 
     Returns:
         dict with {tier, take_pct, target_sell_pct, reason, priority} or None
@@ -311,7 +316,12 @@ def get_partial_profit_action(
     if yaml_config is None:
         yaml_config = config
 
-    partial_profit_config = yaml_config.get('ai_trader.partial_profits', {})
+    partial_profit_config = dict(yaml_config.get('ai_trader.partial_profits', {}) or {})
+    if profile:
+        for tier_key, tier_override in (profile.get('partial_profits') or {}).items():
+            merged = dict(partial_profit_config.get(tier_key, {}) or {})
+            merged.update(tier_override or {})
+            partial_profit_config[tier_key] = merged
 
     pp_50_gain = partial_profit_config.get('threshold_50pct', {}).get('gain_pct', 50)
     pp_50_sell = partial_profit_config.get('threshold_50pct', {}).get('sell_pct', 75)

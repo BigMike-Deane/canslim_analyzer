@@ -124,6 +124,53 @@ class TestPartialProfitTierDelta:
         action = get_partial_profit_action(gain_pct=30.0, current_score=50, partial_taken=0)
         assert action is None
 
+    def test_profile_partial_profits_overrides_top_tier(self):
+        """nostate_cap50 mechanism: a profile's partial_profits section
+        overrides matching tier keys. sell_pct=100 raises the cumulative
+        target; min_score=0 makes the tier score-proof."""
+        from backend.trading_engine import get_partial_profit_action
+
+        profile = {"partial_profits": {
+            "threshold_50pct": {"gain_pct": 50, "sell_pct": 100, "min_score": 0}}}
+        # score 10 would fail the default gate (55) — override must be score-proof
+        action = get_partial_profit_action(
+            gain_pct=52.0, current_score=10, partial_taken=25, profile=profile)
+        assert action is not None
+        assert action["tier"] == 50
+        assert action["take_pct"] == 75  # 100 - 25 cumulative
+
+    def test_profile_override_leaves_other_tiers_untouched(self):
+        """Shallow per-tier merge: overriding threshold_50pct must not disturb
+        the 25/40 tiers, and no profile means pure default behavior."""
+        from backend.trading_engine import get_partial_profit_action
+
+        profile = {"partial_profits": {
+            "threshold_50pct": {"gain_pct": 50, "sell_pct": 100, "min_score": 0}}}
+        action = get_partial_profit_action(
+            gain_pct=25.0, current_score=70, partial_taken=0, profile=profile)
+        assert action is not None
+        assert action["tier"] == 25
+        assert action["take_pct"] == 25
+        # profile without the section: identical to no profile at all
+        for p in ({}, {"partial_profits": {}}, None):
+            a = get_partial_profit_action(
+                gain_pct=55.0, current_score=70, partial_taken=50, profile=p)
+            assert a is not None and a["take_pct"] == 25  # default 75 - 50
+
+    def test_cap50_profile_registered_with_expected_ladder(self):
+        """The shipped nostate_cap50 profile carries the exact override the
+        jul-29 exit-lab replay tested, and its shadow registration exists."""
+        from config_loader import config as yaml_config
+
+        prof = yaml_config.get('strategy_profiles.nostate_cap50', {})
+        assert prof, "nostate_cap50 profile missing from config"
+        assert prof["partial_profits"]["threshold_50pct"] == {
+            "gain_pct": 50, "sell_pct": 100, "min_score": 0}
+        assert prof.get("hidden") is True  # shadow-only, keep out of picker
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_cap50', {})
+        assert reg.get("parent_strategy") == "nostate_cap50"
+        assert reg.get("starting_value") == 25000
+
 
 # ── 2. Trailing stop bands (champion config: 25/18/12/6/4) ───────────────────
 

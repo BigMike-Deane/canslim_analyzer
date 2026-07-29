@@ -3081,7 +3081,7 @@ class BacktestEngine:
 
             # PARTIAL PROFIT TAKING - let winners run while locking in gains
             partial_taken = position.partial_profit_taken
-            partial_action = get_partial_profit_action(gain_pct, current_score, partial_taken)
+            partial_action = get_partial_profit_action(gain_pct, current_score, partial_taken, profile=self.profile)
             if partial_action:
                 take_pct = partial_action["take_pct"]
                 shares_to_sell = position.shares * (take_pct / 100)

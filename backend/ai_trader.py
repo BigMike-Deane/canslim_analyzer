@@ -1883,7 +1883,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
 
         # PARTIAL PROFIT TAKING - let winners run while locking in gains
         partial_taken = getattr(position, 'partial_profit_taken', 0) or 0
-        partial_action = get_partial_profit_action(gain_pct, score, partial_taken, yaml_config=yaml_config)
+        partial_action = get_partial_profit_action(gain_pct, score, partial_taken, yaml_config=yaml_config, profile=profile)
         if partial_action:
             sells.append({
                 "position": position,

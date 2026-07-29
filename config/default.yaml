@@ -1259,6 +1259,52 @@ strategy_profiles:
       min_confidence: 0.30    # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
+  # profit top tier raised to a cumulative 100% target at +50% gain
+  # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
+  # are fraction-of-remaining, so after a prior 25-tier fire this realizes
+  # ~81% cumulative and leaves ~19% riding the normal bands — matching the
+  # replayed variant exactly. Replay: +0.14pp/episode vs
+  # champion (n.s., understated — no capital recycling), halves the variance
+  # of the 50+ tail (actuals: mean give-back 66pp of peak, n=6, holding past
+  # +50 = +3.7pp CI [-25,+33]). Promotion criteria, pre-registered: paired vs
+  # shadow_baseline, >=15 exits including >=3 cap-tier fires, mixed-regime
+  # weeks, no early call.
+  nostate_cap50:
+    hidden: true
+    label: "NoState Cap 50 (shadow)"
+    description: "nostate_cs_bear + partial-profit top tier 100% cumulative at +50% gain, score-proof (exit-lab jul-29 live shadow A/B)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    partial_profits:
+      threshold_50pct: { gain_pct: 50, sell_pct: 100, min_score: 0 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Experimental: same as nostate_optimized but with earnings_avoidance_days=3
   # (default 5). Drives the avoidance-gate-too-conservative test from the
   # canslim-livescan-churn-investigation loose threads. The C→B path on
@@ -1842,4 +1888,12 @@ shadow_strategy_profiles:
     parent_strategy: nostate_wide_trail
     starting_value: 25000
     description: "cs_bear + trailing bands x1.5 — exit-lab jul-24 candidate (replay +8.2pp/episode pooled across 2018-2026 windows; shadow A/B is the promotion gate)"
+    scorer_overrides: {}
+  # Big-winner cap A/B (2026-07-29): owner asked whether large gains are held
+  # too long. Replay says caps below +40 destroy value (cap_at_30 sig worse)
+  # but a 100%-realize at +50 is expectation-neutral and variance-reducing.
+  shadow_cap50:
+    parent_strategy: nostate_cap50
+    starting_value: 25000
+    description: "cs_bear + realize 100% at +50% gain — exit-lab jul-29 candidate (replay +0.14pp/episode n.s.; cuts 50+ tail variance; shadow A/B is the promotion gate)"
     scorer_overrides: {}
