@@ -898,7 +898,7 @@ function VerdictLedger({ summary, edge }) {
   const ciX = (v) => `${(100 * (v - lo) / span).toFixed(1)}%`
 
   return (
-    <div className="mb-4 rounded-lg border border-dark-600 border-t-2 border-t-primary-500 bg-gradient-to-b from-dark-800 to-dark-850 p-4">
+    <div className="mb-4 rounded-xl border border-dark-600 border-t-2 border-t-primary-500 bg-gradient-to-b from-dark-800 to-dark-850 p-4">
       <div className="flex items-baseline gap-4 flex-wrap">
         <div>
           <div className="text-[10px] uppercase tracking-[.18em] text-dark-400">Portfolio value</div>
@@ -1364,8 +1364,8 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
   return (
     <Card variant="glass" className="mb-4">
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <span className="text-sm font-semibold text-dark-100">
-          Positions <span className="text-dark-400 font-normal">({positions.length})</span>
+        <span className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">
+          Positions <span className="text-dark-500 font-normal">({positions.length})</span>
         </span>
         <div className="flex items-center gap-2">
           {loading && (

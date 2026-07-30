@@ -23,7 +23,7 @@ export default function AlertChip({ tone = 'ok', label, value, onClick, title })
     </>
   )
 
-  const base = `border border-dark-600 border-l-[3px] rounded px-3 py-1.5 text-left ${toneCls}`
+  const base = `border border-dark-600 border-l-[3px] rounded-lg px-3 py-1.5 text-left ${toneCls}`
 
   if (onClick) {
     return (

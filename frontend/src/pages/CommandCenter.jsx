@@ -84,7 +84,7 @@ function DefensePriorityCard({ positions }) {
     <Card as="section" aria-labelledby="cc-defense-heading" variant="accent" accent="red" className="bg-red-500/[0.04] mb-3">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span id="cc-defense-heading" className="text-sm font-semibold text-red-300">Defensive Priority</span>
+          <span id="cc-defense-heading" className="text-[10px] font-semibold tracking-widest uppercase text-red-300">Defensive Priority</span>
           <TagBadge color="red">DEFENSE DAY</TagBadge>
         </div>
         <span className="text-[10px] text-dark-500">closest to stop</span>
@@ -139,7 +139,7 @@ function CoiledSpringSection({ cs }) {
   // signal; the full candidate list is one tap away. Duplicated surfaces
   // (AI Portfolio section, /coiled-spring page) carry the expanded view.
   return (
-    <Card as="section" aria-labelledby="cc-coiled-spring-heading" variant="accent" accent="teal" className="bg-teal-500/[0.03]">
+    <Card as="section" aria-labelledby="cc-coiled-spring-heading" variant="glass">
       <CollapsibleSection
         title="Coiled Spring"
         titleId="cc-coiled-spring-heading"
@@ -263,7 +263,7 @@ function ImprovingRadarSection({ radar }) {
   // Collapsed by default (ui-revamp): discovery lens, never a candidate
   // pipeline — the count badge is the glance; expand to browse.
   return (
-    <Card as="section" aria-labelledby="cc-radar-heading" variant="accent" accent="purple" className="bg-purple-500/[0.03]">
+    <Card as="section" aria-labelledby="cc-radar-heading" variant="glass">
       <CollapsibleSection
         title="Improving Radar"
         titleId="cc-radar-heading"

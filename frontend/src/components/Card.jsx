@@ -47,12 +47,17 @@ export default function Card({
   )
 }
 
+// One title voice for every card (ui-align, Jul-30): the small-caps
+// eyebrow the ledger, chart, summary, and drawer headers already use.
+// Three competing header styles (bold sentence case here, caps in
+// SectionLabel/CollapsibleSection, hand-rolled spans elsewhere) were the
+// main source of the page reading as separate boxes instead of a system.
 export function CardHeader({ title, subtitle, action, className = '', titleId }) {
   return (
     <div className={`flex items-center justify-between mb-3 ${className}`}>
       <div>
-        <h3 id={titleId} className="text-sm font-semibold text-dark-100">{title}</h3>
-        {subtitle && <p className="text-xs text-dark-400 mt-0.5">{subtitle}</p>}
+        <h3 id={titleId} className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">{title}</h3>
+        {subtitle && <p className="text-xs text-dark-500 mt-0.5 normal-case tracking-normal">{subtitle}</p>}
       </div>
       {action && <div>{action}</div>}
     </div>
