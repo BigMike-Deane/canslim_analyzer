@@ -1187,10 +1187,13 @@ strategy_profiles:
   # (+20.4pp/52d) while chop days cost −7.9pp/20d. Evaluated ONLY via the
   # 'shadow_chop_damper' ShadowStrategy stack (live A/B); never assign to a
   # real user until the shadow verdict is in. Hidden from the picker.
+  # 2026-07-30 rebase: originally cloned from nostate_optimized (no correction
+  # zone, ML veto off), which confounded the A/B — it sat out every CZ entry
+  # the cs_bear baseline could take. Now a faithful cs_bear clone + damper.
   nostate_chop_damper:
     hidden: true
     label: "NoState Chop Damper (shadow)"
-    description: "nostate_optimized + half-size buys while SPY hugs its 50MA (live shadow A/B)"
+    description: "nostate_cs_bear + half-size buys while SPY hugs its 50MA (live shadow A/B)"
     min_score: 73
     max_positions: 8
     max_single_position_pct: 25
@@ -1208,12 +1211,17 @@ strategy_profiles:
     score_crash_ignore_if_profitable: 20
     market_state: { enabled: false }
     chop_damper: { enabled: true, band_pct: 1.5, position_multiplier: 0.5 }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
     ml_signal:
       enabled: true
       weight: 20
       min_roc_auc: 0.55
-      log_only: true
-      min_confidence: 0.0
+      log_only: true         # match cs_bear: bonus path OFF
+      min_confidence: 0.30   # match cs_bear: veto path ON
       veto_action: "skip"
 
   # Exit-lab candidate (2026-07-24): champion clone with trailing bands
@@ -1876,6 +1884,8 @@ shadow_strategy_profiles:
   # SPY sits 0-1.5% above its 50MA. See docs/real-money-gates.md Gate 2 and
   # the nostate_chop_damper profile. Registered HERE (not direct DB insert —
   # the sync soft-archives any active shadow this section doesn't declare).
+  # 2026-07-30: profile rebased onto cs_bear (CZ + ML-veto parity with the
+  # baseline); stack reset same day — A/B clock restarts at the reset.
   shadow_chop_damper:
     parent_strategy: nostate_chop_damper
     starting_value: 25000
