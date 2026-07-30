@@ -2769,6 +2769,7 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
 // ══════════════════════════════════════════════════════════════════════
 const TABS = [
   { key: 'overview', label: 'Overview' },
+  { key: 'analysis', label: 'Analysis' },
   { key: 'detail', label: 'Detail' },
 ]
 
@@ -3193,27 +3194,6 @@ export default function AIPortfolio() {
             loading={windowReturnsLoading}
           />
 
-          {/* Clock banners live in the ledger now — scorecard keeps the
-              metric grid and the expandable significance detail. */}
-          <EdgeScorecard edge={edge} hideClocks />
-
-          <PortfolioNarrative edge={edge} trades={trades} />
-
-          <EdgeAttribution edge={edge} />
-
-          <ExitReconciliation
-            reconciliation={reconciliation}
-            allTime={reconAllTime}
-            onWindowChange={handleReconWindowChange}
-          />
-
-          <SectorAllocationChart
-            riskData={riskData}
-            cashPct={portfolio?.summary?.total_value > 0
-              ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
-              : 0}
-          />
-
           <ConfigPanel
             config={portfolio?.config}
             onUpdate={handleUpdateConfig}
@@ -3235,6 +3215,33 @@ export default function AIPortfolio() {
               Run Backtest
             </Link>
           </div>
+        </>
+      )}
+
+      {/* Analysis tab (ui-revamp): the "is the edge real?" deep-dive —
+          scorecard with full clock banners (no ledger on this tab), the
+          live-templated narrative, attribution, exit reconciliation, and
+          sector allocation. One tap from overview, out of its way. */}
+      {activeTab === 'analysis' && (
+        <>
+          <EdgeScorecard edge={edge} />
+
+          <PortfolioNarrative edge={edge} trades={trades} />
+
+          <EdgeAttribution edge={edge} />
+
+          <ExitReconciliation
+            reconciliation={reconciliation}
+            allTime={reconAllTime}
+            onWindowChange={handleReconWindowChange}
+          />
+
+          <SectorAllocationChart
+            riskData={riskData}
+            cashPct={portfolio?.summary?.total_value > 0
+              ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
+              : 0}
+          />
         </>
       )}
 

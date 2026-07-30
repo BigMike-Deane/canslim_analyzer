@@ -135,13 +135,25 @@ function CoiledSpringSection({ cs }) {
   const hasData = (candidates?.length > 0) || (stats?.total > 0)
   if (!hasData) return null
 
+  // Collapsed by default (ui-revamp): a count badge carries the glanceable
+  // signal; the full candidate list is one tap away. Duplicated surfaces
+  // (AI Portfolio section, /coiled-spring page) carry the expanded view.
   return (
     <Card as="section" aria-labelledby="cc-coiled-spring-heading" variant="accent" accent="teal" className="bg-teal-500/[0.03]">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <span id="cc-coiled-spring-heading" className="text-sm font-semibold text-teal-300">Coiled Spring</span>
-          <TagBadge color="teal">CATALYST</TagBadge>
-        </div>
+      <CollapsibleSection
+        title="Coiled Spring"
+        titleId="cc-coiled-spring-heading"
+        defaultOpen={false}
+        badge={
+          <span className="flex items-center gap-1.5">
+            <TagBadge color="teal">CATALYST</TagBadge>
+            {candidates?.length > 0 && (
+              <span className="text-[10px] font-data text-teal-300">{candidates.length} upcoming</span>
+            )}
+          </span>
+        }
+      >
+      <div className="flex justify-end mb-2">
         <Link to="/coiled-spring/history" className="text-teal-400 text-[10px] hover:text-teal-300 transition-colors">
           History &rarr;
         </Link>
@@ -201,6 +213,7 @@ function CoiledSpringSection({ cs }) {
           </div>
         </div>
       )}
+      </CollapsibleSection>
     </Card>
   )
 }
@@ -247,14 +260,23 @@ function ImprovingRadarSection({ radar }) {
     </Link>
   )
 
+  // Collapsed by default (ui-revamp): discovery lens, never a candidate
+  // pipeline — the count badge is the glance; expand to browse.
   return (
     <Card as="section" aria-labelledby="cc-radar-heading" variant="accent" accent="purple" className="bg-purple-500/[0.03]">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span id="cc-radar-heading" className="text-sm font-semibold text-purple-300">Improving Radar</span>
-          <TagBadge color="purple">SCORE Δ{radar.lookback_days}D</TagBadge>
-        </div>
-      </div>
+      <CollapsibleSection
+        title="Improving Radar"
+        titleId="cc-radar-heading"
+        defaultOpen={false}
+        badge={
+          <span className="flex items-center gap-1.5">
+            <TagBadge color="purple">SCORE Δ{radar.lookback_days}D</TagBadge>
+            {rising.length > 0 && (
+              <span className="text-[10px] font-data text-purple-300">{rising.length} rising</span>
+            )}
+          </span>
+        }
+      >
       <div className="text-[10px] text-dark-400 mb-2"
            title="Event-study backed: these beat static peers by ~1-2pp over the next 2-4 weeks. They are NOT a candidate pipeline — fast risers reach the 72+ buy bar LESS often than stable near-bar names (17% vs 29% within 30d); scores mean-revert even while prices run.">
         Score momentum igniting under the buy bar — historically outperforms for 2–4 weeks. Momentum lens, not a candidate pipeline.
@@ -274,6 +296,7 @@ function ImprovingRadarSection({ radar }) {
           {cautions.map(s => <Row key={s.ticker} s={s} caution />)}
         </div>
       )}
+      </CollapsibleSection>
     </Card>
   )
 }
@@ -316,6 +339,7 @@ function GroupRotationSection({ data }) {
       <CollapsibleSection
         title="Group Rotation"
         titleId="cc-group-rotation-heading"
+        defaultOpen={false}
         badge={data?.as_of ? (
           <span className="text-[9px] font-data text-dark-500" title={data.as_of}>
             as of {formatRelativeTime(data.as_of)}
@@ -674,6 +698,20 @@ export default function CommandCenter() {
               {runningAction === 'scan' ? <span className="inline-flex items-center gap-1.5"><Spinner size="xs" inline />Starting…</span> : 'Start Scan'}
             </button>
           </div>
+          {/* Scanner status folded into the header (ui-revamp): a chip when
+              idle; the progress card below only appears mid-scan. */}
+          <span className="hidden sm:flex items-center gap-1.5 text-[10px] font-data">
+            {scanner?.is_scanning ? (
+              <span className="flex items-center gap-1.5 text-primary-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse-dot" />
+                scan {scanner.stocks_scanned != null ? `${scanner.stocks_scanned}/${scanner.total_stocks}` : '…'}
+              </span>
+            ) : (
+              <span className="text-dark-500" title={scanner?.last_scan_end ? `Last scan ${formatRelativeTime(scanner.last_scan_end)}` : ''}>
+                scanner idle
+              </span>
+            )}
+          </span>
           <span
             className="text-[10px] text-dark-500 font-data"
             title={lastUpdate ? formatTime(lastUpdate.toISOString()) : ''}
@@ -682,6 +720,26 @@ export default function CommandCenter() {
           </span>
         </div>
       </header>
+
+      {/* In-flight scan progress — full detail only while it matters */}
+      {scanner?.is_scanning && (
+        <Card variant="glass" padding="px-4 py-3" className="mb-3">
+          <div className="flex items-center justify-between text-[10px] font-data text-dark-400">
+            <span className="truncate">{scanner.phase_label || scanner.current_phase || 'scanning'}</span>
+            <span className="ml-2 shrink-0">
+              {scanner.phase_total > 0
+                ? `${scanner.phase_current || 0}/${scanner.phase_total}`
+                : `${scanner.stocks_scanned || 0}/${scanner.total_stocks || '…'}`}
+            </span>
+          </div>
+          <div className="mt-2 h-1 bg-dark-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary-500/60 rounded-full transition-all duration-500"
+              style={{ width: `${Math.min(100, ((scanner.phase_total > 0 ? (scanner.phase_current || 0) / scanner.phase_total : (scanner.stocks_scanned || 0) / (scanner.total_stocks || 1))) * 100)}%` }}
+            />
+          </div>
+        </Card>
+      )}
 
       {/* ═══════════════════════════════════════════
           MOBILE LAYOUT: optimized card order
@@ -940,7 +998,16 @@ export default function CommandCenter() {
 
           {/* Earnings Countdown */}
           <Card as="section" aria-labelledby="cc-earnings-heading" variant="glass" animate stagger={4}>
-            <CollapsibleSection title="Earnings" titleId="cc-earnings-heading">
+            <CollapsibleSection
+              title="Earnings"
+              titleId="cc-earnings-heading"
+              defaultOpen={false}
+              badge={earnings?.length > 0 ? (
+                <span className="text-[10px] font-data text-dark-500">
+                  {earnings.length} upcoming{earnings.some(e => e.days <= 7) ? ' · one <7d' : ''}
+                </span>
+              ) : undefined}
+            >
               {(!earnings || earnings.length === 0) ? (
                 <EmptyState bare compact message="No upcoming earnings" />
               ) : (
@@ -971,7 +1038,16 @@ export default function CommandCenter() {
 
           {/* Recent Trades */}
           <Card as="section" aria-labelledby="cc-trades-heading" variant="glass" animate stagger={5}>
-            <CollapsibleSection title="Trades" titleId="cc-trades-heading">
+            <CollapsibleSection
+              title="Trades"
+              titleId="cc-trades-heading"
+              defaultOpen={false}
+              badge={trades?.length > 0 ? (
+                <span className="text-[10px] font-data text-dark-500">
+                  last {trades[0]?.executed_at ? formatRelativeTime(trades[0].executed_at) : '—'}
+                </span>
+              ) : undefined}
+            >
               {(!trades || trades.length === 0) ? (
                 <EmptyState bare compact message="No recent trades" />
               ) : (
@@ -1027,66 +1103,8 @@ export default function CommandCenter() {
             </CollapsibleSection>
           </Card>
 
-          {/* Scanner Status */}
-          <Card as="section" aria-labelledby="cc-scanner-heading" variant="glass" padding="px-4 py-3" animate stagger={6}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <span id="cc-scanner-heading" className="text-[10px] font-semibold tracking-widest uppercase text-dark-400">Scanner</span>
-                {scanner?.is_scanning ? (
-                  <span className="flex items-center gap-1.5 text-[10px] text-primary-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse-dot" />
-                    {scanner?.current_phase || scanner?.phase || 'scanning'}
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-dark-500">IDLE</span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                {scanner?.is_scanning && scanner?.stocks_scanned != null && (
-                  <span className="text-[10px] font-data text-dark-400">
-                    {scanner.stocks_scanned}/{scanner.total_stocks}
-                  </span>
-                )}
-                {scanner?.last_scan_end && !scanner?.is_scanning && (
-                  <span className="text-[10px] font-data text-dark-500">
-                    {formatRelativeTime(scanner.last_scan_end)}
-                  </span>
-                )}
-              </div>
-            </div>
-            {scanner?.is_scanning && scanner?.total_stocks > 0 && (
-              <div className="mt-2 h-1 bg-dark-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-primary-500/60 rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, ((scanner.stocks_scanned || 0) / scanner.total_stocks) * 100)}%` }}
-                />
-              </div>
-            )}
-            {/* Per-phase progress: keeps moving through insider/short, p1_data,
-                saving, ai_trading, etc. after Phase 1 stock fetch finishes. */}
-            {scanner?.is_scanning && scanner?.current_phase && scanner.current_phase !== 'scanning' && (
-              <div className="mt-2">
-                <div className="flex items-center justify-between text-[10px] font-data text-dark-400">
-                  <span className="truncate">
-                    {scanner.phase_label || scanner.current_phase}
-                  </span>
-                  {scanner.phase_total > 0 && (
-                    <span className="ml-2 shrink-0">
-                      {scanner.phase_current || 0}/{scanner.phase_total}
-                    </span>
-                  )}
-                </div>
-                {scanner.phase_total > 0 && (
-                  <div className="mt-1 h-1 bg-dark-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-emerald-500/60 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.min(100, ((scanner.phase_current || 0) / scanner.phase_total) * 100)}%` }}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-          </Card>
+          {/* Scanner status lives in the page header now (ui-revamp); the
+              in-flight progress card renders under the header during scans. */}
 
         </div>
       </div>
