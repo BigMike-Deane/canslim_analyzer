@@ -2854,7 +2854,9 @@ export default function AIPortfolio() {
   // `aiPortfolio<Name>Expanded` convention.
   const [csExpanded, setCsExpanded] = useState(() => {
     const saved = localStorage.getItem('aiPortfolioCsExpanded')
-    return saved == null ? true : saved === 'true'
+    // Default collapsed (ui-revamp drawer grammar) — the count badge is
+    // the glance; a saved preference still wins in either direction.
+    return saved == null ? false : saved === 'true'
   })
   const [earningsCalendar, setEarningsCalendar] = useState(null)
   const [earningsExpanded, setEarningsExpanded] = useState(() => {

@@ -767,7 +767,13 @@ export default function CommandCenter() {
             />
           </div>
           {sparkline && sparkline.length > 1 && (
-            <Sparkline data={sparkline} width={320} height={36} gradient className="w-full mb-2" />
+            <div className="relative mb-2">
+              <Sparkline data={sparkline} width={320} height={36} gradient className="w-full" />
+              {/* Window label: the sparkline is the last 30 days, which can
+                  run red while the all-time return above it is green —
+                  labeling the window keeps that from reading as a bug. */}
+              <span className="absolute top-0 right-0 text-[9px] font-data text-dark-500">30d</span>
+            </div>
           )}
           <div className="grid grid-cols-3 gap-2 pt-2 border-t border-dark-700/30">
             <div>
@@ -868,8 +874,9 @@ export default function CommandCenter() {
             </div>
 
             {sparkline && sparkline.length > 1 && (
-              <div className="mb-3">
+              <div className="mb-3 relative">
                 <Sparkline data={sparkline} width={200} height={40} gradient className="w-full" />
+                <span className="absolute top-0 right-0 text-[9px] font-data text-dark-500">30d</span>
               </div>
             )}
 

@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { getAdjacentTickers } from '../stockListContext'
 import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { api, formatScore, getScoreClass, getScoreLabel, getScoreHex, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { chartAxis, chartColors } from '../components/chartTheme'
-import { ScoreBadge, TagBadge, PnlText } from '../components/Badge'
+import { TagBadge, PnlText } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import Spinner from '../components/Spinner'
 import Modal from '../components/Modal'
@@ -13,6 +13,72 @@ import CollapsibleSection from '../components/CollapsibleSection'
 import { useToast } from '../components/Toast'
 import PositionSizingCard from '../components/PositionSizingCard'
 import { computePositionSizing } from '../positionSizing'
+
+/* ─── Held-position hero (ui-revamp) ──────────────────────────────────
+   The page's job is "buy / hold / sell — and why?". When the AI already
+   holds this ticker, the buy-oriented sizing card self-suppresses and,
+   before this card existed, NOTHING replaced it — you could arrive from
+   a needs-attention chip or defense-day row and see no P&L, no off-peak,
+   no exit plan. This is the hold story: the position's state plus the
+   server-computed nearest exit trigger (backend/exit_plan.py — same data
+   the AI Portfolio modal renders; presentation-only, no re-derivation). */
+function HeldPositionCard({ position }) {
+  if (!position) return null
+  const p = position
+  const offPeak = p.trailing_stop?.drop_from_peak_pct
+  const plan = p.exit_plan
+  const nearest = plan?.triggers?.find(t => t.kind === plan.nearest_kind)
+  const nearTone = nearest?.direction === 'up'
+    ? 'text-emerald-400'
+    : nearest?.distance_pct == null ? 'text-dark-400'
+      : nearest.distance_pct <= 5 ? 'text-red-400'
+        : nearest.distance_pct <= 12 ? 'text-amber-400'
+          : 'text-dark-300'
+  return (
+    <Card variant="glass" className="mb-4 border-t-2 border-t-primary-500">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <span className="text-[10px] font-semibold tracking-widest uppercase text-primary-400">
+          AI portfolio holds this position
+        </span>
+        <Link to="/ai-portfolio" className="text-[10px] text-primary-400 hover:text-primary-300 transition-colors">
+          Manage in AI Portfolio &rarr;
+        </Link>
+      </div>
+      <div className="flex items-baseline gap-4 flex-wrap mb-2">
+        <div className="text-2xl font-bold font-data text-dark-100">
+          {formatCurrency(p.current_value)}
+          <span className={`text-base font-semibold ml-2 ${p.gain_loss_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {p.gain_loss_pct >= 0 ? '+' : ''}{p.gain_loss_pct?.toFixed(1)}%
+          </span>
+        </div>
+        <span className="text-xs text-dark-400 font-data">
+          {p.shares?.toFixed(2)} sh @ {formatCurrency(p.cost_basis)}
+        </span>
+        {offPeak != null && (
+          <span className="text-xs text-dark-400 font-data">
+            {offPeak.toFixed(1)}% off peak {p.trailing_stop?.peak_price ? `(${formatCurrency(p.trailing_stop.peak_price)})` : ''}
+          </span>
+        )}
+      </div>
+      {nearest && (
+        <div className="flex items-center justify-between bg-dark-850 rounded-md px-2.5 py-1.5 text-xs">
+          <span className="text-dark-300">
+            Nearest exit: <b className="text-dark-100">{nearest.label}</b>
+            {nearest.note && <span className="text-dark-500 ml-1.5 hidden sm:inline">{nearest.note}</span>}
+          </span>
+          <span className="font-data text-right">
+            <span className="text-dark-100">{nearest.price != null ? formatCurrency(nearest.price) : `< ${nearest.threshold}`}</span>
+            {nearest.distance_pct != null && (
+              <span className={`ml-2 ${nearTone}`}>
+                {nearest.direction === 'up' ? `${nearest.distance_pct}% to go` : `${nearest.distance_pct}% away`}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+    </Card>
+  )
+}
 
 /* ─── Score Gauge (SVG ring) ──────────────────────────────────────── */
 
@@ -1536,7 +1602,8 @@ export default function StockDetail() {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
               </button>
             </h1>
-            <ScoreBadge score={stock.canslim_score} size="md" />
+            {/* Score lives in the gauge to the right — the small badge here
+                was a duplicate of the same number (one hero per screen). */}
           </div>
           <div className="text-dark-300 text-sm truncate">{stock.name}</div>
           <div className="text-xs text-dark-400 mt-0.5">{stock.sector} / {stock.industry}</div>
@@ -1573,6 +1640,13 @@ export default function StockDetail() {
           (aiPortfolio.positions || []).map(p => p.ticker?.toUpperCase())
         )
         const alreadyHeld = heldTickers.has((stock.ticker || ticker).toUpperCase())
+        // Held ⇒ the hold story replaces the buy-side sizing card.
+        if (alreadyHeld) {
+          const pos = (aiPortfolio.positions || []).find(
+            p => p.ticker?.toUpperCase() === (stock.ticker || ticker).toUpperCase()
+          )
+          return <HeldPositionCard position={pos} />
+        }
         const sizing = computePositionSizing({
           ticker: stock.ticker || ticker,
           currentPrice: stock.current_price,
@@ -1588,17 +1662,20 @@ export default function StockDetail() {
         return <PositionSizingCard sizing={sizing} alreadyHeld={alreadyHeld} />
       })()}
 
+      {/* Decision inputs first (setup + the score's evidence), then the
+          supporting research cluster — same first-glance vs drill-down
+          ordering as the portfolio pages. */}
+      <TechnicalAnalysis stock={stock} />
+
+      <CANSLIMDetail stock={stock} />
+
       <AnalystConsensus stock={stock} />
 
       <GrowthModeSection stock={stock} />
 
-      <TechnicalAnalysis stock={stock} />
-
       <InsiderShortSection stock={stock} />
 
       <FundamentalAudit audit={audit} />
-
-      <CANSLIMDetail stock={stock} />
 
       <ScoreHistory
         history={stock.score_history}

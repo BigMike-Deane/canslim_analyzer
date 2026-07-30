@@ -95,11 +95,19 @@ async def unread_count(
     rows — nothing is hidden, only the badge is scoped.
     """
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    count = (db.query(func.count(Notification.id))
-             .filter(Notification.user_id == current_user.id,
-                     Notification.read_at.is_(None),
-                     Notification.created_at >= week_ago)
-             .scalar() or 0)
+    q = (db.query(func.count(Notification.id))
+         .filter(Notification.user_id == current_user.id,
+                 Notification.read_at.is_(None),
+                 Notification.created_at >= week_ago))
+    # Muted kinds don't badge either — one mental model for the mute knob:
+    # no push, no badge, still browsable on the Notifications page. Uses
+    # the same coercion as the delivery gate (the column has a TEXT-typed
+    # legacy shape on some rows — see database.py jsonb_repairs).
+    from backend.database import coerce_json_list
+    muted = coerce_json_list(getattr(current_user, "mute_kinds", None))
+    if muted:
+        q = q.filter(Notification.kind.notin_(muted))
+    count = q.scalar() or 0
     return {"count": count}
 
 

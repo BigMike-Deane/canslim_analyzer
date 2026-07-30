@@ -337,6 +337,45 @@ class TestIsolation:
         assert client.get("/api/notifications/unread-count").json()["count"] == 1
 
 
+# ── Badge scoping: the unread-count is "look now", not an archive ────
+# The badge excludes (a) rows older than 7 days and (b) muted kinds; the
+# Notifications page still lists and counts everything (unread_count in
+# the list response stays overall).
+
+class TestBadgeScoping:
+    def test_badge_excludes_rows_older_than_7_days(self):
+        from datetime import datetime, timedelta, timezone
+        db = SessionLocal()
+        try:
+            old = Notification(user_id=USER_A_ID, kind="trade", title="old", body="")
+            old.created_at = datetime.now(timezone.utc) - timedelta(days=10)
+            db.add(old)
+            db.add(Notification(user_id=USER_A_ID, kind="trade", title="new", body=""))
+            db.commit()
+        finally:
+            db.close()
+        _act_as(_user_a)
+        assert client.get("/api/notifications/unread-count").json()["count"] == 1
+        # The page's own unread_count stays overall — nothing hidden.
+        assert client.get("/api/notifications").json()["unread_count"] == 2
+
+    def test_badge_excludes_muted_kinds_but_page_keeps_them(self):
+        db = SessionLocal()
+        try:
+            db.add(Notification(user_id=USER_A_ID, kind="breakout", title="brk", body=""))
+            db.add(Notification(user_id=USER_A_ID, kind="trade", title="trd", body=""))
+            db.commit()
+        finally:
+            db.close()
+        muted_user = User(id=USER_A_ID, email="a@test.com", display_name="A",
+                          is_active=True, mute_kinds=["breakout"])
+        _act_as(muted_user)
+        assert client.get("/api/notifications/unread-count").json()["count"] == 1
+        # Muted rows still list on the page.
+        titles = {i["title"] for i in client.get("/api/notifications").json()["items"]}
+        assert titles == {"brk", "trd"}
+
+
 # ── List behavior: ordering, filtering, pagination ───────────────────
 
 class TestListing:
