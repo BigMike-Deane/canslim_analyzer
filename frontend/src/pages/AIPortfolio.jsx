@@ -729,10 +729,13 @@ function EdgeAttribution({ edge }) {
   const signCls = (v) => (v == null ? 'text-dark-400' : v >= 0 ? 'text-emerald-400' : 'text-red-400')
 
   // The headline insight: realized P&L vs the slice of it that actually beat
-  // SPY. When excess ≪ realized, the gains were market-driven, not edge.
+  // SPY. Stated as the live proportion rather than a thresholded "mostly
+  // market" verdict — a fixed cutoff let one big exit flip the banner's
+  // absolutist copy from misleading to absent with no state in between.
   const realized = a.total_realized_gain
   const excess = a.total_excess_gain
-  const marketDriven = realized != null && excess != null && realized > 0 && excess < realized * 0.5
+  const hasSplit = realized != null && excess != null && realized > 0
+  const skillPct = hasSplit ? Math.round((excess / realized) * 100) : null
 
   const conc = a.concentration || {}
 
@@ -771,11 +774,19 @@ function EdgeAttribution({ edge }) {
         />
       </div>
 
-      {marketDriven && (
-        <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-md px-2.5 py-1.5 mb-3">
+      {hasSplit && (
+        <div
+          className={`text-[11px] rounded-md px-2.5 py-1.5 mb-3 border ${
+            excess < 0
+              ? 'text-amber-300/90 bg-amber-500/10 border-amber-500/20'
+              : 'text-dark-400 bg-dark-850/60 border-dark-700/50'
+          }`}
+        >
           {excess < 0
-            ? `The realized gain came entirely from market exposure — the portfolio actually trailed a passive SPY position by ${usd(Math.abs(excess))} over the same windows. The dollar P&L overstates the edge.`
-            : `Most of the realized gain came from market exposure — only ${usd(excess)} beat a passive SPY position over the same windows. The dollar P&L overstates the edge.`}
+            ? `The realized gain is all market exposure — the same capital in SPY over the same hold windows would have earned ${usd(Math.abs(excess))} more.`
+            : excess >= realized
+              ? `All ${usd(realized)} of realized P&L beat SPY — SPY was flat-to-down over these hold windows, so none of the gain is market exposure.`
+              : `${usd(excess)} of the ${usd(realized)} realized (${skillPct}%) beat SPY over the same hold windows; the remaining ${usd(realized - excess)} is market exposure.`}
         </div>
       )}
 
