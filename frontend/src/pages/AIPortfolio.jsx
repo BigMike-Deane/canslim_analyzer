@@ -260,7 +260,10 @@ const WINDOW_LABELS = {
   'all': 'Since Inception',
 }
 
-function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, loading }) {
+// `heroInLedger`: when the VerdictLedger renders above this card it already
+// carries the big all-time value, so the card drops its duplicate headline
+// and keeps only the windowed return, range pills, and the stat row.
+function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, loading, heroInLedger = false }) {
   if (!summary) return null
 
   const winRet = windowReturns?.portfolio
@@ -301,9 +304,11 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
           </div>
         </div>
       </div>
-      <div className="text-3xl font-bold font-data mt-1 mb-1">
-        {formatCurrency(summary.total_value)}
-      </div>
+      {!heroInLedger && (
+        <div className="text-3xl font-bold font-data mt-1 mb-1">
+          {formatCurrency(summary.total_value)}
+        </div>
+      )}
       <div className={`text-sm flex items-center gap-1.5 font-data ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
         <span>{isPositive ? '+' : ''}{formatCurrency(Math.abs(returnDollar ?? 0))}</span>
         <span className="text-dark-500">({formatPercent(returnPct, true)})</span>
@@ -485,7 +490,7 @@ function EdgePower({ power, significant }) {
   )
 }
 
-function EdgeScorecard({ edge }) {
+function EdgeScorecard({ edge, hideClocks = false }) {
   // `edge` is the all-window scorecard fetched by the page. Narrower windows
   // are fetched on demand; keep `data` separate so `all` reuses the prop
   // (no refetch) while other windows hit the endpoint with their day count.
@@ -583,12 +588,12 @@ function EdgeScorecard({ edge }) {
           {/* Verdict clock — promoted to headline (owner ask, Jul-22): the
               single question is "do we beat SPY, and when will we KNOW?".
               Yellow = counting; green = statistically confirmed. */}
-          {range === 'all' && data.alpha_significance?.significant_95 && (
+          {!hideClocks && range === 'all' && data.alpha_significance?.significant_95 && (
             <div className="text-[11px] font-medium text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-md px-2.5 py-1.5 mb-3">
               ✓ Alpha statistically confirmed at 95% confidence.
             </div>
           )}
-          {range === 'all' && !data.alpha_significance?.significant_95 && data.power?.additional_days_needed != null && (
+          {!hideClocks && range === 'all' && !data.alpha_significance?.significant_95 && data.power?.additional_days_needed != null && (
             <div
               className="text-[11px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-1.5 mb-1.5"
               title="At the current alpha and volatility, how many more trading days of live data are needed before the edge over SPY is statistically provable (95% confidence, 80% power). Assumes the edge persists — this is a clock, not a promise. This is the UNCONDITIONAL question — see the trend-day clock below for the regime-aware one."
@@ -602,7 +607,7 @@ function EdgeScorecard({ edge }) {
               outperformance came from trend days), so the trend-day clock is
               the decision-relevant one — it runs ~10x faster than the blended
               clock above because conditioning un-dilutes the effect. */}
-          {range === 'all' && data.regime_edge?.trend && (
+          {!hideClocks && range === 'all' && data.regime_edge?.trend && (
             <div
               className={`text-[11px] font-medium rounded-md px-2.5 py-1.5 border ${
                 data.regime_edge.chop ? 'mb-1.5' : 'mb-3'
@@ -625,7 +630,7 @@ function EdgeScorecard({ edge }) {
               bucket of the trend line above. All live underperformance
               concentrates on chop days, so it renders in the down/red tone
               when negative instead of hiding in the trend line's tooltip. */}
-          {range === 'all' && data.regime_edge?.chop && (
+          {!hideClocks && range === 'all' && data.regime_edge?.chop && (
             <div
               className={`text-[11px] font-medium rounded-md px-2.5 py-1.5 mb-3 border ${
                 data.regime_edge.chop.mean_daily_excess_bps < 0
@@ -820,6 +825,228 @@ function EdgeAttribution({ edge }) {
             </>
           )}
         </CollapsibleSection>
+      </div>
+    </Card>
+  )
+}
+
+// ── Verdict ledger (ui-revamp direction A) ──────────────────────────
+// The page's 3-second answer as ONE hero band: value, SPY, edge, the
+// verdict sentence, and the two proof meters (trend-day clock, alpha CI).
+// Replaces the stack of separate pill banners that used to carry these —
+// EdgeScorecard renders its banner stack only when this ledger is absent
+// (hideClocks prop). Every value derives from the live edge payload, so
+// the band rewrites itself on each fetch.
+function VerdictLedger({ summary, edge }) {
+  if (!edge || (edge.trading_days || 0) < 2 || summary?.total_value == null) return null
+  const R = edge.regime_edge, P = edge.power, A = edge.alpha_significance
+  const pct = (v, d = 1) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`
+  const proven = A?.significant_95
+
+  // Alpha CI meter geometry: zero tick + point estimate pin, both as % of span.
+  const lo = A?.alpha_annualized_ci_low_pct, hi = A?.alpha_annualized_ci_high_pct
+  const span = (lo != null && hi != null && hi > lo) ? hi - lo : null
+  const ciX = (v) => `${(100 * (v - lo) / span).toFixed(1)}%`
+
+  return (
+    <div className="mb-4 rounded-lg border border-dark-600 border-t-2 border-t-primary-500 bg-gradient-to-b from-dark-800 to-dark-850 p-4">
+      <div className="flex items-baseline gap-4 flex-wrap">
+        <div>
+          <div className="text-[10px] uppercase tracking-[.18em] text-dark-400">Portfolio value</div>
+          <div className="text-3xl font-semibold text-dark-100 font-data">
+            {formatCurrency(summary.total_value)}
+            <span className={`text-base font-semibold ml-2 ${edge.total_return_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {pct(edge.total_return_pct)}
+            </span>
+          </div>
+        </div>
+        <div className="text-sm text-dark-300">
+          SPY same window <b className="text-dark-100 font-data">{pct(edge.spy_return_pct)}</b>
+        </div>
+        <div className="ml-auto text-right">
+          <div className="text-[10px] uppercase tracking-[.18em] text-dark-400">Edge vs SPY</div>
+          <div className="text-2xl font-bold text-primary-400 font-data">
+            {edge.excess_return_pct >= 0 ? '+' : ''}{edge.excess_return_pct?.toFixed(1)} pp
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-dark-700 text-xs text-dark-300">
+        {proven ? (
+          <><b className="text-emerald-400">Statistically proven.</b> Alpha is confirmed at the 95% level.</>
+        ) : R?.trend ? (
+          <>
+            <b className="text-dark-100">Promising, not yet proven.</b>{' '}
+            All measured edge sits on trend days ({R.trend.mean_daily_excess_bps > 0 ? '+' : ''}{R.trend.mean_daily_excess_bps} bps/day)
+            {R.chop && <>; chop days cost {R.chop.mean_daily_excess_bps} bps/day</>}.
+            {R.trend.additional_days_needed != null && (
+              <> Statistical proof needs ≈<b className="text-dark-100">{R.trend.additional_days_needed} more trend days</b>.</>
+            )}
+          </>
+        ) : (
+          <><b className="text-dark-100">Building the case.</b> {edge.trading_days} trading days collected.</>
+        )}
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+        {R?.trend?.required_days > 0 && (
+          <div>
+            <div className="flex justify-between text-[10px] uppercase tracking-[.12em] text-dark-400 mb-1">
+              <span>Trend-day clock</span>
+              <b className="text-dark-300 tracking-normal font-data">{R.trend.n_days} / {R.trend.required_days} days</b>
+            </div>
+            <div className="h-1.5 rounded-full bg-dark-750 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary-500"
+                style={{ width: `${Math.min(100, 100 * R.trend.n_days / R.trend.required_days).toFixed(1)}%` }}
+              />
+            </div>
+          </div>
+        )}
+        {span != null && (
+          <div>
+            <div className="flex justify-between text-[10px] uppercase tracking-[.12em] text-dark-400 mb-1">
+              <span>Alpha 95% CI — must clear zero</span>
+              <b className="text-dark-300 tracking-normal font-data">
+                {A.alpha_annualized_pct?.toFixed(0)}% ({lo.toFixed(0)}…{hi.toFixed(0)})
+              </b>
+            </div>
+            <div className="h-1.5 rounded-full bg-dark-750 relative">
+              {lo < 0 && hi > 0 && (
+                <span className="absolute -top-0.5 -bottom-0.5 w-px bg-dark-300" style={{ left: ciX(0) }} />
+              )}
+              <span
+                className="absolute -top-1 w-2.5 h-2.5 rounded-full bg-primary-500 border-2 border-dark-900 -translate-x-1/2"
+                style={{ left: ciX(A.alpha_annualized_pct) }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Needs attention (ui-revamp direction A) ─────────────────────────
+// The "is anything on fire?" strip: drawdowns past -5%, score fades ≥12
+// points, near-stop positions, and the cash chip. Derived per render from
+// live positions, so a chip disappears the refresh after its condition
+// clears. Renders a single quiet all-clear chip when nothing is hot.
+function NeedsAttention({ positions, summary }) {
+  if (!positions?.length || !summary) return null
+  const chips = []
+  for (const p of positions) {
+    if ((p.gain_loss_pct ?? 0) < -5) {
+      chips.push({ tone: 'hot', label: `${p.ticker} drawdown`, value: `${p.gain_loss_pct.toFixed(1)}%` })
+    }
+    const base = p.is_growth_stock ? p.purchase_growth_score : p.purchase_score
+    const now = p.is_growth_stock ? p.current_growth_score : p.current_score
+    if (base != null && now != null && base - now >= 12) {
+      chips.push({ tone: 'warm', label: `${p.ticker} score fade`, value: `${base.toFixed(0)} → ${now.toFixed(0)}` })
+    }
+    if (p.trailing_stop?.near_stop) {
+      chips.push({ tone: 'hot', label: `${p.ticker} near stop`, value: `${p.trailing_stop.drop_from_peak_pct?.toFixed(1)}% off peak` })
+    }
+  }
+  const cashPct = summary.total_value > 0 ? (100 * summary.cash / summary.total_value) : 0
+  const toneCls = {
+    hot: 'border-l-red-400/80 text-red-400',
+    warm: 'border-l-amber-400/80 text-amber-400',
+    ok: 'border-l-dark-500 text-dark-200',
+  }
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Needs attention" />
+      <div className="flex gap-2 flex-wrap">
+        {chips.length === 0 && (
+          <div className={`border border-dark-600 border-l-[3px] ${toneCls.ok} rounded px-3 py-1.5`}>
+            <div className="text-[11px] text-dark-400">Positions</div>
+            <div className="text-sm font-semibold text-dark-200">All inside bands</div>
+          </div>
+        )}
+        {chips.map((c, i) => (
+          <div key={c.label + i} className={`border border-dark-600 border-l-[3px] rounded px-3 py-1.5 ${toneCls[c.tone]}`}>
+            <div className="text-[11px] text-dark-400">{c.label}</div>
+            <div className="text-sm font-semibold font-data">{c.value}</div>
+          </div>
+        ))}
+        <div className={`border border-dark-600 border-l-[3px] ${toneCls.ok} rounded px-3 py-1.5`}>
+          <div className="text-[11px] text-dark-400">Cash ready</div>
+          <div className="text-sm font-semibold text-dark-200 font-data">
+            {formatCurrency(summary.cash)} · {cashPct.toFixed(0)}%
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+// ── Portfolio narrative (ui-revamp: direction B's prose, made live) ──
+// The two memo paragraphs the owner kept from the "Portfolio Note" mock:
+// realizations and the verdict question. Every number, name, and verdict
+// phrase is templated from the live edge/trades payloads at render time —
+// nothing is authored copy, so the prose can never go stale. It rewrites
+// itself on each poll exactly like the numeric cards do.
+function PortfolioNarrative({ edge, trades }) {
+  const a = edge?.attribution
+  if (!a || a.status !== 'ok' || !a.closed_positions) return null
+  const A = edge.alpha_significance, R = edge.regime_edge
+  const usd = (v) => formatCurrency(v)
+  const skillPct = a.total_realized_gain > 0
+    ? Math.round(100 * a.total_excess_gain / a.total_realized_gain) : null
+
+  // Latest realized exit — the freshest SELL row carrying a realized gain.
+  const lastSell = (trades || []).find(t => t.action === 'SELL' && t.realized_gain != null)
+  const lastSellPct = lastSell?.cost_basis && lastSell?.price
+    ? (100 * (lastSell.price / lastSell.cost_basis - 1)) : null
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader
+        title="The story so far"
+        subtitle="Written from live data — this prose rewrites itself on every refresh"
+      />
+      <div className="text-[13px] leading-relaxed text-dark-200 space-y-3 font-data">
+        <p>
+          Lifetime, the account has closed <b className="text-dark-100">{a.closed_positions}</b> positions
+          — {a.winners} winners against {a.losers} losers — for{' '}
+          <b className={a.total_realized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}>{usd(a.total_realized_gain)}</b> realized.
+          {skillPct != null && (
+            <> Of that, <b className="text-dark-100">{usd(a.total_excess_gain)}</b> ({skillPct}%) beat what the same
+            capital would have earned in SPY over the same hold windows; the rest is market exposure.</>
+          )}
+          {a.concentration?.top1_share_of_gains_pct != null && a.top_contributors?.[0] && (
+            <> The gains are top-heavy: <b className="text-dark-100">{a.top_contributors[0].ticker}</b> alone
+            accounts for {a.concentration.top1_share_of_gains_pct}%.</>
+          )}
+          {lastSell && (
+            <> Latest realization: <b className="text-dark-100">{lastSell.ticker}</b>
+            {lastSellPct != null && <> at {lastSellPct >= 0 ? '+' : ''}{lastSellPct.toFixed(1)}%</>},
+            booking <b className={lastSell.realized_gain >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+            {usd(lastSell.realized_gain)}</b> — the exit rule, not sentiment, made the call.</>
+          )}
+        </p>
+        {A && R?.trend && (
+          <p>
+            Is the edge real? {A.significant_95 ? (
+              <>Yes — alpha is <b className="text-emerald-400">statistically confirmed</b> at the 95% level
+              (p={A.p_value}).</>
+            ) : (
+              <>The honest answer is <i>not proven yet</i>. Annualized alpha reads{' '}
+              <b className="text-dark-100">{A.alpha_annualized_pct?.toFixed(0)}%</b>, but the 95% interval
+              ({A.alpha_annualized_ci_low_pct?.toFixed(0)} to +{A.alpha_annualized_ci_high_pct?.toFixed(0)})
+              still straddles zero. The sharper lens is regime: the {R.trend.n_days} trend days earned{' '}
+              <b className="text-emerald-400">+{R.trend.mean_daily_excess_bps} bps/day</b> over the index
+              {R.chop && <>; the {R.chop.n_days} chop days cost{' '}
+              <b className="text-red-400">{R.chop.mean_daily_excess_bps} bps</b></>}.
+              {R.trend.additional_days_needed != null && (
+                <> At the current mix, the trend-day case reaches proof in roughly{' '}
+                <b className="text-dark-100">{R.trend.additional_days_needed} more trend days</b> — the clock
+                this page keeps.</>
+              )}</>
+            )}
+          </p>
+        )}
       </div>
     </Card>
   )
@@ -1140,12 +1367,21 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           const offPeakTone = ts?.near_stop
             ? 'text-red-400'
             : (offPeak ?? 0) > 5 ? 'text-amber-400' : 'text-dark-500'
+          // Severity stripe (direction A): red = deep drawdown or near stop,
+          // amber = score fade ≥12pts. Same thresholds as NeedsAttention so
+          // a striped row always has a matching chip above.
+          const baseScore = position.is_growth_stock ? position.purchase_growth_score : position.purchase_score
+          const stripe = ((position.gain_loss_pct ?? 0) < -5 || ts?.near_stop)
+            ? 'border-l-2 border-l-red-400/80'
+            : (baseScore != null && glanceScore != null && baseScore - glanceScore >= 12)
+              ? 'border-l-2 border-l-amber-400/80'
+              : 'border-l-2 border-l-transparent'
           return (
             <button
               key={position.id}
               type="button"
               onClick={() => setSelectedPosition(position)}
-              className="w-full text-left flex justify-between items-center gap-3 py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors"
+              className={`w-full text-left flex justify-between items-center gap-3 py-2.5 border-b border-dark-700/30 last:border-0 hover:bg-dark-750/50 -mx-2 px-2 rounded transition-colors ${stripe}`}
             >
               {/* At-a-glance identity only. Secondary signals (sector full name,
                   insider sentiment, short interest, growth tag, alt score) live in
@@ -2889,6 +3125,150 @@ export default function AIPortfolio() {
         }
       />
 
+      {/* Waiting for trades banner — transient status stays at the top */}
+      {waitingForTrades && (
+        <Card variant="glass" className="mb-4 border-primary-500/30 bg-primary-500/5" padding="p-3">
+          <div className="flex items-center gap-2 text-primary-400">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
+              <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+            <span className="font-medium text-sm">Executing trades... This may take up to 2 minutes.</span>
+          </div>
+          <div className="text-dark-400 text-[10px] mt-1">Page will auto-update when complete.</div>
+        </Card>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b border-dark-700/50 overflow-x-auto">
+        {TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-3 py-2 text-xs font-semibold tracking-wider uppercase transition-colors whitespace-nowrap border-b-2 ${
+              activeTab === tab.key
+                ? 'text-primary-400 border-primary-500'
+                : 'text-dark-400 border-transparent hover:text-dark-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && (
+        <>
+          {/* Cold-start framing for brand-new accounts (renders nothing once
+              the portfolio has ≥2 trading days of history). */}
+          <TrackRecordBanner edge={edge} />
+
+          {/* Direction-A hierarchy: the verdict ledger answers "am I
+              beating SPY, and when will I know?" before anything else. */}
+          <VerdictLedger summary={portfolio?.summary} edge={edge} />
+
+          <SummaryCard
+            summary={portfolio?.summary}
+            config={portfolio?.config}
+            windowReturns={windowReturns}
+            timeRange={timeRange}
+            setTimeRange={setTimeRange}
+            loading={windowReturnsLoading}
+            heroInLedger={!!edge && (edge.trading_days || 0) >= 2}
+          />
+
+          <PerformanceChart
+            history={history}
+            startingCash={portfolio?.config?.starting_cash || 25000}
+            timeRange={timeRange}
+          />
+
+          {/* "Is anything on fire?" — the second question, answered before
+              the reader reaches the full positions table. */}
+          <NeedsAttention positions={portfolio?.positions} summary={portfolio?.summary} />
+
+          <PositionsList
+            positions={portfolio?.positions}
+            windowReturns={windowReturns}
+            timeRange={timeRange}
+            setTimeRange={setTimeRange}
+            loading={windowReturnsLoading}
+          />
+
+          {/* Clock banners live in the ledger now — scorecard keeps the
+              metric grid and the expandable significance detail. */}
+          <EdgeScorecard edge={edge} hideClocks />
+
+          <PortfolioNarrative edge={edge} trades={trades} />
+
+          <EdgeAttribution edge={edge} />
+
+          <ExitReconciliation
+            reconciliation={reconciliation}
+            allTime={reconAllTime}
+            onWindowChange={handleReconWindowChange}
+          />
+
+          <SectorAllocationChart
+            riskData={riskData}
+            cashPct={portfolio?.summary?.total_value > 0
+              ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
+              : 0}
+          />
+
+          <ConfigPanel
+            config={portfolio?.config}
+            onUpdate={handleUpdateConfig}
+            onInitialize={handleInitialize}
+            onRefresh={handleRefresh}
+            onRunCycle={handleRunCycle}
+            waitingForTrades={waitingForTrades}
+          />
+
+          <TradeHistory trades={trades} />
+
+          {/* Links */}
+          <SectionLabel>More</SectionLabel>
+          <div className="flex gap-4 mb-4">
+            <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              Trade Analytics
+            </Link>
+            <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
+              Run Backtest
+            </Link>
+          </div>
+        </>
+      )}
+
+      {activeTab === 'detail' && <PortfolioDetailView />}
+
+      {/* Discovery & housekeeping sections (ui-revamp direction A): buy-side
+          candidates and utilities sit BELOW portfolio state — the page's job
+          is "am I beating SPY / is anything on fire?" first. Shared across
+          both tabs, same as when they rendered above the tab strip. */}
+
+      {/* Coiled Spring Alerts */}
+      <CoiledSpringSection
+        csAlerts={csAlerts}
+        csExpanded={csExpanded}
+        setCsExpanded={setCsExpanded}
+      />
+
+      {/* Paper Mode is now indicated as a chip next to the AI Trading
+          header inside ConfigPanel above — saves a full-width banner. */}
+
+      {/* Risk Monitor */}
+      <RiskMonitorSection
+        riskData={riskData}
+        riskExpanded={riskExpanded}
+        setRiskExpanded={setRiskExpanded}
+      />
+
+      {/* Earnings Calendar */}
+      <EarningsCalendarSection
+        earningsCalendar={earningsCalendar}
+        earningsExpanded={earningsExpanded}
+        setEarningsExpanded={setEarningsExpanded}
+      />
+
       {/* Auto-refresh toggle */}
       <Card variant="glass" className="mb-4" padding="p-3">
         <div className="flex items-center justify-between">
@@ -2920,134 +3300,6 @@ export default function AIPortfolio() {
           </button>
         </div>
       </Card>
-
-      {/* Waiting for trades banner */}
-      {waitingForTrades && (
-        <Card variant="glass" className="mb-4 border-primary-500/30 bg-primary-500/5" padding="p-3">
-          <div className="flex items-center gap-2 text-primary-400">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
-              <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" />
-            </svg>
-            <span className="font-medium text-sm">Executing trades... This may take up to 2 minutes.</span>
-          </div>
-          <div className="text-dark-400 text-[10px] mt-1">Page will auto-update when complete.</div>
-        </Card>
-      )}
-
-      {/* Coiled Spring Alerts */}
-      <CoiledSpringSection
-        csAlerts={csAlerts}
-        csExpanded={csExpanded}
-        setCsExpanded={setCsExpanded}
-      />
-
-      {/* Paper Mode is now indicated as a chip next to the AI Trading
-          header inside ConfigPanel below — saves a full-width banner. */}
-
-      {/* Risk Monitor */}
-      <RiskMonitorSection
-        riskData={riskData}
-        riskExpanded={riskExpanded}
-        setRiskExpanded={setRiskExpanded}
-      />
-
-      {/* Earnings Calendar */}
-      <EarningsCalendarSection
-        earningsCalendar={earningsCalendar}
-        earningsExpanded={earningsExpanded}
-        setEarningsExpanded={setEarningsExpanded}
-      />
-
-      {/* Tabs */}
-      <div className="flex gap-1 mb-4 border-b border-dark-700/50 overflow-x-auto">
-        {TABS.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-3 py-2 text-xs font-semibold tracking-wider uppercase transition-colors whitespace-nowrap border-b-2 ${
-              activeTab === tab.key
-                ? 'text-primary-400 border-primary-500'
-                : 'text-dark-400 border-transparent hover:text-dark-200'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'overview' && (
-        <>
-          {/* Cold-start framing for brand-new accounts (renders nothing once
-              the portfolio has ≥2 trading days of history). */}
-          <TrackRecordBanner edge={edge} />
-
-          {/* SummaryCard hoisted to top so the time-range pills (embedded
-              in its header) are visible immediately — no scrolling. */}
-          <SummaryCard
-            summary={portfolio?.summary}
-            config={portfolio?.config}
-            windowReturns={windowReturns}
-            timeRange={timeRange}
-            setTimeRange={setTimeRange}
-            loading={windowReturnsLoading}
-          />
-
-          <PerformanceChart
-            history={history}
-            startingCash={portfolio?.config?.starting_cash || 25000}
-            timeRange={timeRange}
-          />
-
-          <EdgeScorecard edge={edge} />
-
-          <EdgeAttribution edge={edge} />
-
-          <ExitReconciliation
-            reconciliation={reconciliation}
-            allTime={reconAllTime}
-            onWindowChange={handleReconWindowChange}
-          />
-
-          <SectorAllocationChart
-            riskData={riskData}
-            cashPct={portfolio?.summary?.total_value > 0
-              ? (portfolio.summary.cash / portfolio.summary.total_value) * 100
-              : 0}
-          />
-
-          <ConfigPanel
-            config={portfolio?.config}
-            onUpdate={handleUpdateConfig}
-            onInitialize={handleInitialize}
-            onRefresh={handleRefresh}
-            onRunCycle={handleRunCycle}
-            waitingForTrades={waitingForTrades}
-          />
-
-          <PositionsList
-            positions={portfolio?.positions}
-            windowReturns={windowReturns}
-            timeRange={timeRange}
-            setTimeRange={setTimeRange}
-            loading={windowReturnsLoading}
-          />
-
-          <TradeHistory trades={trades} />
-
-          {/* Links */}
-          <SectionLabel>More</SectionLabel>
-          <div className="flex gap-4 mb-4">
-            <Link to="/analytics" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
-              Trade Analytics
-            </Link>
-            <Link to="/backtest" className="text-xs text-primary-400 hover:text-primary-300 transition-colors">
-              Run Backtest
-            </Link>
-          </div>
-        </>
-      )}
-
-      {activeTab === 'detail' && <PortfolioDetailView />}
 
       <div className="h-4" />
     </div>
