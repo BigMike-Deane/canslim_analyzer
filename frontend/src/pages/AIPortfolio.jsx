@@ -2770,7 +2770,7 @@ function EarningsCalendarSection({ earningsCalendar, earningsExpanded, setEarnin
 const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'analysis', label: 'Analysis' },
-  { key: 'detail', label: 'Detail' },
+  { key: 'detail', label: 'Trade Quality' },
 ]
 
 export default function AIPortfolio() {
@@ -3224,7 +3224,11 @@ export default function AIPortfolio() {
           sector allocation. One tap from overview, out of its way. */}
       {activeTab === 'analysis' && (
         <>
-          <EdgeScorecard edge={edge} />
+          {/* hideClocks here too: the verdict/clock content has exactly two
+              homes — the ledger's meters (overview) and the narrative's
+              prose (below). The scorecard contributes what only it has:
+              the metric grid and the expandable significance detail. */}
+          <EdgeScorecard edge={edge} hideClocks />
 
           <PortfolioNarrative edge={edge} trades={trades} />
 
@@ -3248,35 +3252,39 @@ export default function AIPortfolio() {
       {activeTab === 'detail' && <PortfolioDetailView />}
 
       {/* Discovery & housekeeping sections (ui-revamp direction A): buy-side
-          candidates and utilities sit BELOW portfolio state — the page's job
-          is "am I beating SPY / is anything on fire?" first. Shared across
-          both tabs, same as when they rendered above the tab strip. */}
+          candidates and utilities sit BELOW portfolio state, and ONLY on the
+          Overview tab — rendering them under every tab was the "shown three
+          times" duplication the dedup pass removed. */}
+      {activeTab === 'overview' && (
+        <>
+          {/* Coiled Spring Alerts */}
+          <CoiledSpringSection
+            csAlerts={csAlerts}
+            csExpanded={csExpanded}
+            setCsExpanded={setCsExpanded}
+          />
 
-      {/* Coiled Spring Alerts */}
-      <CoiledSpringSection
-        csAlerts={csAlerts}
-        csExpanded={csExpanded}
-        setCsExpanded={setCsExpanded}
-      />
+          {/* Paper Mode is now indicated as a chip next to the AI Trading
+              header inside ConfigPanel above — saves a full-width banner. */}
 
-      {/* Paper Mode is now indicated as a chip next to the AI Trading
-          header inside ConfigPanel above — saves a full-width banner. */}
+          {/* Risk Monitor */}
+          <RiskMonitorSection
+            riskData={riskData}
+            riskExpanded={riskExpanded}
+            setRiskExpanded={setRiskExpanded}
+          />
 
-      {/* Risk Monitor */}
-      <RiskMonitorSection
-        riskData={riskData}
-        riskExpanded={riskExpanded}
-        setRiskExpanded={setRiskExpanded}
-      />
+          {/* Earnings Calendar */}
+          <EarningsCalendarSection
+            earningsCalendar={earningsCalendar}
+            earningsExpanded={earningsExpanded}
+            setEarningsExpanded={setEarningsExpanded}
+          />
+        </>
+      )}
 
-      {/* Earnings Calendar */}
-      <EarningsCalendarSection
-        earningsCalendar={earningsCalendar}
-        earningsExpanded={earningsExpanded}
-        setEarningsExpanded={setEarningsExpanded}
-      />
-
-      {/* Auto-refresh toggle */}
+      {/* Auto-refresh toggle — Overview only, same home as the sections above */}
+      {activeTab === 'overview' && (
       <Card variant="glass" className="mb-4" padding="p-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -3307,6 +3315,7 @@ export default function AIPortfolio() {
           </button>
         </div>
       </Card>
+      )}
 
       <div className="h-4" />
     </div>

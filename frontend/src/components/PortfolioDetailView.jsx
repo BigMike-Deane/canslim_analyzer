@@ -1,22 +1,23 @@
 import { useState, useEffect } from 'react'
-import { api, formatDateTime, formatPercent, formatCurrency } from '../api'
+import { api, formatDateTime, formatPercent } from '../api'
 import Card, { CardHeader } from './Card'
 import { PnlText } from './Badge'
 
+// ui-revamp dedup: this view now owns ONLY its unique content — signal
+// attribution and exit quality. The stat tiles, positions table, and
+// last-7-days trades it used to duplicate all have single homes on the
+// Overview tab (ledger, SummaryCard, PositionsList, TradeHistory).
 export default function PortfolioDetailView() {
-  const [data, setData] = useState(null)
   const [attribution, setAttribution] = useState(null)
   const [exitQuality, setExitQuality] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('positions')
+  const [tab, setTab] = useState('signals')
 
   useEffect(() => {
     Promise.all([
-      api.getPortfolioSummary(),
       api.getSignalAttribution().catch(() => null),
       api.getExitQuality().catch(() => null),
-    ]).then(([summary, attr, exit]) => {
-      setData(summary)
+    ]).then(([attr, exit]) => {
       setAttribution(attr)
       setExitQuality(exit)
     }).finally(() => setLoading(false))
@@ -28,29 +29,14 @@ export default function PortfolioDetailView() {
     </div>
   )
 
-  if (!data) return <div className="text-dark-400 py-8 text-center">No portfolio data</div>
-
-  const { portfolio, positions, recent_trades } = data
+  if (!attribution && !exitQuality) {
+    return <div className="text-dark-400 py-8 text-center">No trade-quality data yet — closed trades feed this view.</div>
+  }
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {[
-          { label: 'Total Value', value: `$${portfolio.total_value.toLocaleString(undefined, { maximumFractionDigits: 0 })}` },
-          { label: 'Cash', value: `$${portfolio.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })} (${formatPercent(portfolio.cash_pct)})` },
-          { label: 'Unrealized P&L', value: <PnlText value={portfolio.unrealized_pnl} prefix="$" /> },
-          { label: 'Positions', value: `${portfolio.positions_count}` },
-          { label: 'Strategy', value: portfolio.strategy },
-        ].map((s, i) => (
-          <Card key={i}>
-            <div className="text-xs text-dark-400">{s.label}</div>
-            <div className="text-lg font-semibold text-dark-100 mt-1">{s.value}</div>
-          </Card>
-        ))}
-      </div>
-
       <div className="flex gap-1 border-b border-dark-700">
-        {['positions', 'signals', 'exits'].map(t => (
+        {['signals', 'exits'].map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -58,79 +44,10 @@ export default function PortfolioDetailView() {
               tab === t ? 'border-primary-500 text-primary-400' : 'border-transparent text-dark-400 hover:text-dark-200'
             }`}
           >
-            {t === 'positions' ? 'Positions' : t === 'signals' ? 'Signal Attribution' : 'Exit Quality'}
+            {t === 'signals' ? 'Signal Attribution' : 'Exit Quality'}
           </button>
         ))}
       </div>
-
-      {tab === 'positions' && (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-dark-400 text-xs border-b border-dark-700">
-                  <th className="text-left py-2 px-2 font-medium">Ticker</th>
-                  <th className="text-right py-2 px-2 font-medium">Price</th>
-                  <th className="text-right py-2 px-2 font-medium">P&L</th>
-                  <th className="text-right py-2 px-2 font-medium">%</th>
-                  <th className="text-right py-2 px-2 font-medium">Stop</th>
-                  <th className="text-right py-2 px-2 font-medium">To Stop</th>
-                  <th className="text-right py-2 px-2 font-medium">Days</th>
-                  <th className="text-right py-2 px-2 font-medium">Score</th>
-                  <th className="text-right py-2 px-2 font-medium">% Port</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.map(p => {
-                  const stopColor = p.pct_to_stop < 3 ? 'text-red-400' : p.pct_to_stop < 5 ? 'text-yellow-400' : 'text-dark-300'
-                  return (
-                    <tr key={p.ticker} className="border-b border-dark-700/50 hover:bg-dark-750">
-                      <td className="py-2 px-2">
-                        <a href={`/stock/${p.ticker}`} className="text-primary-400 hover:underline font-medium">{p.ticker}</a>
-                        {p.pyramid_count > 0 && <span className="ml-1 text-xs text-dark-500">x{p.pyramid_count + 1}</span>}
-                        {p.is_growth_stock && <span className="ml-1 text-xs text-purple-400">G</span>}
-                      </td>
-                      <td className="py-2 px-2 text-right text-dark-200">{formatCurrency(p.current_price)}</td>
-                      <td className="py-2 px-2 text-right"><PnlText value={p.gain_loss} prefix="$" /></td>
-                      <td className={`py-2 px-2 text-right font-medium ${p.gain_loss_pct > 0 ? 'text-green-400' : p.gain_loss_pct < 0 ? 'text-red-400' : 'text-dark-400'}`}>
-                        {formatPercent(p.gain_loss_pct, true)}
-                      </td>
-                      <td className="py-2 px-2 text-right text-dark-400">{formatCurrency(p.stop_price)}</td>
-                      <td className={`py-2 px-2 text-right font-medium ${stopColor}`}>{formatPercent(p.pct_to_stop)}</td>
-                      <td className="py-2 px-2 text-right text-dark-300">{p.days_held}d</td>
-                      <td className="py-2 px-2 text-right text-dark-300">{p.current_score}</td>
-                      <td className="py-2 px-2 text-right text-dark-400">{formatPercent(p.pct_of_portfolio)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {recent_trades.length > 0 && (
-            <Card>
-              <CardHeader title="Last 7 Days" />
-              <div className="space-y-1">
-                {recent_trades.map((t, i) => (
-                  <div key={i} className="flex items-center justify-between text-sm py-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-                        t.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                      }`}>{t.action}</span>
-                      <span className="text-dark-200 font-medium">{t.ticker}</span>
-                      <span className="text-dark-500">{t.shares} @ {formatCurrency(t.price)}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {t.pnl != null && <PnlText value={t.pnl} prefix="$" />}
-                      <span className="text-dark-500 text-xs">{formatDateTime(t.date)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-        </>
-      )}
 
       {tab === 'signals' && attribution && (
         <div className="space-y-4">
