@@ -86,10 +86,19 @@ async def unread_count(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Lightweight endpoint for the header bell badge — meant to be polled."""
+    """Lightweight endpoint for the header bell badge — meant to be polled.
+
+    The badge counts only the last 7 days of unread rows: a red number
+    should mean "look now", and letting months of never-cleared rows pile
+    into it kills the signal (the count had reached 64 before this window
+    was added). The Notifications page still lists and counts ALL unread
+    rows — nothing is hidden, only the badge is scoped.
+    """
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     count = (db.query(func.count(Notification.id))
              .filter(Notification.user_id == current_user.id,
-                     Notification.read_at.is_(None))
+                     Notification.read_at.is_(None),
+                     Notification.created_at >= week_ago)
              .scalar() or 0)
     return {"count": count}
 

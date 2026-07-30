@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatDateTime, formatTime } from '../api'
-import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
+import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, ReferenceArea, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { ScoreBadge, ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
@@ -16,6 +16,7 @@ import PortfolioDetailView from '../components/PortfolioDetailView'
 import EmptyState from '../components/EmptyState'
 import PositionHealthChip from '../components/PositionHealthChip'
 import DataTable from '../components/DataTable'
+import AlertChip from '../components/AlertChip'
 
 // ── Performance Chart ───────────────────────────────────────────────
 // `timeRange` is now controlled by the page-level WindowReturnsBar so the
@@ -111,6 +112,33 @@ function PerformanceChart({ history, startingCash, timeRange }) {
   const firstValue = filteredHistory[0]?.total_value || startingCash
   const isPositive = latestValue >= firstValue
 
+  // Regime shading: contiguous spans of CHOP tape — SPY less than 1.5%
+  // above its 50MA (same threshold as backend regime_edge). The whole edge
+  // thesis is regime-conditional (+33 bps/day on trend days, bleed on chop
+  // days), so painting chop windows onto the chart makes the ledger's
+  // verdict sentence visible: the portfolio should pull away from SPY in
+  // clear bands and go flat-to-losing in shaded ones. Points without MA
+  // data (spy_dist_pct null) stay unshaded; the 1d view skips shading
+  // (a single session is one regime — the tint would just be noise).
+  const CHOP_THRESHOLD_PCT = 1.5
+  const chopSpans = []
+  if (timeRange !== '1d') {
+    let spanStart = null
+    for (let i = 0; i < filteredHistory.length; i++) {
+      const d = filteredHistory[i]
+      const isChop = d.spy_dist_pct != null && d.spy_dist_pct < CHOP_THRESHOLD_PCT
+      if (isChop && spanStart == null) spanStart = d.timestamp || d.date
+      if (!isChop && spanStart != null) {
+        chopSpans.push({ x1: spanStart, x2: d.timestamp || d.date })
+        spanStart = null
+      }
+    }
+    if (spanStart != null) {
+      const last = filteredHistory[filteredHistory.length - 1]
+      chopSpans.push({ x1: spanStart, x2: last.timestamp || last.date })
+    }
+  }
+
   // Format timestamp for tooltip - uses centralized CST formatter
   const formatTimestamp = (ts) => ts ? formatDateTime(ts) : ''
 
@@ -163,6 +191,18 @@ function PerformanceChart({ history, startingCash, timeRange }) {
                 <stop offset="100%" stopColor={lineColor} stopOpacity={0.0} />
               </linearGradient>
             </defs>
+            {/* Chop-regime tint behind everything else */}
+            {chopSpans.map((s, i) => (
+              <ReferenceArea
+                key={`chop-${i}`}
+                x1={s.x1}
+                x2={s.x2}
+                fill="#e8b93c"
+                fillOpacity={0.05}
+                stroke="none"
+                ifOverflow="visible"
+              />
+            ))}
             {/* SPY benchmark overlay — normalized to starting value of the
                 window so the two lines compare apples-to-apples. Sourced
                 from the backend's MarketSnapshot table, not historical_data. */}
@@ -244,6 +284,15 @@ function PerformanceChart({ history, startingCash, timeRange }) {
           <span className="inline-block w-3 border-t border-dashed border-dark-400" />
           SPY (normalized)
         </span>
+        {chopSpans.length > 0 && (
+          <span
+            className="inline-flex items-center gap-1.5"
+            title={`Shaded spans: SPY under +${CHOP_THRESHOLD_PCT}% vs its 50-day MA — the chop tape where the strategy historically bleeds. Clear spans are trend days, where all measured edge accrues.`}
+          >
+            <span className="inline-block w-3 h-2.5 rounded-sm" style={{ backgroundColor: 'rgba(232,185,60,.18)' }} />
+            chop tape
+          </span>
+        )}
       </div>
     </Card>
   )
@@ -932,50 +981,48 @@ function VerdictLedger({ summary, edge }) {
 // points, near-stop positions, and the cash chip. Derived per render from
 // live positions, so a chip disappears the refresh after its condition
 // clears. Renders a single quiet all-clear chip when nothing is hot.
-function NeedsAttention({ positions, summary }) {
+// Every problem chip carries its action (`onSelectTicker` opens the
+// position modal in PositionsList below) — an alert that names a problem
+// must take you to the decision, not just report it.
+function NeedsAttention({ positions, summary, onSelectTicker }) {
   if (!positions?.length || !summary) return null
   const chips = []
   for (const p of positions) {
     if ((p.gain_loss_pct ?? 0) < -5) {
-      chips.push({ tone: 'hot', label: `${p.ticker} drawdown`, value: `${p.gain_loss_pct.toFixed(1)}%` })
+      chips.push({ tone: 'hot', ticker: p.ticker, label: `${p.ticker} drawdown`, value: `${p.gain_loss_pct.toFixed(1)}%` })
     }
     const base = p.is_growth_stock ? p.purchase_growth_score : p.purchase_score
     const now = p.is_growth_stock ? p.current_growth_score : p.current_score
     if (base != null && now != null && base - now >= 12) {
-      chips.push({ tone: 'warm', label: `${p.ticker} score fade`, value: `${base.toFixed(0)} → ${now.toFixed(0)}` })
+      chips.push({ tone: 'warm', ticker: p.ticker, label: `${p.ticker} score fade`, value: `${base.toFixed(0)} → ${now.toFixed(0)}` })
     }
     if (p.trailing_stop?.near_stop) {
-      chips.push({ tone: 'hot', label: `${p.ticker} near stop`, value: `${p.trailing_stop.drop_from_peak_pct?.toFixed(1)}% off peak` })
+      chips.push({ tone: 'hot', ticker: p.ticker, label: `${p.ticker} near stop`, value: `${p.trailing_stop.drop_from_peak_pct?.toFixed(1)}% off peak` })
     }
   }
   const cashPct = summary.total_value > 0 ? (100 * summary.cash / summary.total_value) : 0
-  const toneCls = {
-    hot: 'border-l-red-400/80 text-red-400',
-    warm: 'border-l-amber-400/80 text-amber-400',
-    ok: 'border-l-dark-500 text-dark-200',
-  }
   return (
     <Card variant="glass" className="mb-4">
       <CardHeader title="Needs attention" />
       <div className="flex gap-2 flex-wrap">
         {chips.length === 0 && (
-          <div className={`border border-dark-600 border-l-[3px] ${toneCls.ok} rounded px-3 py-1.5`}>
-            <div className="text-[11px] text-dark-400">Positions</div>
-            <div className="text-sm font-semibold text-dark-200">All inside bands</div>
-          </div>
+          <AlertChip tone="ok" label="Positions" value="All inside bands" />
         )}
         {chips.map((c, i) => (
-          <div key={c.label + i} className={`border border-dark-600 border-l-[3px] rounded px-3 py-1.5 ${toneCls[c.tone]}`}>
-            <div className="text-[11px] text-dark-400">{c.label}</div>
-            <div className="text-sm font-semibold font-data">{c.value}</div>
-          </div>
+          <AlertChip
+            key={c.label + i}
+            tone={c.tone}
+            label={c.label}
+            value={c.value}
+            title={`Open ${c.ticker} position details`}
+            onClick={() => onSelectTicker?.(c.ticker)}
+          />
         ))}
-        <div className={`border border-dark-600 border-l-[3px] ${toneCls.ok} rounded px-3 py-1.5`}>
-          <div className="text-[11px] text-dark-400">Cash ready</div>
-          <div className="text-sm font-semibold text-dark-200 font-data">
-            {formatCurrency(summary.cash)} · {cashPct.toFixed(0)}%
-          </div>
-        </div>
+        <AlertChip
+          tone="ok"
+          label="Cash ready"
+          value={`${formatCurrency(summary.cash)} · ${cashPct.toFixed(0)}%`}
+        />
       </div>
     </Card>
   )
@@ -1243,9 +1290,19 @@ const POSITION_SORTS = [
 // reflects the selected window. Otherwise falls back to lifetime gain_loss_pct.
 // Mirrors SummaryCard's inline pill row so the user can flip windows while
 // scanning the list without scrolling back to the summary at the top.
-function PositionsList({ positions, windowReturns, timeRange, setTimeRange, loading }) {
+function PositionsList({ positions, windowReturns, timeRange, setTimeRange, loading, openTicker, onOpenHandled }) {
   const [selectedPosition, setSelectedPosition] = useState(null)
   const [sortKey, setSortKey] = useState('value')
+
+  // External open request (NeedsAttention chip tap): resolve the ticker to
+  // its position row and open the same modal a row tap would. The handled
+  // callback clears the parent's request so re-tapping the chip re-opens.
+  useEffect(() => {
+    if (!openTicker) return
+    const match = (positions || []).find(p => p.ticker === openTicker)
+    if (match) setSelectedPosition(match)
+    onOpenHandled?.()
+  }, [openTicker, positions])
 
   // Effective per-position score depends on stock type (mirrors the render
   // below: growth stocks show current_growth_score, others current_score).
@@ -2816,6 +2873,9 @@ export default function AIPortfolio() {
   })
   const [windowReturns, setWindowReturns] = useState(null)
   const [windowReturnsLoading, setWindowReturnsLoading] = useState(false)
+  // NeedsAttention → PositionsList handoff: a chip tap sets the ticker,
+  // PositionsList opens its modal and clears it via onOpenHandled.
+  const [attentionTicker, setAttentionTicker] = useState(null)
   const [edge, setEdge] = useState(null)
   const [reconciliation, setReconciliation] = useState(null)
   // Window for the reconciliation card's LIVE exit set. Default post-fix
@@ -3183,8 +3243,13 @@ export default function AIPortfolio() {
           />
 
           {/* "Is anything on fire?" — the second question, answered before
-              the reader reaches the full positions table. */}
-          <NeedsAttention positions={portfolio?.positions} summary={portfolio?.summary} />
+              the reader reaches the full positions table. Chip taps open
+              the position modal via the attentionTicker handoff. */}
+          <NeedsAttention
+            positions={portfolio?.positions}
+            summary={portfolio?.summary}
+            onSelectTicker={setAttentionTicker}
+          />
 
           <PositionsList
             positions={portfolio?.positions}
@@ -3192,6 +3257,8 @@ export default function AIPortfolio() {
             timeRange={timeRange}
             setTimeRange={setTimeRange}
             loading={windowReturnsLoading}
+            openTicker={attentionTicker}
+            onOpenHandled={() => setAttentionTicker(null)}
           />
 
           <ConfigPanel

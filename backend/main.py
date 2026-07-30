@@ -3648,6 +3648,7 @@ async def get_ai_portfolio_history(
     # to a slightly earlier MarketSnapshot when the exact first-day row is
     # missing (weekend, scanner gap, or first_day == start_date_only edge).
     spy_by_date = {}
+    spy_dist_by_date = {}
     if snapshots:
         market_snaps = db.query(MarketSnapshot).filter(
             MarketSnapshot.date >= start_date_only - timedelta(days=7),
@@ -3655,6 +3656,9 @@ async def get_ai_portfolio_history(
         ).all()
         for ms in market_snaps:
             spy_by_date[ms.date] = ms.spy_price
+            if ms.spy_50_ma:
+                spy_dist_by_date[ms.date] = round(
+                    (ms.spy_price - ms.spy_50_ma) / ms.spy_50_ma * 100.0, 2)
 
     # Intraday SPY ticks (append-only log, accruing since 2026-06-11). Where
     # a tick exists at-or-before a snapshot's timestamp, it is preferred over
@@ -3741,11 +3745,28 @@ async def get_ai_portfolio_history(
             price = spy_by_date[max(earlier)]
         return round(base_value * (price / spy_anchor), 2)
 
+    def _spy_dist_for(snap):
+        """SPY %-distance from its 50MA on the snapshot's day (carry-forward
+        over weekends/gaps, same convention as the SPY price fallback).
+        Feeds the frontend's regime shading: chop = dist below the
+        regime_edge threshold, trend = above. None when MA history is
+        missing so old rows degrade to unshaded."""
+        snap_day = snap.date or (snap.timestamp.date() if snap.timestamp else None)
+        if not snap_day:
+            return None
+        if snap_day in spy_dist_by_date:
+            return spy_dist_by_date[snap_day]
+        earlier = [d for d in spy_dist_by_date if d <= snap_day]
+        if not earlier:
+            return None
+        return spy_dist_by_date[max(earlier)]
+
     return [{
         "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else None,
         "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
         "total_value": s.total_value,
         "spy_value": _spy_value_for(s),
+        "spy_dist_pct": _spy_dist_for(s),
         "cash": s.cash,
         "positions_value": s.positions_value,
         "positions_count": s.positions_count,
