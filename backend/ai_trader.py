@@ -2320,11 +2320,15 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     if candidate_tickers:
         try:
             from sqlalchemy import func
-            # Get last 3 scores per ticker using a subquery approach
+            # Get last 3 scores per ticker. StockScore has no ticker column
+            # (keyed by stock_id) — the original version of this batch fetch
+            # queried StockScore.ticker, which raised AttributeError into the
+            # except below and silently disabled averaging entirely.
             all_recent_scores = (
-                db.query(StockScore.ticker, StockScore.total_score)
-                .filter(StockScore.ticker.in_(candidate_tickers))
-                .order_by(StockScore.ticker, StockScore.timestamp.desc())
+                db.query(Stock.ticker, StockScore.total_score)
+                .join(Stock, StockScore.stock_id == Stock.id)
+                .filter(Stock.ticker.in_(candidate_tickers))
+                .order_by(Stock.ticker, StockScore.timestamp.desc())
                 .all()
             )
             # Group by ticker, keeping only the 3 most recent per ticker

@@ -1066,6 +1066,39 @@ class TestEvaluateBuysRanking:
         assert b["signal_factors"]["entry_type"] == "standard"
         assert b["is_growth_stock"] is False
 
+    def test_multi_scan_averaging_uses_score_history(
+        self,
+        db_session,
+        stub_market_bullish,
+        disable_atr_http,
+        disable_historical_data,
+        disable_ml_and_yfinance,
+        silence_webhooks,
+    ):
+        """Regression: the batch score-history fetch queried StockScore.ticker
+        — a column that doesn't exist (the table is keyed by stock_id) — and
+        the surrounding try/except swallowed the AttributeError at DEBUG, so
+        multi-scan averaging was silently dead. With 3 history rows whose
+        50/30/20 average deviates >=3 pts from the current score, the buy's
+        effective_score must be the average, not the raw score."""
+        from datetime import datetime, timedelta, timezone
+        from backend.ai_trader import evaluate_buys
+        from backend.database import StockScore
+
+        _seed_config(db_session, strategy="nostate_optimized", current_cash=20000.0)
+        stock = _seed_growth_projection_stock(db_session, "AVG", canslim_score=80.0)
+        now = datetime.now(timezone.utc)
+        # oldest -> newest: 60, 70, 80. Weighted 80*.5 + 70*.3 + 60*.2 = 73.
+        for age_min, score in ((180, 60.0), (90, 70.0), (5, 80.0)):
+            ts = now - timedelta(minutes=age_min)
+            db_session.add(StockScore(stock_id=stock.id, timestamp=ts,
+                                      date=ts.date(), total_score=score))
+        db_session.commit()
+
+        buys = evaluate_buys(db_session, user_id=1)
+        assert len(buys) == 1
+        assert abs(buys[0]["effective_score"] - 73.0) < 0.01
+
     def test_stale_rows_excluded_from_candidates(
         self,
         db_session,
