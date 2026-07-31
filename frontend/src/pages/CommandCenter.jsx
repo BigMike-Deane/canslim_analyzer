@@ -43,19 +43,19 @@ function useMarketRefresh(callback, intervalMs = 60000) {
 function BuyDayPill({ active }) {
   if (active === null || active === undefined) {
     return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border bg-dark-800 border-dark-700 text-dark-500">
+      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border whitespace-nowrap bg-dark-800 border-dark-700 text-dark-500">
         <span className="w-1.5 h-1.5 rounded-full bg-dark-500" />
         ---
       </span>
     )
   }
   return active ? (
-    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border bg-emerald-500/15 border-emerald-500/40 text-emerald-300">
+    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap bg-emerald-500/15 border-emerald-500/40 text-emerald-300">
       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
       BUY DAY
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border bg-red-500/15 border-red-500/40 text-red-300">
+    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap bg-red-500/15 border-red-500/40 text-red-300">
       <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
       DEFENSE DAY
     </span>
@@ -713,7 +713,7 @@ export default function CommandCenter() {
             )}
           </span>
           <span
-            className="text-[10px] text-dark-500 font-data"
+            className="hidden sm:inline text-[10px] text-dark-500 font-data"
             title={lastUpdate ? formatTime(lastUpdate.toISOString()) : ''}
           >
             {lastUpdate ? `Updated ${formatRelativeTime(lastUpdate.toISOString())}` : ''}
