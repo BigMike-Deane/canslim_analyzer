@@ -3572,6 +3572,10 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
             "is_active": config.is_active,
             "paper_mode": getattr(config, 'paper_mode', False) or False,
             "strategy": getattr(config, 'strategy', None) or "balanced",
+            # Live half of the buy gate (min_score is the static half). None
+            # when SPY data is unavailable so the UI can render "unknown"
+            # instead of a confidently wrong open/closed.
+            "spy_gate_open": (not is_bearish_market) if (_spy_price and _spy_ma50) else None,
         },
         "summary": portfolio,
         "positions": positions_data

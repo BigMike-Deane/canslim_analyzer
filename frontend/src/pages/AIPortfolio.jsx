@@ -2375,7 +2375,7 @@ function SectorAllocationChart({ riskData, cashPct }) {
 }
 
 // ── Config Panel ────────────────────────────────────────────────────
-function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, waitingForTrades }) {
+function ConfigPanel({ config, positions, tradesCount, onUpdate, onInitialize, onRunCycle, onRefresh, waitingForTrades }) {
   const [isActive, setIsActive] = useState(config?.is_active || false)
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
@@ -2422,6 +2422,33 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       console.error('Failed to run cycle:', err)
     }
   }
+
+  // A portfolio that has never traded gets "set up" framing instead of the
+  // destructive "wipe" framing — there is nothing to lose yet. (New users'
+  // portfolios are auto-created at $25k; this dialog is where they pick
+  // their own number.)
+  const fresh = (positions?.length || 0) === 0 && (tradesCount || 0) === 0
+
+  // Live protective triggers, from the same exit_plan payload the trader's
+  // evaluate_sells mirrors (ATR-widened, trailing-tier, bear-regime aware) —
+  // per position, the tightest priced down-direction trigger.
+  const downTriggers = (positions || [])
+    .map(p => {
+      const ts = (p.exit_plan?.triggers || []).filter(
+        t => t.direction === 'down' && t.price != null && t.distance_pct != null
+      )
+      if (ts.length === 0) return null
+      const nearest = ts.reduce((a, b) => (b.distance_pct < a.distance_pct ? b : a))
+      return { ticker: p.ticker, label: nearest.label, distance_pct: nearest.distance_pct }
+    })
+    .filter(Boolean)
+  const stopDists = downTriggers.map(t => t.distance_pct)
+  const stopMin = stopDists.length ? Math.min(...stopDists) : null
+  const stopMax = stopDists.length ? Math.max(...stopDists) : null
+  const nearestExit = downTriggers.length
+    ? downTriggers.reduce((a, b) => (b.distance_pct < a.distance_pct ? b : a))
+    : null
+  const gateOpen = config?.spy_gate_open
 
   // Clamp to the endpoint's accepted range ($1k–$1M) so a stray input can't
   // 400 the request; round to whole dollars.
@@ -2511,12 +2538,39 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
           </div>
         </div>
 
+        {/* Live strategy state — not the static config scalars: the buy gate
+            shows BOTH halves (score floor + SPY regime gate), and stops are
+            the effective per-position triggers (trailing/ATR/bear-aware),
+            not the base −7% floor. */}
         <StatGrid
           columns={3}
           stats={[
-            { label: 'Min Score', value: config?.min_score_to_buy || '72' },
-            { label: 'Take Profit', value: `+${config?.take_profit_pct || 75}%`, color: 'text-emerald-400' },
-            { label: 'Stop Loss', value: `-${config?.stop_loss_pct || 7}%`, color: 'text-red-400' },
+            {
+              label: 'Buy Gate',
+              value: `≥${config?.min_score_to_buy || 72}`,
+              sublabel: gateOpen === false
+                ? <span className="text-red-400">closed — SPY &lt; 50MA</span>
+                : gateOpen === true
+                  ? <span className="text-emerald-400">open — SPY &gt; 50MA</span>
+                  : 'score to buy',
+            },
+            {
+              label: 'Live Stops',
+              value: stopMin != null
+                ? (Math.round(stopMin) === Math.round(stopMax)
+                    ? `−${stopMin.toFixed(1)}%`
+                    : `−${stopMin.toFixed(1)}–${stopMax.toFixed(1)}%`)
+                : `−${config?.stop_loss_pct || 7}%`,
+              color: 'text-red-400',
+              sublabel: stopMin != null ? 'below price · trailing/ATR' : 'base — no open positions',
+            },
+            {
+              label: 'Nearest Exit',
+              value: nearestExit ? nearestExit.ticker : '—',
+              sublabel: nearestExit
+                ? `${nearestExit.label.toLowerCase()} · ${nearestExit.distance_pct.toFixed(1)}% away`
+                : 'no open positions',
+            },
           ]}
           className="text-sm"
         />
@@ -2553,9 +2607,11 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       <button
         onClick={openReset}
         disabled={initializing}
-        className="w-full py-2 mb-2 bg-dark-700 hover:bg-red-500/10 hover:text-red-400 rounded-lg text-sm font-medium transition-colors text-dark-300"
+        className={`w-full py-2 mb-2 bg-dark-700 rounded-lg text-sm font-medium transition-colors text-dark-300 ${
+          fresh ? 'hover:bg-dark-600' : 'hover:bg-red-500/10 hover:text-red-400'
+        }`}
       >
-        {initializing ? 'Resetting...' : 'Reset Portfolio…'}
+        {initializing ? 'Resetting...' : fresh ? 'Set Starting Cash…' : 'Reset Portfolio…'}
       </button>
 
       <Link
@@ -2565,23 +2621,32 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
         Run Historical Backtest
       </Link>
 
-      <Modal open={resetOpen} onClose={() => !initializing && setResetOpen(false)} title="Reset AI Portfolio" size="sm">
-        <div className="flex gap-2.5 p-3 mb-4 bg-red-500/10 border border-red-500/30 rounded-lg">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-               className="text-red-400 shrink-0 mt-0.5">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-            <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
-          <div className="text-xs text-red-300/90 leading-relaxed">
-            This wipes the portfolio: all open positions, the full trade history,
-            and every performance snapshot are permanently deleted. The chart and
-            edge stats start over from day one. This cannot be undone.
+      <Modal open={resetOpen} onClose={() => !initializing && setResetOpen(false)}
+             title={fresh ? 'Set Up AI Portfolio' : 'Reset AI Portfolio'} size="sm">
+        {fresh ? (
+          <div className="p-3 mb-4 bg-dark-750/60 border border-dark-700 rounded-lg text-xs text-dark-300 leading-relaxed">
+            Pick the paper-trading bankroll the AI starts with. Nothing has been
+            traded yet, so you can change this freely — once trades exist,
+            changing it requires a full reset.
           </div>
-        </div>
+        ) : (
+          <div className="flex gap-2.5 p-3 mb-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                 className="text-red-400 shrink-0 mt-0.5">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <div className="text-xs text-red-300/90 leading-relaxed">
+              This wipes the portfolio: all open positions, the full trade history,
+              and every performance snapshot are permanently deleted. The chart and
+              edge stats start over from day one. This cannot be undone.
+            </div>
+          </div>
+        )}
 
         <label htmlFor="ai-start-cash" className="block text-[10px] font-semibold tracking-widest uppercase text-dark-400 mb-1.5">
-          New starting cash
+          {fresh ? 'Starting cash' : 'New starting cash'}
         </label>
         <div className="relative mb-1.5">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-500 text-sm pointer-events-none">$</span>
@@ -2611,9 +2676,15 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
           <button
             onClick={handleInitialize}
             disabled={initializing}
-            className="flex-1 py-2 bg-red-500/80 hover:bg-red-500 rounded-lg text-sm font-semibold transition-colors text-white disabled:opacity-50"
+            className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-colors text-white disabled:opacity-50 ${
+              fresh ? 'bg-primary-500 hover:bg-primary-600' : 'bg-red-500/80 hover:bg-red-500'
+            }`}
           >
-            {initializing ? 'Resetting…' : `Wipe & restart at $${initCash.toLocaleString()}`}
+            {initializing
+              ? fresh ? 'Starting…' : 'Resetting…'
+              : fresh
+                ? `Start with $${initCash.toLocaleString()}`
+                : `Wipe & restart at $${initCash.toLocaleString()}`}
           </button>
         </div>
       </Modal>
@@ -3334,6 +3405,8 @@ export default function AIPortfolio() {
 
           <ConfigPanel
             config={portfolio?.config}
+            positions={portfolio?.positions}
+            tradesCount={trades?.length || 0}
             onUpdate={handleUpdateConfig}
             onInitialize={handleInitialize}
             onRefresh={handleRefresh}
