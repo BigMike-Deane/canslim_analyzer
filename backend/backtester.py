@@ -52,6 +52,7 @@ from backend.trading_engine import (
     get_tightened_trailing_stop,
     evaluate_score_crash,
     sanitize_signal_factors,
+    min_position_value,
 )
 
 from backend.database import (
@@ -1994,7 +1995,7 @@ class BacktestEngine:
                     if trade_value > available_invest:
                         trade.shares = available_invest / trade.price
                     # Skip if adjusted position is too small to be meaningful
-                    if trade.shares * trade.price < 100:
+                    if trade.shares * trade.price < min_position_value(pv):
                         continue
                 self._execute_buy(current_date, trade)
                 buys_executed_today += 1
@@ -2089,7 +2090,7 @@ class BacktestEngine:
             remaining_seed_budget = max_seed_cash - seed_cash_spent
             position_value = min(position_value, remaining_seed_budget, self.cash * 0.70)
 
-            if position_value < 100 or self.cash < 100:
+            if position_value < min_position_value(portfolio_value) or self.cash < 100:
                 break
 
             shares = position_value / price
@@ -3872,7 +3873,7 @@ class BacktestEngine:
             cash_limit = max(cash_limit, 500)  # Floor
             position_value = min(position_value, cash_limit)
 
-            if position_value < 100:
+            if position_value < min_position_value(portfolio_value):
                 continue
 
             # Check sector allocation % limit (shared helper — mirrored in ai_trader.check_sector_limit)
@@ -3907,7 +3908,7 @@ class BacktestEngine:
                     multiplier = max(0.25, corr_reduction * (1.0 - excess * 0.5))
                     old_val = position_value
                     position_value *= multiplier
-                    if position_value < 100:
+                    if position_value < min_position_value(portfolio_value):
                         continue
                     logger.debug(f"CORR GUARD: {ticker} corr={max_corr:.2f} with "
                                  f"{most_corr_ticker}, ${old_val:.0f} -> ${position_value:.0f}")
@@ -4153,6 +4154,20 @@ class BacktestEngine:
 
     def _evaluate_pyramids(self, current_date: date, scores: Dict[str, dict]) -> List[SimulatedTrade]:
         """Evaluate positions for pyramid opportunities, prioritizing breakouts"""
+        # RESEARCH LEVER (default OFF, backtester-only — ai_trader untouched):
+        # pyramid_rules.bearish_market_gate makes ALL adds (pyramids + scale-ins)
+        # honor the same SPY<50MA signal that blocks new buys. Live behavior is
+        # asymmetric: the regime gate blocks a fresh $3.6k position while
+        # allowing a $900 add to an existing one (observed: user-3 ITIC/SN
+        # pyramids Jul-28/29 2026 fired inside a bearish tape). Missing SPY
+        # data counts as bearish, mirroring the buy gate's conservatism.
+        gate_cfg = self.profile.get('pyramid_rules', {})
+        if gate_cfg.get('bearish_market_gate', False):
+            spy = self.data_provider.get_market_direction(current_date).get('spy', {})
+            spy_price, spy_ma50 = spy.get('price', 0), spy.get('ma_50', 0)
+            if not spy_price or not spy_ma50 or spy_price < spy_ma50:
+                return []
+
         pyramids = []
         portfolio_value = self._get_portfolio_value(current_date)
 

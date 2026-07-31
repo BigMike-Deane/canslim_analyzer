@@ -653,3 +653,31 @@ class TestApplyPositionSizeMultipliersCoverage:
             pre_breakout_bonus=30, has_base=True,
         ))
         assert abs(result - 12.0 * 1.40 * 0.93) < 0.01
+
+
+class TestMinPositionValue:
+    """Shared runt-position floor (2026-07-31): both ai_trader and backtester
+    size buys through this — a 0.6%-of-book seed remainder (user-3 FTDR $145)
+    paid a full stop round trip while moving nothing."""
+
+    def test_pct_floor_dominates_on_normal_book(self):
+        from backend.trading_engine import min_position_value
+        # $25k book at 1.5% -> $375 floor (FTDR's $145 would be skipped)
+        assert min_position_value(25000.0, min_pct=1.5) == 375.0
+
+    def test_absolute_floor_dominates_on_tiny_book(self):
+        from backend.trading_engine import min_position_value
+        # $5k book at 1.5% = $75 -> absolute $100 floor wins
+        assert min_position_value(5000.0, min_pct=1.5) == 100.0
+
+    def test_zero_or_missing_portfolio_falls_back_to_absolute(self):
+        from backend.trading_engine import min_position_value
+        assert min_position_value(0.0, min_pct=1.5) == 100.0
+        assert min_position_value(None, min_pct=1.5) == 100.0
+
+    def test_default_pct_resolves_from_yaml(self):
+        from backend.trading_engine import min_position_value
+        # No min_pct passed -> YAML ai_trader.allocation.min_position_pct
+        # (1.5 in default.yaml). Must never be below the absolute floor.
+        assert min_position_value(25000.0) >= 100.0
+        assert min_position_value(25000.0) == 375.0

@@ -55,6 +55,7 @@ from backend.trading_engine import (
     cache_atr_stop,
     atr_stop_fallback,
     dedup_scores_to_daily,
+    min_position_value,
 )
 
 # Import email utils with fallback for testing
@@ -3637,8 +3638,9 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 # Recalculate position value and shares with live price
                 logger.info(f"{stock.ticker}: buy_value=${buy['value']:.2f}, cash=${config.current_cash:.2f}")
                 actual_value = min(buy["value"], config.current_cash - min_cash_reserve)  # Leave 10% reserve
-                if actual_value < 100:
-                    logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f}), skipping")
+                min_pos_value = min_position_value(portfolio["total_value"])
+                if actual_value < min_pos_value:
+                    logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f} < ${min_pos_value:.2f} floor), skipping")
                     continue
 
                 actual_shares = actual_value / live_price

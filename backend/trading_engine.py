@@ -184,6 +184,21 @@ def atr_stop_fallback(ticker: str, base_stop_pct: float, max_age_days: int = 5, 
     return base_stop_pct
 
 
+def min_position_value(portfolio_value: float, min_pct: Optional[float] = None,
+                       absolute_floor: float = 100.0) -> float:
+    """Smallest position worth opening: max of an absolute dollar floor and
+    `min_pct`% of portfolio value (YAML ai_trader.allocation.min_position_pct
+    when not passed). Runt positions — e.g. a 0.6%-of-book seed remainder —
+    pay a full stop-loss round trip while moving nothing. Used by BOTH
+    ai_trader and backtester buy sizing (parity); pyramid adds keep their own
+    $100 threshold because an add extends an existing position, not a runt."""
+    if min_pct is None:
+        min_pct = config.get('ai_trader.allocation.min_position_pct', 1.5)
+    if portfolio_value and portfolio_value > 0:
+        return max(absolute_floor, portfolio_value * float(min_pct) / 100.0)
+    return absolute_floor
+
+
 def get_cached_atr_stop(ticker: str, max_age_days: int = 5, today=None) -> Optional[float]:
     """Last successfully-computed effective ATR stop for `ticker`, or None if
     absent/stale. Read-only view of the same cache the live trading cycle
