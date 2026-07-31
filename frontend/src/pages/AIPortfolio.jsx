@@ -960,15 +960,33 @@ function VerdictLedger({ summary, edge }) {
                 {A.alpha_annualized_pct?.toFixed(0)}% ({lo.toFixed(0)}…{hi.toFixed(0)})
               </b>
             </div>
-            <div className="h-1.5 rounded-full bg-dark-750 relative">
+            <div className="relative">
+              <div className="relative h-1.5 rounded-full bg-dark-750 overflow-hidden">
+                {lo < 0 && (
+                  <div className="absolute inset-y-0 left-0 bg-red-500/40" style={{ width: ciX(Math.min(hi, 0)) }} />
+                )}
+                {hi > 0 && (
+                  <div className="absolute inset-y-0 right-0 bg-emerald-500/40" style={{ left: ciX(Math.max(lo, 0)) }} />
+                )}
+              </div>
               {lo < 0 && hi > 0 && (
-                <span className="absolute -top-0.5 -bottom-0.5 w-px bg-dark-300" style={{ left: ciX(0) }} />
+                <span className="absolute -top-1 -bottom-1 w-px bg-dark-100" style={{ left: ciX(0) }} />
               )}
               <span
                 className="absolute -top-1 w-2.5 h-2.5 rounded-full bg-primary-500 border-2 border-dark-900 -translate-x-1/2"
                 style={{ left: ciX(A.alpha_annualized_pct) }}
               />
             </div>
+            {lo < 0 && hi > 0 && (
+              <div className="relative h-3 mt-1">
+                <span
+                  className="absolute text-[9px] leading-3 text-dark-400 -translate-x-1/2 whitespace-nowrap"
+                  style={{ left: `${Math.min(88, Math.max(12, 100 * -lo / span)).toFixed(1)}%` }}
+                >
+                  0 = no edge
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>
