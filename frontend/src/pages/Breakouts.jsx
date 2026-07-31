@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, formatCurrency, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
-import Card, { CardHeader, SectionLabel } from '../components/Card'
+import Card, { SectionLabel } from '../components/Card'
+import CollapsedDrawer from '../components/CollapsedDrawer'
 import { ScoreBadge, TagBadge } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
 import useApi from '../hooks/useApi'
@@ -305,8 +306,11 @@ export default function Breakouts() {
         )}
       </Card>
 
-      <Card variant="glass" className="bg-dark-850/30">
-        <CardHeader title="What is a Breakout?" />
+      <CollapsedDrawer
+        title="What is a Breakout?"
+        cardProps={{ className: 'bg-dark-850/30' }}
+        badge={<TagBadge color="cyan">GUIDE</TagBadge>}
+      >
         <div className="text-dark-400 text-sm space-y-2">
           <p>A breakout occurs when a stock's price moves above a resistance level (pivot point) with increased volume.</p>
           <SectionLabel>Key Signals</SectionLabel>
@@ -325,7 +329,7 @@ export default function Breakouts() {
             </li>
           </ul>
         </div>
-      </Card>
+      </CollapsedDrawer>
 
       <div className="h-4" />
     </div>

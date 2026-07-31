@@ -5,6 +5,7 @@ import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { PnlText } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
+import CollapsedDrawer from '../components/CollapsedDrawer'
 import { tooltipStyle as TOOLTIP_STYLE, chartAxis, chartColors } from '../components/chartTheme'
 import { buildCsv, downloadCsv } from '../csv'
 
@@ -262,12 +263,29 @@ function BestWorstTrades({ best, worst }) {
   )
 }
 
+// Drawer header badge: "<n> <noun> · <P&L leader>" — the glanceable signal
+// the UI grammar requires on demoted sections.
+function BreakdownBadge({ data, noun, labelOf }) {
+  const leader = data.reduce((a, b) => (b.pnl > a.pnl ? b : a))
+  return (
+    <span className="text-[10px] font-data text-dark-400">
+      {data.length} {noun}{data.length !== 1 ? 's' : ''} ·{' '}
+      <span className={leader.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+        {labelOf(leader)} {leader.pnl >= 0 ? '+' : '−'}{formatCurrency(Math.abs(leader.pnl))}
+      </span>
+    </span>
+  )
+}
+
 function SectorBreakdown({ data }) {
   if (!data || data.length === 0) return null
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Performance by Sector" />
+    <CollapsedDrawer
+      title="Performance by Sector"
+      cardProps={{ className: 'mb-4' }}
+      badge={<BreakdownBadge data={data} noun="sector" labelOf={s => s.sector} />}
+    >
       <div className="space-y-0">
         {data.map((s) => (
           <BreakdownRow
@@ -279,7 +297,7 @@ function SectorBreakdown({ data }) {
           />
         ))}
       </div>
-    </Card>
+    </CollapsedDrawer>
   )
 }
 
@@ -287,8 +305,11 @@ function EntryTypeBreakdown({ data }) {
   if (!data || data.length === 0) return null
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Performance by Entry Type" />
+    <CollapsedDrawer
+      title="Performance by Entry Type"
+      cardProps={{ className: 'mb-4' }}
+      badge={<BreakdownBadge data={data} noun="type" labelOf={et => et.entry_type.replace(/_/g, ' ')} />}
+    >
       <div className="space-y-0">
         {data.map((et) => (
           <BreakdownRow
@@ -300,7 +321,7 @@ function EntryTypeBreakdown({ data }) {
           />
         ))}
       </div>
-    </Card>
+    </CollapsedDrawer>
   )
 }
 
@@ -308,8 +329,11 @@ function SellReasonBreakdown({ data }) {
   if (!data || data.length === 0) return null
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Performance by Sell Reason" />
+    <CollapsedDrawer
+      title="Performance by Sell Reason"
+      cardProps={{ className: 'mb-4' }}
+      badge={<BreakdownBadge data={data} noun="reason" labelOf={sr => sr.sell_reason} />}
+    >
       <div className="space-y-0">
         {data.map((sr) => (
           <BreakdownRow
@@ -327,7 +351,7 @@ function SellReasonBreakdown({ data }) {
           />
         ))}
       </div>
-    </Card>
+    </CollapsedDrawer>
   )
 }
 
@@ -335,8 +359,11 @@ function HoldDurationBreakdown({ data }) {
   if (!data || data.length === 0) return null
 
   return (
-    <Card variant="glass" className="mb-4">
-      <CardHeader title="Performance by Hold Duration" />
+    <CollapsedDrawer
+      title="Performance by Hold Duration"
+      cardProps={{ className: 'mb-4' }}
+      badge={<BreakdownBadge data={data} noun="bucket" labelOf={hd => hd.duration} />}
+    >
       <div className="space-y-0">
         {data.map((hd) => (
           <BreakdownRow
@@ -348,7 +375,7 @@ function HoldDurationBreakdown({ data }) {
           />
         ))}
       </div>
-    </Card>
+    </CollapsedDrawer>
   )
 }
 
