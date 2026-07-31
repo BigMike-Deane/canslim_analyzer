@@ -537,15 +537,72 @@ def send_web_push_broadcast(title: str, body: str, data: dict = None,
         return 0
 
 
+def _fold_into_daily_digest(db, Notification, user_id: int, kind: str,
+                            title: str, data: dict, digest_label: str,
+                            digest_url: str, now) -> bool:
+    """Fold one event into the user's existing same-day row of this kind.
+
+    Returns True if an existing row absorbed the event (caller skips the
+    insert), False if no same-day row exists (caller inserts normally).
+    The first event of the day stays a plain single-event row; from the
+    second event on, the row becomes a digest: count + tickers in the
+    title, one line per event in the body, resurfaced as unread.
+    """
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0,
+                            tzinfo=None)
+    existing = (db.query(Notification)
+                .filter(Notification.user_id == user_id,
+                        Notification.kind == kind,
+                        Notification.created_at >= day_start)
+                .order_by(Notification.created_at.desc())
+                .first())
+    if existing is None:
+        return False
+
+    prev = existing.data if isinstance(existing.data, dict) else {}
+    lines = list(prev.get("digest_lines") or [existing.title])
+    tickers = list(prev.get("tickers") or
+                   ([prev["ticker"]] if prev.get("ticker") else []))
+    count = int(prev.get("count") or 1) + 1
+
+    ticker = (data or {}).get("ticker")
+    if ticker and ticker not in tickers:
+        tickers.append(ticker)
+    if len(lines) < 20:
+        lines.append(title)
+
+    shown = ", ".join(tickers[:4])
+    if len(tickers) > 4:
+        shown += f" +{len(tickers) - 4}"
+    existing.title = f"{digest_label} today: {count}" + (f" — {shown}" if shown else "")
+    overflow = count - len(lines)
+    existing.body = "\n".join(lines) + (f"\n… +{overflow} more" if overflow > 0 else "")
+    # New dict on purpose — SQLAlchemy JSON columns don't track in-place
+    # mutation, only attribute assignment.
+    existing.data = {**prev, "count": count, "tickers": tickers,
+                     "digest_lines": lines, "url": digest_url,
+                     "last_event": data or {}}
+    existing.read_at = None
+    existing.created_at = now
+    return True
+
+
 def broadcast_notification(kind: str, title: str, body: str,
                            priority: str = "default", tags: list = None,
-                           data: dict = None) -> int:
+                           data: dict = None, coalesce_daily: bool = False,
+                           digest_label: str = None,
+                           digest_url: str = "/notifications") -> int:
     """Persist an in-app notification for every active user AND fan out a
     Web Push to every active user's devices.
 
     Used for system-wide events (breakouts, market regime changes, etc.)
     that aren't tied to any single user's portfolio. Fail-soft at every
-    step. Returns the number of DB rows inserted.
+    step. Returns the number of DB rows inserted or folded.
+
+    coalesce_daily: high-volume kinds (breakout, coiled_spring) set this so
+    each user gets at most ONE page row per kind per UTC day — later events
+    fold into it as a digest instead of minting new rows. Outbound push is
+    unaffected: it stays per-event and mute-gated below.
     """
     inserted = 0
     try:
@@ -556,14 +613,28 @@ def broadcast_notification(kind: str, title: str, body: str,
                         db.query(User.id).filter(User.is_active == True).all()]
             if user_ids:
                 now = datetime.now(timezone.utc)
-                db.bulk_save_objects([
-                    Notification(
-                        user_id=uid, kind=kind, title=title, body=body or "",
-                        priority=priority, tags=tags, data=data, created_at=now,
-                    ) for uid in user_ids
-                ])
-                db.commit()
-                inserted = len(user_ids)
+                if coalesce_daily:
+                    label = digest_label or (kind.replace("_", " ").capitalize() + "s")
+                    for uid in user_ids:
+                        if not _fold_into_daily_digest(
+                                db, Notification, uid, kind, title, data,
+                                label, digest_url, now):
+                            db.add(Notification(
+                                user_id=uid, kind=kind, title=title,
+                                body=body or "", priority=priority,
+                                tags=tags, data=data, created_at=now,
+                            ))
+                    db.commit()
+                    inserted = len(user_ids)
+                else:
+                    db.bulk_save_objects([
+                        Notification(
+                            user_id=uid, kind=kind, title=title, body=body or "",
+                            priority=priority, tags=tags, data=data, created_at=now,
+                        ) for uid in user_ids
+                    ])
+                    db.commit()
+                    inserted = len(user_ids)
         finally:
             db.close()
     except Exception as e:
@@ -640,7 +711,9 @@ def send_coiled_spring_alert_webhook(stock, cs_result: dict) -> bool:
 
     tags = ["cyclone", "chart_with_upwards_trend"]
     broadcast_notification(kind="coiled_spring", title=title, body=message,
-                           priority="high", tags=tags, data=data)
+                           priority="high", tags=tags, data=data,
+                           coalesce_daily=True, digest_label="Coiled springs",
+                           digest_url="/coiled-spring/history")
     return send_webhook_notification(title, message, priority="high", data=data, tags=tags,
                                      kind="coiled_spring")
 

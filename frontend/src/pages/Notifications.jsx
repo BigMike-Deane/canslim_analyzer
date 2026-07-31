@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, formatRelativeTime, formatDateTime } from '../api'
 import { useToast } from '../components/Toast'
-import Spinner from '../components/Spinner'
 import useApi from '../hooks/useApi'
 
 const PAGE_SIZE = 50
@@ -112,6 +111,12 @@ export default function Notifications() {
 
   function handleRowClick(n) {
     handleMarkRead(n)
+    // Daily-digest rows (count > 1) span multiple tickers — go to the
+    // kind's list page instead of any single stock.
+    if ((n?.data?.count || 0) > 1 && n?.data?.url) {
+      navigate(n.data.url)
+      return
+    }
     const ticker = n?.data?.ticker
     if (ticker) navigate(`/stock/${ticker}`)
   }
@@ -165,7 +170,11 @@ export default function Notifications() {
 
       <div className="bg-dark-900 border border-dark-700/60 rounded-lg overflow-hidden">
         {loading && (
-          <Spinner label="Loading notifications…" />
+          <div className="p-4 space-y-3" aria-label="Loading notifications">
+            {[1, 2, 3, 4, 5, 6].map(i => (
+              <div key={i} className="skeleton h-12 rounded-lg" />
+            ))}
+          </div>
         )}
         {!loading && items.length === 0 && (
           <div className="px-4 py-12 text-center text-xs text-dark-500">

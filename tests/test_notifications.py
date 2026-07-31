@@ -623,3 +623,110 @@ class TestThresholdPreview:
         # JSON doesn't carry NaN/inf in standard mode, but if they got through
         # we'd see >1. Pinning the contract here.
         assert body["scores"] == [50.0]
+
+
+# ── Daily digest coalescing (breakout / coiled_spring volume tuning) ──
+
+class TestDailyDigestCoalescing:
+    """coalesce_daily=True: one page row per kind per UTC day per user;
+    later events fold into a digest instead of minting new rows."""
+
+    def _rows(self, kind):
+        db = SessionLocal()
+        try:
+            return (db.query(Notification)
+                    .filter(Notification.user_id == USER_A_ID,
+                            Notification.kind == kind)
+                    .order_by(Notification.created_at.desc()).all())
+        finally:
+            db.close()
+
+    def _bcast(self, ticker, title=None):
+        return broadcast_notification(
+            kind="breakout", title=title or f"BREAKOUT: {ticker} $10.00",
+            body=f"Score: 80 | Pivot: $9.50\nflat 6w | Tech",
+            priority="high", data={"ticker": ticker},
+            coalesce_daily=True, digest_label="Breakouts",
+            digest_url="/breakouts")
+
+    def test_first_event_is_a_plain_row(self):
+        self._bcast("AAA")
+        rows = self._rows("breakout")
+        assert len(rows) == 1
+        assert rows[0].title == "BREAKOUT: AAA $10.00"
+        assert rows[0].data == {"ticker": "AAA"}
+
+    def test_second_same_day_event_folds_into_digest(self):
+        self._bcast("AAA")
+        self._bcast("BBB")
+        rows = self._rows("breakout")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.title == "Breakouts today: 2 — AAA, BBB"
+        assert row.body == "BREAKOUT: AAA $10.00\nBREAKOUT: BBB $10.00"
+        assert row.data["count"] == 2
+        assert row.data["tickers"] == ["AAA", "BBB"]
+        assert row.data["url"] == "/breakouts"
+
+    def test_fold_resurfaces_read_row_as_unread(self):
+        self._bcast("AAA")
+        db = SessionLocal()
+        try:
+            from datetime import datetime, timezone
+            db.query(Notification).filter(
+                Notification.user_id == USER_A_ID
+            ).update({"read_at": datetime.now(timezone.utc)})
+            db.commit()
+        finally:
+            db.close()
+        self._bcast("BBB")
+        assert self._rows("breakout")[0].read_at is None
+
+    def test_yesterdays_row_does_not_absorb_today(self):
+        self._bcast("AAA")
+        db = SessionLocal()
+        try:
+            from datetime import datetime, timezone, timedelta
+            db.query(Notification).filter(
+                Notification.user_id == USER_A_ID
+            ).update({"created_at":
+                      datetime.now(timezone.utc) - timedelta(days=1)})
+            db.commit()
+        finally:
+            db.close()
+        self._bcast("BBB")
+        rows = self._rows("breakout")
+        assert len(rows) == 2
+        assert rows[0].title == "BREAKOUT: BBB $10.00"
+
+    def test_different_kind_does_not_fold(self):
+        self._bcast("AAA")
+        broadcast_notification(kind="coiled_spring", title="CS: AAA",
+                               body="b", data={"ticker": "AAA"},
+                               coalesce_daily=True,
+                               digest_label="Coiled springs",
+                               digest_url="/coiled-spring/history")
+        assert len(self._rows("breakout")) == 1
+        assert len(self._rows("coiled_spring")) == 1
+
+    def test_title_caps_tickers_at_four(self):
+        for t in ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF"):
+            self._bcast(t)
+        row = self._rows("breakout")[0]
+        assert row.title == "Breakouts today: 6 — AAA, BBB, CCC, DDD +2"
+        assert row.data["count"] == 6
+
+    def test_duplicate_ticker_counts_but_lists_once(self):
+        self._bcast("AAA")
+        self._bcast("AAA", title="BREAKOUT + VOLUME: AAA $11.00")
+        row = self._rows("breakout")[0]
+        assert row.data["count"] == 2
+        assert row.data["tickers"] == ["AAA"]
+        assert row.title == "Breakouts today: 2 — AAA"
+
+    def test_without_flag_every_event_is_a_row(self):
+        for t in ("AAA", "BBB"):
+            broadcast_notification(kind="breakout",
+                                   title=f"BREAKOUT: {t}", body="b",
+                                   data={"ticker": t})
+        assert len(self._rows("breakout")) == 2

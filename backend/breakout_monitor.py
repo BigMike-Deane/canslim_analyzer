@@ -195,6 +195,8 @@ def check_intraday_breakouts():
                 broadcast_notification(
                     kind="breakout", title=title, body=message,
                     priority=priority, tags=tags,
+                    coalesce_daily=True, digest_label="Breakouts",
+                    digest_url="/breakouts",
                     data={"ticker": stock.ticker, "price": price,
                           "pivot_price": stock.pivot_price,
                           "pct_from_pivot": pct_from_pivot,
