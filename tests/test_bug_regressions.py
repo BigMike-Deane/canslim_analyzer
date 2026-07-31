@@ -1991,8 +1991,12 @@ class TestBatchScoreHistory:
         assert "_score_history_cache" in source
         # Must build cache before the main candidate loop
         assert "candidate_tickers" in source
-        # Must use .in_ for batch query
-        assert "StockScore.ticker.in_(candidate_tickers)" in source
+        # Must use .in_ for batch query, joined through Stock — StockScore has
+        # no ticker column (keyed by stock_id). The previous assertion pinned
+        # the literal `StockScore.ticker.in_(...)` string, which enshrined a
+        # broken column reference that silently disabled averaging (5de0093).
+        assert "Stock.ticker.in_(candidate_tickers)" in source
+        assert "StockScore.stock_id == Stock.id" in source
 
     def test_no_per_ticker_query_in_get_avg_score(self):
         """_get_avg_score should use the cache, not run individual DB queries."""
