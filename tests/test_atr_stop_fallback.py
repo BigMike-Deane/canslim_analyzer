@@ -8,7 +8,12 @@ ai_trader.py hookup is staged in docs/june19-minor-items-playbook.md.
 
 from datetime import date
 
-from backend.trading_engine import cache_atr_stop, atr_stop_fallback, _atr_stop_cache
+from backend.trading_engine import (
+    cache_atr_stop,
+    atr_stop_fallback,
+    get_cached_atr_stop,
+    _atr_stop_cache,
+)
 
 
 def setup_function():
@@ -36,3 +41,21 @@ def test_cache_overwrites_with_latest():
     cache_atr_stop("AMD", 15.0, today=date(2026, 6, 10))
     cache_atr_stop("AMD", 11.0, today=date(2026, 6, 12))
     assert atr_stop_fallback("AMD", 7.0, today=date(2026, 6, 12)) == 11.0
+
+
+# get_cached_atr_stop — read-only view used by the Exit Plan display (returns
+# None instead of a base fallback, so callers can tell "no fresh reading" apart
+# from "ATR happens to equal base").
+
+def test_get_cached_returns_none_when_uncached():
+    assert get_cached_atr_stop("NEW") is None
+
+
+def test_get_cached_returns_fresh_value():
+    cache_atr_stop("PANW", 12.4, today=date(2026, 7, 29))
+    assert get_cached_atr_stop("PANW", today=date(2026, 7, 31)) == 12.4
+
+
+def test_get_cached_returns_none_when_stale():
+    cache_atr_stop("PANW", 12.4, today=date(2026, 7, 1))
+    assert get_cached_atr_stop("PANW", today=date(2026, 7, 31)) is None

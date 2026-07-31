@@ -15,6 +15,7 @@ in sync" is enforced by having a single source of truth.
 
 import logging
 import math
+from typing import Optional
 
 from config_loader import config
 from backend.trading_utils import _nan_safe  # noqa: F401 - re-export for convenience
@@ -181,6 +182,21 @@ def atr_stop_fallback(ticker: str, base_stop_pct: float, max_age_days: int = 5, 
     if ((today or _date.today()) - cached_date) <= timedelta(days=max_age_days):
         return stop
     return base_stop_pct
+
+
+def get_cached_atr_stop(ticker: str, max_age_days: int = 5, today=None) -> Optional[float]:
+    """Last successfully-computed effective ATR stop for `ticker`, or None if
+    absent/stale. Read-only view of the same cache the live trading cycle
+    maintains — lets display surfaces (Exit Plan card) show the widened stop
+    the trader will actually use, without re-fetching or importing ai_trader."""
+    from datetime import date as _date, timedelta
+    entry = _atr_stop_cache.get(ticker)
+    if entry is None:
+        return None
+    cached_date, stop = entry
+    if ((today or _date.today()) - cached_date) <= timedelta(days=max_age_days):
+        return stop
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -3464,7 +3464,7 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
     # position's exit plan uses the same stop regime evaluate_sells would
     # (SPY < 50MA ⇒ tighter bearish stop). Cached call — no extra fetch.
     from backend.exit_plan import compute_exit_plan
-    from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
+    from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening, get_cached_atr_stop
     from backend.trading_utils import get_strategy_profile
     from config_loader import config as _yaml_config
     # Same YAML stops rung the live trader resolves through (parity with
@@ -3548,6 +3548,10 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
                 stop_loss_pct=config.stop_loss_pct,
                 stop_loss_config=_stops_config,
                 is_bearish_market=is_bearish_market,
+                # Cached effective ATR stop from the last trading cycle (same
+                # process as the scheduler) — shows the widened stop the trader
+                # will actually honor, not just the base floor.
+                atr_stop_pct=get_cached_atr_stop(p.ticker),
             ),
             # Insider/Short signals from Stock table
             "insider_sentiment": stock.insider_sentiment if stock else None,

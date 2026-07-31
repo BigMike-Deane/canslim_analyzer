@@ -19,9 +19,11 @@ values; output is a JSON-friendly dict. Trivially unit-testable; zero risk to
 the trading path.
 
 Scope / honest caveats baked into the trigger ``note`` fields:
-  - The hard stop is the *base* (normal/bearish) percentage. The live trader may
-    *widen* it per-position via ATR for volatile names — that only ever gives a
-    position MORE room, so the displayed level is a conservative floor.
+  - The hard stop shows the *effective* level: the base (normal/bearish)
+    percentage, widened to the trader's cached ATR stop when the caller passes
+    one (``atr_stop_pct``, read from trading_engine's ATR cache). Without a
+    fresh cached value the base is shown as a conservative floor with a
+    "may widen" note.
   - Take-profit is shown as the price target, but the trader only takes the full
     profit when the score is *also* fading — noted on the trigger.
   - Score-based exits (crash / weak-position) are conditions, not prices.
@@ -55,6 +57,7 @@ def compute_exit_plan(
     stop_loss_pct: Optional[float] = None,
     stop_loss_config: Optional[dict] = None,
     is_bearish_market: bool = False,
+    atr_stop_pct: Optional[float] = None,
 ) -> dict:
     """Derive the active sell triggers for one position.
 
@@ -82,8 +85,8 @@ def compute_exit_plan(
 
     # ── 1. Hard stop loss ────────────────────────────────────────────
     # Mirrors evaluate_sells: effective stop = profile/config normal (or bearish
-    # when SPY<50MA). VIX + ATR adjustments are intentionally skipped here — VIX
-    # needs live data and ATR only widens, so the base is a safe floor.
+    # when SPY<50MA), widened by the cached ATR stop when the caller supplies
+    # one. VIX adjustment is intentionally skipped (needs live data).
     if has_price:
         stop_pct = select_effective_stop_loss_pct(
             profile=profile,
@@ -97,18 +100,35 @@ def compute_exit_plan(
             vix_proxy=None,
             vix_config=None,
         )
-        stop_price = cost_basis * (1 - stop_pct / 100.0)
+        # ATR widening: mirror check_stop_losses — the live stop is
+        # max(base, ATR stop). `atr_stop_pct` is the caller-supplied cached
+        # effective stop from the last trading cycle (already capped at
+        # max_stop_pct when computed); None means no fresh ATR reading, in
+        # which case the base is shown with the old "may widen" hedge.
+        effective_pct = stop_pct
+        atr_widened = atr_stop_pct is not None and atr_stop_pct > stop_pct
+        if atr_widened:
+            effective_pct = atr_stop_pct
+        stop_price = cost_basis * (1 - effective_pct / 100.0)
+        if atr_widened:
+            note = (
+                f"{effective_pct:.0f}% below entry · ATR-widened from {stop_pct:.0f}% base"
+                + (" · bearish market" if is_bearish_market else "")
+                + " · volatile name gets room"
+            )
+        else:
+            note = (
+                f"{stop_pct:.0f}% below entry"
+                + (" · bearish-market stop" if is_bearish_market else "")
+                + " · may widen for volatile names"
+            )
         triggers.append({
             "kind": "stop_loss",
             "label": "Stop loss",
             "price": round(stop_price, 2),
             "direction": "down",
             "distance_pct": round(abs(_pct(stop_price, current_price) or 0.0), 1),
-            "note": (
-                f"{stop_pct:.0f}% below entry"
-                + (" · bearish-market stop" if is_bearish_market else "")
-                + " · may widen for volatile names"
-            ),
+            "note": note,
         })
 
     # ── 2. Trailing stop ─────────────────────────────────────────────

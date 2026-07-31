@@ -2268,6 +2268,9 @@ class TestAITraderBacktesterSync:
         ai_source = (Path(__file__).parent.parent / "backend" / "ai_trader.py").read_text()
         bt_source = (Path(__file__).parent.parent / "backend" / "backtester.py").read_text()
         engine_source = (Path(__file__).parent.parent / "backend" / "trading_engine.py").read_text()
+        # Read-only display surfaces (Exit Plan card etc.) are legitimate sole
+        # consumers of accessor-style helpers — still not dead code.
+        main_source = (Path(__file__).parent.parent / "backend" / "main.py").read_text()
 
         # Extract all public function names from trading_engine.py
         engine_functions = re.findall(r'^def (\w+)\(', engine_source, re.MULTILINE)
@@ -2275,12 +2278,14 @@ class TestAITraderBacktesterSync:
         public_functions = [f for f in engine_functions if not f.startswith('_')]
 
         for func in public_functions:
-            # At least one of ai_trader or backtester should import each function
+            # At least one of ai_trader / backtester / the API display layer
+            # should import each function
             ai_imports = func in ai_source
             bt_imports = func in bt_source
-            assert ai_imports or bt_imports, (
-                f"trading_engine.{func}() is not used by either ai_trader or backtester — "
-                f"dead code in trading_engine.py?"
+            display_imports = func in main_source
+            assert ai_imports or bt_imports or display_imports, (
+                f"trading_engine.{func}() is not used by ai_trader, backtester, "
+                f"or main.py — dead code in trading_engine.py?"
             )
 
     def test_signal_factors_sanitized_in_both(self):

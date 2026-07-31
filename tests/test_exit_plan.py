@@ -55,6 +55,41 @@ class TestStopLoss:
         # stop 93 vs current 110 → (93/110 - 1) ≈ -15.45% → magnitude 15.5
         assert _by_kind(plan, "stop_loss")["distance_pct"] == pytest.approx(15.5, abs=0.1)
 
+    def test_atr_stop_widens_displayed_level(self):
+        # Cached ATR stop (12.4%) wider than the 7% base → the card shows the
+        # widened level the trader will actually honor (mirrors
+        # check_stop_losses' max(base, atr)).
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=95.0, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8,
+            atr_stop_pct=12.4,
+        )
+        stop = _by_kind(plan, "stop_loss")
+        assert stop["price"] == pytest.approx(87.6, abs=0.01)
+        assert "ATR-widened" in stop["note"]
+
+    def test_atr_stop_below_base_is_ignored(self):
+        # ATR narrower than base must never TIGHTEN the stop (live path is
+        # max(base, atr)); note keeps the "may widen" hedge.
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=95.0, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8,
+            atr_stop_pct=5.0,
+        )
+        stop = _by_kind(plan, "stop_loss")
+        assert stop["price"] == pytest.approx(93.0, abs=0.01)
+        assert "may widen" in stop["note"]
+
+    def test_no_atr_value_keeps_base_and_hedge_note(self):
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=95.0, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8,
+            atr_stop_pct=None,
+        )
+        stop = _by_kind(plan, "stop_loss")
+        assert stop["price"] == pytest.approx(93.0, abs=0.01)
+        assert "may widen" in stop["note"]
+
 
 class TestTrailingStop:
     def test_no_trailing_below_activation_tier(self):
