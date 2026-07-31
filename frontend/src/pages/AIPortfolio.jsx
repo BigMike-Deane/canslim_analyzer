@@ -2382,11 +2382,11 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
   const [refreshing, setRefreshing] = useState(false)
   const [strategies, setStrategies] = useState([])
   const [changingStrategy, setChangingStrategy] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
   const [startCash, setStartCash] = useState(config?.starting_cash || 25000)
 
   useEffect(() => {
     setIsActive(config?.is_active || false)
-    setStartCash(config?.starting_cash || 25000)
   }, [config])
 
   // Load available strategies
@@ -2427,13 +2427,20 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
   // 400 the request; round to whole dollars.
   const initCash = Math.min(1000000, Math.max(1000, Math.round(Number(startCash) || 0)))
 
+  const openReset = () => {
+    // Seed the dialog from the live portfolio each time it opens, not from
+    // whatever a previous (possibly cancelled) dialog left behind.
+    setStartCash(config?.starting_cash || 25000)
+    setResetOpen(true)
+  }
+
   const handleInitialize = async () => {
-    if (!confirm(`This will reset the AI Portfolio to $${initCash.toLocaleString()} and clear all history. Continue?`)) {
-      return
-    }
     setInitializing(true)
     try {
       await onInitialize(initCash)
+      setResetOpen(false)
+    } catch {
+      // onInitialize already toasted; keep the dialog open for retry/cancel.
     } finally {
       setInitializing(false)
     }
@@ -2543,28 +2550,12 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
         </button>
       </div>
 
-      <div className="flex items-center gap-2 mb-2">
-        <label htmlFor="ai-start-cash" className="text-xs text-dark-400 whitespace-nowrap">Starting cash</label>
-        <div className="relative flex-1">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-dark-500 text-sm pointer-events-none">$</span>
-          <input
-            id="ai-start-cash"
-            type="number"
-            min={1000}
-            max={1000000}
-            step={1000}
-            value={startCash}
-            onChange={(e) => setStartCash(e.target.value)}
-            className="w-full pl-5 pr-2 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm font-data text-dark-100 focus:border-primary-500 outline-none"
-          />
-        </div>
-      </div>
       <button
-        onClick={handleInitialize}
+        onClick={openReset}
         disabled={initializing}
-        className="w-full py-2 mb-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-dark-300"
+        className="w-full py-2 mb-2 bg-dark-700 hover:bg-red-500/10 hover:text-red-400 rounded-lg text-sm font-medium transition-colors text-dark-300"
       >
-        {initializing ? 'Resetting...' : `Reset Portfolio ($${initCash.toLocaleString()})`}
+        {initializing ? 'Resetting...' : 'Reset Portfolio…'}
       </button>
 
       <Link
@@ -2573,6 +2564,59 @@ function ConfigPanel({ config, onUpdate, onInitialize, onRunCycle, onRefresh, wa
       >
         Run Historical Backtest
       </Link>
+
+      <Modal open={resetOpen} onClose={() => !initializing && setResetOpen(false)} title="Reset AI Portfolio" size="sm">
+        <div className="flex gap-2.5 p-3 mb-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+               className="text-red-400 shrink-0 mt-0.5">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <div className="text-xs text-red-300/90 leading-relaxed">
+            This wipes the portfolio: all open positions, the full trade history,
+            and every performance snapshot are permanently deleted. The chart and
+            edge stats start over from day one. This cannot be undone.
+          </div>
+        </div>
+
+        <label htmlFor="ai-start-cash" className="block text-[10px] font-semibold tracking-widest uppercase text-dark-400 mb-1.5">
+          New starting cash
+        </label>
+        <div className="relative mb-1.5">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-500 text-sm pointer-events-none">$</span>
+          <input
+            id="ai-start-cash"
+            type="number"
+            min={1000}
+            max={1000000}
+            step={1000}
+            value={startCash}
+            onChange={(e) => setStartCash(e.target.value)}
+            className="w-full pl-6 pr-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm font-data text-dark-100 focus:border-primary-500 outline-none"
+          />
+        </div>
+        <div className="text-[10px] text-dark-500 mb-4">
+          $1,000 – $1,000,000. The new portfolio starts as all cash.
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => setResetOpen(false)}
+            disabled={initializing}
+            className="flex-1 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-dark-300"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleInitialize}
+            disabled={initializing}
+            className="flex-1 py-2 bg-red-500/80 hover:bg-red-500 rounded-lg text-sm font-semibold transition-colors text-white disabled:opacity-50"
+          >
+            {initializing ? 'Resetting…' : `Wipe & restart at $${initCash.toLocaleString()}`}
+          </button>
+        </div>
+      </Modal>
     </Card>
   )
 }
@@ -3110,6 +3154,7 @@ export default function AIPortfolio() {
     } catch (err) {
       console.error('Failed to initialize:', err)
       toast.error(err?.message || 'Failed to initialize AI Portfolio')
+      throw err // let the reset dialog stay open on failure
     }
   }
 
