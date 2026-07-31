@@ -957,7 +957,7 @@ function VerdictLedger({ summary, edge }) {
             <div className="flex justify-between text-[10px] uppercase tracking-[.12em] text-dark-400 mb-1">
               <span>Alpha 95% CI — must clear zero</span>
               <b className="text-dark-300 tracking-normal font-data">
-                {A.alpha_annualized_pct?.toFixed(0)}% ({lo.toFixed(0)}…{hi.toFixed(0)})
+                est. {A.alpha_annualized_pct >= 0 ? '+' : ''}{A.alpha_annualized_pct?.toFixed(0)}%/yr
               </b>
             </div>
             <div className="relative">
@@ -977,16 +977,22 @@ function VerdictLedger({ summary, edge }) {
                 style={{ left: ciX(A.alpha_annualized_pct) }}
               />
             </div>
-            {lo < 0 && hi > 0 && (
-              <div className="relative h-3 mt-1">
+            <div className="relative h-3 mt-1 text-[9px] leading-3 text-dark-400">
+              <span className="absolute left-0 whitespace-nowrap">
+                worst case {lo >= 0 ? '+' : ''}{lo.toFixed(0)}%
+              </span>
+              {lo < 0 && hi > 0 && (
                 <span
-                  className="absolute text-[9px] leading-3 text-dark-400 -translate-x-1/2 whitespace-nowrap"
-                  style={{ left: `${Math.min(88, Math.max(12, 100 * -lo / span)).toFixed(1)}%` }}
+                  className="absolute -translate-x-1/2 whitespace-nowrap"
+                  style={{ left: `${Math.min(70, Math.max(30, 100 * -lo / span)).toFixed(1)}%` }}
                 >
                   0 = no edge
                 </span>
-              </div>
-            )}
+              )}
+              <span className="absolute right-0 whitespace-nowrap">
+                best case {hi >= 0 ? '+' : ''}{hi.toFixed(0)}%
+              </span>
+            </div>
           </div>
         )}
       </div>
