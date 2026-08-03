@@ -210,7 +210,8 @@ WEBHOOK_URL = os.environ.get('CANSLIM_WEBHOOK_URL', '')
 def send_webhook_notification(title: str, message: str, priority: str = "default",
                               data: dict = None, tags: list = None,
                               click: str = None, markdown: bool = False,
-                              url: str = None, kind: str = None) -> bool:
+                              url: str = None, kind: str = None,
+                              for_user_id: int = None) -> bool:
     """Send push notification via webhook (e.g., ntfy.sh, Pushover, or custom).
 
     Args:
@@ -223,6 +224,9 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
         markdown: If True, enable markdown formatting in ntfy
         url: Override webhook URL. Falls back to global CANSLIM_WEBHOOK_URL env var.
              Pass an empty string explicitly to silence (per-user routing uses this).
+        for_user_id: The user this webhook is FOR when `url` is a per-user
+             override. Their prefs gate the send — without it, per-user
+             routing bypassed mute_kinds entirely (2026-07-31 owner report).
 
     Returns:
         True if notification sent successfully, False otherwise
@@ -232,25 +236,24 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
         logger.debug("Webhook URL not configured, skipping notification")
         return False
 
-    # Owner-mute gate for the GLOBAL legacy webhook (2026-07-22 owner
-    # report): the global CANSLIM_WEBHOOK_URL is de-facto the owner's phone,
-    # but this path predates per-user prefs and bypassed mute_kinds — a
-    # muted kind still pinged via ntfy even though the per-user broadcast
-    # path correctly suppressed it. When a `kind` is supplied AND we're
-    # firing the global URL (not an explicit per-user `url` override), run
-    # the same _should_deliver gate the broadcast path uses for user 1.
+    # Pref gate (2026-07-22 owner report, extended 2026-07-31): when a
+    # `kind` is supplied, run the same _should_deliver gate the broadcast
+    # path uses — against the target user's prefs. The global
+    # CANSLIM_WEBHOOK_URL is de-facto the owner's phone, so the global path
+    # gates on user 1; an explicit per-user `url` gates on `for_user_id`.
     # Urgent priority bypasses by design; kind=None (ops/backup messages)
-    # keeps legacy behavior.
-    if kind and url is None and priority != "urgent":
+    # keeps legacy behavior, as does a per-user url with no for_user_id.
+    gate_user_id = 1 if url is None else for_user_id
+    if kind and gate_user_id is not None and priority != "urgent":
         try:
             from backend.database import SessionLocal, User
             _db = SessionLocal()
             try:
-                owner = _db.query(User).filter(User.id == 1).first()
+                gate_user = _db.query(User).filter(User.id == gate_user_id).first()
             finally:
                 _db.close()
-            if owner is not None and not _should_deliver(owner, kind, priority, data):
-                logger.info(f"Global webhook suppressed by owner prefs (kind={kind}): {title}")
+            if gate_user is not None and not _should_deliver(gate_user, kind, priority, data):
+                logger.info(f"Webhook suppressed by user {gate_user_id} prefs (kind={kind}): {title}")
                 return False
         except Exception:
             pass  # pref lookup failure must never block a notification
@@ -373,6 +376,21 @@ def _should_deliver(user, kind: str, priority: str, data: dict = None) -> bool:
     return True
 
 
+def _is_kind_muted(user, kind: str, priority: str) -> bool:
+    """True when the user has muted this kind outright (mute_kinds).
+
+    Distinct from _should_deliver: quiet hours and score threshold defer or
+    filter the outbound ping but the in-app row should still surface as
+    unread later. A muted kind is 'never alert me' — its in-app row is
+    written pre-read so it can't light the bell badge. Urgent bypasses,
+    same as everywhere else.
+    """
+    if priority == "urgent" or not user:
+        return False
+    from backend.database import coerce_json_list
+    return kind in coerce_json_list(getattr(user, "mute_kinds", None))
+
+
 def create_notification(user_id: int, kind: str, title: str, body: str,
                         priority: str = "default", tags: list = None,
                         data: dict = None) -> bool:
@@ -384,15 +402,29 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
     In-app DB rows are ALWAYS written so the bell + Notifications page show
     full history; only outbound push (and ntfy) are gated by the user's
     mute_kinds / quiet_hours preferences. Urgent items bypass the gate.
+    Muted kinds are inserted pre-read (read_at=now) — recorded history that
+    never lights the unread badge (2026-07-31 owner report).
     """
     if not user_id:
         return False
     inserted = False
     user = None
     try:
+        from types import SimpleNamespace
         from backend.database import SessionLocal, Notification, User
         db = SessionLocal()
         try:
+            u = db.query(User).filter(User.id == user_id).first()
+            if u is not None:
+                # Snapshot pref fields NOW — commit() below expires the ORM
+                # instance, and _should_deliver runs after db.close() where
+                # a lazy refresh would raise DetachedInstanceError.
+                user = SimpleNamespace(
+                    mute_kinds=getattr(u, "mute_kinds", None),
+                    quiet_hours_start=getattr(u, "quiet_hours_start", None),
+                    quiet_hours_end=getattr(u, "quiet_hours_end", None),
+                    score_alert_threshold=getattr(u, "score_alert_threshold", None),
+                )
             note = Notification(
                 user_id=user_id,
                 kind=kind,
@@ -401,11 +433,12 @@ def create_notification(user_id: int, kind: str, title: str, body: str,
                 priority=priority,
                 tags=tags,
                 data=data,
+                read_at=(datetime.now(timezone.utc)
+                         if _is_kind_muted(user, kind, priority) else None),
             )
             db.add(note)
             db.commit()
             inserted = True
-            user = db.query(User).filter(User.id == user_id).first()
         finally:
             db.close()
     except Exception as e:
@@ -539,7 +572,7 @@ def send_web_push_broadcast(title: str, body: str, data: dict = None,
 
 def _fold_into_daily_digest(db, Notification, user_id: int, kind: str,
                             title: str, data: dict, digest_label: str,
-                            digest_url: str, now) -> bool:
+                            digest_url: str, now, muted: bool = False) -> bool:
     """Fold one event into the user's existing same-day row of this kind.
 
     Returns True if an existing row absorbed the event (caller skips the
@@ -582,7 +615,11 @@ def _fold_into_daily_digest(db, Notification, user_id: int, kind: str,
     existing.data = {**prev, "count": count, "tickers": tickers,
                      "digest_lines": lines, "url": digest_url,
                      "last_event": data or {}}
-    existing.read_at = None
+    # A muted kind must not resurface as unread — folding kept relighting
+    # the bell all day for kinds the user explicitly silenced (2026-07-31
+    # owner report). Content still updates; read state is left alone.
+    if not muted:
+        existing.read_at = None
     existing.created_at = now
     return True
 
@@ -603,38 +640,54 @@ def broadcast_notification(kind: str, title: str, body: str,
     each user gets at most ONE page row per kind per UTC day — later events
     fold into it as a digest instead of minting new rows. Outbound push is
     unaffected: it stays per-event and mute-gated below.
+
+    Users who muted this kind still get the in-app row (documented
+    contract: recorded, not deleted) but it's written pre-read and digest
+    folds never flip it back to unread — a muted kind must not light the
+    bell badge (2026-07-31 owner report).
     """
     inserted = 0
     try:
         from backend.database import SessionLocal, Notification, User
         db = SessionLocal()
         try:
-            user_ids = [uid for (uid,) in
-                        db.query(User.id).filter(User.is_active == True).all()]
-            if user_ids:
+            from backend.database import coerce_json_list
+            user_rows = (db.query(User.id, User.mute_kinds)
+                         .filter(User.is_active == True).all())
+            if user_rows:
                 now = datetime.now(timezone.utc)
+                # Index access, not attribute access — works for both Row
+                # objects and the plain tuples test fakes return.
+                muted_by_uid = {
+                    row[0]: (priority != "urgent"
+                             and kind in coerce_json_list(row[1]))
+                    for row in user_rows
+                }
                 if coalesce_daily:
                     label = digest_label or (kind.replace("_", " ").capitalize() + "s")
-                    for uid in user_ids:
+                    for uid in muted_by_uid:
                         if not _fold_into_daily_digest(
                                 db, Notification, uid, kind, title, data,
-                                label, digest_url, now):
+                                label, digest_url, now,
+                                muted=muted_by_uid[uid]):
                             db.add(Notification(
                                 user_id=uid, kind=kind, title=title,
                                 body=body or "", priority=priority,
                                 tags=tags, data=data, created_at=now,
+                                read_at=now if muted_by_uid[uid] else None,
                             ))
                     db.commit()
-                    inserted = len(user_ids)
+                    inserted = len(muted_by_uid)
                 else:
                     db.bulk_save_objects([
                         Notification(
                             user_id=uid, kind=kind, title=title, body=body or "",
                             priority=priority, tags=tags, data=data, created_at=now,
-                        ) for uid in user_ids
+                            read_at=now if muted_by_uid[uid] else None,
+                        ) for uid in muted_by_uid
                     ])
                     db.commit()
-                    inserted = len(user_ids)
+                    inserted = len(muted_by_uid)
         finally:
             db.close()
     except Exception as e:
@@ -757,7 +810,7 @@ def send_trade_webhook(ticker: str, action: str, shares: float, price: float,
 
     url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="high", tags=tags, url=url,
-                                     kind="trade")
+                                     kind="trade", for_user_id=user_id)
 
 
 def send_stop_loss_webhook(ticker: str, shares: float, price: float,
@@ -939,7 +992,8 @@ def send_score_crash_warning_push(ticker: str, purchase_score: float, current_sc
 
     url = get_user_webhook_url(user_id) if user_id is not None else None
     return send_webhook_notification(title, message, priority="high",
-                                     tags=tags, url=url, kind="score_crash")
+                                     tags=tags, url=url, kind="score_crash",
+                                     for_user_id=user_id)
 
 
 def send_bear_base_update_push(total: int, top_candidates: list) -> bool:

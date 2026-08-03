@@ -331,7 +331,8 @@ export default function Settings() {
         <h2 className="text-lg font-medium text-white mb-1">Notification preferences</h2>
         <p className="text-sm text-dark-400 mb-4">
           <span className="text-dark-200">Checked = delivered to your devices.</span>{' '}
-          Unchecked kinds are silenced (still recorded in-app).{' '}
+          Unchecked kinds are silenced (recorded in-app as already-read, so
+          they never light the bell).{' '}
           <span className="text-amber-400">Urgent alerts</span>{' '}
           (stop losses, circuit breakers) always come through regardless.
         </p>

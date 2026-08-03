@@ -493,7 +493,7 @@ class TestBroadcastNotification:
         from backend import email_utils
         fake_db = MagicMock()
         fake_db.query.return_value.filter.return_value.all.side_effect = [
-            [(1,), (2,)],                                  # insert step: user ids
+            [(1, None), (2, None)],                        # insert step: (id, mute_kinds)
             [self._user_row(1), self._user_row(2)],        # push step: user rows
         ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
@@ -508,7 +508,7 @@ class TestBroadcastNotification:
         from backend import email_utils
         fake_db = MagicMock()
         fake_db.query.return_value.filter.return_value.all.side_effect = [
-            [(1,)],
+            [(1, None)],
             [self._user_row(1)],
         ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
@@ -520,7 +520,7 @@ class TestBroadcastNotification:
         from backend import email_utils
         fake_db = MagicMock()
         fake_db.query.return_value.filter.return_value.all.side_effect = [
-            [(1,), (2,)],
+            [(1, ["breakout"]), (2, None)],
             [self._user_row(1, mute=["breakout"]), self._user_row(2)],
         ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
@@ -536,7 +536,7 @@ class TestBroadcastNotification:
         from backend import email_utils
         fake_db = MagicMock()
         fake_db.query.return_value.filter.return_value.all.side_effect = [
-            [(1,), (2,)],
+            [(1, None), (2, None)],
             [self._user_row(1, threshold=80), self._user_row(2)],
         ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
@@ -550,7 +550,7 @@ class TestBroadcastNotification:
         from backend import email_utils
         fake_db = MagicMock()
         fake_db.query.return_value.filter.return_value.all.side_effect = [
-            [(1,)],
+            [(1, ["risk_alert"])],
             [self._user_row(1, mute=["risk_alert"])],
         ]
         with patch("backend.database.SessionLocal", return_value=fake_db), \
@@ -974,3 +974,131 @@ class TestGlobalWebhookOwnerMuteGate:
                 url="https://ntfy.sh/user2-topic")
         assert ok is True
         mock_sl.assert_not_called()
+
+
+# ============================================================================
+# Per-user webhook pref gate (for_user_id) + muted-kind pre-read rows
+# ============================================================================
+class TestPerUserWebhookPrefGate:
+    """url= override + for_user_id must gate on THAT user's prefs — before
+    2026-07-31 the per-user path bypassed mute_kinds entirely."""
+
+    def _user(self, mutes):
+        u = MagicMock()
+        u.mute_kinds = mutes
+        u.quiet_hours_start = None
+        u.quiet_hours_end = None
+        u.score_alert_threshold = None
+        return u
+
+    def _db_returning(self, user):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = user
+        return db
+
+    @patch("backend.email_utils.requests.post")
+    def test_muted_kind_suppresses_personal_send(self, mock_post):
+        from backend import email_utils
+        with patch("backend.database.SessionLocal",
+                   return_value=self._db_returning(self._user(["score_crash"]))):
+            ok = email_utils.send_webhook_notification(
+                "SC", "msg", priority="high", kind="score_crash",
+                url="https://ntfy.sh/user1-topic", for_user_id=1)
+        assert ok is False
+        mock_post.assert_not_called()
+
+    @patch("backend.email_utils.requests.post")
+    def test_unmuted_kind_sends_to_personal_url(self, mock_post):
+        from backend import email_utils
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+        with patch("backend.database.SessionLocal",
+                   return_value=self._db_returning(self._user(["breakout"]))):
+            ok = email_utils.send_webhook_notification(
+                "T", "msg", priority="high", kind="trade",
+                url="https://ntfy.sh/user1-topic", for_user_id=1)
+        assert ok is True
+        assert mock_post.call_args[0][0] == "https://ntfy.sh/user1-topic"
+
+
+class TestMutedKindPreRead:
+    """Muted kinds stay recorded in-app but are inserted pre-read and never
+    resurfaced as unread by digest folds — they must not light the bell."""
+
+    def _user(self, mutes):
+        u = MagicMock()
+        u.mute_kinds = mutes
+        u.quiet_hours_start = None
+        u.quiet_hours_end = None
+        u.score_alert_threshold = None
+        return u
+
+    def test_create_notification_muted_inserts_read(self):
+        from backend import email_utils
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.first.return_value = \
+            self._user(["coiled_spring"])
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user") as mock_push:
+            ok = email_utils.create_notification(1, "coiled_spring", "CS", "body",
+                                                 priority="high")
+        assert ok is True
+        inserted = fake_db.add.call_args[0][0]
+        assert inserted.read_at is not None
+        mock_push.assert_not_called()  # muted → outbound push suppressed too
+
+    def test_create_notification_unmuted_inserts_unread(self):
+        from backend import email_utils
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.first.return_value = \
+            self._user(["breakout"])
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user", return_value=1):
+            ok = email_utils.create_notification(1, "trade", "T", "body",
+                                                 priority="high")
+        assert ok is True
+        inserted = fake_db.add.call_args[0][0]
+        assert inserted.read_at is None
+
+    def test_urgent_kind_never_pre_read_even_if_muted(self):
+        """Urgent bypasses mute everywhere — including the pre-read insert."""
+        from backend import email_utils
+        fake_db = MagicMock()
+        fake_db.query.return_value.filter.return_value.first.return_value = \
+            self._user(["stop_loss"])
+        with patch("backend.database.SessionLocal", return_value=fake_db), \
+             patch.object(email_utils, "send_web_push_to_user", return_value=1):
+            email_utils.create_notification(1, "stop_loss", "STOP", "body",
+                                            priority="urgent")
+        assert fake_db.add.call_args[0][0].read_at is None
+
+    def _fold(self, muted, read_at_before):
+        from types import SimpleNamespace
+        from datetime import datetime, timezone
+        from backend.email_utils import _fold_into_daily_digest
+        from backend.database import Notification
+        existing = SimpleNamespace(
+            title="🌀 Coiled Spring: TILE",
+            data={"ticker": "TILE"},
+            read_at=read_at_before,
+            created_at=None,
+            body="",
+        )
+        db = MagicMock()
+        (db.query.return_value.filter.return_value
+           .order_by.return_value.first.return_value) = existing
+        now = datetime.now(timezone.utc)
+        folded = _fold_into_daily_digest(
+            db, Notification, 1, "coiled_spring", "🌀 Coiled Spring: ICUI",
+            {"ticker": "ICUI"}, "Coiled springs", "/coiled-spring/history",
+            now, muted=muted)
+        assert folded is True
+        return existing
+
+    def test_fold_muted_keeps_read_state(self):
+        sentinel = "2026-07-31T10:00:00"
+        existing = self._fold(muted=True, read_at_before=sentinel)
+        assert existing.read_at == sentinel  # NOT resurfaced as unread
+
+    def test_fold_unmuted_resurfaces_unread(self):
+        existing = self._fold(muted=False, read_at_before="2026-07-31T10:00:00")
+        assert existing.read_at is None
