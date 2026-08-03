@@ -14,6 +14,7 @@ HTTPException(400/404) which the test endpoint propagates verbatim.
 
 import html
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -301,6 +302,307 @@ def build_ab_eval_snapshot_html(
         'return_delta': return_delta,
         'sharpe_delta': sharpe_delta,
         'source': source,
+    }
+
+
+SHADOW_BASELINE_NAME = 'shadow_baseline'
+
+# Shadow stacks are judged against the contemporaneous baseline stack, not
+# against their own (empty) pre-history, so the decision labels read as
+# pacing-vs-baseline rather than keep/revert-the-change.
+_SHADOW_VS_BASELINE_STYLE = {
+    'keep':              {'bg': '#10b981', 'label': 'ON PACE'},
+    'revert':            {'bg': '#ef4444', 'label': 'LAGGING'},
+    'marginal':          {'bg': '#f59e0b', 'label': 'MIXED'},
+    'insufficient_data': {'bg': '#6b7280', 'label': 'INSUFFICIENT DATA'},
+}
+
+
+def _naive_utc(dt):
+    """DB timestamps are timezone-naive UTC; strip tzinfo from anything
+    aware so in-Python comparisons never mix naive and aware."""
+    if dt is not None and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
+def build_shadow_vs_baseline_snapshot_html(
+    shadow_name: str,
+    db: Session,
+    baseline_name: str = SHADOW_BASELINE_NAME,
+) -> dict:
+    """Build a shadow-experiment snapshot: experiment vs baseline stack over
+    the SAME calendar window.
+
+    A pre/post-cutoff comparison is structurally wrong for shadow stacks —
+    they have no trades before activation, so any 'pre' window is empty by
+    construction and a delta against it is fabricated. The honest read is
+    contemporaneous: both stacks' trades from the later of the two clock
+    starts (first recorded trade — resets wipe trade history, so this is
+    also the post-reset restart) through now. Promotion remains gated on
+    each experiment's pre-registered criteria; this snapshot is monitoring.
+
+    Raises ValueError when either stack is missing/archived, when asked to
+    compare the baseline to itself, or when neither stack has traded yet
+    (transient post-reset state — the caller's per-stack error isolation
+    logs it without killing the fan-out).
+    """
+    from sqlalchemy import or_
+    from backend.database import ShadowStrategy, ShadowTrade
+
+    def _resolve_stack(name, role):
+        ss = db.query(ShadowStrategy).filter(ShadowStrategy.name == name).first()
+        if ss is None:
+            raise ValueError(f"{role} shadow strategy '{name}' not found")
+        if ss.archived_at is not None:
+            raise ValueError(f"{role} shadow strategy '{name}' is archived")
+        return ss
+
+    exp = _resolve_stack(shadow_name, "Experiment")
+    base = _resolve_stack(baseline_name, "Baseline")
+    if exp.id == base.id:
+        raise ValueError("Refusing to compare the baseline stack against itself")
+
+    def _stack_trades(ss):
+        # Same pyramid exclusion as _resolve_ab_window: drop action='PYRAMID'
+        # and BUY rows whose reason marks a pyramid add; keep NULL reasons.
+        return db.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == ss.id,
+            ~ShadowTrade.action.in_(['PYRAMID']),
+            or_(
+                ShadowTrade.reason.is_(None),
+                ~ShadowTrade.reason.like('PYRAMID:%'),
+            ),
+        ).order_by(ShadowTrade.executed_at).all()
+
+    exp_trades_all = _stack_trades(exp)
+    base_trades_all = _stack_trades(base)
+
+    clock_starts = [
+        _naive_utc(rows[0].executed_at)
+        for rows in (exp_trades_all, base_trades_all) if rows
+    ]
+    if not clock_starts:
+        raise ValueError(
+            f"Neither '{shadow_name}' nor '{baseline_name}' has any trades "
+            f"yet — no common window to compare."
+        )
+    window_start = max(clock_starts)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    window_days = max((now - window_start).days, 1)
+
+    def _split(rows):
+        prior = [t for t in rows if _naive_utc(t.executed_at) < window_start]
+        window = [t for t in rows if _naive_utc(t.executed_at) >= window_start]
+        return prior, window
+
+    exp_prior, exp_window = _split(exp_trades_all)
+    _, base_window = _split(base_trades_all)
+
+    base_summary = _summarize_window(
+        base_window, window_days, float(base.starting_value or 25000.0))
+    exp_summary = _summarize_window(
+        exp_window, window_days, float(exp.starting_value or 25000.0))
+    # _compute_delta is post-minus-pre; feeding (baseline, experiment) makes
+    # every delta experiment-minus-baseline, which is the sign we want.
+    delta = _compute_delta(base_summary, exp_summary)
+    decision = _decide(base_summary, exp_summary, delta, {
+        'min_return_delta_pp': -5.0,
+        'min_sharpe_delta': 0.0,
+        'min_post_sells': 5,
+    })
+
+    base_sells = (base_summary.get('realized_sell_pct') or {}).get('n', 0)
+    exp_sells = (exp_summary.get('realized_sell_pct') or {}).get('n', 0)
+
+    warnings = []
+    if window_days < 21:
+        warnings.append(
+            f"Common window is only {window_days} days — verdict clocks are "
+            f"young; expect INSUFFICIENT DATA until more trades close."
+        )
+    if base_sells < 10:
+        warnings.append(
+            f"Baseline has only {base_sells} closed SELLs in the window — "
+            f"baseline statistics unstable."
+        )
+    if exp_sells < 10:
+        warnings.append(
+            f"Experiment has only {exp_sells} closed SELLs in the window — "
+            f"experiment statistics unstable."
+        )
+
+    # Best/worst tables for the EXPERIMENT stack — same serializer path as
+    # the live snapshot; prior BUYs (pre-window history, possible when the
+    # experiment's own clock predates the baseline's) seed the map first.
+    prior_buy_map: dict = {}
+    for t in exp_prior:
+        if t.action == 'BUY':
+            prior_buy_map[(t.ticker, _trade_scope_id(t))] = t
+    serialized_window = []
+    for t in exp_window:
+        serialized_window.append(_serialize_trade_row(t, prior_buy_map))
+        if t.action == 'BUY':
+            prior_buy_map[(t.ticker, _trade_scope_id(t))] = t
+
+    sells = [r for r in serialized_window
+             if r['action'] == 'SELL' and r['realized_pct'] is not None]
+    best_trades = sorted(sells, key=lambda r: r['realized_pct'], reverse=True)[:5]
+    worst_trades = sorted(sells, key=lambda r: r['realized_pct'])[:5]
+
+    style = _SHADOW_VS_BASELINE_STYLE.get(
+        decision['decision'], _SHADOW_VS_BASELINE_STYLE['insufficient_data'])
+    decision_label = style['label']
+    decision_bg = style['bg']
+    decision_reason = html.escape(decision['decision_reason'])
+
+    window_range = (
+        f"{window_start.date().isoformat()} → {now.date().isoformat()} "
+        f"({window_days}d, both stacks)"
+    )
+
+    rows_html = ''.join([
+        _row('Total return',   base_summary.get('total_return_pct'),          exp_summary.get('total_return_pct'),          delta.get('total_return_pct_delta')),
+        _row('Capital eff.',   base_summary.get('capital_efficiency_pct'),    exp_summary.get('capital_efficiency_pct'),    delta.get('capital_efficiency_pct_delta')),
+        _row('Sharpe / trade', base_summary.get('sharpe_per_trade'),          exp_summary.get('sharpe_per_trade'),          delta.get('sharpe_per_trade_delta'),          formatter=_fmt_num),
+        _row('Realized DD',    base_summary.get('realized_max_drawdown_pct'), exp_summary.get('realized_max_drawdown_pct'), delta.get('realized_max_drawdown_pct_delta'), good_is_positive=False),
+        _row('Entries / day',  base_summary.get('entry_rate_per_day'),        exp_summary.get('entry_rate_per_day'),        delta.get('entry_rate_per_day_delta'),        formatter=_fmt_num),
+        _row('Exits / day',    base_summary.get('exit_rate_per_day'),         exp_summary.get('exit_rate_per_day'),         delta.get('exit_rate_per_day_delta'),         formatter=_fmt_num),
+    ])
+
+    warnings_html = ''
+    if warnings:
+        items = ''.join(f'<li style="margin-bottom:4px;">{html.escape(w)}</li>' for w in warnings)
+        warnings_html = f'''
+        <div style="margin-top:16px;padding:12px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;">
+          <div style="font-weight:bold;color:#78350f;font-size:13px;margin-bottom:6px;">Caveats</div>
+          <ul style="margin:0;padding-left:20px;color:#78350f;font-size:12px;">{items}</ul>
+        </div>'''
+
+    best_html = _trade_rows(best_trades, 'Top 5 experiment SELLs (best)')
+    worst_html = _trade_rows(worst_trades, 'Top 5 experiment SELLs (worst)')
+
+    shadow_safe = html.escape(shadow_name)
+    baseline_safe = html.escape(baseline_name)
+    source_badge_html = (
+        '<span style="display:inline-block;margin-left:8px;padding:2px 8px;'
+        'background:#7c3aed;color:#fff;border-radius:4px;font-size:11px;'
+        'font-weight:600;letter-spacing:0.05em;text-transform:uppercase;">'
+        'Shadow</span>'
+    )
+
+    html_body = f'''<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:600px;margin:0 auto;padding:20px;">
+
+    <div style="background:#fff;border-radius:8px;padding:20px;margin-bottom:16px;border:1px solid #e5e7eb;">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Shadow vs Baseline Snapshot</div>
+      <h1 style="margin:0;font-size:18px;color:#111827;">{shadow_safe} vs {baseline_safe}{source_badge_html}</h1>
+      <p style="margin:4px 0 0 0;font-size:12px;color:#6b7280;">Window {window_range}</p>
+    </div>
+
+    <div style="background:{decision_bg};color:#fff;border-radius:8px;padding:18px;margin-bottom:16px;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;opacity:0.9;margin-bottom:4px;">Pacing</div>
+      <div style="font-size:22px;font-weight:bold;margin-bottom:8px;">{decision_label}</div>
+      <div style="font-size:13px;line-height:1.5;opacity:0.95;">{decision_reason}</div>
+    </div>
+
+    <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #e5e7eb;">
+      <h2 style="margin:0 0 12px 0;font-size:14px;color:#111827;">Side-by-side</h2>
+      <div style="font-size:11px;color:#6b7280;margin-bottom:8px;">
+        baseline SELLs={base_sells} · experiment SELLs={exp_sells}
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f9fafb;">
+            <th style="padding:8px 12px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Metric</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Baseline</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Experiment</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Δ</th>
+          </tr>
+        </thead>
+        <tbody>{rows_html}
+        </tbody>
+      </table>
+      {warnings_html}
+    </div>
+
+    <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #e5e7eb;">
+      {best_html}
+      {worst_html}
+    </div>
+
+    <p style="font-size:11px;color:#9ca3af;text-align:center;margin:16px 0 0 0;">
+      Contemporaneous comparison over the same window — promotion follows each
+      experiment's pre-registered gate; this snapshot is monitoring only.<br>
+      Generated by CANSLIM Analyzer · shadow_vs_baseline
+    </p>
+  </div>
+</body>
+</html>'''
+
+    return_delta = delta.get('total_return_pct_delta')
+    sharpe_delta = delta.get('sharpe_per_trade_delta')
+    text_body = (
+        f"[Shadow] {shadow_name} vs {baseline_name} — window {window_range}\n"
+        f"Pacing: {decision_label}\n"
+        f"  {decision['decision_reason']}\n\n"
+        f"Baseline SELLs:   {base_sells}\n"
+        f"Experiment SELLs: {exp_sells}\n\n"
+        f"Total return delta (exp - base):  {_fmt_pct(return_delta)}\n"
+        f"Sharpe per-trade delta:           {_fmt_num(sharpe_delta)}\n\n"
+        f"Promotion follows the experiment's pre-registered gate; this "
+        f"snapshot is monitoring only.\n"
+    )
+
+    subject = (
+        f"[Shadow] CANSLIM A/B [{decision_label}] {shadow_name} vs "
+        f"{baseline_name} · since {window_start.date().isoformat()}"
+    )
+
+    return {
+        'subject': subject,
+        'html': html_body,
+        'text': text_body,
+        'decision': decision['decision'],
+        'window_start': window_start.date().isoformat(),
+        'window_days': window_days,
+        'window_sell_count': exp_sells,
+        'baseline_sell_count': base_sells,
+        'return_delta': return_delta,
+        'sharpe_delta': sharpe_delta,
+        'source': 'shadow_vs_baseline',
+    }
+
+
+def send_shadow_vs_baseline_snapshot(
+    shadow_name: str,
+    db: Session,
+    recipient: Optional[str] = None,
+    baseline_name: str = SHADOW_BASELINE_NAME,
+) -> dict:
+    """Build the shadow-vs-baseline snapshot and send via email_utils."""
+    snapshot = build_shadow_vs_baseline_snapshot_html(
+        shadow_name, db, baseline_name=baseline_name,
+    )
+    sent = send_email(
+        snapshot['subject'],
+        snapshot['html'],
+        snapshot['text'],
+        recipient=recipient,
+    )
+    from backend.email_utils import RECIPIENT_EMAIL
+    resolved_recipient = recipient or RECIPIENT_EMAIL
+    return {
+        'sent': sent,
+        'recipient': resolved_recipient,
+        'subject': snapshot['subject'],
+        'decision': snapshot['decision'],
+        'window_sell_count': snapshot['window_sell_count'],
+        'window_start': snapshot['window_start'],
+        'source': snapshot['source'],
     }
 
 

@@ -76,6 +76,18 @@ def _ok_result(decision='keep', sent=True, post_sells=6):
     }
 
 
+def _ok_shadow_result(decision='keep', sent=True, window_sells=6):
+    return {
+        'sent': sent,
+        'recipient': 'bayern.mikedeane@gmail.com',
+        'subject': f'[Shadow] CANSLIM A/B [{decision.upper()}] x vs shadow_baseline',
+        'decision': decision,
+        'window_sell_count': window_sells,
+        'window_start': '2026-07-30',
+        'source': 'shadow_vs_baseline',
+    }
+
+
 class TestWeeklyABEvalEmailFanOut:
     def _patch_env(self, monkeypatch):
         # Force the cron to actually run — CANSLIM_ENV=test is the suite
@@ -108,8 +120,10 @@ class TestWeeklyABEvalEmailFanOut:
         assert 'source' not in kwargs or kwargs.get('source') == 'live'
 
     def test_live_then_one_per_active_shadow(self, db_session, monkeypatch):
-        """Two active shadows → 3 calls: live + shadow_a + shadow_b. Live
-        comes first; shadows iterate in id order."""
+        """Two active shadows → 1 live call (pre/post framing) + 2 shadow
+        calls (vs-baseline framing). Live comes first; shadows iterate in
+        id order and carry shadow_name, NOT a cutoff — the vs-baseline
+        window is derived from the stacks' own clocks."""
         self._patch_env(monkeypatch)
         db_session.add(_make_shadow("shadow_a"))
         db_session.add(_make_shadow("shadow_b"))
@@ -117,20 +131,21 @@ class TestWeeklyABEvalEmailFanOut:
 
         from backend import scheduler as scheduler_mod
         with patch('backend.ab_eval_email.send_ab_eval_snapshot',
-                   return_value=_ok_result()) as mock_send:
+                   return_value=_ok_result()) as mock_live, \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   return_value=_ok_shadow_result()) as mock_shadow:
             scheduler_mod._run_weekly_ab_eval_email()
 
-        assert mock_send.call_count == 3
-        calls = mock_send.call_args_list
-        # Live first
-        assert calls[0].kwargs['strategy'] == 'nostate_cs_bear'
-        assert calls[0].kwargs.get('source', 'live') == 'live'
-        # Shadows after, source='shadow', cutoff matches live
-        assert calls[1].kwargs['strategy'] == 'shadow_a'
-        assert calls[1].kwargs['source'] == 'shadow'
-        assert calls[1].kwargs['cutoff_date'] == '2026-05-07'
-        assert calls[2].kwargs['strategy'] == 'shadow_b'
-        assert calls[2].kwargs['source'] == 'shadow'
+        # Live first, pre/post framing, hard cutoff — unchanged.
+        assert mock_live.call_count == 1
+        assert mock_live.call_args.kwargs['strategy'] == 'nostate_cs_bear'
+        assert mock_live.call_args.kwargs['cutoff_date'] == '2026-05-07'
+        # Shadows via the vs-baseline path, in id order, no cutoff kwarg.
+        assert mock_shadow.call_count == 2
+        shadow_calls = mock_shadow.call_args_list
+        assert shadow_calls[0].kwargs['shadow_name'] == 'shadow_a'
+        assert shadow_calls[1].kwargs['shadow_name'] == 'shadow_b'
+        assert 'cutoff_date' not in shadow_calls[0].kwargs
 
     def test_archived_shadows_skipped(self, db_session, monkeypatch):
         """archived_at != NULL → not in the fan-out. Active sibling still
@@ -142,13 +157,32 @@ class TestWeeklyABEvalEmailFanOut:
 
         from backend import scheduler as scheduler_mod
         with patch('backend.ab_eval_email.send_ab_eval_snapshot',
-                   return_value=_ok_result()) as mock_send:
+                   return_value=_ok_result()), \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   return_value=_ok_shadow_result()) as mock_shadow:
             scheduler_mod._run_weekly_ab_eval_email()
 
-        assert mock_send.call_count == 2  # live + active only
-        called_strategies = [c.kwargs['strategy'] for c in mock_send.call_args_list]
-        assert 'shadow_legacy' not in called_strategies
-        assert 'shadow_active' in called_strategies
+        called_shadows = [c.kwargs['shadow_name'] for c in mock_shadow.call_args_list]
+        assert called_shadows == ['shadow_active']
+
+    def test_baseline_stack_skipped(self, db_session, monkeypatch):
+        """The shadow_baseline stack is the comparator, not a target — a
+        baseline-vs-baseline email would be meaningless, so the fan-out
+        skips it while still emailing the real experiments."""
+        self._patch_env(monkeypatch)
+        db_session.add(_make_shadow("shadow_baseline"))
+        db_session.add(_make_shadow("shadow_experiment"))
+        db_session.commit()
+
+        from backend import scheduler as scheduler_mod
+        with patch('backend.ab_eval_email.send_ab_eval_snapshot',
+                   return_value=_ok_result()), \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   return_value=_ok_shadow_result()) as mock_shadow:
+            scheduler_mod._run_weekly_ab_eval_email()
+
+        called_shadows = [c.kwargs['shadow_name'] for c in mock_shadow.call_args_list]
+        assert called_shadows == ['shadow_experiment']
 
     def test_shadow_failure_does_not_abort_live(self, db_session, monkeypatch):
         """Live ran first AND succeeded; shadow exception is caught. Critical
@@ -159,14 +193,16 @@ class TestWeeklyABEvalEmailFanOut:
         db_session.commit()
 
         from backend import scheduler as scheduler_mod
-        # First call (live) succeeds; second (shadow) raises.
-        side_effects = [_ok_result(), Exception("shadow boom")]
+        # Live succeeds; the shadow's vs-baseline snapshot raises.
         with patch('backend.ab_eval_email.send_ab_eval_snapshot',
-                   side_effect=side_effects) as mock_send, \
+                   return_value=_ok_result()) as mock_live, \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   side_effect=Exception("shadow boom")) as mock_shadow, \
              patch.object(scheduler_mod, 'logger') as mock_logger:
             scheduler_mod._run_weekly_ab_eval_email()
 
-        assert mock_send.call_count == 2
+        assert mock_live.call_count == 1
+        assert mock_shadow.call_count == 1
         # Live success was logged, shadow failure was logged at error level.
         assert any("(live)" in str(c) for c in mock_logger.info.call_args_list)
         assert any("Shadow A/B eval email failed for 'shadow_broken'" in str(c)
@@ -181,18 +217,19 @@ class TestWeeklyABEvalEmailFanOut:
         db_session.commit()
 
         from backend import scheduler as scheduler_mod
-        side_effects = [
-            _ok_result(),                    # live
-            Exception("shadow_first boom"),  # first shadow raises
-            _ok_result(decision='revert'),   # second shadow still runs
+        shadow_side_effects = [
+            Exception("shadow_first boom"),          # first shadow raises
+            _ok_shadow_result(decision='revert'),    # second shadow still runs
         ]
         with patch('backend.ab_eval_email.send_ab_eval_snapshot',
-                   side_effect=side_effects) as mock_send:
+                   return_value=_ok_result()) as mock_live, \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   side_effect=shadow_side_effects) as mock_shadow:
             scheduler_mod._run_weekly_ab_eval_email()
 
-        assert mock_send.call_count == 3
-        called_strategies = [c.kwargs['strategy'] for c in mock_send.call_args_list]
-        assert called_strategies == ['nostate_cs_bear', 'shadow_first', 'shadow_second']
+        assert mock_live.call_count == 1
+        called_shadows = [c.kwargs['shadow_name'] for c in mock_shadow.call_args_list]
+        assert called_shadows == ['shadow_first', 'shadow_second']
 
     def test_live_failure_does_not_abort_shadow_fan_out(self, db_session, monkeypatch):
         """Live raises; shadow still runs. Inverse contract — operator
@@ -202,13 +239,15 @@ class TestWeeklyABEvalEmailFanOut:
         db_session.commit()
 
         from backend import scheduler as scheduler_mod
-        side_effects = [Exception("live boom"), _ok_result()]
         with patch('backend.ab_eval_email.send_ab_eval_snapshot',
-                   side_effect=side_effects) as mock_send, \
+                   side_effect=Exception("live boom")) as mock_live, \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   return_value=_ok_shadow_result()) as mock_shadow, \
              patch.object(scheduler_mod, 'logger') as mock_logger:
             scheduler_mod._run_weekly_ab_eval_email()
 
-        assert mock_send.call_count == 2
+        assert mock_live.call_count == 1
+        assert mock_shadow.call_count == 1
         assert any("Live A/B eval email failed" in str(c)
                    for c in mock_logger.error.call_args_list)
 

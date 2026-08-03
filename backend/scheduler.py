@@ -2437,6 +2437,7 @@ def start_ml_backfill_job():
 
 _AB_EVAL_LIVE_STRATEGY = 'nostate_cs_bear'
 _AB_EVAL_CUTOFF_DATE = '2026-05-07'
+_AB_EVAL_SHADOW_BASELINE = 'shadow_baseline'
 
 
 def _run_weekly_ab_eval_email():
@@ -2449,10 +2450,13 @@ def _run_weekly_ab_eval_email():
     fan-out is failure-isolated — a single shadow snapshot blowing up
     must not kill the live email or the other shadows.
 
-    Cutoff is hard-coded to the live Approach 2 cutoff for both live and
-    shadow during the 2026-05-07 → 2026-06-18 evaluation window; this
-    keeps shadow verdicts directly comparable to the live verdict. Step 7
-    revisits per-stack cutoffs once real candidate stacks land.
+    The live email keeps the pre/post-cutoff framing (the strategy has
+    history on both sides of its cutoff). Shadow stacks do NOT — they have
+    no trades before activation, so a pre/post read against the live
+    cutoff is fabricated. Each shadow instead gets a contemporaneous
+    experiment-vs-shadow_baseline snapshot over the common clock window
+    (later of the two stacks' first trades → now); the baseline stack
+    itself is skipped — it is the comparator, not a target.
 
     Disabled when CANSLIM_ENV=test so the test suite doesn't try to send
     real mail through smtp.gmail.com."""
@@ -2461,6 +2465,7 @@ def _run_weekly_ab_eval_email():
         return
     try:
         from backend.ab_eval_email import send_ab_eval_snapshot
+        from backend.ab_eval_email import send_shadow_vs_baseline_snapshot
         from backend.database import SessionLocal, ShadowStrategy
         db = SessionLocal()
         try:
@@ -2483,17 +2488,17 @@ def _run_weekly_ab_eval_email():
                 ShadowStrategy.archived_at.is_(None)
             ).order_by(ShadowStrategy.id).all()
             for shadow in shadows:
+                if shadow.name == _AB_EVAL_SHADOW_BASELINE:
+                    continue  # the baseline is the comparator, not a target
                 try:
-                    result = send_ab_eval_snapshot(
-                        strategy=shadow.name,
-                        cutoff_date=_AB_EVAL_CUTOFF_DATE,
+                    result = send_shadow_vs_baseline_snapshot(
+                        shadow_name=shadow.name,
                         db=db,
-                        source='shadow',
                     )
                     logger.info(
                         f"Weekly A/B eval email (shadow {shadow.name}): "
                         f"sent={result['sent']} decision={result['decision']} "
-                        f"post_sells={result['post_sell_count']}"
+                        f"window_sells={result['window_sell_count']}"
                     )
                 except Exception as e:
                     logger.error(

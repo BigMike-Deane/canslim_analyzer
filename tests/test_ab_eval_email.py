@@ -680,3 +680,172 @@ class TestShadowSourceSnapshot:
             assert "Shadow strategy 'does_not_exist' not found" in exc.value.detail
         finally:
             db.close()
+
+
+class TestShadowVsBaselineSnapshot:
+    """The vs-baseline builder: shadow experiments are compared to the
+    shadow_baseline stack over the SAME calendar window (later of the two
+    stacks' first trades -> now), never pre/post around a live cutoff a
+    shadow has no history across. Decision math reuses _summarize_window/
+    _compute_delta/_decide verbatim; labels are pacing-flavored."""
+
+    def _db(self):
+        from backend.database import (
+            init_db, SessionLocal, AIPortfolioTrade, AIPortfolioConfig,
+            ShadowStrategy, ShadowTrade,
+        )
+        init_db()
+        db = SessionLocal()
+        db.query(ShadowTrade).delete()
+        db.query(ShadowStrategy).delete()
+        db.query(AIPortfolioTrade).delete()
+        db.query(AIPortfolioConfig).delete()
+        db.commit()
+        return db
+
+    def _seed_stack(self, db, name, gains, start_day, month=6, buy_hour=10, sell_hour=15):
+        """One BUY+SELL round-trip per gain, on consecutive days from
+        start_day. cost_basis=10 x shares=10 -> per-trade pct = gain."""
+        from tests.test_strategy_ab_eval_shadow import (
+            _make_shadow_strategy, _make_shadow_trade,
+        )
+        ss = _make_shadow_strategy(name=name, starting_value=25000.0)
+        db.add(ss)
+        db.commit()
+        db.refresh(ss)
+        for i, g in enumerate(gains):
+            db.add(_make_shadow_trade(
+                strategy_id=ss.id, action="BUY", shares=10.0,
+                ticker=f"{name[-4:].upper()}{i}",
+                executed_at=datetime(2026, month, start_day + i, buy_hour, tzinfo=timezone.utc),
+            ))
+            db.add(_make_shadow_trade(
+                strategy_id=ss.id, action="SELL", shares=10.0, cost_basis=10.0,
+                realized_gain=g, ticker=f"{name[-4:].upper()}{i}",
+                executed_at=datetime(2026, month, start_day + i, sell_hour, tzinfo=timezone.utc),
+                reason="TRAILING STOP: test",
+            ))
+        db.commit()
+        return ss
+
+    def test_on_pace_when_experiment_leads_baseline(self):
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_baseline", [50.0, -30.0, 40.0, 60.0, -20.0], start_day=1)
+            self._seed_stack(db, "shadow_exp", [80.0, 20.0, 60.0, 90.0, 10.0], start_day=1)
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            assert snap['decision'] == 'keep'
+            assert '[Shadow] CANSLIM A/B [ON PACE] shadow_exp vs shadow_baseline' in snap['subject']
+            assert 'ON PACE' in snap['html']
+            assert snap['window_sell_count'] == 5
+            assert snap['baseline_sell_count'] == 5
+            assert snap['source'] == 'shadow_vs_baseline'
+        finally:
+            db.close()
+
+    def test_lagging_when_experiment_trails_on_both_bars(self):
+        db = self._db()
+        try:
+            # Baseline +$1,300 realized; experiment -$5,000 -> return delta
+            # well under -5pp of the $25k base AND sharpe flips negative.
+            self._seed_stack(db, "shadow_baseline", [500.0, -300.0, 400.0, 600.0, 100.0], start_day=1)
+            self._seed_stack(db, "shadow_exp", [-1000.0, -800.0, -1200.0, -900.0, -1100.0], start_day=1)
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            assert snap['decision'] == 'revert'
+            assert '[LAGGING]' in snap['subject']
+            assert 'LAGGING' in snap['html']
+        finally:
+            db.close()
+
+    def test_window_starts_at_later_clock(self):
+        """Experiment predates the baseline's clock (e.g. baseline was
+        reset) -> window starts at the BASELINE's first trade and the
+        experiment's earlier round-trips stay out of the comparison."""
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_baseline", [10.0, 20.0, 15.0, 5.0, 25.0], start_day=10)
+            # Experiment has 2 May round-trips (pre-window) + 5 in-window.
+            from tests.test_strategy_ab_eval_shadow import _make_shadow_trade
+            exp = self._seed_stack(db, "shadow_exp", [12.0, 22.0, 17.0, 7.0, 27.0], start_day=10)
+            for i, g in enumerate([999.0, 888.0]):
+                db.add(_make_shadow_trade(
+                    strategy_id=exp.id, action="BUY", shares=10.0, ticker=f"OLD{i}",
+                    executed_at=datetime(2026, 5, 1 + i, 10, tzinfo=timezone.utc),
+                ))
+                db.add(_make_shadow_trade(
+                    strategy_id=exp.id, action="SELL", shares=10.0, cost_basis=10.0,
+                    realized_gain=g, ticker=f"OLD{i}",
+                    executed_at=datetime(2026, 5, 1 + i, 15, tzinfo=timezone.utc),
+                ))
+            db.commit()
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            assert snap['window_start'] == '2026-06-10'
+            assert snap['window_sell_count'] == 5  # May round-trips excluded
+            assert 'OLD0' not in snap['html']
+        finally:
+            db.close()
+
+    def test_insufficient_when_experiment_below_five_sells(self):
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_baseline", [10.0, 20.0, 15.0, 5.0, 25.0], start_day=1)
+            self._seed_stack(db, "shadow_exp", [12.0, 22.0], start_day=1)
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            assert snap['decision'] == 'insufficient_data'
+            assert '[INSUFFICIENT DATA]' in snap['subject']
+        finally:
+            db.close()
+
+    def test_missing_baseline_raises_value_error(self):
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_exp", [10.0, 20.0], start_day=1)
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            with pytest.raises(ValueError, match="Baseline shadow strategy 'shadow_baseline' not found"):
+                build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+        finally:
+            db.close()
+
+    def test_baseline_against_itself_raises(self):
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_baseline", [10.0, 20.0], start_day=1)
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            with pytest.raises(ValueError, match="baseline stack against itself"):
+                build_shadow_vs_baseline_snapshot_html("shadow_baseline", db)
+        finally:
+            db.close()
+
+    def test_no_trades_anywhere_raises(self):
+        db = self._db()
+        try:
+            from tests.test_strategy_ab_eval_shadow import _make_shadow_strategy
+            db.add(_make_shadow_strategy(name="shadow_baseline"))
+            db.add(_make_shadow_strategy(name="shadow_exp"))
+            db.commit()
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            with pytest.raises(ValueError, match="no common window"):
+                build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+        finally:
+            db.close()
+
+    def test_send_wrapper_returns_contract_keys(self):
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_baseline", [10.0, 20.0, 15.0, 5.0, 25.0], start_day=1)
+            self._seed_stack(db, "shadow_exp", [12.0, 22.0, 17.0, 7.0, 27.0], start_day=1)
+            from backend import ab_eval_email as mod
+            with patch.object(mod, 'send_email', return_value=True) as mock_send:
+                result = mod.send_shadow_vs_baseline_snapshot("shadow_exp", db)
+            assert mock_send.call_count == 1
+            assert result['sent'] is True
+            assert result['decision'] == 'keep'
+            assert result['window_sell_count'] == 5
+            assert result['source'] == 'shadow_vs_baseline'
+            assert 'vs shadow_baseline' in result['subject']
+        finally:
+            db.close()
