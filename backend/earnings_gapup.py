@@ -311,7 +311,8 @@ def send_gapup_alert(gapups: list) -> bool:
 
         sent = send_webhook_notification(
             title, message, priority="high",
-            tags=["rocket", "chart_with_upwards_trend"]
+            tags=["rocket", "chart_with_upwards_trend"],
+            kind="earnings_gapup",
         )
 
         if sent:

@@ -11,6 +11,7 @@ const MUTABLE_KINDS = [
   { key: 'trade',              label: 'Trade executed' },
   { key: 'breakout',           label: 'Breakout alerts' },
   { key: 'coiled_spring',      label: 'Coiled Spring' },
+  { key: 'earnings_gapup',     label: 'Earnings gap-ups' },
   { key: 'score_crash',        label: 'Score drops' },
   { key: 'risk_alert',         label: 'Risk alerts' },
   { key: 'spy_gate_change',    label: 'SPY gate flips' },

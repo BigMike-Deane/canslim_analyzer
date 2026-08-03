@@ -15,6 +15,7 @@ const KIND_META = {
   score_crash:        { label: 'Score Drop',   cls: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
   breakout:           { label: 'Breakout',     cls: 'bg-primary-500/10 text-primary-400 border-primary-500/30' },
   coiled_spring:      { label: 'Coiled Spring',cls: 'bg-rose-500/10 text-rose-400 border-rose-500/30' },
+  earnings_gapup:     { label: 'Earnings Gap-Up', cls: 'bg-primary-500/10 text-primary-400 border-primary-500/30' },
   risk_alert:         { label: 'Risk',         cls: 'bg-orange-500/10 text-orange-400 border-orange-500/30' },
   spy_gate_change:    { label: 'SPY Gate',     cls: 'bg-accent-500/10 text-accent-500 border-accent-500/30' },
   market_turn:        { label: 'Market Turn',  cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
