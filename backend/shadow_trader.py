@@ -117,6 +117,16 @@ SHADOW_USER_ID = -100
 # and writes against any other model fall through to the sandbox session.
 _AI_MODELS = (AIPortfolioPosition, AIPortfolioConfig, AIPortfolioTrade, AIPortfolioSnapshot)
 
+# SPY cash-sweep rows (chop→SPY rotation stacks, 2026-08-03) are part of the
+# ShadowTrade log's cash ledger but must NEVER enter the position FIFO — a
+# swept SPY holding is not a position (no stops, no slots, no score). The
+# reason prefix is the serialization contract, same pattern as 'PYRAMID:'.
+_SWEEP_REASON_PREFIX = "SPY SWEEP"
+
+
+def is_sweep_reason(reason) -> bool:
+    return bool(reason) and str(reason).startswith(_SWEEP_REASON_PREFIX)
+
 # Target pct embedded in partial-profit sell reasons by
 # trading_engine.get_partial_profit_action ("PARTIAL PROFIT 25%: Up ...").
 # After a partial executes, live ai_trader's accumulator equals that TARGET
@@ -353,8 +363,25 @@ class ShadowSession:
         open_buys = defaultdict(deque)
         partial_taken = defaultdict(float)
         cash = self._synthetic_config.current_cash
+        sweep_shares = 0.0
+        sweep_cost = 0.0
 
         for t in trades:
+            if is_sweep_reason(t.reason):
+                # SPY sweep rows: cash ledger yes, position FIFO no. Shares
+                # reconstitute config.spy_sweep_shares; average cost carries
+                # so the next liquidation's realized_gain is computable.
+                if t.action == "BUY":
+                    cash -= (t.shares or 0) * (t.price or 0)
+                    sweep_shares += t.shares or 0
+                    sweep_cost += (t.shares or 0) * (t.price or 0)
+                elif t.action == "SELL":
+                    cash += (t.shares or 0) * (t.price or 0)
+                    if sweep_shares > 1e-9:
+                        avg = sweep_cost / sweep_shares
+                        sweep_cost -= avg * min(t.shares or 0, sweep_shares)
+                    sweep_shares = max(0.0, sweep_shares - (t.shares or 0))
+                continue
             entry = {
                 "shares": t.shares,
                 "price": t.price,
@@ -399,6 +426,10 @@ class ShadowSession:
                     partial_taken[t.ticker] = 0.0
 
         self._synthetic_config.current_cash = cash
+        self._synthetic_config.spy_sweep_shares = sweep_shares
+        # Average cost of the OPEN sweep shares — read by the sweep-delta
+        # emitter to stamp realized_gain on the next liquidation row.
+        self._sweep_avg_cost = (sweep_cost / sweep_shares) if sweep_shares > 1e-9 else 0.0
 
         # Consolidate same-ticker open buys into one synthetic position
         for ticker, queue in open_buys.items():
@@ -806,6 +837,64 @@ class ShadowSession:
             self._remove_synthetic_position(position)
         return st
 
+    def emit_shadow_sweep_delta(self, pre_cash: float, pre_shares: float,
+                                reason_suffix: str = "") -> Optional[ShadowTrade]:
+        """Translate a live sweep helper's synthetic-config mutation into a
+        ShadowTrade row so the FIFO rebuild can reconstitute sweep state.
+
+        The live helpers (handle_spy_sweep / liquidate_spy_sweep) mutate
+        config.current_cash and config.spy_sweep_shares in place; callers
+        snapshot both BEFORE the call and pass the snapshots here. The delta
+        becomes one BUY or SELL row with the 'SPY SWEEP' reason prefix — the
+        contract _derive_synthetic_positions keys on to route the row into
+        the cash ledger + sweep share count instead of the position FIFO.
+        Returns the queued row, or None when the helper was a no-op.
+        """
+        cfg = self._synthetic_config
+        d_shares = (cfg.spy_sweep_shares or 0.0) - (pre_shares or 0.0)
+        d_cash = (cfg.current_cash or 0.0) - (pre_cash or 0.0)
+        if abs(d_shares) < 1e-9:
+            return None
+        price = abs(d_cash) / abs(d_shares)
+        now = datetime.now(timezone.utc)
+        if d_shares > 0:
+            st = ShadowTrade(
+                shadow_strategy_id=self.shadow_strategy.id,
+                ticker="SPY",
+                action="BUY",
+                shares=d_shares,
+                price=price,
+                total_value=abs(d_cash),
+                reason=f"{_SWEEP_REASON_PREFIX} BUY: parking idle cash (SPY > 50MA)",
+                canslim_score=None,
+                cost_basis=None,
+                realized_gain=None,
+                holding_days=None,
+                signal_factors={},
+                executed_at=now,
+            )
+        else:
+            sold = -d_shares
+            cost = getattr(self, "_sweep_avg_cost", 0.0) or 0.0
+            reason = f"{_SWEEP_REASON_PREFIX} SOLD: {reason_suffix or 'liquidated'}"
+            st = ShadowTrade(
+                shadow_strategy_id=self.shadow_strategy.id,
+                ticker="SPY",
+                action="SELL",
+                shares=sold,
+                price=price,
+                total_value=abs(d_cash),
+                reason=reason,
+                canslim_score=None,
+                cost_basis=cost,
+                realized_gain=(price - cost) * sold if cost else 0.0,
+                holding_days=None,
+                signal_factors={"sell_reason": reason},
+                executed_at=now,
+            )
+        self._pending_shadow_trades.append(st)
+        return st
+
     def drain_pending_shadow_trades(self) -> List[ShadowTrade]:
         out = list(self._pending_shadow_trades)
         self._pending_shadow_trades.clear()
@@ -1067,6 +1156,28 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         # 76 names / $127.7k on a $25k stack. Mirror live execution: consume
         # slots and cash in rank order, stop when either runs out.
         cfg = shadow_session._synthetic_config
+        # SPY-sweep parity (chop→SPY stacks): live frees swept cash before
+        # executing decided buys (run_ai_trading_cycle) and re-parks idle
+        # cash after the cycle — mirror both around the buy loop. The delta
+        # emitter serializes each move as a 'SPY SWEEP' ShadowTrade so the
+        # next FIFO rebuild reconstitutes sweep state. Failures isolated:
+        # a sweep error must never cost the stack its buy/sell decisions.
+        if buys and float(getattr(cfg, "spy_sweep_shares", 0) or 0) > 0:
+            try:
+                from backend.ai_trader import liquidate_spy_sweep
+                pre_cash = float(getattr(cfg, "current_cash", 0) or 0)
+                pre_shares = float(getattr(cfg, "spy_sweep_shares", 0) or 0)
+                liquidate_spy_sweep(
+                    shadow_session, cfg, "freeing cash for shadow buys",
+                    user_id=SHADOW_USER_ID,
+                )
+                shadow_session.emit_shadow_sweep_delta(
+                    pre_cash, pre_shares, "freeing cash for shadow buys")
+            except Exception as e:
+                logger.error(
+                    f"shadow sweep liquidation failed for {strategy.name}: {e}",
+                    exc_info=True,
+                )
         open_positions = len(shadow_session._synthetic_positions or [])
         remaining_slots = max(0, int(getattr(cfg, "max_positions", 8) or 8) - open_positions)
         remaining_cash = float(getattr(cfg, "current_cash", 0) or 0)
@@ -1097,6 +1208,23 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 signal_factors=buy.get("signal_factors") if isinstance(buy, dict) else None,
                 is_growth_stock=bool(buy.get("is_growth_stock", False)) if isinstance(buy, dict) else False,
             )
+
+        # ── SPY sweep (after buys, matching live cycle order) ────────────────
+        # Reuses the LIVE handle_spy_sweep through the session proxy for full
+        # parity: it reads the synthetic config/positions via the intercepted
+        # queries, mutates synthetic cash/sweep-shares in place, and the delta
+        # emitter turns the move into a serialized ShadowTrade.
+        try:
+            from backend.trading_utils import get_strategy_profile
+            profile = get_strategy_profile(strategy.parent_strategy)
+            if (profile.get('spy_sweep') or {}).get('enabled'):
+                from backend.ai_trader import handle_spy_sweep
+                pre_cash = float(getattr(cfg, "current_cash", 0) or 0)
+                pre_shares = float(getattr(cfg, "spy_sweep_shares", 0) or 0)
+                handle_spy_sweep(shadow_session, cfg, profile, user_id=SHADOW_USER_ID)
+                shadow_session.emit_shadow_sweep_delta(pre_cash, pre_shares, "SPY < 50MA")
+        except Exception as e:
+            logger.error(f"shadow spy_sweep failed for {strategy.name}: {e}", exc_info=True)
 
         # ── Persist ──────────────────────────────────────────────────────────
         pending = shadow_session.drain_pending_shadow_trades()

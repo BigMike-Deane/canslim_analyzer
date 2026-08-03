@@ -1227,6 +1227,54 @@ strategy_profiles:
       min_confidence: 0.30   # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # Chop->SPY rotation candidate (2026-08-03): chop_damper clone + SPY cash
+  # sweep. Regime attribution (81d live): chop days bleed ~-37 bps/day vs
+  # SPY while the damper leaves its freed cash idle. This lever parks that
+  # idle cash in SPY via the existing spy_sweep mechanism (buys when SPY >
+  # 50MA, force-liquidates below the MA and whenever the strategy wants to
+  # buy), so chop days drift WITH SPY instead of sitting flat. The regime
+  # signal (SPY distance vs its 50MA) is causal - computable in real time.
+  # Evaluated ONLY via the 'shadow_chop_spy' ShadowStrategy stack.
+  # Pre-registered criteria (2026-08-03, before launch): paired vs
+  # shadow_baseline AND vs shadow_chop_damper over >=1 full mixed-regime
+  # cycle including >=15 chop days (SPY 0-1.5% above 50MA); promote only if
+  # it beats BOTH (the sweep must add value beyond the damper alone); kill
+  # if it trails shadow_baseline at that checkpoint. No early call.
+  nostate_chop_spy:
+    hidden: true
+    label: "NoState Chop SPY (shadow)"
+    description: "nostate_chop_damper + SPY sweep of damper-idled cash (chop->SPY rotation, live shadow A/B)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    chop_damper: { enabled: true, band_pct: 1.5, position_multiplier: 0.5 }
+    spy_sweep: { enabled: true, min_idle_pct: 10 }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true         # match cs_bear: bonus path OFF
+      min_confidence: 0.30   # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Exit-lab candidate (2026-07-24): champion clone with trailing bands
   # widened x1.5. Counterfactual replay over 151 backtest episodes (W1-W4
   # 2018-2026) + 62 live episodes ranked x1.5 bands +8.2pp/episode pooled
@@ -1909,4 +1957,16 @@ shadow_strategy_profiles:
     parent_strategy: nostate_cap50
     starting_value: 25000
     description: "cs_bear + realize 100% at +50% gain — exit-lab jul-29 candidate (replay +0.14pp/episode n.s.; cuts 50+ tail variance; shadow A/B is the promotion gate)"
+    scorer_overrides: {}
+  # Chop->SPY rotation A/B (2026-08-03): chop_damper clone + SPY sweep of
+  # the cash the damper idles. Gate pre-registered on the nostate_chop_spy
+  # profile comment - must beat BOTH shadow_baseline and shadow_chop_damper
+  # over a mixed-regime cycle with >=15 chop days; kill if it trails
+  # baseline. Sweep trades appear in ShadowTrade as ticker=SPY rows with
+  # reason prefix 'SPY SWEEP' (excluded from position FIFO, included in the
+  # cash ledger - see shadow_trader._derive_synthetic_positions).
+  shadow_chop_spy:
+    parent_strategy: nostate_chop_spy
+    starting_value: 25000
+    description: "chop_damper + SPY sweep of idle cash (chop->SPY rotation) — aug-03 candidate; gate: beat baseline AND chop_damper over a mixed-regime cycle w/ >=15 chop days"
     scorer_overrides: {}
