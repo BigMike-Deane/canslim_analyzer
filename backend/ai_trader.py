@@ -906,8 +906,13 @@ def get_buy_throttle_limit(db: Session, profile: dict, user_id: int = 1) -> int:
     return 999
 
 
-def liquidate_spy_sweep(db: Session, config, reason: str = "", user_id: int = 1):
-    """Sell all SPY sweep shares and return cash to portfolio."""
+def liquidate_spy_sweep(db: Session, config, reason: str = "", user_id: int = 1,
+                        target_value: float | None = None):
+    """Sell SPY sweep shares and return cash to portfolio.
+
+    target_value: raise only this much cash (partial sale, capped at the
+    sweep's value); None liquidates the whole sweep.
+    """
     spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
     if spy_sweep_shares <= 0:
         return
@@ -916,10 +921,16 @@ def liquidate_spy_sweep(db: Session, config, reason: str = "", user_id: int = 1)
     if not spy_price:
         return
 
-    sweep_value = spy_sweep_shares * spy_price
+    shares_to_sell = spy_sweep_shares
+    if target_value is not None:
+        shares_to_sell = min(spy_sweep_shares, max(0.0, target_value) / spy_price)
+        if shares_to_sell <= 1e-9:
+            return
+
+    sweep_value = shares_to_sell * spy_price
     config.current_cash += sweep_value
-    config.spy_sweep_shares = 0.0
-    logger.info(f"SPY SWEEP SOLD: {spy_sweep_shares:.1f} shares @ ${spy_price:.2f} = ${sweep_value:,.0f} ({reason})")
+    config.spy_sweep_shares = spy_sweep_shares - shares_to_sell
+    logger.info(f"SPY SWEEP SOLD: {shares_to_sell:.1f} shares @ ${spy_price:.2f} = ${sweep_value:,.0f} ({reason})")
 
 
 def handle_spy_sweep(db: Session, config, profile: dict, user_id: int = 1):
@@ -960,10 +971,14 @@ def handle_spy_sweep(db: Session, config, profile: dict, user_id: int = 1):
         idle_cash = config.current_cash - cash_reserve
 
         if idle_cash > total_value * min_idle_pct:
-            sweep_shares = idle_cash / spy_price
+            # Gate on the cached 50MA read, but execute at the live price —
+            # the sell leg prices off fetch_live_price, and a stale buy leg
+            # mints phantom sweep P&L on every sell/re-park round trip.
+            exec_price = fetch_live_price('SPY') or spy_price
+            sweep_shares = idle_cash / exec_price
             config.current_cash -= idle_cash
             config.spy_sweep_shares = (spy_sweep_shares + sweep_shares)
-            logger.info(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${spy_price:.2f} = ${idle_cash:,.0f}")
+            logger.info(f"SPY SWEEP BUY: {sweep_shares:.1f} shares @ ${exec_price:.2f} = ${idle_cash:,.0f}")
 
 
 def get_portfolio_value(db: Session, user_id: int = 1) -> dict:
@@ -2357,7 +2372,14 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         return current_score
 
     # Pre-compute portfolio value once (avoids 100+ DB queries inside the loop)
-    portfolio_value = get_portfolio_value(db, user_id=user_id)["total_value"]
+    _portfolio_snapshot = get_portfolio_value(db, user_id=user_id)
+    portfolio_value = _portfolio_snapshot["total_value"]
+    # Cash parked in the SPY sweep is reclaimable on demand (the cycle frees
+    # it before executing buys), so it counts toward the buy budget.
+    # Live/backtest liquidate before evaluating (term is 0 there); the shadow
+    # harness evaluates first and frees only the shortfall — without this its
+    # per-slot sizing collapses to the $500 runt floor.
+    reclaimable_sweep = _portfolio_snapshot.get("sweep_value", 0.0) or 0.0
 
     # Pre-compute cross-sectional features (once per evaluation, not per candidate)
     # Sector RS rank: median rs_12m per sector, ranked as percentile
@@ -2902,7 +2924,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
         # Budget cash evenly across remaining position slots
         remaining_slots = max(1, max_positions - len(current_tickers))
-        available_cash = portfolio_config.current_cash * 0.90  # Keep 10% liquid buffer
+        available_cash = (portfolio_config.current_cash + reclaimable_sweep) * 0.90  # Keep 10% liquid buffer
         per_slot_budget = available_cash / remaining_slots
         # Allow high-conviction entries up to 1.3x the per-slot budget
         if pre_breakout_bonus >= 35 or is_breaking_out:

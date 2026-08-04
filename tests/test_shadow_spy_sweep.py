@@ -275,6 +275,81 @@ class TestLiveSweepHelperThroughProxy:
         assert abs(st.realized_gain - (-1200.0)) < 1e-6
 
 
+class TestPartialSweepLiquidation:
+    """target_value sells only the shortfall a tick's buys need — the fix
+    for the every-tick full-sweep round trip that bloated the ledger and
+    minted phantom P&L from mismatched price sources (2026-08-04)."""
+
+    def _cfg(self, cash=1000.0, shares=40.0):
+        class Cfg:
+            pass
+        c = Cfg()
+        c.current_cash = cash
+        c.spy_sweep_shares = shares
+        return c
+
+    def test_partial_sale_raises_target_cash(self, db_session, monkeypatch):
+        import backend.ai_trader as ai_trader
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda t: 500.0)
+        cfg = self._cfg()
+        ai_trader.liquidate_spy_sweep(db_session, cfg, "test", user_id=SHADOW_USER_ID,
+                                      target_value=2000.0)
+        assert abs(cfg.current_cash - 3000.0) < 1e-6
+        assert abs(cfg.spy_sweep_shares - 36.0) < 1e-9  # sold 4 of 40 shares
+
+    def test_target_above_holdings_sells_everything(self, db_session, monkeypatch):
+        import backend.ai_trader as ai_trader
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda t: 500.0)
+        cfg = self._cfg()
+        ai_trader.liquidate_spy_sweep(db_session, cfg, "test", user_id=SHADOW_USER_ID,
+                                      target_value=999_999.0)
+        assert abs(cfg.current_cash - 21000.0) < 1e-6  # 1000 + 40 * 500
+        assert cfg.spy_sweep_shares == 0.0
+
+    def test_none_target_keeps_full_liquidation(self, db_session, monkeypatch):
+        import backend.ai_trader as ai_trader
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda t: 500.0)
+        cfg = self._cfg()
+        ai_trader.liquidate_spy_sweep(db_session, cfg, "test", user_id=SHADOW_USER_ID)
+        assert abs(cfg.current_cash - 21000.0) < 1e-6
+        assert cfg.spy_sweep_shares == 0.0
+
+    def test_zero_target_is_noop(self, db_session, monkeypatch):
+        import backend.ai_trader as ai_trader
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda t: 500.0)
+        cfg = self._cfg()
+        ai_trader.liquidate_spy_sweep(db_session, cfg, "test", user_id=SHADOW_USER_ID,
+                                      target_value=0.0)
+        assert cfg.current_cash == 1000.0
+        assert cfg.spy_sweep_shares == 40.0
+
+
+class TestSweepBuyExecutesAtLivePrice:
+    """The 50MA gate reads the cached market direction, but execution must
+    price at fetch_live_price — the sell leg does, and a stale buy leg mints
+    phantom sweep P&L on every sell/re-park round trip."""
+
+    def test_buy_leg_uses_live_price_not_cached(self, db_session, monkeypatch):
+        import data_fetcher
+        monkeypatch.setattr(
+            data_fetcher, "get_cached_market_direction",
+            lambda: {"success": True,
+                     "indexes": {"SPY": {"price": 500.0, "ma_50": 480.0}}})
+        import backend.ai_trader as ai_trader
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda t: 505.0)
+
+        strategy = _make_strategy(db_session)
+        session = ShadowSession(db_session, strategy, [])
+        cfg = session._synthetic_config
+        profile = {"spy_sweep": {"enabled": True, "min_idle_pct": 10}}
+
+        ai_trader.handle_spy_sweep(session, cfg, profile, user_id=SHADOW_USER_ID)
+
+        # idle = 25,000 - 5% reserve (1,250) = 23,750, bought at LIVE 505
+        assert abs(cfg.spy_sweep_shares - 23750.0 / 505.0) < 1e-9
+        assert abs(cfg.current_cash - 1250.0) < 1e-6
+
+
 class TestChopSpyConfigRegistration:
     """Pin the experiment's config so a YAML refactor can't silently drop
     the lever or the stack registration."""

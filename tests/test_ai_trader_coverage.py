@@ -2561,12 +2561,15 @@ class TestSpySweep:
         monkeypatch,
     ):
         """SPY above 50MA + idle cash > 20% of total → buy SPY shares."""
+        from backend import ai_trader
         from backend.ai_trader import handle_spy_sweep
 
         cfg = _seed_config(db_session, current_cash=10000.0, starting_cash=25000.0)
         # Profile enables sweep
         profile = {"spy_sweep": {"enabled": True, "min_idle_pct": 20}}
 
+        # Buy leg executes at the live price (gate uses the cached direction)
+        monkeypatch.setattr(ai_trader, "fetch_live_price", lambda t: 500.0)
         handle_spy_sweep(db_session, cfg, profile=profile, user_id=1)
         # Some sweep should have been bought (10000 cash, no positions, total=10000,
         # 20% of 10000 = 2000 idle threshold; 10000-500 reserve = 9500 idle > 2000 → buy)

@@ -1156,30 +1156,48 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         # 76 names / $127.7k on a $25k stack. Mirror live execution: consume
         # slots and cash in rank order, stop when either runs out.
         cfg = shadow_session._synthetic_config
-        # SPY-sweep parity (chop→SPY stacks): live frees swept cash before
-        # executing decided buys (run_ai_trading_cycle) and re-parks idle
-        # cash after the cycle — mirror both around the buy loop. The delta
-        # emitter serializes each move as a 'SPY SWEEP' ShadowTrade so the
-        # next FIFO rebuild reconstitutes sweep state. Failures isolated:
-        # a sweep error must never cost the stack its buy/sell decisions.
-        if buys and float(getattr(cfg, "spy_sweep_shares", 0) or 0) > 0:
-            try:
-                from backend.ai_trader import liquidate_spy_sweep
-                pre_cash = float(getattr(cfg, "current_cash", 0) or 0)
-                pre_shares = float(getattr(cfg, "spy_sweep_shares", 0) or 0)
-                liquidate_spy_sweep(
-                    shadow_session, cfg, "freeing cash for shadow buys",
-                    user_id=SHADOW_USER_ID,
-                )
-                shadow_session.emit_shadow_sweep_delta(
-                    pre_cash, pre_shares, "freeing cash for shadow buys")
-            except Exception as e:
-                logger.error(
-                    f"shadow sweep liquidation failed for {strategy.name}: {e}",
-                    exc_info=True,
-                )
         open_positions = len(shadow_session._synthetic_positions or [])
         remaining_slots = max(0, int(getattr(cfg, "max_positions", 8) or 8) - open_positions)
+        # SPY-sweep yield-to-buys (chop→SPY stacks): free ONLY the shortfall
+        # the decided buys need, on top of the 5% reserve handle_spy_sweep
+        # maintains. Liquidating the whole sweep and re-parking the surplus
+        # each tick round-tripped ~$16k through two price sources (sell at
+        # live, rebuy at the 4h-stale cache) — phantom sweep P&L plus two
+        # churn rows per tick in the A/B ledger. evaluate_buys sizes off
+        # cash + reclaimable sweep, so decisions are already full-sized.
+        # The delta emitter serializes the move as a 'SPY SWEEP' ShadowTrade
+        # so the next FIFO rebuild reconstitutes sweep state. Failures
+        # isolated: a sweep error must never cost the stack its buy/sell
+        # decisions.
+        if buys and remaining_slots > 0 and float(getattr(cfg, "spy_sweep_shares", 0) or 0) > 0:
+            planned_spend = sum(
+                float(b.get("value", 0) or 0)
+                for b in buys[:remaining_slots] if isinstance(b, dict)
+            )
+            if planned_spend > 0:
+                try:
+                    from backend.ai_trader import get_portfolio_value, liquidate_spy_sweep
+                    total_value = float(
+                        (get_portfolio_value(shadow_session, user_id=SHADOW_USER_ID) or {})
+                        .get("total_value") or 0
+                    )
+                    reserve = 0.05 * total_value
+                    shortfall = planned_spend + reserve - float(getattr(cfg, "current_cash", 0) or 0)
+                    if shortfall > 0:
+                        pre_cash = float(getattr(cfg, "current_cash", 0) or 0)
+                        pre_shares = float(getattr(cfg, "spy_sweep_shares", 0) or 0)
+                        liquidate_spy_sweep(
+                            shadow_session, cfg, "freeing cash for shadow buys",
+                            user_id=SHADOW_USER_ID,
+                            target_value=shortfall,
+                        )
+                        shadow_session.emit_shadow_sweep_delta(
+                            pre_cash, pre_shares, "freeing cash for shadow buys")
+                except Exception as e:
+                    logger.error(
+                        f"shadow sweep liquidation failed for {strategy.name}: {e}",
+                        exc_info=True,
+                    )
         remaining_cash = float(getattr(cfg, "current_cash", 0) or 0)
         for buy in buys:
             if remaining_slots <= 0 or remaining_cash <= 0:
