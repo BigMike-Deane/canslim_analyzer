@@ -347,7 +347,7 @@ def build_shadow_vs_baseline_snapshot_html(
     (transient post-reset state — the caller's per-stack error isolation
     logs it without killing the fan-out).
     """
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
     from backend.database import ShadowStrategy, ShadowTrade
 
     def _resolve_stack(name, role):
@@ -366,12 +366,19 @@ def build_shadow_vs_baseline_snapshot_html(
     def _stack_trades(ss):
         # Same pyramid exclusion as _resolve_ab_window: drop action='PYRAMID'
         # and BUY rows whose reason marks a pyramid add; keep NULL reasons.
+        # 'SPY SWEEP' rows are cash-parking, not strategy trades — counting
+        # them inflates sell counts toward the min_post_sells gate and
+        # dilutes per-trade stats with ~0% round-trips. Their realized P&L
+        # is surfaced separately as a caveat line.
         return db.query(ShadowTrade).filter(
             ShadowTrade.shadow_strategy_id == ss.id,
             ~ShadowTrade.action.in_(['PYRAMID']),
             or_(
                 ShadowTrade.reason.is_(None),
-                ~ShadowTrade.reason.like('PYRAMID:%'),
+                and_(
+                    ~ShadowTrade.reason.like('PYRAMID:%'),
+                    ~ShadowTrade.reason.like('SPY SWEEP%'),
+                ),
             ),
         ).order_by(ShadowTrade.executed_at).all()
 
@@ -430,6 +437,23 @@ def build_shadow_vs_baseline_snapshot_html(
         warnings.append(
             f"Experiment has only {exp_sells} closed SELLs in the window — "
             f"experiment statistics unstable."
+        )
+
+    # SPY sweep rows are excluded from the stats above; surface their
+    # realized P&L so a sweeping stack's SPY drift stays visible. The
+    # promotion gates read portfolio values, which include it either way.
+    sweep_sells = db.query(ShadowTrade).filter(
+        ShadowTrade.shadow_strategy_id == exp.id,
+        ShadowTrade.action == 'SELL',
+        ShadowTrade.reason.like('SPY SWEEP%'),
+        ShadowTrade.executed_at >= window_start,
+    ).all()
+    if sweep_sells:
+        sweep_pnl = sum(float(t.realized_gain or 0) for t in sweep_sells)
+        warnings.append(
+            f"SPY sweep excluded from trade stats: {len(sweep_sells)} sweep "
+            f"SELL(s) realized ${sweep_pnl:+,.0f} in the window (cash-parking; "
+            f"counted in the promotion gate's portfolio values, not here)."
         )
 
     # Best/worst tables for the EXPERIMENT stack — same serializer path as

@@ -800,6 +800,42 @@ class TestShadowVsBaselineSnapshot:
         finally:
             db.close()
 
+    def test_sweep_rows_excluded_from_stats_but_surfaced(self):
+        """'SPY SWEEP' rows are cash-parking, not strategy trades: they must
+        not count toward sell counts / per-trade stats (churn could satisfy
+        the min_post_sells gate by itself), but their realized P&L must stay
+        visible as a caveat line."""
+        db = self._db()
+        try:
+            self._seed_stack(db, "shadow_baseline", [10.0, 20.0, 15.0, 5.0, 25.0], start_day=1)
+            exp = self._seed_stack(db, "shadow_exp", [12.0, 22.0, 17.0, 7.0, 27.0], start_day=1)
+            from tests.test_strategy_ab_eval_shadow import _make_shadow_trade
+            # Churn-style SPY round trips inside the window
+            for i in range(3):
+                db.add(_make_shadow_trade(
+                    strategy_id=exp.id, action="BUY", shares=20.0, ticker="SPY",
+                    reason="SPY SWEEP BUY: parking idle cash (SPY > 50MA)",
+                    executed_at=datetime(2026, 6, 2 + i, 11, tzinfo=timezone.utc),
+                ))
+                db.add(_make_shadow_trade(
+                    strategy_id=exp.id, action="SELL", shares=20.0, cost_basis=500.0,
+                    realized_gain=100.0, ticker="SPY",
+                    reason="SPY SWEEP SOLD: freeing cash for shadow buys",
+                    executed_at=datetime(2026, 6, 2 + i, 12, tzinfo=timezone.utc),
+                ))
+            db.commit()
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            # Stock sells only — the 3 sweep SELLs must not count
+            assert snap['window_sell_count'] == 5
+            # Sweep rows must not surface in the best/worst trade tables
+            assert 'SPY SWEEP SOLD' not in snap['html']
+            # ...but their realized P&L is a visible caveat (3 × $100)
+            assert 'SPY sweep excluded from trade stats' in snap['html']
+            assert '+300' in snap['html']
+        finally:
+            db.close()
+
     def test_missing_baseline_raises_value_error(self):
         db = self._db()
         try:
