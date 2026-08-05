@@ -668,6 +668,13 @@ export default function CommandCenter() {
     : []
   const strategyName = portfolio?.strategy || 'balanced'
   const strategyLabel = strategyName.replace(/_/g, ' ')
+  // 30-day change % derived from the sparkline itself (first vs last point)
+  // so the number always agrees with the line's red/green.
+  const sparkFirst = sparkline?.[0]?.value
+  const sparkLast = sparkline?.[sparkline.length - 1]?.value
+  const spark30dPct = (sparkline?.length > 1 && sparkFirst)
+    ? ((sparkLast - sparkFirst) / sparkFirst) * 100
+    : null
 
   return (
     <div className="p-4 md:p-6">
@@ -771,8 +778,14 @@ export default function CommandCenter() {
               <Sparkline data={sparkline} width={320} height={36} gradient className="w-full" />
               {/* Window label: the sparkline is the last 30 days, which can
                   run red while the all-time return above it is green —
-                  labeling the window keeps that from reading as a bug. */}
-              <span className="absolute top-0 right-0 text-[9px] font-data text-dark-500">30d</span>
+                  labeling the window + its change % keeps that from reading
+                  as a bug. */}
+              <span className={`absolute top-0 right-0 text-[9px] font-data ${
+                spark30dPct == null ? 'text-dark-500'
+                  : spark30dPct >= 0 ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                30d{spark30dPct != null && ` ${spark30dPct >= 0 ? '+' : ''}${spark30dPct.toFixed(1)}%`}
+              </span>
             </div>
           )}
           <div className="grid grid-cols-3 gap-2 pt-2 border-t border-dark-700/30">
@@ -876,7 +889,12 @@ export default function CommandCenter() {
             {sparkline && sparkline.length > 1 && (
               <div className="mb-3 relative">
                 <Sparkline data={sparkline} width={200} height={40} gradient className="w-full" />
-                <span className="absolute top-0 right-0 text-[9px] font-data text-dark-500">30d</span>
+                <span className={`absolute top-0 right-0 text-[9px] font-data ${
+                  spark30dPct == null ? 'text-dark-500'
+                    : spark30dPct >= 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  30d{spark30dPct != null && ` ${spark30dPct >= 0 ? '+' : ''}${spark30dPct.toFixed(1)}%`}
+                </span>
               </div>
             )}
 
