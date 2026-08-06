@@ -594,11 +594,23 @@ Constraints (from auto-memory, do not relitigate):
       CLEAN, Aug-10 rebuilt A/B email dry-run ALL GREEN, owner stop-loss
       n still 2 (n≥5 ETA ~mid-Sept).
 
+- [x] 2026-08-06 `d2e38c5` — useApi migration of AIPortfolio + Backtest
+      (last UI-audit residual, CLOSED). Six contained fetch sites moved to
+      the hook: EdgeScorecard window fetch (hand-rolled fetchSeq deleted),
+      PositionDetailModal trades+score-history (result now ticker-stamped
+      so A's rows can't linger under B's header while B loads), config-card
+      strategies, windowReturns (error→lifetime fallback preserved via hook
+      `error`), Backtest form strategies, multi-period presets. Deliberately
+      NOT migrated (per CLAUDE.md "opportunistically, not wholesale"):
+      AIPortfolio's 8-endpoint Promise.all + Backtest's self-stopping run
+      poll. Suite 3626 green; deployed; headless-verified live (Analysis
+      tab Edge card survives rapid 7D/30D/90D clicks — 3 fetches, no
+      races; position modal opens; Backtest strategy select = 24 options).
+      Backtest.jsx is full-CRLF → edited via binary-mode python.
+
 ## Next up (ranked by expected returns impact)
-1. **useApi hook refactor** — last Jul-23 UI-audit residual (alt_configs /
-   RS fields / gapups page cleared by `509c2ad`). Zero strategy risk,
-   fits patience mode. Remaining hand-rolled multi-fetch pages:
-   AIPortfolio, Backtest (migrate opportunistically per CLAUDE.md).
+(empty — patience mode; next work arrives via monitoring clocks below or
+owner direction)
 
 ## Monitoring clocks (no action until due)
 - ~late-Aug: ML-demotion cohort re-read — wait for passed closed_n > 0;
