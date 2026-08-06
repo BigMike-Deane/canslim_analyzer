@@ -13,6 +13,7 @@ import EmptyState from '../components/EmptyState'
 import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 import BacktestCompareView from '../components/BacktestCompareView'
 import { useToast } from '../components/Toast'
+import useApi from '../hooks/useApi'
 
 function PerformanceChart({ data, startingCash }) {
   if (!data || data.length < 2) {
@@ -139,11 +140,7 @@ function BacktestForm({ onSubmit, isLoading }) {
     stock_universe: 'sp500',
     strategy: 'balanced'
   })
-  const [strategies, setStrategies] = useState([])
-
-  useEffect(() => {
-    api.getStrategies().then(setStrategies).catch(() => {})
-  }, [])
+  const { data: strategies } = useApi(() => api.getStrategies(), [], { initialData: [] })
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -682,12 +679,8 @@ function BacktestResults({ backtest, onClose }) {
 }
 
 function MultiPeriodPanel({ onLaunch, isLoading }) {
-  const [presets, setPresets] = useState([])
+  const { data: presets } = useApi(() => api.getBacktestPresets(), [], { initialData: [] })
   const [expanded, setExpanded] = useState(false)
-
-  useEffect(() => {
-    api.getBacktestPresets().then(setPresets).catch(() => {})
-  }, [])
 
   if (!presets.length) return null
 

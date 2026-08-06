@@ -10,6 +10,7 @@ import CollapsibleSection from '../components/CollapsibleSection'
 import Sparkline from '../components/Sparkline'
 import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
+import useApi from '../hooks/useApi'
 import { buildCsv, downloadCsv } from '../csv'
 import Modal from '../components/Modal'
 import PortfolioDetailView from '../components/PortfolioDetailView'
@@ -540,38 +541,21 @@ function EdgePower({ power, significant }) {
 }
 
 function EdgeScorecard({ edge, hideClocks = false }) {
-  // `edge` is the all-window scorecard fetched by the page. Narrower windows
-  // are fetched on demand; keep `data` separate so `all` reuses the prop
-  // (no refetch) while other windows hit the endpoint with their day count.
+  // `edge` is the all-window scorecard fetched by the page; `all` reuses the
+  // prop (no refetch) while narrower windows fetch on demand off `range`.
+  // useApi's request seq supersedes the hand-rolled fetchSeq guard: rapid
+  // window clicks fire overlapping fetches, and a slower earlier response
+  // must not clobber the window selected last.
   const [range, setRange] = useState('all')
-  const [data, setData] = useState(edge)
-  const [loading, setLoading] = useState(false)
-  // Monotonic request id: rapid window clicks fire overlapping fetches, and
-  // a slower earlier response must not clobber the window selected last.
-  const fetchSeq = useRef(0)
-
-  // Re-sync to the parent's all-window edge when it loads/changes, but only
-  // while viewing `all` — don't clobber a narrower window the user selected.
-  useEffect(() => {
-    if (range === 'all') setData(edge)
-  }, [edge, range])
-
-  async function selectRange(next) {
-    if (next === range) return
-    setRange(next)
-    const seq = ++fetchSeq.current
-    if (next === 'all') { setData(edge); return }
-    setLoading(true)
-    try {
-      const win = EDGE_WINDOWS.find(w => w.value === next)
-      const result = await api.getAIPortfolioEdge(win.days)
-      if (seq === fetchSeq.current) setData(result)
-    } catch {
-      // Keep the prior window's numbers rather than blanking the card.
-    } finally {
-      if (seq === fetchSeq.current) setLoading(false)
-    }
-  }
+  const selectRange = setRange
+  const { data: winData, loading } = useApi(
+    () => api.getAIPortfolioEdge(EDGE_WINDOWS.find(w => w.value === range).days),
+    [range],
+    { enabled: range !== 'all' }
+  )
+  // While a window loads — or if its fetch fails — show the last loaded
+  // numbers rather than blanking the card.
+  const data = range === 'all' ? edge : (winData ?? edge)
 
   if (!data) return null
 
@@ -1975,30 +1959,28 @@ const POSITION_TRADE_COLUMNS = [
 ]
 
 function PositionDetailModal({ position, onClose }) {
-  const [trades, setTrades] = useState(null)
-  const [scoreHistory, setScoreHistory] = useState(null)
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (!position) { setTrades(null); setScoreHistory(null); return }
-    // Stale-effect guard: tapping position A then quickly position B (or
-    // closing the modal) leaves A's fetch in flight — its late resolve must
-    // not render A's trades/score history under B's header.
-    let stale = false
-    setLoading(true)
-    // Fetch trades + stock (for score_history) in parallel — both keyed on ticker.
-    Promise.all([
+  // Fetch trades + stock (for score_history) in parallel — both keyed on
+  // ticker. useApi's request seq covers the stale-effect case (tapping
+  // position A then quickly position B leaves A's fetch in flight — its late
+  // resolve must not render A's data under B's header); the ticker stamp on
+  // the result covers the already-committed case (A's rows must not linger
+  // under B's header while B loads). Per-leg catches keep one failing
+  // endpoint from blanking both.
+  const { data: detail, loading } = useApi(
+    () => Promise.all([
       api.getAIPortfolioTrades(200, position.ticker)
         .then(t => Array.isArray(t) ? t : [])
         .catch(() => []),
       api.getStock(position.ticker)
         .then(s => s?.score_history || null)
         .catch(() => null),
-    ])
-      .then(([t, sh]) => { if (!stale) { setTrades(t); setScoreHistory(sh) } })
-      .finally(() => { if (!stale) setLoading(false) })
-    return () => { stale = true }
-  }, [position?.id, position?.ticker])
+    ]).then(([t, sh]) => ({ ticker: position.ticker, trades: t, scoreHistory: sh })),
+    [position?.id, position?.ticker],
+    { enabled: !!position }
+  )
+  const fresh = detail && detail.ticker === position?.ticker ? detail : null
+  const trades = fresh?.trades ?? null
+  const scoreHistory = fresh?.scoreHistory ?? null
 
   if (!position) return null
 
@@ -2380,7 +2362,6 @@ function ConfigPanel({ config, positions, tradesCount, onUpdate, onInitialize, o
   const [updating, setUpdating] = useState(false)
   const [initializing, setInitializing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [strategies, setStrategies] = useState([])
   const [changingStrategy, setChangingStrategy] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
   const [startCash, setStartCash] = useState(config?.starting_cash || 25000)
@@ -2390,9 +2371,7 @@ function ConfigPanel({ config, positions, tradesCount, onUpdate, onInitialize, o
   }, [config])
 
   // Load available strategies
-  useEffect(() => {
-    api.getStrategies().then(setStrategies).catch(() => {})
-  }, [])
+  const { data: strategies } = useApi(() => api.getStrategies(), [], { initialData: [] })
 
   const handleToggle = async () => {
     setUpdating(true)
@@ -3012,8 +2991,17 @@ export default function AIPortfolio() {
     const saved = localStorage.getItem('aiPortfolioTimeRange')
     return ['1d', '7d', '30d', 'all'].includes(saved) ? saved : 'all'
   })
-  const [windowReturns, setWindowReturns] = useState(null)
-  const [windowReturnsLoading, setWindowReturnsLoading] = useState(false)
+  // Window returns re-fetch when the user picks a different window OR the
+  // underlying portfolio refreshes (`lastUpdated` bumps when fetchData()
+  // completes — keeps per-position returns in sync with the auto-refresh
+  // cycle as current_price updates from background scans).
+  const {
+    data: windowReturnsData,
+    error: windowReturnsError,
+    loading: windowReturnsLoading,
+  } = useApi(() => api.getAIPortfolioWindowReturns(timeRange), [timeRange, lastUpdated])
+  // Fall back to lifetime numbers when the window fetch fails.
+  const windowReturns = windowReturnsError ? null : windowReturnsData
   // NeedsAttention → PositionsList handoff: a chip tap sets the ticker,
   // PositionsList opens its modal and clears it via onOpenHandled.
   const [attentionTicker, setAttentionTicker] = useState(null)
@@ -3169,26 +3157,6 @@ export default function AIPortfolio() {
   useEffect(() => {
     localStorage.setItem('aiPortfolioAutoRefresh', autoRefresh.toString())
   }, [autoRefresh])
-
-  // Fetch window returns whenever the user picks a different window OR
-  // the underlying portfolio refreshes (so per-position returns stay fresh
-  // as current_price updates from background scans).
-  useEffect(() => {
-    let cancelled = false
-    setWindowReturnsLoading(true)
-    api.getAIPortfolioWindowReturns(timeRange)
-      .then(data => { if (!cancelled) setWindowReturns(data) })
-      .catch(err => {
-        if (!cancelled) {
-          console.error('Failed to fetch window returns:', err)
-          setWindowReturns(null)  // Fall back to lifetime numbers on error
-        }
-      })
-      .finally(() => { if (!cancelled) setWindowReturnsLoading(false) })
-    return () => { cancelled = true }
-    // `lastUpdated` triggers refetch when fetchData() completes — keeps
-    // windowed positions in sync with the auto-refresh cycle.
-  }, [timeRange, lastUpdated])
 
   // Persist time-range pick
   useEffect(() => {
