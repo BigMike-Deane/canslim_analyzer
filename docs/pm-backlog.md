@@ -579,19 +579,38 @@ Constraints (from auto-memory, do not relitigate):
       partly encode regime). Verdict rule unchanged: wait for closed_n on
       BOTH cohorts; no ML re-enable without LIVE A/B regardless.
 
+- [x] 2026-08-06 (iter: due monitoring reads, verification-only) —
+      (1) **H-fix A/B VERDICT: KEEP, clock CLOSED** (strategy-ab-eval
+      cutoff=2026-07-02, post 35d/13 sells clears the ≥5 gate): return
+      delta +9.95pp, sharpe/trade +0.092, drawdown −2.02pp, mean sell
+      +23.93% vs +7.68%. Caveat: post window includes DELL +109.9% TP and
+      a friendlier tape — but H was a correctness fix; the pre-registered
+      bar was "did it degrade?" (≥ −5pp) and it clearly didn't.
+      (2) **Digest coalescing spot-check PASSED** (Jul-30 watch item):
+      Jul-31 pre-deploy rows individual (13:30 UTC < 14:38 deploy), first
+      post-deploy row correctly coalesced ("Breakouts today: 4 — ...");
+      Aug-1+ exactly ≤1 row/kind/day/user across all 3 users.
+      (3) Same-day (separate session log): chop_spy post-reset audit
+      CLEAN, Aug-10 rebuilt A/B email dry-run ALL GREEN, owner stop-loss
+      n still 2 (n≥5 ETA ~mid-Sept).
+
 ## Next up (ranked by expected returns impact)
 1. **useApi hook refactor** — last Jul-23 UI-audit residual (alt_configs /
    RS fields / gapups page cleared by `509c2ad`). Zero strategy risk,
-   fits patience mode.
+   fits patience mode. Remaining hand-rolled multi-fetch pages:
+   AIPortfolio, Backtest (migrate opportunistically per CLAUDE.md).
 
 ## Monitoring clocks (no action until due)
-- **Aug-1 14:00 UTC**: exit-recon poller EMAILS verdict (gate met Jul-28;
-  expect FIX WORKED). Afterwards: retire or re-mint the poller (its JWT
-  dies 2026-08-10).
-- ~mid-Aug: H-fix strategy-ab-eval re-check (cutoff 2026-07-02).
 - ~late-Aug: ML-demotion cohort re-read — wait for passed closed_n > 0;
   read avg_age_days + closed-mix BEFORE gains (Jul-28 read confounded,
   see above).
-- Ongoing: shadow_chop_damper (id=3) + shadow_wide_trail (id=4) A/Bs —
-  no promotion until they survive mixed-regime/chop weeks.
+- Ongoing: shadow_chop_damper (id=3) + shadow_wide_trail (id=4) +
+  shadow_cap50 (id=5) + shadow_chop_spy (id=6, clock Aug-4) A/Bs — no
+  promotion until they survive mixed-regime/chop weeks (0 chop days
+  accrued since Aug-4 as of Aug-6).
+- ~mid-Sept: exit-decision stop-loss re-check when owner stop-loss n≥5
+  (Aug-6: n=2; manual curl recipe in auto-memory jun24 file).
 - ~Sept: Improving Radar out-of-sample re-validation.
+- CLOSED Aug-6: H-fix A/B (KEEP, above). CLOSED Aug-3: exit-recon poller
+  retired (owner-approved; Aug-1 email never delivered — verdict pulled
+  manually, FIX WORKED numerically, stops n=2 marginal).
