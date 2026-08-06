@@ -1426,6 +1426,14 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           // Prefer windowed return; fall back to lifetime gain_loss_pct if the
           // endpoint hasn't responded yet or for unknown tickers.
           const pct = winRow?.return_pct ?? position.gain_loss_pct
+          // Dollar P&L is ALWAYS lifetime-vs-cost-basis (what selling now would
+          // realize) — it does NOT follow the window pills like pct does, so
+          // its sign can differ from a windowed pct. Tooltip carries the frame.
+          const pnl = position.gain_loss ?? (
+            position.current_value != null && position.cost_basis != null && position.shares != null
+              ? position.current_value - position.shares * position.cost_basis
+              : null
+          )
           const isPos = (pct ?? 0) >= 0
           const isMidWindow = winRow?.notes?.includes('opened mid-window')
           const glanceScore = position.is_growth_stock ? position.current_growth_score : position.current_score
@@ -1490,13 +1498,26 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
               </div>
               <div className="text-right shrink-0">
                 <div className="font-semibold font-data text-dark-100">{formatCurrency(position.current_value)}</div>
-                <span
-                  className={`text-[10px] font-data ${isPos ? 'text-emerald-400' : 'text-red-400'}`}
-                  title={isMidWindow ? 'Position opened during this window — return shown since purchase' : undefined}
-                >
-                  {isPos ? '+' : ''}{pct != null ? pct.toFixed(2) : '—'}%
-                  {isMidWindow && <span className="text-dark-500 ml-1">·new</span>}
-                </span>
+                <div className="text-[10px] font-data">
+                  {pnl != null && (
+                    <>
+                      <span
+                        className={pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+                        title="Unrealized P&L vs cost basis — the dollars gained or lost if this position were sold now"
+                      >
+                        {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
+                      </span>
+                      <span className="text-dark-500"> · </span>
+                    </>
+                  )}
+                  <span
+                    className={isPos ? 'text-emerald-400' : 'text-red-400'}
+                    title={isMidWindow ? 'Position opened during this window — return shown since purchase' : undefined}
+                  >
+                    {isPos ? '+' : ''}{pct != null ? pct.toFixed(2) : '—'}%
+                    {isMidWindow && <span className="text-dark-500 ml-1">·new</span>}
+                  </span>
+                </div>
               </div>
               <ScoreBadge score={glanceScore} ticker={position.ticker} size="sm" className="shrink-0" />
             </button>
