@@ -1681,6 +1681,7 @@ async def list_ml_matrices(
     """
     anchors = (
         db.query(BacktestRun)
+        .filter(BacktestRun.user_id == current_user.id)
         .filter(BacktestRun.name.like(f"{_MATRIX_PREFIX_A}%"))
         .order_by(desc(BacktestRun.created_at))
         .limit(limit * 4)
@@ -1693,6 +1694,7 @@ async def list_ml_matrices(
         sibling_names = [f"[ML {label}] {suffix}" for label in _MATRIX_LABELS]
         siblings = (
             db.query(BacktestRun)
+            .filter(BacktestRun.user_id == current_user.id)
             .filter(BacktestRun.name.in_(sibling_names))
             .all()
         )

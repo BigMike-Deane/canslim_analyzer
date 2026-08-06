@@ -62,7 +62,15 @@ export default function useApi(fetcher, deps = [], opts = {}) {
   }, [])
 
   useEffect(() => {
-    if (!enabled) return undefined
+    if (!enabled) {
+      // Disabled (possibly mid-flight): the cleanup below bumps seqRef, so an
+      // in-flight request can no longer clear its own spinner in `finally`.
+      // Reset loading here so a consumer that flips enabled=false — e.g.
+      // EdgeScorecard switching back to 'All' before a window fetch resolves —
+      // doesn't stay dimmed (aria-busy) forever.
+      setLoading(false)
+      return undefined
+    }
     run()
     const timer = pollMs > 0 ? setInterval(() => run({ isPoll: true }), pollMs) : null
     return () => {

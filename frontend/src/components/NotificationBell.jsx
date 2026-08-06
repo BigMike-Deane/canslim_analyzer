@@ -108,6 +108,13 @@ export default function NotificationBell({ collapsed }) {
         toast.error(err?.message || 'Failed to mark as read')
       }
     }
+    // Digest rows (count>1) keep the FIRST event's ticker but stand for many
+    // events — route to the digest URL like the Notifications page does,
+    // instead of dropping the rest by deep-linking only the first ticker.
+    if ((n?.data?.count || 0) > 1 && n?.data?.url) {
+      navigate(n.data.url)
+      return
+    }
     const ticker = n?.data?.ticker
     if (ticker) navigate(`/stock/${ticker}`)
     else navigate('/notifications')

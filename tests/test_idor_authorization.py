@@ -393,6 +393,39 @@ class TestCrossUserAuthorization:
         finally:
             db.close()
 
+    def test_ml_matrices_are_scoped_per_user(self, client):
+        """Regression: GET /api/ml/matrices had no user filter on either the
+        anchors query or the siblings query, so any authenticated user could
+        list every user's ML A/B/C/D matrix runs. The producer
+        (POST /api/ml/compare-matrix) has stamped user_id since its first
+        commit, so the fix is a strict user_id filter on both queries."""
+        suffix = "nostate_optimized 2024-01-01→2024-06-01"
+        db = SessionLocal()
+        try:
+            for label in ("A baseline", "B bonus-only", "C veto-only", "D both"):
+                db.add(BacktestRun(
+                    user_id=ALICE_ID, name=f"[ML {label}] {suffix}",
+                    status="completed", strategy="nostate_optimized",
+                    start_date=date(2024, 1, 1), end_date=date(2024, 6, 1),
+                    starting_cash=25000,
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+        r_bob = client.get("/api/ml/matrices", headers=_h("bob"))
+        assert r_bob.status_code == 200
+        assert r_bob.json()["matrices"] == [], "bob must not see alice's ML matrix runs"
+
+        r_alice = client.get("/api/ml/matrices", headers=_h("alice"))
+        assert r_alice.status_code == 200
+        body = r_alice.json()
+        assert body["count"] == 1, "alice must still see her own complete matrix"
+        assert body["matrices"][0]["suffix"] == suffix
+        assert set(body["matrices"][0]["variants"].keys()) == {
+            "A baseline", "B bonus-only", "C veto-only", "D both",
+        }
+
     def test_fidelity_snapshots_are_scoped_per_user(self, client):
         db = SessionLocal()
         try:
@@ -551,3 +584,31 @@ class TestAnalyzeJobPrivilegeScope:
         # alice + bob are both is_admin=False per fixture.
         r = client.get("/api/analyze/jobs/1", headers=_h("alice"))
         assert r.status_code == 403, "non-admin must be rejected by /api/analyze/jobs/{id}"
+
+
+# ── Global mutation endpoints must be admin-only ──────────────────────
+
+class TestGlobalMutationEndpointsRequireAdmin:
+    """Regression: these endpoints mutate GLOBAL state (market snapshots, DB
+    backups, FMP rate-limit counters, the shared coiled-spring alert table)
+    yet were reachable by any authenticated user via get_current_active_user.
+    They are now gated by get_admin_user, matching the comparable global
+    endpoints /api/scanner/start|stop|config and /api/analyze/scan.
+
+    The 403 must come from the dependency, so the endpoint body (real backup,
+    real Yahoo/FMP fetch, real deletes) never executes in this test."""
+
+    ENDPOINTS = [
+        ("post", "/api/market-direction/refresh"),
+        ("post", "/api/system/backup"),
+        ("post", "/api/market/refresh"),
+        ("post", "/api/rate-limit-stats/reset"),
+        ("post", "/api/coiled-spring/record?ticker=AAPL"),
+        ("post", "/api/coiled-spring/cleanup-duplicates"),
+        ("post", "/api/coiled-spring/update-outcomes"),
+    ]
+
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_non_admin_rejected(self, client, method, path):
+        r = getattr(client, method)(path, headers=_h("alice"))
+        assert r.status_code == 403, f"non-admin must be rejected by {method.upper()} {path}"

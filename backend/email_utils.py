@@ -857,12 +857,18 @@ def send_stop_loss_webhook(ticker: str, shares: float, price: float,
                                      tags=tags, url=url)
 
 
-def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
+def send_risk_alert_webhook(alert_type: str, details: str,
+                            user_id: int = None) -> bool:
     """Send webhook alert for portfolio risk conditions.
 
     Args:
         alert_type: Type of risk (heat, sector_concentration, position_size)
         details: Description of the risk condition
+        user_id: Owner of the portfolio this alert is about. REQUIRED for
+            correct routing — risk alerts carry per-portfolio state (heat %,
+            drawdown %, sector counts), so they must go only to the owning
+            user. When None (defensive/legacy), a single global-topic webhook
+            is sent with NO per-user in-app fan-out.
 
     Returns:
         True if sent successfully
@@ -881,9 +887,20 @@ def send_risk_alert_webhook(alert_type: str, details: str) -> bool:
     }
     title = titles.get(alert_type, f"Risk Alert: {alert_type}")
     tags = tag_map.get(alert_type, ["warning"])
-    broadcast_notification(kind="risk_alert", title=title, body=details,
-                           priority="high", tags=tags,
-                           data={"alert_type": alert_type})
+    # Per-user routing (NOT broadcast_notification): broadcast inserts a row +
+    # push for EVERY active user, which would show one user's portfolio heat/
+    # drawdown/sector numbers in every other user's feed. Mirror the per-user
+    # senders (send_trade_webhook / send_stop_loss_webhook).
+    if user_id is not None:
+        create_notification(
+            user_id, kind="risk_alert", title=title, body=details,
+            priority="high", tags=tags, data={"alert_type": alert_type},
+        )
+        url = get_user_webhook_url(user_id)
+        return send_webhook_notification(title, details, priority="high",
+                                         tags=tags, url=url, kind="risk_alert",
+                                         for_user_id=user_id)
+    # Unknown owner: single global-topic webhook, no per-user fan-out.
     return send_webhook_notification(title, details, priority="high", tags=tags,
                                      kind="risk_alert")
 

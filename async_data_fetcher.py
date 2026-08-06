@@ -1565,8 +1565,12 @@ async def get_stock_data_async(
             else:
                 stock_data.institutional_holders_pct = cached_inst
 
-    # Get price history from Yahoo chart API (fast, no rate limit)
-    chart_data = fetch_price_from_chart_api(ticker)
+    # Get price history from Yahoo chart API (fast, no rate limit).
+    # Offload these two blocking requests.get() fetches to a thread — run
+    # directly on the event loop they stall all 50 gathered tasks in the
+    # batch (Jul-27 884038b class, scoped to the scanner loop).
+    loop = asyncio.get_event_loop()
+    chart_data = await loop.run_in_executor(None, fetch_price_from_chart_api, ticker)
     if chart_data.get("current_price"):
         if not stock_data.current_price:
             stock_data.current_price = chart_data["current_price"]
@@ -1602,7 +1606,7 @@ async def get_stock_data_async(
 
     # Fetch weekly price history for base pattern detection
     # This is a separate call because we need weekly OHLC data, not daily
-    weekly_data = fetch_weekly_price_history(ticker)
+    weekly_data = await loop.run_in_executor(None, fetch_weekly_price_history, ticker)
     if weekly_data:
         stock_data.weekly_price_history = weekly_data
 

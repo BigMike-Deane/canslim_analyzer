@@ -3209,6 +3209,29 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
 
 
+def compute_dynamic_reserve_pct(market_regime: dict) -> float:
+    """Cash-reserve fraction for the current market regime. Extracted so the
+    live cycle AND the shadow harness enforce the identical reserve and never
+    drift (strong-bull 5% ... strong-bear 60%; neutral 20%). Reads the same
+    ai_trader.allocation config keys as the former inline block."""
+    from config_loader import config as yaml_config
+    alloc_config = yaml_config.get('ai_trader.allocation', {})
+    regime = market_regime.get('regime') if isinstance(market_regime, dict) else market_regime
+    if regime == "bullish":
+        from data_fetcher import get_cached_market_direction
+        _mkt = get_cached_market_direction()
+        _signal = _mkt.get("weighted_signal", 0) if _mkt.get("success") else 0
+        return (alloc_config.get('cash_reserve_strong_bull', 0.05) if _signal >= 2.0
+                else alloc_config.get('cash_reserve_bull', 0.10))
+    if regime == "bearish":
+        from data_fetcher import get_cached_market_direction
+        _mkt = get_cached_market_direction()
+        _signal = _mkt.get("weighted_signal", 0) if _mkt.get("success") else 0
+        return (alloc_config.get('cash_reserve_strong_bear', 0.60) if _signal <= -1.0
+                else alloc_config.get('cash_reserve_bear', 0.40))
+    return alloc_config.get('cash_reserve_neutral', 0.20)
+
+
 def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
     """
     Run a complete AI trading cycle:
@@ -3543,27 +3566,9 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
         # Strong bull: 5%, Bull: 10%, Neutral: 20%, Bear: 40%, Strong bear: 60%
         market_regime = get_market_regime(db)
 
-        from config_loader import config as yaml_config
-        alloc_config = yaml_config.get('ai_trader.allocation', {})
-        if market_regime["regime"] == "bullish":
-            # Check if strong bull (signal >= 2.0) vs regular bull
-            from data_fetcher import get_cached_market_direction
-            _mkt = get_cached_market_direction()
-            _signal = _mkt.get("weighted_signal", 0) if _mkt.get("success") else 0
-            if _signal >= 2.0:
-                dynamic_reserve_pct = alloc_config.get('cash_reserve_strong_bull', 0.05)
-            else:
-                dynamic_reserve_pct = alloc_config.get('cash_reserve_bull', 0.10)
-        elif market_regime["regime"] == "bearish":
-            from data_fetcher import get_cached_market_direction
-            _mkt = get_cached_market_direction()
-            _signal = _mkt.get("weighted_signal", 0) if _mkt.get("success") else 0
-            if _signal <= -1.0:
-                dynamic_reserve_pct = alloc_config.get('cash_reserve_strong_bear', 0.60)
-            else:
-                dynamic_reserve_pct = alloc_config.get('cash_reserve_bear', 0.40)
-        else:
-            dynamic_reserve_pct = alloc_config.get('cash_reserve_neutral', 0.20)
+        # Reserve fraction now lives in compute_dynamic_reserve_pct (shared
+        # with the shadow harness so the two never drift).
+        dynamic_reserve_pct = compute_dynamic_reserve_pct(market_regime)
 
         min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
 
@@ -3762,7 +3767,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             from backend.email_utils import send_risk_alert_webhook
             # Re-check heat for alerting
             if heat_penalty_active:
-                send_risk_alert_webhook("heat", f"Portfolio heat {total_heat:.1f}% exceeds {max_heat}% warning threshold")
+                send_risk_alert_webhook("heat", f"Portfolio heat {total_heat:.1f}% exceeds {max_heat}% warning threshold", user_id=user_id)
             # Check sector concentration (batch-fetch to avoid N+1)
             positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
             pos_tickers = [p.ticker for p in positions]
@@ -3778,11 +3783,11 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             for sector, count in sector_counts.items():
                 if count > max_per_sector:
                     send_risk_alert_webhook("sector_concentration",
-                                            f"Sector '{sector}' has {count} positions - exceeds limit of {max_per_sector}")
+                                            f"Sector '{sector}' has {count} positions - exceeds limit of {max_per_sector}", user_id=user_id)
             # Check drawdown
             if current_drawdown >= halt_threshold * 0.7:
                 send_risk_alert_webhook("drawdown",
-                                        f"Portfolio drawdown {current_drawdown:.1f}% approaching halt threshold {halt_threshold}%")
+                                        f"Portfolio drawdown {current_drawdown:.1f}% approaching halt threshold {halt_threshold}%", user_id=user_id)
         except Exception as e:
             logger.warning(f"Risk alert webhooks failed: {e}")
 

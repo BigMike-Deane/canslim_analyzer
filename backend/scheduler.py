@@ -86,9 +86,12 @@ def _persist_health_to_redis():
         import json
         client = get_redis_client()
         if client:
-            client.set(_HEALTH_REDIS_KEY, json.dumps(_system_health))
-    except Exception:
-        pass  # Redis persistence is best-effort
+            # deque is not JSON-serializable -- convert to list for the wire
+            payload = {**_system_health, "errors_today": list(_system_health["errors_today"])}
+            client.set(_HEALTH_REDIS_KEY, json.dumps(payload))
+    except Exception as e:
+        # Redis persistence is best-effort -- never raise, but stay visible
+        logger.debug(f"Could not persist health to Redis: {e}")
 
 
 def _restore_health_from_redis():
@@ -101,7 +104,11 @@ def _restore_health_from_redis():
             data = client.get(_HEALTH_REDIS_KEY)
             if data:
                 saved = json.loads(data)
+                # errors_today was serialized as a list; rebuild the bounded deque
+                restored_errors = saved.pop("errors_today", None)
                 _system_health.update(saved)
+                if restored_errors is not None:
+                    _system_health["errors_today"] = deque(restored_errors, maxlen=50)
                 logger.info(f"Restored system health from Redis (last scan: {saved.get('last_successful_scan', 'N/A')})")
     except Exception as e:
         logger.debug(f"Could not restore health from Redis: {e}")
@@ -838,481 +845,481 @@ def run_continuous_scan():
         _scan_config["phase_total"] = 0
         _scan_config["phase_label"] = _PHASE_LABELS.get("scanning")
 
-    logger.info(f"Starting continuous scan ({_scan_config['source']})...")
-
-    # Get tickers based on source
-    # Always include portfolio tickers first (they're most important)
-    from sp500_tickers import get_portfolio_tickers
-    portfolio_tickers = get_portfolio_tickers()
-
-    source = _scan_config["source"]
-    if source == "top50":
-        base_tickers = get_sp500_tickers()[:50]
-    elif source == "sp500":
-        base_tickers = get_sp500_tickers()
-    elif source == "russell":
-        base_tickers = get_russell2000_tickers()
-    elif source == "all":
-        base_tickers = get_all_tickers(include_portfolio=False)  # Portfolio added separately
-    else:
-        base_tickers = get_sp500_tickers()
-
-    # Combine: portfolio first (priority), then base tickers, deduplicated
-    seen = set()
-    tickers = []
-    for t in portfolio_tickers + base_tickers:
-        if t not in seen:
-            seen.add(t)
-            tickers.append(t)
-
-    # Shuffle ONLY the non-portfolio tickers to avoid Yahoo warmup issues
-    # Keep portfolio tickers at the front (they're most important)
-    num_portfolio = len(portfolio_tickers)
-    portfolio_section = tickers[:num_portfolio]
-    rest_section = tickers[num_portfolio:]
-    random.shuffle(rest_section)
-    tickers = portfolio_section + rest_section
-
-    logger.info(f"Including {len(portfolio_tickers)} portfolio tickers in scan")
-
-    _scan_config["total_stocks"] = len(tickers)
-    logger.info(f"Scanning {len(tickers)} stocks...")
-    _check_universe_shrink(len(tickers))
-
-    # Import here to avoid circular imports
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-
-    from canslim_scorer import CANSLIMScorer, GrowthModeScorer, TechnicalAnalyzer
-    from data_fetcher import (
-        DataFetcher, get_cached_market_direction,
-        fetch_fmp_insider_trading, fetch_short_interest,
-        fetch_fmp_earnings_calendar, fetch_fmp_analyst_estimates,
-        is_data_fresh, mark_data_fetched
-    )
-    from growth_projector import GrowthProjector
-
-    # IMPORTANT: Fetch market direction FIRST, before any stock analysis
-    # This ensures the M score uses fresh data and avoids rate limiting during stock scans
-    logger.info("Fetching market direction data (SPY, QQQ, DIA)...")
-    market_data = get_cached_market_direction(force_refresh=True)
-    if market_data.get("success"):
-        logger.info(f"Market direction: {market_data.get('market_trend')} "
-                   f"(score: {market_data.get('market_score')}, "
-                   f"signal: {market_data.get('weighted_signal', 0):.2f})")
-    else:
-        logger.warning(f"Failed to fetch market direction: {market_data.get('error')}")
-
-    data_fetcher = DataFetcher()
-    canslim_scorer = CANSLIMScorer(data_fetcher)
-    growth_mode_scorer = GrowthModeScorer(data_fetcher, canslim_scorer)
-    growth_projector = GrowthProjector(data_fetcher)
-
-    # Pre-load industry group ranks from DB (from previous scan cycle)
-    _industry_group_ranks = {}
-    ig_preload_db = SessionLocal()
     try:
-        ig_rows = ig_preload_db.query(Stock.ticker, Stock.industry_group_rank).filter(
-            Stock.industry_group_rank != None
-        ).all()
-        _industry_group_ranks = {t: r for t, r in ig_rows}
-        if _industry_group_ranks:
-            logger.info(f"Loaded industry group ranks for {len(_industry_group_ranks)} stocks")
-    except Exception as e:
-        logger.debug(f"Industry group rank preload failed: {e}")
-    finally:
-        # close() must run even if the query raises, or the scan leaks a
-        # connection per cycle until the pool is exhausted.
-        ig_preload_db.close()
+        logger.info(f"Starting continuous scan ({_scan_config['source']})...")
 
-    def analyze_stock(ticker: str) -> dict:
-        """Analyze a single stock"""
+        # Get tickers based on source
+        # Always include portfolio tickers first (they're most important)
+        from sp500_tickers import get_portfolio_tickers
+        portfolio_tickers = get_portfolio_tickers()
+
+        source = _scan_config["source"]
+        if source == "top50":
+            base_tickers = get_sp500_tickers()[:50]
+        elif source == "sp500":
+            base_tickers = get_sp500_tickers()
+        elif source == "russell":
+            base_tickers = get_russell2000_tickers()
+        elif source == "all":
+            base_tickers = get_all_tickers(include_portfolio=False)  # Portfolio added separately
+        else:
+            base_tickers = get_sp500_tickers()
+
+        # Combine: portfolio first (priority), then base tickers, deduplicated
+        seen = set()
+        tickers = []
+        for t in portfolio_tickers + base_tickers:
+            if t not in seen:
+                seen.add(t)
+                tickers.append(t)
+
+        # Shuffle ONLY the non-portfolio tickers to avoid Yahoo warmup issues
+        # Keep portfolio tickers at the front (they're most important)
+        num_portfolio = len(portfolio_tickers)
+        portfolio_section = tickers[:num_portfolio]
+        rest_section = tickers[num_portfolio:]
+        random.shuffle(rest_section)
+        tickers = portfolio_section + rest_section
+
+        logger.info(f"Including {len(portfolio_tickers)} portfolio tickers in scan")
+
+        _scan_config["total_stocks"] = len(tickers)
+        logger.info(f"Scanning {len(tickers)} stocks...")
+        _check_universe_shrink(len(tickers))
+
+        # Import here to avoid circular imports
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+
+        from canslim_scorer import CANSLIMScorer, GrowthModeScorer, TechnicalAnalyzer
+        from data_fetcher import (
+            DataFetcher, get_cached_market_direction,
+            fetch_fmp_insider_trading, fetch_short_interest,
+            fetch_fmp_earnings_calendar, fetch_fmp_analyst_estimates,
+            is_data_fresh, mark_data_fetched
+        )
+        from growth_projector import GrowthProjector
+
+        # IMPORTANT: Fetch market direction FIRST, before any stock analysis
+        # This ensures the M score uses fresh data and avoids rate limiting during stock scans
+        logger.info("Fetching market direction data (SPY, QQQ, DIA)...")
+        market_data = get_cached_market_direction(force_refresh=True)
+        if market_data.get("success"):
+            logger.info(f"Market direction: {market_data.get('market_trend')} "
+                       f"(score: {market_data.get('market_score')}, "
+                       f"signal: {market_data.get('weighted_signal', 0):.2f})")
+        else:
+            logger.warning(f"Failed to fetch market direction: {market_data.get('error')}")
+
+        data_fetcher = DataFetcher()
+        canslim_scorer = CANSLIMScorer(data_fetcher)
+        growth_mode_scorer = GrowthModeScorer(data_fetcher, canslim_scorer)
+        growth_projector = GrowthProjector(data_fetcher)
+
+        # Pre-load industry group ranks from DB (from previous scan cycle)
+        _industry_group_ranks = {}
+        ig_preload_db = SessionLocal()
         try:
-            stock_data = data_fetcher.get_stock_data(ticker)
-            if not stock_data or not stock_data.is_valid:
+            ig_rows = ig_preload_db.query(Stock.ticker, Stock.industry_group_rank).filter(
+                Stock.industry_group_rank != None
+            ).all()
+            _industry_group_ranks = {t: r for t, r in ig_rows}
+            if _industry_group_ranks:
+                logger.info(f"Loaded industry group ranks for {len(_industry_group_ranks)} stocks")
+        except Exception as e:
+            logger.debug(f"Industry group rank preload failed: {e}")
+        finally:
+            # close() must run even if the query raises, or the scan leaks a
+            # connection per cycle until the pool is exhausted.
+            ig_preload_db.close()
+
+        def analyze_stock(ticker: str) -> dict:
+            """Analyze a single stock"""
+            try:
+                stock_data = data_fetcher.get_stock_data(ticker)
+                if not stock_data or not stock_data.is_valid:
+                    return None
+
+                # Pass industry group rank from previous cycle (bootstrap: first scan has no ranks)
+                ig_rank = _industry_group_ranks.get(ticker)
+                canslim_result = canslim_scorer.score_stock(stock_data, industry_group_rank=ig_rank)
+                projection = growth_projector.project_growth(
+                    stock_data=stock_data,
+                    canslim_score=canslim_result
+                )
+
+                # Extract RS values for persistence
+                rs_values = canslim_scorer.extract_rs_values(stock_data)
+
+                # Calculate Growth Mode score if applicable
+                growth_mode_result = None
+                is_growth_stock = growth_mode_scorer.should_use_growth_mode(stock_data)
+                if is_growth_stock:
+                    growth_mode_result = growth_mode_scorer.score_stock(stock_data)
+
+                # Technical analysis
+                base_pattern = TechnicalAnalyzer.detect_base_pattern(stock_data.weekly_price_history)
+                volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
+                is_breaking_out, breakout_vol = TechnicalAnalyzer.is_breaking_out(stock_data, base_pattern)
+
+                # Insider trading signals (fetch weekly)
+                insider_data = {}
+                if not is_data_fresh(ticker, "insider_trading"):
+                    insider_data = fetch_fmp_insider_trading(ticker)
+                    if insider_data:
+                        mark_data_fetched(ticker, "insider_trading")
+
+                # Short interest data (fetch daily)
+                short_data = {}
+                if not is_data_fresh(ticker, "short_interest"):
+                    short_data = fetch_short_interest(ticker)
+                    if short_data:
+                        mark_data_fetched(ticker, "short_interest")
+
+                # P1 Feature: Earnings calendar (fetch weekly)
+                earnings_calendar_data = {}
+                if not is_data_fresh(ticker, "earnings_calendar"):
+                    earnings_calendar_data = fetch_fmp_earnings_calendar(ticker)
+                    if earnings_calendar_data:
+                        mark_data_fetched(ticker, "earnings_calendar")
+
+                # P1 Feature: Analyst estimates (fetch every 3 days)
+                analyst_estimates_data = {}
+                if not is_data_fresh(ticker, "analyst_estimates"):
+                    analyst_estimates_data = fetch_fmp_analyst_estimates(ticker)
+                    if analyst_estimates_data:
+                        mark_data_fetched(ticker, "analyst_estimates")
+
+                return {
+                    "ticker": ticker,
+                    "company_name": stock_data.name,
+                    "sector": stock_data.sector,
+                    "industry": stock_data.industry or None,
+                    "current_price": stock_data.current_price,
+                    "market_cap": stock_data.market_cap,
+                    "canslim_score": canslim_result.total_score,
+                    "c_score": canslim_result.c_score,
+                    "a_score": canslim_result.a_score,
+                    "n_score": canslim_result.n_score,
+                    "s_score": canslim_result.s_score,
+                    "l_score": canslim_result.l_score,
+                    "i_score": canslim_result.i_score,
+                    "m_score": canslim_result.m_score,
+                    "score_details": {
+                        "c": {
+                            "summary": canslim_result.c_detail,
+                            "quarterly_eps": stock_data.quarterly_earnings[:4] if stock_data.quarterly_earnings else [],
+                            "earnings_surprise_pct": stock_data.earnings_surprise_pct,
+                        },
+                        "a": {
+                            "summary": canslim_result.a_detail,
+                            "annual_eps": stock_data.annual_earnings[:3] if stock_data.annual_earnings else [],
+                            "roe": stock_data.roe,
+                        },
+                        "n": {
+                            "summary": canslim_result.n_detail,
+                            "current_price": stock_data.current_price,
+                            "week_52_high": stock_data.high_52w,
+                            "pct_from_high": round(((stock_data.high_52w - stock_data.current_price) / stock_data.high_52w) * 100, 1) if stock_data.high_52w and stock_data.current_price else None,
+                        },
+                        "s": {
+                            "summary": canslim_result.s_detail,
+                            "volume_ratio": volume_ratio,
+                            "avg_volume": stock_data.avg_volume_50d,
+                            "shares_outstanding": stock_data.shares_outstanding,
+                        },
+                        "l": {
+                            "summary": canslim_result.l_detail,
+                            "relative_strength": stock_data.relative_strength if hasattr(stock_data, 'relative_strength') else None,
+                            "rs_12m": rs_values.get("rs_12m"),
+                            "rs_3m": rs_values.get("rs_3m"),
+                        },
+                        "i": {
+                            "summary": canslim_result.i_detail,
+                            "institutional_pct": stock_data.institutional_holders_pct,
+                        },
+                        "m": {
+                            "summary": canslim_result.m_detail,
+                        },
+                    },
+                    "projected_growth": projection.projected_growth_pct,
+                    "confidence": projection.confidence,
+                    "analyst_target": stock_data.analyst_target_price,
+                    "pe_ratio": stock_data.trailing_pe,
+                    "week_52_high": stock_data.high_52w,
+                    "week_52_low": stock_data.low_52w,
+                    "relative_strength": None,  # Could parse from l_detail if needed
+                    "institutional_ownership": stock_data.institutional_holders_pct,
+                    # RS values for persistence
+                    "rs_12m": rs_values.get("rs_12m"),
+                    "rs_3m": rs_values.get("rs_3m"),
+                    # Growth Mode scoring
+                    "is_growth_stock": is_growth_stock,
+                    "growth_mode_score": growth_mode_result.total_score if growth_mode_result else None,
+                    "growth_mode_details": {
+                        "r": growth_mode_result.r_detail,
+                        "f": growth_mode_result.f_detail,
+                        "n": growth_mode_result.n_detail,
+                        "s": growth_mode_result.s_detail,
+                        "l": growth_mode_result.l_detail,
+                        "i": growth_mode_result.i_detail,
+                        "m": growth_mode_result.m_detail,
+                    } if growth_mode_result else None,
+                    # Enhanced earnings
+                    "eps_acceleration": len(stock_data.quarterly_earnings) >= 5 and canslim_result.c_detail and "+accel" in canslim_result.c_detail,
+                    "earnings_surprise_pct": stock_data.earnings_surprise_pct,
+                    "revenue_growth_pct": _calc_revenue_growth(stock_data),
+                    # Technical analysis
+                    "volume_ratio": volume_ratio,
+                    "weeks_in_base": base_pattern.get("weeks", 0),
+                    "base_type": base_pattern.get("type", "none"),
+                    "pivot_price": base_pattern.get("pivot_price", 0),
+                    "is_breaking_out": is_breaking_out,
+                    "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
+                    # Insider trading signals
+                    "insider_buy_count": insider_data.get("buy_count"),
+                    "insider_sell_count": insider_data.get("sell_count"),
+                    "insider_net_shares": insider_data.get("net_shares"),
+                    "insider_sentiment": insider_data.get("sentiment"),
+                    # Short interest
+                    "short_interest_pct": short_data.get("short_interest_pct"),
+                    "short_ratio": short_data.get("short_ratio"),
+                    # P1 Feature: Earnings Calendar
+                    "next_earnings_date": earnings_calendar_data.get("next_earnings_date"),
+                    "days_to_earnings": earnings_calendar_data.get("days_to_earnings"),
+                    "earnings_beat_streak": earnings_calendar_data.get("earnings_beat_streak"),
+                    # P1 Feature: Analyst Estimate Revisions
+                    "eps_estimate_current": analyst_estimates_data.get("eps_estimate_current"),
+                    "eps_estimate_prior": analyst_estimates_data.get("eps_estimate_prior"),
+                    "eps_estimate_revision_pct": analyst_estimates_data.get("eps_estimate_revision_pct"),
+                    "estimate_revision_trend": analyst_estimates_data.get("estimate_revision_trend"),
+                    # P1 Feature: Insider Value Tracking (from enhanced insider_data)
+                    "insider_buy_value": insider_data.get("buy_value"),
+                    "insider_sell_value": insider_data.get("sell_value"),
+                    "insider_net_value": insider_data.get("net_value"),
+                    "insider_largest_buy": insider_data.get("largest_buy"),
+                    "insider_largest_buyer_title": insider_data.get("largest_buyer_title"),
+                    # Raw earnings data (needed for database save)
+                    "quarterly_earnings": stock_data.quarterly_earnings,
+                    "annual_earnings": stock_data.annual_earnings,
+                    "quarterly_revenue": stock_data.quarterly_revenue,
+                }
+            except Exception as e:
+                logger.error(f"Error analyzing {ticker}: {e}")
                 return None
 
-            # Pass industry group rank from previous cycle (bootstrap: first scan has no ranks)
-            ig_rank = _industry_group_ranks.get(ticker)
-            canslim_result = canslim_scorer.score_stock(stock_data, industry_group_rank=ig_rank)
-            projection = growth_projector.project_growth(
-                stock_data=stock_data,
-                canslim_score=canslim_result
-            )
-
-            # Extract RS values for persistence
-            rs_values = canslim_scorer.extract_rs_values(stock_data)
-
-            # Calculate Growth Mode score if applicable
-            growth_mode_result = None
-            is_growth_stock = growth_mode_scorer.should_use_growth_mode(stock_data)
-            if is_growth_stock:
-                growth_mode_result = growth_mode_scorer.score_stock(stock_data)
-
-            # Technical analysis
-            base_pattern = TechnicalAnalyzer.detect_base_pattern(stock_data.weekly_price_history)
-            volume_ratio = TechnicalAnalyzer.calculate_volume_ratio(stock_data)
-            is_breaking_out, breakout_vol = TechnicalAnalyzer.is_breaking_out(stock_data, base_pattern)
-
-            # Insider trading signals (fetch weekly)
-            insider_data = {}
-            if not is_data_fresh(ticker, "insider_trading"):
-                insider_data = fetch_fmp_insider_trading(ticker)
-                if insider_data:
-                    mark_data_fetched(ticker, "insider_trading")
-
-            # Short interest data (fetch daily)
-            short_data = {}
-            if not is_data_fresh(ticker, "short_interest"):
-                short_data = fetch_short_interest(ticker)
-                if short_data:
-                    mark_data_fetched(ticker, "short_interest")
-
-            # P1 Feature: Earnings calendar (fetch weekly)
-            earnings_calendar_data = {}
-            if not is_data_fresh(ticker, "earnings_calendar"):
-                earnings_calendar_data = fetch_fmp_earnings_calendar(ticker)
-                if earnings_calendar_data:
-                    mark_data_fetched(ticker, "earnings_calendar")
-
-            # P1 Feature: Analyst estimates (fetch every 3 days)
-            analyst_estimates_data = {}
-            if not is_data_fresh(ticker, "analyst_estimates"):
-                analyst_estimates_data = fetch_fmp_analyst_estimates(ticker)
-                if analyst_estimates_data:
-                    mark_data_fetched(ticker, "analyst_estimates")
-
-            return {
-                "ticker": ticker,
-                "company_name": stock_data.name,
-                "sector": stock_data.sector,
-                "industry": stock_data.industry or None,
-                "current_price": stock_data.current_price,
-                "market_cap": stock_data.market_cap,
-                "canslim_score": canslim_result.total_score,
-                "c_score": canslim_result.c_score,
-                "a_score": canslim_result.a_score,
-                "n_score": canslim_result.n_score,
-                "s_score": canslim_result.s_score,
-                "l_score": canslim_result.l_score,
-                "i_score": canslim_result.i_score,
-                "m_score": canslim_result.m_score,
-                "score_details": {
-                    "c": {
-                        "summary": canslim_result.c_detail,
-                        "quarterly_eps": stock_data.quarterly_earnings[:4] if stock_data.quarterly_earnings else [],
-                        "earnings_surprise_pct": stock_data.earnings_surprise_pct,
-                    },
-                    "a": {
-                        "summary": canslim_result.a_detail,
-                        "annual_eps": stock_data.annual_earnings[:3] if stock_data.annual_earnings else [],
-                        "roe": stock_data.roe,
-                    },
-                    "n": {
-                        "summary": canslim_result.n_detail,
-                        "current_price": stock_data.current_price,
-                        "week_52_high": stock_data.high_52w,
-                        "pct_from_high": round(((stock_data.high_52w - stock_data.current_price) / stock_data.high_52w) * 100, 1) if stock_data.high_52w and stock_data.current_price else None,
-                    },
-                    "s": {
-                        "summary": canslim_result.s_detail,
-                        "volume_ratio": volume_ratio,
-                        "avg_volume": stock_data.avg_volume_50d,
-                        "shares_outstanding": stock_data.shares_outstanding,
-                    },
-                    "l": {
-                        "summary": canslim_result.l_detail,
-                        "relative_strength": stock_data.relative_strength if hasattr(stock_data, 'relative_strength') else None,
-                        "rs_12m": rs_values.get("rs_12m"),
-                        "rs_3m": rs_values.get("rs_3m"),
-                    },
-                    "i": {
-                        "summary": canslim_result.i_detail,
-                        "institutional_pct": stock_data.institutional_holders_pct,
-                    },
-                    "m": {
-                        "summary": canslim_result.m_detail,
-                    },
-                },
-                "projected_growth": projection.projected_growth_pct,
-                "confidence": projection.confidence,
-                "analyst_target": stock_data.analyst_target_price,
-                "pe_ratio": stock_data.trailing_pe,
-                "week_52_high": stock_data.high_52w,
-                "week_52_low": stock_data.low_52w,
-                "relative_strength": None,  # Could parse from l_detail if needed
-                "institutional_ownership": stock_data.institutional_holders_pct,
-                # RS values for persistence
-                "rs_12m": rs_values.get("rs_12m"),
-                "rs_3m": rs_values.get("rs_3m"),
-                # Growth Mode scoring
-                "is_growth_stock": is_growth_stock,
-                "growth_mode_score": growth_mode_result.total_score if growth_mode_result else None,
-                "growth_mode_details": {
-                    "r": growth_mode_result.r_detail,
-                    "f": growth_mode_result.f_detail,
-                    "n": growth_mode_result.n_detail,
-                    "s": growth_mode_result.s_detail,
-                    "l": growth_mode_result.l_detail,
-                    "i": growth_mode_result.i_detail,
-                    "m": growth_mode_result.m_detail,
-                } if growth_mode_result else None,
-                # Enhanced earnings
-                "eps_acceleration": len(stock_data.quarterly_earnings) >= 5 and canslim_result.c_detail and "+accel" in canslim_result.c_detail,
-                "earnings_surprise_pct": stock_data.earnings_surprise_pct,
-                "revenue_growth_pct": _calc_revenue_growth(stock_data),
-                # Technical analysis
-                "volume_ratio": volume_ratio,
-                "weeks_in_base": base_pattern.get("weeks", 0),
-                "base_type": base_pattern.get("type", "none"),
-                "pivot_price": base_pattern.get("pivot_price", 0),
-                "is_breaking_out": is_breaking_out,
-                "breakout_volume_ratio": breakout_vol if is_breaking_out else None,
-                # Insider trading signals
-                "insider_buy_count": insider_data.get("buy_count"),
-                "insider_sell_count": insider_data.get("sell_count"),
-                "insider_net_shares": insider_data.get("net_shares"),
-                "insider_sentiment": insider_data.get("sentiment"),
-                # Short interest
-                "short_interest_pct": short_data.get("short_interest_pct"),
-                "short_ratio": short_data.get("short_ratio"),
-                # P1 Feature: Earnings Calendar
-                "next_earnings_date": earnings_calendar_data.get("next_earnings_date"),
-                "days_to_earnings": earnings_calendar_data.get("days_to_earnings"),
-                "earnings_beat_streak": earnings_calendar_data.get("earnings_beat_streak"),
-                # P1 Feature: Analyst Estimate Revisions
-                "eps_estimate_current": analyst_estimates_data.get("eps_estimate_current"),
-                "eps_estimate_prior": analyst_estimates_data.get("eps_estimate_prior"),
-                "eps_estimate_revision_pct": analyst_estimates_data.get("eps_estimate_revision_pct"),
-                "estimate_revision_trend": analyst_estimates_data.get("estimate_revision_trend"),
-                # P1 Feature: Insider Value Tracking (from enhanced insider_data)
-                "insider_buy_value": insider_data.get("buy_value"),
-                "insider_sell_value": insider_data.get("sell_value"),
-                "insider_net_value": insider_data.get("net_value"),
-                "insider_largest_buy": insider_data.get("largest_buy"),
-                "insider_largest_buyer_title": insider_data.get("largest_buyer_title"),
-                # Raw earnings data (needed for database save)
-                "quarterly_earnings": stock_data.quarterly_earnings,
-                "annual_earnings": stock_data.annual_earnings,
-                "quarterly_revenue": stock_data.quarterly_revenue,
-            }
-        except Exception as e:
-            logger.error(f"Error analyzing {ticker}: {e}")
+        def _calc_revenue_growth(stock_data) -> float:
+            """Calculate YoY revenue growth percentage"""
+            if stock_data.quarterly_revenue and len(stock_data.quarterly_revenue) >= 5:
+                current = stock_data.quarterly_revenue[0]
+                prior = stock_data.quarterly_revenue[4]
+                if prior > 0:
+                    return round(((current - prior) / prior) * 100, 1)
             return None
 
-    def _calc_revenue_growth(stock_data) -> float:
-        """Calculate YoY revenue growth percentage"""
-        if stock_data.quarterly_revenue and len(stock_data.quarterly_revenue) >= 5:
-            current = stock_data.quarterly_revenue[0]
-            prior = stock_data.quarterly_revenue[4]
-            if prior > 0:
-                return round(((current - prior) / prior) * 100, 1)
-        return None
+        def save_stock_to_db(db, analysis: dict):
+            """Save analysis to database with historical tracking"""
+            from backend.database import Stock, StockScore
+            from datetime import date
 
-    def save_stock_to_db(db, analysis: dict):
-        """Save analysis to database with historical tracking"""
-        from backend.database import Stock, StockScore
-        from datetime import date
+            stock = db.query(Stock).filter(Stock.ticker == analysis["ticker"]).first()
+            if not stock:
+                stock = Stock(ticker=analysis["ticker"])
+                db.add(stock)
+                db.flush()  # Get the ID
 
-        stock = db.query(Stock).filter(Stock.ticker == analysis["ticker"]).first()
-        if not stock:
-            stock = Stock(ticker=analysis["ticker"])
-            db.add(stock)
-            db.flush()  # Get the ID
+            # Track score change
+            old_score = stock.canslim_score
+            new_score = analysis.get("canslim_score")
 
-        # Track score change
-        old_score = stock.canslim_score
-        new_score = analysis.get("canslim_score")
+            # SAFEGUARD: Detect potential data blips before saving
+            # If score dropped dramatically AND key data is missing, keep the old score
+            if old_score is not None and new_score is not None:
+                score_drop = old_score - new_score
 
-        # SAFEGUARD: Detect potential data blips before saving
-        # If score dropped dramatically AND key data is missing, keep the old score
-        if old_score is not None and new_score is not None:
-            score_drop = old_score - new_score
+                # Check for signs of incomplete data
+                has_earnings_data = bool(analysis.get("quarterly_earnings"))
+                has_price_data = analysis.get("current_price") is not None and analysis.get("current_price") > 0
+                has_52w_high = analysis.get("week_52_high") is not None and analysis.get("week_52_high") > 0
 
-            # Check for signs of incomplete data
-            has_earnings_data = bool(analysis.get("quarterly_earnings"))
-            has_price_data = analysis.get("current_price") is not None and analysis.get("current_price") > 0
-            has_52w_high = analysis.get("week_52_high") is not None and analysis.get("week_52_high") > 0
+                # Count how many component scores are 0 (suspicious if many are 0)
+                component_scores = [
+                    analysis.get("c_score", 0),
+                    analysis.get("a_score", 0),
+                    analysis.get("n_score", 0),
+                    analysis.get("s_score", 0),
+                    analysis.get("l_score", 0),
+                    analysis.get("i_score", 0),
+                ]
+                zero_components = sum(1 for s in component_scores if s == 0)
 
-            # Count how many component scores are 0 (suspicious if many are 0)
-            component_scores = [
-                analysis.get("c_score", 0),
-                analysis.get("a_score", 0),
-                analysis.get("n_score", 0),
-                analysis.get("s_score", 0),
-                analysis.get("l_score", 0),
-                analysis.get("i_score", 0),
-            ]
-            zero_components = sum(1 for s in component_scores if s == 0)
+                # Check score details for "Insufficient data" or "No data" indicators
+                score_details = analysis.get("score_details", {})
+                data_issues = []
+                for component, details in score_details.items():
+                    if isinstance(details, dict):
+                        summary = details.get("summary", "")
+                        if any(x in summary.lower() for x in ["insufficient", "no data", "no price", "no volume"]):
+                            data_issues.append(component.upper())
 
-            # Check score details for "Insufficient data" or "No data" indicators
-            score_details = analysis.get("score_details", {})
-            data_issues = []
-            for component, details in score_details.items():
-                if isinstance(details, dict):
-                    summary = details.get("summary", "")
-                    if any(x in summary.lower() for x in ["insufficient", "no data", "no price", "no volume"]):
-                        data_issues.append(component.upper())
+                # BLIP DETECTION: Score dropped >25 points AND looks like missing data
+                is_likely_blip = (
+                    score_drop > 25 and  # Big drop
+                    (zero_components >= 3 or  # Too many zero components
+                     not has_earnings_data or  # Missing earnings
+                     len(data_issues) >= 2)  # Multiple data issues
+                )
 
-            # BLIP DETECTION: Score dropped >25 points AND looks like missing data
-            is_likely_blip = (
-                score_drop > 25 and  # Big drop
-                (zero_components >= 3 or  # Too many zero components
-                 not has_earnings_data or  # Missing earnings
-                 len(data_issues) >= 2)  # Multiple data issues
+                if is_likely_blip:
+                    logger.warning(f"DATA BLIP DETECTED for {analysis['ticker']}: "
+                                  f"Score would drop {old_score:.0f} → {new_score:.0f} (-{score_drop:.0f}). "
+                                  f"Issues: {data_issues}, Zero components: {zero_components}. "
+                                  f"KEEPING OLD SCORE.")
+                    # Keep the old score - don't update
+                    new_score = old_score
+                    analysis["canslim_score"] = old_score
+                    # Also preserve component scores if they were non-zero before
+                    if stock.c_score and analysis.get("c_score") == 0:
+                        analysis["c_score"] = stock.c_score
+                    if stock.a_score and analysis.get("a_score") == 0:
+                        analysis["a_score"] = stock.a_score
+                    if stock.n_score and analysis.get("n_score") == 0:
+                        analysis["n_score"] = stock.n_score
+                    if stock.s_score and analysis.get("s_score") == 0:
+                        analysis["s_score"] = stock.s_score
+                    if stock.l_score and analysis.get("l_score") == 0:
+                        analysis["l_score"] = stock.l_score
+                    if stock.i_score and analysis.get("i_score") == 0:
+                        analysis["i_score"] = stock.i_score
+
+                stock.previous_score = old_score
+                stock.score_change = round(new_score - old_score, 2)
+            else:
+                stock.previous_score = None
+                stock.score_change = None
+
+            # Update stock data (only overwrite with non-None values to prevent
+            # API failures from wiping existing good data)
+            stock.name = analysis.get("company_name") or stock.name
+            stock.sector = analysis.get("sector") or stock.sector
+            stock.industry = analysis.get("industry") or stock.industry
+            stock.current_price = analysis.get("current_price") or stock.current_price
+            stock.market_cap = analysis.get("market_cap") or stock.market_cap
+            stock.canslim_score = new_score
+            stock.c_score = analysis.get("c_score")
+            stock.a_score = analysis.get("a_score")
+            stock.n_score = analysis.get("n_score")
+            stock.s_score = analysis.get("s_score")
+            stock.l_score = analysis.get("l_score")
+            stock.i_score = analysis.get("i_score")
+            stock.m_score = analysis.get("m_score")
+            stock.score_details = analysis.get("score_details")
+            stock.projected_growth = analysis.get("projected_growth")
+            stock.growth_confidence = analysis.get("confidence")
+            stock.week_52_high = analysis.get("week_52_high") or stock.week_52_high
+            stock.week_52_low = analysis.get("week_52_low") or stock.week_52_low
+            stock.last_updated = datetime.now(timezone.utc)
+
+            # RS values for momentum confirmation
+            stock.rs_12m = analysis.get("rs_12m")
+            stock.rs_3m = analysis.get("rs_3m")
+
+            # Growth Mode scoring
+            stock.growth_mode_score = analysis.get("growth_mode_score")
+            stock.growth_mode_details = analysis.get("growth_mode_details")
+            stock.is_growth_stock = analysis.get("is_growth_stock", False)
+
+            # Enhanced earnings analysis
+            stock.eps_acceleration = analysis.get("eps_acceleration")
+            stock.earnings_surprise_pct = analysis.get("earnings_surprise_pct")
+            stock.revenue_growth_pct = analysis.get("revenue_growth_pct")
+            # Keep existing earnings/revenue history when this scan produced none —
+            # an empty list here means the fetch failed or the cache was evicted,
+            # not that the company's reported quarters vanished
+            stock.quarterly_earnings = analysis.get("quarterly_earnings") or stock.quarterly_earnings
+            stock.annual_earnings = analysis.get("annual_earnings") or stock.annual_earnings
+            stock.quarterly_revenue = analysis.get("quarterly_revenue") or stock.quarterly_revenue
+
+            # Technical analysis
+            stock.volume_ratio = analysis.get("volume_ratio")
+            stock.weeks_in_base = analysis.get("weeks_in_base")
+            stock.base_type = analysis.get("base_type")
+            stock.pivot_price = analysis.get("pivot_price")
+            stock.is_breaking_out = analysis.get("is_breaking_out", False)
+            stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
+            stock.volume_dry_up = analysis.get("volume_dry_up", False)
+            stock.volume_dry_up_score = analysis.get("volume_dry_up_score", 0)
+            stock.institutional_accumulation = analysis.get("institutional_accumulation", False)
+            if analysis.get("ma_21") is not None:
+                stock.ma_21 = analysis.get("ma_21")
+            if analysis.get("ma_50") is not None:
+                stock.ma_50 = analysis.get("ma_50")
+            if analysis.get("atr_pct") is not None:
+                stock.atr_pct = analysis.get("atr_pct")
+
+            # Insider trading signals (only update if we have data)
+            if analysis.get("insider_sentiment"):
+                stock.insider_buy_count = analysis.get("insider_buy_count")
+                stock.insider_sell_count = analysis.get("insider_sell_count")
+                stock.insider_net_shares = analysis.get("insider_net_shares")
+                stock.insider_sentiment = analysis.get("insider_sentiment")
+                stock.insider_updated_at = datetime.now(timezone.utc)
+                # P1 Feature: Insider value tracking
+                stock.insider_buy_value = analysis.get("insider_buy_value")
+                stock.insider_sell_value = analysis.get("insider_sell_value")
+                stock.insider_net_value = analysis.get("insider_net_value")
+                stock.insider_largest_buy = analysis.get("insider_largest_buy")
+                stock.insider_largest_buyer_title = analysis.get("insider_largest_buyer_title")
+
+            # Short interest (only update if we have data)
+            if analysis.get("short_interest_pct") is not None:
+                stock.short_interest_pct = analysis.get("short_interest_pct")
+                stock.short_ratio = analysis.get("short_ratio")
+                stock.short_updated_at = datetime.now(timezone.utc)
+
+            # P1 Feature: Earnings calendar (only update if we have data)
+            if analysis.get("next_earnings_date") or analysis.get("earnings_beat_streak"):
+                # Convert string date to Python date object for SQLite
+                next_earnings_str = analysis.get("next_earnings_date")
+                if next_earnings_str:
+                    stock.next_earnings_date = datetime.strptime(next_earnings_str, '%Y-%m-%d').date()
+                stock.days_to_earnings = analysis.get("days_to_earnings")
+                stock.earnings_beat_streak = analysis.get("earnings_beat_streak")
+                stock.earnings_calendar_updated_at = datetime.now(timezone.utc)
+
+            # P1 Feature: Analyst estimate revisions (only update if we have data)
+            if analysis.get("eps_estimate_current") is not None:
+                stock.eps_estimate_current = analysis.get("eps_estimate_current")
+                stock.eps_estimate_prior = analysis.get("eps_estimate_prior")
+                stock.eps_estimate_revision_pct = analysis.get("eps_estimate_revision_pct")
+                stock.estimate_revision_trend = analysis.get("estimate_revision_trend")
+                stock.analyst_estimates_updated_at = datetime.now(timezone.utc)
+
+            # Save historical score (one per scan for granular backtesting data)
+            today = date.today()
+            historical_score = StockScore(
+                stock_id=stock.id,
+                timestamp=datetime.now(timezone.utc),
+                date=today,
+                total_score=new_score,
+                c_score=analysis.get("c_score"),
+                c_score_uncapped=analysis.get("c_score_uncapped"),
+                a_score=analysis.get("a_score"),
+                n_score=analysis.get("n_score"),
+                s_score=analysis.get("s_score"),
+                l_score=analysis.get("l_score"),
+                i_score=analysis.get("i_score"),
+                m_score=analysis.get("m_score"),
+                projected_growth=analysis.get("projected_growth"),
+                current_price=analysis.get("current_price"),
+                week_52_high=analysis.get("week_52_high")
             )
+            db.add(historical_score)
 
-            if is_likely_blip:
-                logger.warning(f"DATA BLIP DETECTED for {analysis['ticker']}: "
-                              f"Score would drop {old_score:.0f} → {new_score:.0f} (-{score_drop:.0f}). "
-                              f"Issues: {data_issues}, Zero components: {zero_components}. "
-                              f"KEEPING OLD SCORE.")
-                # Keep the old score - don't update
-                new_score = old_score
-                analysis["canslim_score"] = old_score
-                # Also preserve component scores if they were non-zero before
-                if stock.c_score and analysis.get("c_score") == 0:
-                    analysis["c_score"] = stock.c_score
-                if stock.a_score and analysis.get("a_score") == 0:
-                    analysis["a_score"] = stock.a_score
-                if stock.n_score and analysis.get("n_score") == 0:
-                    analysis["n_score"] = stock.n_score
-                if stock.s_score and analysis.get("s_score") == 0:
-                    analysis["s_score"] = stock.s_score
-                if stock.l_score and analysis.get("l_score") == 0:
-                    analysis["l_score"] = stock.l_score
-                if stock.i_score and analysis.get("i_score") == 0:
-                    analysis["i_score"] = stock.i_score
+            # NOTE: Don't commit here - batched commits happen in the main loop for performance
+            return stock
 
-            stock.previous_score = old_score
-            stock.score_change = round(new_score - old_score, 2)
-        else:
-            stock.previous_score = None
-            stock.score_change = None
-
-        # Update stock data (only overwrite with non-None values to prevent
-        # API failures from wiping existing good data)
-        stock.name = analysis.get("company_name") or stock.name
-        stock.sector = analysis.get("sector") or stock.sector
-        stock.industry = analysis.get("industry") or stock.industry
-        stock.current_price = analysis.get("current_price") or stock.current_price
-        stock.market_cap = analysis.get("market_cap") or stock.market_cap
-        stock.canslim_score = new_score
-        stock.c_score = analysis.get("c_score")
-        stock.a_score = analysis.get("a_score")
-        stock.n_score = analysis.get("n_score")
-        stock.s_score = analysis.get("s_score")
-        stock.l_score = analysis.get("l_score")
-        stock.i_score = analysis.get("i_score")
-        stock.m_score = analysis.get("m_score")
-        stock.score_details = analysis.get("score_details")
-        stock.projected_growth = analysis.get("projected_growth")
-        stock.growth_confidence = analysis.get("confidence")
-        stock.week_52_high = analysis.get("week_52_high") or stock.week_52_high
-        stock.week_52_low = analysis.get("week_52_low") or stock.week_52_low
-        stock.last_updated = datetime.now(timezone.utc)
-
-        # RS values for momentum confirmation
-        stock.rs_12m = analysis.get("rs_12m")
-        stock.rs_3m = analysis.get("rs_3m")
-
-        # Growth Mode scoring
-        stock.growth_mode_score = analysis.get("growth_mode_score")
-        stock.growth_mode_details = analysis.get("growth_mode_details")
-        stock.is_growth_stock = analysis.get("is_growth_stock", False)
-
-        # Enhanced earnings analysis
-        stock.eps_acceleration = analysis.get("eps_acceleration")
-        stock.earnings_surprise_pct = analysis.get("earnings_surprise_pct")
-        stock.revenue_growth_pct = analysis.get("revenue_growth_pct")
-        # Keep existing earnings/revenue history when this scan produced none —
-        # an empty list here means the fetch failed or the cache was evicted,
-        # not that the company's reported quarters vanished
-        stock.quarterly_earnings = analysis.get("quarterly_earnings") or stock.quarterly_earnings
-        stock.annual_earnings = analysis.get("annual_earnings") or stock.annual_earnings
-        stock.quarterly_revenue = analysis.get("quarterly_revenue") or stock.quarterly_revenue
-
-        # Technical analysis
-        stock.volume_ratio = analysis.get("volume_ratio")
-        stock.weeks_in_base = analysis.get("weeks_in_base")
-        stock.base_type = analysis.get("base_type")
-        stock.pivot_price = analysis.get("pivot_price")
-        stock.is_breaking_out = analysis.get("is_breaking_out", False)
-        stock.breakout_volume_ratio = analysis.get("breakout_volume_ratio")
-        stock.volume_dry_up = analysis.get("volume_dry_up", False)
-        stock.volume_dry_up_score = analysis.get("volume_dry_up_score", 0)
-        stock.institutional_accumulation = analysis.get("institutional_accumulation", False)
-        if analysis.get("ma_21") is not None:
-            stock.ma_21 = analysis.get("ma_21")
-        if analysis.get("ma_50") is not None:
-            stock.ma_50 = analysis.get("ma_50")
-        if analysis.get("atr_pct") is not None:
-            stock.atr_pct = analysis.get("atr_pct")
-
-        # Insider trading signals (only update if we have data)
-        if analysis.get("insider_sentiment"):
-            stock.insider_buy_count = analysis.get("insider_buy_count")
-            stock.insider_sell_count = analysis.get("insider_sell_count")
-            stock.insider_net_shares = analysis.get("insider_net_shares")
-            stock.insider_sentiment = analysis.get("insider_sentiment")
-            stock.insider_updated_at = datetime.now(timezone.utc)
-            # P1 Feature: Insider value tracking
-            stock.insider_buy_value = analysis.get("insider_buy_value")
-            stock.insider_sell_value = analysis.get("insider_sell_value")
-            stock.insider_net_value = analysis.get("insider_net_value")
-            stock.insider_largest_buy = analysis.get("insider_largest_buy")
-            stock.insider_largest_buyer_title = analysis.get("insider_largest_buyer_title")
-
-        # Short interest (only update if we have data)
-        if analysis.get("short_interest_pct") is not None:
-            stock.short_interest_pct = analysis.get("short_interest_pct")
-            stock.short_ratio = analysis.get("short_ratio")
-            stock.short_updated_at = datetime.now(timezone.utc)
-
-        # P1 Feature: Earnings calendar (only update if we have data)
-        if analysis.get("next_earnings_date") or analysis.get("earnings_beat_streak"):
-            # Convert string date to Python date object for SQLite
-            next_earnings_str = analysis.get("next_earnings_date")
-            if next_earnings_str:
-                stock.next_earnings_date = datetime.strptime(next_earnings_str, '%Y-%m-%d').date()
-            stock.days_to_earnings = analysis.get("days_to_earnings")
-            stock.earnings_beat_streak = analysis.get("earnings_beat_streak")
-            stock.earnings_calendar_updated_at = datetime.now(timezone.utc)
-
-        # P1 Feature: Analyst estimate revisions (only update if we have data)
-        if analysis.get("eps_estimate_current") is not None:
-            stock.eps_estimate_current = analysis.get("eps_estimate_current")
-            stock.eps_estimate_prior = analysis.get("eps_estimate_prior")
-            stock.eps_estimate_revision_pct = analysis.get("eps_estimate_revision_pct")
-            stock.estimate_revision_trend = analysis.get("estimate_revision_trend")
-            stock.analyst_estimates_updated_at = datetime.now(timezone.utc)
-
-        # Save historical score (one per scan for granular backtesting data)
-        today = date.today()
-        historical_score = StockScore(
-            stock_id=stock.id,
-            timestamp=datetime.now(timezone.utc),
-            date=today,
-            total_score=new_score,
-            c_score=analysis.get("c_score"),
-            c_score_uncapped=analysis.get("c_score_uncapped"),
-            a_score=analysis.get("a_score"),
-            n_score=analysis.get("n_score"),
-            s_score=analysis.get("s_score"),
-            l_score=analysis.get("l_score"),
-            i_score=analysis.get("i_score"),
-            m_score=analysis.get("m_score"),
-            projected_growth=analysis.get("projected_growth"),
-            current_price=analysis.get("current_price"),
-            week_52_high=analysis.get("week_52_high")
-        )
-        db.add(historical_score)
-
-        # NOTE: Don't commit here - batched commits happen in the main loop for performance
-        return stock
-
-    try:
         # ASYNC SCANNING: Use async batch processing for 10x performance boost
         # Fetches 50 stocks concurrently, then saves to database
         # Performance: ~10 stocks in 3s vs 30-50s with old method

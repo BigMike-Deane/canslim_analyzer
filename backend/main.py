@@ -666,7 +666,7 @@ async def get_market_direction(
 
 
 @app.post("/api/market-direction/refresh")
-async def refresh_market_direction(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+async def refresh_market_direction(current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
     """Force refresh market direction data from Yahoo Finance."""
     update_market_snapshot(db, force_refresh=True)
 
@@ -955,7 +955,7 @@ async def get_system_health(current_user: User = Depends(get_current_active_user
 
 
 @app.post("/api/system/backup")
-async def trigger_backup(current_user: User = Depends(get_current_active_user)):
+async def trigger_backup(current_user: User = Depends(get_admin_user)):
     """Manually trigger a database backup."""
     from backend.backup import perform_backup
     result = perform_backup()
@@ -1188,7 +1188,7 @@ async def get_market_data(current_user: User = Depends(get_current_active_user),
 
 
 @app.post("/api/market/refresh")
-async def refresh_market_data(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+async def refresh_market_data(current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
     """Force refresh SPY price and moving averages - call this independently of scans"""
     try:
         update_market_snapshot(db)
@@ -1223,7 +1223,7 @@ async def get_rate_limit_stats(current_user: User = Depends(get_current_active_u
 
 
 @app.post("/api/rate-limit-stats/reset")
-async def reset_rate_limit_stats(current_user: User = Depends(get_current_active_user)):
+async def reset_rate_limit_stats(current_user: User = Depends(get_admin_user)):
     """Reset FMP API rate limit statistics"""
     from data_fetcher import reset_rate_limit_stats
     reset_rate_limit_stats()
@@ -3309,7 +3309,7 @@ async def get_coiled_spring_history(
 
 
 @app.post("/api/coiled-spring/record")
-async def record_coiled_spring_alert(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+async def record_coiled_spring_alert(ticker: str, current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
     """
     Record a Coiled Spring alert for tracking.
     Called when a CS candidate is identified for the watchlist.
@@ -3356,7 +3356,7 @@ async def record_coiled_spring_alert(ticker: str, current_user: User = Depends(g
 
 
 @app.post("/api/coiled-spring/cleanup-duplicates")
-async def cleanup_cs_duplicates(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db), dry_run: bool = Query(True)):
+async def cleanup_cs_duplicates(current_user: User = Depends(get_admin_user), db: Session = Depends(get_db), dry_run: bool = Query(True)):
     """Delete duplicate CS alerts, keeping one per ticker per earnings cycle (21 days).
     Prefers alerts with outcomes. Use dry_run=false to actually delete."""
     from backend.database import CoiledSpringAlert
@@ -3381,7 +3381,7 @@ async def cleanup_cs_duplicates(current_user: User = Depends(get_current_active_
 
 
 @app.post("/api/coiled-spring/update-outcomes")
-async def update_coiled_spring_outcomes(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+async def update_coiled_spring_outcomes(current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
     """
     Update outcomes for past CS alerts where earnings have occurred.
     Compares price_at_alert to current price.

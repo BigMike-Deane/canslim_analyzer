@@ -711,23 +711,57 @@ class TestBuyExecutionGuard:
         assert 0 < len(rows) <= 8, f"expected <=8 buys, got {len(rows)}"
         assert sum(r.total_value for r in rows) <= 25000.0 + 1e-6
 
-    def test_cash_exhaustion_partial_last_fill(self, db_session, monkeypatch):
+    def test_cash_exhaustion_clamps_last_fill_to_reserve(self, db_session, monkeypatch):
+        # Cash-reserve parity (2026-08-06 audit #1): live enforces a dynamic
+        # reserve at buy execution and never spends to $0; the shadow loop used
+        # to exhaust cash, so shadow arms ran 5-20pp more invested than live and
+        # inflated returns in trend. Pin the reserve at 5% for determinism and
+        # assert the last fill is clamped so the cushion survives.
         from backend import shadow_trader
         from backend import ai_trader
         strategy = _make_strategy(db_session, name="guard_cash_test")
 
-        # 3 decisions of $12k each on $25k: full, full, then $1k partial.
+        # 3 decisions of $12k each on a $25k stack with a 5% ($1,250) reserve:
+        # full $12k, clamped $11,750, then STOP (only the reserve remains).
         decisions = [self._buy_decision(f"C{i}", value=12000.0) for i in range(3)]
         monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
         monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: decisions)
+        monkeypatch.setattr(ai_trader, "compute_dynamic_reserve_pct", lambda *a, **kw: 0.05)
 
         shadow_trader._run_one_strategy(strategy.id, [])
 
         rows = sorted(db_session.query(ShadowTrade).filter(
             ShadowTrade.shadow_strategy_id == strategy.id).all(),
             key=lambda r: r.id)
-        assert len(rows) == 3
+        assert len(rows) == 2
         assert rows[0].total_value == pytest.approx(12000.0)
-        assert rows[1].total_value == pytest.approx(12000.0)
-        assert rows[2].total_value == pytest.approx(1000.0)
-        assert sum(r.total_value for r in rows) == pytest.approx(25000.0)
+        assert rows[1].total_value == pytest.approx(11750.0)
+        # Reserve preserved: spent <= 25000 - 1250, never drives cash to $0.
+        assert sum(r.total_value for r in rows) == pytest.approx(23750.0)
+
+    def test_growth_buy_persists_growth_score_for_rebuild(self, db_session, monkeypatch):
+        # Audit #10 (Zeno-class): buy_signal_factors carries no growth_mode_score
+        # key, so the FIFO rebuild default was always None → growth-mode shadow
+        # positions could never SCORE CRASH or TAKE PROFIT (effective purchase
+        # score read as 0). The emit path now injects the stock's growth score.
+        from backend import shadow_trader
+        from backend import ai_trader
+        strategy = _make_strategy(db_session, name="growth_score_test")
+
+        stock = SimpleNamespace(ticker="GRW", current_price=50.0,
+                                canslim_score=70.0, growth_mode_score=88.0)
+        decision = {"stock": stock, "value": 5000.0, "reason": "growth buy",
+                    "signal_factors": {"composite_score": 70.0},
+                    "is_growth_stock": True}
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: [decision])
+        monkeypatch.setattr(ai_trader, "compute_dynamic_reserve_pct", lambda *a, **kw: 0.05)
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        row = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id,
+            ShadowTrade.ticker == "GRW").first()
+        assert row is not None
+        assert row.signal_factors is not None
+        assert row.signal_factors.get("growth_mode_score") == pytest.approx(88.0)

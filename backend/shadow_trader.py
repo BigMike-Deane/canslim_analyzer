@@ -1158,6 +1158,26 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         cfg = shadow_session._synthetic_config
         open_positions = len(shadow_session._synthetic_positions or [])
         remaining_slots = max(0, int(getattr(cfg, "max_positions", 8) or 8) - open_positions)
+        # Cash-reserve parity: live enforces a dynamic 5-60% reserve at buy
+        # execution (ai_trader.compute_dynamic_reserve_pct). This loop used to
+        # spend to $0, so every shadow arm ran 5-20pp more invested than the
+        # same strategy would live and inflated its returns in trending tape.
+        # Compute the reserve ONCE and reuse it for sweep liquidation sizing and
+        # the buy loop so both keep the same cushion live does.
+        try:
+            from backend.ai_trader import (get_portfolio_value, get_market_regime,
+                                           compute_dynamic_reserve_pct)
+            _total_value = float(
+                (get_portfolio_value(shadow_session, user_id=SHADOW_USER_ID) or {})
+                .get("total_value") or 0)
+            try:
+                _reserve_pct = compute_dynamic_reserve_pct(get_market_regime(shadow_session))
+            except Exception:
+                _reserve_pct = 0.05  # conservative floor if regime lookup fails
+            min_cash_reserve = _total_value * _reserve_pct
+        except Exception as e:
+            logger.error(f"shadow reserve calc failed for {strategy.name}: {e}", exc_info=True)
+            min_cash_reserve = 0.0
         # SPY-sweep yield-to-buys (chop→SPY stacks): free ONLY the shortfall
         # the decided buys need, on top of the 5% reserve handle_spy_sweep
         # maintains. Liquidating the whole sweep and re-parking the surplus
@@ -1176,13 +1196,9 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             )
             if planned_spend > 0:
                 try:
-                    from backend.ai_trader import get_portfolio_value, liquidate_spy_sweep
-                    total_value = float(
-                        (get_portfolio_value(shadow_session, user_id=SHADOW_USER_ID) or {})
-                        .get("total_value") or 0
-                    )
-                    reserve = 0.05 * total_value
-                    shortfall = planned_spend + reserve - float(getattr(cfg, "current_cash", 0) or 0)
+                    from backend.ai_trader import liquidate_spy_sweep
+                    # Same reserve as the buy loop below (was a flat 5%).
+                    shortfall = planned_spend + min_cash_reserve - float(getattr(cfg, "current_cash", 0) or 0)
                     if shortfall > 0:
                         pre_cash = float(getattr(cfg, "current_cash", 0) or 0)
                         pre_shares = float(getattr(cfg, "spy_sweep_shares", 0) or 0)
@@ -1200,7 +1216,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                     )
         remaining_cash = float(getattr(cfg, "current_cash", 0) or 0)
         for buy in buys:
-            if remaining_slots <= 0 or remaining_cash <= 0:
+            # Stop when only the reserve is left (live parity), not at $0.
+            if remaining_slots <= 0 or remaining_cash - min_cash_reserve <= 0:
                 break
             stock = buy.get("stock") if isinstance(buy, dict) else None
             if stock is None:
@@ -1210,20 +1227,31 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             price = getattr(stock, "current_price", None) or 0
             if not ticker or value <= 0 or price <= 0:
                 continue
-            if value > remaining_cash:
-                value = remaining_cash  # partial last fill, matches live cash exhaustion
-                if value / price <= 0:
-                    continue
+            spendable = remaining_cash - min_cash_reserve
+            if value > spendable:
+                value = spendable  # clamp last fill to the reserve floor (mirrors live)
+            if value <= 0 or value / price <= 0:
+                continue
             remaining_slots -= 1
             remaining_cash -= value
             shares = value / price
+            # Persist the purchase growth score into signal_factors so the FIFO
+            # rebuild can set purchase_growth_score. buy_signal_factors carries
+            # no 'growth_mode_score' key, so the rebuild default was always None
+            # → growth-mode shadow positions could never SCORE CRASH or TAKE
+            # PROFIT (effective purchase score read as 0).
+            sf = dict(buy.get("signal_factors") or {}) if isinstance(buy, dict) else {}
+            if sf.get("growth_mode_score") is None:
+                _gms = getattr(stock, "growth_mode_score", None)
+                if _gms is not None:
+                    sf["growth_mode_score"] = _gms
             shadow_session.emit_shadow_buy(
                 ticker=ticker,
                 shares=shares,
                 price=price,
                 reason=buy.get("reason", "shadow buy") if isinstance(buy, dict) else "shadow buy",
                 canslim_score=getattr(stock, "canslim_score", None),
-                signal_factors=buy.get("signal_factors") if isinstance(buy, dict) else None,
+                signal_factors=sf,
                 is_growth_stock=bool(buy.get("is_growth_stock", False)) if isinstance(buy, dict) else False,
             )
 

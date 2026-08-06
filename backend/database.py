@@ -321,7 +321,11 @@ def run_migrations():
     # SQLite never showed it: its dialect json.loads on read.
     if not DATABASE_URL.startswith("sqlite"):
         jsonb_repairs = [("users", "mute_kinds"),
-                         ("backtest_runs", "overlay_stats")]
+                         ("backtest_runs", "overlay_stats"),
+                         # profile_overrides is physically TEXT under a Column(JSON)
+                         # model (GRID/PYRGATE sweep-arm overrides); without this a
+                         # new reader gets a str and silently drops the overrides.
+                         ("backtest_runs", "profile_overrides")]
         with engine.begin() as conn:
             for table, column in jsonb_repairs:
                 if table not in existing_tables:

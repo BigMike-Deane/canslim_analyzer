@@ -600,8 +600,17 @@ export default function CommandCenter() {
     setRunningAction(action)
     try {
       if (action === 'cycle') {
-        await api.runAITradingCycle()
-        toast.success('Trading cycle complete')
+        // The endpoint returns 200 with status market_closed / busy /
+        // started — don't claim 'complete' for any of them (a Saturday
+        // click otherwise toasted success though nothing ran).
+        const result = await api.runAITradingCycle()
+        if (result?.status === 'market_closed' || result?.status === 'busy') {
+          toast.info(result.message || 'Trading cycle not run')
+        } else if (result?.status === 'started') {
+          toast.info(result.message || 'Trading cycle started — refresh in ~15-20s')
+        } else {
+          toast.success('Trading cycle complete')
+        }
       }
       if (action === 'scan') {
         await api.startScanner('all', 35)

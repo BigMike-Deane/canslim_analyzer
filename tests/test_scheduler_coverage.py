@@ -1542,17 +1542,16 @@ class TestSystemHealthHelpers:
 
         _restore_health_from_redis()  # Must not raise
 
-    def test_persist_health_silently_swallows_serialization_error(self, monkeypatch):
-        """LATENT BUG (logged, not fixed during 2026-06-18 eval):
-        `_system_health["errors_today"]` is a `deque(maxlen=50)` which
-        json.dumps cannot serialize. The bare except at line 90-91 swallows
-        the TypeError every call, meaning Redis persistence has been silently
-        broken in production. Restore-on-startup still works because it
-        deserializes JSON the prior persist would have written — but
-        nothing ever gets written, so it's a no-op restore. Prod behavior
-        is unchanged (still cold-starts each restart), so this is NOT
-        safety-critical. Fix DEFERRED past 2026-06-18 eval to avoid
-        confounding A/B reads."""
+    def test_persist_health_serializes_deque_and_writes(self, monkeypatch):
+        """FIXED (2026-08-06, was a LATENT BUG logged during the 2026-06-18
+        eval): `_system_health["errors_today"]` is a `deque(maxlen=50)` which
+        json.dumps cannot serialize, so the old code raised TypeError on
+        every call (swallowed by a bare except) and Redis persistence never
+        wrote anything. The fix converts the deque to a list before
+        encoding, so client.set is now reached — this test used to assert
+        call_count == 0 as the bug's pin, and flipping it to == 1 was the
+        pre-agreed signal that the bug got fixed. Full round-trip coverage
+        lives in tests/test_scheduler_latch_and_health.py."""
         from backend.scheduler import _persist_health_to_redis
         import redis_cache
 
@@ -1561,11 +1560,11 @@ class TestSystemHealthHelpers:
 
         _persist_health_to_redis()  # Must not raise
 
-        # The bare except swallows the serialization error — client.set is
-        # never reached. If a future fix wraps `errors_today` as a list
-        # before encoding, this assertion will flip to == 1 and that's the
-        # signal the latent bug got fixed.
-        assert fake_client.set.call_count == 0
+        assert fake_client.set.call_count == 1
+        # And the payload it wrote must actually be valid JSON.
+        import json as _json
+        _key, _value = fake_client.set.call_args[0]
+        _json.loads(_value)
 
     def test_restore_health_with_data_updates_state(self, monkeypatch):
         from backend import scheduler as scheduler_mod

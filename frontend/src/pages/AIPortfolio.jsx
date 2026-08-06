@@ -873,7 +873,11 @@ function EdgeAttribution({ edge }) {
 function VerdictLedger({ summary, edge }) {
   if (!edge || (edge.trading_days || 0) < 2 || summary?.total_value == null) return null
   const R = edge.regime_edge, P = edge.power, A = edge.alpha_significance
-  const pct = (v, d = 1) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`
+  // Null-safe like EdgeScorecard's pct: spy_return_pct is legitimately null
+  // when the window has <2 date-aligned SPY snapshots (coverage ~78-97%), and
+  // an unguarded toFixed here throws inside the app-wide ErrorBoundary — i.e.
+  // one missing field blanks the entire app on the Overview tab.
+  const pct = (v, d = 1) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`)
   const proven = A?.significant_95
 
   // Alpha CI meter geometry: zero tick + point estimate pin, both as % of span.
