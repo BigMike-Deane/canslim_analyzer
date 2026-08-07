@@ -6,6 +6,7 @@
 # This file is the reference copy. Set up 2026-06-11 for the owner's week
 # on the road: cloud Claude Code sessions can't SSH to the VPS (Tailscale),
 # so deploys go: PR -> merge to `deploy` branch -> this poller ships it.
+# Re-armed 2026-08-07 (cron re-added, deploy branch reset to main).
 #
 # Safety rails:
 #   - Lockfile: no concurrent runs.
