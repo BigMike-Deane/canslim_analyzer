@@ -979,6 +979,9 @@ class TestFetchWithCacheRedisPath:
         fake_redis = MagicMock()
         fake_redis.enabled = True
         fake_redis.get.return_value = {"hello": "world"}
+        # 3600s TTL with 3000s remaining → entry is 600s old.
+        fake_redis.freshness_intervals = {"earnings": 3600}
+        fake_redis.get_ttl.return_value = 3000
         monkeypatch.setattr(data_fetcher, "redis_cache", fake_redis)
 
         # DB-cache load no-op.
@@ -995,6 +998,12 @@ class TestFetchWithCacheRedisPath:
         assert called == []
         # And the result was written into the in-memory cache.
         assert data_fetcher.get_cached_data("AAPL", "earnings") == {"hello": "world"}
+        # Freshness stamp is back-dated to the entry's actual write time
+        # (full TTL − remaining = 600s ago), not restamped to now — a Redis
+        # HIT is not a fetch (Aug-6 audit #14).
+        stamp = data_fetcher._data_freshness_cache["AAPL"]["earnings"]
+        age_secs = (datetime.now() - stamp).total_seconds()
+        assert 590 <= age_secs <= 660, f"expected ~600s-old stamp, got {age_secs:.0f}s"
 
     def test_redis_get_exception_falls_through_to_fetch_func(self, monkeypatch):
         """Branch: 460-461 — `try/except` around redis_cache.get falls

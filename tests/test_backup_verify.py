@@ -96,3 +96,44 @@ class TestVerifyLatestBackup:
             for conn in admin_conns
         )
         assert dropped, "scratch DB was not dropped on the failure path"
+
+
+class TestPerformBackupKeepsDump:
+    """Aug-6 audit #18: perform_backup's except deletes `filepath` (the dump).
+    Post-success housekeeping (rename/webhook/cleanup) must not be able to
+    reach that path — a cleanup hiccup used to destroy the fresh valid backup
+    and alert FAILED."""
+
+    def test_cleanup_raise_does_not_delete_fresh_dump(self, db_url_env, monkeypatch, tmp_path):
+        from pathlib import Path
+        monkeypatch.setattr(backup, "BACKUP_DIR", str(tmp_path))
+
+        def fake_pg_dump(cmd, **kwargs):
+            Path(cmd[cmd.index("-f") + 1]).write_bytes(b"x" * 1024)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("subprocess.run", side_effect=fake_pg_dump), \
+             patch.object(backup, "cleanup_old_backups",
+                          side_effect=OSError("mtime race on rotated file")), \
+             patch("backend.email_utils.send_webhook_notification", return_value=True):
+            result = backup.perform_backup()
+
+        assert result["status"] == "success"
+        dumps = list(tmp_path.glob("canslim_*.dump"))
+        assert len(dumps) == 1, "fresh dump was deleted by housekeeping failure"
+        assert dumps[0].stat().st_size > 0
+
+    def test_dump_failure_still_removes_partial_and_reports_failed(self, db_url_env, monkeypatch, tmp_path):
+        from pathlib import Path
+        monkeypatch.setattr(backup, "BACKUP_DIR", str(tmp_path))
+
+        def fake_pg_dump_fail(cmd, **kwargs):
+            Path(cmd[cmd.index("-f") + 1]).write_bytes(b"partial")
+            return MagicMock(returncode=1, stderr="disk full")
+
+        with patch("subprocess.run", side_effect=fake_pg_dump_fail), \
+             patch("backend.email_utils.send_webhook_notification", return_value=True):
+            result = backup.perform_backup()
+
+        assert result["status"] == "failed"
+        assert list(tmp_path.glob("canslim_*.dump")) == [], "partial dump not cleaned up"

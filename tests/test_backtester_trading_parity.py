@@ -498,3 +498,58 @@ class TestBacktesterScoreStability:
         result = engine._check_score_stability("UNKNOWN", current_score=30)
         expected = check_score_stability_from_history([], 30, threshold=50)
         assert result == expected
+
+
+class TestBacktesterPyramidSectorCaps:
+    """Aug-6 audit #15: live check_sector_limit gates pyramids (count arm +
+    allocation arm via apply_sector_allocation_cap); the backtester pyramid
+    path had neither. These mirror live semantics — including the quirk that
+    the count arm counts the candidate's own sector, so a full sector blocks
+    adds to an existing position."""
+
+    def _score(self):
+        return {"TEST": {"total_score": 80, "is_breaking_out": False, "volume_ratio": 1.0}}
+
+    def test_sector_at_max_stock_count_blocks_pyramid(self, engine):
+        from backend.trading_utils import MAX_STOCKS_PER_SECTOR
+
+        engine.cash = 20000.0
+        engine.static_data = {"TEST": {"sector": "Technology"}}
+        engine.data_provider.get_price_on_date.return_value = 110.0
+        _add_position(engine, "TEST", shares=20.0, cost_basis=100.0, peak_price=112.0,
+                      pyramid_count=0, purchase_date=date.today() - timedelta(days=35))
+        # Tiny fillers: fill the sector's stock count without moving its
+        # allocation, so only the count arm can be what rejects.
+        for i in range(MAX_STOCKS_PER_SECTOR - 1):
+            _add_position(engine, f"FILL{i}", shares=2.0, cost_basis=100.0,
+                          peak_price=112.0, sector="Technology")
+
+        assert engine._evaluate_pyramids(date.today(), self._score()) == []
+
+        # Control: one slot free in the sector → pyramid goes through.
+        del engine.positions["FILL0"]
+        pyramids = engine._evaluate_pyramids(date.today(), self._score())
+        assert [t.ticker for t in pyramids] == ["TEST"]
+
+    def test_sector_over_allocation_cap_blocks_pyramid(self, engine):
+        from backend.trading_utils import MAX_SECTOR_ALLOCATION
+
+        engine.cash = 8000.0
+        engine.static_data = {"TEST": {"sector": "Technology"}}
+        engine.data_provider.get_price_on_date.return_value = 110.0
+        _add_position(engine, "TEST", shares=20.0, cost_basis=100.0, peak_price=112.0,
+                      pyramid_count=0, purchase_date=date.today() - timedelta(days=35))
+        # Size OTHER so the sector sits ~10pp above the allocation cap
+        # regardless of the configured cap value.
+        target = min(MAX_SECTOR_ALLOCATION + 0.10, 0.90)
+        sector_value = engine.cash * target / (1 - target)
+        other_value = sector_value - 20.0 * 110.0
+        _add_position(engine, "OTHER", shares=other_value / 110.0, cost_basis=100.0,
+                      peak_price=112.0, sector="Technology")
+
+        assert engine._evaluate_pyramids(date.today(), self._score()) == []
+
+        # Control: same book but OTHER in a different sector → pyramid allowed.
+        engine.positions["OTHER"].sector = "Energy"
+        pyramids = engine._evaluate_pyramids(date.today(), self._score())
+        assert [t.ticker for t in pyramids] == ["TEST"]

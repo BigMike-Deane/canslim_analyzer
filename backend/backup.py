@@ -70,33 +70,6 @@ def perform_backup() -> dict:
         size_bytes = os.path.getsize(filepath)
         size_mb = size_bytes / (1024 * 1024)
 
-        # Tag Sunday backups as weekly (won't be rotated with daily)
-        if weekday == "sunday":
-            weekly_name = f"canslim_weekly_{timestamp}.dump"
-            weekly_path = os.path.join(BACKUP_DIR, weekly_name)
-            os.rename(filepath, weekly_path)
-            filepath = weekly_path
-            filename = weekly_name
-
-        logger.info(f"Backup complete: {filename} ({size_mb:.1f} MB)")
-
-        send_webhook_notification(
-            title="DB Backup Complete",
-            message=f"{filename} ({size_mb:.1f} MB)",
-            priority="low",
-            tags=["white_check_mark", "floppy_disk"],
-        )
-
-        # Clean up old backups
-        cleanup_old_backups()
-
-        return {
-            "status": "success",
-            "filename": filename,
-            "size_mb": round(size_mb, 1),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
     except Exception as e:
         logger.error(f"Backup failed: {e}")
         # Remove partial file
@@ -118,6 +91,42 @@ def perform_backup() -> dict:
             "error": str(e),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    # The dump on disk is valid from here on. Housekeeping below must never
+    # reach the failure path above — its except deletes `filepath`, so a
+    # rename/webhook/cleanup raise would destroy a healthy backup and alert
+    # "FAILED" over a hiccup (Aug-6 audit #18).
+
+    # Tag Sunday backups as weekly (won't be rotated with daily)
+    if weekday == "sunday":
+        weekly_name = f"canslim_weekly_{timestamp}.dump"
+        weekly_path = os.path.join(BACKUP_DIR, weekly_name)
+        try:
+            os.rename(filepath, weekly_path)
+            filepath = weekly_path
+            filename = weekly_name
+        except OSError as e:
+            logger.warning(f"Could not tag weekly backup, keeping daily name: {e}")
+
+    logger.info(f"Backup complete: {filename} ({size_mb:.1f} MB)")
+
+    try:
+        send_webhook_notification(
+            title="DB Backup Complete",
+            message=f"{filename} ({size_mb:.1f} MB)",
+            priority="low",
+            tags=["white_check_mark", "floppy_disk"],
+        )
+        cleanup_old_backups()
+    except Exception as e:
+        logger.warning(f"Post-backup housekeeping failed (backup kept): {e}")
+
+    return {
+        "status": "success",
+        "filename": filename,
+        "size_mb": round(size_mb, 1),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def cleanup_old_backups():

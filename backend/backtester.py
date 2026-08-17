@@ -1941,19 +1941,23 @@ class BacktestEngine:
                 self._take_snapshot(current_date)
                 return
 
-        # Liquidate SPY sweep before evaluating buys (active picks get first dibs on cash)
-        if can_buy and self.spy_sweep_shares > 0:
-            self._liquidate_spy_sweep(current_date, "freeing cash for active buys")
-
         if can_buy:
             # Score full universe when we can buy
             all_scores = self._calculate_scores(current_date)
             all_scores.update(held_scores)  # Ensure held positions have scores
 
-            # Evaluate pyramids with full scores
+            # Evaluate pyramids with full scores. Pyramids run BEFORE the
+            # sweep liquidation below: live evaluate_pyramids sizes off
+            # current_cash only and never reclaims sweep cash (sweep reclaim
+            # happens at buy-sizing time), so backtest pyramids must not get
+            # first dibs on freed sweep cash either.
             pyramids = self._evaluate_pyramids(current_date, all_scores)
             for trade in pyramids[:3]:
                 self._execute_pyramid(current_date, trade)
+
+            # Liquidate SPY sweep before evaluating buys (active picks get first dibs on cash)
+            if self.spy_sweep_shares > 0:
+                self._liquidate_spy_sweep(current_date, "freeing cash for active buys")
 
             # Evaluate and execute buys (with market state exposure cap + buy throttle)
             buys = self._evaluate_buys(current_date, all_scores)
@@ -4258,6 +4262,29 @@ class BacktestEngine:
 
             if pyramid_amount < 100:
                 continue
+
+            # Sector caps — mirror live check_sector_limit (ai_trader.py). The
+            # count arm counts the position's OWN sector, so a sector at max
+            # stocks blocks even adds to an existing position there — live
+            # quirk, mirrored on purpose. Scale-ins above stay uncapped in
+            # both engines.
+            sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
+            sector_count = sum(1 for p in self.positions.values() if p.sector == sector)
+            if sector_count >= MAX_STOCKS_PER_SECTOR:
+                continue
+            if portfolio_value > 0:
+                sector_value = sum(
+                    p.shares * (self.data_provider.get_price_on_date(p.ticker, current_date) or p.cost_basis)
+                    for p in self.positions.values() if p.sector == sector
+                )
+                pyramid_amount = apply_sector_allocation_cap(
+                    requested_position_value=pyramid_amount,
+                    current_sector_value=sector_value,
+                    portfolio_value=portfolio_value,
+                    max_sector_allocation=MAX_SECTOR_ALLOCATION,
+                )
+                if pyramid_amount < 100:
+                    continue
 
             shares = pyramid_amount / price
 

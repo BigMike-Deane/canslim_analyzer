@@ -1518,6 +1518,26 @@ def execute_trade(db: Session, ticker: str, action: str, shares: float,
                   user_id: int = 1, holding_days: int = None):
     """Record a trade in the database with detailed logging"""
     signal_factors = sanitize_signal_factors(signal_factors)
+    # Paper mode never mutates position state (pyramid_count,
+    # partial_profit_taken, deletion), so the same trigger re-fires every
+    # cycle and would re-record the same trade all day (Aug-6 audit #16).
+    # Bound the spam to one paper row per ticker/action/day — matches the
+    # daily cadence a real run of the same trigger would produce.
+    if is_paper:
+        try:
+            existing = db.query(AIPortfolioTrade.id).filter(
+                AIPortfolioTrade.user_id == user_id,
+                AIPortfolioTrade.ticker == ticker,
+                AIPortfolioTrade.action == action,
+                AIPortfolioTrade.is_paper.is_(True),
+                AIPortfolioTrade.executed_at >= get_cst_now().replace(
+                    hour=0, minute=0, second=0, microsecond=0),
+            ).first()
+            if existing:
+                logger.debug(f"PAPER dedupe: {ticker} {action} already recorded today")
+                return
+        except Exception:
+            pass  # dedupe is best-effort; never block recording
     # Stamp the strategy ACTIVE AT EXECUTION so A/B attribution survives
     # later strategy switches (before this, /strategy-ab-eval resolved
     # users by their current config — reassigning a user silently moved

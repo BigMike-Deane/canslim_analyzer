@@ -429,12 +429,13 @@ def is_data_fresh(ticker: str, data_type: str) -> bool:
         return (datetime.now() - last_fetch).total_seconds() < interval
 
 
-def mark_data_fetched(ticker: str, data_type: str):
-    """Mark that data was just fetched"""
+def mark_data_fetched(ticker: str, data_type: str, at: Optional[datetime] = None):
+    """Mark that data was fetched — at `at` when the data's true fetch time
+    is older than now (e.g. restored from a persistent cache layer)."""
     with _freshness_lock:
         if ticker not in _data_freshness_cache:
             _data_freshness_cache[ticker] = {}
-        _data_freshness_cache[ticker][data_type] = datetime.now()
+        _data_freshness_cache[ticker][data_type] = at or datetime.now()
 
 
 def get_cached_data(ticker: str, data_type: str):
@@ -514,7 +515,16 @@ def fetch_with_cache(ticker: str, data_type: str, fetch_func, *args, **kwargs):
             if redis_cached is not None:
                 # Store in memory cache for next time
                 set_cached_data(ticker, data_type, redis_cached, persist_to_db=False)
-                mark_data_fetched(ticker, data_type)
+                # Back-date the freshness stamp to the entry's actual write
+                # time (full TTL minus remaining). Stamping now() on a HIT
+                # made near-expiry data look freshly fetched — up to ~2x the
+                # intended staleness window (Aug-6 audit #14). remaining < 0
+                # means no TTL (price-type entries, always-fresh by design).
+                full_ttl = redis_cache.freshness_intervals.get(data_type, 86400)
+                remaining = redis_cache.get_ttl(ticker, data_type)
+                age_secs = max(0, full_ttl - remaining) if remaining >= 0 else 0
+                mark_data_fetched(ticker, data_type,
+                                  at=datetime.now() - timedelta(seconds=age_secs))
                 _cache_hit_count += 1
                 logger.debug(f"Redis cache hit: {ticker}:{data_type}")
                 return redis_cached

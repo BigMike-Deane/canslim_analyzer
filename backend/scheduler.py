@@ -883,7 +883,8 @@ def run_continuous_scan():
 
         logger.info(f"Including {len(portfolio_tickers)} portfolio tickers in scan")
 
-        _scan_config["total_stocks"] = len(tickers)
+        with _state_lock:
+            _scan_config["total_stocks"] = len(tickers)
         logger.info(f"Scanning {len(tickers)} stocks...")
         _check_universe_shrink(len(tickers))
 
@@ -1336,10 +1337,11 @@ def run_continuous_scan():
             # and p1_data run over a different (smaller) population, so writing
             # them into stocks_scanned would regress the existing UI.
             if phase == "stocks":
-                _scan_config["stocks_scanned"] = current
-                # Also update total if it differs (e.g., from checkpoint resume)
-                if _scan_config["total_stocks"] != total:
-                    _scan_config["total_stocks"] = total
+                with _state_lock:
+                    _scan_config["stocks_scanned"] = current
+                    # Also update total if it differs (e.g., from checkpoint resume)
+                    if _scan_config["total_stocks"] != total:
+                        _scan_config["total_stocks"] = total
 
             # Build the phase_detail string + drive the broader per-phase
             # progress fields so the UI keeps moving after Phase 1 ends.
@@ -1376,7 +1378,8 @@ def run_continuous_scan():
             current=0,
             total=len(analysis_results),
         )
-        _scan_config["stocks_scanned"] = 0  # Reset for save progress
+        with _state_lock:
+            _scan_config["stocks_scanned"] = 0  # Reset for save progress
 
         # Save results to database with BATCHED COMMITS for performance
         # Uses savepoints so one bad stock doesn't lose the entire batch
@@ -1394,8 +1397,9 @@ def run_continuous_scan():
                     nested.commit()
                     successful += 1
                     # Update progress in real-time
-                    _scan_config["stocks_scanned"] = successful
-                    _scan_config["phase_current"] = successful
+                    with _state_lock:
+                        _scan_config["stocks_scanned"] = successful
+                        _scan_config["phase_current"] = successful
 
                     # Batch commit every BATCH_SIZE stocks
                     if successful % BATCH_SIZE == 0:
@@ -1420,7 +1424,8 @@ def run_continuous_scan():
 
         save_time = time.time() - start_time - fetch_time
         total_time = time.time() - start_time
-        _scan_config["stocks_scanned"] = successful
+        with _state_lock:
+            _scan_config["stocks_scanned"] = successful
         logger.info(f"Continuous scan complete: {successful}/{len(tickers)} stocks in {total_time:.1f}s total")
         per_stock_total = total_time / successful if successful else 0.0
         logger.info(f"  Fetch: {fetch_time:.0f}s | Save: {save_time:.0f}s | Per stock: {per_stock_total:.2f}s")

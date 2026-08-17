@@ -565,7 +565,12 @@ function EdgeScorecard({ edge, hideClocks = false }) {
 
   const insufficient = data.status !== 'ok'
   const excess = data.excess_return_pct
-  const phrase = EDGE_WINDOW_PHRASE[range] || 'over the window'
+  // The verdict must describe the numbers actually on screen: while a window
+  // fetch is in flight (or after it failed), `data` falls back to the
+  // all-window scorecard, so phrasing it as the selected window would claim
+  // since-inception numbers are e.g. "over the last 30 days".
+  const shownRange = range !== 'all' && winData == null ? 'all' : range
+  const phrase = EDGE_WINDOW_PHRASE[shownRange] || 'over the window'
   // `low_sample` trips for any series under ~20 trading days — which includes an
   // established account viewing the 7D/30D tab. Only treat it as a *young
   // account* cold-start on the All window, where a thin series means the
