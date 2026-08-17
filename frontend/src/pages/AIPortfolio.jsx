@@ -1431,16 +1431,24 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           // Prefer windowed return; fall back to lifetime gain_loss_pct if the
           // endpoint hasn't responded yet or for unknown tickers.
           const pct = winRow?.return_pct ?? position.gain_loss_pct
-          // Dollar P&L is ALWAYS lifetime-vs-cost-basis (what selling now would
-          // realize) — it does NOT follow the window pills like pct does, so
-          // its sign can differ from a windowed pct. Tooltip carries the frame.
-          const pnl = position.gain_loss ?? (
+          // Dollar P&L follows the window pills exactly like pct does (owner
+          // ask 2026-08-17, supersedes the lifetime-only framing shipped in
+          // c08c927): window rows carry `return` = (current − window-start
+          // price) × shares. Falls back to lifetime-vs-cost-basis while the
+          // endpoint loads — same fallback contract as pct — and the All
+          // window's backend math IS lifetime-vs-cost-basis, so All keeps
+          // showing realized-if-sold dollars.
+          const lifetimePnl = position.gain_loss ?? (
             position.current_value != null && position.cost_basis != null && position.shares != null
               ? position.current_value - position.shares * position.cost_basis
               : null
           )
-          const isPos = (pct ?? 0) >= 0
+          const pnl = winRow?.return ?? lifetimePnl
           const isMidWindow = winRow?.notes?.includes('opened mid-window')
+          // Mid-window opens fall back to since-purchase math server-side, so
+          // their dollar is lifetime, not windowed — label it accordingly.
+          const pnlIsWindowed = timeRange !== 'all' && winRow?.return != null && !isMidWindow
+          const isPos = (pct ?? 0) >= 0
           const glanceScore = position.is_growth_stock ? position.current_growth_score : position.current_score
           // Trailing-stop risk fields (may be absent: null below the +5%
           // activation tier, or on older payloads) — degrade to nothing.
@@ -1508,7 +1516,9 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
                     <>
                       <span
                         className={pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
-                        title="Unrealized P&L vs cost basis — the dollars gained or lost if this position were sold now"
+                        title={pnlIsWindowed
+                          ? `Dollar change over the ${WINDOW_LABELS[timeRange] || ''} window — price move × shares held`
+                          : 'Unrealized P&L vs cost basis — the dollars gained or lost if this position were sold now'}
                       >
                         {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
                       </span>

@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 
 # ============== YFINANCE SESSION MANAGEMENT ==============
 # Track yfinance session state for handling Invalid Crumb errors
-_yf_session_lock = asyncio.Lock()
 _yf_session_state = {
     "last_refresh": None,
     "consecutive_errors": 0,
@@ -176,7 +175,6 @@ _fallback_tracker = {
     "stocks_no_data": set(),  # Tickers with no cache available
     "last_reset": None
 }
-_fallback_lock = asyncio.Lock()
 
 # Maximum age for fallback data (7 days) - older data is considered too stale
 MAX_FALLBACK_CACHE_AGE_DAYS = 7

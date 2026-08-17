@@ -1038,7 +1038,11 @@ export default function CommandCenter() {
               defaultOpen={false}
               badge={earnings?.length > 0 ? (
                 <span className="text-[10px] font-data text-dark-500">
-                  {earnings.length} upcoming{earnings.some(e => e.days <= 7) ? ' · one <7d' : ''}
+                  {earnings.length} upcoming
+                  {(() => {
+                    const soon = earnings.filter(e => e.days <= 7).length
+                    return soon > 0 ? ` · ${soon} <7d` : ''
+                  })()}
                 </span>
               ) : undefined}
             >

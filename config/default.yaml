@@ -229,6 +229,10 @@ ai_trader:
     max_sector_allocation: 0.50   # Max 50% in any sector (O'Neil: follow best sectors, manage risk via stops)
     max_stocks_per_sector: 4      # Max 4 stocks per sector
     max_single_position: 0.25     # Max 25% in single stock (Minervini: 4 stocks at 25% = fully invested)
+                                  # COUPLED: pyramid caps read THIS key (trading_utils.MAX_POSITION_ALLOCATION)
+                                  # while buy sizing reads each profile's max_single_position_pct — keep them
+                                  # equal (x100) or pyramids silently cap at a different level than buys.
+                                  # test_backend_config.py::test_position_cap_keys_agree enforces this.
     min_position_pct: 1.5         # Skip buys below this % of portfolio value — runt positions
                                   # (e.g. a 0.6%-of-book cash remainder) pay full stop round trips
                                   # while moving nothing ($100 absolute floor still applies)
