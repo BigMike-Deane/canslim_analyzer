@@ -597,12 +597,18 @@ def get_sector_allocations(db: Session, user_id: int = 1) -> dict:
     }
 
 
-def check_sector_limit(db: Session, ticker: str, buy_amount: float, user_id: int = 1) -> tuple[float, str]:
+def check_sector_limit(db: Session, ticker: str, buy_amount: float, user_id: int = 1,
+                       skip_count_arm: bool = False) -> tuple[float, str]:
     """
     Check if a buy would exceed sector limits.
     Returns: (adjusted_amount, reason)
     - If sector limit would be exceeded, reduce the buy amount
     - If already at max stocks in sector, return 0
+
+    skip_count_arm: pyramids-only lever (sector_cap.exempt_pyramids_from_count
+    profile flag) — an add to an existing position brings no new NAME into the
+    sector, so the count arm may be waived. The allocation % arm always applies.
+    Mirrored in backtester._evaluate_pyramids under the same profile key.
     """
     stock = db.query(Stock).filter(Stock.ticker == ticker).first()
     sector = stock.sector if stock and stock.sector else "Unknown"
@@ -613,7 +619,7 @@ def check_sector_limit(db: Session, ticker: str, buy_amount: float, user_id: int
     current_count = sector_info.get("counts", {}).get(sector, 0)
 
     # Check stock count limit
-    if current_count >= MAX_STOCKS_PER_SECTOR:
+    if not skip_count_arm and current_count >= MAX_STOCKS_PER_SECTOR:
         return 0, f"Max {MAX_STOCKS_PER_SECTOR} stocks in {sector}"
 
     # Check allocation limit (shared helper — mirrored in backtester)
@@ -648,6 +654,14 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
     positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     portfolio = get_portfolio_value(db, user_id=user_id)
     portfolio_value = portfolio["total_value"]
+
+    # sector_cap.exempt_pyramids_from_count (profile flag, default off): adds
+    # skip the sector COUNT arm only. Same key drives the backtester lever —
+    # one flag, all engines. SECEX aug-18 backtests: +11.0pp W3 / +18.9pp W4,
+    # DD unchanged, no-op in chop; shadow A/B (shadow_sector_relief) is the
+    # promotion gate before any live profile flips it on.
+    _profile = get_strategy_profile(getattr(config, 'strategy', None) or "balanced")
+    exempt_count_arm = (_profile.get('sector_cap') or {}).get('exempt_pyramids_from_count', False)
 
     # Batch fetch all stocks in one query (fixes N+1)
     tickers = [pos.ticker for pos in positions]
@@ -773,8 +787,10 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
         if pyramid_amount < 100:
             continue
 
-        # Check sector limits
-        adjusted_amount, limit_reason = check_sector_limit(db, position.ticker, pyramid_amount, user_id=user_id)
+        # Check sector limits (count arm waived when the profile lever is on)
+        adjusted_amount, limit_reason = check_sector_limit(
+            db, position.ticker, pyramid_amount, user_id=user_id,
+            skip_count_arm=exempt_count_arm)
         if adjusted_amount < 100:
             continue
         pyramid_amount = adjusted_amount

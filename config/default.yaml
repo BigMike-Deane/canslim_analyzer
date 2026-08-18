@@ -1322,6 +1322,51 @@ strategy_profiles:
       min_confidence: 0.30    # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # Sector-cap pyramid relief (2026-08-18): cs_bear clone + pyramids exempt
+  # from the sector COUNT arm (an add brings no new name into the sector;
+  # allocation % arm still applies). SECEX backtests vs same-day controls:
+  # +11.0pp W3 / +18.9pp W4 (W4 drift-hot, sign only), DD unchanged, exact
+  # no-op in both chop windows. Evaluated ONLY via the 'shadow_sector_relief'
+  # ShadowStrategy stack. Pre-registered criteria (2026-08-18, before
+  # launch): paired vs shadow_baseline over >=1 full mixed-regime cycle
+  # (trend AND chop weeks) AND >=5 count-exempt pyramids actually fired
+  # (the lever must have been exercised — sector at 4 names with an
+  # eligible winner is rare in diversified books); promote only if it beats
+  # baseline at that checkpoint, kill if it trails. No early call.
+  nostate_sector_relief:
+    hidden: true
+    label: "NoState Sector Relief (shadow)"
+    description: "nostate_cs_bear + pyramids exempt from sector count arm (live shadow A/B, aug-18 SECEX candidate)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    sector_cap: { exempt_pyramids_from_count: true }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -1973,4 +2018,14 @@ shadow_strategy_profiles:
     parent_strategy: nostate_chop_spy
     starting_value: 25000
     description: "chop_damper + SPY sweep of idle cash (chop->SPY rotation) — aug-03 candidate; gate: beat baseline AND chop_damper over a mixed-regime cycle w/ >=15 chop days"
+    scorer_overrides: {}
+  # Sector-cap pyramid relief A/B (2026-08-18): first arm launched with the
+  # pyramid-mirroring harness (Step 3+, same day). ALL arm clocks reset at
+  # that deploy — pyramids change every arm's trajectory, so pre-Aug-18
+  # shadow data is not comparable. Gate pre-registered on the
+  # nostate_sector_relief profile comment.
+  shadow_sector_relief:
+    parent_strategy: nostate_sector_relief
+    starting_value: 25000
+    description: "cs_bear + pyramids exempt from sector count arm — aug-18 SECEX candidate (+11.0pp W3 / +18.9pp W4 vs same-day controls, DD flat, chop no-op); gate: beat baseline over a mixed-regime cycle AND >=5 count-exempt pyramids fired"
     scorer_overrides: {}

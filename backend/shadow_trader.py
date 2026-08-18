@@ -42,9 +42,13 @@ Limitations (v1):
     FIXED 2026-07-25 via ShadowPositionPeak: peaks are ratcheted forward
     across ticks and initialized from daily highs on first sight — see
     _apply_persisted_peaks / _persist_peaks.
-  - Pyramid (action="PYRAMID") is not yet emitted by shadow — pyramids are evaluated
-    in run_ai_trading_cycle's outer loop, not in evaluate_buys. Step 3+ will mirror
-    pyramid evaluation.
+  - Pyramids MIRRORED as of 2026-08-18 (Step 3+): the live evaluate_pyramids
+    runs through the session proxy between the sell and buy phases, matching
+    live cycle order; execution mirrors the live block (max 3/cycle, cash
+    guards) at synthetic-book prices. The 1-day cooldown is enforced by
+    ShadowSession.pyramided_today (the live cooldown query is multi-entity →
+    passes through the intercept and reads zero rows). All arm clocks were
+    reset at this change — pre-Aug-18 shadow trajectories are not comparable.
   - Drawdown circuit breaker, FTD penalty, portfolio-heat penalty are run_ai_trading_cycle
     concerns. Shadow runs evaluate_buys with both penalty flags = False; not
     perfectly faithful to live behavior in regimes where those penalties activate.
@@ -794,6 +798,63 @@ class ShadowSession:
         self._synthetic_positions.append(new_pos)
         return st
 
+    def emit_shadow_pyramid(self, *, position: _SyntheticPosition, shares: float,
+                            price: float, reason: str) -> ShadowTrade:
+        """Construct + queue a PYRAMID ShadowTrade and fold the add into the
+        synthetic position — mirrors run_ai_trading_cycle's pyramid execution
+        block (cash deduction + cost-basis re-average + pyramid_count bump).
+        The FIFO rebuild already treats PYRAMID rows as BUY lots and re-derives
+        pyramid_count as len(open lots) - 1, so no rebuild change is needed.
+        """
+        total_value = shares * price
+        st = ShadowTrade(
+            shadow_strategy_id=self.shadow_strategy.id,
+            ticker=position.ticker,
+            action="PYRAMID",
+            shares=shares,
+            price=price,
+            total_value=total_value,
+            reason=reason,
+            canslim_score=getattr(position, "current_score", None),
+            cost_basis=None,
+            realized_gain=None,
+            holding_days=None,
+            signal_factors={},
+            executed_at=datetime.now(timezone.utc),
+        )
+        self._pending_shadow_trades.append(st)
+        # Update synthetic state (mirror of ai_trader.py pyramid execution)
+        self._synthetic_config.current_cash -= total_value
+        total_cost = (position.shares * position.cost_basis) + total_value
+        position.shares += shares
+        position.cost_basis = total_cost / position.shares if position.shares > 0 else price
+        position.current_value = position.shares * price
+        position.gain_loss = position.current_value - total_cost
+        position.gain_loss_pct = ((price / position.cost_basis) - 1) * 100 if position.cost_basis else 0.0
+        position.pyramid_count = (getattr(position, "pyramid_count", 0) or 0) + 1
+        return st
+
+    def pyramided_today(self, ticker: str) -> bool:
+        """Shadow-side mirror of live's 1-day pyramid cooldown.
+
+        evaluate_pyramids reads the cooldown via a TWO-entity query
+        (AIPortfolioTrade.ticker, func.max(executed_at)) which the query()
+        intercept can't serve — multi-model queries pass through to the real
+        DB, where the shadow user has no rows, so the live cooldown is
+        silently inert in shadow. Enforced here from the ShadowTrade log
+        (persisted view + this cycle's pending rows) instead.
+        """
+        today = datetime.now(timezone.utc).date()
+        for t in list(self._shadow_trade_view) + list(self._pending_shadow_trades):
+            if t.ticker != ticker:
+                continue
+            if t.action != "PYRAMID" and not (t.reason or "").startswith("PYRAMID:"):
+                continue
+            ts = t.executed_at
+            if ts is not None and ts.date() >= today:
+                return True
+        return False
+
     def emit_shadow_sell(self, *, position: _SyntheticPosition, shares: float,
                          price: float, reason: str,
                          is_partial: bool = False) -> ShadowTrade:
@@ -1123,7 +1184,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         shadow_session = ShadowSession(sandbox, strategy, ar_for_session)
 
         # Lazy import to dodge circular dependency at module load time.
-        from backend.ai_trader import evaluate_buys, evaluate_sells
+        from backend.ai_trader import evaluate_buys, evaluate_pyramids, evaluate_sells
 
         # ── SELL phase ───────────────────────────────────────────────────────
         try:
@@ -1133,6 +1194,45 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             sells = []
 
         _emit_sell_decisions(shadow_session, sells)
+
+        # ── PYRAMID phase (2026-08-18, Step 3+) ──────────────────────────────
+        # Between sells and buys, matching live cycle order (run_ai_trading_
+        # cycle: sells → pyramids → buys → sweep). Reuses the LIVE
+        # evaluate_pyramids through the session proxy; execution mirrors the
+        # live block (max 3/cycle, value = min(amount, cash*0.5), cash guard)
+        # except prices come from the synthetic book's current_price — same
+        # convention as shadow buys/sells (no live price fetches in shadow).
+        # The 1-day pyramid cooldown is enforced via pyramided_today() — see
+        # its docstring for why the live query can't serve it here. The
+        # drawdown circuit breaker stays unmodeled (docstring Limitations).
+        try:
+            pyramids = evaluate_pyramids(shadow_session, user_id=SHADOW_USER_ID)
+        except Exception as e:
+            logger.error(f"shadow evaluate_pyramids failed for {strategy.name}: {e}", exc_info=True)
+            pyramids = []
+        _pyr_executed = 0
+        for pyramid in pyramids:
+            if _pyr_executed >= 3:  # live caps 3 pyramids per cycle
+                break
+            position = pyramid.get("position") if isinstance(pyramid, dict) else None
+            if position is None:
+                continue
+            if shadow_session.pyramided_today(position.ticker):
+                continue
+            _cash = float(getattr(shadow_session._synthetic_config, "current_cash", 0) or 0)
+            actual_value = min(float(pyramid.get("amount", 0) or 0), _cash * 0.5)
+            _price = getattr(position, "current_price", None) or 0
+            if actual_value < 100 or _price <= 0 or _cash < actual_value:
+                continue
+            shadow_session.emit_shadow_pyramid(
+                position=position,
+                shares=actual_value / _price,
+                price=_price,
+                reason=f"PYRAMID: {pyramid.get('reason', 'shadow pyramid')}",
+            )
+            _pyr_executed += 1
+        if _pyr_executed:
+            logger.info(f"shadow[{strategy.name}]: executed {_pyr_executed} pyramid(s)")
 
         # ── BUY phase ────────────────────────────────────────────────────────
         # ftd_penalty_active / heat_penalty_active default False — see module

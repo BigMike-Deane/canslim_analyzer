@@ -765,3 +765,144 @@ class TestBuyExecutionGuard:
         assert row is not None
         assert row.signal_factors is not None
         assert row.signal_factors.get("growth_mode_score") == pytest.approx(88.0)
+
+
+# ── Pyramid mirroring (Step 3+, 2026-08-18) ───────────────────────────────────
+
+
+class TestShadowPyramids:
+    """Shadow pyramid phase: emit_shadow_pyramid state math, the
+    pyramided_today cooldown (the live cooldown query is multi-entity and
+    passes through the intercept → must be enforced shadow-side), FIFO
+    rebuild round-trip of PYRAMID rows, and orchestrator execution."""
+
+    def test_emit_shadow_pyramid_updates_position_and_cash(self, db_session):
+        strategy = _make_strategy(db_session, name="pyr_emit")
+        _add_shadow_trade(db_session, strategy.id, "AAPL", "BUY", 10.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=5))
+        ss = ShadowSession(db_session, strategy,
+                           [{"ticker": "AAPL", "current_price": 110.0, "total_score": 80}])
+        pos = ss._synthetic_positions[0]
+        cash_before = ss._synthetic_config.current_cash  # 25000 - 1000
+
+        st = ss.emit_shadow_pyramid(position=pos, shares=6.0, price=110.0,
+                                    reason="PYRAMID: Winner +10% | Score 80")
+        assert st.action == "PYRAMID"
+        assert st.total_value == pytest.approx(660.0)
+        assert ss._synthetic_config.current_cash == pytest.approx(cash_before - 660.0)
+        assert pos.shares == pytest.approx(16.0)
+        # (10*100 + 660) / 16 = 103.75 — live cost-basis re-average
+        assert pos.cost_basis == pytest.approx(103.75)
+        assert pos.pyramid_count == 1
+
+    def test_pyramided_today_reads_persisted_and_pending(self, db_session):
+        strategy = _make_strategy(db_session, name="pyr_cooldown")
+        _add_shadow_trade(db_session, strategy.id, "OLD", "PYRAMID", 5.0, 100.0,
+                          reason="PYRAMID: Winner +12%",
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=2))
+        _add_shadow_trade(db_session, strategy.id, "HOT", "PYRAMID", 5.0, 100.0,
+                          reason="PYRAMID: Winner +9%",
+                          executed_at=datetime.now(timezone.utc))
+        ss = ShadowSession(db_session, strategy, [])
+
+        assert ss.pyramided_today("HOT") is True     # persisted, today
+        assert ss.pyramided_today("OLD") is False    # persisted, 2 days ago
+        assert ss.pyramided_today("NEW") is False
+
+        # A pending (this-cycle) pyramid must also arm the cooldown.
+        _add_shadow_trade(db_session, strategy.id, "NEW", "BUY", 10.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=3))
+        ss2 = ShadowSession(db_session, strategy,
+                            [{"ticker": "NEW", "current_price": 110.0, "total_score": 80}])
+        pos = [p for p in ss2._synthetic_positions if p.ticker == "NEW"][0]
+        ss2.emit_shadow_pyramid(position=pos, shares=1.0, price=110.0,
+                                reason="PYRAMID: Winner +10%")
+        assert ss2.pyramided_today("NEW") is True
+
+    def test_fifo_rebuild_roundtrips_pyramid_rows(self, db_session):
+        """A PYRAMID row must reconstruct exactly like live: shares merge,
+        cost basis re-averages, pyramid_count = open lots - 1, cash ledger
+        includes the add."""
+        strategy = _make_strategy(db_session, name="pyr_rebuild")
+        _add_shadow_trade(db_session, strategy.id, "AAPL", "BUY", 10.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=5))
+        _add_shadow_trade(db_session, strategy.id, "AAPL", "PYRAMID", 6.0, 110.0,
+                          reason="PYRAMID: Winner +10%",
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=2))
+        ss = ShadowSession(db_session, strategy,
+                           [{"ticker": "AAPL", "current_price": 115.0, "total_score": 80}])
+
+        assert len(ss._synthetic_positions) == 1
+        pos = ss._synthetic_positions[0]
+        assert pos.shares == pytest.approx(16.0)
+        assert pos.cost_basis == pytest.approx((1000.0 + 660.0) / 16.0)
+        assert pos.pyramid_count == 1
+        assert ss._synthetic_config.current_cash == pytest.approx(25000.0 - 1000.0 - 660.0)
+
+    def test_orchestrator_executes_pyramid_between_sells_and_buys(
+            self, db_session, monkeypatch):
+        """_run_one_strategy persists a PYRAMID ShadowTrade for an eligible
+        decision, and the same-day cooldown suppresses a second add on the
+        next tick."""
+        from backend import shadow_trader
+        from backend import ai_trader
+
+        strategy = _make_strategy(db_session, name="pyr_orch")
+        _add_shadow_trade(db_session, strategy.id, "AAPL", "BUY", 10.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=5))
+
+        def fake_evaluate_pyramids(db, **kw):
+            positions = db.query(AIPortfolioPosition).all()
+            if not positions:
+                return []
+            return [{"position": positions[0], "amount": 600.0,
+                     "shares": 600.0 / (positions[0].current_price or 1),
+                     "reason": "Winner +10% | Score 80", "priority": 0}]
+
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_pyramids", fake_evaluate_pyramids)
+
+        analysis = [{"ticker": "AAPL", "current_price": 110.0, "total_score": 80}]
+        n = shadow_trader._run_one_strategy(strategy.id, analysis)
+        assert n == 1
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id,
+            ShadowTrade.action == "PYRAMID").all()
+        assert len(rows) == 1
+        assert rows[0].ticker == "AAPL"
+        assert rows[0].reason.startswith("PYRAMID:")
+        assert rows[0].total_value == pytest.approx(600.0)
+
+        # Second tick same day: cooldown must suppress a repeat add.
+        n2 = shadow_trader._run_one_strategy(strategy.id, analysis)
+        assert n2 == 0
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id,
+            ShadowTrade.action == "PYRAMID").all()
+        assert len(rows) == 1
+
+    def test_orchestrator_caps_three_pyramids_per_cycle(
+            self, db_session, monkeypatch):
+        from backend import shadow_trader
+        from backend import ai_trader
+
+        strategy = _make_strategy(db_session, name="pyr_cap3")
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+        for t in tickers:
+            _add_shadow_trade(db_session, strategy.id, t, "BUY", 10.0, 100.0,
+                              executed_at=datetime.now(timezone.utc) - timedelta(days=5))
+
+        def fake_evaluate_pyramids(db, **kw):
+            return [{"position": p, "amount": 300.0, "shares": 3.0,
+                     "reason": "Winner +10% | Score 80", "priority": 0}
+                    for p in db.query(AIPortfolioPosition).all()]
+
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_pyramids", fake_evaluate_pyramids)
+
+        analysis = [{"ticker": t, "current_price": 110.0, "total_score": 80}
+                    for t in tickers]
+        n = shadow_trader._run_one_strategy(strategy.id, analysis)
+        assert n == 3  # live caps 3 pyramids per cycle

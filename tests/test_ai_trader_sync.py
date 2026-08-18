@@ -424,6 +424,46 @@ class TestSectorLimit:
         assert amount == 0
         assert "Max" in reason and "Technology" in reason
 
+    def test_skip_count_arm_waives_count_cap(self):
+        """sector_cap.exempt_pyramids_from_count lever: skip_count_arm=True
+        lets an add through a sector at MAX_STOCKS_PER_SECTOR as long as the
+        allocation arm has room. Same request with the default is blocked."""
+        from backend.ai_trader import check_sector_limit
+        from backend.database import Stock, AIPortfolioConfig
+
+        db = _fresh_session()
+        db.add(AIPortfolioConfig(user_id=1, current_cash=22000.0))
+        for t in ["AAPL", "MSFT", "GOOGL", "META"]:
+            db.add(Stock(ticker=t, sector="Technology"))
+            # sector $8k of $30k PV = 26.7% — allocation arm has room
+            db.add(_make_position(ticker=t, current_value=2000.0))
+        db.commit()
+
+        blocked, reason = check_sector_limit(db, "AAPL", buy_amount=5000.0, user_id=1)
+        assert blocked == 0 and "Max" in reason
+
+        amount, reason = check_sector_limit(db, "AAPL", buy_amount=5000.0, user_id=1,
+                                            skip_count_arm=True)
+        assert amount == 5000.0
+
+    def test_skip_count_arm_still_enforces_allocation_cap(self):
+        """The lever waives ONLY the count arm: a sector already over
+        MAX_SECTOR_ALLOCATION still rejects the add with skip_count_arm=True."""
+        from backend.ai_trader import check_sector_limit
+        from backend.database import Stock, AIPortfolioConfig
+
+        db = _fresh_session()
+        db.add(AIPortfolioConfig(user_id=1, current_cash=10000.0))
+        for t in ["AAPL", "MSFT", "GOOGL", "META"]:
+            db.add(Stock(ticker=t, sector="Technology"))
+            # sector $20k of $30k PV = 66.7% — over the 50% allocation cap
+            db.add(_make_position(ticker=t, current_value=5000.0))
+        db.commit()
+
+        amount, reason = check_sector_limit(db, "AAPL", buy_amount=5000.0, user_id=1,
+                                            skip_count_arm=True)
+        assert amount == 0
+
     def test_unknown_sector_treated_as_unknown_bucket(self):
         """Stock with no sector falls into 'Unknown' bucket — should still
         permit the buy when no other 'Unknown' positions exist."""
