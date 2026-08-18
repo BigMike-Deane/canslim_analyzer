@@ -4268,9 +4268,16 @@ class BacktestEngine:
             # stocks blocks even adds to an existing position there — live
             # quirk, mirrored on purpose. Scale-ins above stay uncapped in
             # both engines.
+            # A/B lever sector_cap.exempt_pyramids_from_count (default off =
+            # live parity): a pyramid adds no new NAME to the sector, so the
+            # count arm arguably shouldn't bind it. Allocation % arm below
+            # still applies either way. Live/shadow wiring only after the
+            # backtest read passes its gate.
             sector = self.static_data.get(ticker, {}).get("sector", "Unknown")
             sector_count = sum(1 for p in self.positions.values() if p.sector == sector)
-            if sector_count >= MAX_STOCKS_PER_SECTOR:
+            exempt_count_arm = (self.profile.get('sector_cap') or {}).get(
+                'exempt_pyramids_from_count', False)
+            if not exempt_count_arm and sector_count >= MAX_STOCKS_PER_SECTOR:
                 continue
             if portfolio_value > 0:
                 sector_value = sum(

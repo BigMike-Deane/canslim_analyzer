@@ -465,6 +465,59 @@ class TestBacktesterPyramids:
         )
         assert pyramids == []
 
+    def _seed_sector_at_count_cap(self, engine, filler_shares):
+        """4 Technology positions (= MAX_STOCKS_PER_SECTOR): TEST is an
+        eligible winner; F1-F3 are fillers sized by filler_shares."""
+        engine.cash = 20000.0
+        _add_position(engine, "TEST", shares=40.0, cost_basis=100.0, peak_price=112.0,
+                      purchase_score=80.0, pyramid_count=0,
+                      purchase_date=date.today() - timedelta(days=35))
+        for t in ("F1", "F2", "F3"):
+            _add_position(engine, t, shares=filler_shares, cost_basis=100.0,
+                          peak_price=112.0, pyramid_count=0,
+                          purchase_date=date.today() - timedelta(days=35))
+        engine.static_data = {t: {"sector": "Technology"}
+                              for t in ("TEST", "F1", "F2", "F3")}
+        engine.data_provider.get_price_on_date.return_value = 110.0
+
+    def test_sector_count_cap_blocks_pyramid_by_default(self, engine):
+        """Live parity pin: sector at MAX_STOCKS_PER_SECTOR blocks adds into
+        its own positions (the mirrored live quirk) when the lever is off."""
+        self._seed_sector_at_count_cap(engine, filler_shares=5.0)
+
+        pyramids = engine._evaluate_pyramids(
+            date.today(),
+            {"TEST": {"total_score": 80, "is_breaking_out": False, "volume_ratio": 1.0}},
+        )
+        assert [p for p in pyramids if "Winner" in p.reason] == []
+
+    def test_exempt_pyramids_from_count_allows_add_at_cap(self, engine):
+        """sector_cap.exempt_pyramids_from_count=true → count arm skipped for
+        adds; the same at-cap winner now pyramids (allocation arm has room)."""
+        self._seed_sector_at_count_cap(engine, filler_shares=5.0)
+        engine.profile['sector_cap'] = {'exempt_pyramids_from_count': True}
+
+        pyramids = engine._evaluate_pyramids(
+            date.today(),
+            {"TEST": {"total_score": 80, "is_breaking_out": False, "volume_ratio": 1.0}},
+        )
+        winners = [p for p in pyramids if "Winner" in p.reason]
+        assert len(winners) == 1 and winners[0].ticker == "TEST"
+
+    def test_exempt_count_still_respects_allocation_arm(self, engine):
+        """Lever exempts the COUNT arm only: with the sector already over
+        MAX_SECTOR_ALLOCATION (30%), the allocation cap still blocks the add."""
+        # sector ~65% of PV — over the cap in every env config (0.30 prod,
+        # 0.50 development, which is what pytest runs under)
+        self._seed_sector_at_count_cap(engine, filler_shares=100.0)
+        engine.profile['sector_cap'] = {'exempt_pyramids_from_count': True}
+
+        pyramids = engine._evaluate_pyramids(
+            date.today(),
+            {"TEST": {"total_score": 80, "is_breaking_out": False, "volume_ratio": 1.0}},
+        )
+        assert [p for p in pyramids if "Winner" in p.reason] == []
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier 2 — _check_score_stability adapter (delegation parity)
