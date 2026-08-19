@@ -303,9 +303,10 @@ function ImprovingRadarSection({ radar }) {
 
 // Industry Group Rotation — where money is rotating. Backed by
 // /api/industry-groups: rotation.improving / rotation.deteriorating are
-// groups whose 3-month RS meaningfully diverges from their 12-month RS
-// (|rs_diff| > 0.05). RS values are ratios vs SPY (~1.0 = market-perform),
-// so rs_diff is shown ×100 as "RS points" to keep one-decimal legibility.
+// groups whose 3-month RS meaningfully diverges from their own 12-month
+// trend normalized to per-quarter pace (rs_12m ** 0.25) — |rs_diff| > 0.05.
+// RS values are ratios vs SPY (~1.0 = market-perform), so rs_diff is shown
+// ×100 as percentage points of quarterly out/under-performance vs trend.
 // Hidden entirely when the one-shot fetch fails or returns nothing.
 function GroupRotationSection({ data }) {
   const improving = data?.rotation?.improving || []
@@ -317,22 +318,27 @@ function GroupRotationSection({ data }) {
     return `${v >= 0 ? '+' : ''}${v.toFixed(1)}`
   }
 
-  const GroupRow = ({ g, tone }) => (
-    <div className="flex items-center justify-between gap-2 py-1 border-b border-dark-700/20 last:border-0">
-      <span
-        className="text-[11px] text-dark-300 truncate min-w-0"
-        title={`${g.industry} — group rank ${g.rank}/100 · 3m RS ${g.avg_rs_3m?.toFixed?.(2) ?? g.avg_rs_3m} vs 12m RS ${g.avg_rs_12m?.toFixed?.(2) ?? g.avg_rs_12m}`}
+  // 3m RS > 1.0 means the group is beating SPY right now — shown as a dot so
+  // "rotating out" of a still-strong leader (cooling, not collapsing) reads
+  // differently from a group that is both decelerating AND lagging the market.
+  const GroupRow = ({ g, tone }) => {
+    const beatingNow = (g.avg_rs_3m ?? 0) >= 1.0
+    return (
+      <div
+        className="flex items-center justify-between gap-2 py-1 border-b border-dark-700/20 last:border-0"
+        title={`${g.industry} (${g.stock_count} stocks) — strength percentile ${g.rank}/100 (100 = strongest). Last 3m: ${beatingNow ? 'beating' : 'lagging'} SPY (RS ${g.avg_rs_3m?.toFixed?.(2) ?? g.avg_rs_3m}); typical quarter over the past year: RS ${g.avg_rs_12m_q?.toFixed?.(2) ?? '—'}. Diff ${fmtDiff(g.rs_diff)}pp/qtr vs its own trend.`}
       >
-        {g.industry}
-      </span>
-      <span className="flex items-center gap-1.5 shrink-0">
-        <span className={`text-[10px] font-data font-medium ${tone}`}>{fmtDiff(g.rs_diff)}</span>
-        <span className="text-[9px] font-data text-dark-500" title={`${g.stock_count} stocks in group`}>
-          ({g.stock_count})
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className={`w-1 h-1 rounded-full shrink-0 ${beatingNow ? 'bg-emerald-400' : 'bg-red-400/70'}`} />
+          <span className="text-[11px] text-dark-300 truncate min-w-0">{g.industry}</span>
         </span>
-      </span>
-    </div>
-  )
+        <span className="flex items-center gap-1.5 shrink-0">
+          <span className={`text-[10px] font-data font-medium ${tone}`}>{fmtDiff(g.rs_diff)}</span>
+          <span className="text-[9px] font-data text-dark-500">({g.stock_count})</span>
+        </span>
+      </div>
+    )
+  }
 
   return (
     <Card as="section" aria-labelledby="cc-group-rotation-heading" variant="glass">
@@ -340,22 +346,30 @@ function GroupRotationSection({ data }) {
         title="Group Rotation"
         titleId="cc-group-rotation-heading"
         defaultOpen={false}
-        badge={data?.as_of ? (
-          <span className="text-[9px] font-data text-dark-500" title={data.as_of}>
-            as of {formatRelativeTime(data.as_of)}
+        badge={
+          <span className="flex items-center gap-1.5 text-[9px] font-data">
+            <span className="text-emerald-400/90">{improving.length}↑</span>
+            <span className="text-red-400/90">{deteriorating.length}↓</span>
+            {data?.as_of && (
+              <span className="text-dark-500" title={data.as_of}>
+                · as of {formatRelativeTime(data.as_of)}
+              </span>
+            )}
           </span>
-        ) : undefined}
+        }
       >
         <div
           className="text-[10px] text-dark-400 mb-2"
-          title="3-month group RS minus 12-month group RS (×100). Positive = the group is outperforming its own longer-term trend — money rotating in. IBD: ~37% of a stock's move comes from its industry group."
+          title="Each group's last-3-month relative strength vs SPY, compared to its own typical quarter over the past year (12m RS normalized to per-quarter pace). The number is percentage points per quarter above/below that trend. IBD: ~37% of a stock's move comes from its industry group."
         >
-          3m vs 12m group relative strength — where money is rotating.
+          Each group&rsquo;s 3-month pace vs its own 12-month trend, in pp/quarter.
+          Dot = beating (green) or lagging (red) SPY over the last 3 months.
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400 mb-1.5">
-              Money Flowing In
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400 mb-1.5"
+                 title="Accelerating: last-3-month RS is running ahead of the group's own 12-month pace — money rotating in">
+              Rotating In
             </div>
             {improving.length === 0 ? (
               <div className="text-[10px] text-dark-500 py-1">None</div>
@@ -366,8 +380,9 @@ function GroupRotationSection({ data }) {
             )}
           </div>
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-red-400 mb-1.5">
-              Money Flowing Out
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-red-400 mb-1.5"
+                 title="Decelerating: last-3-month RS is running behind the group's own 12-month pace — money rotating out. A green dot here = still beating SPY, just cooling.">
+              Rotating Out
             </div>
             {deteriorating.length === 0 ? (
               <div className="text-[10px] text-dark-500 py-1">None</div>
@@ -923,7 +938,7 @@ export default function CommandCenter() {
           <Card as="section" aria-labelledby="cc-risk-heading" variant="glass" animate stagger={3} className="hidden md:block">
             <SectionLabel id="cc-risk-heading">Risk</SectionLabel>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-dark-400">Heat</span>
+              <span className="text-xs text-dark-400" title="Portfolio heat: % of total portfolio value lost if every position fell to its stop from here (position weight × distance-to-stop, summed). <10% normal · 10–15% warning · >15% danger">Heat</span>
               <span className={`text-sm font-data font-semibold ${
                 risk?.heat_status === 'normal' ? 'text-emerald-400' :
                 risk?.heat_status === 'warning' ? 'text-amber-400' : 'text-red-400'
@@ -1124,7 +1139,7 @@ export default function CommandCenter() {
           <Card as="section" aria-labelledby="cc-mobile-risk-heading" variant="glass" className="md:hidden">
             <CollapsibleSection title="Risk" titleId="cc-mobile-risk-heading" defaultOpen={false}>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-dark-400">Heat</span>
+                <span className="text-xs text-dark-400" title="Portfolio heat: % of total portfolio value lost if every position fell to its stop from here (position weight × distance-to-stop, summed). <10% normal · 10–15% warning · >15% danger">Heat</span>
                 <span className={`text-sm font-data font-semibold ${
                   risk?.heat_status === 'normal' ? 'text-emerald-400' :
                   risk?.heat_status === 'warning' ? 'text-amber-400' : 'text-red-400'

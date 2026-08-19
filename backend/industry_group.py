@@ -190,10 +190,21 @@ def get_bottom_groups(db: Session, limit: int = 20) -> List[dict]:
     ]
 
 
+# Rotation lists need more members than the ranking floor (2): a 2-stock
+# "group" whipsaws on one ticker and reliably tops the movers list.
+ROTATION_MIN_STOCKS = 5
+
+
 def get_group_rotation_summary(db: Session) -> dict:
     """
     Get a summary of sector/group rotation for the bear market report.
-    Compares 3m RS vs 12m RS to identify groups gaining/losing momentum.
+
+    Compares the group's 3m RS against its 12m RS normalized to the SAME
+    per-quarter scale (rs_12m ** 0.25). Raw rs_3m - rs_12m is biased: the
+    12m ratio compounds over 4x the window, so steady leaders (e.g. a group
+    beating SPY 5%/qtr all year: rs_3m 1.05, rs_12m 1.22) read as
+    "deteriorating" and steady laggards as "improving". The quarter-pace
+    diff measures true acceleration vs the group's own trend.
     """
     rankings = compute_industry_group_rankings(db)
     if not rankings:
@@ -203,18 +214,23 @@ def get_group_rotation_summary(db: Session) -> dict:
     deteriorating = []
 
     for name, data in rankings.items():
-        rs_diff = data['avg_rs_3m'] - data['avg_rs_12m']
+        if data['stock_count'] < ROTATION_MIN_STOCKS:
+            continue
+        # 12m RS expressed as its equivalent per-quarter pace (RS >= 0 always)
+        rs_12m_q = max(data['avg_rs_12m'], 0.0) ** 0.25
+        rs_diff = data['avg_rs_3m'] - rs_12m_q
         entry = {
             'industry': name,
             'rank': data['rank'],
             'rs_diff': round(rs_diff, 4),
             'avg_rs_3m': data['avg_rs_3m'],
             'avg_rs_12m': data['avg_rs_12m'],
+            'avg_rs_12m_q': round(rs_12m_q, 4),
             'stock_count': data['stock_count'],
         }
-        if rs_diff > 0.05:  # 3m RS meaningfully above 12m — gaining momentum
+        if rs_diff > 0.05:  # 3m pace meaningfully above own trend — accelerating
             improving.append(entry)
-        elif rs_diff < -0.05:  # Losing momentum
+        elif rs_diff < -0.05:  # Decelerating vs own trend
             deteriorating.append(entry)
 
     improving.sort(key=lambda x: x['rs_diff'], reverse=True)

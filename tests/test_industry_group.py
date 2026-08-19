@@ -381,11 +381,14 @@ class TestGetBottomGroups:
 
 
 class TestGetGroupRotationSummary:
-    """Covers backend/industry_group.py:192-227 — bear-market-report rotation
-    bucketing. Groups are split by `avg_rs_3m - avg_rs_12m`:
+    """Covers backend/industry_group.py get_group_rotation_summary — rotation
+    bucketing. Groups are split by `avg_rs_3m - avg_rs_12m ** 0.25` (the 12m
+    RS normalized to its equivalent per-quarter pace, so steady leaders don't
+    read as deteriorating just because 12m compounds over 4x the window):
       diff >  0.05 → improving
       diff < -0.05 → deteriorating
       otherwise    → excluded from both buckets
+    Groups with fewer than ROTATION_MIN_STOCKS members are excluded.
     Each bucket is sorted by |diff| descending and capped at 15 entries.
     """
 
@@ -424,15 +427,51 @@ class TestGetGroupRotationSummary:
     def test_strong_negative_diff_routes_to_deteriorating(self):
         from backend.industry_group import get_group_rotation_summary
         rankings = dict([
-            self._rank_entry("LosingSteam", 30, rs_3m=0.4, rs_12m=1.5),  # diff -1.1
+            # per-quarter trend = 1.5 ** 0.25 ≈ 1.1067 → diff ≈ -0.7067
+            self._rank_entry("LosingSteam", 30, rs_3m=0.4, rs_12m=1.5),
         ])
         with patch("backend.industry_group.compute_industry_group_rankings",
                    return_value=rankings):
             result = get_group_rotation_summary(MagicMock())
         assert len(result["deteriorating"]) == 1
         assert result["deteriorating"][0]["industry"] == "LosingSteam"
-        assert result["deteriorating"][0]["rs_diff"] == pytest.approx(-1.1, abs=1e-6)
+        assert result["deteriorating"][0]["rs_diff"] == pytest.approx(
+            0.4 - 1.5 ** 0.25, abs=1e-4)
+        assert result["deteriorating"][0]["avg_rs_12m_q"] == pytest.approx(
+            1.5 ** 0.25, abs=1e-4)
         assert result["improving"] == []
+
+    def test_steady_leader_not_flagged_as_deteriorating(self):
+        """A group beating SPY at the same ~5%/quarter pace all year has
+        rs_3m ≈ 1.05 and rs_12m ≈ 1.05**4 ≈ 1.2155. The old raw subtraction
+        (1.05 - 1.2155 = -0.17) mislabeled it 'money flowing out'; the
+        per-quarter normalization must leave it out of both buckets."""
+        from backend.industry_group import get_group_rotation_summary
+        rankings = dict([
+            self._rank_entry("SteadyLeader", 90, rs_3m=1.05, rs_12m=1.05 ** 4),
+        ])
+        with patch("backend.industry_group.compute_industry_group_rankings",
+                   return_value=rankings):
+            result = get_group_rotation_summary(MagicMock())
+        assert result["improving"] == []
+        assert result["deteriorating"] == []
+
+    def test_tiny_groups_excluded_from_rotation(self):
+        """Groups below ROTATION_MIN_STOCKS whipsaw on single tickers and are
+        excluded from the rotation buckets (rankings still include them)."""
+        from backend.industry_group import (
+            get_group_rotation_summary, ROTATION_MIN_STOCKS)
+        rankings = dict([
+            self._rank_entry("TinyMover", 66, rs_3m=2.0, rs_12m=1.0,
+                             stock_count=ROTATION_MIN_STOCKS - 1),
+            self._rank_entry("BigMover", 70, rs_3m=2.0, rs_12m=1.0,
+                             stock_count=ROTATION_MIN_STOCKS),
+        ])
+        with patch("backend.industry_group.compute_industry_group_rankings",
+                   return_value=rankings):
+            result = get_group_rotation_summary(MagicMock())
+        assert [g["industry"] for g in result["improving"]] == ["BigMover"]
+        assert result["total_groups"] == 2
 
     def test_neutral_diff_excluded_from_both_buckets(self):
         """A group whose 3m vs 12m RS differ by <= 0.05 in absolute value
