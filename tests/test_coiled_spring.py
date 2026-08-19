@@ -332,66 +332,107 @@ class TestDatabaseModel:
 
 
 class TestCSConfidence:
-    """Test rule-based CS confidence scoring derived from historical outcomes."""
+    """Test rule-based CS confidence scoring derived from historical outcomes.
 
-    def test_death_zone_very_low(self):
-        """days_to_earnings <= 2 should produce very low confidence."""
+    v2 model (2026-08-19), recalibrated on 138 outcome-labeled live alerts:
+    10-14d timing is the best window (v1's "3-5d sweet spot" was an n=2
+    artifact — it is the WORST bucket at n=138), l_score >= 12 is the
+    strongest single predictor, and institutional_pct == 0 is missing data
+    (no bonus), not "low institutional".
+    """
+
+    def test_best_window_plus_leader_very_high(self):
+        """10-14d out + L>=12 was 75% win / +10.8% avg in calibration —
+        the combo must reach VERY HIGH."""
         from canslim_scorer import calculate_cs_confidence
         score = calculate_cs_confidence(
-            days_to_earnings=2, institutional_pct=30, weeks_in_base=20,
-            c_score=15, beat_streak=5,
-        )
-        assert score < 30, f"Death zone (2 days) should be LOW, got {score}"
-
-    def test_sweet_spot_high(self):
-        """3-5 days + low inst + long base should produce high confidence."""
-        from canslim_scorer import calculate_cs_confidence
-        score = calculate_cs_confidence(
-            days_to_earnings=4, institutional_pct=10, weeks_in_base=26,
-            c_score=15, beat_streak=6,
+            days_to_earnings=12, institutional_pct=25, weeks_in_base=26,
+            c_score=15, beat_streak=6, l_score=13,
         )
         assert score >= 80, f"Best setup should be VERY HIGH, got {score}"
 
+    def test_old_sweet_spot_now_below_neutral(self):
+        """3-5 days was the worst bucket at n=138 (25% win, 38% loss) —
+        must score BELOW neutral even with an otherwise decent setup."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=4, institutional_pct=30, weeks_in_base=15,
+            c_score=12, beat_streak=4, l_score=9,
+        )
+        assert score < 50, f"3-5d window should be below neutral, got {score}"
+
+    def test_imminent_earnings_below_neutral(self):
+        """<=2 days scores below neutral (mediocre bucket: 32% win,
+        -0.29% avg) — softened from v1's -40 'death zone' (n=3)."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=2, institutional_pct=30, weeks_in_base=20,
+            c_score=15, beat_streak=5, l_score=9,
+        )
+        assert score < 50, f"<=2d should be below neutral, got {score}"
+
     def test_moderate_setup(self):
-        """6-9 days + high inst should produce moderate confidence."""
+        """6-9 days + crowded institutional should produce moderate confidence."""
+        from canslim_scorer import calculate_cs_confidence
+        score = calculate_cs_confidence(
+            days_to_earnings=7, institutional_pct=70, weeks_in_base=15,
+            c_score=12, beat_streak=3, l_score=9,
+        )
+        assert 30 <= score <= 59, f"Moderate setup should be 30-59, got {score}"
+
+    def test_leader_lifts_confidence(self):
+        """l_score >= 12 (53% win, +3.81% avg — strongest factor) must add
+        a full tier over an identical non-leader setup."""
+        from canslim_scorer import calculate_cs_confidence
+        kwargs = dict(days_to_earnings=11, institutional_pct=30,
+                      weeks_in_base=26, c_score=15, beat_streak=6)
+        leader = calculate_cs_confidence(**kwargs, l_score=13)
+        laggard = calculate_cs_confidence(**kwargs, l_score=8.5)
+        assert leader - laggard == 15, f"L>=12 should add +15, got {leader}-{laggard}"
+
+    def test_missing_institutional_gets_no_bonus(self):
+        """institutional_pct == 0 means the provider had no data (a third
+        of live alerts) — it must NOT earn the low-institutional bonus."""
+        from canslim_scorer import calculate_cs_confidence
+        kwargs = dict(days_to_earnings=11, weeks_in_base=26,
+                      c_score=15, beat_streak=6, l_score=13)
+        missing = calculate_cs_confidence(**kwargs, institutional_pct=0)
+        known_low = calculate_cs_confidence(**kwargs, institutional_pct=25)
+        assert known_low - missing == 5, "0% inst must be neutral, real <40% gets +5"
+        none_val = calculate_cs_confidence(**kwargs, institutional_pct=None)
+        assert none_val == missing, "None and 0 both mean unknown"
+
+    def test_crowded_institutional_penalized(self):
+        """institutional >= 60% (27% win, -0.34% avg) keeps its penalty."""
+        from canslim_scorer import calculate_cs_confidence
+        kwargs = dict(days_to_earnings=11, weeks_in_base=26,
+                      c_score=15, beat_streak=6, l_score=13)
+        crowded = calculate_cs_confidence(**kwargs, institutional_pct=70)
+        unknown = calculate_cs_confidence(**kwargs, institutional_pct=0)
+        assert unknown - crowded == 10, ">=60% inst should cost -10"
+
+    def test_l_score_optional_backward_compatible(self):
+        """Callers that don't pass l_score (unknown) get no L adjustment."""
         from canslim_scorer import calculate_cs_confidence
         score = calculate_cs_confidence(
             days_to_earnings=7, institutional_pct=70, weeks_in_base=15,
             c_score=12, beat_streak=3,
         )
-        assert 30 <= score <= 59, f"Moderate setup should be 30-59, got {score}"
-
-    def test_flgt_pattern_low(self):
-        """Replicate FLGT pattern (2 days, high inst) = should flag as dangerous."""
-        from canslim_scorer import calculate_cs_confidence
-        score = calculate_cs_confidence(
-            days_to_earnings=2, institutional_pct=59, weeks_in_base=16,
-            c_score=15, beat_streak=8,
-        )
-        assert score < 30, f"FLGT pattern should be LOW, got {score}"
-
-    def test_winner_pattern_high(self):
-        """Replicate STNG winner pattern (9 days, cup, long base)."""
-        from canslim_scorer import calculate_cs_confidence
-        score = calculate_cs_confidence(
-            days_to_earnings=9, institutional_pct=73, weeks_in_base=26,
-            c_score=15, beat_streak=9,
-        )
-        assert score >= 60, f"STNG pattern should be HIGH, got {score}"
+        assert 30 <= score <= 59
 
     def test_score_clamped_0_100(self):
         """Score should never exceed 0-100 range."""
         from canslim_scorer import calculate_cs_confidence
         # Best possible
         best = calculate_cs_confidence(
-            days_to_earnings=4, institutional_pct=5, weeks_in_base=30,
-            c_score=15, beat_streak=10,
+            days_to_earnings=12, institutional_pct=25, weeks_in_base=30,
+            c_score=15, beat_streak=10, l_score=15,
         )
         assert 0 <= best <= 100
         # Worst possible
         worst = calculate_cs_confidence(
             days_to_earnings=1, institutional_pct=80, weeks_in_base=15,
-            c_score=10, beat_streak=3,
+            c_score=10, beat_streak=3, l_score=6,
         )
         assert 0 <= worst <= 100
 

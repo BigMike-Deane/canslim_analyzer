@@ -3087,6 +3087,7 @@ async def get_coiled_spring_candidates(current_user: User = Depends(get_current_
                 weeks_in_base=stock.weeks_in_base or 0,
                 c_score=stock.c_score or 0,
                 beat_streak=beat_streak,
+                l_score=stock.l_score,
             )
 
             qualified.append({
@@ -6738,6 +6739,7 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
                 weeks_in_base=s.weeks_in_base or 15,
                 c_score=(s.score_details or {}).get('c', {}).get('score', 12) if isinstance(s.score_details, dict) else 12,
                 beat_streak=s.earnings_beat_streak or 3,
+                l_score=s.l_score,
             ),
         } for s in cs_candidates]
 

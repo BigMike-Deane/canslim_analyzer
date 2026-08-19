@@ -1230,6 +1230,7 @@ def calculate_coiled_spring_score(data, score, config: dict = None) -> dict:
             weeks_in_base=weeks_in_base,
             c_score=c_score,
             beat_streak=earnings_beat_streak,
+            l_score=l_score,
         )
 
     else:
@@ -1248,63 +1249,79 @@ def calculate_cs_confidence(
     weeks_in_base: int,
     c_score: float,
     beat_streak: int,
+    l_score: float = None,
 ) -> int:
     """
     Calculate CS confidence score (0-100) based on historical outcome patterns.
 
-    Derived from analysis of 28 live CS alerts (10 wins, 14 flat, 4 losses).
+    v2 (2026-08-19): recalibrated on 138 outcome-labeled live alerts
+    (51 wins incl. 12 big, 54 flat, 33 losses; Feb-Aug 2026). The v1 model
+    was fit on 28 alerts and its biggest weight (+20 for 3-5 days) rested
+    on n=2 — at n=138 that bucket is the WORST (25% win, 38% loss). Every
+    v2 weight below was verified stable across both time-halves of the data.
 
-    Key findings:
-    - days_to_earnings <= 2: 0 wins, 3 losses, avg -11.73% (AVOID)
-    - days_to_earnings 3-5: 2 wins, 0 losses, avg +7.66% (BEST)
-    - Low institutional (<20%): 67% win rate, avg +3.85%
-    - High institutional (>60%): 22% win rate, avg +1.57%
-    - Longer bases (26+ weeks) favor winners
+    Key findings (n=138):
+    - days_to_earnings 10-14: 45% win, 18% loss, avg +2.79% (BEST — early
+      alerts, base not yet bid up into the report)
+    - days_to_earnings 3-5: 25% win, 38% loss, avg -1.06% (worst window)
+    - l_score >= 12: 53% win, avg +3.81% (strongest single factor);
+      combined with 10-14d timing: 75% win, avg +10.8%
+    - institutional_pct == 0 is MISSING DATA (33% of alerts, incl.
+      mega-caps recorded at 0%) — treated as unknown, no adjustment
+    - institutional >= 60%: 27% win, avg -0.34% (crowded — penalty holds)
+    - weeks_in_base >= 26: mild positive, stable (40% vs 28% win)
 
     Returns int 0-100:
-        0-29:  LOW — high risk, consider skipping
+        0-29:  LOW — high risk, consider skipping (trader gate skips <30)
         30-59: MODERATE — proceed with caution
         60-79: HIGH — solid setup
-        80+:   VERY HIGH — best setups
+        80+:   VERY HIGH — best setups (67% win, avg +7.3% in calibration)
     """
     score = 50  # Start neutral
 
-    # 1. Timing factor (biggest differentiator, -40 to +20)
+    # 1. Timing factor (-20 to +15): monotonically better with more runway.
+    # The v1 "3-5d sweet spot" inverted at n=138; <=2d is below-average
+    # (32% win, -0.29%) rather than the v1 "death zone" (which was n=3).
     if days_to_earnings is not None:
         if days_to_earnings <= 2:
-            score -= 40  # Death zone: 0 wins, 3 losses in data
+            score -= 20
         elif days_to_earnings <= 5:
-            score += 20  # Sweet spot: 100% win rate in data
+            score -= 15
         elif days_to_earnings <= 9:
-            score += 10  # Good: 83% win rate in data
+            score += 5
         else:
-            score += 15  # Early alert 10-14d: 75% win rate
+            score += 15  # 10-14d: best window, stable in both halves
 
-    # 2. Institutional ownership factor (-10 to +15)
-    if institutional_pct < 20:
-        score += 15  # Low inst = room for institutional buying catalyst
-    elif institutional_pct < 40:
-        score += 5   # Moderate = some room
-    elif institutional_pct > 60:
-        score -= 10  # Already crowded = limited upside catalyst
+    # 2. Relative strength factor (0 to +15): strongest predictor in the
+    # data — leaders into earnings keep leading out of them.
+    if l_score is not None:
+        if l_score >= 12:
+            score += 15
+        elif l_score >= 10:
+            score += 5
 
-    # 3. Base length factor (0 to +10)
+    # 3. Institutional ownership factor (-10 to +5). Zero/None means the
+    # provider had no data (a third of alerts) — no adjustment, since v1's
+    # +15 "low institutional" bonus was mostly rewarding missing data.
+    if institutional_pct is not None and institutional_pct > 0:
+        if institutional_pct < 40:
+            score += 5
+        elif institutional_pct >= 60:
+            score -= 10  # Crowded = limited institutional-buying catalyst
+
+    # 4. Base length factor (0 to +5)
     if weeks_in_base >= 26:
-        score += 10  # Very long consolidation = more stored energy
-    elif weeks_in_base >= 20:
-        score += 5   # Extended base
+        score += 5  # Very long consolidation = more stored energy
 
-    # 4. C score factor (0 to +5)
+    # 5. C score factor (0 to +5) — only near-perfect C differentiates;
+    # the 12-14.4 band performed WORSE than <12 in the data.
     if c_score >= 14.5:
-        score += 5   # Near-perfect current earnings
-    elif c_score >= 12:
-        score += 2   # Solid current earnings
+        score += 5
 
-    # 5. Beat streak factor (0 to +5)
+    # 6. Beat streak factor (0 to +2) — non-monotonic in the data
+    # (3 beats outperformed 4-5); only a token nudge for 6+.
     if beat_streak >= 6:
-        score += 5   # Strong consistency
-    elif beat_streak >= 4:
-        score += 2   # Good consistency
+        score += 2
 
     return max(0, min(100, score))
 
