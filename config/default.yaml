@@ -1461,6 +1461,56 @@ strategy_profiles:
       min_confidence: 0.30    # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # ML veto kill-or-bless A/B (2026-08-20): cs_bear clone with the ML veto
+  # OFF (min_confidence 0.0; log_only stays true — bonus off everywhere).
+  # Why: the Aug-20 review found the Jul-4 ML demotion turned the veto off
+  # on nostate_optimized only — live cs_bear (u1/u2) still vetoes buys with
+  # ml_confidence < 0.30, justified by matrix #551-554 which shares the
+  # lookahead flaw the demotion documented. The only clean evidence is the
+  # confounded u1/u2-vs-u3 split (would-veto cohort closed -6.4% avg, 1/9
+  # wins — mildly PRO-veto). This arm isolates the lever: vs shadow_baseline
+  # (which vetoes, like live) the ONLY delta is the veto.
+  # Promotion criteria, pre-registered — KILL-OR-BLESS, either way resolves:
+  #   - Arm TRAILS baseline per the weekly decision rule over a mixed-regime
+  #     cycle with >=5 sub-0.30 buys taken and closed -> veto is earning its
+  #     keep: BLESS it on cs_bear (update the Apr-29 comment, close the
+  #     jul-04 thread).
+  #   - Arm BEATS baseline under the same conditions -> the veto discards
+  #     good CANSLIM buys: RETIRE it (min_confidence 0.0 on cs_bear).
+  # Expected direction per current data: arm trails (veto helps).
+  nostate_ml_veto_off:
+    hidden: true
+    label: "NoState ML Veto Off (shadow)"
+    description: "nostate_cs_bear with the ML confidence veto disabled (live shadow A/B, aug-20 kill-or-bless)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true          # keep computing + logging ml_confidence
+      weight: 20             # inert while log_only=true
+      min_roc_auc: 0.55
+      log_only: true         # match cs_bear: bonus path OFF
+      min_confidence: 0.0    # THE LEVER: veto path OFF (cs_bear runs 0.30)
+      veto_action: "skip"    # inert while min_confidence=0
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -1643,6 +1693,15 @@ strategy_profiles:
       # candidates the cs_only correction-zone rule can't accept, so we keep
       # log_only=true (no bonus) but turn on min_confidence to filter bad buys.
       # C config: +136.6% / Sharpe 1.57 / DD 9.0% (vs A baseline +77.6% / 0.96 / 14.2%)
+      #
+      # 2026-08-20 NOTE: matrix #551-554 shares the lookahead flaw the Jul-4
+      # demotion documented on nostate_optimized (backtester scores history
+      # with a model trained on that same window) — this veto's backtest
+      # justification is NOT trustworthy. The Jul-4 demotion turned the veto
+      # off on nostate_optimized only and left this one ON (u1/u2 live).
+      # Post-Jul-4 observational data mildly FAVORS the veto (would-veto
+      # cohort closed -6.4% avg, 1/9 wins), so it stays ON pending the
+      # shadow_ml_veto_off arm's verdict — do not flip without that gate.
       enabled: true
       weight: 20
       min_roc_auc: 0.55
@@ -2141,4 +2200,14 @@ shadow_strategy_profiles:
     parent_strategy: nostate_cs_exempt
     starting_value: 25000
     description: "cs_bear + CS positions hold through earnings (no pre-earnings stop tighten / 25% trim) — aug-20 audit-#11 candidate; gate: beat baseline over a mixed-regime cycle AND >=5 CS positions carried through an earnings print"
+    scorer_overrides: {}
+  # ML veto kill-or-bless A/B (2026-08-20): the aug-20 review found live
+  # cs_bear still vetoes ml_confidence<0.30 buys (Jul-4 demotion missed it).
+  # This arm turns the veto OFF; baseline keeps it ON — the pre-registered
+  # gate on the nostate_ml_veto_off profile comment resolves the veto's
+  # fate in EITHER direction (trail = bless, beat = retire).
+  shadow_ml_veto_off:
+    parent_strategy: nostate_ml_veto_off
+    starting_value: 25000
+    description: "cs_bear with the ML confidence veto OFF — aug-20 kill-or-bless (live cs_bear vetoes <0.30; observational read mildly pro-veto); gate: >=5 sub-0.30 buys closed over a mixed-regime cycle, trail baseline = bless veto, beat = retire it"
     scorer_overrides: {}

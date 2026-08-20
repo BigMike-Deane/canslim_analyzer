@@ -149,6 +149,20 @@ class TestBaselineComparisons:
         assert _metric(row, "pre-earnings exits suppressed")["n"] == 1
         assert _metric(row, "CS-cohort buys")["n"] == 1
 
+    def test_ml_veto_off_counts_sub_threshold_buys(self, db_session):
+        """The kill-or-bless arm's gate metric: buys the live 0.30 veto
+        would have blocked. Missing ml_confidence must not count."""
+        a = _arm(db_session, "shadow_ml_veto_off")
+        _trade(db_session, a.id, "LOW", "BUY",
+               signal_factors={"ml_confidence": 0.209})
+        _trade(db_session, a.id, "HIGH", "BUY",
+               signal_factors={"ml_confidence": 0.35})
+        _trade(db_session, a.id, "NOML", "BUY",
+               signal_factors={"breakout": True})
+        out = _call(db_session)
+        assert _metric(out["arms"][0], "sub-0.30-confidence buys taken") == {
+            "label": "sub-0.30-confidence buys taken", "n": 1, "target": 5}
+
     def test_cs_window14_counts_widened_band_buys(self, db_session):
         a = _arm(db_session, "shadow_cs_window14")
         _trade(db_session, a.id, "A8", "BUY",

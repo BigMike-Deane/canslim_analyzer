@@ -1651,6 +1651,15 @@ async def experiment_gates(
              "n": _suppressed_vs_baseline(a.id, "SELL", "PRE-EARNINGS"),
              "target": 5},
         ],
+        "shadow_ml_veto_off": lambda a: [
+            # Buys the live veto would have blocked (conf < 0.30) — the
+            # arm's whole reason to exist. signal_factors.ml_confidence is
+            # stamped on every buy since the Jul-4 demotion kept logging on.
+            {"label": "sub-0.30-confidence buys taken",
+             "n": sum(1 for t in _rows(a.id, "BUY")
+                      if (_sf(t).get("ml_confidence") or 1.0) < 0.30),
+             "target": 5},
+        ],
     }
 
     arm_payload = []

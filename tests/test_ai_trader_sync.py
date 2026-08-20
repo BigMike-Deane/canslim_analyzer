@@ -205,6 +205,28 @@ class TestPartialProfitTierDelta:
                 assert not p.get('earnings_tighten_cs_exempt'), (
                     f"{name} unexpectedly enables earnings_tighten_cs_exempt")
 
+    def test_ml_veto_off_profile_registered_and_live_veto_unchanged(self):
+        """The aug-20 kill-or-bless arm: veto OFF in the arm's parent, while
+        live cs_bear KEEPS its 0.30 veto (the experiment's whole point is
+        the baseline-vs-arm delta — flipping cs_bear would destroy it)."""
+        from config_loader import config as yaml_config
+
+        prof = yaml_config.get('strategy_profiles.nostate_ml_veto_off', {})
+        assert prof, "nostate_ml_veto_off profile missing from config"
+        ml = prof["ml_signal"]
+        assert ml["min_confidence"] == 0.0   # the lever
+        assert ml["log_only"] is True        # bonus stays off, like cs_bear
+        assert ml["enabled"] is True         # confidence still logged
+        assert prof.get("hidden") is True
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_ml_veto_off', {})
+        assert reg.get("parent_strategy") == "nostate_ml_veto_off"
+        assert reg.get("starting_value") == 25000
+        # Control side: live cs_bear still vetoes at 0.30 — do not "fix"
+        # this without the arm's pre-registered verdict.
+        cs_bear_ml = yaml_config.get('strategy_profiles.nostate_cs_bear.ml_signal', {})
+        assert cs_bear_ml.get("min_confidence") == 0.30
+        assert cs_bear_ml.get("log_only") is True
+
 
 # ── 2. Trailing stop bands (champion config: 25/18/12/6/4) ───────────────────
 
