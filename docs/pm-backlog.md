@@ -608,21 +608,56 @@ Constraints (from auto-memory, do not relitigate):
       races; position modal opens; Backtest strategy select = 24 options).
       Backtest.jsx is full-CRLF → edited via binary-mode python.
 
+- [x] 2026-08-20 (owner-directed full day; 4 deploys) —
+      (1) **CS shadow arms 8+9 SHIPPED `edcb7d1`**: shadow_cs_window14
+      (CS buy window 7d->14d via cs_allow_buy_days profile override; v2
+      recal's best 10-14d bucket was alert-only) + shadow_cs_exempt
+      (audit #11: `not is_cs` in pre-earnings tightening was a tautology
+      — flag never populated on any position type; now real via
+      signal_factors provenance, earnings_tighten_cs_exempt flag,
+      default off = live parity). Gates pre-registered in YAML. Aug-6
+      audit now FULLY dispatched.
+      (2) **Security sweep `e5def5e`** (Boot/u4 joined Aug-18 -> multi-user
+      is live): auth audit CLEAN (0 IDOR; prod REQUIRE_AUTH=true + strong
+      secret verified); fixed XFF-leftmost rate-limit bypass,
+      email_verified check, push endpoint re-bind 409, prod /docs off,
+      admin-gated ops reads, .env.template REQUIRE_AUTH=true; dep sweep
+      fastapi 0.141.1 + starlette 1.6.0 (all PYSECs cleared).
+      (3) **PM batch `5c789cc`**: ml-demotion-cohort FIFO bug FIXED
+      (ANET -59% phantom: ticker-total realized over one buy's cost;
+      corrected read: would_veto closed ~-6.4% 1/9 wins vs passed -3.99%
+      2/5 — veto directionally right, verdict rule unchanged, re-read
+      ~Sept); Gate Progress card live on ABEval (all pre-registered
+      gates + stop-loss clock measurable at a glance; new arms = add to
+      ARM_GATES dict in admin.py); react-router 7 + vite 8 (npm audit 0
+      vulns; rolldown needs function-form manualChunks).
+      (4) **Refresh-token rotation `fbfdbf4`** + live-verified:
+      single-use jti (refresh_tokens table), replay >60s = family
+      revoked + token_reuse audit event, <=60s tab-race grace (only for
+      normally-rotated tokens — family kills immediate), legacy tokens
+      = bounded 7d migration tail. Security debt now ZERO except
+      unfixable ecdsa PYSEC (transitive, likely unused).
+      (5) CS v2 first live alert VERIFIED (GWRE conf 75 = exact v2
+      recompute). Suite 3690 green.
+
 ## Next up (ranked by expected returns impact)
 (empty — patience mode; next work arrives via monitoring clocks below or
 owner direction)
 
 ## Monitoring clocks (no action until due)
-- ~late-Aug: ML-demotion cohort re-read — wait for passed closed_n > 0;
-  read avg_age_days + closed-mix BEFORE gains (Jul-28 read confounded,
-  see above).
-- Ongoing: shadow_chop_damper (id=3) + shadow_wide_trail (id=4) +
-  shadow_cap50 (id=5) + shadow_chop_spy (id=6, clock Aug-4) A/Bs — no
-  promotion until they survive mixed-regime/chop weeks (0 chop days
-  accrued since Aug-4 as of Aug-6).
-- ~mid-Sept: exit-decision stop-loss re-check when owner stop-loss n≥5
-  (Aug-6: n=2; manual curl recipe in auto-memory jun24 file).
+- Aug-24 Mon 09:00 UTC: weekly A/B email — first send including arms
+  7/8/9; spot-check via the new Gate Progress card (ABEval) + inbox.
+- ~Sept: ML-demotion cohort re-read (Aug-20 read done post-FIFO-fix:
+  veto directionally right but passed has 13 open riders; wait for more
+  passed closed_n).
+- Ongoing: shadow arms 3-9 — no promotion until pre-registered gates
+  pass (chop 0/15 as of Aug-20, SPY-50MA gap compressing 3.9->2.2%);
+  progress now on the ABEval Gate Progress card.
+- ~mid-Sept: exit-decision stop-loss re-check when owner stop-loss n>=5
+  (Aug-20: n=3, avg -8.23% vs -10 bar; on the Gate Progress card).
 - ~Sept: Improving Radar out-of-sample re-validation.
+- ~Nov: CS confidence v2 recalibration re-check at ~200 outcomes
+  (post-Aug-19 rows only; PASS = tiers monotonic + VHIGH >=55% win).
 - CLOSED Aug-6: H-fix A/B (KEEP, above). CLOSED Aug-3: exit-recon poller
   retired (owner-approved; Aug-1 email never delivered — verdict pulled
   manually, FIX WORKED numerically, stops n=2 marginal).
