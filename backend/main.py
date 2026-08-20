@@ -250,10 +250,17 @@ async def lifespan(app: FastAPI):
 
 # ============== App Setup ==============
 
+# Interactive API docs are a route-map disclosure to anonymous visitors —
+# disabled in production (dev keeps /docs for local exploration).
+_IS_PRODUCTION = os.environ.get("CANSLIM_ENV", "development") == "production"
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
 )
 
 # Rate limiting (slowapi). The Limiter lives in backend.rate_limiter so
@@ -299,7 +306,11 @@ class TrustForwardedFor(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            request.scope["client"] = (xff.split(",")[0].strip(), 0)
+            # RIGHTMOST element, not leftmost: Caddy APPENDS the true client
+            # IP to any client-supplied X-Forwarded-For, so the left end is
+            # attacker-controlled. Taking [0] let a caller rotate fake IPs to
+            # bypass every rate limit and forge audit-log source_ip entries.
+            request.scope["client"] = (xff.split(",")[-1].strip(), 0)
         return await call_next(request)
 
 
@@ -878,8 +889,10 @@ async def health_check(request: Request = None, db: Session = Depends(get_db)):
 # ============== System Health & Backups ==============
 
 @app.get("/api/system-health")
-async def get_system_health(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    """Comprehensive system health dashboard data."""
+async def get_system_health(current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    """Comprehensive system health dashboard data. Admin-only: exposes DB
+    size, scan internals and backup state — operator data, and the only
+    frontend consumer (SystemHealth page) is already in the admin sidebar."""
     from backend.scheduler import get_system_health, get_scan_status
     from backend.backup import get_backup_status
 
@@ -963,8 +976,9 @@ async def trigger_backup(current_user: User = Depends(get_admin_user)):
 
 
 @app.get("/api/system/backups")
-async def list_backups(current_user: User = Depends(get_current_active_user)):
-    """List available database backups."""
+async def list_backups(current_user: User = Depends(get_admin_user)):
+    """List available database backups. Admin-only, matching the POST
+    /api/system/backup gate — the read/write asymmetry was unintentional."""
     from backend.backup import list_backups
     return {"backups": list_backups()}
 
@@ -1210,8 +1224,9 @@ async def refresh_market_data(current_user: User = Depends(get_admin_user), db: 
 
 
 @app.get("/api/rate-limit-stats")
-async def get_rate_limit_stats(current_user: User = Depends(get_current_active_user)):
-    """Get FMP API rate limit statistics (429 errors tracked)"""
+async def get_rate_limit_stats(current_user: User = Depends(get_admin_user)):
+    """Get FMP API rate limit statistics (429 errors tracked). Admin-only,
+    matching the POST reset gate."""
     from data_fetcher import get_rate_limit_stats
     stats = get_rate_limit_stats()
     return {
@@ -1965,8 +1980,11 @@ async def get_stock(
 
 
 @app.post("/api/stocks/{ticker}/refresh")
-async def refresh_stock(ticker: str, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    """Force refresh a stock's analysis"""
+@limiter.limit("10/minute")
+async def refresh_stock(ticker: str, request: Request, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Force refresh a stock's analysis. Any user may refresh (the stock-page
+    button), but each refresh spends real FMP/Yahoo quota — tighter per-IP
+    limit than the global 60/min."""
     ticker = validate_ticker_param(ticker)
 
     # Force means force: drop the object cache so the fetch below is real.

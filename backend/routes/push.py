@@ -71,7 +71,19 @@ async def subscribe(
     ).first()
 
     if existing:
-        existing.user_id = current_user.id
+        if existing.user_id != current_user.id:
+            # A push endpoint URL is a per-device credential. Re-binding one
+            # user's endpoint to another account would silently reroute the
+            # original owner's device into the caller's notification stream
+            # (misdelivery/DoS). Legit device-handoff recovers by the old
+            # account unsubscribing (or an admin pruning the row), which
+            # issues a fresh endpoint on the next subscribe.
+            logger.warning(
+                "Push subscribe rejected: endpoint owned by user %s, "
+                "requested by user %s", existing.user_id, current_user.id)
+            raise HTTPException(
+                status_code=409,
+                detail="This device's push subscription belongs to another account")
         existing.p256dh_key = req.keys.p256dh
         existing.auth_key = req.keys.auth
         existing.user_agent = ua

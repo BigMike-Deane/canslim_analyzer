@@ -573,6 +573,72 @@ class TestCrossUserAuthorization:
         finally:
             db.close()
 
+    def test_push_subscribe_cannot_rebind_another_users_endpoint(self, client):
+        """Aug-20 hardening: POST /api/push/subscribe upserted on endpoint
+        GLOBALLY — a caller who learned another user's endpoint URL could
+        silently reassign that device row (reroute/DoS the owner's pushes).
+        Cross-user re-bind must now 409 and leave the row untouched."""
+        db = SessionLocal()
+        try:
+            sub = PushSubscription(
+                user_id=ALICE_ID,
+                endpoint="https://example.invalid/alice-device",
+                p256dh_key="alice-p256dh", auth_key="alice-auth",
+                user_agent="alice-agent",
+            )
+            db.add(sub)
+            db.commit()
+            sid = sub.id
+        finally:
+            db.close()
+
+        r = client.post("/api/push/subscribe", headers=_h("bob"), json={
+            "endpoint": "https://example.invalid/alice-device",
+            "keys": {"p256dh": "bob-p256dh", "auth": "bob-auth"},
+        })
+        assert r.status_code == 409, "cross-user endpoint re-bind must be rejected"
+
+        db = SessionLocal()
+        try:
+            row = db.query(PushSubscription).filter_by(id=sid).first()
+            assert row.user_id == ALICE_ID
+            assert row.p256dh_key == "alice-p256dh"
+        finally:
+            db.close()
+
+        # Same-user re-subscribe (permission churn) still upserts in place.
+        r = client.post("/api/push/subscribe", headers=_h("alice"), json={
+            "endpoint": "https://example.invalid/alice-device",
+            "keys": {"p256dh": "alice-new", "auth": "alice-new-auth"},
+        })
+        assert r.status_code == 200
+        db = SessionLocal()
+        try:
+            row = db.query(PushSubscription).filter_by(id=sid).first()
+            assert row.user_id == ALICE_ID and row.p256dh_key == "alice-new"
+        finally:
+            db.close()
+
+
+# ── Operator-data reads must be admin-only ────────────────────────────
+
+class TestOperatorReadsRequireAdmin:
+    """Aug-20 hardening: these reads expose operator data (DB size, scan
+    internals, backup inventory, FMP quota state) and their mutating
+    counterparts were already admin-gated — the read/write asymmetry was
+    unintentional. Only the admin SystemHealth page consumes them."""
+
+    ENDPOINTS = [
+        ("get", "/api/system-health"),
+        ("get", "/api/system/backups"),
+        ("get", "/api/rate-limit-stats"),
+    ]
+
+    @pytest.mark.parametrize("method,path", ENDPOINTS)
+    def test_non_admin_rejected(self, client, method, path):
+        r = getattr(client, method)(path, headers=_h("alice"))
+        assert r.status_code == 403, f"non-admin must be rejected by {method.upper()} {path}"
+
 
 # ── F-2: privilege scope for /api/analyze/jobs/{job_id} ───────────────
 

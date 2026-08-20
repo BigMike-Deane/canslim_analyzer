@@ -62,6 +62,7 @@ class TestGoogleTokenVerification:
             "email": "user@gmail.com",
             "name": "Test User",
             "iss": "accounts.google.com",
+            "email_verified": True,
         }
         result = verify_google_token("valid-google-token")
         assert result["email"] == "user@gmail.com"
@@ -171,9 +172,28 @@ class TestGoogleIssuerCheck:
         mock_verify.return_value = {
             "email": "user@gmail.com",
             "iss": "https://accounts.google.com",
+            "email_verified": True,
         }
         result = verify_google_token("any-token")
         assert result["email"] == "user@gmail.com"
+
+    @patch("backend.auth.GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    @patch("google.oauth2.id_token.verify_oauth2_token")
+    def test_rejects_unverified_email(self, mock_verify):
+        """email is the account identity — a Google-signed token whose email
+        is UNVERIFIED (possible on Workspace/federated identities) must not
+        authenticate, or it could claim a pre-created invite row."""
+        from fastapi import HTTPException
+        for claim in ({"email_verified": False}, {}):  # explicit false + absent
+            mock_verify.return_value = {
+                "email": "user@gmail.com",
+                "iss": "accounts.google.com",
+                **claim,
+            }
+            with pytest.raises(HTTPException) as exc_info:
+                verify_google_token("any-token")
+            assert exc_info.value.status_code == 401
+            assert "verified" in exc_info.value.detail.lower()
 
 
 class TestGetCurrentUser:

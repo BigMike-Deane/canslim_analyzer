@@ -1,5 +1,7 @@
-fastapi==0.118.0
-starlette==0.47.2
+# fastapi/starlette pinned to the pair validated by the full test suite
+# (aug-20 security dependency sweep — clears all starlette PYSEC advisories)
+fastapi==0.141.1
+starlette==1.6.0
 uvicorn[standard]==0.24.0
 sqlalchemy==2.0.23
 python-dotenv==1.2.2
@@ -12,10 +14,15 @@ pyyaml>=6.0.1
 redis>=5.0.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
-aiohttp>=3.9.0
+aiohttp>=3.14.3
 psycopg2-binary>=2.9.0
-python-multipart>=0.0.6
+python-multipart>=0.0.31
 python-jose[cryptography]>=3.3.0
+# Security floors for transitive deps flagged by pip-audit (aug-20 sweep)
+cryptography>=50.0.0
+idna>=3.15
+pyasn1>=0.6.4
+soupsieve>=2.8.4
 passlib[bcrypt]>=1.7.4
 google-auth>=2.25.0
 slowapi>=0.1.9

@@ -65,6 +65,12 @@ def verify_google_token(id_token_str: str) -> dict:
         )
         if payload.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
             raise HTTPException(status_code=401, detail="Invalid token issuer")
+        # The email claim is our account identity, so it must be VERIFIED.
+        # Consumer Google accounts always are; some Workspace/federated
+        # identities can carry email_verified=false, and an unverified email
+        # matching a pre-created invite row would be an account takeover.
+        if not payload.get("email_verified"):
+            raise HTTPException(status_code=401, detail="Google account email not verified")
         return payload
     except ValueError as e:
         logger.warning(f"Google token verification failed: {e}")

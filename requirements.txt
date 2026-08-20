@@ -10,17 +10,17 @@ beautifulsoup4>=4.12.0
 tqdm>=4.65.0
 pyyaml>=6.0.1
 redis>=5.0.0
-aiohttp>=3.9.0
+aiohttp>=3.14.3
 
 # --- Backend (FastAPI + DB) ---
-fastapi>=0.118.0
-starlette>=0.47.2
+fastapi>=0.141.1
+starlette>=1.6.0
 uvicorn[standard]>=0.24.0
 sqlalchemy>=2.0.23
 python-dotenv>=1.2.2
 apscheduler>=3.10.4
 psycopg2-binary>=2.9.0
-python-multipart>=0.0.6
+python-multipart>=0.0.31
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 google-auth>=2.25.0
