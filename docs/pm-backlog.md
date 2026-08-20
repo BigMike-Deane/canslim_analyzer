@@ -650,7 +650,11 @@ owner direction)
 - ~Sept: ML-demotion cohort re-read (Aug-20 read done post-FIFO-fix:
   veto directionally right but passed has 13 open riders; wait for more
   passed closed_n).
-- Ongoing: shadow arms 3-9 — no promotion until pre-registered gates
+- ML veto kill-or-bless: shadow_ml_veto_off id=10 live Aug-20 evening
+  (`247f90b`) — live cs_bear STILL vetoes conf<0.30 (Jul-4 demotion hit
+  nostate_optimized only); arm isolates the lever; gate on the profile
+  comment (trail baseline = bless, beat = retire; >=5 sub-0.30 buys).
+- Ongoing: shadow arms 3-10 — no promotion until pre-registered gates
   pass (chop 0/15 as of Aug-20, SPY-50MA gap compressing 3.9->2.2%);
   progress now on the ABEval Gate Progress card.
 - ~mid-Sept: exit-decision stop-loss re-check when owner stop-loss n>=5
