@@ -203,7 +203,8 @@ class TestGoogleLogin:
             token = _run(google_login(req_body, request=_make_request(), db=db))
         # display_name unchanged
         assert user.display_name == "Already Set"
-        db.commit.assert_not_called()
+        # One commit always happens now: the refresh-token record (rotation)
+        db.commit.assert_called_once()
         # Token shape: access + refresh, both decode to sub="42"
         assert token.token_type == "bearer"
         for raw in (token.access_token, token.refresh_token):
@@ -236,7 +237,8 @@ class TestGoogleLogin:
         ):
             _run(google_login(req_body, request=_make_request(), db=db))
         assert user.display_name is None
-        db.commit.assert_not_called()
+        # One commit always happens now: the refresh-token record (rotation)
+        db.commit.assert_called_once()
 
     def test_email_is_lowercased_before_lookup(self):
         """Google returns mixed-case emails; the lookup must use lowercase."""

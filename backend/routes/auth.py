@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from backend.database import get_db, User, coerce_json_list
+from backend.database import get_db, User, RefreshTokenRecord, coerce_json_list
 from backend.auth import (
     verify_google_token, create_access_token,
-    create_refresh_token, Token, UserResponse,
+    issue_refresh_token, REFRESH_REUSE_GRACE_SECONDS,
+    Token, UserResponse,
     get_current_active_user, SECRET_KEY, ALGORITHM,
     GOOGLE_CLIENT_ID
 )
@@ -75,11 +76,12 @@ async def google_login(req: GoogleLoginRequest, request: Request = None, db: Ses
     google_name = google_payload.get("name")
     if google_name and not user.display_name:
         user.display_name = google_name
-        db.commit()
 
+    refresh = issue_refresh_token(db, user.id)
+    db.commit()
     return Token(
         access_token=create_access_token(data={"sub": str(user.id)}),
-        refresh_token=create_refresh_token(data={"sub": str(user.id)}),
+        refresh_token=refresh,
     )
 
 
@@ -106,9 +108,67 @@ async def refresh_token(req: RefreshRequest, request: Request = None, db: Sessio
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    # Single-use rotation (aug-20). Tokens carry a jti recorded server-side;
+    # presenting one consumes it. Legacy jti-less tokens (issued before the
+    # rotation deploy) are accepted until their natural expiry — a bounded
+    # 7-day migration tail — and come out of the exchange recorded.
+    from datetime import datetime, timedelta, timezone
+
+    jti = payload.get("jti")
+    # Naive UTC — matches the refresh_tokens column convention.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if jti is not None:
+        rec = db.query(RefreshTokenRecord).filter(
+            RefreshTokenRecord.jti == jti).first()
+        if rec is None or rec.user_id != user_id:
+            # Signed but never recorded (or recorded for someone else) —
+            # possible forgery with a leaked secret; reject.
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        if rec.revoked_at is not None:
+            # Grace applies ONLY to tokens spent by a normal rotation
+            # (replaced_by_jti set) — a concurrent tab losing the race.
+            # Tokens revoked by a family kill have no replacement and must
+            # stay dead immediately, or the kill could be ridden out for
+            # the length of the grace window.
+            grace = timedelta(seconds=REFRESH_REUSE_GRACE_SECONDS)
+            if rec.replaced_by_jti is None or now - rec.revoked_at > grace:
+                # REUSE outside the concurrency grace window: this token was
+                # already spent — someone is replaying it. Revoke the user's
+                # entire outstanding token family and audit the event.
+                db.query(RefreshTokenRecord).filter(
+                    RefreshTokenRecord.user_id == user_id,
+                    RefreshTokenRecord.revoked_at.is_(None),
+                ).update({RefreshTokenRecord.revoked_at: now},
+                         synchronize_session=False)
+                db.commit()
+                try:
+                    record_event(
+                        "token_reuse",
+                        source_ip=_client_ip(request),
+                        route="/api/auth/refresh",
+                        detail=f"user_id={user_id} jti replayed; family revoked",
+                    )
+                except Exception:
+                    pass
+                raise HTTPException(status_code=401, detail="Invalid refresh token")
+            # Inside grace: a concurrent tab lost the race — hand it a fresh
+            # pair without re-revoking or alarming.
+        else:
+            rec.revoked_at = now
+
+    new_refresh = issue_refresh_token(db, user.id)
+    if jti is not None and rec.replaced_by_jti is None:
+        rec.replaced_by_jti = jwt.decode(
+            new_refresh, SECRET_KEY, algorithms=[ALGORITHM]).get("jti")
+    # Opportunistic hygiene: drop records long past expiry.
+    db.query(RefreshTokenRecord).filter(
+        RefreshTokenRecord.expires_at < now - timedelta(days=7),
+    ).delete(synchronize_session=False)
+    db.commit()
+
     return Token(
         access_token=create_access_token(data={"sub": str(user.id)}),
-        refresh_token=create_refresh_token(data={"sub": str(user.id)}),
+        refresh_token=new_refresh,
     )
 
 

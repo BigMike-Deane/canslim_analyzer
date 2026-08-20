@@ -1,8 +1,10 @@
 """In-memory audit-log ring buffer for security-relevant rejections.
 
-Records two kinds of events:
-  - "rate_limit": slowapi RateLimitExceeded (CSO #4 limiter is firing).
-  - "auth_fail":  Google login rejected (invalid token / unknown user / etc).
+Records three kinds of events:
+  - "rate_limit":  slowapi RateLimitExceeded (CSO #4 limiter is firing).
+  - "auth_fail":   Google login rejected (invalid token / unknown user / etc).
+  - "token_reuse": a spent refresh-token jti was replayed outside the
+                   concurrency grace window (token family revoked).
 
 The buffer is a bounded deque so memory cannot grow unboundedly. Events are
 PII-scrubbed by callers — record only the failure REASON, never the email
@@ -18,7 +20,7 @@ from typing import Literal
 
 _MAX_EVENTS = 500  # ~24h at 20 events/hr; deque drops oldest on overflow
 
-EventKind = Literal["rate_limit", "auth_fail"]
+EventKind = Literal["rate_limit", "auth_fail", "token_reuse"]
 
 _events: "deque[dict]" = deque(maxlen=_MAX_EVENTS)
 _lock = Lock()

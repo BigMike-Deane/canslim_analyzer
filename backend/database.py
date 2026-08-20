@@ -1851,6 +1851,28 @@ class ShadowPositionPeak(Base):
     )
 
 
+class RefreshTokenRecord(Base):
+    """Server-side ledger of issued refresh tokens (single-use rotation).
+
+    Aug-20 security item: a bare-JWT refresh token was valid for its full
+    7 days with no revocation path. Every refresh token now carries a jti
+    recorded here; /api/auth/refresh revokes the presented jti and issues
+    a new one (rotation). A jti presented AGAIN outside the concurrency
+    grace window means the token leaked — the whole user's token family
+    is revoked. Datetimes are NAIVE UTC (this codebase's column
+    convention) — compare with naive values only.
+    """
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, index=True, nullable=False)
+    issued_at = Column(DateTime)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, index=True)
+    replaced_by_jti = Column(String)
+
+
 # ── SystemState helpers ───────────────────────────────────────────────────────
 # Tiny accessors that hide the ORM boilerplate at every call site. The
 # SPY-flip detector (ai_trader) uses the two-call pattern (read previous,

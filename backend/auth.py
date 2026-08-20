@@ -86,10 +86,48 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def create_refresh_token(data: dict) -> str:
+    """LEGACY refresh token — no jti, not server-recorded, not revocable.
+
+    Kept only so tokens issued before the rotation deploy keep working for
+    their remaining lifetime (the refresh endpoint accepts jti-less tokens
+    until natural expiry). All NEW issuance goes through
+    issue_refresh_token(); do not call this from login/refresh paths.
+    """
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+# Concurrency grace: two tabs refreshing at once both present the same jti;
+# the loser must not be treated as a thief. A revoked jti re-presented
+# within this window gets a fresh pair without alarm.
+REFRESH_REUSE_GRACE_SECONDS = 60
+
+
+def issue_refresh_token(db, user_id: int) -> str:
+    """Create a SINGLE-USE refresh token and record its jti for rotation.
+
+    The DB row is what makes the token revocable; a syntactically valid
+    refresh JWT whose jti has no row is rejected. Caller owns the commit
+    boundary — this only db.add()s.
+    """
+    import secrets
+    from backend.database import RefreshTokenRecord
+
+    jti = secrets.token_hex(16)
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    token = jwt.encode(
+        {"sub": str(user_id), "exp": expire, "type": "refresh", "jti": jti},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+    db.add(RefreshTokenRecord(
+        jti=jti, user_id=user_id,
+        issued_at=now.replace(tzinfo=None),
+        expires_at=expire.replace(tzinfo=None),
+    ))
+    return token
 
 
 # --- Pydantic schemas ---
