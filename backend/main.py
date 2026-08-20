@@ -3123,6 +3123,7 @@ async def get_coiled_spring_candidates(current_user: User = Depends(get_current_
                 "confidence": confidence,
                 "quality_rank": round(quality_rank, 1),
                 "current_price": stock.current_price,
+                "pivot_price": stock.pivot_price,
                 "pct_from_high": round(pct_from_high, 1),
                 "volume_ratio": round(volume_ratio, 1),
                 "entry_status": entry_status,
@@ -6751,6 +6752,8 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
             "weeks_in_base": s.weeks_in_base,
             "beat_streak": s.earnings_beat_streak,
             "base_type": s.base_type,
+            "pivot_price": s.pivot_price,
+            "price": s.current_price,
             "confidence": calculate_cs_confidence(
                 days_to_earnings=s.days_to_earnings or 7,
                 institutional_pct=(s.score_details or {}).get('i', {}).get('institutional_pct', 50) if isinstance(s.score_details, dict) else 50,

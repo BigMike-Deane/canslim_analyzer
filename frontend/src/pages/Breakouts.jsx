@@ -4,7 +4,7 @@ import { api, formatCurrency, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { SectionLabel } from '../components/Card'
 import CollapsedDrawer from '../components/CollapsedDrawer'
-import { ScoreBadge, TagBadge } from '../components/Badge'
+import { ScoreBadge, TagBadge, BaseTag } from '../components/Badge'
 import PageHeader from '../components/PageHeader'
 import useApi from '../hooks/useApi'
 
@@ -56,11 +56,11 @@ function BreakoutRow({ stock }) {
         <div>
           <div className="flex items-center gap-2">
             <span className="font-semibold text-dark-50">{stock.ticker}</span>
-            {stock.base_type && stock.base_type !== 'none' && (
-              <TagBadge color="cyan">
-                {stock.base_type === 'cup_with_handle' ? 'cup+handle' : stock.base_type}
-              </TagBadge>
-            )}
+            <BaseTag
+              baseType={stock.base_type}
+              pivotPrice={stock.pivot_price}
+              currentPrice={stock.current_price}
+            />
             {stock.is_breaking_out && (
               <TagBadge color="green">Breakout</TagBadge>
             )}

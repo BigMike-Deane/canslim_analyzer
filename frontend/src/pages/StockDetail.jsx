@@ -1087,7 +1087,27 @@ function TechnicalAnalysis({ stock }) {
           <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Base Pattern</div>
           <div className="font-semibold text-sm capitalize">
             {stock.base_type && stock.base_type !== 'none' ? (
-              <span className="text-blue-400">{stock.base_type} base</span>
+              (() => {
+                // Detected geometry != live setup: flag bases the price has
+                // already left (breakout done) or fallen out of (base failed).
+                const rel = stock.pivot_price > 0 && stock.current_price > 0
+                  ? ((stock.current_price - stock.pivot_price) / stock.pivot_price) * 100
+                  : null
+                const status = rel == null ? null : rel > 5 ? 'extended' : rel < -20 ? 'broken' : null
+                return (
+                  <span className={status ? 'text-dark-400' : 'text-blue-400'}>
+                    {stock.base_type} base
+                    {status && (
+                      <span
+                        className="text-dark-500"
+                        title={status === 'extended'
+                          ? 'Price is >5% above the base pivot — the breakout already happened.'
+                          : 'Price is >20% below the base pivot — the base failed.'}
+                      > · {status}</span>
+                    )}
+                  </span>
+                )
+              })()
             ) : (
               <span className="text-dark-500">No base</span>
             )}

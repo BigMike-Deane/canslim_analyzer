@@ -5,7 +5,7 @@ import { computePositionSizing } from '../positionSizing'
 import { useOwnerPrefs } from '../hooks/useOwnerPrefs'
 import PositionHealthChip from '../components/PositionHealthChip'
 import Card, { SectionLabel } from '../components/Card'
-import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, PnlText, CSConfidenceBadge } from '../components/Badge'
+import { ScoreBadge, OutcomeBadge, ActionBadge, TagBadge, BaseTag, PnlText, CSConfidenceBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import Sparkline from '../components/Sparkline'
 import CollapsibleSection from '../components/CollapsibleSection'
@@ -183,7 +183,11 @@ function CoiledSpringSection({ cs }) {
             >
               <div className="flex items-center gap-2">
                 <span className="font-medium text-teal-300 text-xs w-10">{c.ticker}</span>
-                {c.base_type && <TagBadge>{c.base_type}</TagBadge>}
+                <BaseTag
+                  baseType={c.base_type}
+                  pivotPrice={c.pivot_price}
+                  currentPrice={c.price}
+                />
               </div>
               <div className="flex items-center gap-2">
                 <CSConfidenceBadge confidence={c.confidence} />

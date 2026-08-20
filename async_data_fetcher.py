@@ -24,7 +24,7 @@ from pathlib import Path
 from data_fetcher import (
     StockData, FMP_API_KEY, FMP_BASE_URL,
     get_cached_data, set_cached_data, mark_data_fetched, is_data_fresh,
-    fetch_price_from_chart_api, fetch_weekly_price_history,
+    fetch_price_from_chart_api, fetch_weekly_price_history, fetch_with_cache,
     REDIS_AVAILABLE, _data_freshness_cache, _freshness_lock,
     load_cache_from_db, mark_ticker_as_delisted, clear_delisted_ticker,
     refresh_delisted_cache, block_ticker_permanently, non_equity_reason,
@@ -1603,8 +1603,13 @@ async def get_stock_data_async(
                 stock_data.current_volume = volumes[-1] if volumes[-1] else 0
 
     # Fetch weekly price history for base pattern detection
-    # This is a separate call because we need weekly OHLC data, not daily
-    weekly_data = await loop.run_in_executor(None, fetch_weekly_price_history, ticker)
+    # This is a separate call because we need weekly OHLC data, not daily.
+    # Routed through fetch_with_cache (aug-20): the direct call bypassed the
+    # cache tier entirely, so every 90-min scan re-fetched ~4k weekly-candle
+    # series from Yahoo while the 24h weekly_history TTL sat unused.
+    weekly_data = await loop.run_in_executor(
+        None, lambda: fetch_with_cache(
+            ticker, "weekly_history", fetch_weekly_price_history, ticker))
     if weekly_data:
         stock_data.weekly_price_history = weekly_data
 

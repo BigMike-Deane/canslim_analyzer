@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatPercent, formatDateTime, formatTime } from '../api'
 import { XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, ReferenceArea, PieChart, Pie, Cell, Area, AreaChart } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
-import { ScoreBadge, ActionBadge, TagBadge, MLConfidenceBadge } from '../components/Badge'
+import { ScoreBadge, ActionBadge, TagBadge, BaseTag, MLConfidenceBadge } from '../components/Badge'
 import StatGrid, { StatRow } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import CollapsibleSection from '../components/CollapsibleSection'
@@ -2752,9 +2752,12 @@ function CoiledSpringSection({ csAlerts, csExpanded, setCsExpanded }) {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-dark-100">{stock.ticker}</span>
-                    {stock.base_type && stock.base_type !== 'none' && (
-                      <TagBadge color="cyan">{stock.weeks_in_base}w {stock.base_type}</TagBadge>
-                    )}
+                    <BaseTag
+                      baseType={stock.base_type}
+                      weeksInBase={stock.weeks_in_base}
+                      pivotPrice={stock.pivot_price}
+                      currentPrice={stock.current_price}
+                    />
                     {entryLabel && (
                       <TagBadge color={entryColor}>{entryLabel}</TagBadge>
                     )}

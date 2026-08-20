@@ -106,6 +106,36 @@ export function TagBadge({ children, color = 'default', className = '', ...rest 
   )
 }
 
+// Base-pattern tag with actionability status. A detected pattern means "this
+// geometry exists in the ~6-month lookback", NOT "this is a live setup":
+// price >5% above the pivot = the base already broke out (extended, mirrors
+// the backend's extended-entry threshold); price >20% below = the base
+// failed (broken). Both render muted so the Screener/cards don't imply a
+// tradeable setup. When pivot or price is missing the plain tag renders —
+// fail-safe, never hides the pattern.
+export function BaseTag({ baseType, weeksInBase, pivotPrice, currentPrice }) {
+  if (!baseType || baseType === 'none') return null
+  const label = baseType === 'cup_with_handle' ? 'cup+handle' : baseType
+  const prefix = weeksInBase ? `${weeksInBase}w ` : ''
+  let status = null
+  if (pivotPrice > 0 && currentPrice > 0) {
+    const rel = ((currentPrice - pivotPrice) / pivotPrice) * 100
+    if (rel > 5) status = 'extended'
+    else if (rel < -20) status = 'broken'
+  }
+  if (!status) {
+    return <TagBadge color="cyan">{prefix}{label}</TagBadge>
+  }
+  const tip = status === 'extended'
+    ? 'Price is >5% above this base’s pivot — the breakout already happened; not a fresh entry.'
+    : 'Price is >20% below this base’s pivot — the base failed; pattern is historical, not a setup.'
+  return (
+    <TagBadge color="default" className="opacity-75" title={tip}>
+      {prefix}{label} · {status}
+    </TagBadge>
+  )
+}
+
 export function MLConfidenceBadge({ confidence, size = 'xs', className = '' }) {
   if (confidence == null) return null
   const pct = (confidence * 100).toFixed(0)
