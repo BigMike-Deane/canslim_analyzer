@@ -189,6 +189,23 @@ class TestSyntheticPositionDerivation:
         # Cash decremented by buy value
         assert ss._synthetic_config.current_cash == strategy.starting_value - 1000
 
+    def test_cs_provenance_rebuilt_from_buy_signal_factors(self, db_session):
+        """is_coiled_spring on the rebuilt position comes from the opening
+        BUY's signal_factors (read by the profile-gated pre-earnings
+        exemption, cs_exempt arm). Non-CS buys rebuild False."""
+        strategy = _make_strategy(db_session)
+        _add_shadow_trade(db_session, strategy.id, "CSPX", "BUY", 10, 100.0,
+                          signal_factors={"coiled_spring": True,
+                                          "cs_confidence": 80})
+        _add_shadow_trade(db_session, strategy.id, "PLAIN", "BUY", 5, 50.0,
+                          signal_factors={"breakout": True})
+        _add_shadow_trade(db_session, strategy.id, "NOSF", "BUY", 5, 50.0)
+        ss = ShadowSession(db_session, strategy, [])
+        by_ticker = {p.ticker: p for p in ss._synthetic_positions}
+        assert by_ticker["CSPX"].is_coiled_spring is True
+        assert by_ticker["PLAIN"].is_coiled_spring is False
+        assert by_ticker["NOSF"].is_coiled_spring is False
+
     def test_buy_then_full_sell_yields_no_open_positions(self, db_session):
         strategy = _make_strategy(db_session)
         t0 = datetime.now(timezone.utc) - timedelta(days=10)
@@ -461,6 +478,21 @@ class TestEmitShadowTrades:
         assert pending[0].total_value == 1000.0
         assert ss._synthetic_config.current_cash == starting_cash - 1000.0
         assert len(ss._synthetic_positions) == 1
+
+    def test_emit_buy_stamps_cs_provenance_on_synthetic_position(self, db_session):
+        """Intra-cycle CS buys carry is_coiled_spring immediately (same
+        provenance the FIFO rebuild derives on the next tick)."""
+        strategy = _make_strategy(db_session)
+        ss = ShadowSession(db_session, strategy, [])
+        ss.emit_shadow_buy(ticker="CSPX", shares=5, price=20.0,
+                           reason="🌀 COILED SPRING (12d to earnings)",
+                           canslim_score=80,
+                           signal_factors={"coiled_spring": True})
+        ss.emit_shadow_buy(ticker="PLAIN", shares=5, price=20.0,
+                           reason="test buy", canslim_score=80)
+        by_ticker = {p.ticker: p for p in ss._synthetic_positions}
+        assert by_ticker["CSPX"].is_coiled_spring is True
+        assert by_ticker["PLAIN"].is_coiled_spring is False
 
     def test_emit_sell_full_removes_position_and_records_realized_gain(self, db_session):
         strategy = _make_strategy(db_session)

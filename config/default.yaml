@@ -1367,6 +1367,100 @@ strategy_profiles:
       min_confidence: 0.30    # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # CS buy-window widening (2026-08-20): cs_bear clone with the coiled-spring
+  # evaluation window widened 7d -> 14d before earnings (cs_allow_buy_days
+  # profile override; global earnings_window.allow_buy_days untouched). Why:
+  # the v2 confidence recalibration (9e39576, n=138 outcomes) showed the live
+  # buy window (<=7d) sits exactly over the WORST timing buckets (<=2d -20,
+  # 3-5d -15) while the best bucket (10-14d: 45% win, +2.79% avg; 75% win
+  # with l_score>=12, n=12) was alert-only and unreachable by the trader.
+  # Caveat: that evidence is signal-quality (alert -> post-earnings price),
+  # NOT trader P&L — which is why this is a shadow arm, not a live change.
+  # Promotion criteria, pre-registered: beat shadow_baseline per the weekly
+  # A/B decision rule over a mixed-regime cycle AND >=5 CS buys executed in
+  # the widened 8-14d band (signal_factors.cs_days_to_earnings in 8..14)
+  # with closed outcomes; kill if it trails baseline.
+  nostate_cs_window14:
+    hidden: true
+    label: "NoState CS Window 14 (shadow)"
+    description: "nostate_cs_bear + CS buy window widened to 14d before earnings (live shadow A/B, aug-20 candidate)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    cs_allow_buy_days: 14
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
+  # CS pre-earnings hold-through (2026-08-20): cs_bear clone that makes the
+  # audit-#11 dead exemption real — CS positions skip the pre-earnings stop
+  # tightening + 25% partial trim (earnings_tighten_cs_exempt profile flag;
+  # the flag defaults off everywhere else, which equals live behavior since
+  # the old `not is_cs` check could never fire — no position object carried
+  # the flag). Effect when on: CS earnings plays keep normal trailing bands
+  # and full size into the print (both-direction gap exposure, compounded by
+  # the CS 1.25x size boost). Strategy change, hence shadow-arm gated.
+  # Promotion criteria, pre-registered: beat shadow_baseline per the weekly
+  # A/B decision rule over a mixed-regime cycle AND >=5 CS positions carried
+  # through an earnings print with the exemption active; kill if it trails
+  # baseline. Promotion to live additionally requires CS provenance on
+  # AIPortfolioPosition (no column exists today).
+  nostate_cs_exempt:
+    hidden: true
+    label: "NoState CS Exempt (shadow)"
+    description: "nostate_cs_bear + CS positions exempt from pre-earnings tightening (live shadow A/B, aug-20 audit-#11 candidate)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    earnings_tighten_cs_exempt: true
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -2028,4 +2122,23 @@ shadow_strategy_profiles:
     parent_strategy: nostate_sector_relief
     starting_value: 25000
     description: "cs_bear + pyramids exempt from sector count arm — aug-18 SECEX candidate (+11.0pp W3 / +18.9pp W4 vs same-day controls, DD flat, chop no-op); gate: beat baseline over a mixed-regime cycle AND >=5 count-exempt pyramids fired"
+    scorer_overrides: {}
+  # CS buy-window A/B (2026-08-20): the v2 confidence recalibration's
+  # unshipped finding — the live CS buy window (<=7d) covers the worst
+  # timing buckets while the best (10-14d) was alert-only. Gate
+  # pre-registered on the nostate_cs_window14 profile comment. Clock starts
+  # at this arm's own first trade (later than the Aug-18 fleet reset).
+  shadow_cs_window14:
+    parent_strategy: nostate_cs_window14
+    starting_value: 25000
+    description: "cs_bear + CS buy window widened to 14d pre-earnings — aug-20 candidate (v2 recal: 10-14d bucket 45% win +2.79% signal-quality, NOT P&L); gate: beat baseline over a mixed-regime cycle AND >=5 CS buys in the 8-14d band"
+    scorer_overrides: {}
+  # Audit-#11 CS hold-through A/B (2026-08-20): makes the dead pre-earnings
+  # CS exemption real via the earnings_tighten_cs_exempt profile flag. Gate
+  # pre-registered on the nostate_cs_exempt profile comment. Slow-accruing
+  # by nature — needs CS positions held into earnings windows.
+  shadow_cs_exempt:
+    parent_strategy: nostate_cs_exempt
+    starting_value: 25000
+    description: "cs_bear + CS positions hold through earnings (no pre-earnings stop tighten / 25% trim) — aug-20 audit-#11 candidate; gate: beat baseline over a mixed-regime cycle AND >=5 CS positions carried through an earnings print"
     scorer_overrides: {}

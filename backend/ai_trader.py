@@ -1807,7 +1807,14 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
             earnings_tighten_factor = earnings_tighten_config.get('stop_tighten_factor', 0.50)
             earnings_min_gain_for_partial = earnings_tighten_config.get('min_gain_for_partial', 10)
             days_to_earn = getattr(stock, 'days_to_earnings', None) if stock else None
-            is_cs = getattr(position, 'is_coiled_spring', False)
+            # CS exemption is profile-gated (cs_exempt shadow arm). The bare
+            # `not is_cs` check was dead (audit #11): no live position object
+            # ever carries the flag, so CS earnings plays were tightened like
+            # everything else. Default off = exactly that live behavior;
+            # promotion to live additionally needs CS provenance on
+            # AIPortfolioPosition (column or opening-BUY signal_factors join).
+            is_cs = (profile.get('earnings_tighten_cs_exempt', False)
+                     and bool(getattr(position, 'is_coiled_spring', False)))
 
             if (days_to_earn is not None and isinstance(days_to_earn, (int, float))
                     and 0 < days_to_earn <= earnings_tighten_days and not is_cs):
@@ -2649,8 +2656,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         cs_config = yaml_config.get('coiled_spring', {})
         earnings_config = yaml_config.get('ai_trader.earnings', {})
 
-        # CS-specific settings
-        allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
+        # CS-specific settings. Profile-level override mirrors backtester —
+        # lets the cs_window14 shadow arm widen the CS evaluation window to
+        # the 10-14d bucket (best v2 timing bucket, alert-only until now)
+        # without touching the global YAML default every strategy reads.
+        allow_buy_days = profile.get('cs_allow_buy_days',
+                                     cs_config.get('earnings_window', {}).get('allow_buy_days', 7))
         block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
 
         # Non-CS earnings avoidance settings (profile-level override mirrors backtester).

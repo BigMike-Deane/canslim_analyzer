@@ -2997,7 +2997,12 @@ class BacktestEngine:
                 earnings_tighten_factor = earnings_tighten_config.get('stop_tighten_factor', 0.50)
                 earnings_min_gain_for_partial = earnings_tighten_config.get('min_gain_for_partial', 10)
                 days_to_earn = self.static_data.get(ticker, {}).get('days_to_earnings')
-                is_cs = getattr(position, 'is_coiled_spring', False)
+                # Profile-gated CS exemption (cs_exempt arm, audit #11). CS
+                # provenance comes from the opening BUY's signal_factors —
+                # SimulatedPosition never carried is_coiled_spring, so the old
+                # attribute read was always False. Default off = live parity.
+                is_cs = (self.profile.get('earnings_tighten_cs_exempt', False)
+                         and bool((getattr(position, 'signal_factors', None) or {}).get('coiled_spring')))
 
                 if (days_to_earn is not None and isinstance(days_to_earn, (int, float))
                         and 0 < days_to_earn <= earnings_tighten_days and not is_cs):
@@ -3527,7 +3532,8 @@ class BacktestEngine:
             days_to_earnings = static_data.get('days_to_earnings')
             cs_config = config.get('coiled_spring', {})
             earnings_config = config.get('ai_trader.earnings', {})
-            allow_buy_days = cs_config.get('earnings_window', {}).get('allow_buy_days', 7)
+            allow_buy_days = self.profile.get('cs_allow_buy_days',
+                                              cs_config.get('earnings_window', {}).get('allow_buy_days', 7))
             block_days = cs_config.get('earnings_window', {}).get('block_days', 1)
             # Profile-level override for non-CS earnings avoidance window. Lets us
             # A/B test alternate gate widths (e.g. nostate_optimized_avoid3) without

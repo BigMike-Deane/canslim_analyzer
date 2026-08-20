@@ -171,6 +171,40 @@ class TestPartialProfitTierDelta:
         assert reg.get("parent_strategy") == "nostate_cap50"
         assert reg.get("starting_value") == 25000
 
+    def test_cs_window14_profile_registered_with_widened_window(self):
+        """The aug-20 cs_window14 arm: CS buy window widened 7d -> 14d via
+        the cs_allow_buy_days profile override; global default untouched."""
+        from config_loader import config as yaml_config
+
+        prof = yaml_config.get('strategy_profiles.nostate_cs_window14', {})
+        assert prof, "nostate_cs_window14 profile missing from config"
+        assert prof["cs_allow_buy_days"] == 14
+        assert prof.get("hidden") is True  # shadow-only, keep out of picker
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_cs_window14', {})
+        assert reg.get("parent_strategy") == "nostate_cs_window14"
+        assert reg.get("starting_value") == 25000
+        # The global CS window every other profile reads stays at 7
+        assert yaml_config.get(
+            'coiled_spring.earnings_window.allow_buy_days') == 7
+
+    def test_cs_exempt_profile_registered_with_exemption_flag(self):
+        """The aug-20 cs_exempt arm (audit #11): CS positions exempt from
+        pre-earnings tightening via earnings_tighten_cs_exempt."""
+        from config_loader import config as yaml_config
+
+        prof = yaml_config.get('strategy_profiles.nostate_cs_exempt', {})
+        assert prof, "nostate_cs_exempt profile missing from config"
+        assert prof["earnings_tighten_cs_exempt"] is True
+        assert prof.get("hidden") is True
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_cs_exempt', {})
+        assert reg.get("parent_strategy") == "nostate_cs_exempt"
+        assert reg.get("starting_value") == 25000
+        # No other profile carries the flag — the exemption is arm-scoped
+        for name, p in (yaml_config.get('strategy_profiles', {}) or {}).items():
+            if name != 'nostate_cs_exempt' and isinstance(p, dict):
+                assert not p.get('earnings_tighten_cs_exempt'), (
+                    f"{name} unexpectedly enables earnings_tighten_cs_exempt")
+
 
 # ── 2. Trailing stop bands (champion config: 25/18/12/6/4) ───────────────────
 

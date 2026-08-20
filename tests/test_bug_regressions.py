@@ -3050,35 +3050,89 @@ class TestPreEarningsTighteningBacktester:
         pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
         assert len(pre_earnings) >= 1, f"Expected pre-earnings sell, got: {[s.reason for s in sells]}"
 
-    def test_cs_positions_exempt_from_tightening(self):
-        """Coiled Spring positions should NOT get pre-earnings tightening."""
+    def _make_cs_position_near_earnings(self, engine):
+        """CS-provenance position 2d from earnings, up 10% with a peak drop
+        that trips the tightened trailing band. CS provenance travels the
+        REAL production path — the opening BUY's signal_factors — not a
+        hand-set attribute (audit #11: SimulatedPosition never carried
+        is_coiled_spring, so the old attribute-based test passed against
+        wiring that could never fire in production)."""
         from backend.backtester import SimulatedPosition
         from datetime import date, timedelta
 
-        engine = self._make_engine()
-
+        # Geometry from test_pre_earnings_tightened_trailing_fires: peak gain
+        # 35% -> normal trailing band 18% does NOT fire at a 12% drop, so the
+        # sell decision is owned by the tightened band (9%) alone. (The old
+        # exempt test's 125/110 geometry tripped the NORMAL trailing stop
+        # before the pre-earnings block — it asserted on the wrong rule.)
         pos = SimulatedPosition(
             ticker="CSPOS", shares=100, cost_basis=100.0,
             purchase_date=date.today() - timedelta(days=30),
-            purchase_score=80.0, peak_price=125.0,
+            purchase_score=80.0, peak_price=135.0,
             peak_date=date.today() - timedelta(days=5),
-            sector="Technology", partial_profit_taken=0
+            sector="Technology", partial_profit_taken=0,
+            signal_factors={"coiled_spring": True, "cs_confidence": 80},
         )
-        pos.is_coiled_spring = True
         engine.positions["CSPOS"] = pos
 
         engine.data_provider = MagicMock()
-        engine.data_provider.get_price_on_date.return_value = 110.0
+        engine.data_provider.get_price_on_date.return_value = 118.8
         engine.data_provider.get_market_direction.return_value = {"spy": {"price": 500, "ma_50": 490}}
         engine.data_provider.get_atr.return_value = 2.0
         engine.data_provider.get_vix_proxy.return_value = 18.0
 
         engine.static_data["CSPOS"] = {"days_to_earnings": 2, "sector": "Technology"}
+        return pos
+
+    def test_cs_positions_tightened_by_default_profile(self):
+        """LIVE PARITY: without earnings_tighten_cs_exempt, CS positions get
+        pre-earnings tightening like everything else. This is the actual live
+        behavior (the old `not is_cs` check was dead — audit #11) and the
+        control-arm behavior the cs_exempt shadow A/B measures against."""
+        from datetime import date
+
+        engine = self._make_engine()
+        self._make_cs_position_near_earnings(engine)
+
+        sells = engine._evaluate_sells(date.today(), {"CSPOS": {"total_score": 75}})
+
+        pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
+        assert len(pre_earnings) >= 1, (
+            "Default profile must tighten CS positions (live parity); "
+            f"got: {[s.reason for s in sells]}")
+
+    def test_cs_positions_exempt_from_tightening(self):
+        """With earnings_tighten_cs_exempt enabled (cs_exempt arm), CS
+        positions hold through earnings — no PRE-EARNINGS stop or partial."""
+        from datetime import date
+
+        engine = self._make_engine()
+        self._make_cs_position_near_earnings(engine)
+        # Top-level copy so the flag can't leak into the cached profile dict
+        engine.profile = dict(engine.profile or {})
+        engine.profile["earnings_tighten_cs_exempt"] = True
 
         sells = engine._evaluate_sells(date.today(), {"CSPOS": {"total_score": 75}})
 
         pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
         assert len(pre_earnings) == 0, "CS positions should be exempt from pre-earnings tightening"
+
+    def test_non_cs_position_still_tightened_under_cs_exempt_profile(self):
+        """The exemption is CS-only: a non-CS position under the cs_exempt
+        profile still gets the pre-earnings treatment."""
+        from datetime import date
+
+        engine = self._make_engine()
+        pos = self._make_cs_position_near_earnings(engine)
+        pos.signal_factors = {"breakout": True}  # no CS provenance
+        engine.profile = dict(engine.profile or {})
+        engine.profile["earnings_tighten_cs_exempt"] = True
+
+        sells = engine._evaluate_sells(date.today(), {"CSPOS": {"total_score": 75}})
+
+        pre_earnings = [s for s in sells if "PRE-EARNINGS" in s.reason]
+        assert len(pre_earnings) >= 1, (
+            f"Non-CS position must still tighten; got: {[s.reason for s in sells]}")
 
     def test_pre_earnings_partial_for_profitable_position(self):
         """Position up 15% near earnings should get 25% partial profit."""

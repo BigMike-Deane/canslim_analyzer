@@ -482,6 +482,10 @@ class ShadowSession:
                 pyramid_count=max(0, len(entries) - 1),
                 partial_profit_taken=partial_taken.get(ticker, 0.0),
                 user_id=SHADOW_USER_ID,
+                # CS provenance from the opening BUY's journal — read by the
+                # profile-gated pre-earnings exemption (cs_exempt arm).
+                is_coiled_spring=bool(
+                    first_entry["signal_factors"].get("coiled_spring")),
             )
             self._synthetic_positions.append(position)
 
@@ -794,6 +798,7 @@ class ShadowSession:
             pyramid_count=0,
             partial_profit_taken=0,
             user_id=SHADOW_USER_ID,
+            is_coiled_spring=bool((signal_factors or {}).get("coiled_spring")),
         )
         self._synthetic_positions.append(new_pos)
         return st
