@@ -5,6 +5,7 @@ import {
 } from 'recharts'
 import { api, cache } from '../api'
 import { useAuth } from '../auth'
+import useApi from '../hooks/useApi'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
@@ -643,6 +644,79 @@ function CapDeltaCard({ selected, refreshSeconds }) {
 }
 
 
+function GateMeter({ metric }) {
+  const { label, n, target } = metric
+  const met = target != null && n >= target
+  const frac = target ? Math.min(n / target, 1) : 0
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-dark-400 flex-1 truncate" title={label}>{label}</span>
+      <span className={`tabular-nums ${met ? 'text-emerald-400' : 'text-dark-200'}`}>
+        {n}{target != null && ` / ${target}`}{met && ' ✓'}
+      </span>
+      {target != null && (
+        <div className="w-16 h-1 rounded bg-dark-700 overflow-hidden shrink-0">
+          <div
+            className={`h-full rounded ${met ? 'bg-emerald-500' : 'bg-dark-400'}`}
+            style={{ width: `${frac * 100}%` }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Accrual toward each arm's pre-registered promotion gate. Read-only
+// progress — verdicts always come from the weekly A/B email decision rule.
+function GateProgressCard() {
+  const { data, error, loading } = useApi(() => api.getExperimentGates(), [])
+
+  if (loading && !data) {
+    return <Card><div className="skeleton h-24 rounded" /></Card>
+  }
+  // Silent degrade: the rest of the page works without the gates readout.
+  if (error || !data) return null
+
+  const stops = data.program_clocks?.stop_loss_recheck
+  return (
+    <Card>
+      <CardHeader
+        title="Gate Progress"
+        subtitle="Accrual toward each arm's pre-registered promotion gate — verdicts come from the weekly email, not this card"
+      />
+      {stops && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs border-b border-dark-700/40 pb-3">
+          <span className="text-dark-400">{stops.label}:</span>
+          <span className={`tabular-nums ${stops.n >= stops.target ? 'text-emerald-400' : 'text-dark-200'}`}>
+            {stops.n} / {stops.target} stops
+          </span>
+          {stops.avg_loss_pct != null && (
+            <span className="text-dark-400">
+              avg {fmtPct(stops.avg_loss_pct)} vs {fmtPct(stops.bar_pct, 1)} bar
+            </span>
+          )}
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
+        {(data.arms || []).map(arm => (
+          <div key={arm.id} className="space-y-1.5 min-w-0">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-xs font-medium text-dark-100 truncate" title={arm.description || arm.name}>
+                {arm.name.replace(/^shadow_/, '')}
+              </span>
+              <span className="text-[10px] text-dark-500 shrink-0">
+                {arm.days_accrued != null && `${arm.days_accrued}d`} · {arm.buys}B/{arm.sells}S
+                {arm.pyramids > 0 && `/${arm.pyramids}P`}
+              </span>
+            </div>
+            {arm.gate_metrics.map(m => <GateMeter key={m.label} metric={m} />)}
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
 export default function ABEval() {
   const { user } = useAuth()
   const [selected, setSelected] = useState(loadStoredSelection)
@@ -822,6 +896,9 @@ export default function ABEval() {
           </button>
         </div>
       </div>
+
+      {/* Gate progress — the whole program's accrual at a glance */}
+      <GateProgressCard />
 
       {/* Controls */}
       <Card>

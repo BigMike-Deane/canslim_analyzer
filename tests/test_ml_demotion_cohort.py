@@ -137,18 +137,61 @@ class TestOutcomes:
         assert row["gain_pct"] == 7.5
 
     def test_closed_position_realizes_against_sells(self, db_session):
-        """No position row + later SELLs → realized_gain summed over the
-        buy's cost (partial sells accumulate)."""
+        """No position row + the lot fully sold → the LOT's own FIFO
+        outcome from sell prices (partial sells accumulate)."""
         _buy(db_session, "GONE", 0.20, price=100.0, shares=10.0)
-        _sell(db_session, "GONE", realized_gain=50.0,
+        _sell(db_session, "GONE", realized_gain=50.0, price=110.0, shares=5.0,
               executed_at=AFTER + timedelta(days=2))
-        _sell(db_session, "GONE", realized_gain=30.0,
+        _sell(db_session, "GONE", realized_gain=30.0, price=106.0, shares=5.0,
               executed_at=AFTER + timedelta(days=4))
         db_session.commit()
         out = _call(db_session)
         row = out["trades"][0]
         assert row["status"] == "closed"
-        assert row["gain_pct"] == 8.0  # (50+30) / 1000 * 100
+        assert row["gain_pct"] == 8.0  # (5*10 + 5*6) / 1000 * 100
+
+    def test_regenerated_ticker_does_not_cross_contaminate_lots(self, db_session):
+        """Live 2026-08-20 bug (ANET-u3): buy A closed at a small gain, the
+        ticker was re-bought MUCH larger and stopped out. The old code
+        summed ALL later sells over buy A's cost (-59.1% for a +4.1% lot)
+        and, had the second position still been open, would have marked the
+        closed buy A 'open' with the new position's gain. Each buy must
+        report its OWN lot's FIFO outcome."""
+        # Generation 1: 2 shares @ 100, fully sold @ 104 (+4%)
+        _buy(db_session, "REGEN", 0.20, price=100.0, shares=2.0,
+             executed_at=AFTER)
+        _sell(db_session, "REGEN", realized_gain=8.0, price=104.0, shares=2.0,
+              executed_at=AFTER + timedelta(days=1))
+        # Generation 2: 20 shares @ 105, stopped out @ 96 (-8.6%)
+        _buy(db_session, "REGEN", 0.35, price=105.0, shares=20.0,
+             executed_at=AFTER + timedelta(days=2))
+        _sell(db_session, "REGEN", realized_gain=-180.0, price=96.0, shares=20.0,
+              executed_at=AFTER + timedelta(days=10))
+        db_session.commit()
+        out = _call(db_session)
+        by_gen = {r["cohort"]: r for r in out["trades"]}
+        gen1 = by_gen["would_veto"]   # conf 0.20
+        gen2 = by_gen["passed"]       # conf 0.35
+        assert gen1["status"] == "closed" and gen1["gain_pct"] == 4.0
+        assert gen2["status"] == "closed" and gen2["gain_pct"] == pytest.approx(-8.57, abs=0.01)
+
+    def test_closed_generation_stays_closed_when_ticker_rebought_open(self, db_session):
+        """A closed lot must not flip to 'open' just because a NEWER
+        position for the same ticker exists."""
+        _buy(db_session, "REOPEN", 0.20, price=100.0, shares=10.0,
+             executed_at=AFTER)
+        _sell(db_session, "REOPEN", realized_gain=100.0, price=110.0, shares=10.0,
+              executed_at=AFTER + timedelta(days=1))
+        _buy(db_session, "REOPEN", 0.40, price=120.0, shares=10.0,
+             executed_at=AFTER + timedelta(days=2))
+        _position(db_session, "REOPEN", gain_loss_pct=5.0)
+        db_session.commit()
+        out = _call(db_session)
+        by_conf = {r["ml_confidence"]: r for r in out["trades"]}
+        assert by_conf[0.20]["status"] == "closed"
+        assert by_conf[0.20]["gain_pct"] == 10.0
+        assert by_conf[0.40]["status"] == "open"
+        assert by_conf[0.40]["gain_pct"] == 5.0
 
     def test_position_scoped_by_user(self, db_session):
         """User 2's open position must not resolve user 1's buy — user 1's

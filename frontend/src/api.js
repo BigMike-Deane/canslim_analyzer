@@ -32,6 +32,7 @@ const CACHE_TTL = {
   '/api/admin/strategy-ab-eval': 60,   // 1 min — experiment moves slowly, but operator may tweak window params
   '/api/admin/strategy-ab-eval-trades': 60,  // 1 min — per-trade sibling fetched alongside the aggregate
   '/api/admin/shadow-strategies': 60,  // 1 min — registry only changes on YAML edits + boot
+  '/api/admin/experiment-gates': 300,  // 5 min — gate accrual moves at trading pace
   '/api/notifications': 15,            // 15 sec — list + bell dropdown
   '/api/notifications/unread-count': 15,
 }
@@ -696,6 +697,10 @@ export const api = {
     if (source) params.set('source', source)
     return request(`/api/admin/strategy-ab-eval?${params}`)
   },
+
+  // Gate-progress readout: accrual toward every arm's pre-registered
+  // promotion gate (defined in config/default.yaml comments).
+  getExperimentGates: () => request('/api/admin/experiment-gates'),
 
   // Per-trade sibling: trade rows + cumulative-return curves for the chart + table.
   getStrategyABEvalTrades: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, source } = {}) => {

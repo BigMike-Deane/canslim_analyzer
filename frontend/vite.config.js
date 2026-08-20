@@ -16,9 +16,17 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-recharts': ['recharts'],
+        // Function form: vite 8's rolldown bundler dropped the object form
+        // ("manualChunks is not a function"). Same split as before.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (/node_modules\/(recharts|d3-[^/]+|victory-vendor|react-smooth)\//.test(id)) {
+            return 'vendor-recharts'
+          }
+          if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(id)) {
+            return 'vendor-react'
+          }
+          return undefined
         },
       },
     },

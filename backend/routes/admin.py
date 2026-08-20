@@ -2,6 +2,7 @@
 operational diagnostics that are too sensitive for the public API."""
 
 import json
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -1384,6 +1385,47 @@ async def ml_demotion_cohort(
     ).order_by(AIPortfolioTrade.executed_at).all()
 
     now_utc = datetime.now(timezone.utc)
+
+    # Per-lot FIFO outcomes, built lazily per (ticker, user). The old logic
+    # summed ALL later sells' realized_gain over ONE buy's cost, and called
+    # any buy 'open' whenever ANY position row existed — both wrong once a
+    # ticker is re-bought. Live 2026-08-20: ANET-u3's $453 first buy wore
+    # the $268 loss of the later 18-share generation and reported -59.1%
+    # for a lot that actually closed +4.1%.
+    _lot_cache: dict = {}
+
+    def _lot_outcome(buy_trade):
+        key = (buy_trade.ticker, buy_trade.user_id)
+        if key not in _lot_cache:
+            history = db.query(AIPortfolioTrade).filter(
+                AIPortfolioTrade.ticker == buy_trade.ticker,
+                AIPortfolioTrade.user_id == buy_trade.user_id,
+                AIPortfolioTrade.action.in_(('BUY', 'PYRAMID', 'SELL')),
+            ).order_by(AIPortfolioTrade.executed_at, AIPortfolioTrade.id).all()
+            lots = {}
+            open_lots = deque()
+            for h in history:
+                if h.action in ('BUY', 'PYRAMID'):
+                    lot = {'shares': h.shares or 0.0,
+                           'shares_left': h.shares or 0.0,
+                           'price': h.price or 0.0,
+                           'realized': 0.0}
+                    lots[h.id] = lot
+                    if lot['shares_left'] > 1e-9:
+                        open_lots.append(lot)
+                else:
+                    to_sell = h.shares or 0.0
+                    while to_sell > 1e-9 and open_lots:
+                        head = open_lots[0]
+                        take = min(head['shares_left'], to_sell)
+                        head['realized'] += ((h.price or 0.0) - head['price']) * take
+                        head['shares_left'] -= take
+                        to_sell -= take
+                        if head['shares_left'] <= 1e-9:
+                            open_lots.popleft()
+            _lot_cache[key] = lots
+        return _lot_cache[key].get(buy_trade.id)
+
     rows = []
     for t in buys:
         # Legacy rows store signal_factors as a JSON string — decode like
@@ -1397,24 +1439,23 @@ async def ml_demotion_cohort(
         conf = sf.get('ml_confidence') if isinstance(sf, dict) else None
         if conf is None:
             continue
-        pos = db.query(AIPortfolioPosition).filter(
-            AIPortfolioPosition.ticker == t.ticker,
-            AIPortfolioPosition.user_id == t.user_id,
-        ).first()
-        if pos is not None:
-            status, gain_pct = 'open', pos.gain_loss_pct
+        lot = _lot_outcome(t)
+        cost = (lot['price'] * lot['shares']) if lot else 0.0
+        if lot is not None and lot['shares_left'] <= 1e-9 and cost > 0:
+            # This buy's lot is fully consumed — its OWN realized outcome.
+            status = 'closed'
+            gain_pct = round(lot['realized'] / cost * 100, 2)
         else:
-            # Position closed — realize the buy against its later SELLs.
-            sells = db.query(AIPortfolioTrade).filter(
-                AIPortfolioTrade.action == 'SELL',
-                AIPortfolioTrade.ticker == t.ticker,
-                AIPortfolioTrade.user_id == t.user_id,
-                AIPortfolioTrade.executed_at > t.executed_at,
-            ).all()
-            cost = (t.price or 0) * (t.shares or 0)
-            gain = sum((s.realized_gain or 0) for s in sells)
-            status = 'closed' if sells else 'unknown'
-            gain_pct = round(gain / cost * 100, 2) if (sells and cost > 0) else None
+            # Lot (partially) outstanding: mark to market via the live
+            # position row; no row = data gap, don't guess.
+            pos = db.query(AIPortfolioPosition).filter(
+                AIPortfolioPosition.ticker == t.ticker,
+                AIPortfolioPosition.user_id == t.user_id,
+            ).first()
+            if pos is not None:
+                status, gain_pct = 'open', pos.gain_loss_pct
+            else:
+                status, gain_pct = 'unknown', None
         age_days = None
         if t.executed_at is not None:
             exec_at = t.executed_at
@@ -1466,5 +1507,199 @@ async def ml_demotion_cohort(
             'toward the older cohort in a trending tape. The demotion is '
             'vindicated if would_veto performs no worse than passed once '
             'closed_n accumulates.'
+        ),
+    }
+
+
+@router.get("/experiment-gates")
+@limiter.limit("30/minute")
+async def experiment_gates(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Live progress of every pre-registered promotion gate. 100% read-only.
+
+    The gates themselves are pre-registered in config/default.yaml comments
+    (per-arm) — this endpoint just measures how far each arm has accrued
+    toward them, so the program's state is glanceable instead of tracked in
+    session notes. Adding an arm: give it an entry in ARM_GATES below.
+    """
+    from backend.database import MarketSnapshot
+
+    now_utc = datetime.now(timezone.utc)
+
+    def _chop_days_since(start_dt, band_pct=1.5):
+        """Trading days where SPY sat 0..band_pct% above its 50MA."""
+        if start_dt is None:
+            return 0
+        snaps = db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= start_dt.date(),
+            MarketSnapshot.spy_price.isnot(None),
+            MarketSnapshot.spy_50_ma.isnot(None),
+        ).all()
+        n = 0
+        for s in snaps:
+            if s.spy_50_ma and s.spy_50_ma > 0:
+                gap = (s.spy_price - s.spy_50_ma) / s.spy_50_ma * 100
+                if 0 <= gap <= band_pct:
+                    n += 1
+        return n
+
+    def _sf(t):
+        sf = t.signal_factors
+        if isinstance(sf, str):
+            try:
+                sf = json.loads(sf)
+            except Exception:
+                sf = None
+        return sf if isinstance(sf, dict) else {}
+
+    arms = db.query(ShadowStrategy).filter(
+        ShadowStrategy.archived_at.is_(None)).order_by(ShadowStrategy.id).all()
+    trades_by_arm = {}
+    for a in arms:
+        trades_by_arm[a.id] = db.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == a.id,
+        ).order_by(ShadowTrade.executed_at).all()
+
+    def _rows(arm_id, action=None, include_sweeps=False):
+        out = []
+        for t in trades_by_arm.get(arm_id, []):
+            if not include_sweeps and (t.reason or "").startswith("SPY SWEEP"):
+                continue
+            if action and t.action != action:
+                continue
+            out.append(t)
+        return out
+
+    baseline = next((a for a in arms if a.name == "shadow_baseline"), None)
+
+    def _unmatched_vs_baseline(arm_id, action, reason_prefix=None):
+        """Rows in an arm with no same-ticker same-day counterpart in the
+        baseline stack — i.e. behavior the arm's lever caused."""
+        if baseline is None:
+            return 0
+        def _key(t):
+            return (t.ticker, t.executed_at.date() if t.executed_at else None)
+        base_keys = {
+            _key(t) for t in _rows(baseline.id, action)
+            if reason_prefix is None or (t.reason or "").startswith(reason_prefix)
+        }
+        n = 0
+        for t in _rows(arm_id, action):
+            if reason_prefix is not None and not (t.reason or "").startswith(reason_prefix):
+                continue
+            if _key(t) not in base_keys:
+                n += 1
+        return n
+
+    def _suppressed_vs_baseline(arm_id, action, reason_prefix):
+        """Baseline rows with no counterpart in the arm — behavior the
+        arm's lever SUPPRESSED (e.g. pre-earnings exits it skipped)."""
+        if baseline is None:
+            return 0
+        def _key(t):
+            return (t.ticker, t.executed_at.date() if t.executed_at else None)
+        arm_keys = {
+            _key(t) for t in _rows(arm_id, action)
+            if (t.reason or "").startswith(reason_prefix)
+        }
+        n = 0
+        for t in _rows(baseline.id, action):
+            if not (t.reason or "").startswith(reason_prefix):
+                continue
+            if _key(t) not in arm_keys:
+                n += 1
+        return n
+
+    # Per-arm gate metric builders. Each returns a list of
+    # {label, n, target} dicts; the weekly-email >=5-closed-sells gate is
+    # appended to every arm automatically.
+    ARM_GATES = {
+        "shadow_chop_damper": lambda a: [
+            {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
+        ],
+        "shadow_wide_trail": lambda a: [
+            {"label": "exits", "n": len(_rows(a.id, "SELL")), "target": 15},
+        ],
+        "shadow_cap50": lambda a: [
+            {"label": "exits", "n": len(_rows(a.id, "SELL")), "target": 15},
+            {"label": "cap-tier fires",
+             "n": sum(1 for t in _rows(a.id, "SELL")
+                      if "PARTIAL PROFIT (100" in (t.reason or "")
+                      or "+50" in (t.reason or "")), "target": 3},
+        ],
+        "shadow_chop_spy": lambda a: [
+            {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
+        ],
+        "shadow_sector_relief": lambda a: [
+            {"label": "count-exempt pyramids",
+             "n": _unmatched_vs_baseline(a.id, "PYRAMID"), "target": 5},
+        ],
+        "shadow_cs_window14": lambda a: [
+            {"label": "CS buys in 8-14d band",
+             "n": sum(1 for t in _rows(a.id, "BUY")
+                      if 8 <= (_sf(t).get("cs_days_to_earnings") or 0) <= 14),
+             "target": 5},
+        ],
+        "shadow_cs_exempt": lambda a: [
+            {"label": "CS-cohort buys",
+             "n": sum(1 for t in _rows(a.id, "BUY")
+                      if _sf(t).get("coiled_spring")), "target": None},
+            {"label": "pre-earnings exits suppressed",
+             "n": _suppressed_vs_baseline(a.id, "SELL", "PRE-EARNINGS"),
+             "target": 5},
+        ],
+    }
+
+    arm_payload = []
+    for a in arms:
+        activated = a.activated_at
+        if activated is not None and activated.tzinfo is None:
+            activated = activated.replace(tzinfo=timezone.utc)
+        sells = _rows(a.id, "SELL")
+        metrics = ARM_GATES.get(a.name, lambda _a: [])(a)
+        arm_payload.append({
+            "id": a.id,
+            "name": a.name,
+            "description": a.description,
+            "activated_at": a.activated_at.isoformat() if a.activated_at else None,
+            "days_accrued": max((now_utc - activated).days, 0) if activated else None,
+            "buys": len(_rows(a.id, "BUY")),
+            "pyramids": len(_rows(a.id, "PYRAMID")),
+            "sells": len(sells),
+            "gate_metrics": metrics
+            + [{"label": "closed sells (weekly-email gate)", "n": len(sells), "target": 5}],
+        })
+
+    # Program-level clocks that live outside the shadow fleet.
+    STOP_RECHECK_CUTOFF = datetime(2026, 6, 24, tzinfo=timezone.utc)
+    stop_sells = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.action == "SELL",
+        AIPortfolioTrade.user_id.in_((1, 2)),
+        AIPortfolioTrade.executed_at > STOP_RECHECK_CUTOFF,
+        AIPortfolioTrade.reason.like("STOP LOSS%"),
+    ).all()
+    stop_pcts = []
+    for s in stop_sells:
+        cost = (s.cost_basis or 0) * (s.shares or 0)
+        if cost > 0 and s.realized_gain is not None:
+            stop_pcts.append(s.realized_gain / cost * 100)
+
+    return {
+        "program_clocks": {
+            "stop_loss_recheck": {
+                "label": "Exit-fix re-check (owner stops since Jun-24)",
+                "n": len(stop_pcts), "target": 5,
+                "avg_loss_pct": round(sum(stop_pcts) / len(stop_pcts), 2) if stop_pcts else None,
+                "bar_pct": -10.0,
+            },
+        },
+        "arms": arm_payload,
+        "note": (
+            "Gate definitions are pre-registered in config/default.yaml "
+            "comments; this endpoint only measures accrual. Verdicts come "
+            "from the weekly A/B email decision rule, never from this card."
         ),
     }
