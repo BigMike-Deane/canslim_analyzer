@@ -233,16 +233,26 @@ def get_or_create_config(db: Session, user_id: int = 1) -> AIPortfolioConfig:
     """Get or create AI portfolio configuration"""
     config = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.user_id == user_id).first()
     if not config:
+        # New portfolios start on the live champion strategy so every user
+        # portfolio is a same-strategy replicate (owner decision Aug-21:
+        # more data points per strategy beats accidental per-user variety).
+        # Scalars mirror the profile the same way initialize_ai_portfolio
+        # does — previously this hardcoded pre-sweep values (20 positions /
+        # 12%) and left strategy to the column default ('balanced'), so
+        # signups silently got a config nobody chose.
+        default_strategy = "nostate_cs_bear"
+        profile = get_strategy_profile(default_strategy)
         config = AIPortfolioConfig(
             starting_cash=25000.0,
             current_cash=25000.0,
-            max_positions=8,  # Concentration IS the alpha (Jul-20 sweep) — matches tuned profiles
-            max_position_pct=25.0,  # Matches profile max_single_position_pct
-            min_score_to_buy=72,  # CANSLIM quality threshold
+            max_positions=profile.get("max_positions", 8),
+            max_position_pct=profile.get("max_single_position_pct", 25.0),
+            min_score_to_buy=profile.get("min_score", 72),
             sell_score_threshold=45,  # Hold slightly longer
-            take_profit_pct=75.0,  # Let winners run (champion: 75%)
-            stop_loss_pct=8.0,  # O'Neil standard 8% stop
+            take_profit_pct=profile.get("take_profit_pct", 75.0),
+            stop_loss_pct=profile.get("stop_loss_pct", 7.0),
             is_active=True,
+            strategy=default_strategy,
             user_id=user_id
         )
         db.add(config)
