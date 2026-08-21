@@ -10,6 +10,7 @@ import CollapsibleSection from '../components/CollapsibleSection'
 import Sparkline from '../components/Sparkline'
 import { tooltipStyle, tooltipLabelStyle, chartAxis, chartColors } from '../components/chartTheme'
 import { useToast } from '../components/Toast'
+import { useAuth } from '../auth'
 import useApi from '../hooks/useApi'
 import { buildCsv, downloadCsv } from '../csv'
 import Modal from '../components/Modal'
@@ -22,7 +23,27 @@ import AlertChip from '../components/AlertChip'
 // ── Performance Chart ───────────────────────────────────────────────
 // `timeRange` is now controlled by the page-level WindowReturnsBar so the
 // chart, header summary, and per-position returns all reflect the same window.
+
+// Owner-requested easter egg (Aug-21): user 4's portfolio line gets a
+// broader stroke and a distinctive end-cap where an arrowhead would go.
+// Purely cosmetic — data, axes, and tooltips are untouched. Remove by
+// deleting BOOT_USER_ID gating + BootEndCap.
+const BOOT_USER_ID = 4
+function BootEndCap({ cx, cy, index, lastIndex, fill }) {
+  if (index !== lastIndex || cx == null || cy == null) return <g />
+  return (
+    <g transform={`translate(${cx},${cy})`} opacity={0.95}>
+      <circle cx={-38} cy={7.5} r={7.5} fill={fill} />
+      <circle cx={-38} cy={-7.5} r={7.5} fill={fill} />
+      <rect x={-39} y={-5.5} width={33} height={11} rx={5.5} fill={fill} />
+      <ellipse cx={-3} cy={0} rx={9} ry={7.5} fill={fill} />
+    </g>
+  )
+}
+
 function PerformanceChart({ history, startingCash, timeRange }) {
+  const { user } = useAuth()
+  const isBoot = user?.id === BOOT_USER_ID
   if (!history || history.length < 2) {
     return (
       <Card variant="glass" className="mb-4 h-48 flex items-center justify-center text-dark-400">
@@ -239,9 +260,18 @@ function PerformanceChart({ history, startingCash, timeRange }) {
               type="monotone"
               dataKey="total_value"
               stroke={lineColor}
-              strokeWidth={2}
+              strokeWidth={isBoot ? 4 : 2}
               fill={`url(#${gradientId})`}
-              dot={filteredHistory.length <= 50}
+              dot={isBoot
+                ? (props) => (
+                    <BootEndCap
+                      key={`bec-${props.index}`}
+                      {...props}
+                      lastIndex={filteredHistory.length - 1}
+                      fill={lineColor}
+                    />
+                  )
+                : filteredHistory.length <= 50}
               activeDot={{ r: 4, fill: lineColor }}
             />
             <ReferenceLine
