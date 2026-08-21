@@ -24,21 +24,33 @@ import AlertChip from '../components/AlertChip'
 // `timeRange` is now controlled by the page-level WindowReturnsBar so the
 // chart, header summary, and per-position returns all reflect the same window.
 
-// Owner-requested easter egg (Aug-21): user 4's portfolio line gets a
-// broader stroke and a distinctive end-cap where an arrowhead would go.
-// Purely cosmetic — data, axes, and tooltips are untouched. Remove by
-// deleting BOOT_USER_ID gating + BootEndCap.
+// Owner-requested easter egg (Aug-21): user 4's portfolio line renders as
+// full anatomy — base glyph at the first data point, the (thickened) real
+// trend line as the shaft, tip glyph at the last point. Purely cosmetic —
+// the line's centerline is still the true equity curve; data, axes, and
+// tooltips are untouched. Remove by deleting BOOT_USER_ID + BootAnatomy.
 const BOOT_USER_ID = 4
-function BootEndCap({ cx, cy, index, lastIndex, fill }) {
-  if (index !== lastIndex || cx == null || cy == null) return <g />
-  return (
-    <g transform={`translate(${cx},${cy})`} opacity={0.95}>
-      <circle cx={-38} cy={7.5} r={7.5} fill={fill} />
-      <circle cx={-38} cy={-7.5} r={7.5} fill={fill} />
-      <rect x={-39} y={-5.5} width={33} height={11} rx={5.5} fill={fill} />
-      <ellipse cx={-3} cy={0} rx={9} ry={7.5} fill={fill} />
-    </g>
-  )
+function BootAnatomy({ cx, cy, index, lastIndex, fill }) {
+  if (cx == null || cy == null) return <g />
+  if (index === 0) {
+    // Base: twin circles saddling the start of the line. Offset right so
+    // they don't clip on the plot's left edge (first point sits at x≈0).
+    return (
+      <g transform={`translate(${cx},${cy})`} opacity={0.95}>
+        <circle cx={6} cy={9} r={9} fill={fill} />
+        <circle cx={6} cy={-9} r={9} fill={fill} />
+      </g>
+    )
+  }
+  if (index === lastIndex) {
+    // Tip: glans just past the final data point, wider than the shaft
+    return (
+      <g transform={`translate(${cx},${cy})`} opacity={0.95}>
+        <ellipse cx={1} cy={0} rx={10} ry={8.5} fill={fill} />
+      </g>
+    )
+  }
+  return <g />
 }
 
 function PerformanceChart({ history, startingCash, timeRange }) {
@@ -260,11 +272,11 @@ function PerformanceChart({ history, startingCash, timeRange }) {
               type="monotone"
               dataKey="total_value"
               stroke={lineColor}
-              strokeWidth={isBoot ? 4 : 2}
+              strokeWidth={isBoot ? 7 : 2}
               fill={`url(#${gradientId})`}
               dot={isBoot
                 ? (props) => (
-                    <BootEndCap
+                    <BootAnatomy
                       key={`bec-${props.index}`}
                       {...props}
                       lastIndex={filteredHistory.length - 1}
