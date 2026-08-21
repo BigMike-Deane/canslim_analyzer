@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { getAdjacentTickers } from '../stockListContext'
-import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from 'recharts'
+import { ComposedChart, LineChart, Line, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, ReferenceLine } from 'recharts'
 import { api, formatScore, getScoreClass, getScoreLabel, getScoreHex, formatCurrency, formatPercent, formatMarketCap, formatDateTime } from '../api'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
 import { chartAxis, chartColors } from '../components/chartTheme'
@@ -705,28 +705,44 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
     return { ...d, _deltas }
   })
 
-  // Price overlay: rendered as % change from the window's first priced point,
-  // on an axis spanning exactly 100 percentage points — the same span as the
-  // 0-100 score axis. That makes 1pp of price move = 1 score point of height,
-  // so the two lines' shapes are directly comparable. (Previously the price
-  // axis was min/max-fitted with 5% padding, magnifying price moves ~3x vs
-  // the score and making score drops read as minor by comparison.)
+  // Score axis floor: scores below ~40 are dead space (buy floor is 72,
+  // even weak holds sit in the 50s), so a fixed 0 floor spends half the
+  // chart's resolution on a region no stock visits. Snap the floor to the
+  // largest of {0, 25, 50} sitting ≥5 points below the window's low —
+  // snapping (not min-fitting) caps magnification at 2x and keeps two
+  // stocks with the same axis directly comparable.
+  const scoreVals = data.map(d => d.total_score).filter(v => v != null)
+  const scoreMin = scoreVals.length ? Math.min(...scoreVals) : 0
+  const scoreFloor = Math.max(0, Math.min(50, Math.floor((scoreMin - 5) / 25) * 25))
+  const scoreSpan = 100 - scoreFloor
+  const scoreTicks = Array.from({ length: scoreSpan / 25 + 1 }, (_, i) => scoreFloor + i * 25)
+
+  // Price overlay: rendered as % change from the window's first priced
+  // point, on an axis whose span in percentage points EQUALS the score
+  // axis span — that makes 1pp of price move = 1 score point of height,
+  // so the two lines' shapes are directly comparable at every zoom level.
+  // (Previously the price axis was min/max-fitted with 5% padding,
+  // magnifying price moves ~3x vs the score and making score drops read
+  // as minor by comparison.)
   const anchorPrice = data.find(d => d.price > 0)?.price
   const chartData = anchorPrice
     ? data.map(d => (d.price > 0 ? { ...d, _pricePct: ((d.price / anchorPrice) - 1) * 100 } : d))
     : data
   const pricePcts = chartData.map(d => d._pricePct).filter(v => v != null)
   const hasPrice = pricePcts.length > 0
-  // Center the price series inside the 100pp window. Widen only when the
-  // move can't fit (>~100pp), sacrificing 1:1 scale rather than clipping.
-  let priceDomain = [-50, 50]
+  // Center the price series inside the score-span window. Widen only when
+  // the move can't fit, sacrificing 1:1 scale rather than clipping.
+  let priceDomain = [-scoreSpan / 2, scoreSpan / 2]
   if (hasPrice) {
     const lo = Math.min(...pricePcts)
     const hi = Math.max(...pricePcts)
-    const span = Math.max(100, (hi - lo) * 1.1)
+    const span = Math.max(scoreSpan, (hi - lo) * 1.1)
     const mid = (lo + hi) / 2
     priceDomain = [mid - span / 2, mid + span / 2]
   }
+
+  // Buy gate for context — champion config min_score (nostate_optimized).
+  const BUY_FLOOR = 72
 
   // Per-component std dev over the visible window. Flat letters (sd < 0.5)
   // are dropped from the chart and legend so the dynamic ones (usually N/S/M)
@@ -859,7 +875,8 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             />
             <YAxis
               yAxisId="score"
-              domain={[0, 100]}
+              domain={[scoreFloor, 100]}
+              ticks={scoreTicks}
               tick={{ fontSize: 10, fill: chartColors.brand }}
               axisLine={false}
               tickLine={false}
@@ -879,6 +896,15 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
                 range instead of being squashed at the bottom of the 0-100 score axis. */}
             <YAxis yAxisId="component" domain={[0, 15]} hide={true} />
             <Tooltip content={<ScoreReplayTooltip showComponents={showComponents} isPerScan={isPerScan} />} />
+            {/* Buy gate — above this line the stock is buyable. Gives the
+                (possibly cropped) score axis an actionable anchor. */}
+            <ReferenceLine
+              yAxisId="score"
+              y={BUY_FLOOR}
+              stroke="rgba(255,255,255,0.18)"
+              strokeDasharray="3 3"
+              label={{ value: `buy ${BUY_FLOOR}`, position: 'insideBottomLeft', fill: 'rgba(255,255,255,0.35)', fontSize: 9 }}
+            />
             {/* Score area */}
             <Area
               yAxisId="score"
