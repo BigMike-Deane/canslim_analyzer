@@ -117,7 +117,10 @@ function PerformanceChart({ data, startingCash }) {
             <YAxis
               tick={{ fontSize: 10, fill: chartAxis.tick }}
               tickFormatter={(v) => `${v.toFixed(0)}%`}
-              domain={['dataMin - 5', 'dataMax + 5']}
+              // Force-include 0 so the breakeven reference line never slides
+              // off-canvas on strong runs (all-positive curves used to lose
+              // their "how far above zero" anchor).
+              domain={[(dataMin) => Math.min(0, dataMin - 5), (dataMax) => dataMax + 5]}
               axisLine={false}
               tickLine={false}
             />

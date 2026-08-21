@@ -637,7 +637,15 @@ function ScoreReplayTooltip({ active, payload, label, showComponents, isPerScan 
       <div className="flex items-center gap-3 mb-1">
         {/* Brand amber for score, pale gold for price — was red/gold pre-rebrand. */}
         <span style={{ color: chartColors.brand }}>Score: <b>{formatScore(d.total_score)}</b></span>
-        {d.price != null && <span style={{ color: '#fde68a' }}>Price: <b>{formatCurrency(d.price)}</b></span>}
+        {d.price != null && (
+          <span style={{ color: '#fde68a' }}>
+            Price: <b>{formatCurrency(d.price)}</b>
+            {/* Matches the right axis, which plots % vs window start. */}
+            {d._pricePct != null && (
+              <span className="text-dark-500"> ({d._pricePct >= 0 ? '+' : ''}{d._pricePct.toFixed(1)}%)</span>
+            )}
+          </span>
+        )}
       </div>
       {topMover && (
         <div className="text-[11px] mb-1">
@@ -697,10 +705,28 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
     return { ...d, _deltas }
   })
 
-  // Compute price domain with 5% padding
-  const prices = data.map(d => d.price).filter(Boolean)
-  const priceMin = prices.length ? Math.floor(Math.min(...prices) * 0.95) : 0
-  const priceMax = prices.length ? Math.ceil(Math.max(...prices) * 1.05) : 100
+  // Price overlay: rendered as % change from the window's first priced point,
+  // on an axis spanning exactly 100 percentage points — the same span as the
+  // 0-100 score axis. That makes 1pp of price move = 1 score point of height,
+  // so the two lines' shapes are directly comparable. (Previously the price
+  // axis was min/max-fitted with 5% padding, magnifying price moves ~3x vs
+  // the score and making score drops read as minor by comparison.)
+  const anchorPrice = data.find(d => d.price > 0)?.price
+  const chartData = anchorPrice
+    ? data.map(d => (d.price > 0 ? { ...d, _pricePct: ((d.price / anchorPrice) - 1) * 100 } : d))
+    : data
+  const pricePcts = chartData.map(d => d._pricePct).filter(v => v != null)
+  const hasPrice = pricePcts.length > 0
+  // Center the price series inside the 100pp window. Widen only when the
+  // move can't fit (>~100pp), sacrificing 1:1 scale rather than clipping.
+  let priceDomain = [-50, 50]
+  if (hasPrice) {
+    const lo = Math.min(...pricePcts)
+    const hi = Math.max(...pricePcts)
+    const span = Math.max(100, (hi - lo) * 1.1)
+    const mid = (lo + hi) / 2
+    priceDomain = [mid - span / 2, mid + span / 2]
+  }
 
   // Per-component std dev over the visible window. Flat letters (sd < 0.5)
   // are dropped from the chart and legend so the dynamic ones (usually N/S/M)
@@ -726,10 +752,38 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
     { value: 'all', label: 'All' },
   ]
 
+  // Peak-context badge: chart geometry can't communicate the drop when the
+  // peak sits outside the selected window (default 1M), so state it
+  // numerically. Computed from the FULL fetched history, not the visible
+  // slice — the badge is the one element that never loses the peak.
+  const latestPoint = history[history.length - 1]
+  const peakPoint = history.reduce(
+    (best, h) => (h.total_score != null && h.total_score > (best?.total_score ?? -Infinity) ? h : best),
+    null
+  )
+  const peakDrop = peakPoint && latestPoint?.total_score != null
+    ? peakPoint.total_score - latestPoint.total_score
+    : 0
+  const peakDateLabel = (() => {
+    if (!peakPoint?.date) return ''
+    const dt = new Date(peakPoint.date)
+    // Date-only strings parse as UTC midnight; format in UTC too, or the
+    // label shifts back a day in western timezones.
+    return isNaN(dt) ? '' : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+  })()
+
   return (
     <Card as="section" aria-labelledby="sd-replay-heading" variant="glass" className="mb-4">
       <div className="flex items-center justify-between mb-2">
-        <CardHeader title="Score Replay" titleId="sd-replay-heading" />
+        <CardHeader
+          title="Score Replay"
+          titleId="sd-replay-heading"
+          subtitle={peakDrop >= 5 ? (
+            <span className="text-red-400" title="Drop from the highest score in the fetched history — the peak may sit outside the selected window">
+              ▼ {peakDrop.toFixed(1)} from {formatScore(peakPoint.total_score)} peak{peakDateLabel ? ` (${peakDateLabel})` : ''}
+            </span>
+          ) : undefined}
+        />
         <div className="flex items-center gap-2">
           {onResolutionChange && (
             <div className="flex bg-dark-900/50 rounded overflow-hidden border border-white/5">
@@ -778,7 +832,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
       </div>
       <div className="h-56 -mx-2">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
                 {/* Brand amber gradient for the score area — was red #dc2626. */}
@@ -814,12 +868,12 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
             <YAxis
               yAxisId="price"
               orientation="right"
-              domain={[priceMin, priceMax]}
+              domain={priceDomain}
               tick={{ fontSize: 10, fill: '#fde68a' }}
               axisLine={false}
               tickLine={false}
               width={45}
-              tickFormatter={v => `$${v}`}
+              tickFormatter={v => `${v > 0 ? '+' : ''}${Math.round(v)}%`}
             />
             {/* Hidden axis for component lines so they get the full 0-15 vertical
                 range instead of being squashed at the bottom of the 0-100 score axis. */}
@@ -837,12 +891,14 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
               name="Score"
             />
             {/* Price line — pale gold (was red/gold) for high-contrast pairing
-                with the brand-amber score line; dashed for axis disambiguation. */}
-            {prices.length > 0 && (
+                with the brand-amber score line; dashed for axis disambiguation.
+                Plots _pricePct (% vs window start) so its vertical scale
+                matches the score axis 1:1 — see priceDomain above. */}
+            {hasPrice && (
               <Line
                 yAxisId="price"
                 type="monotone"
-                dataKey="price"
+                dataKey="_pricePct"
                 stroke="#fde68a"
                 strokeWidth={1.5}
                 dot={false}
@@ -868,6 +924,11 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
           </ComposedChart>
         </ResponsiveContainer>
       </div>
+      {hasPrice && (
+        <div className="text-[10px] text-dark-500 mt-1 px-1">
+          Price axis: % vs window start, scaled so 1% ≈ 1 score point
+        </div>
+      )}
       {showComponents && (
         <div className="flex flex-wrap gap-3 mt-2 px-1 items-center">
           {activeComponents.map(k => (

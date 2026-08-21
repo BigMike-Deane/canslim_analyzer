@@ -146,6 +146,22 @@ function PerformanceChart({ history, startingCash, timeRange }) {
   const lineColor = isPositive ? '#10b981' : '#ef4444'
   const gradientId = isPositive ? 'perfGradientGreen' : 'perfGradientRed'
 
+  // Y domain: pad by 5% of the visible range (was a fixed ±$500, which made
+  // visual amplitude depend on the window — a $300 1D wiggle filled a third
+  // of the card while an $8k "All" move looked the same). Range-proportional
+  // padding keeps the curve's use of vertical space consistent across
+  // windows and as the account grows. Spans both series since SPY shares
+  // the axis; falls back to 0.5% of value when the window is flat.
+  const yVals = []
+  for (const d of filteredHistory) {
+    if (d.total_value != null) yVals.push(d.total_value)
+    if (d.spy_value != null) yVals.push(d.spy_value)
+  }
+  const yMin = yVals.length ? Math.min(...yVals) : 0
+  const yMax = yVals.length ? Math.max(...yVals) : 1
+  const yPad = Math.max((yMax - yMin) * 0.05, Math.abs(yMax) * 0.005, 1)
+  const yDomain = [yMin - yPad, yMax + yPad]
+
   // Compact-currency tick formatter for the Y axis. Portfolio values live
   // in the $20k–$100k range so "$25k" / "$32.5k" reads cleaner than the
   // full "$25,000.00" — and short labels keep the small h-44 chart from
@@ -264,7 +280,7 @@ function PerformanceChart({ history, startingCash, timeRange }) {
             />
             <YAxis
               orientation="right"
-              domain={['dataMin - 500', 'dataMax + 500']}
+              domain={yDomain}
               tickFormatter={formatYTick}
               tick={{ fill: chartAxis.tick, fontSize: 10 }}
               axisLine={false}
