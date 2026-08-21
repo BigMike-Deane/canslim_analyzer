@@ -3583,8 +3583,13 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
     return {
         "config": {
             "starting_cash": config.starting_cash,
-            "max_positions": config.max_positions,
-            "max_position_pct": config.max_position_pct,
+            # Effective values, profile-resolved the same way the live trader
+            # does (ai_trader: profile.get(key, config row)). The raw columns
+            # are legacy creation defaults (20/12) the trader never reads for
+            # tuned profiles — displaying them told users they had open
+            # position slots that don't exist.
+            "max_positions": _profile.get('max_positions', config.max_positions),
+            "max_position_pct": _profile.get('max_single_position_pct', config.max_position_pct),
             "min_score_to_buy": config.min_score_to_buy,
             "sell_score_threshold": config.sell_score_threshold,
             "take_profit_pct": config.take_profit_pct,
@@ -6290,8 +6295,13 @@ async def get_portfolio_risk(current_user: User = Depends(get_current_active_use
         for s, d in sorted(sector_data.items(), key=lambda x: x[1]["value"], reverse=True)
     ]
 
-    # Position size alerts
-    max_pos_pct = config.max_position_pct or 25.0
+    # Position size alerts — threshold from the strategy profile (what the
+    # trader's sizing actually honors), not the legacy config column: rows
+    # created with the old 12% default fired "near limit" at 10.8% while the
+    # trader happily sized to the profile's 25% cap.
+    from backend.trading_utils import get_strategy_profile as _get_profile
+    _risk_profile = _get_profile(getattr(config, 'strategy', None) or "balanced")
+    max_pos_pct = _risk_profile.get('max_single_position_pct', config.max_position_pct or 25.0)
     position_alerts = []
     for pos in positions:
         if pv > 0:

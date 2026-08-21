@@ -1061,8 +1061,8 @@ class AIPortfolioConfig(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     starting_cash = Column(Float, default=25000.0)
     current_cash = Column(Float, default=25000.0)
-    max_positions = Column(Integer, default=15)
-    max_position_pct = Column(Float, default=10.0)  # Max % of portfolio per position
+    max_positions = Column(Integer, default=8)  # Concentration IS the alpha (Jul-20 sweep)
+    max_position_pct = Column(Float, default=25.0)  # Max % of portfolio per position — matches profile caps
     min_score_to_buy = Column(Integer, default=75)
     sell_score_threshold = Column(Integer, default=50)  # Sell if score drops below
     take_profit_pct = Column(Float, default=25.0)  # Take profits at this gain %

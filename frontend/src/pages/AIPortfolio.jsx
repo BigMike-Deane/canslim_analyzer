@@ -387,7 +387,7 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
           stats={[
             { label: 'Cash', value: formatCurrency(summary.cash) },
             { label: 'Invested', value: formatCurrency(summary.positions_value) },
-            { label: 'Positions', value: `${summary.positions_count} / ${config?.max_positions || 15}` },
+            { label: 'Positions', value: `${summary.positions_count} / ${config?.max_positions || 8}` },
           ]}
         />
       </div>
