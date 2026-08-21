@@ -43,10 +43,22 @@ function BootAnatomy({ cx, cy, index, lastIndex, fill }) {
     )
   }
   if (index === lastIndex) {
-    // Tip: glans just past the final data point, wider than the shaft
+    // Tip: helmet silhouette pointing along the line direction — flared
+    // corona ridge (wider than the 7px shaft), dome tapering to a rounded
+    // point, concave base edge. Anchored so the corona sits just behind
+    // the final data point.
     return (
       <g transform={`translate(${cx},${cy})`} opacity={0.95}>
-        <ellipse cx={1} cy={0} rx={10} ry={8.5} fill={fill} />
+        <path
+          d="M -3,-10
+             C 5,-10 11,-8.5 14.5,-6.5
+             C 18,-4.5 20,-2.5 20,0
+             C 20,2.5 18,4.5 14.5,6.5
+             C 11,8.5 5,10 -3,10
+             C -0.5,5.5 -0.5,-5.5 -3,-10
+             Z"
+          fill={fill}
+        />
       </g>
     )
   }
