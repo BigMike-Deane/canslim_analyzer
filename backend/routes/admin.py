@@ -1657,6 +1657,17 @@ def compute_experiment_gates(db: Session) -> dict:
                       if (_sf(t).get("ml_confidence") or 1.0) < 0.30),
              "target": 5},
         ],
+        "shadow_chop_entry_bar": lambda a: [
+            {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
+            {"label": "baseline buys not taken (suppression proxy)",
+             "n": _suppressed_vs_baseline(a.id, "BUY", ""), "target": 5},
+        ],
+        "shadow_chop_trim": lambda a: [
+            {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
+            {"label": "chop trims fired",
+             "n": sum(1 for t in _rows(a.id, "SELL")
+                      if (t.reason or "").startswith("CHOP TRIM")), "target": 5},
+        ],
     }
 
     arm_payload = []

@@ -1511,6 +1511,96 @@ strategy_profiles:
       min_confidence: 0.0    # THE LEVER: veto path OFF (cs_bear runs 0.30)
       veto_action: "skip"    # inert while min_confidence=0
 
+  # Chop entry bar (2026-08-25): cs_bear clone that requires CONFIRMED
+  # breakouts while SPY sits 0-1.5% above its 50MA (chop band); trend days
+  # are champion-identical. Motivation: live realized outcomes (96
+  # round-trips) — chop-band entries win 47% vs 65% on trend days, weak
+  # cohort = unconfirmed pre-breakouts. Evaluated ONLY via the
+  # 'shadow_chop_entry_bar' ShadowStrategy stack.
+  # Pre-registered criteria (2026-08-25, before launch): paired vs
+  # shadow_baseline over >=1 full mixed-regime cycle including >=15 chop
+  # days AND >=5 suppressed chop entries; promote only if it beats
+  # baseline; kill if it trails at that checkpoint. No early call.
+  nostate_chop_entry_bar:
+    hidden: true
+    label: "NoState Chop Entry Bar (shadow)"
+    description: "nostate_cs_bear + confirmed-breakout-only entries in the chop band (live shadow A/B, aug-25)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+    chop_entry_bar: { enabled: true, band_pct: 1.5, require_breakout: true }
+
+  # Chop trim (2026-08-25): cs_bear clone that trims 30% of any holding
+  # stretched >=25% above its own 50MA while SPY hugs its MA, once per
+  # position generation. Motivation: the measured chop bleed (-32 bps/day
+  # vs SPY) is UNREALIZED drift of held extended names — entries and exits
+  # both test clean. NOTE: regime-conditional cousin of the KILLED
+  # unconditional winner-tightening (jun-18) — shipped with explicit owner
+  # approval 2026-08-25, shadow-only, kill-or-bless. Evaluated ONLY via
+  # the 'shadow_chop_trim' ShadowStrategy stack.
+  # Pre-registered criteria (2026-08-25, before launch): paired vs
+  # shadow_baseline over >=1 full mixed-regime cycle including >=15 chop
+  # days AND >=5 trims fired; promote only if it beats baseline (the trim
+  # must pay for its lost trend upside); kill if it trails. No early call.
+  nostate_chop_trim:
+    hidden: true
+    label: "NoState Chop Trim (shadow)"
+    description: "nostate_cs_bear + one-time 30% trim of >=25%-extended holdings on chop days (live shadow A/B, aug-25)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+    chop_trim: { enabled: true, band_pct: 1.5, min_ext_pct: 25, trim_pct: 30 }
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -2210,4 +2300,21 @@ shadow_strategy_profiles:
     parent_strategy: nostate_ml_veto_off
     starting_value: 25000
     description: "cs_bear with the ML confidence veto OFF — aug-20 kill-or-bless (live cs_bear vetoes <0.30; observational read mildly pro-veto); gate: >=5 sub-0.30 buys closed over a mixed-regime cycle, trail baseline = bless veto, beat = retire it"
+    scorer_overrides: {}
+  # Chop entry bar A/B (2026-08-25): buy-side chop gate from the aug-25
+  # chop investigation (chop-band entries win 47% vs 65%). Gate
+  # pre-registered on the nostate_chop_entry_bar profile comment.
+  shadow_chop_entry_bar:
+    parent_strategy: nostate_chop_entry_bar
+    starting_value: 25000
+    description: "cs_bear + confirmed-breakout-only entries in the chop band — aug-25 candidate (chop entries win 47 vs 65 pct trend); gate: beat baseline over a mixed-regime cycle w/ >=15 chop days AND >=5 suppressed chop entries"
+    scorer_overrides: {}
+  # Chop trim A/B (2026-08-25): sell-side chop lever — the measured bleed
+  # is unrealized drift of HELD extended names. Regime-conditional cousin
+  # of the killed unconditional winner-tightening; owner-approved aug-25,
+  # kill-or-bless. Gate pre-registered on the nostate_chop_trim profile.
+  shadow_chop_trim:
+    parent_strategy: nostate_chop_trim
+    starting_value: 25000
+    description: "cs_bear + one-time 30 pct trim of >=25 pct-extended holdings on chop days — aug-25 candidate (chop bleed = unrealized drift of held names); gate: beat baseline over a mixed-regime cycle w/ >=15 chop days AND >=5 trims fired"
     scorer_overrides: {}

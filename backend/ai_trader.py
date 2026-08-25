@@ -47,6 +47,8 @@ from backend.trading_engine import (
     calculate_position_size_pct,
     apply_position_size_multipliers,
     chop_damper_multiplier,
+    chop_entry_bar_blocks,
+    chop_trim_pct,
     categorize_sell_reason,
     get_tightened_trailing_stop,
     evaluate_score_crash,
@@ -1815,6 +1817,29 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         elif vix_proxy > high_vix:
             logger.debug(f"VIX proxy {vix_proxy:.1f} > {high_vix}: widening stops to {effective_stop_loss_pct:.1f}%")
 
+    # CHOP TRIM precompute (profile-gated, default OFF — shadow_chop_trim arm
+    # only): SPY reference + once-per-position-generation guard, batched so
+    # the champion path pays nothing.
+    chop_trim_cfg = profile.get('chop_trim', {})
+    chop_trimmed_tickers: set = set()
+    chop_spy_px = chop_spy_ma = 0.0
+    if chop_trim_cfg.get('enabled', False):
+        _spy_ct = (market_data.get("indexes", {}) or {}).get("SPY", {}) if market_data.get("success") else {}
+        chop_spy_px = _spy_ct.get("price", 0) or 0
+        chop_spy_ma = _spy_ct.get("ma_50", 0) or 0
+        try:
+            _by_ticker_pos = {p.ticker: p for p in positions}
+            for t in db.query(AIPortfolioTrade).filter(
+                    AIPortfolioTrade.user_id == user_id,
+                    AIPortfolioTrade.action == "SELL",
+                    AIPortfolioTrade.reason.like("CHOP TRIM%")).all():
+                _p = _by_ticker_pos.get(t.ticker)
+                if (_p is not None and _p.purchase_date and t.executed_at
+                        and t.executed_at >= _p.purchase_date):
+                    chop_trimmed_tickers.add(t.ticker)
+        except Exception as e:
+            logger.debug(f"chop trim history lookup failed: {e}")
+
     for position in positions:
         # Use effective score based on stock type
         score = get_effective_score(position, use_current=True)
@@ -1914,6 +1939,27 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
                     "priority": 2  # High priority - protect gains
                 })
                 logger.info(f"{position.ticker}: Trailing stop triggered - peak ${position.peak_price:.2f}, now ${position.current_price:.2f} (-{drop_from_peak:.1f}%)")
+                continue
+
+        # CHOP TRIM (profile-gated, default OFF — shadow_chop_trim arm only):
+        # trim a slice of extended holdings on chop days; the measured chop
+        # bleed is unrealized drift of HELD names (2026-08-25 investigation).
+        # Once per position generation. MIRRORED in backtester.
+        if (chop_trim_cfg.get('enabled', False)
+                and position.ticker not in chop_trimmed_tickers):
+            _stock_ma50 = getattr(stock, 'ma_50', None) if stock else None
+            _ext_pct = (((position.current_price - _stock_ma50) / _stock_ma50 * 100.0)
+                        if _stock_ma50 and _stock_ma50 > 0 else None)
+            _trim = chop_trim_pct(chop_spy_px, chop_spy_ma, profile, _ext_pct)
+            if _trim:
+                sells.append({
+                    "position": position,
+                    "reason": f"CHOP TRIM ({_trim:.0f}%): +{_ext_pct:.0f}% above 50MA in chop regime",
+                    "priority": 3,
+                    "is_partial": True,
+                    "sell_pct": _trim,
+                })
+                logger.info(f"{position.ticker}: chop trim {_trim:.0f}% (ext +{_ext_pct:.0f}%)")
                 continue
 
         # PRE-EARNINGS TRAILING STOP TIGHTENING (synced with backtester)
@@ -3282,6 +3328,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     shares = position_value / stock.current_price
                     buy_signal_factors["ml_reduced"] = True
                     logger.info(f"ML REDUCE: {stock} confidence {ml_confidence:.3f} < {ml_min_confidence}, halved position")
+        # Chop entry bar (profile-gated, default OFF — shadow_chop_entry_bar
+        # arm only): in the chop band, only confirmed breakouts pass.
+        # MIRRORED in backtester per the parity rule.
+        if chop_entry_bar_blocks(spy_px, spy_50, profile, is_breaking_out):
+            logger.info(f"CHOP ENTRY BAR: {stock} skipped (unconfirmed entry in chop band)")
+            continue
         buys.append({
             "stock": stock,
             "shares": shares,

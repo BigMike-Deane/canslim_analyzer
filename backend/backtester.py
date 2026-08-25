@@ -49,6 +49,8 @@ from backend.trading_engine import (
     calculate_position_size_pct,
     apply_position_size_multipliers,
     chop_damper_multiplier,
+    chop_entry_bar_blocks,
+    chop_trim_pct,
     get_tightened_trailing_stop,
     evaluate_score_crash,
     sanitize_signal_factors,
@@ -2988,6 +2990,30 @@ class BacktestEngine:
                             sells.append(trade)
                         continue
 
+            # CHOP TRIM (profile-gated, default OFF — MIRRORS
+            # ai_trader.evaluate_sells per the parity rule): trim a slice of
+            # extended holdings on chop days, once per position generation.
+            if (self.profile.get('chop_trim', {}).get('enabled', False)
+                    and not getattr(position, 'chop_trim_taken', False)):
+                _ct_ext = (scores.get(ticker, {}) or {}).get('pct_from_50ma')
+                _ct_trim = chop_trim_pct(spy_data.get('price', 0), spy_data.get('ma_50', 0),
+                                         self.profile, _ct_ext)
+                if _ct_trim:
+                    position.chop_trim_taken = True
+                    trade = SimulatedTrade(
+                        ticker=ticker,
+                        action="SELL",
+                        shares=position.shares * (_ct_trim / 100.0),
+                        price=price,
+                        reason=f"CHOP TRIM ({_ct_trim:.0f}%): +{_ct_ext:.0f}% above 50MA in chop regime",
+                        score=current_score,
+                        priority=3,
+                        sell_pct=_ct_trim,
+                    )
+                    trade._signal_factors = {"sell_reason": "CHOP TRIM", "gain_pct": round(gain_pct, 1), "sell_pct": _ct_trim}
+                    sells.append(trade)
+                    continue
+
             # PRE-EARNINGS TRAILING STOP TIGHTENING
             # Non-CS positions approaching earnings get tighter trailing stops to protect gains
             # CS (Coiled Spring) positions are earnings plays — they hold through intentionally
@@ -3864,6 +3890,20 @@ class BacktestEngine:
                         _spy_chop.get("close", 0), _spy_chop.get("ma50", 0), self.profile)
                 except Exception:
                     pass  # market data unavailable — fail open, size normally
+
+            # Chop entry bar (profile-gated, default OFF — MIRRORS
+            # ai_trader.evaluate_buys per the parity rule): in the chop band
+            # only confirmed breakouts pass.
+            if self.profile.get('chop_entry_bar', {}).get('enabled', False) and self.data_provider:
+                try:
+                    _spy_ceb = self.data_provider.get_spy_daily_data(current_date)
+                    if chop_entry_bar_blocks(
+                            _spy_ceb.get("close", 0), _spy_ceb.get("ma50", 0),
+                            self.profile, score_data.get('is_breaking_out', False)):
+                        _funnel["chop_entry_bar"] = _funnel.get("chop_entry_bar", 0) + 1
+                        continue
+                except Exception:
+                    pass  # market data unavailable — fail open
 
             # Cap at profile max or market regime max AFTER all multipliers (matches live trader)
             profile_max_pct = self.profile.get('max_single_position_pct', 25)

@@ -665,6 +665,60 @@ def chop_damper_multiplier(spy_price: float, spy_ma50: float, profile: dict) -> 
     return 1.0
 
 
+def _in_chop_band(spy_price, spy_ma50, band_pct: float) -> bool:
+    """SPY sitting 0..band_pct% above its 50MA — the shared chop-regime
+    definition (below-MA days belong to the binary gate, not chop levers).
+    Missing market data returns False: every chop lever fails open."""
+    if not spy_price or not spy_ma50 or spy_ma50 <= 0:
+        return False
+    dist_pct = (spy_price - spy_ma50) / spy_ma50 * 100.0
+    return 0 <= dist_pct < band_pct
+
+
+def chop_entry_bar_blocks(spy_price: float, spy_ma50: float, profile: dict,
+                          is_breaking_out: bool) -> bool:
+    """Buy-side chop gate (shadow_chop_entry_bar arm, 2026-08-25) — True
+    when this candidate should be SKIPPED entirely.
+
+    Motivation (live realized outcomes, 96 round-trips): entries opened in
+    the chop band win 47% vs 65% for trend entries, and the weak cohort is
+    unconfirmed pre-breakouts. In chop, only CONFIRMED breakouts pass; on
+    trend days behavior is identical to the champion. Default OFF — the
+    champion profile never enables it; live A/B via the shadow stack only.
+    """
+    cfg = profile.get('chop_entry_bar', {})
+    if not cfg.get('enabled', False):
+        return False
+    if not _in_chop_band(spy_price, spy_ma50, cfg.get('band_pct', 1.5)):
+        return False
+    return cfg.get('require_breakout', True) and not is_breaking_out
+
+
+def chop_trim_pct(spy_price: float, spy_ma50: float, profile: dict,
+                  stock_ext_pct: float | None) -> float | None:
+    """Sell-side chop trim (shadow_chop_trim arm, 2026-08-25) — the partial
+    percentage to trim from an extended holding on a chop day, or None.
+
+    Motivation: the measured chop bleed (-32 bps/day vs SPY) is unrealized
+    drift of HELD extended names, not entries or exits. This trims a slice
+    of positions stretched >= min_ext_pct above their own 50MA while SPY
+    hugs its MA. Regime-conditional cousin of the KILLED unconditional
+    winner-tightening (jun-18) — shipped ONLY as a shadow arm with a
+    pre-registered kill-or-bless gate; caller enforces once-per-position.
+    Default OFF; the champion profile never enables it.
+    """
+    cfg = profile.get('chop_trim', {})
+    if not cfg.get('enabled', False):
+        return None
+    if not _in_chop_band(spy_price, spy_ma50, cfg.get('band_pct', 1.5)):
+        return None
+    if stock_ext_pct is None or stock_ext_pct != stock_ext_pct:
+        return None  # missing/NaN extension — fail open
+    if stock_ext_pct < cfg.get('min_ext_pct', 25.0):
+        return None
+    return float(cfg.get('trim_pct', 30.0))
+
+
 def apply_position_size_multipliers(
     position_pct: float,
     pre_breakout_bonus: float,

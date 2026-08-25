@@ -257,3 +257,32 @@ class TestStopClockVerdict:
         for i, g in enumerate((-8.0, -8.5)):
             _stop_sell(db_session, g, ticker=f"T{i}")
         assert compute_experiment_gates(db_session) == _call(db_session)
+
+
+class TestChopArmGates:
+    """Gate metrics for the aug-25 chop arms (entry bar + trim)."""
+
+    def test_chop_trim_counts_trims(self, db_session):
+        arm = _arm(db_session, "shadow_chop_trim")
+        _arm(db_session, "shadow_baseline")
+        _trade(db_session, arm.id, "AAA", "SELL",
+               reason="CHOP TRIM (30%): +31% above 50MA in chop regime")
+        _trade(db_session, arm.id, "BBB", "SELL", reason="TRAILING STOP: test")
+        out = _call(db_session)
+        row = next(a for a in out["arms"] if a["name"] == "shadow_chop_trim")
+        trims = _metric(row, "chop trims fired")
+        assert trims["n"] == 1
+        assert trims["target"] == 5
+        assert _metric(row, "chop days") is not None
+
+    def test_chop_entry_bar_suppression_proxy(self, db_session):
+        arm = _arm(db_session, "shadow_chop_entry_bar")
+        base = _arm(db_session, "shadow_baseline")
+        # Baseline bought two names; the arm only took one -> 1 suppressed
+        _trade(db_session, base.id, "AAA", "BUY")
+        _trade(db_session, base.id, "BBB", "BUY")
+        _trade(db_session, arm.id, "AAA", "BUY")
+        out = _call(db_session)
+        row = next(a for a in out["arms"] if a["name"] == "shadow_chop_entry_bar")
+        sup = _metric(row, "baseline buys not taken (suppression proxy)")
+        assert sup["n"] == 1
