@@ -4052,6 +4052,12 @@ async def get_ai_portfolio_edge_reconciliation(
     if since_dt is not None:
         live_q = live_q.filter(AIPortfolioTrade.executed_at >= since_dt)
     live_sells = live_q.all()
+    # Split artifacts (e.g. SFBS 2:1 on 2026-08-21) are not genuine exits —
+    # a repaired row carries signal_factors.split_artifact and must not skew
+    # the pre-registered stop-loss cohort stats.
+    live_sells = [t for t in live_sells
+                  if not ((t.signal_factors or {}).get("split_artifact")
+                          if isinstance(t.signal_factors, dict) else False)]
     live_records = [live_trade_to_record(t) for t in live_sells]
     live_summary = summarize_exits(live_records)
 

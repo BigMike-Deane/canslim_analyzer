@@ -1107,6 +1107,91 @@ def fetch_live_price(ticker: str) -> float | None:
     return None
 
 
+def fetch_recent_split(ticker: str, lookback_days: int = 10) -> float | None:
+    """Return the share-adjustment factor of a stock split effective within
+    the last lookback_days, or None if there was none (or FMP is unreachable).
+
+    Factor is numerator/denominator: a 2:1 forward split returns 2.0
+    (shares multiply by it, per-share prices divide by it); a 1:10 reverse
+    split returns 0.1. Fail-soft: any error returns None so the trading
+    cycle never blocks on this lookup.
+    """
+    import requests
+
+    fmp_api_key = os.environ.get('FMP_API_KEY', '')
+    if not fmp_api_key:
+        return None
+    url = f"https://financialmodelingprep.com/stable/splits?symbol={ticker}&apikey={fmp_api_key}"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None
+        cutoff = date.today() - timedelta(days=lookback_days)
+        for row in resp.json() or []:
+            try:
+                split_date = date.fromisoformat(str(row.get("date", ""))[:10])
+                numerator = float(row.get("numerator") or 0)
+                denominator = float(row.get("denominator") or 0)
+            except (TypeError, ValueError):
+                continue
+            if split_date >= cutoff and numerator > 0 and denominator > 0:
+                factor = numerator / denominator
+                if abs(factor - 1.0) > 1e-9:
+                    return factor
+    except Exception as e:
+        logger.warning(f"FMP split lookup failed for {ticker}: {e}")
+    return None
+
+
+def maybe_apply_split_adjustment(position, new_price: float) -> bool:
+    """Scale a position through a stock split so the raw-quote jump does not
+    register as a price collapse and fire a phantom stop.
+
+    Quotes arrive split-adjusted the morning a split takes effect, but the
+    position's shares/cost_basis/peak_price are still pre-split (SFBS 2:1 on
+    2026-08-21 booked a -50.2% "STOP LOSS" this way). A large move vs the
+    last stored price is only treated as a split when FMP's splits feed
+    confirms one took effect recently; the confirmed ratio is applied even
+    if the day also had real movement. Returns True when adjusted.
+    """
+    old_price = getattr(position, "current_price", None)
+    if not old_price or not new_price:
+        return False
+    ratio = new_price / old_price
+    # Ordinary moves stay inside this band; the band also makes the
+    # adjustment idempotent — once applied, ratio returns to ~1 and the
+    # position is never re-scaled for the same split.
+    if 0.75 < ratio < 1.4:
+        return False
+    factor = fetch_recent_split(position.ticker)
+    if not factor:
+        return False
+    old_shares = position.shares
+    old_basis = position.cost_basis
+    position.shares = position.shares * factor
+    position.cost_basis = position.cost_basis / factor
+    if position.peak_price:
+        position.peak_price = position.peak_price / factor
+    logger.warning(
+        f"{position.ticker}: split adjustment x{factor:g} applied — "
+        f"shares {old_shares:.4f}->{position.shares:.4f}, "
+        f"cost basis ${old_basis:.2f}->${position.cost_basis:.2f}"
+    )
+    try:
+        from backend.email_utils import create_notification
+        create_notification(
+            user_id=position.user_id,
+            kind="risk_alert",
+            title=f"Stock split adjusted: {position.ticker}",
+            body=(f"{position.ticker} split (factor {factor:g}) — position rescaled: "
+                  f"shares x{factor:g}, cost basis ${old_basis:.2f} -> "
+                  f"${position.cost_basis:.2f}. No trade executed."),
+        )
+    except Exception as e:
+        logger.debug(f"Split notification failed for {position.ticker}: {e}")
+    return True
+
+
 def update_position_prices(db: Session, use_live_prices: bool = True, user_id: int = 1):
     """Update all position prices - fetches live prices by default.
     Also tracks peak price for trailing stop loss.
@@ -1138,6 +1223,10 @@ def update_position_prices(db: Session, use_live_prices: bool = True, user_id: i
             current_price = stock.current_price if stock else None
 
         if current_price:
+            try:
+                maybe_apply_split_adjustment(position, current_price)
+            except Exception as e:
+                logger.warning(f"{position.ticker}: split check failed: {e}")
             position.current_price = current_price
             position.current_value = position.shares * current_price
             position.gain_loss = position.current_value - (position.shares * position.cost_basis)
