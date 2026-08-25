@@ -549,3 +549,47 @@ class TestBootstrapRegimeExcess:
         reg = regime_conditional_edge(port, spy, dist)
         assert boot["overall"]["n_days"] == 12
         assert reg["trend"]["n_days"] == 12
+
+
+class TestRegimeMixSummary:
+    """regime_mix_summary — trailing trend share vs breakeven share
+    (owner ask 2026-08-25: 'is the tape trend-heavy enough?')."""
+
+    def _regime(self, trend_bps, chop_bps):
+        return {"trend": {"mean_daily_excess_bps": trend_bps},
+                "chop": {"mean_daily_excess_bps": chop_bps}}
+
+    def test_share_breakeven_and_blend(self):
+        from backend.edge_metrics import regime_mix_summary
+        dists = [2.0] * 42 + [0.5] * 18  # 70% trend over the window
+        out = regime_mix_summary(dists, self._regime(23.3, -32.4))
+        assert out["trend_share_pct"] == 70.0
+        assert abs(out["breakeven_trend_share_pct"] - 58.2) < 0.2
+        assert out["above_breakeven"] is True
+        # blend = .7*23.3 + .3*(-32.4) = 6.59
+        assert abs(out["blended_daily_excess_bps"] - 6.6) < 0.15
+
+    def test_below_breakeven_flagged(self):
+        from backend.edge_metrics import regime_mix_summary
+        dists = [2.0] * 30 + [0.5] * 30  # 50% trend
+        out = regime_mix_summary(dists, self._regime(23.3, -32.4))
+        assert out["above_breakeven"] is False
+        assert out["blended_daily_excess_bps"] < 0
+
+    def test_no_breakeven_without_canonical_signs(self):
+        from backend.edge_metrics import regime_mix_summary
+        dists = [2.0] * 40 + [0.5] * 20
+        out = regime_mix_summary(dists, self._regime(23.3, 5.0))  # chop positive
+        assert "breakeven_trend_share_pct" not in out
+        assert out["trend_share_pct"] == round(40 / 60 * 100, 1)
+        out2 = regime_mix_summary(dists, None)  # no regime data at all
+        assert out2["trend_share_pct"] == round(40 / 60 * 100, 1)
+
+    def test_window_and_none_handling(self):
+        from backend.edge_metrics import regime_mix_summary
+        # None dists dropped; window trims to the trailing 60 classified days
+        dists = [None] * 5 + [0.5] * 100 + [2.0] * 60
+        out = regime_mix_summary(dists, self._regime(20.0, -20.0))
+        assert out["window_days"] == 60
+        assert out["trend_share_pct"] == 100.0
+        assert regime_mix_summary([2.0] * 5, None) is None  # < 10 days

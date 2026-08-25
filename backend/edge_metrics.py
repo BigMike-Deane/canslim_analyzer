@@ -635,6 +635,50 @@ def regime_conditional_edge(
             "threshold_pct": trend_threshold_pct}
 
 
+def regime_mix_summary(
+    spy_dist_pct: Sequence[Optional[float]],
+    regime_edge: Optional[dict],
+    window_days: int = 60,
+    trend_threshold_pct: float = 1.5,
+) -> Optional[dict]:
+    """Trailing regime mix vs the breakeven mix (owner ask 2026-08-25).
+
+    The strategy's blended edge is a weighted average of a positive
+    trend-day mean and a negative chop-day mean, so whether it beats SPY
+    is a function of the market's regime mix: breakeven trend share =
+    |chop| / (trend + |chop|). This reports the trailing window's actual
+    trend share against that bar, turning "should I worry about chop?"
+    into a glanceable meter. Descriptive only — same persistence caveats
+    as regime_conditional_edge (the means are point estimates).
+
+    Returns None with <10 classified days. breakeven/blended fields are
+    present only when the regime means have the canonical signs
+    (trend > 0 > chop); with any other sign pattern a breakeven share
+    doesn't exist, and the mix alone is still reported.
+    """
+    dists = [d for d in spy_dist_pct if d is not None]
+    tail = dists[-window_days:]
+    if len(tail) < 10:
+        return None
+    share = sum(1 for d in tail if d > trend_threshold_pct) / len(tail)
+    out = {
+        "window_days": len(tail),
+        "trend_share_pct": round(share * 100.0, 1),
+        "threshold_pct": trend_threshold_pct,
+    }
+    trend = (regime_edge or {}).get("trend")
+    chop = (regime_edge or {}).get("chop")
+    if trend and chop:
+        tm = trend.get("mean_daily_excess_bps") or 0.0
+        cm = chop.get("mean_daily_excess_bps") or 0.0
+        if tm > 0 > cm:
+            breakeven = -cm / (tm - cm)
+            out["breakeven_trend_share_pct"] = round(breakeven * 100.0, 1)
+            out["blended_daily_excess_bps"] = round(share * tm + (1.0 - share) * cm, 1)
+            out["above_breakeven"] = bool(share > breakeven)
+    return out
+
+
 def bootstrap_regime_excess(
     port_values: Sequence[float],
     spy_values: Sequence[Optional[float]],

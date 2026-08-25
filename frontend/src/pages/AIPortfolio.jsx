@@ -1074,6 +1074,47 @@ function VerdictLedger({ summary, edge }) {
             </div>
           </div>
         )}
+        {/* Regime mix (owner ask Aug-25): the blended edge is positive only
+            while the tape stays trend-heavy enough — this shows the trailing
+            trend-day share against that breakeven bar. */}
+        {edge.regime_mix?.trend_share_pct != null && (
+          <div
+            title={`Of the last ${edge.regime_mix.window_days} trading days, ${edge.regime_mix.trend_share_pct}% were trend days (SPY > ${edge.regime_mix.threshold_pct}% above its 50MA). ${edge.regime_mix.breakeven_trend_share_pct != null ? `At the measured trend/chop edges, the strategy beats SPY only while the trend share stays above ${edge.regime_mix.breakeven_trend_share_pct}% — the white tick.` : 'No breakeven bar: the trend/chop edge signs are not in their usual pattern right now.'}`}
+          >
+            <div className="flex justify-between text-[10px] uppercase tracking-[.12em] text-dark-400 mb-1">
+              <span>Regime mix — market weather</span>
+              <b className={`tracking-normal font-data ${
+                edge.regime_mix.above_breakeven === false ? 'text-red-400' : 'text-dark-300'
+              }`}>
+                {edge.regime_mix.trend_share_pct.toFixed(0)}% trend ({edge.regime_mix.window_days}d)
+              </b>
+            </div>
+            <div className="relative">
+              <div className="h-1.5 rounded-full bg-dark-750 overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${
+                    edge.regime_mix.above_breakeven === false ? 'bg-red-500/70' : 'bg-emerald-500/70'
+                  }`}
+                  style={{ width: `${Math.min(100, edge.regime_mix.trend_share_pct).toFixed(1)}%` }}
+                />
+              </div>
+              {edge.regime_mix.breakeven_trend_share_pct != null && (
+                <span
+                  className="absolute -top-1 -bottom-1 w-px bg-dark-100"
+                  style={{ left: `${Math.min(100, edge.regime_mix.breakeven_trend_share_pct).toFixed(1)}%` }}
+                />
+              )}
+            </div>
+            {edge.regime_mix.breakeven_trend_share_pct != null && (
+              <div className="mt-1 text-[9px] leading-3 text-dark-400">
+                breakeven {edge.regime_mix.breakeven_trend_share_pct.toFixed(0)}% —{' '}
+                {edge.regime_mix.above_breakeven
+                  ? <>tape is trend-heavy enough; blended edge ≈ +{edge.regime_mix.blended_daily_excess_bps} bps/day</>
+                  : <>below breakeven; blended edge ≈ {edge.regime_mix.blended_daily_excess_bps} bps/day</>}
+              </div>
+            )}
+          </div>
+        )}
         {/* Bootstrap check (edge inference v2, Aug-25): block-bootstrap CIs on
             the same paired daily-excess series as the t-based meter above —
             robust to fat tails and week-scale autocorrelation, so this is the
