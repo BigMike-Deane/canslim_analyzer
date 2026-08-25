@@ -975,10 +975,14 @@ function VerdictLedger({ summary, edge }) {
         <div className="text-sm text-dark-300">
           SPY same window <b className="text-dark-100 font-data">{pct(edge.spy_return_pct)}</b>
         </div>
-        <div className="ml-auto text-right">
+        <div
+          className="ml-auto text-right"
+          title="Portfolio return minus SPY's return over the same date-aligned days, in percentage points. This is the raw scoreboard; the meters below say how confident to be that it's skill rather than luck."
+        >
           <div className="text-[10px] uppercase tracking-[.18em] text-dark-400">Edge vs SPY</div>
           <div className="text-2xl font-bold text-primary-400 font-data">
-            {edge.excess_return_pct >= 0 ? '+' : ''}{edge.excess_return_pct?.toFixed(1)} pp
+            {edge.excess_return_pct == null ? '—'
+              : `${edge.excess_return_pct >= 0 ? '+' : ''}${edge.excess_return_pct.toFixed(1)} pp`}
           </div>
         </div>
       </div>
@@ -989,8 +993,20 @@ function VerdictLedger({ summary, edge }) {
         ) : R?.trend ? (
           <>
             <b className="text-dark-100">Promising, not yet proven.</b>{' '}
-            All measured edge sits on trend days ({R.trend.mean_daily_excess_bps > 0 ? '+' : ''}{R.trend.mean_daily_excess_bps} bps/day)
-            {R.chop && <>; chop days cost {R.chop.mean_daily_excess_bps} bps/day</>}.
+            {/* Claim guarded by the data (UI grammar rule): only assert
+                "edge lives on trend days" while trend is positive and chop
+                isn't — otherwise state the split neutrally. */}
+            {R.trend.mean_daily_excess_bps > 0 && (!R.chop || R.chop.mean_daily_excess_bps <= 0) ? (
+              <>
+                The measured edge sits on trend days (+{R.trend.mean_daily_excess_bps} bps/day)
+                {R.chop && <>; chop days cost {R.chop.mean_daily_excess_bps} bps/day</>}.
+              </>
+            ) : (
+              <>
+                Trend days run {R.trend.mean_daily_excess_bps > 0 ? '+' : ''}{R.trend.mean_daily_excess_bps} bps/day vs SPY
+                {R.chop && <>; chop days {R.chop.mean_daily_excess_bps > 0 ? '+' : ''}{R.chop.mean_daily_excess_bps} bps/day</>}.
+              </>
+            )}
             {R.trend.additional_days_needed != null && (
               <> Statistical proof needs ≈<b className="text-dark-100">{R.trend.additional_days_needed} more trend days</b>.</>
             )}
@@ -1077,7 +1093,11 @@ function VerdictLedger({ summary, edge }) {
                 if (!b) return null
                 const pos = (b.alpha_annualized_pct ?? 0) >= 0
                 return (
-                  <span key={key} className="whitespace-nowrap">
+                  <span
+                    key={key}
+                    className="whitespace-nowrap"
+                    title={`Across the ${b.n_days} ${key === 'overall' ? 'trading' : key} days measured so far, the portfolio ${pos ? 'beat' : 'trailed'} SPY at a pace of ${b.alpha_annualized_pct?.toFixed(0)}%/yr — the rate it would compound at if every day looked like these. The bracket is the 95% plausible range; the last number is the chance the true edge on these days is positive.`}
+                  >
                     <span className="text-dark-400">{label}</span>{' '}
                     <b className={`font-data ${pos ? 'text-emerald-400' : 'text-red-400'}`}>
                       {pos ? '+' : ''}{b.alpha_annualized_pct?.toFixed(0)}%/yr
@@ -1088,7 +1108,7 @@ function VerdictLedger({ summary, edge }) {
                     <b className={`font-data ${b.excludes_zero_95 ? (pos ? 'text-emerald-400' : 'text-red-400') : 'text-amber-300'}`}>
                       {b.prob_positive_pct?.toFixed(0)}%
                     </b>
-                    <span className="text-dark-500"> · {b.n_days}d</span>
+                    <span className="text-dark-500"> likely real · {b.n_days}d</span>
                   </span>
                 )
               })}
