@@ -1108,7 +1108,10 @@ function VerdictLedger({ summary, edge }) {
                     <b className={`font-data ${b.excludes_zero_95 ? (pos ? 'text-emerald-400' : 'text-red-400') : 'text-amber-300'}`}>
                       {b.prob_positive_pct?.toFixed(0)}%
                     </b>
-                    <span className="text-dark-500"> likely real · {b.n_days}d</span>
+                    {/* "measured" is load-bearing: without it the owner read
+                        the sample size as a countdown (Aug-25). The countdown
+                        lives in the Trend-day clock above. */}
+                    <span className="text-dark-500"> likely real · {b.n_days}d measured</span>
                   </span>
                 )
               })}
