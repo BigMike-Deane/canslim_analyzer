@@ -708,6 +708,25 @@ function GateProgressCard() {
           )}
         </div>
       )}
+      {/* Date-based calendar clocks: the pre-registered re-check schedule
+          self-reports here instead of living in session notes. */}
+      {(data.program_clocks?.calendar || []).length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2 text-[10px] border-b border-dark-700/40 pb-3">
+          {data.program_clocks.calendar.map(c => (
+            <span
+              key={c.label}
+              title={`Due ${c.due_date}`}
+              className={`px-2 py-0.5 rounded border ${
+                c.due
+                  ? 'bg-red-500/15 text-red-400 border-red-500/20 font-semibold'
+                  : 'bg-dark-850 text-dark-400 border-dark-700'
+              }`}
+            >
+              {c.label} · {c.due ? 'DUE' : `${c.days_until}d`}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
         {(data.arms || []).map(arm => (
           <div key={arm.id} className="space-y-1.5 min-w-0">

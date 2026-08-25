@@ -21,7 +21,10 @@ const Breakouts = lazy(() => import('./pages/Breakouts'))
 const Backtest = lazy(() => import('./pages/Backtest'))
 const Analytics = lazy(() => import('./pages/Analytics'))
 const CoiledSpringHistory = lazy(() => import('./pages/CoiledSpringHistory'))
-const FidelitySync = lazy(() => import('./pages/FidelitySync'))
+// FidelitySync retired 2026-08-25 (owner call: no brokerage integration until
+// the app earns real-money confidence; last CSV upload was 2026-03-03).
+// Page component + backend routes + data kept intact for revival — re-add the
+// lazy import, the /fidelity route, and the Sidebar entry to bring it back.
 const Admin = lazy(() => import('./pages/Admin'))
 const BearBase = lazy(() => import('./pages/BearBase'))
 const EarningsGapups = lazy(() => import('./pages/EarningsGapups'))
@@ -80,7 +83,6 @@ function AppContent() {
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/coiled-spring/history" element={<CoiledSpringHistory />} />
-            <Route path="/fidelity" element={<FidelitySync />} />
             <Route path="/trade-journal" element={<Navigate to="/analytics" replace />} />
             <Route path="/bear-base" element={<BearBase />} />
             <Route path="/gapups" element={<EarningsGapups />} />
@@ -91,6 +93,7 @@ function AppContent() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/decision-log" element={<Navigate to="/ai-portfolio" replace />} />
+            <Route path="/fidelity" element={<Navigate to="/" replace />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
           </Suspense>

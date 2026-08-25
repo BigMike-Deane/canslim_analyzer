@@ -370,6 +370,16 @@ def _gates_card_html(db: Session, shadow_name: str) -> str:
             pill = _pill(f'{n}/{target}', '#6b7280')
         rows.append(_tr(clock.get('label') or 'Stop-loss re-check', detail, pill))
 
+    # Date-based calendar clocks: pre-registered re-check dates self-report.
+    for c in (gates.get('program_clocks') or {}).get('calendar') or []:
+        if c.get('due'):
+            pill = _pill('DUE', '#dc2626')
+            detail = f"was due {c.get('due_date')}"
+        else:
+            pill = _pill(f"in {c.get('days_until')}d", '#6b7280')
+            detail = f"due {c.get('due_date')}"
+        rows.append(_tr(c.get('label') or '', detail, pill))
+
     arm = next((a for a in gates.get('arms') or []
                 if a.get('name') == shadow_name), None)
     if arm:

@@ -3,7 +3,7 @@ operational diagnostics that are too sensitive for the public API."""
 
 import json
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -1716,8 +1716,32 @@ def compute_experiment_gates(db: Session) -> dict:
     if stop_avg is not None and len(stop_pcts) >= 5:
         stop_verdict = "PASS" if stop_avg >= -10.0 else "FAIL"
 
+    # Date-based program clocks (PM program 2026-08-25): the pre-registered
+    # re-check calendar lives in the product instead of session notes, so
+    # each date self-reports on the Gate Progress card and the Monday email.
+    # Reschedule by editing here; provenance in the memory/backlog notes.
+    CALENDAR_CLOCKS = [
+        {"label": "Improving Radar out-of-sample re-validation",
+         "due_date": "2026-09-15"},
+        {"label": "ML demotion-cohort re-read (post per-lot FIFO fix)",
+         "due_date": "2026-09-20"},
+        {"label": "CS confidence v2 recalibration (~200 outcomes, post-Aug-19 rows)",
+         "due_date": "2026-11-15"},
+    ]
+    _today = datetime.now(timezone.utc).date()
+    calendar = []
+    for c in CALENDAR_CLOCKS:
+        _due = date_cls.fromisoformat(c["due_date"])
+        calendar.append({
+            "label": c["label"],
+            "due_date": c["due_date"],
+            "days_until": (_due - _today).days,
+            "due": _today >= _due,
+        })
+
     return {
         "program_clocks": {
+            "calendar": calendar,
             "stop_loss_recheck": {
                 "label": "Exit-fix re-check (owner stops since Jun-24)",
                 "n": len(stop_pcts), "target": 5,

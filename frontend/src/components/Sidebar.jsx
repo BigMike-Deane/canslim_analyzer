@@ -30,7 +30,6 @@ const navGroups = [
     items: [
       { to: '/backtest', icon: 'rewind', label: 'Backtest' },
       { to: '/watchlist', icon: 'eye', label: 'Watchlist' },
-      { to: '/fidelity', icon: 'sync', label: 'Fidelity' },
     ],
   },
   {
