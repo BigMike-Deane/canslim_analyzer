@@ -885,3 +885,42 @@ class TestShadowVsBaselineSnapshot:
             assert 'vs shadow_baseline' in result['subject']
         finally:
             db.close()
+
+
+class TestClocksCard:
+    """Pre-registered clocks card (PM program 2026-08-25): the weekly shadow
+    email inlines compute_experiment_gates so verdict-ready clocks announce
+    themselves. Reuses TestShadowVsBaselineSnapshot's seeding."""
+
+    def test_clocks_card_renders_in_shadow_email(self):
+        helper = TestShadowVsBaselineSnapshot()
+        db = helper._db()
+        try:
+            helper._seed_stack(db, "shadow_baseline", [50.0, -30.0, 40.0], start_day=1)
+            helper._seed_stack(db, "shadow_exp", [80.0, 20.0, 60.0], start_day=1)
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            assert 'Pre-registered clocks' in snap['html']
+            # The universal per-arm accrual gate appears for this arm
+            assert 'closed sells (weekly-email gate)' in snap['html']
+            # The program-level stop clock appears even with no stops yet
+            assert 'Exit-fix re-check' in snap['html']
+        finally:
+            db.close()
+
+    def test_clocks_card_fails_soft(self):
+        helper = TestShadowVsBaselineSnapshot()
+        db = helper._db()
+        try:
+            helper._seed_stack(db, "shadow_baseline", [50.0, -30.0, 40.0], start_day=1)
+            helper._seed_stack(db, "shadow_exp", [80.0, 20.0, 60.0], start_day=1)
+            from unittest.mock import patch
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            with patch("backend.ab_eval_email.compute_experiment_gates",
+                       side_effect=RuntimeError("boom")):
+                snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db)
+            # Monitoring email must still send, just without the card
+            assert 'Pre-registered clocks' not in snap['html']
+            assert 'Side-by-side' in snap['html']
+        finally:
+            db.close()

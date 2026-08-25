@@ -1107,6 +1107,11 @@ def fetch_live_price(ticker: str) -> float | None:
     return None
 
 
+# (ticker, date) -> factor|None; process-local, naturally expires by keying
+# on today's date. Transient HTTP failures are never cached.
+_split_lookup_cache: dict = {}
+
+
 def fetch_recent_split(ticker: str, lookback_days: int = 10) -> float | None:
     """Return the share-adjustment factor of a stock split effective within
     the last lookback_days, or None if there was none (or FMP is unreachable).
@@ -1121,6 +1126,12 @@ def fetch_recent_split(ticker: str, lookback_days: int = 10) -> float | None:
     fmp_api_key = os.environ.get('FMP_API_KEY', '')
     if not fmp_api_key:
         return None
+    # One lookup per ticker per day: shadow reconciliation re-checks every
+    # outlier position each scan tick (~16/day), and the answer can't change
+    # intraday. Negative results (None) are cached too.
+    cache_key = (ticker, date.today())
+    if cache_key in _split_lookup_cache:
+        return _split_lookup_cache[cache_key]
     url = f"https://financialmodelingprep.com/stable/splits?symbol={ticker}&apikey={fmp_api_key}"
     try:
         resp = requests.get(url, timeout=10)
@@ -1137,8 +1148,11 @@ def fetch_recent_split(ticker: str, lookback_days: int = 10) -> float | None:
             if split_date >= cutoff and numerator > 0 and denominator > 0:
                 factor = numerator / denominator
                 if abs(factor - 1.0) > 1e-9:
+                    _split_lookup_cache[cache_key] = factor
                     return factor
+        _split_lookup_cache[cache_key] = None
     except Exception as e:
+        # Transient failures are NOT cached — retry next call.
         logger.warning(f"FMP split lookup failed for {ticker}: {e}")
     return None
 
@@ -1177,6 +1191,10 @@ def maybe_apply_split_adjustment(position, new_price: float) -> bool:
         f"shares {old_shares:.4f}->{position.shares:.4f}, "
         f"cost basis ${old_basis:.2f}->${position.cost_basis:.2f}"
     )
+    # Shadow synthetic positions carry a negative sentinel user_id — the
+    # adjustment applies, but no human should be notified for them.
+    if not position.user_id or position.user_id < 0:
+        return True
     try:
         from backend.email_utils import create_notification
         create_notification(

@@ -8,7 +8,19 @@ import types
 from datetime import date, timedelta
 from unittest.mock import patch, MagicMock
 
+import pytest
+
+from backend import ai_trader
 from backend.ai_trader import fetch_recent_split, maybe_apply_split_adjustment
+
+
+@pytest.fixture(autouse=True)
+def _clear_split_cache():
+    """The per-day lookup cache is correct in production but leaks results
+    across tests that mock different FMP responses for the same ticker."""
+    ai_trader._split_lookup_cache.clear()
+    yield
+    ai_trader._split_lookup_cache.clear()
 
 
 def make_position(**overrides):

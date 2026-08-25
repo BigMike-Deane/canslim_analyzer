@@ -21,6 +21,7 @@ Conventions
 from __future__ import annotations
 
 import math
+import random
 import statistics
 from typing import Optional, Sequence
 
@@ -545,6 +546,30 @@ def _win_rate(realized_gains: Sequence[float]) -> Optional[float]:
     return round(wins / len(gains) * 100, 1)
 
 
+def _paired_excess_series(
+    port_values: Sequence[float],
+    spy_values: Sequence[Optional[float]],
+    spy_dist_pct: Sequence[Optional[float]],
+) -> list[tuple[float, float]]:
+    """Aligned (daily excess return, SPY 50MA distance) pairs.
+
+    Day i is included only when both series have valid values on i-1 and i
+    and the regime distance is known on the RETURN day i — the exact
+    filtering regime_conditional_edge has always used, factored out so the
+    bootstrap resamples the identical series the t-test sees.
+    """
+    n = min(len(port_values), len(spy_values), len(spy_dist_pct))
+    out: list[tuple[float, float]] = []
+    for i in range(1, n):
+        pv0, pv1 = port_values[i - 1], port_values[i]
+        sv0, sv1 = spy_values[i - 1], spy_values[i]
+        dist = spy_dist_pct[i]
+        if not pv0 or not pv1 or not sv0 or not sv1 or dist is None:
+            continue
+        out.append(((pv1 / pv0 - 1.0) - (sv1 / sv0 - 1.0), dist))
+    return out
+
+
 def regime_conditional_edge(
     port_values: Sequence[float],
     spy_values: Sequence[Optional[float]],
@@ -573,17 +598,11 @@ def regime_conditional_edge(
     required/additional day counts at 95%/80% (same formula and caveats as
     _power_analysis — assumes the effect persists, iid days).
     """
-    n = min(len(port_values), len(spy_values), len(spy_dist_pct))
-    if n < 3:
+    series = _paired_excess_series(port_values, spy_values, spy_dist_pct)
+    if not series:
         return None
     buckets: dict[str, list[float]] = {"trend": [], "chop": []}
-    for i in range(1, n):
-        pv0, pv1 = port_values[i - 1], port_values[i]
-        sv0, sv1 = spy_values[i - 1], spy_values[i]
-        dist = spy_dist_pct[i]
-        if not pv0 or not pv1 or not sv0 or not sv1 or dist is None:
-            continue
-        excess = (pv1 / pv0 - 1.0) - (sv1 / sv0 - 1.0)
+    for excess, dist in series:
         buckets["trend" if dist > trend_threshold_pct else "chop"].append(excess)
 
     def _bucket_stats(xs: list[float]) -> Optional[dict]:
@@ -614,3 +633,90 @@ def regime_conditional_edge(
         return None
     return {"trend": trend, "chop": chop,
             "threshold_pct": trend_threshold_pct}
+
+
+def bootstrap_regime_excess(
+    port_values: Sequence[float],
+    spy_values: Sequence[Optional[float]],
+    spy_dist_pct: Sequence[Optional[float]],
+    trend_threshold_pct: float = 1.5,
+    n_boot: int = 2000,
+    block_len: int = 5,
+    seed: int = 20260825,
+) -> Optional[dict]:
+    """Moving-block bootstrap CIs on the paired daily excess-return series.
+
+    Complements regime_conditional_edge on the SAME series and buckets: the
+    t/normal tests there assume iid near-normal days, but daily excess
+    returns are fat-tailed and mildly autocorrelated, so those intervals
+    can be optimistic. Resampling contiguous blocks (block_len trading
+    days, ~1 week) preserves short-range dependence and skew — these are
+    the intervals to gate real-money decisions on.
+
+    Deterministic for a given seed (fixed random.Random stream), so the
+    numbers are stable across refreshes of the same window. Buckets with
+    fewer than 8 days return None. prob_positive_pct is the fraction of
+    bootstrap means above zero — the plain-language "chance the edge is
+    real given the data so far".
+    """
+    series = _paired_excess_series(port_values, spy_values, spy_dist_pct)
+    if len(series) < 8:
+        return None
+    samples = {
+        "overall": [e for e, _ in series],
+        "trend": [e for e, d in series if d > trend_threshold_pct],
+        "chop": [e for e, d in series if d <= trend_threshold_pct],
+    }
+    rng = random.Random(seed)
+
+    def _boot(xs: list[float]) -> Optional[dict]:
+        n = len(xs)
+        if n < 8:
+            return None
+        length = max(1, min(block_len, n // 2))
+        starts = n - length + 1
+        n_blocks = math.ceil(n / length)
+        means = []
+        for _ in range(n_boot):
+            sample: list[float] = []
+            for _ in range(n_blocks):
+                s = rng.randrange(starts)
+                sample.extend(xs[s:s + length])
+            del sample[n:]
+            means.append(sum(sample) / n)
+        means.sort()
+
+        def _pctile(p: float) -> float:
+            idx = p * (len(means) - 1)
+            lo_i = math.floor(idx)
+            hi_i = math.ceil(idx)
+            frac = idx - lo_i
+            return means[lo_i] * (1.0 - frac) + means[hi_i] * frac
+
+        lo, hi = _pctile(0.025), _pctile(0.975)
+        mean = statistics.fmean(xs)
+        prob_pos = sum(1 for m in means if m > 0) / len(means)
+
+        def _annualize(v: float) -> float:
+            return round(v * TRADING_DAYS_PER_YEAR * 100.0, 1)
+
+        return {
+            "n_days": n,
+            "mean_daily_excess_bps": round(mean * 1e4, 1),
+            "alpha_annualized_pct": _annualize(mean),
+            "ci_low_annualized_pct": _annualize(lo),
+            "ci_high_annualized_pct": _annualize(hi),
+            "prob_positive_pct": round(prob_pos * 100.0, 1),
+            "excludes_zero_95": bool(lo > 0 or hi < 0),
+        }
+
+    out = {key: _boot(xs) for key, xs in samples.items()}
+    if all(v is None for v in out.values()):
+        return None
+    out["params"] = {
+        "n_boot": n_boot,
+        "block_len": block_len,
+        "seed": seed,
+        "threshold_pct": trend_threshold_pct,
+    }
+    return out

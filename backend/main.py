@@ -3930,7 +3930,7 @@ async def get_ai_portfolio_edge(
     # clock is diluted by mixing +trend and −chop days; the trend-day edge is
     # the provable-soon question. Distance = SPY % above its 50MA per day
     # (carry-forward like the price series).
-    from backend.edge_metrics import regime_conditional_edge
+    from backend.edge_metrics import bootstrap_regime_excess, regime_conditional_edge
 
     def _spy_dist_for(day):
         price = spy_by_date.get(day)
@@ -3948,6 +3948,9 @@ async def get_ai_portfolio_edge(
 
     spy_dist = [_spy_dist_for(d) for d in days_sorted]
     metrics["regime_edge"] = regime_conditional_edge(port_values, spy_values, spy_dist)
+    # Block-bootstrap CIs on the same paired series (fat-tail/autocorr robust);
+    # deterministic seed keeps the meter stable across refreshes.
+    metrics["bootstrap_edge"] = bootstrap_regime_excess(port_values, spy_values, spy_dist)
 
     # Edge Validation Phase 3: per-position return/alpha attribution. Pull the
     # full SELL rows (not just realized_gain) and price each position's SPY

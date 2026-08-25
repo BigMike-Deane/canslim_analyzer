@@ -695,6 +695,17 @@ function GateProgressCard() {
               avg {fmtPct(stops.avg_loss_pct)} vs {fmtPct(stops.bar_pct, 1)} bar
             </span>
           )}
+          {/* Mechanical verdict (fires server-side once n >= target): the one
+              clock whose pre-registered rule is pure arithmetic. */}
+          {stops.verdict && (
+            <span className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${
+              stops.verdict === 'PASS'
+                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20'
+                : 'bg-red-500/15 text-red-400 border-red-500/20'
+            }`}>
+              {stops.verdict}
+            </span>
+          )}
         </div>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">

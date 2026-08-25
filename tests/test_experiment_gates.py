@@ -192,3 +192,68 @@ class TestStopLossClock:
         assert clock["n"] == 2
         assert clock["avg_loss_pct"] == -8.5
         assert clock["bar_pct"] == -10.0
+
+
+def _stop_sell(db, gain_pct, *, user_id=1, ticker="AAA", days_ago=10,
+               split_artifact=False):
+    """Owner-portfolio STOP LOSS sell landing at gain_pct vs cost."""
+    cost, shares = 100.0, 10.0
+    sf = {"sell_reason": "STOP LOSS", "gain_pct": gain_pct}
+    if split_artifact:
+        sf["split_artifact"] = True
+    t = AIPortfolioTrade(
+        user_id=user_id, ticker=ticker, action="SELL",
+        shares=shares, price=cost * (1 + gain_pct / 100),
+        total_value=shares * cost * (1 + gain_pct / 100),
+        cost_basis=cost, realized_gain=shares * cost * gain_pct / 100,
+        reason=f"STOP LOSS: Down {abs(gain_pct):.1f}%",
+        signal_factors=sf,
+        executed_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days_ago),
+    )
+    db.add(t)
+    db.commit()
+    return t
+
+
+class TestStopClockVerdict:
+    """PM program 2026-08-25: the stop-loss re-check verdict fires
+    mechanically at n>=5 and split artifacts are excluded (same rule as
+    the reconciliation endpoint)."""
+
+    def test_no_verdict_below_target(self, db_session):
+        for i, g in enumerate((-8.0, -8.5, -9.0)):
+            _stop_sell(db_session, g, ticker=f"T{i}")
+        clock = _call(db_session)["program_clocks"]["stop_loss_recheck"]
+        assert clock["n"] == 3
+        assert clock["verdict"] is None
+
+    def test_pass_at_five_clean_stops_above_bar(self, db_session):
+        for i, g in enumerate((-8.0, -8.5, -9.0, -7.5, -8.2)):
+            _stop_sell(db_session, g, ticker=f"T{i}")
+        clock = _call(db_session)["program_clocks"]["stop_loss_recheck"]
+        assert clock["n"] == 5
+        assert clock["verdict"] == "PASS"
+        assert clock["avg_loss_pct"] > -10.0
+
+    def test_fail_when_average_breaches_bar(self, db_session):
+        for i, g in enumerate((-12.0, -14.0, -11.0, -13.0, -12.5)):
+            _stop_sell(db_session, g, ticker=f"T{i}")
+        clock = _call(db_session)["program_clocks"]["stop_loss_recheck"]
+        assert clock["verdict"] == "FAIL"
+
+    def test_split_artifacts_excluded(self, db_session):
+        for i, g in enumerate((-8.0, -8.5, -9.0, -7.5)):
+            _stop_sell(db_session, g, ticker=f"T{i}")
+        # A -50% split artifact (the SFBS shape) must not reach the cohort:
+        # n stays 4 (no verdict yet) and the average stays clean.
+        _stop_sell(db_session, -50.2, ticker="SFBS", split_artifact=True)
+        clock = _call(db_session)["program_clocks"]["stop_loss_recheck"]
+        assert clock["n"] == 4
+        assert clock["verdict"] is None
+        assert clock["avg_loss_pct"] > -10.0
+
+    def test_pure_function_matches_endpoint(self, db_session):
+        from backend.routes.admin import compute_experiment_gates
+        for i, g in enumerate((-8.0, -8.5)):
+            _stop_sell(db_session, g, ticker=f"T{i}")
+        assert compute_experiment_gates(db_session) == _call(db_session)

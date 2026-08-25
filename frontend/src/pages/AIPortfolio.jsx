@@ -1058,6 +1058,43 @@ function VerdictLedger({ summary, edge }) {
             </div>
           </div>
         )}
+        {/* Bootstrap check (edge inference v2, Aug-25): block-bootstrap CIs on
+            the same paired daily-excess series as the t-based meter above —
+            robust to fat tails and week-scale autocorrelation, so this is the
+            interval the real-money gate should trust. P(edge>0) is the share
+            of bootstrap resamples with a positive mean: the plain-language
+            "chance the edge is real given the data so far". */}
+        {edge.bootstrap_edge && (
+          <div className="sm:col-span-2">
+            <div className="flex justify-between text-[10px] uppercase tracking-[.12em] text-dark-400 mb-1">
+              <span title="Moving-block bootstrap (2,000 resamples, ~1-week blocks) on daily portfolio-minus-SPY returns. Distribution-free: no normality assumption, robust to fat tails.">
+                Bootstrap check — P(edge &gt; 0)
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-dark-300">
+              {[['trend', 'Trend days'], ['chop', 'Chop days'], ['overall', 'All days']].map(([key, label]) => {
+                const b = edge.bootstrap_edge[key]
+                if (!b) return null
+                const pos = (b.alpha_annualized_pct ?? 0) >= 0
+                return (
+                  <span key={key} className="whitespace-nowrap">
+                    <span className="text-dark-400">{label}</span>{' '}
+                    <b className={`font-data ${pos ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {pos ? '+' : ''}{b.alpha_annualized_pct?.toFixed(0)}%/yr
+                    </b>{' '}
+                    <span className="text-dark-400 font-data">
+                      [{b.ci_low_annualized_pct?.toFixed(0)}…{b.ci_high_annualized_pct >= 0 ? '+' : ''}{b.ci_high_annualized_pct?.toFixed(0)}]
+                    </span>{' '}
+                    <b className={`font-data ${b.excludes_zero_95 ? (pos ? 'text-emerald-400' : 'text-red-400') : 'text-amber-300'}`}>
+                      {b.prob_positive_pct?.toFixed(0)}%
+                    </b>
+                    <span className="text-dark-500"> · {b.n_days}d</span>
+                  </span>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

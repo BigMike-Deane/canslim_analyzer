@@ -465,3 +465,87 @@ class TestRegimeConditionalEdge:
         out = regime_conditional_edge(port, spy, dist)
         assert out["chop"]["n_days"] == 4
         assert out["trend"] is None
+
+
+class TestBootstrapRegimeExcess:
+    """bootstrap_regime_excess — moving-block bootstrap CIs on the same
+    paired daily excess series regime_conditional_edge tests (PM program
+    2026-08-25: fat-tail/autocorrelation-robust intervals for the owner
+    gate; deterministic for a fixed seed)."""
+
+    def _series(self, excesses, dists, spy_ret=0.001):
+        spy = [100.0]
+        port = [100.0]
+        for e in excesses:
+            spy.append(spy[-1] * (1 + spy_ret))
+            port.append(port[-1] * (1 + spy_ret + e))
+        return port, spy, [0.0] + list(dists)
+
+    def _mixed(self, n_trend=30, n_chop=20, seed=11):
+        import random
+        rng = random.Random(seed)
+        excesses = ([0.003 + rng.uniform(-0.006, 0.006) for _ in range(n_trend)]
+                    + [-0.002 + rng.uniform(-0.006, 0.006) for _ in range(n_chop)])
+        dists = [2.0] * n_trend + [0.5] * n_chop
+        return self._series(excesses, dists)
+
+    def test_buckets_and_point_estimates_match_series(self):
+        from backend.edge_metrics import bootstrap_regime_excess
+        port, spy, dist = self._mixed()
+        out = bootstrap_regime_excess(port, spy, dist)
+        assert out["overall"]["n_days"] == 50
+        assert out["trend"]["n_days"] == 30
+        assert out["chop"]["n_days"] == 20
+        # Point estimate is the sample mean, not a bootstrap artifact
+        assert out["trend"]["mean_daily_excess_bps"] > 0
+        assert out["chop"]["mean_daily_excess_bps"] < out["trend"]["mean_daily_excess_bps"]
+        # CI brackets the point estimate
+        for key in ("overall", "trend", "chop"):
+            b = out[key]
+            assert b["ci_low_annualized_pct"] <= b["alpha_annualized_pct"] <= b["ci_high_annualized_pct"]
+            assert 0.0 <= b["prob_positive_pct"] <= 100.0
+
+    def test_deterministic_for_fixed_seed(self):
+        from backend.edge_metrics import bootstrap_regime_excess
+        port, spy, dist = self._mixed()
+        a = bootstrap_regime_excess(port, spy, dist)
+        b = bootstrap_regime_excess(port, spy, dist)
+        assert a == b
+        c = bootstrap_regime_excess(port, spy, dist, seed=1)
+        assert c["overall"]["ci_low_annualized_pct"] != a["overall"]["ci_low_annualized_pct"] or \
+               c["overall"]["ci_high_annualized_pct"] != a["overall"]["ci_high_annualized_pct"]
+
+    def test_strong_edge_excludes_zero(self):
+        from backend.edge_metrics import bootstrap_regime_excess
+        import random
+        rng = random.Random(3)
+        # Large stable positive excess: CI must exclude zero, P(>0) ~ 100
+        excesses = [0.005 + rng.uniform(-0.001, 0.001) for _ in range(60)]
+        port, spy, dist = self._series(excesses, [2.0] * 60)
+        out = bootstrap_regime_excess(port, spy, dist)
+        assert out["trend"]["excludes_zero_95"] is True
+        assert out["trend"]["ci_low_annualized_pct"] > 0
+        assert out["trend"]["prob_positive_pct"] > 99.0
+        assert out["chop"] is None
+
+    def test_small_bucket_is_none_and_tiny_series_is_none(self):
+        from backend.edge_metrics import bootstrap_regime_excess
+        port, spy, dist = self._mixed(n_trend=30, n_chop=4)
+        out = bootstrap_regime_excess(port, spy, dist)
+        assert out["chop"] is None          # 4 < 8 days
+        assert out["trend"] is not None
+        port, spy, dist = self._series([0.001] * 5, [2.0] * 5)
+        assert bootstrap_regime_excess(port, spy, dist) is None  # 5 < 8 pairs
+
+    def test_matches_regime_test_series_filtering(self):
+        from backend.edge_metrics import bootstrap_regime_excess, regime_conditional_edge
+        # None-dist days must be dropped identically in both functions
+        # (excesses varied — zero within-bucket variance is rejected by the
+        # t-test side and would make the comparison vacuous)
+        excesses = [0.003 + 0.0005 * (i % 5) for i in range(12)] + [0.004] * 12
+        dists = [2.0] * 12 + [None] * 12
+        port, spy, dist = self._series(excesses, dists)
+        boot = bootstrap_regime_excess(port, spy, dist)
+        reg = regime_conditional_edge(port, spy, dist)
+        assert boot["overall"]["n_days"] == 12
+        assert reg["trend"]["n_days"] == 12

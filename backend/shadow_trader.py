@@ -131,6 +131,14 @@ _SWEEP_REASON_PREFIX = "SPY SWEEP"
 def is_sweep_reason(reason) -> bool:
     return bool(reason) and str(reason).startswith(_SWEEP_REASON_PREFIX)
 
+
+# Stock-split adjustment rows (action="SPLIT"): pure ledger bookkeeping like
+# sweeps — they rescale the open FIFO lots of one ticker (shares × factor,
+# price ÷ factor) and never touch cash, stops, or slot counts. The factor
+# rides in signal_factors.split_factor with the shares column as fallback.
+# Reason prefix is the serialization contract, same pattern as SPY SWEEP.
+_SPLIT_REASON_PREFIX = "SPLIT ADJUST"
+
 # Target pct embedded in partial-profit sell reasons by
 # trading_engine.get_partial_profit_action ("PARTIAL PROFIT 25%: Up ...").
 # After a partial executes, live ai_trader's accumulator equals that TARGET
@@ -320,6 +328,9 @@ class ShadowSession:
         self._pending_shadow_trades: List[ShadowTrade] = []
         self._derive_synthetic_positions()
         self._apply_persisted_peaks()
+        # After the peak overlay, so a stale pre-split persisted peak gets
+        # scaled here and re-persisted (unconditionally) this same tick.
+        self._reconcile_splits()
 
     # ── Initialisation helpers ───────────────────────────────────────────────
 
@@ -385,6 +396,18 @@ class ShadowSession:
                         avg = sweep_cost / sweep_shares
                         sweep_cost -= avg * min(t.shares or 0, sweep_shares)
                     sweep_shares = max(0.0, sweep_shares - (t.shares or 0))
+                continue
+            if t.action == "SPLIT":
+                # Replay a stock-split adjustment: rescale this ticker's open
+                # lots in place. Cash is untouched — a split moves no money.
+                factor = None
+                if isinstance(t.signal_factors, dict):
+                    factor = t.signal_factors.get("split_factor")
+                factor = factor or t.shares
+                if factor and factor > 0:
+                    for lot in open_buys[t.ticker]:
+                        lot["shares"] = (lot["shares"] or 0) * factor
+                        lot["price"] = (lot["price"] or 0) / factor
                 continue
             entry = {
                 "shares": t.shares,
@@ -515,6 +538,72 @@ class ShadowSession:
                     pos.peak_date = row.peak_date or pos.peak_date
             else:
                 self._init_peak_from_history(pos)
+
+    def _reconcile_splits(self) -> None:
+        """Durably rescale shadow positions through stock splits.
+
+        The FIFO rebuild prices lots at raw historical fills, so a held
+        ticker's split makes the post-split quote read as a collapse against
+        pre-split cost (the SFBS 2:1 live bug, mirrored here — the intraday
+        path's maybe_apply_split_adjustment fix is in-memory only and every
+        rebuild starts over from raw rows). On FMP confirmation this scales
+        the position and queues a SPLIT ledger row that the rebuild replays
+        forever after.
+
+        The trigger reference here is COST BASIS (shadows keep no last-tick
+        price), so two guards the live fix doesn't need: the factor must
+        move the ratio TOWARD 1 (a big legit winner must not be "corrected"
+        by an unrelated recent split), and a ticker with a SPLIT row already
+        in the lookback window is skipped (the rebuild has replayed it, so
+        the elevated ratio is genuine performance).
+        """
+        candidates = [p for p in self._synthetic_positions
+                      if p.current_price and p.cost_basis
+                      and not (0.75 < p.current_price / p.cost_basis < 1.4)]
+        if not candidates:
+            return
+        from backend.ai_trader import fetch_recent_split
+        recent_cut = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=12)
+        recently_split = {t.ticker for t in self._shadow_trade_view
+                          if t.action == "SPLIT" and t.executed_at
+                          and t.executed_at >= recent_cut}
+        now = datetime.now(timezone.utc)
+        for pos in candidates:
+            if pos.ticker in recently_split:
+                continue
+            ratio = pos.current_price / pos.cost_basis
+            factor = fetch_recent_split(pos.ticker)
+            if not factor or factor <= 0:
+                continue
+            if not ((ratio < 1.0 and factor > 1.0) or (ratio > 1.0 and factor < 1.0)):
+                continue
+            pos.shares = (pos.shares or 0) * factor
+            pos.cost_basis = pos.cost_basis / factor
+            if pos.peak_price:
+                pos.peak_price = pos.peak_price / factor
+            pos.current_value = pos.shares * pos.current_price
+            pos.gain_loss = pos.current_value - pos.shares * pos.cost_basis
+            pos.gain_loss_pct = ((pos.current_price / pos.cost_basis) - 1) * 100 \
+                if pos.cost_basis > 0 else 0
+            logger.warning(
+                f"[shadow {self.shadow_strategy.name}] {pos.ticker}: split x{factor:g} "
+                f"applied durably (basis -> ${pos.cost_basis:.2f})"
+            )
+            self._pending_shadow_trades.append(ShadowTrade(
+                shadow_strategy_id=self.shadow_strategy.id,
+                ticker=pos.ticker,
+                action="SPLIT",
+                shares=factor,  # the adjustment factor, not a share count
+                price=0.0,
+                total_value=0.0,
+                reason=f"{_SPLIT_REASON_PREFIX} {factor:g}x: shares x{factor:g}, basis /{factor:g}",
+                canslim_score=None,
+                cost_basis=None,
+                realized_gain=None,
+                holding_days=None,
+                signal_factors={"split_factor": factor},
+                executed_at=now,
+            ))
 
     def _init_peak_from_history(self, pos: "_SyntheticPosition"):
         """Backfill a first-seen position's peak from daily highs since entry.

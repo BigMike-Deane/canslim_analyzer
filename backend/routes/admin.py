@@ -1511,19 +1511,16 @@ async def ml_demotion_cohort(
     }
 
 
-@router.get("/experiment-gates")
-@limiter.limit("30/minute")
-async def experiment_gates(
-    current_user: User = Depends(get_admin_user),
-    db: Session = Depends(get_db),
-    request: Request = None,
-):
+def compute_experiment_gates(db: Session) -> dict:
     """Live progress of every pre-registered promotion gate. 100% read-only.
 
-    The gates themselves are pre-registered in config/default.yaml comments
-    (per-arm) — this endpoint just measures how far each arm has accrued
-    toward them, so the program's state is glanceable instead of tracked in
-    session notes. Adding an arm: give it an entry in ARM_GATES below.
+    Pure function over a Session (same seam as compute_cap_delta_diagnostics)
+    so the weekly shadow A/B email renders the IDENTICAL clocks the
+    /experiment-gates card shows — one computation, two surfaces. The gates
+    themselves are pre-registered in config/default.yaml comments (per-arm);
+    this just measures accrual, plus the mechanical PASS/FAIL for clocks
+    whose pre-registered rule is fully arithmetic (stop-loss re-check).
+    Adding an arm: give it an entry in ARM_GATES below.
     """
     from backend.database import MarketSnapshot
 
@@ -1690,19 +1687,32 @@ async def experiment_gates(
         AIPortfolioTrade.executed_at > STOP_RECHECK_CUTOFF,
         AIPortfolioTrade.reason.like("STOP LOSS%"),
     ).all()
+    # Split artifacts (e.g. SFBS 2:1 2026-08-21) are not genuine stops — same
+    # exclusion as the reconciliation endpoint, so both cohort reads agree.
+    stop_sells = [s for s in stop_sells
+                  if not ((s.signal_factors or {}).get("split_artifact")
+                          if isinstance(s.signal_factors, dict) else False)]
     stop_pcts = []
     for s in stop_sells:
         cost = (s.cost_basis or 0) * (s.shares or 0)
         if cost > 0 and s.realized_gain is not None:
             stop_pcts.append(s.realized_gain / cost * 100)
+    stop_avg = round(sum(stop_pcts) / len(stop_pcts), 2) if stop_pcts else None
+    # Pre-registered rule (Jun-24/Aug-3 program): at n>=5 clean stops, the fix
+    # holds if the average stop lands at or above the -10% bar. Mechanical, so
+    # the verdict fires itself instead of waiting on a manual curl.
+    stop_verdict = None
+    if stop_avg is not None and len(stop_pcts) >= 5:
+        stop_verdict = "PASS" if stop_avg >= -10.0 else "FAIL"
 
     return {
         "program_clocks": {
             "stop_loss_recheck": {
                 "label": "Exit-fix re-check (owner stops since Jun-24)",
                 "n": len(stop_pcts), "target": 5,
-                "avg_loss_pct": round(sum(stop_pcts) / len(stop_pcts), 2) if stop_pcts else None,
+                "avg_loss_pct": stop_avg,
                 "bar_pct": -10.0,
+                "verdict": stop_verdict,
             },
         },
         "arms": arm_payload,
@@ -1712,3 +1722,14 @@ async def experiment_gates(
             "from the weekly A/B email decision rule, never from this card."
         ),
     }
+
+
+@router.get("/experiment-gates")
+@limiter.limit("30/minute")
+async def experiment_gates(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Thin wrapper over compute_experiment_gates — see its docstring."""
+    return compute_experiment_gates(db)

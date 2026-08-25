@@ -938,3 +938,126 @@ class TestShadowPyramids:
                     for t in tickers]
         n = shadow_trader._run_one_strategy(strategy.id, analysis)
         assert n == 3  # live caps 3 pyramids per cycle
+
+
+class TestSplitAdjustment:
+    """SPLIT ledger rows + _reconcile_splits (PM program 2026-08-25): a held
+    ticker's stock split must rescale FIFO lots durably instead of reading
+    as a price collapse (shadow mirror of the live SFBS 2:1 phantom stop)."""
+
+    def _strategy(self, db):
+        return _make_strategy(db, name="shadow_split_test")
+
+    def test_split_row_rescales_open_lots(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        strategy = self._strategy(db_session)
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "BUY", 100.0, 80.0,
+                          executed_at=t0)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "SPLIT", 2.0, 0.0,
+                          executed_at=t0 + timedelta(days=5),
+                          reason="SPLIT ADJUST 2x: shares x2, basis /2",
+                          signal_factors={"split_factor": 2.0})
+        db_session.commit()
+        ss = ShadowSession(db_session, strategy,
+                           [{"ticker": "SFBS", "current_price": 41.0, "total_score": 80}])
+        pos = ss._synthetic_positions[0]
+        assert abs(pos.shares - 200.0) < 1e-6
+        assert abs(pos.cost_basis - 40.0) < 1e-6
+        assert pos.gain_loss_pct > 0  # +2.5%, not -48%
+        # A split moves no money: cash is starting value minus the raw buy
+        assert abs(ss._synthetic_config.current_cash - (25000.0 - 100.0 * 80.0)) < 1e-6
+
+    def test_split_row_only_affects_its_ticker(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        strategy = self._strategy(db_session)
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "BUY", 100.0, 80.0, executed_at=t0)
+        _add_shadow_trade(db_session, strategy.id, "AAPL", "BUY", 10.0, 200.0, executed_at=t0)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "SPLIT", 2.0, 0.0,
+                          executed_at=t0 + timedelta(days=5),
+                          reason="SPLIT ADJUST 2x",
+                          signal_factors={"split_factor": 2.0})
+        db_session.commit()
+        ss = ShadowSession(db_session, strategy, [])
+        by_ticker = {p.ticker: p for p in ss._synthetic_positions}
+        assert abs(by_ticker["SFBS"].cost_basis - 40.0) < 1e-6
+        assert abs(by_ticker["AAPL"].cost_basis - 200.0) < 1e-6
+
+    def test_reconcile_detects_and_emits_durable_row(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        strategy = self._strategy(db_session)
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "BUY", 100.0, 80.0, executed_at=t0)
+        db_session.commit()
+        with patch("backend.ai_trader.fetch_recent_split", return_value=2.0) as mock_fetch:
+            ss = ShadowSession(db_session, strategy,
+                               [{"ticker": "SFBS", "current_price": 40.5, "total_score": 80}])
+        mock_fetch.assert_called_once_with("SFBS")
+        pos = ss._synthetic_positions[0]
+        assert abs(pos.shares - 200.0) < 1e-6
+        assert abs(pos.cost_basis - 40.0) < 1e-6
+        pending = ss.drain_pending_shadow_trades()
+        splits = [t for t in pending if t.action == "SPLIT"]
+        assert len(splits) == 1
+        assert splits[0].signal_factors["split_factor"] == 2.0
+        assert splits[0].reason.startswith("SPLIT ADJUST")
+        assert splits[0].total_value == 0.0
+
+    def test_reconcile_skips_already_applied_split(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        strategy = self._strategy(db_session)
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "BUY", 100.0, 80.0, executed_at=t0)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "SPLIT", 2.0, 0.0,
+                          executed_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2),
+                          reason="SPLIT ADJUST 2x",
+                          signal_factors={"split_factor": 2.0})
+        db_session.commit()
+        # Post-split basis is 40; the stock then genuinely ran to 82
+        # (ratio 2.05 > 1.4). FMP still reports the recent split — the
+        # recently-applied guard must prevent a double application.
+        with patch("backend.ai_trader.fetch_recent_split", return_value=2.0):
+            ss = ShadowSession(db_session, strategy,
+                               [{"ticker": "SFBS", "current_price": 82.0, "total_score": 80}])
+        pos = ss._synthetic_positions[0]
+        assert abs(pos.shares - 200.0) < 1e-6      # not 400
+        assert abs(pos.cost_basis - 40.0) < 1e-6   # not 20
+        assert not [t for t in ss.drain_pending_shadow_trades() if t.action == "SPLIT"]
+
+    def test_reconcile_direction_guard(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        strategy = self._strategy(db_session)
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        _add_shadow_trade(db_session, strategy.id, "XYZ", "BUY", 100.0, 80.0, executed_at=t0)
+        db_session.commit()
+        # Price halved but FMP reports a REVERSE split (0.1) — applying it
+        # would make the distortion worse; the direction guard must refuse.
+        with patch("backend.ai_trader.fetch_recent_split", return_value=0.1):
+            ss = ShadowSession(db_session, strategy,
+                               [{"ticker": "XYZ", "current_price": 40.0, "total_score": 80}])
+        pos = ss._synthetic_positions[0]
+        assert abs(pos.shares - 100.0) < 1e-6
+        assert abs(pos.cost_basis - 80.0) < 1e-6
+
+    def test_reconcile_scales_persisted_peak(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        from backend.database import ShadowPositionPeak
+        strategy = self._strategy(db_session)
+        t0 = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        _add_shadow_trade(db_session, strategy.id, "SFBS", "BUY", 100.0, 80.0, executed_at=t0)
+        db_session.add(ShadowPositionPeak(
+            shadow_strategy_id=strategy.id, ticker="SFBS",
+            opened_at=t0, peak_price=91.0, peak_date=t0))
+        db_session.commit()
+        with patch("backend.ai_trader.fetch_recent_split", return_value=2.0):
+            ss = ShadowSession(db_session, strategy,
+                               [{"ticker": "SFBS", "current_price": 40.5, "total_score": 80}])
+        pos = ss._synthetic_positions[0]
+        # Pre-split persisted peak 91 must come out as 45.5, so trailing
+        # stops don't see a phantom -55% drop from peak.
+        assert abs(pos.peak_price - 45.5) < 1e-6

@@ -28,6 +28,7 @@ from backend.routes.admin import (
     _serialize_trade_row,
     _summarize_window,
     _trade_scope_id,
+    compute_experiment_gates,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,6 +327,80 @@ def _naive_utc(dt):
     return dt
 
 
+def _gates_card_html(db: Session, shadow_name: str) -> str:
+    """Pre-registered clocks card (PM program 2026-08-25): the same
+    compute_experiment_gates payload the ABEval dashboard card renders,
+    inlined into the weekly email so verdict-ready clocks announce
+    themselves instead of waiting on a manual curl. Fail-soft — a
+    monitoring email must always send, so any error renders nothing.
+    """
+    import html as _html
+    try:
+        gates = compute_experiment_gates(db)
+    except Exception as exc:
+        logger.warning(f"gates card skipped for {shadow_name}: {exc}")
+        return ''
+
+    def _pill(label, color):
+        return (f'<span style="display:inline-block;padding:2px 8px;'
+                f'background:{color};color:#fff;border-radius:4px;'
+                f'font-size:11px;font-weight:600;">{label}</span>')
+
+    def _tr(label, detail, pill):
+        return (f'<tr>'
+                f'<td style="padding:6px 12px;font-size:12px;color:#111827;">{_html.escape(label)}</td>'
+                f'<td style="padding:6px 12px;font-size:12px;color:#6b7280;text-align:right;">{detail}</td>'
+                f'<td style="padding:6px 12px;text-align:right;">{pill}</td>'
+                f'</tr>')
+
+    rows = []
+    clock = (gates.get('program_clocks') or {}).get('stop_loss_recheck') or {}
+    if clock:
+        n = clock.get('n') or 0
+        target = clock.get('target') or 5
+        avg = clock.get('avg_loss_pct')
+        verdict = clock.get('verdict')
+        detail = (f"avg {avg:+.2f}% vs {clock.get('bar_pct')}% bar"
+                  if avg is not None else 'no clean stops yet')
+        if verdict == 'PASS':
+            pill = _pill('PASS', '#059669')
+        elif verdict == 'FAIL':
+            pill = _pill('FAIL', '#dc2626')
+        else:
+            pill = _pill(f'{n}/{target}', '#6b7280')
+        rows.append(_tr(clock.get('label') or 'Stop-loss re-check', detail, pill))
+
+    arm = next((a for a in gates.get('arms') or []
+                if a.get('name') == shadow_name), None)
+    if arm:
+        for gm in arm.get('gate_metrics') or []:
+            n = gm.get('n') or 0
+            target = gm.get('target')
+            if target:
+                pill = _pill(f'{n}/{target}', '#059669' if n >= target else '#6b7280')
+                detail = 'accrued' if n >= target else 'accruing'
+            else:
+                pill = _pill(str(n), '#6b7280')
+                detail = 'no target'
+            rows.append(_tr(gm.get('label') or '', detail, pill))
+
+    if not rows:
+        return ''
+    return f"""
+    <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #e5e7eb;">
+      <h2 style="margin:0 0 12px 0;font-size:14px;color:#111827;">Pre-registered clocks</h2>
+      <table style="width:100%;border-collapse:collapse;">
+        <tbody>{''.join(rows)}
+        </tbody>
+      </table>
+      <div style="font-size:11px;color:#9ca3af;margin-top:8px;">
+        Same numbers as the ABEval Gate Progress card (one computation, two
+        surfaces). Green = accrual target met; PASS/FAIL fires mechanically
+        from the pre-registered rule.
+      </div>
+    </div>"""
+
+
 def build_shadow_vs_baseline_snapshot_html(
     shadow_name: str,
     db: Session,
@@ -370,9 +445,11 @@ def build_shadow_vs_baseline_snapshot_html(
         # them inflates sell counts toward the min_post_sells gate and
         # dilutes per-trade stats with ~0% round-trips. Their realized P&L
         # is surfaced separately as a caveat line.
+        # 'SPLIT' rows are corporate-action bookkeeping (see shadow_trader
+        # _SPLIT_REASON_PREFIX) — never strategy trades.
         return db.query(ShadowTrade).filter(
             ShadowTrade.shadow_strategy_id == ss.id,
-            ~ShadowTrade.action.in_(['PYRAMID']),
+            ~ShadowTrade.action.in_(['PYRAMID', 'SPLIT']),
             or_(
                 ShadowTrade.reason.is_(None),
                 and_(
@@ -505,6 +582,7 @@ def build_shadow_vs_baseline_snapshot_html(
 
     best_html = _trade_rows(best_trades, 'Top 5 experiment SELLs (best)')
     worst_html = _trade_rows(worst_trades, 'Top 5 experiment SELLs (worst)')
+    clocks_html = _gates_card_html(db, shadow_name)
 
     shadow_safe = html.escape(shadow_name)
     baseline_safe = html.escape(baseline_name)
@@ -552,7 +630,7 @@ def build_shadow_vs_baseline_snapshot_html(
       </table>
       {warnings_html}
     </div>
-
+{clocks_html}
     <div style="background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #e5e7eb;">
       {best_html}
       {worst_html}
