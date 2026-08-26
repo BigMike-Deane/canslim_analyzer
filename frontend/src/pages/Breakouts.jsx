@@ -31,7 +31,9 @@ const BASE_TYPE_FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'cup_with_handle', label: 'Cup+Handle' },
   { key: 'cup', label: 'Cup' },
-  { key: 'flat_base', label: 'Flat Base' },
+  // key must match the detector's base_type enum ('flat', not 'flat_base') —
+  // a mismatched key renders a permanently-(0) chip that filters to nothing.
+  { key: 'flat', label: 'Flat Base' },
   { key: 'double_bottom', label: 'Double Bottom' },
 ]
 

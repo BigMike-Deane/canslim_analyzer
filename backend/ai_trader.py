@@ -188,6 +188,12 @@ _trading_cycle_meta_lock = threading.Lock()  # Protects access to _trading_cycle
 # next evaluation after each restart.
 SPY_GATE_STATE_KEY = "last_spy_gate_state"
 
+# The live champion strategy. Single source of truth for what new
+# portfolios run and what UI surfaces (Backtest page) preselect — on a
+# champion promotion, flip this alongside the per-user rows (owner
+# policy Aug-21: every portfolio runs the same champion).
+DEFAULT_STRATEGY = "nostate_cs_bear"
+
 def _get_cycle_started():
     """Thread-safe getter for cycle start time"""
     with _trading_cycle_meta_lock:
@@ -242,7 +248,7 @@ def get_or_create_config(db: Session, user_id: int = 1) -> AIPortfolioConfig:
         # does — previously this hardcoded pre-sweep values (20 positions /
         # 12%) and left strategy to the column default ('balanced'), so
         # signups silently got a config nobody chose.
-        default_strategy = "nostate_cs_bear"
+        default_strategy = DEFAULT_STRATEGY
         profile = get_strategy_profile(default_strategy)
         config = AIPortfolioConfig(
             starting_cash=25000.0,

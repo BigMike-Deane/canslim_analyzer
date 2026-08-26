@@ -47,6 +47,12 @@ COPY fmp_rate_limiter.py ./
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
+# Build stamp: UTC epoch seconds captured at image-build time, surfaced by
+# /health as the deploy stamp (backend/build_info.py formats it to Central
+# time). Sits after the last COPY so any code change refreshes this layer —
+# replaces the manually-bumped BUILD_VERSION that went stale within weeks.
+RUN date -u +%s > /app/build_stamp.txt
+
 # Create data + backup directories
 RUN mkdir -p /app/data /app/data/backups
 

@@ -5686,11 +5686,43 @@ async def get_trade_analytics(
 
     monthly_pnl = sorted(monthly.values(), key=lambda x: x["month"])
 
-    # By entry type (from signal_factors)
+    # By entry type. Sell rows never carried an entry_type in signal_factors
+    # (the breakdown rendered one 'unknown' bucket for months), so classify
+    # from the reason string of the position's originating BUY — the reason
+    # prefix (COILED SPRING / PRE-BREAKOUT / BREAKOUT) is an existing
+    # serialization contract. signal_factors.entry_type still wins if a
+    # future writer populates it.
+    def _entry_type_from_reason(reason):
+        r = (reason or "").upper()
+        if "COILED SPRING" in r:
+            return "coiled_spring"
+        if "PRE-BREAKOUT" in r:
+            return "pre_breakout"
+        if "BREAKOUT" in r:
+            return "breakout"
+        return "standard"
+
+    buys_by_ticker = {}
+    for b in buys:
+        buys_by_ticker.setdefault(b.ticker, []).append(b)
+    for _arr in buys_by_ticker.values():
+        _arr.sort(key=lambda b: (b.executed_at is not None, b.executed_at))
+
+    def _entry_type_for_sell(t):
+        factors = t.signal_factors if hasattr(t, 'signal_factors') and t.signal_factors else {}
+        if isinstance(factors, dict) and factors.get("entry_type"):
+            return factors["entry_type"]
+        entry_buy = None
+        for b in buys_by_ticker.get(t.ticker, ()):  # sorted oldest-first
+            if b.executed_at and t.executed_at and b.executed_at <= t.executed_at:
+                entry_buy = b  # keep latest BUY at/before the sell
+        if entry_buy is None:
+            return "unknown"  # entry predates the query window
+        return _entry_type_from_reason(entry_buy.reason)
+
     entry_types = {}
     for t in sells:
-        factors = t.signal_factors if hasattr(t, 'signal_factors') and t.signal_factors else {}
-        entry_type = factors.get("entry_type", "unknown") if isinstance(factors, dict) else "unknown"
+        entry_type = _entry_type_for_sell(t)
         if entry_type not in entry_types:
             entry_types[entry_type] = {"trades": 0, "wins": 0, "pnl": 0}
         entry_types[entry_type]["trades"] += 1
@@ -6413,6 +6445,7 @@ async def list_strategies(
     """List available strategy profiles. Hides profiles flagged `hidden: true`
     in YAML unless include_hidden=true (research/admin use)."""
     from config_loader import config as yaml_config
+    from backend.ai_trader import DEFAULT_STRATEGY
     profiles = yaml_config.get('strategy_profiles', {})
     result = []
     for name, profile in profiles.items():
@@ -6429,6 +6462,9 @@ async def list_strategies(
             "market_state_enabled": profile.get("market_state", {}).get("enabled", True) if isinstance(profile.get("market_state"), dict) else True,
             "seed_count": profile.get("seed_count", 3),
             "hidden": profile.get("hidden", False),
+            # The live champion — UI preselects this (Backtest page); keeps
+            # the default in one place instead of a hardcoded frontend name.
+            "is_default": name == DEFAULT_STRATEGY,
         })
     return result
 

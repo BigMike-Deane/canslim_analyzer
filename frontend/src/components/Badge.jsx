@@ -106,6 +106,21 @@ export function TagBadge({ children, color = 'default', className = '', ...rest 
   )
 }
 
+// Canonical display labels for detector base_type enums. The detector emits
+// snake_case ('flat'|'cup'|'cup_with_handle'|'double_bottom'); every badge
+// renders through this map so no page shows a raw enum string.
+const BASE_TYPE_LABELS = {
+  flat: 'flat base',
+  cup: 'cup',
+  cup_with_handle: 'cup+handle',
+  double_bottom: 'double bottom',
+}
+
+export function formatBaseType(baseType) {
+  if (!baseType) return baseType
+  return BASE_TYPE_LABELS[baseType] || String(baseType).replace(/_/g, ' ')
+}
+
 // Base-pattern tag with actionability status. A detected pattern means "this
 // geometry exists in the ~6-month lookback", NOT "this is a live setup":
 // price >5% above the pivot = the base already broke out (extended, mirrors
@@ -115,7 +130,7 @@ export function TagBadge({ children, color = 'default', className = '', ...rest 
 // fail-safe, never hides the pattern.
 export function BaseTag({ baseType, weeksInBase, pivotPrice, currentPrice }) {
   if (!baseType || baseType === 'none') return null
-  const label = baseType === 'cup_with_handle' ? 'cup+handle' : baseType
+  const label = formatBaseType(baseType)
   const prefix = weeksInBase ? `${weeksInBase}w ` : ''
   let status = null
   if (pivotPrice > 0 && currentPrice > 0) {

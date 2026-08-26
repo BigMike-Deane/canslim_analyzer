@@ -144,6 +144,15 @@ function BacktestForm({ onSubmit, isLoading }) {
     strategy: 'balanced'
   })
   const { data: strategies } = useApi(() => api.getStrategies(), [], { initialData: [] })
+  // Preselect the live champion once strategies load (is_default from the
+  // API). 'balanced' is only the pre-load placeholder — leaving it selected
+  // meant new backtests silently tested a strategy no portfolio runs.
+  const userTouchedStrategy = useRef(false)
+  useEffect(() => {
+    if (userTouchedStrategy.current) return
+    const champion = strategies.find(s => s.is_default)
+    if (champion) setConfig(prev => ({ ...prev, strategy: champion.name }))
+  }, [strategies])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -201,7 +210,7 @@ function BacktestForm({ onSubmit, isLoading }) {
             <label className={labelCls}>Strategy</label>
             <select
               value={config.strategy}
-              onChange={(e) => setConfig({...config, strategy: e.target.value})}
+              onChange={(e) => { userTouchedStrategy.current = true; setConfig({...config, strategy: e.target.value}) }}
               className={inputCls}
             >
               {strategies.length > 0 ? (
@@ -210,7 +219,7 @@ function BacktestForm({ onSubmit, isLoading }) {
                 ))
               ) : (
                 <>
-                  <option value="balanced">Balanced (Default)</option>
+                  <option value="balanced">Balanced</option>
                   <option value="growth">Growth Mode</option>
                 </>
               )}

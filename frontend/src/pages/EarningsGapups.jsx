@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import Card from '../components/Card'
-import { ScoreBadge, TagBadge } from '../components/Badge'
+import { ScoreBadge, TagBadge, formatBaseType } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import DataTable from '../components/DataTable'
@@ -112,7 +112,7 @@ export default function EarningsGapups() {
       mobileHide: true,
       render: (val) => val ? (
         <TagBadge color="cyan">
-          {val === 'cup_with_handle' ? 'cup+handle' : val.replace(/_/g, ' ')}
+          {formatBaseType(val)}
         </TagBadge>
       ) : <span className="text-dark-500 text-[10px]">--</span>,
     },

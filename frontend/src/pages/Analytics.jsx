@@ -402,8 +402,7 @@ function AnalyticsOverview() {
 
   if (loading) {
     return (
-      <div className="p-4 md:p-6 max-w-4xl mx-auto">
-        <PageHeader title="Trade Analytics" />
+      <div className="px-4 md:px-6 pb-4 md:pb-6 max-w-4xl mx-auto">
         <div className="space-y-3">
           <div className="skeleton h-24 rounded-2xl" />
           <div className="skeleton h-48 rounded-2xl" />
@@ -415,8 +414,7 @@ function AnalyticsOverview() {
 
   if (error) {
     return (
-      <div className="p-4 md:p-6 max-w-4xl mx-auto">
-        <PageHeader title="Trade Analytics" />
+      <div className="px-4 md:px-6 pb-4 md:pb-6 max-w-4xl mx-auto">
         <Card variant="glass" className="text-center py-8">
           <div className="text-red-400 text-sm mb-2">Failed to load analytics</div>
           <div className="text-dark-500 text-xs">{error}</div>
@@ -427,8 +425,7 @@ function AnalyticsOverview() {
 
   if (!analytics || !analytics.summary || !analytics.summary.total_trades) {
     return (
-      <div className="p-4 md:p-6 max-w-4xl mx-auto">
-        <PageHeader title="Trade Analytics" />
+      <div className="px-4 md:px-6 pb-4 md:pb-6 max-w-4xl mx-auto">
         <Card variant="glass" className="text-center py-8">
           <div className="text-dark-400 text-sm">
             No trade data yet. Analytics will appear after the AI trader executes trades.
@@ -447,11 +444,14 @@ function AnalyticsOverview() {
   const exportable = Array.isArray(trades) && trades.length > 0
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <PageHeader
-        title="Trade Analytics"
-        subtitle={as_of ? `Updated ${formatRelativeTime(as_of)}` : undefined}
-        actions={exportable ? (
+    <div className="px-4 md:px-6 pb-4 md:pb-6 max-w-4xl mx-auto">
+      {/* Title + tabs live in the parent (one voice, tabs below title like
+          AI Portfolio); this row keeps the per-tab meta: freshness + export. */}
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs text-dark-400">
+          {as_of ? `Updated ${formatRelativeTime(as_of)}` : ''}
+        </p>
+        {exportable ? (
           <button
             onClick={() => downloadTradesCsv(trades)}
             className="text-xs text-dark-300 hover:text-dark-100 px-3 py-1 rounded border border-dark-700 hover:border-dark-600 transition-colors"
@@ -460,7 +460,7 @@ function AnalyticsOverview() {
             Export CSV
           </button>
         ) : null}
-      />
+      </div>
 
       {/* Summary Stats */}
       <SectionLabel>Overview</SectionLabel>
@@ -550,7 +550,9 @@ export default function Analytics() {
   const [tab, setTab] = useState('overview')
   return (
     <div>
-      <div className="flex gap-1 px-4 md:px-6 pt-4 max-w-4xl mx-auto">
+      <div className="px-4 md:px-6 pt-4 md:pt-6 max-w-4xl mx-auto">
+        <PageHeader title="Trade Analytics" />
+        <div className="flex gap-1 -mt-2 mb-4">
         {ANALYTICS_TABS.map(t => (
           <button
             key={t.key}
@@ -565,9 +567,10 @@ export default function Analytics() {
             {t.label}
           </button>
         ))}
+        </div>
       </div>
       {tab === 'overview' ? <AnalyticsOverview /> : (
-        <div className="max-w-4xl mx-auto px-4 py-4">
+        <div className="max-w-4xl mx-auto px-4 md:px-6 pb-4">
           <TradeJournal embedded />
         </div>
       )}
