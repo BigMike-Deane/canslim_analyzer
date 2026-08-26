@@ -117,7 +117,7 @@ def stub_market_bullish(monkeypatch):
         },
     }
     import data_fetcher
-    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda: payload)
+    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda *a, **k: payload)
     return payload
 
 
@@ -132,7 +132,7 @@ def stub_market_bearish(monkeypatch):
         },
     }
     import data_fetcher
-    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda: payload)
+    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda *a, **k: payload)
     return payload
 
 
@@ -140,7 +140,7 @@ def stub_market_bearish(monkeypatch):
 def stub_market_no_data(monkeypatch):
     """Stub get_cached_market_direction → None (data unavailable)."""
     import data_fetcher
-    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda: None)
+    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -2052,7 +2052,7 @@ class TestMarketRegime:
         import data_fetcher
 
         monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
-                            lambda: {"success": True, "weighted_signal": 2.5})
+                            lambda *a, **k: {"success": True, "weighted_signal": 2.5})
         result = get_market_regime(db_session)
         assert result["regime"] == "bullish"
         assert result["max_position_pct"] >= 12.0  # bullish gets bigger positions
@@ -2063,7 +2063,7 @@ class TestMarketRegime:
         import data_fetcher
 
         monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
-                            lambda: {"success": True, "weighted_signal": -1.0})
+                            lambda *a, **k: {"success": True, "weighted_signal": -1.0})
         result = get_market_regime(db_session)
         assert result["regime"] == "bearish"
         assert result["max_position_pct"] <= 12.0  # bearish tightens
@@ -2074,7 +2074,7 @@ class TestMarketRegime:
         import data_fetcher
 
         monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
-                            lambda: {"success": True, "weighted_signal": 0.5})
+                            lambda *a, **k: {"success": True, "weighted_signal": 0.5})
         result = get_market_regime(db_session)
         assert result["regime"] == "neutral"
         assert result["min_score_adjustment"] == 0
@@ -2083,7 +2083,7 @@ class TestMarketRegime:
         from backend.ai_trader import get_market_regime
         import data_fetcher
 
-        monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda: None)
+        monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda *a, **k: None)
         result = get_market_regime(db_session)
         assert result["regime"] == "neutral"
         assert "No market data" in result["detail"]
@@ -3132,7 +3132,7 @@ def silence_cycle_seams(monkeypatch, silence_webhooks, fast_sleep):
     # (regime=bullish + signal>=2 → strong-bull 5% reserve).
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
-                        lambda: {"success": True, "weighted_signal": 2.0})
+                        lambda *a, **k: {"success": True, "weighted_signal": 2.0})
     # Silence the lazy email_utils imports the cycle does at the tail.
     import backend.email_utils as eu
     monkeypatch.setattr(eu, "send_risk_alert_webhook", lambda *a, **kw: None)
@@ -3249,6 +3249,37 @@ class TestRunAITradingCycle:
         assert result["status"] == "inactive"
 
     # ── Position-update + sells loop branches ─────────────────────────────
+
+    def test_cycle_forces_market_direction_refresh(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Regression (2026-08-26): the cycle must force-refresh the
+        market-direction cache before any gate reads.
+
+        The cache TTL is 4h (scanner-friendly), but the SPY 50MA gate is a
+        point-in-time risk control. On 2026-07-20 SPY opened above its 50MA,
+        crossed below midday, and a 19:24Z BWAY buy passed a stale "bullish"
+        read fetched hours earlier. The fix: one get_cached_market_direction(
+        force_refresh=True) call per active cycle, so the regime gate,
+        correction zone, and chop-band reads all see current data."""
+        import data_fetcher
+        force_flags = []
+
+        def recording_stub(*a, **k):
+            force_flags.append(k.get("force_refresh", a[0] if a else False))
+            return {"success": True, "weighted_signal": 2.0,
+                    "indexes": {"SPY": {"price": 500.0, "ma_50": 480.0,
+                                        "ma_200": 450.0, "ema_21": 495.0}}}
+        monkeypatch.setattr(data_fetcher, "get_cached_market_direction", recording_stub)
+
+        import backend.ai_trader as ai_trader
+        _seed_config(db_session, current_cash=25000.0, peak_portfolio_value=25000.0)
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+        assert True in force_flags, (
+            "run_ai_trading_cycle must call get_cached_market_direction("
+            "force_refresh=True) so the SPY gate never trades on a stale read"
+        )
 
     def test_zero_positions_skips_price_update(
         self, db_session, reset_cycle_state, silence_cycle_seams,

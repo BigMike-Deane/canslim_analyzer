@@ -3498,6 +3498,23 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             logger.info("AI Portfolio is not active, skipping cycle")
             return {"status": "inactive", "message": "AI Portfolio is not active"}
 
+        # Refresh the market-direction cache before any gate reads. The
+        # cache TTL is 4h (fine for the scanner's M-score), but the SPY
+        # 50MA gate is a point-in-time risk control: on 2026-07-20 SPY
+        # opened above the 50MA, crossed below midday, and a 19:24Z BWAY
+        # buy passed a "bullish" read fetched hours earlier. One forced
+        # fetch per cycle keeps every downstream read this cycle honest
+        # (regime gate, correction zone, chop band); shadow mirroring
+        # after the live cycle reuses the same fresh cache. Cost: one
+        # index-quote fetch per user per trade sweep (~90 min cadence).
+        # On failure the gate falls back to the cached read (never opens
+        # a closed gate on missing data — evaluate_buys skips on no data).
+        try:
+            from data_fetcher import get_cached_market_direction
+            get_cached_market_direction(force_refresh=True)
+        except Exception as e:
+            logger.warning(f"Market-direction refresh failed, gate may read cached data: {e}")
+
         results = {
             "sells_executed": [],
             "buys_executed": [],

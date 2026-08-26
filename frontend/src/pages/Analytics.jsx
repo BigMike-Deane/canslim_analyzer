@@ -310,6 +310,14 @@ function EntryTypeBreakdown({ data }) {
       cardProps={{ className: 'mb-4' }}
       badge={<BreakdownBadge data={data} noun="type" labelOf={et => et.entry_type.replace(/_/g, ' ')} />}
     >
+      {/* Vintage caveat (2026-08-26 cohort read): entry types arrived in
+          different eras — 'standard' rows are April launch seeds, signal-
+          labeled entries only exist from May on — so cross-type P&L is
+          era-confounded, not an apples-to-apples entry-quality ranking. */}
+      <p className="text-[10px] text-dark-400 mb-2">
+        Entry types span different eras of the portfolio &mdash; comparisons
+        across types mix time periods, not just entry quality.
+      </p>
       <div className="space-y-0">
         {data.map((et) => (
           <BreakdownRow

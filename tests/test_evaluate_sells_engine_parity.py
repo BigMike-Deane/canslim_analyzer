@@ -112,7 +112,7 @@ def _run_live(db, monkeypatch, sc, ticker="PAR"):
     """Drive evaluate_sells with the scenario's matched inputs → category."""
     import backend.ai_trader as ai_trader
     import data_fetcher
-    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda: {
+    monkeypatch.setattr(data_fetcher, "get_cached_market_direction", lambda *a, **k: {
         "success": True, "weighted_signal": 2.0,
         "indexes": {"SPY": {"price": 500.0, "ma_50": 480.0, "ma_200": 450.0, "ema_21": 495.0}},
     })
