@@ -2408,8 +2408,15 @@ const RECENT_TRADE_COLUMNS = [
   },
   {
     key: 'shares', label: 'Shares @ Price', align: 'right', mono: true,
-    render: (v, t) => `${v?.toFixed(2)} @ ${formatCurrency(t.price)}`,
-    className: 'text-xs text-dark-200 whitespace-nowrap',
+    // Stacked on phones: the one-line "108.33 @ $40.22" plus nowrap forced
+    // the table wide enough that the P&L column clipped mid-digit at 390px.
+    render: (v, t) => (
+      <span className="sm:whitespace-nowrap">
+        <span className="block sm:inline">{v?.toFixed(2)}</span>
+        <span className="block sm:inline text-dark-400 sm:text-dark-200"> @ {formatCurrency(t.price)}</span>
+      </span>
+    ),
+    className: 'text-xs text-dark-200',
   },
   {
     key: 'realized_gain', label: 'P&L', align: 'right', sortable: true, mono: true,

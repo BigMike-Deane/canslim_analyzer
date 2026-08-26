@@ -34,10 +34,49 @@ function KindBadge({ kind }) {
   )
 }
 
+// Notification body, collapsed by default. Digest rows carry a line-per-event
+// body (10+ lines for a busy breakout day) — rendered inline they turned the
+// list into a wall of text. Short single-line bodies still render in full;
+// anything longer shows its first line plus an expand toggle. The toggle
+// stops propagation so expanding never triggers the row's navigate.
+function NotificationBody({ body, isOpen, onToggle }) {
+  const lines = body.split('\n').filter(l => l.trim())
+  const collapsible = lines.length > 1 || body.length > 140
+  if (!collapsible) {
+    return <div className="text-xs text-dark-400 mt-1 whitespace-pre-line">{body}</div>
+  }
+  if (!isOpen) {
+    return (
+      <button
+        onClick={onToggle}
+        className="mt-1 flex items-baseline gap-1.5 text-left w-full min-w-0 group"
+        title="Show details"
+      >
+        <span className="text-xs text-dark-400 truncate min-w-0">{lines[0]}</span>
+        <span className="text-[10px] text-dark-500 group-hover:text-dark-300 whitespace-nowrap flex-shrink-0 transition-colors">
+          {lines.length > 1 ? `+${lines.length - 1} more ` : ''}▾
+        </span>
+      </button>
+    )
+  }
+  return (
+    <div className="mt-1">
+      <div className="text-xs text-dark-400 whitespace-pre-line">{body}</div>
+      <button
+        onClick={onToggle}
+        className="text-[10px] text-dark-500 hover:text-dark-300 mt-1 transition-colors"
+      >
+        Collapse ▴
+      </button>
+    </div>
+  )
+}
+
 export default function Notifications() {
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [kindFilter, setKindFilter] = useState('')
   const [offset, setOffset] = useState(0)
+  const [expandedIds, setExpandedIds] = useState(() => new Set())
   const navigate = useNavigate()
   const toast = useToast()
 
@@ -108,6 +147,16 @@ export default function Notifications() {
     } catch (err) {
       toast.error(err?.message || 'Failed to mark all as read')
     }
+  }
+
+  function toggleExpanded(id, e) {
+    e.stopPropagation()
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
   function handleRowClick(n) {
@@ -208,9 +257,11 @@ export default function Notifications() {
                 </span>
               </div>
               {n.body && (
-                <div className="text-xs text-dark-400 mt-1 whitespace-pre-line">
-                  {n.body}
-                </div>
+                <NotificationBody
+                  body={n.body}
+                  isOpen={expandedIds.has(n.id)}
+                  onToggle={(e) => toggleExpanded(n.id, e)}
+                />
               )}
             </div>
             <button

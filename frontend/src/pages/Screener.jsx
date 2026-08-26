@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import useApi from '../hooks/useApi'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, getScoreClass, formatCurrency, formatPercent, formatMarketCap, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { SectionLabel } from '../components/Card'
@@ -8,6 +8,7 @@ import { ScoreBadge } from '../components/Badge'
 import { MiniStat } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../components/Toast'
+import DataTable from '../components/DataTable'
 
 function FilterBar({ filters, onFilterChange, sectors }) {
   return (
@@ -103,6 +104,39 @@ function CANSLIMBreakdown({ stock }) {
   )
 }
 
+// Watch action for the desktop table — same optimistic add as StockRow's
+// expanded-card button, sized for a table cell.
+function WatchCell({ ticker, isWatched, onWatched }) {
+  const [submitting, setSubmitting] = useState(false)
+  const toast = useToast()
+
+  const handleClick = async (e) => {
+    e.stopPropagation()
+    if (isWatched || submitting) return
+    setSubmitting(true)
+    try {
+      await api.addToWatchlist({ ticker })
+      onWatched(ticker)
+      toast.success(`${ticker} added to watchlist`)
+    } catch (err) {
+      toast.error(err.message || 'Failed to add to watchlist')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={isWatched || submitting}
+      className="text-[10px] px-2 py-1 rounded border border-dark-700 text-dark-300 hover:border-dark-500 hover:text-dark-100 disabled:opacity-50 disabled:cursor-default transition-colors whitespace-nowrap"
+      title={isWatched ? 'Already on watchlist' : 'Add to watchlist'}
+    >
+      {submitting ? '…' : isWatched ? '✓' : '+ Watch'}
+    </button>
+  )
+}
+
 function StockRow({ stock, isWatched, onWatched }) {
   const [expanded, setExpanded] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -135,10 +169,12 @@ function StockRow({ stock, isWatched, onWatched }) {
             <span className="text-dark-500 text-[10px] font-data">{formatMarketCap(stock.market_cap)}</span>
           </div>
           <div className="text-dark-400 text-sm truncate">{stock.name}</div>
-          <div className="flex items-center gap-2 text-dark-500 text-[10px] tracking-wide">
+          {/* Info floor is text-dark-400 (UI grammar) — the old 500/600 pair
+              was near-invisible against the card background. */}
+          <div className="flex items-center gap-2 text-dark-400 text-[10px] tracking-wide">
             <span>{stock.sector}</span>
             {stock.last_updated && (
-              <span className="font-data text-dark-600">· {formatRelativeTime(stock.last_updated)}</span>
+              <span className="font-data text-dark-500">· {formatRelativeTime(stock.last_updated)}</span>
             )}
           </div>
         </div>
@@ -190,6 +226,7 @@ function StockRow({ stock, isWatched, onWatched }) {
 
 export default function Screener() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [sectors, setSectors] = useState([])
   const pageSize = 50
   // Hydrate page/filters from the URL on mount so a shared/bookmarked link
@@ -307,6 +344,59 @@ export default function Screener() {
 
   const totalPages = Math.ceil(total / pageSize)
 
+  // Desktop table columns. DataTable's own sorting stays OFF — the FilterBar
+  // sort dropdown is the sorting authority (server-side, across all pages);
+  // letting the table also sort its 50-row page would silently disagree with
+  // the "Score (High to Low)" the user selected.
+  const screenerColumns = useMemo(() => [
+    {
+      key: 'ticker', label: 'Ticker',
+      render: (v) => <span className="font-semibold text-dark-50">{v}</span>,
+    },
+    {
+      key: 'name', label: 'Company',
+      render: (v) => <span className="block truncate max-w-[280px]" title={v}>{v}</span>,
+      className: 'text-xs text-dark-300',
+    },
+    { key: 'sector', label: 'Sector', className: 'text-xs text-dark-400 whitespace-nowrap' },
+    {
+      key: 'current_price', label: 'Price', align: 'right', mono: true,
+      render: (v) => formatCurrency(v),
+      className: 'text-xs text-dark-200 whitespace-nowrap',
+    },
+    {
+      key: 'market_cap', label: 'Mkt Cap', align: 'right', mono: true,
+      render: (v) => formatMarketCap(v),
+      className: 'text-xs text-dark-300 whitespace-nowrap',
+    },
+    {
+      key: 'projected_growth', label: 'Growth', align: 'right', mono: true,
+      render: (v) => v != null
+        ? <span className="text-emerald-400">{v >= 0 ? '+' : ''}{v.toFixed(0)}%</span>
+        : <span className="text-dark-600">-</span>,
+      className: 'text-xs',
+    },
+    {
+      key: 'last_updated', label: 'Updated', align: 'right',
+      render: (v) => v ? formatRelativeTime(v) : '-',
+      className: 'text-[10px] text-dark-400 whitespace-nowrap font-data',
+    },
+    {
+      key: 'canslim_score', label: 'Score', align: 'center',
+      render: (v, s) => <ScoreBadge score={v} ticker={s.ticker} size="sm" />,
+    },
+    {
+      key: '_watch', label: '', align: 'center',
+      render: (_, s) => (
+        <WatchCell
+          ticker={s.ticker}
+          isWatched={watchedTickers.has(s.ticker)}
+          onWatched={markWatched}
+        />
+      ),
+    },
+  ], [watchedTickers, markWatched])
+
   // Page-level freshness stamp. /api/stocks has no as_of field, so derive it
   // from the newest per-row last_updated in the current page of results.
   // ISO-8601 strings with a uniform Z suffix compare correctly lexically.
@@ -355,14 +445,29 @@ export default function Screener() {
       ) : (
         <>
           <Card variant="glass">
-            {stocks.map(stock => (
-              <StockRow
-                key={stock.ticker}
-                stock={stock}
-                isWatched={watchedTickers.has(stock.ticker)}
-                onWatched={markWatched}
+            {/* Phone: expandable cards (unchanged). Desktop: dense table —
+                the card layout stretched to 1440px left most of each row as
+                dead space and made 50 results a ~4,600px scroll. */}
+            <div className="md:hidden">
+              {stocks.map(stock => (
+                <StockRow
+                  key={stock.ticker}
+                  stock={stock}
+                  isWatched={watchedTickers.has(stock.ticker)}
+                  onWatched={markWatched}
+                />
+              ))}
+            </div>
+            <div className="hidden md:block">
+              <DataTable
+                columns={screenerColumns}
+                data={stocks}
+                keyField="ticker"
+                sortable={false}
+                compact
+                onRowClick={(s) => navigate(`/stock/${s.ticker}`)}
               />
-            ))}
+            </div>
           </Card>
 
           {totalPages > 1 && (
