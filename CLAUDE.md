@@ -6,8 +6,6 @@ A mobile-first web application for CANSLIM stock analysis with React frontend an
 **GitHub Repository**: [BigMike-Deane/canslim_analyzer](https://github.com/BigMike-Deane/canslim_analyzer)
 
 ## Architecture
-- **Frontend**: React + Vite + TailwindCSS (mobile-first design)
-- **Backend**: FastAPI + SQLAlchemy + PostgreSQL
 - **Cache**: 3-tier (Memory → Redis → DB → API fetch)
 - **Deployment**: Docker (3 containers + 3 volumes) on VPS at `/opt/canslim_analyzer`
 - **Docker command**: Use `docker-compose` (with hyphen, old version on VPS)
@@ -50,138 +48,13 @@ Champion config: min_score=72, max_positions=8, stop_loss=7%, take_profit=75%, s
 
 Key finding: 5-state market state machine HURTS over full cycles. NoState's binary gate is crude but far more effective (8.6x better over 4yr).
 
-## Key Features
-- **CANSLIM Scoring** (100pts): C(15) A(15) N(15) S(15) L(15) I(10) M(15)
-- **Growth Mode Scoring** (100pts): R(20) F(15) N(15) S(15) L(15) I(10) M(10) for pre-revenue stocks
-- **AI Trading**: Trailing stops, partial profits (25%/40% tiers), score crash detection, sector limits
-- **Backtesting**: Full day-by-day simulation with SPY benchmark, trade history
-- **Coiled Spring**: Earnings catalyst detection — base patterns + beat streaks + approaching earnings
-- **Base Patterns**: Flat base, cup, cup-with-handle, double bottom detection
-- **Breakout Detection**: Pre-breakout (-3% to 0%), active (0% to +5%), extended (>5% penalized)
-- **Market Breadth**: A/D ratio, new highs/lows, sector rotation
-- **Fidelity Sync**: CSV upload, position tracking, trade parsing
-- **Watchlist Alerts**: Email notifications on price/score targets
-- **Data Sources**: FMP (earnings, metrics), Yahoo Finance (prices, fallback), Finviz (institutional)
-
 ## Admin Diagnostics
 - `GET /api/admin/strategy-health` — pre/post-graduation health audit for a strategy.
 - `GET /api/admin/strategy-ab-eval` — live A/B comparison framework: pre vs post-cutoff trade summary + decision (keep/revert/marginal/insufficient_data). Used to evaluate scoring-rule experiments shipped to live trading; backtest replay can't honestly evaluate scoring changes (snapshots freeze today's point-in-time scalars). First consumer: Approach 2 (commit `ec73f83`, deployed 2026-05-07).
 
-## File Structure
-
-### Root Directory
-- `canslim_scorer.py` - CANSLIM scoring logic
-- `data_fetcher.py` / `async_data_fetcher.py` - Data fetching (sync/async)
-- `async_scanner.py` - Async batch scanning
-- `growth_projector.py` - Growth projection model
-- `sp500_tickers.py` - Stock universe management (~2000+ tickers)
-- `config_loader.py` - YAML configuration loader
-- `redis_cache.py` - Redis caching layer
-- `email_report.py` - Email notifications
-
-### Backend (`/backend/`)
-- `main.py` - FastAPI endpoints + shared helpers (~4,750 lines)
-- `routes/fidelity.py` - Fidelity sync routes (extracted from main.py)
-- `database.py` - SQLAlchemy models + migrations
-- `scheduler.py` - Continuous scanning logic
-- `ai_trader.py` - AI Portfolio trading logic
-- `backtester.py` - Historical backtesting engine
-- `historical_data.py` - Historical data provider
-- `market_state.py` - Market state machine (disabled in winner strategy)
-- `fidelity_sync.py` - Fidelity CSV parsing
-
-### Frontend (`/frontend/src/`)
-- `pages/` - Dashboard, AIPortfolio, Backtest, Analytics, Breadth, Screener, etc.
-- `components/` - Sidebar, shared UI components
-- `api.js` - API client with TTL-based caching
-- `App.jsx` - Main application router
-
-#### Frontend data fetching: use the `useApi` hook
-New fetch-and-render code uses `hooks/useApi.js` instead of hand-rolling
-`loading`/`error` state + effects. It bakes in the correctness guards this
-codebase kept re-implementing per page (out-of-order response guard from
-`ce9d69c`, unmount safety, spinner-free background polling):
-
-```javascript
-const { data, error, loading, refetch, setData } = useApi(
-  () => api.getStocks(filters),   // inline arrow is fine — no useCallback needed
-  [filters],                      // deps decide when to re-fetch
-  { pollMs: 30000 }               // optional background polling
-)
-```
-
-Optimistic updates after mutations go through `setData(prev => ...)`.
-Migrated exemplars: Breakouts (one-shot), Screener (deps-driven filters),
-Notifications (optimistic updates + paging). Complex multi-fetch
-orchestration (AIPortfolio, Backtest) still hand-rolls — migrate
-opportunistically, not wholesale.
-
-#### UI grammar (ui-revamp, Jul-30 2026)
-Every page answers its core question with always-visible content; everything
-else is demoted, not deleted. The reusable units:
-
-- `components/AlertChip.jsx` — "something needs attention". Tones: `hot`
-  (act now, red stripe), `warm` (watch, amber stripe), `ok` (context,
-  neutral). A chip that names a problem MUST carry `onClick` to the
-  decision surface (position modal, stock page) — never a dead-end alert.
-- `components/CollapsedDrawer.jsx` — demoted sections: slim header +
-  LIVE count badge ("5 upcoming", "last 6h ago"), content one tap away,
-  collapsed by default. A bare title with a chevron is a missed signal.
-- One hero number per screen; severity stripes on rows use the SAME
-  thresholds as their matching chips (drawdown < -5% / score fade >= 12 /
-  near_stop) so a striped row always has a chip explaining it.
-- Amber discipline: brand amber = identity/interactive; warnings get amber
-  PLUS an icon or stripe; nothing purely decorative gets amber.
-- `text-dark-500` is decorative-only (labels, hints); information text
-  floors at `text-dark-400`.
-- Loading = skeleton blocks (`.skeleton`), never spinners, for page-level
-  loads. Prose cards (PortfolioNarrative) template ALL copy from live
-  payloads — never author claims into JSX that data can invalidate.
-
-#### setState: use the functional form when reading prior state
-When a handler computes the next state from the current state, use the
-functional form `setX(prev => next)` — never `setX(items.map(...))` that
-closes over the state variable directly. The closed-over snapshot is
-frozen at handler-define time, so concurrent updates (polling refreshes,
-overlapping click handlers, async callbacks) eat each other's changes.
-
-```javascript
-// Wrong — stale closure. If a poll lands between click and this line,
-// the polled data is overwritten by the filter of pre-poll items.
-setItems(items.filter(i => i.id !== id))
-
-// Right — reads the latest committed state.
-setItems(prev => prev.filter(i => i.id !== id))
-```
-
-Real bugs from this class: `20bedb5` (Notifications mark-read/delete),
-`3f64176` (Backtest delete vs 2s polling refresh).
-
-### Tests (`/tests/`)
-- 576 tests passing, 5 skipped (Redis tests when unavailable)
-- `conftest.py` - Shared fixtures with in-memory SQLite
-- Key files: `test_backtester.py`, `test_canslim_scorer.py`, `test_bug_regressions.py`
-
-#### Test Isolation: FastAPI Dependency Overrides
-Use the canonical primitives in `tests/conftest.py` for any test that needs to override `get_current_user`, `get_current_admin_user`, or `get_db`. Module-level `app.dependency_overrides[...] = ...` collides when multiple test files override the same key — pytest collection imports every file before any test runs, so last-loaded wins and tests pass/fail based on collection order.
-
-Canonical IDs (defined in `conftest.py`, in the 99000+ range to avoid collision with hand-rolled fixtures):
-- `TEST_ADMIN_ID = 99001` — admin user
-- `TEST_USER_A_ID = 99002` — non-admin user A
-- `TEST_USER_B_ID = 99003` — non-admin user B
-- `TEST_NONADMIN_ID = 99004` — generic non-admin
-
-Scoped override (preferred — restores prior state on exit, even if test raises):
-```python
-from tests.conftest import override_dependency, TEST_ADMIN_ID
-
-def test_admin_endpoint(client):
-    with override_dependency(get_current_admin_user, lambda: User(id=TEST_ADMIN_ID, is_admin=True)):
-        resp = client.get("/api/admin/foo")
-    # override automatically cleared here
-```
-
-Don't reach for module-level `app.dependency_overrides[...] = ...` in new tests — it's the pattern we migrated 9 files off of in `f946080`.
+## Where detailed conventions live
+- Frontend patterns (`useApi` hook, UI grammar, setState rules): `frontend/CLAUDE.md`
+- Test isolation / dependency-override conventions: `tests/CLAUDE.md`
 
 ## Deployment Commands
 See CLAUDE.local.md for deployment commands with actual VPS addresses.
@@ -198,13 +71,7 @@ curl -X POST https://canslim.duckdns.org/api/backtests -H "Content-Type: applica
 ```bash
 export CANSLIM_ENV=development
 python3 -m pytest tests/ -v                           # All tests
-python3 -m pytest tests/ --cov=. --cov-report=html    # With coverage
-python3 -m pytest tests/test_backtester.py -v          # Specific file
 ```
-
-## Dependencies
-- **Backend**: fastapi, uvicorn, sqlalchemy, yfinance>=0.2.40, pandas, numpy, aiohttp, httpx, pyyaml, redis, psycopg2-binary
-- **Frontend**: React 18, Vite, TailwindCSS, Recharts
 
 ## Owner's Trading Preferences
 - Likes stocks under $25 that fit CANSLIM criteria
