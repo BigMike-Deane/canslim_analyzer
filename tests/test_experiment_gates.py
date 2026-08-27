@@ -184,8 +184,9 @@ class TestStopLossClock:
                 reason="STOP LOSS: Down 8.0%", executed_at=when))
             db_session.commit()
         stop(1, 100.0, 10.0, -80.0, datetime(2026, 7, 1, tzinfo=timezone.utc))   # -8%
-        stop(2, 100.0, 10.0, -90.0, datetime(2026, 8, 1, tzinfo=timezone.utc))   # -9%
-        stop(3, 100.0, 10.0, -80.0, datetime(2026, 8, 1, tzinfo=timezone.utc))   # wrong user
+        stop(1, 100.0, 10.0, -90.0, datetime(2026, 8, 1, tzinfo=timezone.utc))   # -9%
+        stop(2, 100.0, 10.0, -80.0, datetime(2026, 8, 1, tzinfo=timezone.utc))   # non-owner
+        stop(3, 100.0, 10.0, -80.0, datetime(2026, 8, 1, tzinfo=timezone.utc))   # non-owner
         stop(1, 100.0, 10.0, -80.0, datetime(2026, 6, 1, tzinfo=timezone.utc))   # pre-cutoff
         out = _call(db_session)
         clock = out["program_clocks"]["stop_loss_recheck"]
@@ -282,6 +283,23 @@ class TestChopArmGates:
         _trade(db_session, base.id, "AAA", "BUY")
         _trade(db_session, base.id, "BBB", "BUY")
         _trade(db_session, arm.id, "AAA", "BUY")
+        out = _call(db_session)
+        row = next(a for a in out["arms"] if a["name"] == "shadow_chop_entry_bar")
+        sup = _metric(row, "baseline buys not taken (suppression proxy)")
+        assert sup["n"] == 1
+
+    def test_suppression_proxy_ignores_pre_activation_baseline_rows(self, db_session):
+        # Fleet resets leave the baseline stack older than late-added arms:
+        # baseline buys made before the arm existed are not suppressions.
+        base = _arm(db_session, "shadow_baseline",
+                    activated_at=T0 - timedelta(days=10))
+        arm = _arm(db_session, "shadow_chop_entry_bar", activated_at=T0)
+        _trade(db_session, base.id, "OLD", "BUY",
+               executed_at=T0 - timedelta(days=5))
+        _trade(db_session, base.id, "NEW", "BUY",
+               executed_at=T0 + timedelta(days=1))
+        _trade(db_session, arm.id, "OTHER", "BUY",
+               executed_at=T0 + timedelta(days=1))
         out = _call(db_session)
         row = next(a for a in out["arms"] if a["name"] == "shadow_chop_entry_bar")
         sup = _metric(row, "baseline buys not taken (suppression proxy)")

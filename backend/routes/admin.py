@@ -1552,6 +1552,9 @@ def compute_experiment_gates(db: Session) -> dict:
                 sf = None
         return sf if isinstance(sf, dict) else {}
 
+    def _naive(dt):
+        return dt.replace(tzinfo=None) if (dt is not None and dt.tzinfo) else dt
+
     arms = db.query(ShadowStrategy).filter(
         ShadowStrategy.archived_at.is_(None)).order_by(ShadowStrategy.id).all()
     trades_by_arm = {}
@@ -1593,9 +1596,13 @@ def compute_experiment_gates(db: Session) -> dict:
 
     def _suppressed_vs_baseline(arm_id, action, reason_prefix):
         """Baseline rows with no counterpart in the arm — behavior the
-        arm's lever SUPPRESSED (e.g. pre-earnings exits it skipped)."""
+        arm's lever SUPPRESSED (e.g. pre-earnings exits it skipped).
+        Only baseline rows inside the arm's own active window count —
+        the baseline stack can predate a later-activated arm."""
         if baseline is None:
             return 0
+        arm_obj = next((x for x in arms if x.id == arm_id), None)
+        activated = _naive(arm_obj.activated_at) if arm_obj else None
         def _key(t):
             return (t.ticker, t.executed_at.date() if t.executed_at else None)
         arm_keys = {
@@ -1604,6 +1611,9 @@ def compute_experiment_gates(db: Session) -> dict:
         }
         n = 0
         for t in _rows(baseline.id, action):
+            if (activated is not None and t.executed_at is not None
+                    and _naive(t.executed_at) < activated):
+                continue
             if not (t.reason or "").startswith(reason_prefix):
                 continue
             if _key(t) not in arm_keys:
@@ -1694,7 +1704,7 @@ def compute_experiment_gates(db: Session) -> dict:
     STOP_RECHECK_CUTOFF = datetime(2026, 6, 24, tzinfo=timezone.utc)
     stop_sells = db.query(AIPortfolioTrade).filter(
         AIPortfolioTrade.action == "SELL",
-        AIPortfolioTrade.user_id.in_((1, 2)),
+        AIPortfolioTrade.user_id == 1,
         AIPortfolioTrade.executed_at > STOP_RECHECK_CUTOFF,
         AIPortfolioTrade.reason.like("STOP LOSS%"),
     ).all()
