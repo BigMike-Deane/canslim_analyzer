@@ -1778,3 +1778,91 @@ async def experiment_gates(
 ):
     """Thin wrapper over compute_experiment_gates — see its docstring."""
     return compute_experiment_gates(db)
+
+# ── Program milestone ledger ──────────────────────────────────────────────
+# Owner-facing event history for the beat-SPY program. Rows come from
+# backend/milestones.py (auto gate-diff writer + seeded history) and from
+# the POST endpoint below (manual owner entries).
+
+class MilestoneCreate(BaseModel):
+    title: str
+    detail: Optional[str] = None
+    category: str = "decision"
+    occurred_at: Optional[datetime] = None
+
+
+def _milestone_out(r):
+    return {
+        "id": r.id,
+        "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+        "category": r.category,
+        "title": r.title,
+        "detail": r.detail,
+        "source": r.source,
+    }
+
+
+@router.get("/program-milestones")
+@limiter.limit("60/minute")
+async def list_program_milestones(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+    category: Optional[str] = Query(None),
+    limit: int = Query(200, le=500),
+):
+    """Program Ledger: milestones newest-first, optional category filter."""
+    from backend.database import ProgramMilestone
+    q = db.query(ProgramMilestone)
+    if category:
+        q = q.filter(ProgramMilestone.category == category)
+    rows = q.order_by(ProgramMilestone.occurred_at.desc(),
+                      ProgramMilestone.id.desc()).limit(limit).all()
+    return [_milestone_out(r) for r in rows]
+
+
+@router.post("/program-milestones")
+@limiter.limit("30/minute")
+async def create_program_milestone(
+    body: MilestoneCreate,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Manual owner entry into the Program Ledger."""
+    from backend.milestones import add_milestone
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title required")
+    row = add_milestone(
+        db,
+        title=title,
+        detail=(body.detail or "").strip() or None,
+        category=body.category,
+        occurred_at=body.occurred_at,
+        source="owner",
+    )
+    return _milestone_out(row)
+
+
+@router.delete("/program-milestones/{milestone_id}")
+@limiter.limit("30/minute")
+async def delete_program_milestone(
+    milestone_id: int,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Remove a ledger row (typo cleanup). Auto rows re-fire only if their
+    dedupe_key row is gone AND the condition still holds — deleting an
+    auto row while its threshold remains crossed will restamp it with the
+    next pass's date, so prefer deleting only manual entries."""
+    from backend.database import ProgramMilestone
+    row = db.query(ProgramMilestone).filter(
+        ProgramMilestone.id == milestone_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Milestone not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": milestone_id}
+

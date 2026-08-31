@@ -702,6 +702,24 @@ export const api = {
   // promotion gate (defined in config/default.yaml comments).
   getExperimentGates: () => request('/api/admin/experiment-gates'),
 
+  // Program Ledger: event-sourced milestone history (auto gate-diff rows
+  // + seeded history + manual owner entries).
+  getProgramMilestones: (category) => {
+    const params = new URLSearchParams()
+    if (category) params.set('category', category)
+    const qs = params.toString()
+    return request(`/api/admin/program-milestones${qs ? `?${qs}` : ''}`)
+  },
+
+  addProgramMilestone: (payload) =>
+    request('/api/admin/program-milestones', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteProgramMilestone: (id) =>
+    request(`/api/admin/program-milestones/${id}`, { method: 'DELETE' }),
+
   // Per-trade sibling: trade rows + cumulative-return curves for the chart + table.
   getStrategyABEvalTrades: ({ strategy, cutoffDate, preWindowDays, postWindowDays, excludePyramids, source } = {}) => {
     const params = new URLSearchParams()

@@ -1766,6 +1766,37 @@ class Notification(Base):
     )
 
 
+class ProgramMilestone(Base):
+    """Owner-facing program ledger: one row per milestone in the beat-SPY
+    research program (arm activations, gate accruals, verdicts, kills,
+    infra events). Event-sourced complement to /admin/experiment-gates:
+    the gates endpoint answers "where are we now?", this table answers
+    "what happened and when?". Owner-only surface (Program Ledger card);
+    never rendered to non-admin users.
+
+    dedupe_key makes the auto-writer (backend/milestones.py) idempotent:
+    threshold-crossing events claim a stable key (e.g.
+    'gate:shadow_chop_trim:chop days:target') and are skipped on every
+    later pass. Seeded history claims keys for events that were already
+    true when the ledger went live, so the first auto pass cannot re-stamp
+    them with deploy day's date. Manual owner rows leave dedupe_key NULL.
+    """
+    __tablename__ = "program_milestones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # When the milestone actually happened (backdatable for seeded
+    # history) as opposed to created_at = when the row was written.
+    occurred_at = Column(DateTime, nullable=False, index=True)
+    # 'experiment' | 'verdict' | 'gate' | 'decision' | 'fix' | 'infra' | 'research'
+    category = Column(String, nullable=False, default="research")
+    title = Column(String, nullable=False)
+    detail = Column(Text, nullable=True)
+    # 'auto' (gate-diff writer) | 'claude' (session/seed) | 'owner' (manual)
+    source = Column(String, nullable=False, default="claude")
+    dedupe_key = Column(String, nullable=True, unique=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 # ── Shadow paper-trading models ───────────────────────────────────────────────
 # Forward-only scoring evaluation: alternative scoring stacks run alongside
 # the live scanner and emit virtual BUY/SELL decisions. The /admin/strategy-

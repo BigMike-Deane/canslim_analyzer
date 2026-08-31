@@ -1867,6 +1867,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start A/B eval email job: {e}")
 
+    # Program milestone ledger: daily gate-diff pass after US close
+    try:
+        start_milestone_job()
+    except Exception as e:
+        logger.warning(f"Failed to start milestone job: {e}")
+
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
     # Run first scan immediately
@@ -2521,6 +2527,44 @@ def _run_weekly_ab_eval_email():
             db.close()
     except Exception as e:
         logger.error(f"Weekly A/B eval email outer failure: {e}", exc_info=True)
+
+
+def _run_milestone_pass_job():
+    """Daily Program Ledger pass: seed backfill (no-op after first run)
+    then the gate-diff auto writer (idempotent via dedupe_key)."""
+    try:
+        from backend.milestones import run_milestone_pass
+        run_milestone_pass()
+    except Exception as e:
+        logger.error(f"Milestone pass failed: {e}")
+
+
+def start_milestone_job():
+    """Schedule the daily Program Ledger gate-diff pass at 21:15 UTC —
+    after US close, so the day's gate accruals are final when stamped.
+    Also runs one pass immediately in the background so a fresh deploy
+    seeds the ledger without waiting a day."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "program_milestones"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_milestone_pass_job,
+        CronTrigger(hour=21, minute=15),
+        id=job_id,
+        name="Program Milestone Ledger Pass",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    from threading import Thread
+    Thread(target=_run_milestone_pass_job, daemon=True).start()
+
+    logger.info("Program milestone job scheduled (21:15 UTC daily)")
 
 
 def start_ab_eval_email_job():

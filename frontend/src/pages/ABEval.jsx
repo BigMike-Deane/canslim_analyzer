@@ -747,6 +747,192 @@ function GateProgressCard() {
   )
 }
 
+// Event-sourced program history: what happened and when — the complement to
+// Gate Progress (which answers "where are we now?"). Rows come from the
+// server-side gate-diff writer, the seeded history, and owner entries here.
+const LEDGER_CATEGORIES = ['experiment', 'verdict', 'gate', 'decision', 'fix', 'infra', 'research']
+const LEDGER_PREVIEW_COUNT = 10
+
+function ledgerDate(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString(undefined, {
+    timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric',
+  })
+}
+
+function ProgramLedgerCard() {
+  const { data, error, loading, refetch, setData } = useApi(() => api.getProgramMilestones(), [])
+  const [filter, setFilter] = useState(null)
+  const [showAll, setShowAll] = useState(false)
+  const [formOpen, setFormOpen] = useState(false)
+  const [newTitle, setNewTitle] = useState('')
+  const [newDetail, setNewDetail] = useState('')
+  const [newCategory, setNewCategory] = useState('decision')
+  const [saving, setSaving] = useState(false)
+  const toast = useToast()
+
+  if (loading && !data) {
+    return <Card><div className="skeleton h-24 rounded" /></Card>
+  }
+  // Silent degrade like GateProgressCard — the page works without it.
+  if (error || !data) return null
+
+  const rows = filter ? data.filter(r => r.category === filter) : data
+  const visible = showAll ? rows : rows.slice(0, LEDGER_PREVIEW_COUNT)
+
+  const handleAdd = async (e) => {
+    e.preventDefault()
+    const title = newTitle.trim()
+    if (!title || saving) return
+    setSaving(true)
+    try {
+      const row = await api.addProgramMilestone({
+        title,
+        detail: newDetail.trim() || null,
+        category: newCategory,
+      })
+      setData(prev => [row, ...(prev || [])])
+      setNewTitle('')
+      setNewDetail('')
+      setFormOpen(false)
+    } catch (err) {
+      toast.error(`Failed to add milestone: ${err.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async (id) => {
+    setData(prev => (prev || []).filter(r => r.id !== id))
+    try {
+      await api.deleteProgramMilestone(id)
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`)
+      refetch()
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between gap-2">
+        <CardHeader
+          title="Program Ledger"
+          subtitle="What happened and when — gate crossings and verdicts record themselves; decisions get written down"
+        />
+        <button
+          onClick={() => setFormOpen(o => !o)}
+          className="shrink-0 text-xs px-2 py-1 rounded border border-dark-700 text-dark-300 hover:border-dark-500 hover:text-dark-100"
+        >
+          {formOpen ? 'Cancel' : '+ Milestone'}
+        </button>
+      </div>
+
+      {formOpen && (
+        <form onSubmit={handleAdd} className="mb-3 grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2 text-xs">
+          <input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="What happened?"
+            maxLength={200}
+            className="bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-dark-100"
+            autoFocus
+          />
+          <select
+            value={newCategory}
+            onChange={(e) => setNewCategory(e.target.value)}
+            className="bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-dark-100"
+          >
+            {LEDGER_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button
+            type="submit"
+            disabled={!newTitle.trim() || saving}
+            className="px-3 py-1.5 rounded border border-primary-500/40 text-primary-300 hover:border-primary-500/70 disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Add'}
+          </button>
+          <input
+            value={newDetail}
+            onChange={(e) => setNewDetail(e.target.value)}
+            placeholder="Detail (optional)"
+            maxLength={500}
+            className="sm:col-span-3 bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-dark-100"
+          />
+        </form>
+      )}
+
+      <div className="mb-3 flex flex-wrap gap-1.5 text-[10px]">
+        <button
+          onClick={() => setFilter(null)}
+          className={`px-2 py-0.5 rounded border ${!filter
+            ? 'bg-dark-800 text-dark-100 border-dark-500'
+            : 'bg-dark-850 text-dark-400 border-dark-700 hover:text-dark-200'}`}
+        >
+          all · {data.length}
+        </button>
+        {LEDGER_CATEGORIES.filter(c => data.some(r => r.category === c)).map(c => (
+          <button
+            key={c}
+            onClick={() => setFilter(f => (f === c ? null : c))}
+            className={`px-2 py-0.5 rounded border ${filter === c
+              ? 'bg-dark-800 text-dark-100 border-dark-500'
+              : 'bg-dark-850 text-dark-400 border-dark-700 hover:text-dark-200'}`}
+          >
+            {c} · {data.filter(r => r.category === c).length}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-2.5">
+        {visible.map(r => (
+          <div key={r.id} className="flex items-start gap-3 min-w-0 group">
+            <span className="shrink-0 w-24 pt-0.5 text-[10px] tabular-nums text-dark-400">
+              {ledgerDate(r.occurred_at)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="text-xs text-dark-100">{r.title}</span>
+                <span className="text-[9px] px-1.5 py-px rounded border bg-dark-850 text-dark-400 border-dark-700">
+                  {r.category}
+                </span>
+                {r.source === 'auto' && (
+                  <span className="text-[9px] text-dark-500" title="Recorded mechanically by the gate-diff writer">
+                    auto
+                  </span>
+                )}
+              </div>
+              {r.detail && (
+                <p className="mt-0.5 text-[11px] leading-snug text-dark-400">{r.detail}</p>
+              )}
+            </div>
+            {r.source === 'owner' && (
+              <button
+                onClick={() => handleDelete(r.id)}
+                title="Delete this entry"
+                className="shrink-0 opacity-0 group-hover:opacity-100 text-dark-500 hover:text-red-400 text-xs px-1"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        ))}
+        {visible.length === 0 && (
+          <p className="text-xs text-dark-400 italic">No milestones in this category yet.</p>
+        )}
+      </div>
+
+      {rows.length > LEDGER_PREVIEW_COUNT && (
+        <button
+          onClick={() => setShowAll(s => !s)}
+          className="mt-3 text-[11px] text-dark-400 hover:text-dark-200"
+        >
+          {showAll ? 'Show recent only' : `Show all ${rows.length}`}
+        </button>
+      )}
+    </Card>
+  )
+}
+
 export default function ABEval() {
   const { user } = useAuth()
   const [selected, setSelected] = useState(loadStoredSelection)
@@ -929,6 +1115,9 @@ export default function ABEval() {
 
       {/* Gate progress — the whole program's accrual at a glance */}
       <GateProgressCard />
+
+      {/* Program ledger — the program's event history (auto + owner rows) */}
+      <ProgramLedgerCard />
 
       {/* Controls */}
       <Card>
