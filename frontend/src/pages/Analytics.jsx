@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { api, formatCurrency, formatPercent, formatRelativeTime } from '../api'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, AreaChart, Area, ReferenceLine } from 'recharts'
 import Card, { CardHeader, SectionLabel } from '../components/Card'
@@ -388,25 +388,7 @@ function HoldDurationBreakdown({ data }) {
 }
 
 function AnalyticsOverview() {
-  const [analytics, setAnalytics] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const data = await api.getTradeAnalytics()
-        setAnalytics(data)
-        setError(null)
-      } catch (err) {
-        console.error('Failed to fetch analytics:', err)
-        setError(err.message || 'Failed to load analytics')
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchData()
-  }, [])
+  const { data: analytics, loading, error } = useApi(() => api.getTradeAnalytics(), [])
 
   if (loading) {
     return (
@@ -425,7 +407,7 @@ function AnalyticsOverview() {
       <div className="px-4 md:px-6 pb-4 md:pb-6 max-w-4xl mx-auto">
         <Card variant="glass" className="text-center py-8">
           <div className="text-red-400 text-sm mb-2">Failed to load analytics</div>
-          <div className="text-dark-500 text-xs">{error}</div>
+          <div className="text-dark-500 text-xs">{error?.message || 'Failed to load analytics'}</div>
         </Card>
       </div>
     )
@@ -548,6 +530,7 @@ function AnalyticsOverview() {
 // a tab; /trade-journal redirects to /analytics. Journal keeps its URL
 // filter params (?days=&ticker=...) — same router context, same page.
 import TradeJournal from './TradeJournal'
+import useApi from '../hooks/useApi'
 
 const ANALYTICS_TABS = [
   { key: 'overview', label: 'Overview' },

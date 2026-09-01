@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCurrency, formatRelativeTime } from '../api'
 import Card from '../components/Card'
@@ -6,6 +6,7 @@ import { ScoreBadge, TagBadge } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import DataTable from '../components/DataTable'
+import useApi from '../hooks/useApi'
 
 function ReadinessScore({ score }) {
   if (score == null) return <span className="text-dark-500 text-xs">-</span>
@@ -103,18 +104,9 @@ function MarketBanner({ isBear, spyPrice, spyMa50 }) {
 }
 
 export default function BearBase() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
   const [expandedTicker, setExpandedTicker] = useState(null)
-
-  useEffect(() => {
-    setLoading(true)
-    api.getBearBaseCandidates(50)
-      .then(d => { setData(d?.data || d); setError(null) })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [])
+  const { data, loading, error } = useApi(
+    () => api.getBearBaseCandidates(50).then(d => d?.data || d), [])
 
   const candidates = data?.candidates || []
 
@@ -256,7 +248,7 @@ export default function BearBase() {
 
       {error && !data && (
         <Card variant="glass" className="text-center py-8 text-red-400">
-          Failed to load: {error}
+          Failed to load: {error?.message}
         </Card>
       )}
 

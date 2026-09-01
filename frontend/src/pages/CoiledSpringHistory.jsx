@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatShortDate, formatCurrency } from '../api'
 import Card from '../components/Card'
@@ -6,6 +6,7 @@ import { OutcomeBadge, TagBadge, PnlText, CSConfidenceBadge, formatBaseType } fr
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import DataTable, { Pagination } from '../components/DataTable'
+import useApi from '../hooks/useApi'
 
 const FILTERS = [
   { key: 'all', label: 'All' },
@@ -16,19 +17,10 @@ const FILTERS = [
 ]
 
 export default function CoiledSpringHistory() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
   const [page, setPage] = useState(1)
   const [filter, setFilter] = useState('all')
-
-  useEffect(() => {
-    setLoading(true)
-    api.getCoiledSpringHistory(page, 50)
-      .then(d => { setData(d); setError(null) })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [page])
+  const { data, loading, error } = useApi(
+    () => api.getCoiledSpringHistory(page, 50), [page])
 
   const stats = data?.cumulative_stats
   const pagination = data?.pagination
@@ -140,7 +132,7 @@ export default function CoiledSpringHistory() {
 
       {error && !data && (
         <Card variant="glass" className="text-center py-8 text-red-400">
-          Failed to load: {error}
+          Failed to load: {error?.message}
         </Card>
       )}
 

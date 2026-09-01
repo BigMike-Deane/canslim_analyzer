@@ -1737,6 +1737,8 @@ def compute_experiment_gates(db: Session) -> dict:
          "due_date": "2026-09-20"},
         {"label": "CS confidence v2 recalibration (~200 outcomes, post-Aug-19 rows)",
          "due_date": "2026-11-15"},
+        {"label": "CANSLIM_API_TOKEN re-mint (Monday routine JWT dies 2027-03-01)",
+         "due_date": "2027-02-15"},
     ]
     _today = datetime.now(timezone.utc).date()
     calendar = []

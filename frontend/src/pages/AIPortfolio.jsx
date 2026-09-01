@@ -601,7 +601,9 @@ function EdgePower({ power, significant }) {
     <div className="mt-2 text-[11px] text-dark-500">
       <span className="text-dark-400">Power:</span> at the current effect size,
       {' '}≈{power.additional_days_needed} more trading day{power.additional_days_needed === 1 ? '' : 's'}
-      {power.est_additional_months != null && ` (~${power.est_additional_months} mo)`}
+      {power.projected_date
+        ? ` (finish line ~${new Date(power.projected_date).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })})`
+        : power.est_additional_months != null ? ` (~${power.est_additional_months} mo)` : ''}
       {' '}of data would be needed to prove this alpha at 95% confidence (80% power).
       <span className="block text-dark-600 mt-0.5">
         {power.current_days} of ≈{power.required_days} days collected · assumes the edge persists.
@@ -707,7 +709,9 @@ function EdgeScorecard({ edge, hideClocks = false }) {
               title="At the current alpha and volatility, how many more trading days of live data are needed before the edge over SPY is statistically provable (95% confidence, 80% power). Assumes the edge persists — this is a clock, not a promise. This is the UNCONDITIONAL question — see the trend-day clock below for the regime-aware one."
             >
               ⏳ Verdict clock (all days): ≈{data.power.additional_days_needed} trading days
-              {data.power.est_additional_months != null && ` (~${data.power.est_additional_months} mo)`} until the
+              {data.power.projected_date
+                ? ` — finish line ~${new Date(data.power.projected_date).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })}`
+                : data.power.est_additional_months != null ? ` (~${data.power.est_additional_months} mo)` : ''} until the
               edge vs SPY is statistically provable. {data.power.current_days}/{data.power.required_days} collected.
             </div>
           )}

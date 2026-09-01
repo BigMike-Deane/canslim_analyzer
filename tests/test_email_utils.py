@@ -1102,3 +1102,39 @@ class TestMutedKindPreRead:
     def test_fold_unmuted_resurfaces_unread(self):
         existing = self._fold(muted=False, read_at_before="2026-07-31T10:00:00")
         assert existing.read_at is None
+
+
+class TestPushReachabilityGuard:
+    """2026-09-01 push hardening: with ntfy retired, zero owner push
+    subscriptions = every alert silently vanishes. The daily guard emails
+    a fallback in that state and fails open on DB errors."""
+
+    def _db_with_count(self, n):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.count.return_value = n
+        return db
+
+    def test_reachable_sends_no_email(self):
+        from backend import email_utils
+        with patch("backend.database.SessionLocal",
+                   return_value=self._db_with_count(2)), \
+             patch.object(email_utils, "send_email") as se:
+            assert email_utils.check_owner_push_reachability() is True
+        se.assert_not_called()
+
+    def test_zero_subscriptions_emails_fallback(self):
+        from backend import email_utils
+        with patch("backend.database.SessionLocal",
+                   return_value=self._db_with_count(0)), \
+             patch.object(email_utils, "send_email", return_value=True) as se:
+            assert email_utils.check_owner_push_reachability() is False
+        se.assert_called_once()
+        assert "push" in se.call_args.kwargs["subject"].lower()
+
+    def test_db_error_fails_open_no_email(self):
+        from backend import email_utils
+        with patch("backend.database.SessionLocal",
+                   side_effect=RuntimeError("db down")), \
+             patch.object(email_utils, "send_email") as se:
+            assert email_utils.check_owner_push_reachability() is True
+        se.assert_not_called()

@@ -344,6 +344,21 @@ class TestPowerAnalysis:
         assert out["already_sufficient"] is True
         assert out["additional_days_needed"] == 0
         assert out["est_additional_months"] == 0.0
+        # No finish line to project when the sample is already sufficient.
+        assert out["projected_date"] is None
+
+    def test_projected_date_is_future_iso_when_days_needed(self):
+        # Modest effect → additional days > 0 → projected calendar date set,
+        # in the future, at the 365/252 trading→calendar ratio.
+        from datetime import date, timedelta
+        n = 60
+        resid = [0.001 + (0.01 if i % 2 == 0 else -0.01) for i in range(n)]
+        out = _power_analysis(resid, [0.0] * n, beta=0.0)
+        assert out["additional_days_needed"] > 0
+        assert out["projected_date"] is not None
+        projected = date.fromisoformat(out["projected_date"])
+        expected_cal = math.ceil(out["additional_days_needed"] * 365 / 252)
+        assert projected == date.today() + timedelta(days=expected_cal)
 
     def test_zero_variance_returns_none(self):
         # Constant residuals → sd 0 → undefined effect → None.

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import Card from '../components/Card'
@@ -6,24 +6,14 @@ import { ScoreBadge, TagBadge, formatBaseType } from '../components/Badge'
 import StatGrid from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import DataTable from '../components/DataTable'
+import useApi from '../hooks/useApi'
 
 const DAY_OPTIONS = [3, 7, 14, 30]
 
 export default function EarningsGapups() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
   const [days, setDays] = useState(7)
-
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    api.getEarningsGapups(days)
-      .then(d => { if (!cancelled) { setData(d?.data || d); setError(null) } })
-      .catch(e => { if (!cancelled) setError(e.message) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [days])
+  const { data, loading, error } = useApi(
+    () => api.getEarningsGapups(days).then(d => d?.data || d), [days])
 
   const gapups = data?.gapups || []
   const actionable = gapups.filter(g => g.is_actionable)
@@ -163,7 +153,7 @@ export default function EarningsGapups() {
 
       {error && !data && (
         <Card variant="glass" className="text-center py-8 text-red-400">
-          Failed to load: {error}
+          Failed to load: {error?.message}
         </Card>
       )}
 

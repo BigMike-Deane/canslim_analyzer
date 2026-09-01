@@ -306,6 +306,48 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
         return False
 
 
+def check_owner_push_reachability() -> bool:
+    """Owner-unreachable guard (2026-09-01): web push is the ONLY real-time
+    alert channel now, so zero owner push subscriptions means every alert
+    silently vanishes — the one failure push itself can never report.
+    Returns True when reachable; on zero subscriptions sends an EMAIL
+    fallback (once per daily check, an exception state) and returns False."""
+    try:
+        from backend.database import SessionLocal, PushSubscription
+        db = SessionLocal()
+        try:
+            n = (db.query(PushSubscription)
+                 .filter(PushSubscription.user_id == 1).count())
+        finally:
+            db.close()
+        if n > 0:
+            return True
+        logger.warning("Owner has ZERO push subscriptions — alerts unreachable; sending email fallback")
+        send_email(
+            subject="CANSLIM: push alerts UNREACHABLE — re-enable on your phone",
+            html_content=(
+                "<p>Your phone has <b>no active push subscriptions</b>, and since "
+                "ntfy was retired (2026-09-01) push is the only real-time alert "
+                "channel — trade, breakout, and ops-failure alerts are currently "
+                "going nowhere.</p>"
+                "<p>Fix: open the CANSLIM PWA from your home-screen icon → "
+                "Settings → Enable Push. If the icon is gone, reinstall via "
+                "Safari Share → Add to Home Screen first.</p>"
+                "<p>This email repeats daily until a subscription is registered.</p>"
+            ),
+            text_content=(
+                "Your phone has no active push subscriptions; push is the only "
+                "real-time alert channel, so alerts are currently going nowhere. "
+                "Open the CANSLIM PWA -> Settings -> Enable Push. "
+                "This email repeats daily until fixed."
+            ),
+        )
+        return False
+    except Exception as e:
+        logger.warning(f"Push reachability check failed: {e}")
+        return True
+
+
 def send_ops_alert(title: str, message: str, priority: str = "urgent",
                    tags: list = None, data: dict = None) -> bool:
     """Owner-facing operational alarm — in-app row + Web Push to every owner

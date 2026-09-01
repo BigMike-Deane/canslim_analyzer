@@ -1872,6 +1872,13 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start A/B eval email job: {e}")
 
+    # Owner push-reachability guard (2026-09-01): daily check that the
+    # owner still has live push subscriptions; emails a fallback if zero.
+    try:
+        start_push_reachability_job()
+    except Exception as e:
+        logger.warning(f"Failed to start push reachability job: {e}")
+
     # Program milestone ledger: daily gate-diff pass after US close
     try:
         start_milestone_job()
@@ -2542,6 +2549,43 @@ def _run_milestone_pass_job():
         run_milestone_pass()
     except Exception as e:
         logger.error(f"Milestone pass failed: {e}")
+
+
+def _run_push_reachability_job():
+    """Daily owner-unreachable guard. Web push is the ONLY real-time
+    alert channel (ntfy retired 2026-09-01); a zero-subscription state
+    is the one failure push itself can never report, so this falls
+    back to email. Fail-soft; skipped under CANSLIM_ENV=test."""
+    if os.environ.get("CANSLIM_ENV") == "test":
+        return
+    try:
+        from backend.email_utils import check_owner_push_reachability
+        check_owner_push_reachability()
+    except Exception as e:
+        logger.warning(f"Push reachability job failed: {e}")
+
+
+def start_push_reachability_job():
+    """Schedule the daily owner push-reachability check at 12:30 UTC
+    (pre-US-open, so a dead channel is flagged before the trading day)."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "push_reachability"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_push_reachability_job,
+        CronTrigger(hour=12, minute=30),
+        id=job_id,
+        name="Owner Push Reachability Guard",
+        replace_existing=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Push reachability job scheduled (12:30 UTC daily)")
 
 
 def start_milestone_job():

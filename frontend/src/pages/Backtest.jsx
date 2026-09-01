@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useSearchParams, useLocation, Link } from 'react-router-dom'
 import { api, formatCurrency, formatRelativeTime, APIError } from '../api'
 import { useAuth } from '../auth'
@@ -761,64 +761,32 @@ export default function Backtest() {
     setSearchParams(next, { replace: true })
   }
 
-  const [backtests, setBacktests] = useState([])
   const [selectedBacktest, setSelectedBacktest] = useState(null)
   const [comparison, setComparison] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
-  const pollingRef = useRef(null)
   const toast = useToast()
 
-  const fetchBacktests = useCallback(async (opts) => {
-    try {
-      const data = await api.getBacktests(opts)
-      setBacktests(data)
-      return data
-    } catch (err) {
-      console.error('Failed to fetch backtests:', err)
-      return []
-    }
-  }, [])
-
-  // Fetch backtests on load
-  useEffect(() => {
-    fetchBacktests()
-  }, [fetchBacktests])
-
-  // Poll for running backtests
+  // Poll at 2s only while a run is active. noCache on poll ticks: the 600s
+  // TTL would otherwise serve the same cached list every tick, freezing the
+  // progress bar until the TTL expired.
+  const [pollMs, setPollMs] = useState(0)
+  const { data: backtests, setData: setBacktests, refetch: refetchBacktests } = useApi(
+    ({ isPoll }) => api.getBacktests(isPoll ? { noCache: true } : undefined),
+    [],
+    { pollMs, initialData: [] }
+  )
   useEffect(() => {
     const hasRunning = backtests.some(b => b.status === 'running' || b.status === 'pending')
-
-    if (hasRunning && !pollingRef.current) {
-      pollingRef.current = setInterval(async () => {
-        // noCache: the 600s TTL would otherwise serve the same cached list
-        // every 2s tick, freezing the progress bar until the TTL expired.
-        const data = await fetchBacktests({ noCache: true })
-        const stillRunning = data.some(b => b.status === 'running' || b.status === 'pending')
-        if (!stillRunning && pollingRef.current) {
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
-        }
-      }, 2000)
-    } else if (!hasRunning && pollingRef.current) {
-      clearInterval(pollingRef.current)
-      pollingRef.current = null
-    }
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current)
-        pollingRef.current = null
-      }
-    }
-  }, [backtests, fetchBacktests])
+    setPollMs(hasRunning ? 2000 : 0)
+  }, [backtests])
 
   const startBacktest = async (config) => {
     setIsLoading(true)
     setError(null)
     try {
       await api.createBacktest(config)
-      fetchBacktests()
+      refetchBacktests({ background: true })
     } catch (err) {
       setError(err instanceof APIError ? err.message : 'Failed to start backtest')
     } finally {
@@ -854,7 +822,7 @@ export default function Backtest() {
   const cancelBacktest = async (id) => {
     try {
       await api.cancelBacktest(id)
-      fetchBacktests()
+      refetchBacktests({ background: true })
     } catch (err) {
       console.error('Failed to cancel backtest:', err)
       setError(err.message || 'Failed to cancel backtest')
@@ -875,7 +843,7 @@ export default function Backtest() {
     setError(null)
     try {
       await api.createMultiBacktest({ starting_cash: 25000, stock_universe: 'all' })
-      fetchBacktests()
+      refetchBacktests({ background: true })
     } catch (err) {
       setError(err.message || 'Failed to start multi-period backtest')
     } finally {

@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import random
 import statistics
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
 TRADING_DAYS_PER_YEAR = 252
@@ -310,6 +311,16 @@ def _power_analysis(
     required = ((z_alpha + z_power) / effect) ** 2
     required_days = max(1, math.ceil(required))
     additional = max(0, required_days - n)
+    # Calendar finish line (2026-09-01): trading days → calendar days at the
+    # 365/252 ratio, from today. A date reads as a goal; "N trading days"
+    # reads as a chore. None when already sufficient or absurdly far out
+    # (>3y ≈ effect too weak to responsibly project).
+    projected_date = None
+    if 0 < additional <= TRADING_DAYS_PER_YEAR * 3:
+        _cal_days = math.ceil(additional * 365 / TRADING_DAYS_PER_YEAR)
+        projected_date = (
+            datetime.now(timezone.utc).date() + timedelta(days=_cal_days)
+        ).isoformat()
     return {
         "effect_size": round(effect, 4),
         "current_days": n,
@@ -317,6 +328,7 @@ def _power_analysis(
         "additional_days_needed": additional,
         "already_sufficient": additional == 0,
         "est_additional_months": round(additional / TRADING_DAYS_PER_YEAR * 12, 1),
+        "projected_date": projected_date,
         "alpha_level": alpha_level,
         "target_power": power,
         "assumptions": (

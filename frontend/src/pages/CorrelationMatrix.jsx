@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import Card, { CardHeader } from '../components/Card'
 import PageHeader from '../components/PageHeader'
+import useApi from '../hooks/useApi'
 
 function getCellColor(value, isDiagonal) {
   if (isDiagonal) return 'bg-dark-600'
@@ -35,25 +35,8 @@ function getCorrelationBg(value) {
 }
 
 export default function CorrelationMatrix() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const result = await api.getCorrelationMatrix()
-        setData(result.data || result)
-        setError(null)
-      } catch (err) {
-        console.error('Failed to fetch correlation data:', err)
-        setError(err.message || 'Failed to load correlation data')
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchData()
-  }, [])
+  const { data, loading, error } = useApi(
+    () => api.getCorrelationMatrix().then(r => r.data || r), [])
 
   if (loading) {
     return (
@@ -72,7 +55,7 @@ export default function CorrelationMatrix() {
       <div className="p-4 md:p-6 max-w-5xl mx-auto">
         <PageHeader title="Correlation Matrix" subtitle="Portfolio position correlations" />
         <Card variant="glass" className="text-center py-8">
-          <div className="text-red-400 text-sm">{error || data?.error || 'No data available'}</div>
+          <div className="text-red-400 text-sm">{error?.message || data?.error || 'No data available'}</div>
         </Card>
       </div>
     )
