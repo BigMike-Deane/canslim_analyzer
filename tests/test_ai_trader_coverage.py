@@ -3137,6 +3137,7 @@ def silence_cycle_seams(monkeypatch, silence_webhooks, fast_sleep):
     import backend.email_utils as eu
     monkeypatch.setattr(eu, "send_risk_alert_webhook", lambda *a, **kw: None)
     monkeypatch.setattr(eu, "send_webhook_notification", lambda *a, **kw: None)
+    monkeypatch.setattr(eu, "send_ops_alert", lambda *a, **kw: None)
 
 
 class TestRunAITradingCycle:

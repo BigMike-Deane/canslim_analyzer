@@ -115,7 +115,7 @@ class TestPerformBackupKeepsDump:
         with patch("subprocess.run", side_effect=fake_pg_dump), \
              patch.object(backup, "cleanup_old_backups",
                           side_effect=OSError("mtime race on rotated file")), \
-             patch("backend.email_utils.send_webhook_notification", return_value=True):
+             patch("backend.email_utils.send_ops_alert", return_value=True):
             result = backup.perform_backup()
 
         assert result["status"] == "success"
@@ -132,7 +132,7 @@ class TestPerformBackupKeepsDump:
             return MagicMock(returncode=1, stderr="disk full")
 
         with patch("subprocess.run", side_effect=fake_pg_dump_fail), \
-             patch("backend.email_utils.send_webhook_notification", return_value=True):
+             patch("backend.email_utils.send_ops_alert", return_value=True):
             result = backup.perform_backup()
 
         assert result["status"] == "failed"

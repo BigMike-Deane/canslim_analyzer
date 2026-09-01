@@ -1861,9 +1861,14 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start intraday stop check job: {e}")
 
-    # Start weekly A/B eval snapshot email (Mon 9 AM UTC)
+    # Weekly A/B eval snapshot emails DEMOTED to exception pings
+    # (2026-09-01, owner): the Program Ledger + milestone push carry
+    # program state now. Flip notifications.ab_eval_email.enabled to
+    # true to resurrect the Monday 11-email ritual.
     try:
-        start_ab_eval_email_job()
+        from config_loader import config as _abeval_config
+        if _abeval_config.get('notifications.ab_eval_email.enabled', False):
+            start_ab_eval_email_job()
     except Exception as e:
         logger.warning(f"Failed to start A/B eval email job: {e}")
 

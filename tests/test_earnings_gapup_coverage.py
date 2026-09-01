@@ -501,7 +501,7 @@ class TestSendGapupAlert:
             datetime.now(timezone.utc) - timedelta(hours=1)
         )
         with patch("backend.ai_trader.is_market_open", return_value=True), patch(
-            "backend.email_utils.send_webhook_notification", return_value=True
+            "backend.email_utils.create_notification", return_value=True
         ) as send_mock:
             result = send_gapup_alert([_gap()])
         assert result is False
@@ -509,7 +509,7 @@ class TestSendGapupAlert:
 
     def test_successful_send_marks_cooldown(self):
         with patch("backend.ai_trader.is_market_open", return_value=True), patch(
-            "backend.email_utils.send_webhook_notification", return_value=True
+            "backend.email_utils.create_notification", return_value=True
         ) as send_mock:
             result = send_gapup_alert([_gap()])
         assert result is True
@@ -518,7 +518,7 @@ class TestSendGapupAlert:
 
     def test_failed_webhook_returns_false_and_skips_cooldown_update(self):
         with patch("backend.ai_trader.is_market_open", return_value=True), patch(
-            "backend.email_utils.send_webhook_notification", return_value=False
+            "backend.email_utils.create_notification", return_value=False
         ):
             result = send_gapup_alert([_gap()])
         assert result is False
@@ -530,7 +530,7 @@ class TestSendGapupAlert:
             datetime.now(timezone.utc) - timedelta(hours=72)
         )
         with patch("backend.ai_trader.is_market_open", return_value=True), patch(
-            "backend.email_utils.send_webhook_notification", return_value=True
+            "backend.email_utils.create_notification", return_value=True
         ):
             send_gapup_alert([_gap()])
         assert "STALE" not in earnings_gapup._recent_gapup_alerts

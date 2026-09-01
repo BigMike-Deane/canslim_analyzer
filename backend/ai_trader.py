@@ -4036,8 +4036,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
     except Exception as e:
         logger.error(f"CRITICAL: Trading cycle failed: {e}", exc_info=True)
         try:
-            from backend.email_utils import send_webhook_notification
-            send_webhook_notification(
+            from backend.email_utils import send_ops_alert
+            send_ops_alert(
                 title="TRADING CYCLE FAILED",
                 message=f"AI trading error: {e}",
                 priority="urgent",

@@ -227,14 +227,47 @@ def seed_history(db):
     return inserted
 
 
+def _notify_new_milestones(rows):
+    """Exception ping (2026-09-01 owner policy): a fresh auto milestone —
+    gate crossed, verdict fired, calendar clock due — is exactly the event
+    the retired weekly-email ritual existed to surface. Push it to the
+    owner's devices instead. Fail-soft: a ping failure never fails the pass."""
+    if not rows:
+        return
+    try:
+        from backend.email_utils import create_notification
+        titles = "\n".join(f"• {r.title}" for r in rows[:5])
+        if len(rows) > 5:
+            titles += f"\n(+{len(rows) - 5} more)"
+        create_notification(
+            1,  # owner — the ledger is an owner-only surface
+            kind="program_milestone",
+            title=(f"Program milestone: {rows[0].title}" if len(rows) == 1
+                   else f"{len(rows)} new program milestones"),
+            body=titles, priority="high",
+            data={"url": "/admin/ab-eval"},
+        )
+    except Exception as e:
+        logger.warning(f"Milestone exception ping failed: {e}")
+
+
 def run_milestone_pass():
     """Scheduler entrypoint: seed (no-op after first run) then diff gates."""
+    from sqlalchemy import func
     db = SessionLocal()
     try:
+        # id watermark — anything auto-written above it this pass is new
+        last_id = db.query(func.max(ProgramMilestone.id)).scalar() or 0
         seeded = seed_history(db)
         auto = record_auto_milestones(db)
         if seeded or auto:
             logger.info(f"milestone pass: {seeded} seeded, {auto} auto-recorded")
+        if auto:
+            new_rows = (db.query(ProgramMilestone)
+                        .filter(ProgramMilestone.id > last_id,
+                                ProgramMilestone.source == "auto")
+                        .order_by(ProgramMilestone.id).all())
+            _notify_new_milestones(new_rows)
         return seeded + auto
     except Exception as e:
         logger.error(f"milestone pass failed: {e}")

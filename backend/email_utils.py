@@ -306,6 +306,19 @@ def send_webhook_notification(title: str, message: str, priority: str = "default
         return False
 
 
+def send_ops_alert(title: str, message: str, priority: str = "urgent",
+                   tags: list = None, data: dict = None) -> bool:
+    """Owner-facing operational alarm — in-app row + Web Push to every owner
+    device. Replaces the retired global ntfy topic (2026-09-01): ops
+    failures (backup, trading cycle) must land on a channel the owner
+    actually watches. kind=system_alarm + urgent bypasses mute prefs."""
+    return create_notification(
+        1,  # owner — same convention as scheduler system_alarm rows
+        kind="system_alarm", title=title, body=message,
+        priority=priority, tags=tags, data=data,
+    )
+
+
 def get_user_webhook_url(user_id: int) -> str:
     """Look up a user's per-user webhook URL. Returns empty string if not set
     or on lookup error — caller treats empty string as 'skip notification'."""

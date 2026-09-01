@@ -21,15 +21,19 @@
 set -u
 REPO_DIR=/root/canslim-backups
 KEY_FILE=/root/.canslim_backup_key
-ENV_FILE=/opt/canslim_analyzer/.env
 STAMP=$(date -u +%Y%m%d)
 TMP=$(mktemp /tmp/canslim_evidence.XXXXXX)
 
 alert() {
-  local url
-  url=$(grep '^CANSLIM_WEBHOOK_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
-  [ -n "$url" ] && curl -s -H "Title: CANSLIM offsite backup FAILED" -H "Priority: high" \
-    -d "offsite backup FAILED: $1 ($(date -u))" "$url" >/dev/null 2>&1
+  # ntfy retired 2026-09-01 — alarm via the app's owner web push + in-app
+  # row (send_ops_alert). Uses the app container; if the container itself
+  # is down the cron log still records the failure line below.
+  docker exec canslim-analyzer python3 -c "
+import sys
+sys.path.insert(0, '/app')
+from backend.email_utils import send_ops_alert
+send_ops_alert('CANSLIM offsite backup FAILED', sys.argv[1], priority='urgent')
+" "offsite backup FAILED: $1 ($(date -u))" >/dev/null 2>&1
   echo "BACKUP FAILED: $1" >&2
 }
 

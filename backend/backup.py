@@ -37,7 +37,7 @@ def _parse_database_url():
 
 def perform_backup() -> dict:
     """Run pg_dump and save compressed backup. Returns status dict."""
-    from backend.email_utils import send_webhook_notification
+    from backend.email_utils import send_ops_alert
 
     os.makedirs(BACKUP_DIR, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -79,7 +79,7 @@ def perform_backup() -> dict:
             except OSError:
                 pass
 
-        send_webhook_notification(
+        send_ops_alert(
             title="DB Backup FAILED",
             message=str(e)[:200],
             priority="urgent",
@@ -111,12 +111,8 @@ def perform_backup() -> dict:
     logger.info(f"Backup complete: {filename} ({size_mb:.1f} MB)")
 
     try:
-        send_webhook_notification(
-            title="DB Backup Complete",
-            message=f"{filename} ({size_mb:.1f} MB)",
-            priority="low",
-            tags=["white_check_mark", "floppy_disk"],
-        )
+        # Success is silence (2026-09-01 exception-only policy) — the weekly
+        # restore-verify + offsite job alarm on failure; no nightly ping.
         cleanup_old_backups()
     except Exception as e:
         logger.warning(f"Post-backup housekeeping failed (backup kept): {e}")

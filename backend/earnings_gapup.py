@@ -268,7 +268,8 @@ def _is_actionable(stock, gap_data: dict) -> bool:
 
 
 def send_gapup_alert(gapups: list) -> bool:
-    """Send ntfy notification for notable post-earnings gap-ups.
+    """Push notification for notable post-earnings gap-ups (owner web push +
+    in-app row; ntfy retired 2026-09-01).
 
     Only fires during market hours (gap-ups aren't actionable overnight / on
     weekends). Applies a 24h per-ticker cooldown so each gap-up alerts once.
@@ -278,7 +279,7 @@ def send_gapup_alert(gapups: list) -> bool:
 
     try:
         from backend.ai_trader import is_market_open
-        from backend.email_utils import send_webhook_notification
+        from backend.email_utils import create_notification
 
         if not is_market_open():
             return False
@@ -309,10 +310,12 @@ def send_gapup_alert(gapups: list) -> bool:
             )
         message = "\n".join(lines)
 
-        sent = send_webhook_notification(
-            title, message, priority="high",
-            tags=["rocket", "chart_with_upwards_trend"],
-            kind="earnings_gapup",
+        sent = create_notification(
+            1,  # owner — was the global ntfy topic's de-facto audience
+            kind="earnings_gapup", title=title, body=message,
+            priority="high", tags=["rocket", "chart_with_upwards_trend"],
+            data={"url": f"/stock/{fresh[0]['ticker']}" if len(fresh) == 1
+                  else "/notifications"},
         )
 
         if sent:

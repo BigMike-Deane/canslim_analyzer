@@ -212,3 +212,50 @@ class TestRoutes:
             asyncio.run(delete_program_milestone(
                 milestone_id=999999, current_user=None, db=db_session))
         assert exc.value.status_code == 404
+
+
+class TestMilestonePing:
+    """2026-09-01 email demotion: fresh auto milestones fire ONE owner push
+    (create_notification, kind=program_milestone) — the exception ping that
+    replaced the weekly A/B email ritual. Empty pass = silence."""
+
+    def _rows(self, db, *titles):
+        return [add_milestone(db, title=t, source="auto",
+                              dedupe_key=f"ping-test:{t}") for t in titles]
+
+    def test_batch_ping_fires_once_with_all_titles(self, db_session):
+        from unittest.mock import patch
+        from backend.milestones import _notify_new_milestones
+        rows = self._rows(db_session, "Gate A met", "Verdict B fired")
+        with patch("backend.email_utils.create_notification") as ping:
+            _notify_new_milestones(rows)
+        ping.assert_called_once()
+        args, kwargs = ping.call_args
+        assert args[0] == 1  # owner
+        assert kwargs["kind"] == "program_milestone"
+        assert "Gate A met" in kwargs["body"]
+        assert "Verdict B fired" in kwargs["body"]
+        assert "2 new" in kwargs["title"]
+
+    def test_single_row_ping_names_the_milestone(self, db_session):
+        from unittest.mock import patch
+        from backend.milestones import _notify_new_milestones
+        rows = self._rows(db_session, "Stop-loss verdict: PASS")
+        with patch("backend.email_utils.create_notification") as ping:
+            _notify_new_milestones(rows)
+        assert "Stop-loss verdict: PASS" in ping.call_args.kwargs["title"]
+
+    def test_empty_pass_is_silent(self, db_session):
+        from unittest.mock import patch
+        from backend.milestones import _notify_new_milestones
+        with patch("backend.email_utils.create_notification") as ping:
+            _notify_new_milestones([])
+        ping.assert_not_called()
+
+    def test_ping_failure_never_raises(self, db_session):
+        from unittest.mock import patch
+        from backend.milestones import _notify_new_milestones
+        rows = self._rows(db_session, "boom target")
+        with patch("backend.email_utils.create_notification",
+                   side_effect=RuntimeError("push down")):
+            _notify_new_milestones(rows)  # must not raise
