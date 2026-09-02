@@ -754,6 +754,180 @@ function GateProgressCard() {
   )
 }
 
+// Buy funnel: why each candidate was or wasn't bought, per cycle per
+// strategy — the audit trail behind every "why didn't arm X buy Y?" read.
+// Rows come from backend/buy_funnel.py (written by the live cycle and every
+// shadow arm); stage = the FIRST gate in evaluate_buys that stopped a name.
+const FUNNEL_STAGE_LABELS = {
+  dead_data: 'dead data', cz_prefilter: 'CZ pre-filter', score_floor: 'score floor',
+  bear_exception_pool: 'bear-exception pool', soft_zone_det: 'soft zone (weak det.)',
+  no_score: 'no score', quality_c: 'C filter', quality_l: 'L filter', quality_growth: 'growth C/A',
+  volume_gate: 'volume gate', earnings_window: 'earnings window', cz_cs_only: 'CZ CS-only',
+  sector_cap: 'sector cap', min_position_value: 'min position', bad_price: 'bad price',
+  ml_veto: 'ML veto', chop_entry_bar: 'chop entry bar', duplicate_class: 'dup. share class',
+  ranked: 'ranked (not taken)', exec_skipped: 'exec skipped', bought: 'bought',
+  market_gate: 'market gate', portfolio_full: 'book full', cash_reserve: 'cash reserve',
+  circuit_breaker: 'circuit breaker', exec_stopped: 'execution stopped',
+}
+const funnelStageClass = (stage) => (
+  stage === 'bought' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20'
+    : stage === 'ranked' || stage === 'exec_skipped' ? 'bg-amber-500/15 text-amber-400 border-amber-500/20'
+      : 'bg-dark-850 text-dark-400 border-dark-700'
+)
+const funnelTime = (iso) => (iso ? new Date(iso).toLocaleString(undefined, {
+  month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+}) : '')
+const FUNNEL_PREVIEW = 25
+
+function BuyFunnelCard() {
+  const [key, setKey] = useState('')
+  const [tickerInput, setTickerInput] = useState('')
+  const [ticker, setTicker] = useState('')
+  const [showAll, setShowAll] = useState(false)
+  const { data, error, loading } = useApi(
+    () => api.getBuyFunnel({ key: key || undefined, ticker: ticker || undefined }),
+    [key, ticker],
+  )
+
+  if (loading && !data) {
+    return <Card><div className="skeleton h-24 rounded" /></Card>
+  }
+  if (error || !data) return null
+
+  const strategies = data.strategies || []
+  const strategyLabel = (s) => (
+    s.shadow_strategy_id != null
+      ? `${s.strategy.replace(/^nostate_/, '')} · shadow ${s.shadow_strategy_id}`
+      : `${s.strategy.replace(/^nostate_/, '')} · user ${s.user_id}`
+  )
+  const cycle = data.cycle
+  const stageOrder = data.stage_order || []
+  const rows = ticker ? (data.rows || []) : (cycle?.rows || [])
+  const shown = showAll ? rows : rows.slice(0, FUNNEL_PREVIEW)
+
+  return (
+    <Card>
+      <CardHeader
+        title="Buy Funnel"
+        subtitle="Why each candidate was or wasn't bought — the first gate that stopped it, per cycle per strategy (21-day retention)"
+      />
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
+        <select
+          value={key}
+          onChange={e => { setKey(e.target.value); setShowAll(false) }}
+          className="bg-dark-850 border border-dark-700 rounded px-2 py-1 text-dark-200"
+          aria-label="Strategy"
+        >
+          <option value="">latest cycle (any strategy)</option>
+          {strategies.map(s => (
+            <option key={s.key} value={s.key}>{strategyLabel(s)} · {funnelTime(s.last_cycle_at)}</option>
+          ))}
+        </select>
+        <form
+          onSubmit={e => { e.preventDefault(); setTicker(tickerInput.trim().toUpperCase()); setShowAll(false) }}
+          className="flex items-center gap-1"
+        >
+          <input
+            value={tickerInput}
+            onChange={e => setTickerInput(e.target.value)}
+            placeholder="why not… TICKER"
+            className="bg-dark-850 border border-dark-700 rounded px-2 py-1 w-36 text-dark-200 placeholder:text-dark-500"
+            aria-label="Ticker lookup"
+          />
+          <button type="submit" className="px-2 py-1 rounded border border-dark-700 text-dark-300 hover:text-dark-100">
+            look up
+          </button>
+          {ticker && (
+            <button
+              type="button"
+              onClick={() => { setTicker(''); setTickerInput('') }}
+              className="px-2 py-1 rounded border border-dark-700 text-dark-400 hover:text-dark-100"
+            >
+              clear
+            </button>
+          )}
+        </form>
+        {!ticker && cycle?.cycle_at && (
+          <span className="text-dark-500">
+            {cycle.strategy?.replace(/^nostate_/, '')} · cycle {funnelTime(cycle.cycle_at)}
+          </span>
+        )}
+      </div>
+
+      {!ticker && cycle && (
+        <div className="flex flex-wrap gap-1.5 mb-3 text-[10px]">
+          {(cycle.notes || []).map(n => (
+            <span key={n.id} className="px-2 py-0.5 rounded border bg-red-500/10 text-red-300 border-red-500/20" title={n.detail || ''}>
+              {FUNNEL_STAGE_LABELS[n.stage] || n.stage}{n.detail ? ` · ${n.detail}` : ''}
+            </span>
+          ))}
+          {stageOrder.filter(st => cycle.stage_counts?.[st]).map(st => (
+            <span key={st} className={`px-2 py-0.5 rounded border ${funnelStageClass(st)}`}>
+              {FUNNEL_STAGE_LABELS[st] || st} · {cycle.stage_counts[st]}
+            </span>
+          ))}
+          {rows.length === 0 && (cycle.notes || []).length === 0 && (
+            <span className="text-dark-500">No funnel rows yet — written at the next trading cycle.</span>
+          )}
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-dark-500">
+              <tr>
+                {ticker && <th className="text-left py-1 pr-3 font-medium">cycle</th>}
+                {ticker && <th className="text-left py-1 pr-3 font-medium">strategy</th>}
+                {!ticker && <th className="text-left py-1 pr-3 font-medium">ticker</th>}
+                <th className="text-left py-1 pr-3 font-medium">stage</th>
+                <th className="text-left py-1 pr-3 font-medium">detail</th>
+                <th className="text-right py-1 pr-3 font-medium">score</th>
+                <th className="text-right py-1 pr-3 font-medium">composite</th>
+                <th className="text-right py-1 font-medium">rank</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map(r => (
+                <tr key={r.id} className="border-t border-dark-800/60">
+                  {ticker && <td className="py-1 pr-3 text-dark-400 whitespace-nowrap">{funnelTime(r.cycle_at)}</td>}
+                  {ticker && (
+                    <td className="py-1 pr-3 text-dark-300 whitespace-nowrap">
+                      {r.strategy.replace(/^nostate_/, '')}{r.shadow_strategy_id != null ? ` · s${r.shadow_strategy_id}` : ` · u${r.user_id}`}
+                    </td>
+                  )}
+                  {!ticker && <td className="py-1 pr-3 font-medium text-dark-100">{r.ticker}</td>}
+                  <td className="py-1 pr-3">
+                    <span className={`px-1.5 py-0.5 rounded border text-[10px] ${funnelStageClass(r.stage)}`}>
+                      {FUNNEL_STAGE_LABELS[r.stage] || r.stage}
+                    </span>
+                  </td>
+                  <td className="py-1 pr-3 text-dark-400 max-w-[28rem] truncate" title={r.detail || ''}>{r.detail || ''}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums text-dark-300">{r.score != null ? r.score.toFixed(0) : ''}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums text-dark-300">{r.composite != null ? r.composite.toFixed(0) : ''}</td>
+                  <td className="py-1 text-right tabular-nums text-dark-300">{r.rank ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length > FUNNEL_PREVIEW && (
+            <button
+              type="button"
+              onClick={() => setShowAll(v => !v)}
+              className="mt-2 text-[11px] text-dark-400 hover:text-dark-100"
+            >
+              {showAll ? 'show fewer' : `show all ${rows.length}`}
+            </button>
+          )}
+        </div>
+      )}
+      {ticker && rows.length === 0 && (
+        <div className="text-xs text-dark-500">No funnel rows for {ticker} in the last 7 days — it never reached a candidate pool (score below the query floor, stale, or already held).</div>
+      )}
+    </Card>
+  )
+}
+
 // Event-sourced program history: what happened and when — the complement to
 // Gate Progress (which answers "where are we now?"). Rows come from the
 // server-side gate-diff writer, the seeded history, and owner entries here.
@@ -1122,6 +1296,7 @@ export default function ABEval() {
 
       {/* Gate progress — the whole program's accrual at a glance */}
       <GateProgressCard />
+      <BuyFunnelCard />
 
       {/* Program ledger — the program's event history (auto + owner rows) */}
       <ProgramLedgerCard />

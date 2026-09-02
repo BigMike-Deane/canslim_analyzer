@@ -1825,6 +1825,36 @@ class ShadowStrategy(Base):
     archived_at = Column(DateTime, index=True)
 
 
+class BuyFunnelRow(Base):
+    """Buy-candidate funnel ledger (backend/buy_funnel.py, 2026-09-02): one
+    row per candidate per trading cycle per strategy, naming the FIRST gate
+    in evaluate_buys that rejected it (stage), or its rank on the decision
+    list, or `bought` once the caller executed it. Live books key on
+    user_id, shadow arms on shadow_strategy_id. ticker="*" rows are
+    cycle-level notes (book full, cash reserve, circuit breaker) written
+    when the evaluator never ran. Capped per cycle and purged after
+    buy_funnel.RETENTION_DAYS; owner-only read surface.
+    """
+    __tablename__ = "buy_funnel_rows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_at = Column(DateTime, nullable=False, index=True)
+    strategy_name = Column(String, nullable=False, index=True)
+    user_id = Column(Integer, nullable=True)
+    shadow_strategy_id = Column(Integer, nullable=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    stage = Column(String, nullable=False)
+    detail = Column(String, nullable=True)
+    score = Column(Float, nullable=True)
+    composite = Column(Float, nullable=True)
+    rank = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __table_args__ = (
+        Index("ix_buy_funnel_strategy_cycle", "strategy_name", "cycle_at"),
+    )
+
+
 class ShadowTrade(Base):
     """A virtual BUY or SELL emitted by a shadow strategy.
 

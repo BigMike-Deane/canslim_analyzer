@@ -2158,11 +2158,18 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
     return sells
 
 
-def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_active: bool = False, user_id: int = 1) -> list:
+def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_active: bool = False, user_id: int = 1, funnel=None) -> list:
     """
     Evaluate stocks for potential buys - considers both CANSLIM and Growth Mode stocks.
     Uses appropriate score based on stock type for a balanced portfolio.
     """
+    # Buy-funnel ledger (backend/buy_funnel.py): every rejection below names
+    # the gate that fired. Callers pass a collector and persist it with a
+    # real session; a throwaway one keeps the call sites unconditional.
+    from backend.buy_funnel import FunnelCollector
+    _f = funnel if funnel is not None else FunnelCollector()
+    _sc = lambda s: _nan_safe(getattr(s, "canslim_score", None))
+
     # Reset ML prediction cache for this evaluation cycle
     try:
         from ml.model import clear_prediction_cache
@@ -2346,6 +2353,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                         f"allowing filtered buys")
                 else:
                     logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
+                    _f.note("market_gate", f"SPY {spy_px:.2f} < 50MA {spy_50:.2f}")
                     return []
 
     # Build set of tickers to exclude (already own or own a duplicate)
@@ -2663,6 +2671,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         stock_atr_pct = _nan_safe(getattr(stock, 'atr_pct', None))
         if stock_rs_12m is None and not stock_atr_pct:
             logger.debug(f"Skipping {stock.ticker}: No RS or ATR data (dead/acquired stock)")
+            _f.reject(stock.ticker, "dead_data", "no RS/ATR data", _sc(stock))
             continue
 
         # Per-stock correction zone flags
@@ -2682,6 +2691,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                        _nan_safe(getattr(stock, 'l_score', 0)))
                 if cal < cz_min_cal:
                     _overlay_stats['cz_pre_filter_rejected'] += 1
+                    _f.reject(stock.ticker, "cz_prefilter", "correction-zone pre-filter", _sc(stock))
                     continue
 
                 if cz_config.get('require_base', False):
@@ -2689,6 +2699,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     weeks = getattr(stock, 'weeks_in_base', 0) or 0
                     if base in ('none', '', None) or weeks < cz_config.get('min_base_weeks', 0):
                         _overlay_stats['cz_pre_filter_rejected'] += 1
+                        _f.reject(stock.ticker, "cz_prefilter", "correction-zone pre-filter", _sc(stock))
                         continue
 
                 if cz_config.get('require_relative_strength', False):
@@ -2696,6 +2707,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     stock_price = _nan_safe(stock.current_price or 0)
                     if stock_ma21 > 0 and stock_price < stock_ma21:
                         _overlay_stats['cz_pre_filter_rejected'] += 1
+                        _f.reject(stock.ticker, "cz_prefilter", "correction-zone pre-filter", _sc(stock))
                         continue
 
                 cz_entry = True
@@ -2731,7 +2743,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 if cal_sum >= bear_exception_min_cal:
                     bear_exception_candidates.append(stock)
                     logger.info(f"Bear exception: {stock.ticker} C+A+L={cal_sum:.0f} (score {effective_score:.0f})")
+                    _f.reject(stock.ticker, "bear_exception_pool", f"C+A+L {cal_sum:.0f}", effective_score)
                     continue
+            _f.reject(stock.ticker, "score_floor", f"{(effective_score or 0):.0f} < floor {soft_zone_floor:.0f} (min {effective_min_score:.0f})", effective_score)
             continue
         elif effective_score < effective_min_score and soft_enabled:
             # H: Calculate deterministic score and gate on it
@@ -2744,6 +2758,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
             # H: Require strong deterministic scores for wider soft zone
             if require_strong_det and stable_score_val < det_min_for_soft:
+                _f.reject(stock.ticker, "soft_zone_det", f"soft zone but N+S+L+I+M {stable_score_val:.0f} < {det_min_for_soft}", effective_score)
                 continue  # Skip weak deterministic stocks in soft zone
 
             # In soft zone — graduated position sizing
@@ -2760,6 +2775,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             logger.info(f"Soft zone: {stock.ticker} score={effective_score:.0f} (threshold={effective_min_score:.0f}), "
                         f"mult={soft_zone_mult:.0%}" + (f" stable override ({stable_score_val:.0f}/70)" if stable_override else ""))
         elif not effective_score:
+            _f.reject(stock.ticker, "no_score", None, None)
             continue
 
         # QUALITY FILTERS: Strategy profile overrides YAML defaults
@@ -2787,9 +2803,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if not (is_growth and skip_growth):
             if c_score < min_c_score:
                 logger.debug(f"Skipping {stock.ticker}: C score {c_score} < {min_c_score}")
+                _f.reject(stock.ticker, "quality_c", f"C {c_score} < {min_c_score}", effective_score)
                 continue
             if l_score < min_l_score:
                 logger.debug(f"Skipping {stock.ticker}: L score {l_score} < {min_l_score}")
+                _f.reject(stock.ticker, "quality_l", f"L {l_score} < {min_l_score}", effective_score)
                 continue
         elif is_growth:
             # Growth stocks bypass normal thresholds but must have SOME fundamental data
@@ -2797,6 +2815,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             a_score = _nan_safe(getattr(stock, 'a_score', 0))
             if c_score == 0 and a_score == 0:
                 logger.debug(f"Skipping growth {stock.ticker}: C=0 and A=0 (no earnings data)")
+                _f.reject(stock.ticker, "quality_growth", "growth stock with C=0 and A=0", effective_score)
                 continue
 
         # VOLUME GATE: Context-aware volume thresholds
@@ -2814,9 +2833,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 vol_threshold = vol_gate_config.get('min_volume_ratio', 1.0)
             if volume_ratio < vol_threshold:
                 logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {vol_threshold} (volume gate)")
+                _f.reject(stock.ticker, "volume_gate", f"vol {volume_ratio:.2f}x < {vol_threshold}", effective_score)
                 continue
         elif volume_ratio < min_volume_ratio and not is_breaking_out:
             logger.debug(f"Skipping {stock.ticker}: Volume ratio {volume_ratio:.2f} < {min_volume_ratio}")
+            _f.reject(stock.ticker, "volume_gate", f"vol {volume_ratio:.2f}x < {min_volume_ratio}", effective_score)
             continue
 
         # Earnings proximity check with Coiled Spring exception
@@ -2863,6 +2884,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     )
                     # Treat as non-CS — apply normal avoidance window
                     if days_to_earnings <= avoidance_days:
+                        _f.reject(stock.ticker, "earnings_window", f"CS conf {cs_confidence} < {min_cs_confidence}, {days_to_earnings}d to earnings", effective_score)
                         continue
                 else:
                     # ALLOW - high conviction earnings catalyst (CS stocks embrace earnings)
@@ -2876,6 +2898,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 # (allow_buy_days is CS evaluation window, not a buy block)
                 if days_to_earnings <= avoidance_days:
                     logger.info(f"Skipping {stock.ticker}: {days_to_earnings}d to earnings (not CS qualified, avoidance={avoidance_days}d)")
+                    _f.reject(stock.ticker, "earnings_window", f"{days_to_earnings}d to earnings, not CS (avoid {avoidance_days}d)", effective_score)
                     continue
 
         # Correction zone CS-only gate: reject non-CS candidates
@@ -2883,10 +2906,12 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             has_cs = hasattr(stock, '_cs_result') and stock._cs_result.get('is_coiled_spring')
             if not has_cs:
                 _overlay_stats['cz_cs_only_rejected'] += 1
+                _f.reject(stock.ticker, "cz_cs_only", "correction zone: not a CS candidate", effective_score)
                 continue  # Not a CS candidate — skip in cs_only mode
             cs_conf = stock._cs_result.get('confidence', 0) if has_cs else 0
             if cs_conf < cz_min_cs_confidence:
                 _overlay_stats['cz_cs_confidence_rejected'] += 1
+                _f.reject(stock.ticker, "cz_cs_only", f"correction zone: CS conf {cs_conf} < {cz_min_cs_confidence}", effective_score)
                 continue  # CS confidence too low
             _overlay_stats['cz_pass'] += 1
             logger.info(f"CZ CS-ONLY pass: {stock.ticker} CS confidence={cs_conf}")
@@ -3153,6 +3178,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # Check sector limits
         adjusted_value, sector_reason = check_sector_limit(db, stock.ticker, position_value, user_id=user_id)
         if adjusted_value < 100:
+            _f.reject(stock.ticker, "sector_cap", sector_reason, effective_score)
             continue  # Skip if sector limit would be exceeded
         position_value = adjusted_value
 
@@ -3172,9 +3198,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                             f"position ${old_val:.0f} -> ${position_value:.0f}")
 
         if position_value < 100:  # Minimum $100 position
+            _f.reject(stock.ticker, "min_position_value", f"${position_value:.0f} < $100", effective_score)
             continue
 
         if not stock.current_price or stock.current_price != stock.current_price or stock.current_price <= 0:
+            _f.reject(stock.ticker, "bad_price", "no valid price", effective_score)
             continue  # Skip None, NaN, or non-positive prices
 
         shares = position_value / stock.current_price
@@ -3328,6 +3356,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                 if veto_action == 'skip':
                     buy_signal_factors["ml_vetoed"] = True
                     logger.info(f"ML VETO: {stock} confidence {ml_confidence:.3f} < {ml_min_confidence}")
+                    _f.reject(stock.ticker, "ml_veto", f"ML conf {ml_confidence:.2f} < {ml_min_confidence}", effective_score)
                     continue
                 elif veto_action == 'reduce':
                     position_value *= 0.5
@@ -3339,6 +3368,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         # MIRRORED in backtester per the parity rule.
         if chop_entry_bar_blocks(spy_px, spy_50, profile, is_breaking_out):
             logger.info(f"CHOP ENTRY BAR: {stock} skipped (unconfirmed entry in chop band)")
+            _f.reject(stock.ticker, "chop_entry_bar", "unconfirmed entry in chop band", effective_score)
             continue
         buys.append({
             "stock": stock,
@@ -3356,6 +3386,8 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
     # Sort by composite score (highest first)
     buys.sort(key=lambda x: x["priority"])
+    for _rank, _b in enumerate(buys, 1):
+        _f.ranked(_b["stock"].ticker, _rank, _b.get("composite_score"), _b.get("effective_score"))
 
     # Log first few buy candidates for debugging
     for b in buys[:5]:
@@ -3379,6 +3411,7 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             if in_group in seen_groups:
                 # Already have a higher-scored ticker from this group, skip
                 logger.info(f"Skipping {ticker} - already have another share class from same company")
+                _f.reject(ticker, "duplicate_class", "another share class ranked higher", None)
                 continue
             seen_groups.add(in_group)
 
@@ -3853,14 +3886,18 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
         if spy_sweep_shares > 0 and not drawdown_halt:
             liquidate_spy_sweep(db, config, "freeing cash for active buys", user_id=user_id)
 
+        from backend.buy_funnel import FunnelCollector, persist_funnel
+        _funnel = FunnelCollector()
         if drawdown_halt:
             logger.warning(f"CIRCUIT BREAKER active ({current_drawdown:.1f}% drawdown) - skipping all buys")
+            _funnel.note("circuit_breaker", f"{current_drawdown:.1f}% drawdown")
         elif config.current_cash < min_cash_reserve:
             logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve (${min_cash_reserve:.2f}), regime={market_regime['regime']}, skipping buys")
+            _funnel.note("cash_reserve", f"cash ${config.current_cash:.0f} < reserve ${min_cash_reserve:.0f}")
         elif position_count < max_positions:
             # Evaluate and execute buys (only if we have room for more positions)
             logger.info("Evaluating buy candidates from Stock table...")
-            buys = evaluate_buys(db, ftd_penalty_active=ftd_penalty_active, heat_penalty_active=heat_penalty_active, user_id=user_id)
+            buys = evaluate_buys(db, ftd_penalty_active=ftd_penalty_active, heat_penalty_active=heat_penalty_active, user_id=user_id, funnel=_funnel)
             results["buys_considered"] = len(buys)
             logger.info(f"Buy candidates found: {len(buys)}")
 
@@ -3875,6 +3912,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 # Buy throttle check
                 if buys_executed_count >= buy_throttle_limit:
                     logger.info(f"Buy throttle limit ({buy_throttle_limit}) reached, stopping buys")
+                    _funnel.note("exec_stopped", f"buy throttle {buy_throttle_limit}")
                     break
 
                 # Re-check dynamic cash reserve on each buy
@@ -3882,10 +3920,12 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
                 if config.current_cash < min_cash_reserve:
                     logger.info(f"Cash ${config.current_cash:.2f} below {dynamic_reserve_pct*100:.0f}% dynamic reserve, stopping buys")
+                    _funnel.note("exec_stopped", f"cash ${config.current_cash:.0f} < reserve ${min_cash_reserve:.0f}")
                     break
 
                 if position_count >= max_positions:
                     logger.info(f"Max positions ({max_positions}) reached, stopping buys")
+                    _funnel.note("exec_stopped", f"max positions {max_positions}")
                     break
 
                 stock = buy["stock"]
@@ -3901,6 +3941,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
                 if not live_price or live_price <= 0:
                     logger.error(f"{stock.ticker}: No valid price, skipping")
+                    _funnel.exec_skip(stock.ticker, "no valid live price")
                     continue
 
                 time.sleep(0.3)  # Rate limit delay
@@ -3911,12 +3952,14 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 min_pos_value = min_position_value(portfolio["total_value"])
                 if actual_value < min_pos_value:
                     logger.info(f"{stock.ticker}: Position too small (${actual_value:.2f} < ${min_pos_value:.2f} floor), skipping")
+                    _funnel.exec_skip(stock.ticker, f"${actual_value:.0f} < ${min_pos_value:.0f} floor")
                     continue
 
                 actual_shares = actual_value / live_price
 
                 if config.current_cash < actual_value:
                     logger.info(f"{stock.ticker}: Not enough cash (${config.current_cash:.2f} < ${actual_value:.2f})")
+                    _funnel.exec_skip(stock.ticker, f"cash ${config.current_cash:.0f} < ${actual_value:.0f}")
                     continue
 
                 # Get growth stock info from buy candidate
@@ -3937,6 +3980,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     is_paper=paper_mode,
                     user_id=user_id
                 )
+                _funnel.bought(stock.ticker)
 
                 if not paper_mode:
                     # Deduct cash
@@ -3982,6 +4026,10 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                 })
         else:
             logger.info(f"Already at max positions ({position_count}), skipping buys")
+            _funnel.note("portfolio_full", f"{position_count}/{max_positions} positions")
+
+        # Funnel ledger: persist with the cycle session (never raises).
+        persist_funnel(db, _funnel, strategy_name=strategy, user_id=user_id)
 
         # Re-sweep idle cash into SPY after buys are done
         handle_spy_sweep(db, config, profile, user_id=user_id)

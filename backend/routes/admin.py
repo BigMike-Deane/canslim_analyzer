@@ -1816,6 +1816,37 @@ def _milestone_out(r):
     }
 
 
+@router.get("/buy-funnel")
+@limiter.limit("60/minute")
+async def get_buy_funnel(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+    key: Optional[str] = Query(None, description="user:<id> | shadow:<id> | name:<strategy>"),
+    ticker: Optional[str] = Query(None),
+    days: int = Query(7, ge=1, le=21),
+    limit: int = Query(400, le=1000),
+):
+    """Buy-candidate funnel (backend/buy_funnel.py): why each name was or
+    wasn't bought, per cycle per strategy. Owner-only. Two modes:
+    - ticker given: that name's rows across every strategy (\"why not X?\").
+    - otherwise: the latest cycle for `key` (default newest overall) with a
+      stage histogram, cycle-level notes and the per-name rows."""
+    from backend.buy_funnel import (
+        STAGE_ORDER, latest_cycle, list_strategies, ticker_history,
+    )
+    out = {
+        "stage_order": STAGE_ORDER,
+        "strategies": list_strategies(db, days=days),
+    }
+    if ticker:
+        out["ticker"] = ticker.upper()
+        out["rows"] = ticker_history(db, ticker, days=days, limit=limit)
+    else:
+        out["cycle"] = latest_cycle(db, key=key, limit=limit)
+    return out
+
+
 @router.get("/program-milestones")
 @limiter.limit("60/minute")
 async def list_program_milestones(

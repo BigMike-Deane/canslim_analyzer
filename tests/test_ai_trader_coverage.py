@@ -3572,7 +3572,7 @@ class TestRunAITradingCycle:
         new_stock = _seed_stock(db_session, "NEW",
                                 canslim_score=80.0, current_price=50.0)
 
-        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1):
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1, funnel=None):
             s = db.query(Stock).filter_by(ticker="NEW").first()
             return [{"stock": s, "reason": "Strong CANSLIM",
                      "value": 5000.0, "shares": 100.0,
@@ -3603,7 +3603,7 @@ class TestRunAITradingCycle:
                      peak_portfolio_value=20000.0, starting_cash=20000.0)
         _seed_stock(db_session, "T1", canslim_score=80.0, current_price=50.0)
 
-        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1):
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1, funnel=None):
             s = db.query(Stock).filter_by(ticker="T1").first()
             return [{"stock": s, "reason": "x", "value": 5000.0,
                      "shares": 100.0, "is_growth_stock": False,
@@ -3637,7 +3637,7 @@ class TestRunAITradingCycle:
         for t in ("CAND1", "CAND2", "CAND3"):
             _seed_stock(db_session, t, canslim_score=80.0, current_price=50.0)
 
-        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1):
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1, funnel=None):
             return [
                 {"stock": db.query(Stock).filter_by(ticker=t).first(),
                  "reason": "x", "value": 5000.0, "shares": 100.0,
@@ -3711,3 +3711,52 @@ class TestRunAITradingCycle:
         assert "sells exploded" in result["message"]
         # Cleanup ran: cycle-start cleared
         assert ai_trader._get_cycle_started() is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Buy-funnel instrumentation (2026-09-02) — evaluate_buys names the gate that
+# stopped each candidate; the collector is caller-owned (backend/buy_funnel.py)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestBuyFunnelInstrumentation:
+    def test_market_gate_writes_a_cycle_note(
+        self, db_session, stub_market_bearish, disable_atr_http,
+        disable_historical_data, silence_webhooks,
+    ):
+        from backend.ai_trader import evaluate_buys
+        from backend.buy_funnel import FunnelCollector
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_stock(db_session, "AAA", canslim_score=85.0)
+        f = FunnelCollector()
+        assert evaluate_buys(db_session, user_id=1, funnel=f) == []
+        assert [n["stage"] for n in f.notes] == ["market_gate"]
+        assert "SPY" in f.notes[0]["detail"]
+
+    def test_score_floor_rejection_is_recorded_with_reason(
+        self, db_session, stub_market_bullish, disable_atr_http,
+        disable_historical_data, silence_webhooks,
+    ):
+        """A candidate under the soft-zone floor never reaches the CS window
+        or volume code — exactly the arm-8 finding this ledger exists for."""
+        from backend.ai_trader import evaluate_buys
+        from backend.buy_funnel import FunnelCollector
+
+        _seed_config(db_session, strategy="nostate_optimized")
+        _seed_stock(db_session, "LOW", canslim_score=50.0, rs_12m=1.1, atr_pct=2.0)
+        f = FunnelCollector()
+        evaluate_buys(db_session, user_id=1, funnel=f)
+        rows = {r["ticker"]: r for r in f.to_rows()}
+        assert "LOW" in rows, rows
+        assert rows["LOW"]["stage"] == "score_floor"
+        assert "floor" in rows["LOW"]["detail"]
+        assert rows["LOW"]["score"] == 50.0
+
+    def test_no_collector_is_harmless(
+        self, db_session, stub_market_bearish, disable_atr_http,
+        disable_historical_data, silence_webhooks,
+    ):
+        from backend.ai_trader import evaluate_buys
+        _seed_config(db_session, strategy="nostate_optimized")
+        assert evaluate_buys(db_session, user_id=1) == []

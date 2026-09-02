@@ -1276,6 +1276,10 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             )
 
         shadow_session = ShadowSession(sandbox, strategy, ar_for_session)
+        # Buy-funnel ledger: collected in-memory through the sandboxed
+        # evaluator, persisted below with the clean `persist` session.
+        from backend.buy_funnel import FunnelCollector, persist_funnel
+        _funnel = FunnelCollector()
 
         # Lazy import to dodge circular dependency at module load time.
         from backend.ai_trader import evaluate_buys, evaluate_pyramids, evaluate_sells
@@ -1337,6 +1341,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 ftd_penalty_active=False,
                 heat_penalty_active=False,
                 user_id=SHADOW_USER_ID,
+                funnel=_funnel,
             )
         except Exception as e:
             logger.error(f"shadow evaluate_buys failed for {strategy.name}: {e}", exc_info=True)
@@ -1352,6 +1357,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         cfg = shadow_session._synthetic_config
         open_positions = len(shadow_session._synthetic_positions or [])
         remaining_slots = max(0, int(getattr(cfg, "max_positions", 8) or 8) - open_positions)
+        if remaining_slots == 0:
+            _funnel.note("portfolio_full", f"{open_positions}/{getattr(cfg, 'max_positions', 8)} positions")
         # Cash-reserve parity: live enforces a dynamic 5-60% reserve at buy
         # execution (ai_trader.compute_dynamic_reserve_pct). This loop used to
         # spend to $0, so every shadow arm ran 5-20pp more invested than the
@@ -1448,6 +1455,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 signal_factors=sf,
                 is_growth_stock=bool(buy.get("is_growth_stock", False)) if isinstance(buy, dict) else False,
             )
+            _funnel.bought(ticker)
 
         # ── SPY sweep (after buys, matching live cycle order) ────────────────
         # Reuses the LIVE handle_spy_sweep through the session proxy for full
@@ -1484,6 +1492,10 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 f"shadow[{strategy_row.name if strategy_row else strategy_id}]: "
                 f"persisted {n_persisted} virtual trade(s)"
             )
+
+        # Funnel ledger for this arm's cycle (never raises).
+        persist_funnel(persist, _funnel, strategy_name=strategy.name,
+                       shadow_strategy_id=strategy_id)
 
         # Peak ratchet persists EVERY tick, trade or no trade — carrying the
         # session high forward is the whole point (see ShadowPositionPeak).

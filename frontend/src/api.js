@@ -702,6 +702,17 @@ export const api = {
   // promotion gate (defined in config/default.yaml comments).
   getExperimentGates: () => request('/api/admin/experiment-gates'),
 
+  // Buy funnel: why each candidate was or wasn't bought, per cycle per
+  // strategy. key = user:<id> | shadow:<id>; ticker = "why not X?" mode.
+  getBuyFunnel: ({ key, ticker, days } = {}) => {
+    const params = new URLSearchParams()
+    if (key) params.set('key', key)
+    if (ticker) params.set('ticker', ticker)
+    if (days) params.set('days', String(days))
+    const qs = params.toString()
+    return request(`/api/admin/buy-funnel${qs ? `?${qs}` : ''}`)
+  },
+
   // Program Ledger: event-sourced milestone history (auto gate-diff rows
   // + seeded history + manual owner entries).
   getProgramMilestones: (category) => {
