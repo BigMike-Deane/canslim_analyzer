@@ -1737,6 +1737,12 @@ def compute_experiment_gates(db: Session) -> dict:
          "due_date": "2026-09-20"},
         {"label": "CS confidence v2 recalibration (~200 outcomes, post-Aug-19 rows)",
          "due_date": "2026-11-15"},
+        # Arms 8/9 (cs_window14 / cs_exempt) first read 2026-09-02: lever
+        # dormant (0/5 band buys) because the profile score floor screens
+        # CS names before the window code runs; supply of >=73-score 8-14d
+        # alerts is ~7%. Re-read once the Oct/Nov earnings season has run.
+        {"label": "Arms 8/9 CS-lever re-read (post Oct/Nov earnings season)",
+         "due_date": "2026-11-20"},
         {"label": "CANSLIM_API_TOKEN re-mint (Monday routine JWT dies 2027-03-01)",
          "due_date": "2027-02-15"},
     ]
