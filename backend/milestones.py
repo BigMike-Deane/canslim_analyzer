@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 
 CATEGORIES = {"experiment", "verdict", "gate", "decision", "fix", "infra", "research"}
 
+# Label of the generic >=5-closed-sells metric compute_experiment_gates appends
+# to every arm. It gates whether the weekly A/B decision rule can run at all;
+# it is not any arm's promotion gate. Kept as the dedupe-key label so rows
+# already recorded under it (arms 8/9, 2026-09-01) never re-fire.
+SUFFICIENCY_LABEL = "closed sells (weekly-email gate)"
+
+
+def is_sufficiency_row(row) -> bool:
+    """True for auto rows written for the generic sufficiency metric."""
+    return f":{SUFFICIENCY_LABEL}:" in (getattr(row, "dedupe_key", None) or "")
+
 
 def add_milestone(db, *, title, occurred_at=None, category="research",
                   detail=None, source="claude", dedupe_key=None):
@@ -113,11 +124,23 @@ def record_auto_milestones(db):
                 ):
                     inserted += 1
             if label and tgt and n >= tgt:
+                if m.get("kind") == "sufficiency":
+                    # Data-sufficiency threshold, not a gate crossing: the
+                    # 2026-09-01 rows titled "'closed sells' accrual met" read
+                    # as promotion events and triggered a false verdict read.
+                    title = (f"{short}: weekly A/B data sufficiency reached "
+                             f"({n}/{tgt}) — not a promotion gate")
+                    detail = ("The shadow-vs-baseline decision rule now has enough "
+                              "closed sells to evaluate this arm. The arm's own "
+                              "pre-registered gate metrics are listed separately "
+                              "and are what a verdict waits on.")
+                else:
+                    title = f"{short}: '{label}' accrual met ({n}/{tgt})"
+                    detail = "Gate accrual only — the verdict comes from the weekly A/B decision rule."
                 if add_milestone(
                     db, occurred_at=now, category="gate", source="auto",
                     dedupe_key=f"gate:{name}:{label}:target",
-                    title=f"{short}: '{label}' accrual met ({n}/{tgt})",
-                    detail="Gate accrual only — the verdict comes from the weekly A/B decision rule.",
+                    title=title, detail=detail,
                 ):
                     inserted += 1
 
@@ -267,7 +290,9 @@ def run_milestone_pass():
                         .filter(ProgramMilestone.id > last_id,
                                 ProgramMilestone.source == "auto")
                         .order_by(ProgramMilestone.id).all())
-            _notify_new_milestones(new_rows)
+            # Sufficiency rows stay in the ledger but never ping — the
+            # exception-ping channel is for gate crossings and verdicts.
+            _notify_new_milestones([r for r in new_rows if not is_sufficiency_row(r)])
         return seeded + auto
     except Exception as e:
         logger.error(f"milestone pass failed: {e}")

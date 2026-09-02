@@ -1523,6 +1523,7 @@ def compute_experiment_gates(db: Session) -> dict:
     Adding an arm: give it an entry in ARM_GATES below.
     """
     from backend.database import MarketSnapshot
+    from backend.milestones import SUFFICIENCY_LABEL
 
     now_utc = datetime.now(timezone.utc)
 
@@ -1696,8 +1697,13 @@ def compute_experiment_gates(db: Session) -> dict:
             "buys": len(_rows(a.id, "BUY")),
             "pyramids": len(_rows(a.id, "PYRAMID")),
             "sells": len(sells),
+            # kind="sufficiency": the weekly A/B decision rule needs >=5 closed
+            # sells before it can render a verdict at all. It is NOT the arm's
+            # pre-registered promotion metric — the ledger/push writer and the
+            # card render it as data sufficiency, not as a gate crossing.
             "gate_metrics": metrics
-            + [{"label": "closed sells (weekly-email gate)", "n": len(sells), "target": 5}],
+            + [{"label": SUFFICIENCY_LABEL, "n": len(sells), "target": 5,
+                "kind": "sufficiency"}],
         })
 
     # Program-level clocks that live outside the shadow fleet.

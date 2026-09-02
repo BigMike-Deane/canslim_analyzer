@@ -259,3 +259,63 @@ class TestMilestonePing:
         with patch("backend.email_utils.create_notification",
                    side_effect=RuntimeError("push down")):
             _notify_new_milestones(rows)  # must not raise
+
+
+class TestSufficiencyMetric:
+    """2026-09-02: the generic >=5-closed-sells metric appended to every arm
+    is data sufficiency for the weekly A/B rule, NOT a promotion gate. Its
+    2026-09-01 rows ("'closed sells' accrual met") read as gate events and
+    triggered a false verdict read. The row still lands in the ledger (with
+    an honest title, same dedupe key so history never re-fires) but never
+    pings."""
+
+    def _five_sells(self, db, arm):
+        for i in range(5):
+            db.add(ShadowTrade(
+                shadow_strategy_id=arm.id, ticker=f"S{i}", action="SELL",
+                shares=1.0, price=10.0, total_value=10.0, realized_gain=0.0,
+                executed_at=T0))
+        db.commit()
+
+    def test_gates_payload_tags_sufficiency_kind(self, db_session):
+        from backend.routes.admin import compute_experiment_gates
+        from backend.milestones import SUFFICIENCY_LABEL
+        _arm(db_session, "shadow_cs_window14")
+        arm = next(a for a in compute_experiment_gates(db_session)["arms"]
+                   if a["name"] == "shadow_cs_window14")
+        kinds = {m["label"]: m.get("kind") for m in arm["gate_metrics"]}
+        assert kinds[SUFFICIENCY_LABEL] == "sufficiency"
+        # The arm's own pre-registered metric carries no sufficiency tag.
+        assert kinds["CS buys in 8-14d band"] is None
+
+    def test_sufficiency_row_keeps_key_but_says_not_a_gate(self, db_session):
+        from backend.milestones import SUFFICIENCY_LABEL, is_sufficiency_row
+        a = _arm(db_session, "shadow_cs_window14")
+        self._five_sells(db_session, a)
+        record_auto_milestones(db_session)
+        key = f"gate:shadow_cs_window14:{SUFFICIENCY_LABEL}:target"
+        row = db_session.query(ProgramMilestone).filter(
+            ProgramMilestone.dedupe_key == key).first()
+        assert row is not None, "sufficiency threshold still lands in the ledger"
+        assert "not a promotion gate" in row.title
+        assert "accrual met" not in row.title
+        assert is_sufficiency_row(row)
+        # The arm's real gate (0/5 band buys) did NOT fire.
+        assert not any("8-14d" in (k or "") for k in _noncal_keys(db_session))
+
+    def test_sufficiency_row_never_pings(self, db_session, monkeypatch):
+        from unittest.mock import patch
+        from backend import milestones as ms
+        a = _arm(db_session, "shadow_cs_window14")
+        self._five_sells(db_session, a)
+        # run_milestone_pass opens its own SessionLocal — same test DB.
+        with patch("backend.email_utils.create_notification") as ping:
+            ms.run_milestone_pass()
+        auto = db_session.query(ProgramMilestone).filter(
+            ProgramMilestone.source == "auto").all()
+        assert any(ms.is_sufficiency_row(r) for r in auto)
+        # Only calendar rows (if any are due today) may have pinged — never
+        # the sufficiency row.
+        for call in ping.call_args_list:
+            assert "not a promotion gate" not in call.kwargs.get("body", "")
+            assert "not a promotion gate" not in call.kwargs.get("title", "")

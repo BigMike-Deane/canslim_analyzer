@@ -645,19 +645,26 @@ function CapDeltaCard({ selected, refreshSeconds }) {
 
 
 function GateMeter({ metric }) {
-  const { label, n, target } = metric
+  const { label, n, target, kind } = metric
   const met = target != null && n >= target
   const frac = target ? Math.min(n / target, 1) : 0
+  // Sufficiency = the weekly A/B rule has enough closed sells to run. It is
+  // not the arm's promotion gate, so it never earns the green "met" styling.
+  const sufficiency = kind === 'sufficiency'
+  const shownLabel = sufficiency ? 'data sufficiency (weekly A/B)' : label
+  const hint = sufficiency
+    ? 'Closed sells needed before the weekly shadow-vs-baseline rule can evaluate this arm. Not a promotion gate.'
+    : label
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="text-dark-400 flex-1 truncate" title={label}>{label}</span>
-      <span className={`tabular-nums ${met ? 'text-emerald-400' : 'text-dark-200'}`}>
-        {n}{target != null && ` / ${target}`}{met && ' ✓'}
+    <div className={`flex items-center gap-2 text-xs ${sufficiency ? 'italic' : ''}`}>
+      <span className="text-dark-400 flex-1 truncate" title={hint}>{shownLabel}</span>
+      <span className={`tabular-nums ${met && !sufficiency ? 'text-emerald-400' : 'text-dark-200'}`}>
+        {n}{target != null && ` / ${target}`}{met && !sufficiency && ' ✓'}
       </span>
       {target != null && (
         <div className="w-16 h-1 rounded bg-dark-700 overflow-hidden shrink-0">
           <div
-            className={`h-full rounded ${met ? 'bg-emerald-500' : 'bg-dark-400'}`}
+            className={`h-full rounded ${met && !sufficiency ? 'bg-emerald-500' : 'bg-dark-400'}`}
             style={{ width: `${frac * 100}%` }}
           />
         </div>

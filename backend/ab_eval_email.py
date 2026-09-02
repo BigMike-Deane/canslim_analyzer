@@ -386,7 +386,10 @@ def _gates_card_html(db: Session, shadow_name: str) -> str:
         for gm in arm.get('gate_metrics') or []:
             n = gm.get('n') or 0
             target = gm.get('target')
-            if target:
+            if gm.get('kind') == 'sufficiency':
+                pill = _pill(f'{n}/{target}', '#6b7280')
+                detail = 'data sufficiency (weekly A/B), not a gate'
+            elif target:
                 pill = _pill(f'{n}/{target}', '#059669' if n >= target else '#6b7280')
                 detail = 'accrued' if n >= target else 'accruing'
             else:
