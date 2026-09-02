@@ -1844,7 +1844,7 @@ class BuyFunnelRow(Base):
     shadow_strategy_id = Column(Integer, nullable=True, index=True)
     ticker = Column(String, nullable=False, index=True)
     stage = Column(String, nullable=False)
-    detail = Column(String, nullable=True)
+    detail = Column(Text, nullable=True)
     score = Column(Float, nullable=True)
     composite = Column(Float, nullable=True)
     rank = Column(Integer, nullable=True)

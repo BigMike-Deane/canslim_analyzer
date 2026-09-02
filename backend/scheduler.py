@@ -1739,7 +1739,8 @@ def _sync_shadow_strategies_at_boot():
             logger.info(
                 "shadow_strategy_profiles sync complete: "
                 f"inserted={result['inserted']} updated={result['updated']} "
-                f"archived={result['archived']} skipped={result['skipped']}"
+                f"archived={result['archived']} skipped={result['skipped']} "
+                f"pending={result.get('pending', [])}"
             )
         finally:
             db.close()

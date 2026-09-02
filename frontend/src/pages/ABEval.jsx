@@ -877,6 +877,8 @@ function BuyFunnelCard() {
         {!ticker && cycle?.cycle_at && (
           <span className="text-dark-500">
             {cycle.strategy?.replace(/^nostate_/, '')} · cycle {funnelTime(cycle.cycle_at)}
+            {cycle.n_candidates != null && ` · ${cycle.n_candidates} candidates`}
+            {cycle.rows_capped && ' · rows capped, counts are complete'}
           </span>
         )}
       </div>

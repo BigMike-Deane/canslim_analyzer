@@ -60,6 +60,11 @@ _STAGE_RANK = {s: i for i, s in enumerate(STAGE_ORDER)}
 # Cycle-level notes use this pseudo-ticker: the evaluator never ran (book
 # full, cash reserve, circuit breaker, market gate) so no per-name row exists.
 CYCLE_TICKER = "*"
+# One note row per cycle carrying the UNCAPPED stage histogram as JSON, so
+# the per-name cap (which keeps late stages) never hides how many names died
+# at the early gates. First live cycle: 37 ml_veto + 3 ranked filled the cap
+# and every earlier stage read as zero.
+HISTOGRAM_STAGE = "histogram"
 
 DEFAULT_CAP = 40
 RETENTION_DAYS = 21
@@ -150,16 +155,26 @@ class FunnelCollector:
         return counts
 
     def to_rows(self, cap: int = DEFAULT_CAP) -> list:
-        """Rows to persist: all notes + the top `cap` candidate rows, keeping
-        the latest stages first, then higher scores. Ranked/bought rows sort
-        by rank so the decision list stays intact under the cap."""
+        """Rows to persist: all notes + an uncapped histogram note + the top
+        `cap` candidate rows, keeping the latest stages first, then higher
+        scores. Ranked/bought rows sort by rank so the decision list stays
+        intact under the cap."""
+        import json
+
         def _key(r):
             stage_rank = _STAGE_RANK.get(r["stage"], -1)
             if r["stage"] in ("ranked", "exec_skipped", "bought"):
                 return (-stage_rank, r["rank"] or 10**6, 0.0)
             return (-stage_rank, 0, -(r["score"] or 0.0))
         rows = sorted(self._rows.values(), key=_key)
-        return list(self.notes) + rows[:max(0, int(cap))]
+        out = list(self.notes)
+        if rows:
+            out.append({
+                "ticker": CYCLE_TICKER, "stage": HISTOGRAM_STAGE,
+                "detail": json.dumps(self.stage_counts(), sort_keys=True),
+                "score": None, "composite": None, "rank": None,
+            })
+        return out + rows[:max(0, int(cap))]
 
 
 def persist_funnel(db, collector: FunnelCollector, *, strategy_name: str,
@@ -292,16 +307,28 @@ def latest_cycle(db, key: Optional[str] = None, limit: int = 400) -> dict:
     rows = rows_q.all()
     rows.sort(key=lambda r: (
         -_STAGE_RANK.get(r.stage, -1), r.rank or 10**6, -(r.score or 0.0)))
+    import json
     counts: dict = {}
+    histogram = None
     for r in rows:
-        if r.ticker != CYCLE_TICKER:
+        if r.ticker == CYCLE_TICKER and r.stage == HISTOGRAM_STAGE and r.detail:
+            try:
+                histogram = json.loads(r.detail)
+            except ValueError:
+                histogram = None
+        elif r.ticker != CYCLE_TICKER:
             counts[r.stage] = counts.get(r.stage, 0) + 1
+    # The histogram note is the truth; row counts are capped.
+    stage_counts = histogram if histogram is not None else counts
     return {
         "key": key,
         "strategy": rows[0].strategy_name if rows else None,
         "cycle_at": cycle_at.isoformat(),
-        "stage_counts": counts,
-        "notes": [_row_out(r) for r in rows if r.ticker == CYCLE_TICKER],
+        "stage_counts": stage_counts,
+        "n_candidates": sum(stage_counts.values()),
+        "rows_capped": histogram is not None and sum(histogram.values()) > len(counts) and sum(counts.values()) < sum(histogram.values()),
+        "notes": [_row_out(r) for r in rows
+                  if r.ticker == CYCLE_TICKER and r.stage != HISTOGRAM_STAGE],
         "rows": [_row_out(r) for r in rows if r.ticker != CYCLE_TICKER][:limit],
     }
 
