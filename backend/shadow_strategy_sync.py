@@ -34,7 +34,7 @@ reconcile transaction is rolled back — partial inserts are never persisted.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
@@ -48,6 +48,36 @@ logger = logging.getLogger(__name__)
 # forward-only A/B telemetry. config_snapshot and parent_strategy are
 # deliberately excluded.
 _MUTABLE_FIELDS = ("description", "scorer_overrides", "starting_value")
+
+# Roles (2026-09-02 vintage ensemble): "experiment" arms carry a pre-registered
+# promotion gate; "benchmark" stacks are copies of the champion started on
+# staggered dates whose only job is to measure launch-vintage luck. Benchmarks
+# never get gate metrics, ledger gate rows, or Monday-routine counts.
+ROLE_EXPERIMENT = "experiment"
+ROLE_BENCHMARK = "benchmark"
+
+
+def shadow_roles() -> Dict[str, str]:
+    """{shadow name: role} from YAML; unspecified = experiment."""
+    out: Dict[str, str] = {}
+    for name, entry in _load_yaml_section().items():
+        role = (entry.get("role") if isinstance(entry, dict) else None) or ROLE_EXPERIMENT
+        out[name] = ROLE_BENCHMARK if role == ROLE_BENCHMARK else ROLE_EXPERIMENT
+    return out
+
+
+def _activate_on(entry):
+    """Optional YAML `activate_on: YYYY-MM-DD` — the stack is not inserted
+    until that UTC date. Lets a staggered-vintage fleet be declared once and
+    light up on schedule (the sync runs at boot and daily at 13:05 UTC)."""
+    raw = entry.get("activate_on") if isinstance(entry, dict) else None
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    return date.fromisoformat(str(raw))
 
 
 def _load_yaml_section() -> Dict[str, Any]:
@@ -95,6 +125,7 @@ def sync_shadow_strategies_from_yaml(db: Session) -> Dict[str, List[str]]:
         "updated": [],
         "archived": [],
         "skipped": [],
+        "pending": [],
     }
 
     try:
@@ -115,6 +146,10 @@ def sync_shadow_strategies_from_yaml(db: Session) -> Dict[str, List[str]]:
             starting_value = float(entry.get("starting_value", 25000.0))
 
             row = existing_by_name.get(name)
+            due = _activate_on(entry)
+            if row is None and due is not None and now.date() < due:
+                result["pending"].append(name)
+                continue
             if row is None:
                 # Fresh insert. Snapshot the parent at this moment.
                 snapshot = dict(parent_profiles.get(parent, {}))
@@ -130,6 +165,8 @@ def sync_shadow_strategies_from_yaml(db: Session) -> Dict[str, List[str]]:
                     archived_at=None,
                 ))
                 result["inserted"].append(name)
+                if (entry.get("role") or ROLE_EXPERIMENT) == ROLE_BENCHMARK:
+                    _ledger_benchmark_activation(db, name, parent, now)
                 continue
 
             if row.archived_at is not None:
@@ -188,3 +225,20 @@ def sync_shadow_strategies_from_yaml(db: Session) -> Dict[str, List[str]]:
         raise
 
     return result
+
+
+def _ledger_benchmark_activation(db: Session, name: str, parent: str, now: datetime) -> None:
+    """Program Ledger row for a vintage benchmark lighting up (fail-soft).
+    Flushes the insert first so add_milestone's commit carries both."""
+    try:
+        from backend.milestones import add_milestone
+        db.flush()
+        add_milestone(
+            db, occurred_at=now, category="experiment", source="auto",
+            dedupe_key=f"vintage:{name}:activated",
+            title=f"Vintage benchmark {name.replace('shadow_', '')} activated ({parent})",
+            detail=("Champion copy started on a staggered date to measure "
+                    "launch-vintage luck; no promotion gate."),
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"vintage ledger row failed for {name}: {e}")

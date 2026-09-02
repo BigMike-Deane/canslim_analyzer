@@ -1514,6 +1514,55 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         persist.close()
 
 
+
+# ── Mark-to-market equity (2026-09-02 vintage ensemble) ──────────────────────
+def shadow_stack_equity(db: Session, strategy: ShadowStrategy,
+                        spy_price: Optional[float] = None) -> dict:
+    """Current equity of one shadow stack: FIFO-derived cash + open positions
+    marked at Stock.current_price + SPY sweep shares at spy_price. Read-only
+    (ShadowSession derives state from the trade log; nothing is written).
+    Positions with no price on file are carried at cost so a missing quote
+    never reads as a loss."""
+    from backend.database import Stock
+    session = ShadowSession(db, strategy, [])
+    cfg = session._synthetic_config
+    cash = float(getattr(cfg, "current_cash", 0.0) or 0.0)
+    positions_value = 0.0
+    n_pos = 0
+    unpriced = 0
+    for pos in session._synthetic_positions or []:
+        shares = float(getattr(pos, "shares", 0.0) or 0.0)
+        if shares <= 0:
+            continue
+        n_pos += 1
+        stock = db.query(Stock).filter(Stock.ticker == pos.ticker).first()
+        px = float(getattr(stock, "current_price", 0.0) or 0.0) if stock else 0.0
+        if px <= 0:
+            px = float(getattr(pos, "cost_basis", 0.0) or 0.0)
+            unpriced += 1
+        positions_value += shares * px
+    sweep_shares = float(getattr(cfg, "spy_sweep_shares", 0.0) or 0.0)
+    if spy_price is None and sweep_shares > 0:
+        try:
+            import data_fetcher
+            md = data_fetcher.get_cached_market_direction() or {}
+            spy_price = float(((md.get("indexes") or {}).get("SPY") or {}).get("price") or 0.0)
+        except Exception:
+            spy_price = 0.0
+    sweep_value = sweep_shares * float(spy_price or 0.0)
+    starting = float(strategy.starting_value or 25000.0)
+    equity = cash + positions_value + sweep_value
+    return {
+        "cash": round(cash, 2),
+        "positions_value": round(positions_value, 2),
+        "sweep_value": round(sweep_value, 2),
+        "equity": round(equity, 2),
+        "starting_value": starting,
+        "return_pct": round((equity / starting - 1.0) * 100, 2) if starting > 0 else None,
+        "n_positions": n_pos,
+        "unpriced_positions": unpriced,
+    }
+
 # ── Intraday stop pass (2026-07-25) ──────────────────────────────────────────
 # The 15-min intraday stop job (scheduler, 2b88bfc) gave the LEAD book intraday
 # hard stops and reliable close-window trailing, while shadow stacks still

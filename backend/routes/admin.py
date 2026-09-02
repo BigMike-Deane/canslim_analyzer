@@ -1511,7 +1511,60 @@ async def ml_demotion_cohort(
     }
 
 
-def compute_experiment_gates(db: Session) -> dict:
+def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
+    """Launch-vintage luck, measured live (2026-09-02): the same champion
+    strategy started on staggered dates. Each stack's mark-to-market return
+    since its own start is compared to SPY over the same span; the spread and
+    stdev of that alpha across stacks is how much of any arm's lead can be
+    start-date luck. Cold-start grid (Aug-3) put this at ~7pp/month from
+    backtests; this is the forward measurement."""
+    import statistics
+    from backend.database import MarketSnapshot
+    from backend.shadow_trader import shadow_stack_equity
+
+    latest = db.query(MarketSnapshot).order_by(MarketSnapshot.date.desc()).first()
+    spy_now = float(latest.spy_price) if latest and latest.spy_price else None
+    rows = []
+    for a in stacks:
+        if a.activated_at is None:
+            continue
+        act = a.activated_at if a.activated_at.tzinfo else a.activated_at.replace(tzinfo=timezone.utc)
+        days = max((now_utc - act).days, 0)
+        try:
+            eq = shadow_stack_equity(db, a, spy_price=spy_now)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"vintage equity failed for {a.name}: {e}")
+            continue
+        spy_start = db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= act.date()).order_by(MarketSnapshot.date).first()
+        spy_pct = None
+        if spy_now and spy_start and spy_start.spy_price:
+            spy_pct = round((spy_now / float(spy_start.spy_price) - 1.0) * 100, 2)
+        ret = eq.get("return_pct")
+        rows.append({
+            "name": a.name,
+            "label": a.name.replace("shadow_", ""),
+            "activated_at": act.date().isoformat(),
+            "days": days,
+            "equity": eq.get("equity"),
+            "return_pct": ret,
+            "spy_pct": spy_pct,
+            "alpha_pp": round(ret - spy_pct, 2) if ret is not None and spy_pct is not None else None,
+            "n_positions": eq.get("n_positions"),
+        })
+    alphas = [r["alpha_pp"] for r in rows if r["alpha_pp"] is not None and r["days"] >= 1]
+    return {
+        "stacks": rows,
+        "n": len(alphas),
+        "spread_pp": round(max(alphas) - min(alphas), 2) if len(alphas) >= 2 else None,
+        "stdev_pp": round(statistics.pstdev(alphas), 2) if len(alphas) >= 2 else None,
+        "note": ("alpha = stack return since its own start minus SPY over the same "
+                 "span; spread/stdev across staggered starts of the SAME strategy = "
+                 "launch-vintage luck, the confound behind three prior cohort reads."),
+    }
+
+
+def compute_experiment_gates(db: Session) -> dict:
     """Live progress of every pre-registered promotion gate. 100% read-only.
 
     Pure function over a Session (same seam as compute_cap_delta_diagnostics)
@@ -1681,8 +1734,20 @@ def compute_experiment_gates(db: Session) -> dict:
         ],
     }
 
+    # Vintage benchmarks (role=benchmark in YAML) are champion copies on
+    # staggered start dates: no gate, no ledger rows. They report under
+    # program_clocks.vintage_spread instead of the arms list. shadow_baseline
+    # stays in the arms list (it is every arm's comparator) AND joins the
+    # vintage set as the Aug-19 start.
+    from backend.shadow_strategy_sync import shadow_roles, ROLE_BENCHMARK
+    roles = shadow_roles()
+    vintage_arms = [a for a in arms
+                    if roles.get(a.name) == ROLE_BENCHMARK or a.name == "shadow_baseline"]
+
     arm_payload = []
     for a in arms:
+        if roles.get(a.name) == ROLE_BENCHMARK and a.name != "shadow_baseline":
+            continue
         activated = a.activated_at
         if activated is not None and activated.tzinfo is None:
             activated = activated.replace(tzinfo=timezone.utc)
@@ -1763,9 +1828,12 @@ def compute_experiment_gates(db: Session) -> dict:
             "due": _today >= _due,
         })
 
+    vintage = _vintage_spread(db, vintage_arms, now_utc)
+
     return {
         "program_clocks": {
             "calendar": calendar,
+            "vintage_spread": vintage,
             "stop_loss_recheck": {
                 "label": "Exit-fix re-check (owner stops since Jun-24)",
                 "n": len(stop_pcts), "target": 5,

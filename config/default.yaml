@@ -2212,6 +2212,7 @@ strategy_profiles:
 shadow_strategy_profiles:
   shadow_baseline:
     parent_strategy: nostate_cs_bear
+    role: benchmark          # Aug-19 vintage of the champion; also every arm's comparator
     starting_value: 25000
     description: "Forward-only parity check against live cs_bear baseline"
     scorer_overrides: {}
@@ -2267,6 +2268,34 @@ shadow_strategy_profiles:
   # that deploy — pyramids change every arm's trajectory, so pre-Aug-18
   # shadow data is not comparable. Gate pre-registered on the
   # nostate_sector_relief profile comment.
+  # Vintage ensemble (2026-09-02): copies of the champion (cs_bear) started
+  # on staggered dates, role=benchmark — no gate, no ledger gate rows, not in
+  # the arms list. Their alpha-vs-SPY spread is the live measurement of
+  # launch-vintage luck (the confound behind the cold-start, pre-breakout and
+  # ml-demotion cohort reads). `activate_on` defers insertion; the sync runs
+  # at boot and daily 13:05 UTC. Readout: /admin/experiment-gates
+  # program_clocks.vintage_spread + the Gate Progress card strip.
+  shadow_vintage_sep02:
+    parent_strategy: nostate_cs_bear
+    role: benchmark
+    activate_on: 2026-09-02
+    starting_value: 25000
+    description: "Champion copy, Sept-2 start — vintage benchmark (no gate)"
+    scorer_overrides: {}
+  shadow_vintage_sep16:
+    parent_strategy: nostate_cs_bear
+    role: benchmark
+    activate_on: 2026-09-16
+    starting_value: 25000
+    description: "Champion copy, Sept-16 start — vintage benchmark (no gate)"
+    scorer_overrides: {}
+  shadow_vintage_sep30:
+    parent_strategy: nostate_cs_bear
+    role: benchmark
+    activate_on: 2026-09-30
+    starting_value: 25000
+    description: "Champion copy, Sept-30 start — vintage benchmark (no gate)"
+    scorer_overrides: {}
   shadow_sector_relief:
     parent_strategy: nostate_sector_relief
     starting_value: 25000

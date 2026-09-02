@@ -1885,6 +1885,13 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start milestone job: {e}")
 
+    # Shadow fleet: daily YAML re-sync so `activate_on` vintages light up on
+    # their date instead of waiting for the next deploy boot.
+    try:
+        start_shadow_sync_job()
+    except Exception as e:
+        logger.warning(f"Failed to start shadow sync job: {e}")
+
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
     # Run first scan immediately
@@ -2586,6 +2593,25 @@ def start_push_reachability_job():
         scheduler.start()
 
     logger.info("Push reachability job scheduled (12:30 UTC daily)")
+
+
+def start_shadow_sync_job():
+    """Daily shadow_strategy_profiles re-sync (13:05 UTC, before US open) so
+    an `activate_on`-dated vintage benchmark starts on its scheduled day.
+    Same reconcile as boot; idempotent."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    job_id = "shadow_profile_sync"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    scheduler.add_job(
+        _sync_shadow_strategies_at_boot,
+        CronTrigger(hour=13, minute=5),
+        id=job_id,
+        name="Shadow Profile Sync",
+        replace_existing=True,
+    )
+    logger.info("Shadow profile sync job scheduled (13:05 UTC daily)")
 
 
 def start_milestone_job():

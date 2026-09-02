@@ -734,6 +734,33 @@ function GateProgressCard() {
           ))}
         </div>
       )}
+      {/* Vintage spread: the same champion started on staggered dates. The
+          spread of alpha-vs-SPY across starts is live launch-luck — the
+          confound behind three earlier cohort reads. Benchmarks, not arms. */}
+      {(data.program_clocks?.vintage_spread?.stacks || []).length > 0 && (
+        <div className="mb-3 text-[10px] border-b border-dark-700/40 pb-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-dark-400" title={data.program_clocks.vintage_spread.note}>
+              Vintage spread (alpha vs SPY since own start):
+            </span>
+            {data.program_clocks.vintage_spread.stacks.map(v => (
+              <span
+                key={v.name}
+                className="px-2 py-0.5 rounded border bg-dark-850 text-dark-300 border-dark-700 tabular-nums"
+                title={`started ${v.activated_at} · ${v.days}d · return ${v.return_pct ?? '–'}% · SPY ${v.spy_pct ?? '–'}% · ${v.n_positions} positions`}
+              >
+                {v.label} {v.alpha_pp != null ? `${v.alpha_pp > 0 ? '+' : ''}${v.alpha_pp.toFixed(1)}pp` : 'pending'}
+              </span>
+            ))}
+            {data.program_clocks.vintage_spread.spread_pp != null && (
+              <span className="text-dark-200 tabular-nums">
+                spread {data.program_clocks.vintage_spread.spread_pp.toFixed(1)}pp · σ {data.program_clocks.vintage_spread.stdev_pp.toFixed(1)}pp
+                <span className="text-dark-500"> (n={data.program_clocks.vintage_spread.n})</span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
         {(data.arms || []).map(arm => (
           <div key={arm.id} className="space-y-1.5 min-w-0">

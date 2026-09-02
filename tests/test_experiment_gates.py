@@ -304,3 +304,75 @@ class TestChopArmGates:
         row = next(a for a in out["arms"] if a["name"] == "shadow_chop_entry_bar")
         sup = _metric(row, "baseline buys not taken (suppression proxy)")
         assert sup["n"] == 1
+
+
+class TestVintageSpread:
+    """2026-09-02 vintage ensemble: role=benchmark stacks leave the arms list
+    (no gate, no ledger rows) and report under program_clocks.vintage_spread
+    as alpha-vs-SPY since their own start; shadow_baseline is both."""
+
+    @pytest.fixture
+    def roles(self, monkeypatch):
+        from backend import shadow_strategy_sync as sss
+        monkeypatch.setattr(sss, "_load_yaml_section", lambda: {
+            "shadow_baseline": {"parent_strategy": "nostate_cs_bear", "role": "benchmark"},
+            "shadow_vintage_sep02": {"parent_strategy": "nostate_cs_bear", "role": "benchmark"},
+            "shadow_wide_trail": {"parent_strategy": "nostate_cs_bear"},
+        })
+
+    @pytest.fixture
+    def priced_stock(self, db_session):
+        from backend.database import Stock
+        db_session.query(Stock).filter(Stock.ticker == "VNTG").delete()
+        db_session.add(Stock(ticker="VNTG", current_price=110.0, canslim_score=70.0))
+        db_session.commit()
+        yield
+        db_session.query(Stock).filter(Stock.ticker == "VNTG").delete()
+        db_session.commit()
+
+    def test_equity_marks_open_position_at_current_price(self, db_session, priced_stock):
+        from backend.shadow_trader import shadow_stack_equity
+        a = _arm(db_session, "shadow_vintage_sep02")
+        _trade(db_session, a.id, "VNTG", "BUY", price=100.0, shares=10.0)
+        eq = shadow_stack_equity(db_session, a, spy_price=500.0)
+        assert eq["cash"] == 24000.0
+        assert eq["positions_value"] == 1100.0
+        assert eq["equity"] == 25100.0 and eq["return_pct"] == 0.4
+        assert eq["n_positions"] == 1 and eq["unpriced_positions"] == 0
+
+    def test_benchmarks_leave_arms_and_report_spread(self, db_session, roles, priced_stock):
+        from backend.routes.admin import compute_experiment_gates
+        base = _arm(db_session, "shadow_baseline", activated_at=T0)
+        vint = _arm(db_session, "shadow_vintage_sep02", activated_at=T0 + timedelta(days=10))
+        exp = _arm(db_session, "shadow_wide_trail", activated_at=T0)
+        _trade(db_session, base.id, "VNTG", "BUY", price=100.0, shares=10.0)   # +1000 mtm
+        _trade(db_session, vint.id, "VNTG", "BUY", price=120.0, shares=10.0,
+               executed_at=T0 + timedelta(days=11))                           # -100 mtm
+        _snap(db_session, date(2026, 8, 1), 500.0, 490.0)
+        _snap(db_session, date(2026, 8, 11), 510.0, 495.0)
+        _snap(db_session, date(2026, 8, 20), 520.0, 500.0)
+
+        g = compute_experiment_gates(db_session)
+        names = [a["name"] for a in g["arms"]]
+        assert "shadow_vintage_sep02" not in names
+        assert "shadow_baseline" in names and "shadow_wide_trail" in names
+
+        vs = g["program_clocks"]["vintage_spread"]
+        by = {r["name"]: r for r in vs["stacks"]}
+        assert set(by) == {"shadow_baseline", "shadow_vintage_sep02"}
+        # baseline: 10sh 100→110 = +$100 = +0.4% vs SPY 500→520 = +4.0% → alpha -3.6
+        assert by["shadow_baseline"]["return_pct"] == 0.4
+        assert by["shadow_baseline"]["spy_pct"] == 4.0
+        assert by["shadow_baseline"]["alpha_pp"] == -3.6
+        # sep02 vintage: 10sh 120→110 = -0.4% vs SPY 510→520 = +1.96% → alpha -2.36
+        assert by["shadow_vintage_sep02"]["return_pct"] == -0.4
+        assert by["shadow_vintage_sep02"]["alpha_pp"] == -2.36
+        assert vs["n"] == 2 and vs["spread_pp"] == 1.24 and vs["stdev_pp"] == 0.62
+
+    def test_no_benchmarks_yields_empty_spread(self, db_session, monkeypatch):
+        from backend import shadow_strategy_sync as sss
+        from backend.routes.admin import compute_experiment_gates
+        monkeypatch.setattr(sss, "_load_yaml_section", lambda: {})
+        _arm(db_session, "shadow_wide_trail")
+        vs = compute_experiment_gates(db_session)["program_clocks"]["vintage_spread"]
+        assert vs["stacks"] == [] and vs["n"] == 0 and vs["spread_pp"] is None

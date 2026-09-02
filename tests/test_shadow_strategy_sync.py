@@ -93,7 +93,7 @@ class TestInsert:
     def test_empty_yaml_empty_db_is_noop(self, db_session, patch_yaml):
         patch_yaml({})
         result = sss.sync_shadow_strategies_from_yaml(db_session)
-        assert result == {"inserted": [], "updated": [], "archived": [], "skipped": []}
+        assert result == {"inserted": [], "updated": [], "archived": [], "skipped": [], "pending": []}
         assert db_session.query(ShadowStrategy).count() == 0
 
     def test_one_yaml_entry_empty_db_inserts_one(self, db_session, patch_yaml):
@@ -148,6 +148,7 @@ class TestUpdate:
         assert result == {
             "inserted": [], "updated": [],
             "archived": [], "skipped": ["shadow_baseline"],
+            "pending": [],
         }
         assert db_session.query(ShadowStrategy).count() == 1
 
@@ -388,3 +389,64 @@ class TestValidation:
         assert rollback_called["count"] >= 1
         # Pre-flight INSERTs were rolled back — no rows persisted.
         assert db_session.query(ShadowStrategy).count() == 0
+
+
+class TestActivateOnAndRoles:
+    """2026-09-02 vintage ensemble: `activate_on` defers insertion until its
+    UTC date; `role: benchmark` stacks get a Program Ledger activation row."""
+
+    def _vintage(self, activate_on, role="benchmark"):
+        return {
+            "shadow_vintage_x": {
+                "parent_strategy": "nostate_cs_bear", "starting_value": 25000,
+                "role": role, "activate_on": activate_on,
+                "description": "champion copy", "scorer_overrides": {},
+            },
+        }
+
+    def test_future_activate_on_is_pending_not_inserted(self, db_session, patch_yaml):
+        future = (datetime.now(timezone.utc) + timedelta(days=10)).date().isoformat()
+        patch_yaml(self._vintage(future))
+        result = sss.sync_shadow_strategies_from_yaml(db_session)
+        assert result["pending"] == ["shadow_vintage_x"]
+        assert result["inserted"] == []
+        assert db_session.query(ShadowStrategy).count() == 0
+        # Idempotent: still pending tomorrow, never archived (it IS in YAML).
+        result = sss.sync_shadow_strategies_from_yaml(db_session)
+        assert result["pending"] == ["shadow_vintage_x"] and result["archived"] == []
+
+    def test_due_activate_on_inserts_and_ledgers_benchmark(self, db_session, patch_yaml):
+        from backend.database import ProgramMilestone
+        db_session.query(ProgramMilestone).filter(
+            ProgramMilestone.dedupe_key == "vintage:shadow_vintage_x:activated").delete()
+        db_session.commit()
+        today = datetime.now(timezone.utc).date().isoformat()
+        patch_yaml(self._vintage(today))
+        result = sss.sync_shadow_strategies_from_yaml(db_session)
+        assert result["inserted"] == ["shadow_vintage_x"] and result["pending"] == []
+        row = db_session.query(ShadowStrategy).filter(ShadowStrategy.name == "shadow_vintage_x").one()
+        assert row.activated_at is not None
+        ledger = db_session.query(ProgramMilestone).filter(
+            ProgramMilestone.dedupe_key == "vintage:shadow_vintage_x:activated").first()
+        assert ledger is not None and ledger.category == "experiment"
+        assert "vintage_x" in ledger.title
+        # Second sync: already present → skipped, ledger row not duplicated.
+        result = sss.sync_shadow_strategies_from_yaml(db_session)
+        assert result["skipped"] == ["shadow_vintage_x"]
+        assert db_session.query(ProgramMilestone).filter(
+            ProgramMilestone.dedupe_key == "vintage:shadow_vintage_x:activated").count() == 1
+        db_session.query(ProgramMilestone).filter(
+            ProgramMilestone.dedupe_key == "vintage:shadow_vintage_x:activated").delete()
+        db_session.commit()
+
+    def test_experiment_insert_writes_no_ledger_row(self, db_session, patch_yaml):
+        from backend.database import ProgramMilestone
+        before = db_session.query(ProgramMilestone).count()
+        patch_yaml(_baseline_yaml())
+        sss.sync_shadow_strategies_from_yaml(db_session)
+        assert db_session.query(ProgramMilestone).count() == before
+
+    def test_roles_default_to_experiment(self, patch_yaml):
+        patch_yaml({**_baseline_yaml(), **self._vintage("2026-09-02")})
+        roles = sss.shadow_roles()
+        assert roles == {"shadow_baseline": "experiment", "shadow_vintage_x": "benchmark"}
