@@ -1857,11 +1857,12 @@ def compute_experiment_gates(db: Session) -> dict:
     # re-check calendar lives in the product instead of session notes, so
     # each date self-reports on the Gate Progress card and the Monday email.
     # Reschedule by editing here; provenance in the memory/backlog notes.
+    # CLOSED 2026-09-04 (both read early, ledger rows 38/39): Improving Radar
+    # OOS re-validation (edge did not hold -> panel Experimental) and the ML
+    # demotion-cohort re-read (closed-only: would_veto 12 @ -7.9% vs passed
+    # 6 @ -2.8%, still vintage-confounded; arm 10's closed-lot gate is the
+    # clean test and supersedes this clock).
     CALENDAR_CLOCKS = [
-        {"label": "Improving Radar out-of-sample re-validation",
-         "due_date": "2026-09-15"},
-        {"label": "ML demotion-cohort re-read (post per-lot FIFO fix)",
-         "due_date": "2026-09-20"},
         {"label": "CS confidence v2 recalibration (~200 outcomes, post-Aug-19 rows)",
          "due_date": "2026-11-15"},
         # Arms 8/9 (cs_window14 / cs_exempt) first read 2026-09-02: lever
