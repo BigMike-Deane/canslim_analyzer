@@ -1631,6 +1631,14 @@ async def get_improving_radar(
 
     Read-only; velocity comes from the stored point-in-time StockScore
     history (no lookahead by construction).
+
+    2026-09-04 OUT-OF-SAMPLE RE-VALIDATION (pre-registered Jul-21): the
+    sub-55 velocity edge REPLICATED on the overlapping Jun-6..Jul-21 window
+    (rising +1.9%/+1.4% vs static +1.4%/+1.0% in both halves, win 55% vs
+    44%) but VANISHED on the fully out-of-sample Jul-22..Aug-21 window
+    (rising +0.7% avg / 46% win vs static +2.3% / 49%; both halves).
+    Per the pre-registered rule the panel is now EXPERIMENTAL: a browse
+    lens with no claimed edge. Do not wire velocity into trading logic.
     """
     from sqlalchemy import text
     from config_loader import config as yaml_config

@@ -1627,6 +1627,46 @@ def compute_experiment_gates(db: Session) -> dict:
             out.append(t)
         return out
 
+    def _closed_lots(arm_id, predicate=None):
+        """Per-lot FIFO outcomes inside one shadow stack: a BUY counts as
+        closed only once its OWN shares are fully consumed by later SELLs
+        of the same ticker (pyramids are separate lots and never count).
+        Mirrors the live ml-demotion-cohort lot logic so a re-buy cannot
+        inherit an earlier generation's result. Returns (closed_count,
+        avg_realized_pct) over BUY lots satisfying `predicate`."""
+        by_ticker = {}
+        for t in _rows(arm_id):
+            if t.action in ("BUY", "PYRAMID", "SELL"):
+                by_ticker.setdefault(t.ticker, []).append(t)
+        closed, pcts = 0, []
+        for hist in by_ticker.values():
+            hist.sort(key=lambda t: (_naive(t.executed_at) or datetime.min, t.id or 0))
+            open_lots = deque()
+            for h in hist:
+                if h.action in ("BUY", "PYRAMID"):
+                    lot = {"trade": h, "left": h.shares or 0.0,
+                           "price": h.price or 0.0, "realized": 0.0}
+                    if lot["left"] > 1e-9:
+                        open_lots.append(lot)
+                    continue
+                to_sell = h.shares or 0.0
+                while to_sell > 1e-9 and open_lots:
+                    head = open_lots[0]
+                    take = min(head["left"], to_sell)
+                    head["realized"] += ((h.price or 0.0) - head["price"]) * take
+                    head["left"] -= take
+                    to_sell -= take
+                    if head["left"] <= 1e-9:
+                        open_lots.popleft()
+                        bt = head["trade"]
+                        if bt.action == "BUY" and (predicate is None or predicate(bt)):
+                            closed += 1
+                            cost = head["price"] * (bt.shares or 0.0)
+                            if cost > 0:
+                                pcts.append(head["realized"] / cost * 100.0)
+        avg = round(sum(pcts) / len(pcts), 1) if pcts else None
+        return closed, avg
+
     baseline = next((a for a in arms if a.name == "shadow_baseline"), None)
 
     def _unmatched_vs_baseline(arm_id, action, reason_prefix=None):
@@ -1712,7 +1752,12 @@ def compute_experiment_gates(db: Session) -> dict:
              "n": _suppressed_vs_baseline(a.id, "SELL", "PRE-EARNINGS"),
              "target": 5},
         ],
-        "shadow_ml_veto_off": lambda a: [
+        "shadow_ml_veto_off": lambda a: _ml_veto_metrics(
+            a, _closed_lots(a.id, lambda t: (_sf(t).get("ml_confidence") or 1.0) < 0.30)),
+    }
+
+    def _ml_veto_metrics(a, _ml_closed):
+        return [
             # Buys the live veto would have blocked (conf < 0.30) — the
             # arm's whole reason to exist. signal_factors.ml_confidence is
             # stamped on every buy since the Jul-4 demotion kept logging on.
@@ -1720,7 +1765,18 @@ def compute_experiment_gates(db: Session) -> dict:
              "n": sum(1 for t in _rows(a.id, "BUY")
                       if (_sf(t).get("ml_confidence") or 1.0) < 0.30),
              "target": 5},
-        ],
+            # The pre-registered gate reads sub-0.30 buys CLOSED (YAML
+            # comment on nostate_ml_veto_off): 'taken' met on day one
+            # (2026-08-20, 8/5) and is only sufficiency; the verdict waits
+            # on lots that have actually finished. Sep-4 first read: 3/5,
+            # all stop-losses.
+            {"label": "sub-0.30-confidence buys closed",
+             "n": _ml_closed[0], "target": 5,
+             "note": (f"avg {_ml_closed[1]:+.1f}% per closed lot"
+                      if _ml_closed[1] is not None else None)},
+        ]
+
+    ARM_GATES.update({
         "shadow_chop_entry_bar": lambda a: [
             {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
             {"label": "baseline buys not taken (suppression proxy)",
@@ -1732,7 +1788,7 @@ def compute_experiment_gates(db: Session) -> dict:
              "n": sum(1 for t in _rows(a.id, "SELL")
                       if (t.reason or "").startswith("CHOP TRIM")), "target": 5},
         ],
-    }
+    })
 
     # Vintage benchmarks (role=benchmark in YAML) are champion copies on
     # staggered start dates: no gate, no ledger rows. They report under

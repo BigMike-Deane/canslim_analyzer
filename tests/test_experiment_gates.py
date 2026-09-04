@@ -163,6 +163,43 @@ class TestBaselineComparisons:
         assert _metric(out["arms"][0], "sub-0.30-confidence buys taken") == {
             "label": "sub-0.30-confidence buys taken", "n": 1, "target": 5}
 
+    def test_ml_veto_off_counts_closed_sub_threshold_lots(self, db_session):
+        """The pre-registered gate reads sub-0.30 buys CLOSED: a BUY lot
+        counts only once its own shares are fully sold (FIFO); pyramids,
+        partial exits and above-threshold buys never count. The note
+        carries the average realized % over the closed lots."""
+        a = _arm(db_session, "shadow_ml_veto_off")
+        t1 = T0 + timedelta(days=1)
+        # LOW: BUY lot closed by a same-size SELL (-8%); the PYRAMID stays open.
+        _trade(db_session, a.id, "LOW", "BUY", price=100, shares=10,
+               signal_factors={"ml_confidence": 0.2}, executed_at=t1)
+        _trade(db_session, a.id, "LOW", "PYRAMID", price=104, shares=5,
+               executed_at=t1 + timedelta(days=1))
+        _trade(db_session, a.id, "LOW", "SELL", price=92, shares=10,
+               executed_at=t1 + timedelta(days=5))
+        # OPEN: partial sell only — lot still open, must not count.
+        _trade(db_session, a.id, "OPEN", "BUY", price=50, shares=10,
+               signal_factors={"ml_confidence": 0.1}, executed_at=t1)
+        _trade(db_session, a.id, "OPEN", "SELL", price=55, shares=4,
+               executed_at=t1 + timedelta(days=3))
+        # HIGH: closed, but above the veto threshold — not the arm's cohort.
+        _trade(db_session, a.id, "HIGH", "BUY", price=20, shares=10,
+               signal_factors={"ml_confidence": 0.4}, executed_at=t1)
+        _trade(db_session, a.id, "HIGH", "SELL", price=10, shares=10,
+               executed_at=t1 + timedelta(days=2))
+        out = _call(db_session)
+        m = _metric(out["arms"][0], "sub-0.30-confidence buys closed")
+        assert (m["n"], m["target"]) == (1, 5)
+        assert m["note"] == "avg -8.0% per closed lot"
+        # 'taken' still counts every sub-0.30 BUY (LOW + OPEN), no note.
+        assert _metric(out["arms"][0], "sub-0.30-confidence buys taken")["n"] == 2
+
+    def test_ml_veto_off_closed_note_absent_with_no_closed_lots(self, db_session):
+        a = _arm(db_session, "shadow_ml_veto_off")
+        _trade(db_session, a.id, "X", "BUY", signal_factors={"ml_confidence": 0.2})
+        m = _metric(_call(db_session)["arms"][0], "sub-0.30-confidence buys closed")
+        assert m["n"] == 0 and m["note"] is None
+
     def test_cs_window14_counts_widened_band_buys(self, db_session):
         a = _arm(db_session, "shadow_cs_window14")
         _trade(db_session, a.id, "A8", "BUY",

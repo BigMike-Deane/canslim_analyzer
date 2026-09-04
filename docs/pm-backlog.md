@@ -659,7 +659,10 @@ owner direction)
   progress now on the ABEval Gate Progress card.
 - ~mid-Sept: exit-decision stop-loss re-check when owner stop-loss n>=5
   (Aug-20: n=3, avg -8.23% vs -10 bar; on the Gate Progress card).
-- ~Sept: Improving Radar out-of-sample re-validation.
+- CLOSED Sep-4: Improving Radar out-of-sample re-validation — edge did
+  NOT hold (Jul-22..Aug-21: rising sub-55 +0.7% vs static +2.3%, win
+  46% vs 49%; in-sample halves replicated). Panel marked experimental
+  per the pre-registered rule; no removal without owner call.
 - ~Nov: CS confidence v2 recalibration re-check at ~200 outcomes
   (post-Aug-19 rows only; PASS = tiers monotonic + VHIGH >=55% win).
 - CLOSED Aug-6: H-fix A/B (KEEP, above). CLOSED Aug-3: exit-recon poller

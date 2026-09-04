@@ -222,11 +222,12 @@ function CoiledSpringSection({ cs }) {
   )
 }
 
-// Improving Radar — score-velocity discovery. Backed by the 2026-07-21
-// event study on point-in-time StockScore history: sub-65 stocks with a
-// fast-rising score lead their static peers by ~1.1pp over the next 14d,
-// while FAST risers already at 75+ went negative (extension, not
-// emergence) — hence the separate chase-risk block.
+// Improving Radar — score-velocity discovery. The 2026-07-21 event study
+// found sub-65 fast risers leading static peers by ~1.1pp over 14d; the
+// pre-registered 2026-09-04 out-of-sample re-validation (Jul-22..Aug-21,
+// ~79k events) found NO such edge (rising +0.7% vs static +2.3% avg, win
+// 46% vs 49%). Per that rule the panel is EXPERIMENTAL: a browse lens
+// with no claimed edge. The 75+ chase-risk block held (band negative).
 function ImprovingRadarSection({ radar }) {
   if (!radar) return null
   const rising = radar.radar || []
@@ -282,8 +283,8 @@ function ImprovingRadarSection({ radar }) {
         }
       >
       <div className="text-[10px] text-dark-400 mb-2"
-           title="Event-study backed: these beat static peers by ~1-2pp over the next 2-4 weeks. They are NOT a candidate pipeline — fast risers reach the 72+ buy bar LESS often than stable near-bar names (17% vs 29% within 30d); scores mean-revert even while prices run.">
-        Score momentum igniting under the buy bar — historically outperforms for 2–4 weeks. Momentum lens, not a candidate pipeline.
+           title="Sep-4 out-of-sample re-validation (Jul-22..Aug-21, ~79k events) found no edge: rising sub-55 names matched or trailed static peers (+0.7% vs +2.3% avg, 46% vs 49% win). The Jul-21 in-sample edge did not hold. Not a candidate pipeline — fast risers reach the 72+ buy bar LESS often than stable near-bar names (17% vs 29% within 30d).">
+        <span className="text-amber-300/90">Experimental</span> — score momentum under the buy bar. Out-of-sample re-check (Sep-4) found no edge; browse lens only.
       </div>
       {rising.length === 0 ? (
         <EmptyState bare compact message="No fast risers under the bar right now" />
