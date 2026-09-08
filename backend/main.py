@@ -4168,6 +4168,35 @@ async def get_ai_portfolio_edge_reconciliation(
 _WINDOW_TO_DAYS = {"1d": 1, "7d": 7, "30d": 30}
 
 
+def _window_anchor_snapshot(db, user_id: int, window_days: int):
+    """Latest snapshot at or before the END of (today - window_days): the
+    book's value as of that day's close, carrying back over weekends and
+    holidays. 1 day => previous trading day's close.
+
+    Single source of the window anchor, shared by /api/ai-portfolio/
+    window-returns (headline + per-position %), the AI Portfolio chart
+    (mirrors this rule client-side) and the Command Center 30d sparkline,
+    so every 1D/7D/30D number on the site measures from the same snapshot.
+    Returns None when the window predates the first snapshot.
+    """
+    from sqlalchemy import or_
+    window_start_date = date.today() - timedelta(days=window_days)
+    window_end_dt = datetime.combine(
+        window_start_date + timedelta(days=1), datetime.min.time()
+    ).replace(tzinfo=timezone.utc)
+    return db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.user_id == user_id,
+        or_(
+            AIPortfolioSnapshot.timestamp < window_end_dt,
+            AIPortfolioSnapshot.date <= window_start_date,
+        ),
+    ).order_by(
+        AIPortfolioSnapshot.timestamp.desc().nullslast(),
+        AIPortfolioSnapshot.date.desc(),
+    ).first()
+
+
+
 @app.get("/api/ai-portfolio/window-returns")
 async def get_ai_portfolio_window_returns(
     window: str = Query("all", pattern="^(1d|7d|30d|all)$"),
@@ -4216,24 +4245,13 @@ async def get_ai_portfolio_window_returns(
         # book's value as of that day's close. Same day the per-position
         # path prices with get_price_on_date (close ON window_start_date,
         # carrying back over weekends/holidays), and the anchor the
-        # Performance chart draws from. 1d => previous trading day's close.
+        # Performance chart and the Command Center sparkline draw from.
+        # 1d => previous trading day's close.
         #
         # 2026-09-08: was "strictly before window_start_date", which put 1D
         # on the close TWO sessions back (Tuesday's 1D = since Friday), so
         # the headline 1D and the chart disagreed in sign on ordinary days.
-        window_end_dt = dt.combine(
-            window_start_date + timedelta(days=1), dt.min.time()
-        ).replace(tzinfo=timezone.utc)
-        anchor_snapshot = db.query(AIPortfolioSnapshot).filter(
-            AIPortfolioSnapshot.user_id == current_user.id,
-            or_(
-                AIPortfolioSnapshot.timestamp < window_end_dt,
-                AIPortfolioSnapshot.date <= window_start_date,
-            ),
-        ).order_by(
-            AIPortfolioSnapshot.timestamp.desc().nullslast(),
-            AIPortfolioSnapshot.date.desc(),
-        ).first()
+        anchor_snapshot = _window_anchor_snapshot(db, current_user.id, window_days)
         if anchor_snapshot is None:
             # Window predates portfolio inception — fall back to earliest snap
             # (degrades gracefully to "since inception" for short histories)
@@ -6675,12 +6693,32 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
     }
 
     # --- 3. Performance sparkline (last 30 days) ---
-    from datetime import timedelta as td
-    sparkline_cutoff = datetime.now(timezone.utc) - td(days=30)
-    snapshots = db.query(AIPortfolioSnapshot).filter(
+    from datetime import timedelta as td  # used further down in this handler
+    # First point = the 30D window anchor (last snapshot at or before the
+    # close of today - 30d), the same snapshot /api/ai-portfolio/
+    # window-returns?window=30d and the AI Portfolio chart measure from, so
+    # the 30d % the Command Center derives from first/last point agrees
+    # with the AI Portfolio 30D slicer.
+    #
+    # 2026-09-08: was a rolling now - 30d wall-clock cutoff whose first
+    # point skipped weekends/holidays -- Command Center read -0.2% (from
+    # Mon Aug-10 close) while AI Portfolio read +1.5% (Fri Aug-7 close) on
+    # the same book. The window predating inception keeps every snapshot,
+    # matching the endpoint's earliest-snapshot fallback.
+    _anchor = _window_anchor_snapshot(db, current_user.id, 30)
+    _anchor_day = None
+    if _anchor is not None:
+        _anchor_day = _anchor.timestamp.date() if _anchor.timestamp else _anchor.date
+    _spark_q = db.query(AIPortfolioSnapshot).filter(
         AIPortfolioSnapshot.user_id == current_user.id,
-        AIPortfolioSnapshot.timestamp >= sparkline_cutoff
-    ).order_by(AIPortfolioSnapshot.timestamp).all()
+    )
+    if _anchor_day is not None:
+        _spark_q = _spark_q.filter(
+            AIPortfolioSnapshot.timestamp >= datetime.combine(
+                _anchor_day, datetime.min.time()
+            ).replace(tzinfo=timezone.utc)
+        )
+    snapshots = _spark_q.order_by(AIPortfolioSnapshot.timestamp).all()
 
     # Deduplicate to 1 per day for sparkline
     daily_values = {}

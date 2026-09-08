@@ -336,3 +336,48 @@ class TestWindowReturnsAnchorIsWindowStartClose:
         _seed_snapshot(day_offset=0, total_value=11000.0)
         r = client.get("/api/ai-portfolio/window-returns?window=7d")
         assert r.json()["portfolio"]["start_value"] == 10000.0
+
+
+class TestCommandCenterSparklineSharesTheWindowAnchor:
+    """(2026-09-08) The Command Center 30d sparkline -- and the 30d % the UI
+    derives from its first/last point -- starts at the same snapshot
+    /window-returns?window=30d anchors on: the last snapshot at or before
+    the close of (today - 30d). Was a rolling now-30d wall-clock cutoff
+    whose first point skipped weekends/holidays, so the Command Center read
+    -0.2% while the AI Portfolio 30D slicer read +1.5% on the same book."""
+
+    def test_first_point_is_the_window_start_close(self):
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=11000.0)
+        _wipe()
+        _seed_snapshot(day_offset=32, total_value=9000.0)
+        _seed_snapshot(day_offset=31, total_value=9500.0)
+        _seed_snapshot(day_offset=30, total_value=10000.0)   # close 30 days ago
+        _seed_snapshot(day_offset=28, total_value=10400.0)
+        _seed_snapshot(day_offset=0, total_value=11000.0)
+        r = client.get("/api/command-center")
+        assert r.status_code == 200
+        spark = r.json()["sparkline"]
+        assert [pt["value"] for pt in spark] == [10000.0, 10400.0, 11000.0]
+        wr = client.get("/api/ai-portfolio/window-returns?window=30d").json()
+        assert wr["portfolio"]["start_value"] == spark[0]["value"]
+
+    def test_weekend_gap_carries_back_to_last_close(self):
+        # Nothing ON the window-start date (weekend/holiday): the first point
+        # is the last close BEFORE it -- never the first session after it.
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=11000.0)
+        _wipe()
+        _seed_snapshot(day_offset=33, total_value=10000.0)   # last close before the gap
+        _seed_snapshot(day_offset=29, total_value=10500.0)   # first session after
+        _seed_snapshot(day_offset=0, total_value=11000.0)
+        spark = client.get("/api/command-center").json()["sparkline"]
+        assert [pt["value"] for pt in spark] == [10000.0, 10500.0, 11000.0]
+        wr = client.get("/api/ai-portfolio/window-returns?window=30d").json()
+        assert wr["portfolio"]["start_value"] == 10000.0
+
+    def test_window_before_inception_keeps_every_snapshot(self):
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=11000.0)
+        _wipe()
+        _seed_snapshot(day_offset=5, total_value=10000.0)
+        _seed_snapshot(day_offset=0, total_value=11000.0)
+        spark = client.get("/api/command-center").json()["sparkline"]
+        assert [pt["value"] for pt in spark] == [10000.0, 11000.0]
