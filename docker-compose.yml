@@ -99,7 +99,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-      - /opt/rgr-planner:/srv/rgr:ro
     depends_on:
       - canslim
     restart: unless-stopped

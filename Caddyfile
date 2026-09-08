@@ -28,20 +28,3 @@ canslim.duckdns.org {
 	}
 	reverse_proxy canslim:8001
 }
-
-# RGR Planner: the family's floor-plan app. One static file in /opt/rgr-planner
-# (mounted read-only into this container). Its own header block: the app uses
-# inline scripts, Google Fonts and the pdf.js library from cdnjs, which the
-# CANSLIM policy above would block. no-cache on the page so updates land at once.
-rgrplanner.duckdns.org {
-	root * /srv/rgr
-	encode gzip
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://cdnjs.cloudflare.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
-		Cache-Control "no-cache"
-	}
-	file_server
-}
