@@ -41,6 +41,12 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
+    # Memory ceiling (2026-09-08): uvicorn leaked to 2.87 GB and the kernel
+    # OOM-killed it host-wide (postgres was an eligible victim). A cgroup
+    # limit makes the kernel kill THIS container only and stamps OOMKilled
+    # in `docker inspect`. backend/process_health.py alerts at 1800 MB,
+    # well before this line. Host is 3.7 GB, no swap.
+    mem_limit: 2560m
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 30s

@@ -183,6 +183,16 @@ async def lifespan(app: FastAPI):
     logger.info("Starting CANSLIM Analyzer API...")
     init_db()
 
+    # Process health: restore the RSS history and classify this start.
+    # An unclean restart (no clean-shutdown flag, same build) raises an ops
+    # alert -- the 2026-09-08 OOM kill went completely unnoticed.
+    try:
+        from backend.process_health import restore_history, check_restart
+        restore_history()
+        check_restart()
+    except Exception as e:
+        logger.warning(f"process_health startup check failed: {e}")
+
     # Start backtest queue worker
     from backend.backtest_queue import backtest_queue
     backtest_queue.start()
@@ -242,6 +252,13 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(auto_start_scanner())
 
     yield
+
+    # Shutdown: flag first -- its absence at the next start is the crash signal
+    try:
+        from backend.process_health import mark_clean_shutdown
+        mark_clean_shutdown()
+    except Exception as e:
+        logger.warning(f"process_health clean-shutdown mark failed: {e}")
 
     # Shutdown: stop queue worker
     backtest_queue.stop()
@@ -895,6 +912,7 @@ async def get_system_health(current_user: User = Depends(get_admin_user), db: Se
     frontend consumer (SystemHealth page) is already in the admin sidebar."""
     from backend.scheduler import get_system_health, get_scan_status
     from backend.backup import get_backup_status
+    from backend.process_health import get_process_health
 
     # Database health
     try:
@@ -956,6 +974,7 @@ async def get_system_health(current_user: User = Depends(get_admin_user), db: Se
         "redis": {"status": redis_status, **redis_info},
         "scanner": get_scan_status(),
         "scheduler": get_system_health(),
+        "process": get_process_health(),
         "fmp_api": fmp_stats,
         "backups": get_backup_status(),
         "ai_portfolio": {

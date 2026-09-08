@@ -126,6 +126,19 @@ def _get_us_market_holidays() -> set:
 _US_MARKET_HOLIDAYS = _get_us_market_holidays()
 
 
+def is_trading_day(now: Optional[datetime] = None) -> bool:
+    """True on NYSE session days (Mon-Fri, not a holiday) -- the calendar
+    half of is_market_open() without the 9:30-16:00 clock. ``now`` must be
+    an Eastern-time datetime (defaults to the current ET time); the
+    scheduler uses it to throttle weekend/holiday scans to one per day."""
+    if now is None:
+        now = datetime.now(EASTERN_TZ)
+    # Weekday check: Monday=0, Friday=4, Saturday=5, Sunday=6
+    if now.weekday() > 4:
+        return False
+    return now.date() not in _US_MARKET_HOLIDAYS
+
+
 def is_market_open() -> bool:
     """
     Check if US stock market is currently open.
@@ -138,12 +151,8 @@ def is_market_open() -> bool:
     # Use zoneinfo for proper DST handling (EST/EDT automatic)
     now = datetime.now(EASTERN_TZ)
 
-    # Weekday check: Monday=0, Friday=4, Saturday=5, Sunday=6
-    if now.weekday() > 4:
-        return False
-
-    # Holiday check
-    if now.date() in _US_MARKET_HOLIDAYS:
+    # Weekend / holiday check
+    if not is_trading_day(now):
         return False
 
     # Market hours: 9:30 AM - 4:00 PM Eastern

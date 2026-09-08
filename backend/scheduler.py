@@ -9,6 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from collections import deque
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 import logging
 import os
@@ -58,6 +59,7 @@ _scan_config = {
     "phase_current": 0,  # Items processed in current phase (e.g. 300)
     "phase_total": 0,  # Total items in current phase (e.g. 1426)
     "phase_label": None,  # Friendly label like "Fetching P1 data"
+    "last_skip": None,  # {"at", "reason"} when the interval job declined to scan (non-trading day)
 }
 
 # System health tracking for error alerting
@@ -824,11 +826,68 @@ def _check_component_wipe(scan_cutoff: datetime) -> None:
         logger.debug(f"component wipe check failed: {e}")
 
 
-def run_continuous_scan():
-    """Execute a scan of the configured stock universe"""
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def _should_skip_non_trading_day_scan(now_utc: datetime, last_scan_iso, is_trading_day_fn):
+    """Return a skip reason on weekends/holidays once that (Eastern) calendar
+    day already has a successful scan; None means scan.
+
+    Why: over Labor Day weekend 2026 (Sep 5-7) the 90-min job ran 70 full
+    scans that each rewrote an identical ~4k-row score set -- zero new
+    information, ~200k wasted stock_scores rows, and each cycle costs RSS
+    while the memory leak is open. One refresh per non-trading day keeps
+    freshness chips honest and still picks up vendor data corrections.
+    Trading days are untouched (overnight cycles feed the pre-market read).
+    """
+    now_et = now_utc.astimezone(_EASTERN)
+    if is_trading_day_fn(now_et):
+        return None
+    if not last_scan_iso:
+        return None
+    try:
+        last = datetime.fromisoformat(str(last_scan_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    last_et = last.astimezone(_EASTERN)
+    if last_et.date() == now_et.date():
+        return (f"non-trading day ({now_et.strftime('%a %Y-%m-%d')} ET) already scanned "
+                f"at {last_et.strftime('%H:%M')} ET -- one refresh per weekend/holiday day")
+    return None
+
+
+def _non_trading_day_skip_reason():
+    try:
+        from backend.ai_trader import is_trading_day
+        with _state_lock:
+            last = _system_health.get("last_successful_scan")
+        return _should_skip_non_trading_day_scan(datetime.now(timezone.utc), last, is_trading_day)
+    except Exception as e:  # never let the throttle block a scan
+        logger.debug(f"non-trading-day check failed: {e}")
+        return None
+
+
+def run_continuous_scan(force: bool = False):
+    """Execute a scan of the configured stock universe.
+
+    ``force`` bypasses the non-trading-day throttle (boot scan, manual
+    trigger); the 90-min interval job calls with the default."""
     from backend.database import SessionLocal, Stock
     from sp500_tickers import get_sp500_tickers, get_russell2000_tickers, get_all_tickers
     import time
+
+    if not force:
+        skip_reason = _non_trading_day_skip_reason()
+        if skip_reason:
+            logger.info(f"Scan skipped: {skip_reason}")
+            with _state_lock:
+                _scan_config["last_skip"] = {
+                    "at": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    "reason": skip_reason,
+                }
+            return
 
     with _state_lock:
         if _scan_config["is_scanning"]:
@@ -1670,6 +1729,14 @@ def run_continuous_scan():
                     f"(fetch={fetch_time:.0f}s save={save_time:.0f}s post={post_scan_time:.0f}s)")
         _record_success("scan")
 
+        # Phase 7: process memory sample. gc + RSS after every scan, one-shot
+        # ops alert past RSS_ALERT_MB (2026-09-08 OOM kill -- process_health.py).
+        try:
+            from backend.process_health import record_scan_sample
+            record_scan_sample()
+        except Exception as e:
+            logger.debug(f"process health sample failed: {e}")
+
     except Exception as e:
         logger.error(f"Scan error: {e}")
         _record_failure("scan", str(e))
@@ -1895,9 +1962,10 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
 
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
-    # Run first scan immediately
+    # Run first scan immediately (forced: a boot/manual scan always runs,
+    # even on a weekend -- the throttle is for the interval job only)
     from threading import Thread
-    Thread(target=run_continuous_scan).start()
+    Thread(target=run_continuous_scan, kwargs={"force": True}).start()
 
     return get_scan_status()
 

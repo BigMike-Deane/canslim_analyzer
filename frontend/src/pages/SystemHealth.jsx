@@ -45,6 +45,65 @@ function TimeAgo({ iso }) {
   return <span className="text-dark-400">{Math.round(hrs / 24)}d ago</span>
 }
 
+// Process memory: per-scan RSS trend + restart classification from
+// backend/process_health.py. Added after the 2026-09-08 OOM kill that no
+// surface showed -- the restart policy made it invisible.
+function Sparkline({ points, alert }) {
+  if (!points || points.length < 2) return null
+  const w = 180, h = 36
+  const vals = points.map(p => p.rss_mb ?? 0)
+  const max = Math.max(...vals, alert || 0) * 1.05 || 1
+  const step = w / (points.length - 1)
+  const y = v => (h - (v / max) * h).toFixed(1)
+  const d = points.map((p, i) => `${(i * step).toFixed(1)},${y(p.rss_mb ?? 0)}`).join(' ')
+  return (
+    <svg width={w} height={h} className="block overflow-visible" aria-label="RSS trend">
+      {alert ? <line x1="0" x2={w} y1={y(alert)} y2={y(alert)} stroke="currentColor" strokeOpacity="0.35" strokeDasharray="3 3" className="text-yellow-400" /> : null}
+      <polyline fill="none" stroke="currentColor" strokeWidth="1.5" points={d} className="text-amber-300" />
+    </svg>
+  )
+}
+
+function ProcessCard({ proc }) {
+  if (!proc) return null
+  const rss = proc.rss_mb
+  const status = rss == null ? 'unknown'
+    : rss >= proc.alert_mb ? 'high'
+    : rss >= proc.alert_mb * 0.75 ? 'degraded'
+    : 'healthy'
+  const rate = proc.growth_mb_per_hour
+  const eta = rate > 0 && proc.limit_mb && rss != null ? Math.round((proc.limit_mb - rss) / rate) : null
+  const kindLabel = { first: 'first start', deploy: 'deploy', clean: 'clean restart', unclean: 'UNCLEAN restart' }[proc.start_kind] || proc.start_kind || '-'
+  // Only this process's samples: a restart resets the curve, so mixing
+  // processes would draw a false cliff.
+  const mine = (proc.samples || []).filter(s => s.proc === proc.started_at)
+  const prev = proc.previous
+  return (
+    <HealthCard title="Process Memory" status={status}>
+      <div className="flex flex-wrap gap-x-8 gap-y-1">
+        <Stat
+          label="RSS"
+          value={rss != null ? <span className="font-data">{rss.toLocaleString()} MB</span> : '-'}
+          sub={`peak ${proc.hwm_mb ?? '-'} · alert ${proc.alert_mb}${proc.limit_mb ? ` · limit ${proc.limit_mb}` : ''}`}
+        />
+        <Stat
+          label="Trend"
+          value={<span className="font-data">{rate == null ? 'n/a' : `${rate > 0 ? '+' : ''}${rate} MB/h`}</span>}
+          sub={eta != null ? `~${eta}h to limit · ${mine.length} samples` : `${mine.length} samples (24h fit)`}
+        />
+        <Stat
+          label="Uptime"
+          value={proc.uptime_hours != null ? `${proc.uptime_hours.toFixed(1)}h` : '-'}
+          sub={prev?.alive_hours != null
+            ? `${kindLabel} · prev alive ${prev.alive_hours}h${prev.last_rss_mb ? ` @ ${prev.last_rss_mb} MB` : ''}`
+            : kindLabel}
+        />
+      </div>
+      <div className="mt-2"><Sparkline points={mine} alert={proc.alert_mb} /></div>
+    </HealthCard>
+  )
+}
+
 export default function SystemHealth() {
   const [data, setData] = useState(null)
   const [health, setHealth] = useState(null)  // /health: running build/version stamp
@@ -153,7 +212,7 @@ export default function SystemHealth() {
       </div>
 
       {/* Running build — confirms which deploy is live (see backend/build_info.py) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <HealthCard title="App Build" status={health?.status}>
           <div className="flex flex-wrap gap-x-10 gap-y-1">
             <Stat label="Build" value={<span className="font-data">{health?.build || 'unknown'}</span>} sub="deploy stamp" />
@@ -182,6 +241,8 @@ export default function SystemHealth() {
             <Stat label="Active model" value="none" />
           )}
         </HealthCard>
+
+        <ProcessCard proc={data?.process} />
       </div>
 
       {/* Status Overview */}
