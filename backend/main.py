@@ -4179,8 +4179,8 @@ async def get_ai_portfolio_window_returns(
     Windows: ``1d`` / ``7d`` / ``30d`` / ``all`` (default).
 
     - Portfolio: derived from ``AIPortfolioSnapshot`` history. For 1d/7d/30d,
-      anchors to the latest snapshot strictly *before* the window-start date
-      (so the window measures change since end-of-prior-day). For ``all``,
+      anchors to the latest snapshot at or before the *close* of the window-start date
+      (the book's value at that day's close; 1d = previous trading day's close). For ``all``,
       uses the earliest snapshot (or starting cash if none exist yet).
     - Per-position: window-start price comes from
       ``HistoricalDataProvider.get_price_on_date`` (which carries back to the
@@ -4212,17 +4212,23 @@ async def get_ai_portfolio_window_returns(
             AIPortfolioSnapshot.date.asc(),
         ).first()
     else:
-        # Latest snapshot strictly *before* window_start_date — measures
-        # change since end-of-prior-period. Handles same-day positions
-        # correctly (1d = since previous trading day's close).
-        window_start_dt = dt.combine(
-            window_start_date, dt.min.time()
+        # Latest snapshot at or before the END of window_start_date -- the
+        # book's value as of that day's close. Same day the per-position
+        # path prices with get_price_on_date (close ON window_start_date,
+        # carrying back over weekends/holidays), and the anchor the
+        # Performance chart draws from. 1d => previous trading day's close.
+        #
+        # 2026-09-08: was "strictly before window_start_date", which put 1D
+        # on the close TWO sessions back (Tuesday's 1D = since Friday), so
+        # the headline 1D and the chart disagreed in sign on ordinary days.
+        window_end_dt = dt.combine(
+            window_start_date + timedelta(days=1), dt.min.time()
         ).replace(tzinfo=timezone.utc)
         anchor_snapshot = db.query(AIPortfolioSnapshot).filter(
             AIPortfolioSnapshot.user_id == current_user.id,
             or_(
-                AIPortfolioSnapshot.timestamp < window_start_dt,
-                AIPortfolioSnapshot.date < window_start_date,
+                AIPortfolioSnapshot.timestamp < window_end_dt,
+                AIPortfolioSnapshot.date <= window_start_date,
             ),
         ).order_by(
             AIPortfolioSnapshot.timestamp.desc().nullslast(),

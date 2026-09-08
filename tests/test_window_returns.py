@@ -4,7 +4,7 @@ Coverage for /api/ai-portfolio/window-returns (Time-Range Returns slicer).
 Endpoint computes portfolio + per-position return % for 1D/7D/30D/All
 windows used by the AI Portfolio page slicer. Tests lock down:
 
-  - Portfolio anchor selection (latest snapshot strictly before window start)
+  - Portfolio anchor selection (latest snapshot at or before the close of window start)
   - Per-position fallback to cost_basis when position opened mid-window
   - Per-position historical price path (mocked HistoricalDataProvider)
   - "all" window matches current lifetime cost_basis behavior
@@ -199,8 +199,9 @@ class TestWindowReturnsWithHistorical:
 
         assert r.status_code == 200
         body = r.json()
-        # Portfolio: anchor is the snapshot 8d ago ($10500) — strictly
-        # before window_start (7d ago). (11000-10500)/10500 ≈ 4.76%
+        # Portfolio: anchor is the latest snapshot at or before the close of
+        # window_start (7d ago); none seeded on day 7, so the 8d-ago one
+        # ($10500) carries forward. (11000-10500)/10500 ≈ 4.76%
         assert body["window"] == "7d"
         assert body["portfolio"]["start_value"] == 10500.0
         assert body["portfolio"]["return_pct"] == pytest.approx(4.76, abs=0.01)
@@ -297,3 +298,41 @@ class TestWindowReturnsAnchorFallback:
         # No pre-window snapshot exists → falls back to earliest snap
         assert body["portfolio"]["start_value"] == 10500.0
         assert body["portfolio"]["return_pct"] == pytest.approx(4.76, abs=0.01)
+
+
+class TestWindowReturnsAnchorIsWindowStartClose:
+    """(2026-09-08) Portfolio anchor = latest snapshot at or before the END
+    of window_start_date -- the book's value at that day's close, the same
+    day the per-position path prices with get_price_on_date. Previously
+    'strictly before', which anchored 1D on the close two sessions back and
+    made the headline 1D disagree in sign with the Performance chart."""
+
+    def test_1d_anchors_on_previous_days_last_snapshot(self):
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=11000.0)
+        _wipe()
+        _seed_snapshot(day_offset=2, total_value=10000.0)   # two sessions back
+        _seed_snapshot(day_offset=1, total_value=10500.0)   # yesterday's close
+        _seed_snapshot(day_offset=0, total_value=11000.0)
+        r = client.get("/api/ai-portfolio/window-returns?window=1d")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["portfolio"]["start_value"] == 10500.0
+        assert body["portfolio"]["return_pct"] == pytest.approx(4.76, abs=0.01)
+
+    def test_today_snapshots_never_anchor_1d(self):
+        # A gap-up opening print today must not become the 1D baseline.
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=11000.0)
+        _wipe()
+        _seed_snapshot(day_offset=1, total_value=10500.0)
+        _seed_snapshot(day_offset=0, total_value=12000.0)
+        r = client.get("/api/ai-portfolio/window-returns?window=1d")
+        assert r.json()["portfolio"]["start_value"] == 10500.0
+
+    def test_7d_anchors_on_day_seven_not_day_eight(self):
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=11000.0)
+        _wipe()
+        _seed_snapshot(day_offset=8, total_value=9000.0)
+        _seed_snapshot(day_offset=7, total_value=10000.0)   # close 7 days ago
+        _seed_snapshot(day_offset=0, total_value=11000.0)
+        r = client.get("/api/ai-portfolio/window-returns?window=7d")
+        assert r.json()["portfolio"]["start_value"] == 10000.0

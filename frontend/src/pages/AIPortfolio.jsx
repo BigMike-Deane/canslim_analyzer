@@ -65,6 +65,11 @@ function BootAnatomy({ cx, cy, index, lastIndex, fill }) {
   return <g />
 }
 
+// Window length in days per slicer value — mirrors _WINDOW_TO_DAYS in
+// backend/main.py so the chart and /window-returns anchor on the same day.
+const WINDOW_DAYS = { '1d': 1, '7d': 7, '30d': 30 }
+const utcDayKey = (d) => new Date(d.timestamp || d.date).toISOString().slice(0, 10)
+
 function PerformanceChart({ history, startingCash, timeRange }) {
   const { user } = useAuth()
   const isBoot = user?.id === BOOT_USER_ID
@@ -83,13 +88,40 @@ function PerformanceChart({ history, startingCash, timeRange }) {
     let filtered = data.filter(d => d.timestamp || d.date)
     filtered.sort((a, b) => new Date(a.timestamp || a.date) - new Date(b.timestamp || b.date))
 
-    if (range !== 'all') {
-      const now = new Date()
-      const cutoff = new Date()
-      if (range === '1d') cutoff.setHours(now.getHours() - 24)
-      else if (range === '7d') cutoff.setDate(now.getDate() - 7)
-      else if (range === '30d') cutoff.setDate(now.getDate() - 30)
-      filtered = filtered.filter(d => new Date(d.timestamp || d.date) >= cutoff)
+    // Window = the ANCHOR forward, where the anchor is the last snapshot at
+    // or before the close of (today − N days) in UTC dates — the same rule
+    // /api/ai-portfolio/window-returns uses for the headline number and the
+    // per-position returns. The first point is therefore the previous close
+    // (1D) or the close N days ago, so the line's colour (last vs first) and
+    // the slicer's % always agree in sign.
+    //
+    // Was a rolling wall-clock cutoff (now − 24h / 7d / 30d), which anchored
+    // 1D on whatever snapshot sat 24h back — mid-session yesterday, or
+    // today's opening print after a long weekend — so the chart drew red
+    // while the slicer read +0.22% (2026-09-08).
+    if (range !== 'all' && filtered.length > 0) {
+      const start = new Date()
+      start.setUTCDate(start.getUTCDate() - (WINDOW_DAYS[range] ?? 0))
+      const startKey = start.toISOString().slice(0, 10)
+      let anchorIdx = -1
+      for (let i = 0; i < filtered.length; i++) {
+        if (utcDayKey(filtered[i]) <= startKey) anchorIdx = i
+        else break
+      }
+      if (anchorIdx >= 0) {
+        // Pre-market the window is just the anchor point. Show the anchor's
+        // whole session instead of a one-point chart (the slicer reads 0.00%
+        // then anyway); the view snaps to [prev close, today…] on the first
+        // print of the day.
+        if (anchorIdx === filtered.length - 1) {
+          const anchorDay = utcDayKey(filtered[anchorIdx])
+          while (anchorIdx > 0 && utcDayKey(filtered[anchorIdx - 1]) === anchorDay) anchorIdx--
+        }
+        filtered = filtered.slice(anchorIdx)
+      }
+      // No snapshot on/before the window start ⇒ the window predates
+      // inception; keep everything (the endpoint likewise falls back to the
+      // earliest snapshot).
     }
 
     // Trim leading "flat startingCash" snapshots — the portfolio sits at
@@ -224,11 +256,15 @@ function PerformanceChart({ history, startingCash, timeRange }) {
   // X-axis tick formatter is range-aware: intraday view shows time only;
   // multi-day views show month+day. Same CST timezone as the tooltip so the
   // axis ticks and the hover label agree.
-  const formatXTick = (ts) => {
+  const lastDayKey = filteredHistory.length ? utcDayKey(filteredHistory[filteredHistory.length - 1]) : null
+  const formatXTick = (ts, index) => {
     if (!ts) return ''
     const d = new Date(ts)
     if (isNaN(d)) return ''
     if (timeRange === '1d') {
+      // The anchor point is the previous session's close — a clock time from
+      // another day would read as a gap in today's tape.
+      if (index === 0 && lastDayKey && d.toISOString().slice(0, 10) !== lastDayKey) return 'prev close'
       return d.toLocaleTimeString('en-US', {
         timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true,
       })
