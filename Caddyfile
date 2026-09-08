@@ -28,3 +28,11 @@ canslim.duckdns.org {
 	}
 	reverse_proxy canslim:8001
 }
+
+# rgrplanner.duckdns.org is a separate project (RGR Planner, /opt/rgr-planner)
+# with its own container and certificate on 8443. This block only lets the
+# plain name work on 443: it forwards to that container over the public name.
+# Nothing else here is shared with it.
+rgrplanner.duckdns.org {
+	reverse_proxy https://rgrplanner.duckdns.org:8443
+}
