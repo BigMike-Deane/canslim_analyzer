@@ -466,7 +466,7 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
         </div>
       )}
       <div className={`text-sm flex items-center gap-1.5 font-data ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-        <span>{isPositive ? '+' : ''}{formatCurrency(Math.abs(returnDollar ?? 0))}</span>
+        <span>{isPositive ? '+' : '-'}{formatCurrency(Math.abs(returnDollar ?? 0))}</span>
         <span className="text-dark-500">({formatPercent(returnPct, true)})</span>
         <span className="text-[10px] uppercase tracking-wider text-dark-500 ml-1">{windowLabel}</span>
       </div>
