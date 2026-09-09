@@ -6,6 +6,7 @@ from collections import deque
 from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import Optional
 
+import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -2036,3 +2037,160 @@ async def delete_program_milestone(
     db.commit()
     return {"deleted": milestone_id}
 
+
+@router.get("/user-portfolios")
+async def get_user_portfolios(
+    include_test: bool = Query(False, description="Include accounts flagged as test"),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Per-user portfolio scoreboard for the admin dashboard.
+
+    ⚑ Reports ALPHA VS SPY OVER EACH USER'S OWN WINDOW, not raw return, and
+    that is the whole point of the endpoint. Users started on different dates,
+    and launch vintage on this strategy is worth roughly 7pp/month of sigma --
+    the confound behind three separate false cohort reads (see the vintage
+    ensemble work). Ranking accounts by raw return would manufacture that
+    confound as a headline. Each user is therefore measured against SPY over
+    exactly the span they have been running.
+
+    Test accounts are EXCLUDED by default. They live in the same tables as
+    real ones, and unfiltered aggregates over these tables have already leaked
+    twice (the gate-card u2 leak, and a stop-loss count that was 7 rows when
+    only 2 belonged to the owner).
+
+    Small-sample honesty: `low_sample` is set when a book has fewer than 10
+    closed trades or under 30 days of history. The UI should mute those rows
+    rather than let a 3-week account with 5 trades top the table.
+    """
+    from backend.database import (
+        AIPortfolioSnapshot, AIPortfolioPosition, MarketSnapshot,
+    )
+    from backend.ai_trader import get_portfolio_value
+
+    # Token match, NOT substring: a bare "test" substring also matches a real
+    # surname like "Testa" and any address at a *test*.com domain, which would
+    # silently hide a genuine account from the scoreboard. Production's marker
+    # is a display name of the form "Mike (TEST)".
+    _TEST_TOKENS = {"test", "tests", "demo", "sandbox", "qa", "dummy"}
+    _TEST_DOMAINS = ("example.com", "test.local", "localhost", "invalid")
+
+    def _looks_like_test(u: User) -> bool:
+        name = (u.display_name or "").lower()
+        tokens = {t for t in re.split(r"[^a-z0-9]+", name) if t}
+        if tokens & _TEST_TOKENS:
+            return True
+        email = (u.email or "").lower()
+        return any(email.endswith("@" + dom) for dom in _TEST_DOMAINS)
+
+    # SPY series once, reused for every user's own window.
+    spy_rows = db.query(MarketSnapshot).filter(
+        MarketSnapshot.spy_price.isnot(None)
+    ).order_by(MarketSnapshot.date.asc()).all()
+    spy_by_date = {m.date: m.spy_price for m in spy_rows}
+    spy_dates = sorted(spy_by_date)
+    spy_latest = spy_by_date[spy_dates[-1]] if spy_dates else None
+
+    def _spy_on_or_before(day):
+        """Carry back over weekends/holidays, same convention as /history."""
+        if not spy_dates or day is None:
+            return None
+        earlier = [d for d in spy_dates if d <= day]
+        return spy_by_date[max(earlier)] if earlier else None
+
+    out = []
+    excluded_test = 0
+    for user in db.query(User).order_by(User.id).all():
+        is_test = _looks_like_test(user)
+        if is_test and not include_test:
+            excluded_test += 1
+            continue
+
+        config = db.query(AIPortfolioConfig).filter_by(user_id=user.id).first()
+        if config is None:
+            continue
+
+        first_snap = db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.user_id == user.id
+        ).order_by(
+            AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
+            AIPortfolioSnapshot.date.asc(),
+        ).first()
+
+        # Window start: first snapshot if there is one, else the first trade.
+        # Falls back to starting_cash so a freshly seeded book still renders.
+        start_value = first_snap.total_value if first_snap else config.starting_cash
+        start_day = None
+        if first_snap:
+            start_day = first_snap.date or (
+                first_snap.timestamp.date() if first_snap.timestamp else None)
+
+        trades = db.query(AIPortfolioTrade).filter(
+            AIPortfolioTrade.user_id == user.id
+        ).all()
+        sells = [t for t in trades if (t.action or "").upper() == "SELL"]
+        if start_day is None and trades:
+            executed = [t.executed_at for t in trades if t.executed_at]
+            if executed:
+                start_day = min(executed).date()
+
+        try:
+            live = get_portfolio_value(db, user_id=user.id)
+            end_value = live["total_value"]
+        except Exception:
+            end_value = None
+
+        ret_pct = None
+        if end_value is not None and start_value:
+            ret_pct = (end_value / start_value - 1.0) * 100
+
+        spy_start = _spy_on_or_before(start_day)
+        spy_pct = None
+        if spy_start and spy_latest:
+            spy_pct = (spy_latest / spy_start - 1.0) * 100
+
+        alpha_pp = None
+        if ret_pct is not None and spy_pct is not None:
+            alpha_pp = ret_pct - spy_pct
+
+        wins = [t for t in sells if (t.realized_gain or 0) > 0]
+        win_rate = round(len(wins) / len(sells) * 100, 1) if sells else None
+
+        days_active = None
+        if start_day:
+            days_active = (date_cls.today() - start_day).days
+
+        out.append({
+            "user_id": user.id,
+            "display_name": user.display_name or user.email,
+            "is_test": is_test,
+            "is_active": bool(config.is_active),
+            "strategy": getattr(config, "strategy", None),
+            "started_on": start_day.isoformat() if start_day else None,
+            "days_active": days_active,
+            "start_value": round(start_value, 2) if start_value else None,
+            "current_value": round(end_value, 2) if end_value is not None else None,
+            "return_pct": round(ret_pct, 2) if ret_pct is not None else None,
+            "spy_return_pct": round(spy_pct, 2) if spy_pct is not None else None,
+            # The number worth ranking on.
+            "alpha_pp": round(alpha_pp, 2) if alpha_pp is not None else None,
+            "open_positions": db.query(AIPortfolioPosition).filter_by(
+                user_id=user.id).count(),
+            "closed_trades": len(sells),
+            "win_rate_pct": win_rate,
+            "low_sample": bool(
+                len(sells) < 10 or (days_active is not None and days_active < 30)
+            ),
+        })
+
+    out.sort(key=lambda r: (r["alpha_pp"] is None, -(r["alpha_pp"] or 0)))
+    return {
+        "users": out,
+        "excluded_test_accounts": excluded_test,
+        "note": (
+            "Ranked by alpha vs SPY over each user's OWN window, never raw "
+            "return: accounts started on different dates and launch vintage "
+            "is worth ~7pp/month of sigma on this strategy. Rows flagged "
+            "low_sample (<10 closed trades or <30 days) are not comparable."
+        ),
+    }

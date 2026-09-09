@@ -649,6 +649,12 @@ export const api = {
   // Admin (user management)
   getUsers: () => request('/api/admin/users'),
 
+  // Per-user portfolio scoreboard. Ranked by alpha vs SPY over each
+  // account's own window -- see the endpoint docstring for why raw
+  // return would be misleading here.
+  getUserPortfolios: (includeTest = false) =>
+    request(`/api/admin/user-portfolios${includeTest ? '?include_test=true' : ''}`),
+
   createUser: async (userData) => {
     const result = await request('/api/admin/users', {
       method: 'POST',

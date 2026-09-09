@@ -17,6 +17,134 @@ function _formatScanDuration(startIso, endIso) {
 }
 import { useAuth } from '../auth'
 
+
+// ── Per-user portfolio scoreboard ────────────────────────────────────────
+// Ranked by ALPHA VS SPY OVER EACH USER'S OWN WINDOW, never raw return.
+// Accounts started on different dates and launch vintage is worth roughly
+// 7pp/month of sigma on this strategy -- the confound behind three separate
+// false cohort reads. A raw-return leaderboard would render that confound as
+// a headline; measuring each book against SPY over exactly the span it has
+// been running removes it.
+function UserPortfolioScoreboard() {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [showTest, setShowTest] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    api.getUserPortfolios(showTest)
+      .then(d => { if (alive) { setData(d); setError('') } })
+      .catch(e => { if (alive) setError(e?.message || 'failed to load') })
+    return () => { alive = false }
+  }, [showTest])
+
+  const pp = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)} pp`)
+  const pct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`)
+  const tone = (v) => (v == null ? 'text-dark-500' : v >= 0 ? 'text-emerald-400' : 'text-red-400')
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-sm font-semibold text-dark-100">Portfolios by user</h2>
+          <p className="text-[11px] text-dark-400 mt-0.5">
+            Alpha vs SPY over each account&rsquo;s own window — not raw return.
+          </p>
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px] text-dark-400 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showTest}
+            onChange={e => setShowTest(e.target.checked)}
+            className="accent-primary-500"
+          />
+          show test accounts
+        </label>
+      </div>
+
+      {error && <div className="text-xs text-red-400">{error}</div>}
+      {!data && !error && <Spinner />}
+
+      {data && (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-dark-500 text-left">
+                  <th className="py-1.5 pr-3 font-medium">Account</th>
+                  <th className="py-1.5 pr-3 font-medium">Since</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Value</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Return</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">SPY</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Alpha</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Closed</th>
+                  <th className="py-1.5 font-medium text-right">Win</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.users.map(u => (
+                  <tr
+                    key={u.user_id}
+                    className={`border-t border-dark-700/50 ${u.low_sample ? 'opacity-60' : ''}`}
+                  >
+                    <td className="py-1.5 pr-3">
+                      <span className="text-dark-100">{u.display_name}</span>
+                      {u.is_test && (
+                        <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400">
+                          test
+                        </span>
+                      )}
+                      {!u.is_active && (
+                        <span className="ml-1.5 text-[9px] text-dark-500">paused</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 text-[11px] text-dark-400 font-data whitespace-nowrap">
+                      {u.started_on || '—'}
+                      {u.days_active != null && (
+                        <span className="text-dark-500"> · {u.days_active}d</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-data text-dark-100">
+                      {u.current_value != null
+                        ? `$${u.current_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : '—'}
+                    </td>
+                    <td className={`py-1.5 pr-3 text-right font-data ${tone(u.return_pct)}`}>
+                      {pct(u.return_pct)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-data text-dark-400">
+                      {pct(u.spy_return_pct)}
+                    </td>
+                    <td className={`py-1.5 pr-3 text-right font-data font-semibold ${tone(u.alpha_pp)}`}>
+                      {pp(u.alpha_pp)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-data text-dark-300">
+                      {u.closed_trades}
+                    </td>
+                    <td className="py-1.5 text-right font-data text-dark-300">
+                      {u.win_rate_pct != null ? `${u.win_rate_pct}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-[10px] text-dark-500 leading-relaxed">
+            Dimmed rows are <b>low sample</b> (&lt;10 closed trades or &lt;30 days) and are
+            not comparable yet — a three-week account is measuring its launch
+            window, not the strategy.
+            {data.excluded_test_accounts > 0 && (
+              <> {data.excluded_test_accounts} test account
+                {data.excluded_test_accounts === 1 ? '' : 's'} hidden.</>
+            )}
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function Admin() {
   const { user } = useAuth()
   const [users, setUsers] = useState([])
@@ -291,6 +419,7 @@ export default function Admin() {
 
   return (
     <div className="p-4 md:p-6 space-y-4">
+      <UserPortfolioScoreboard />
       {mlRibbon}
       {/* Scanner Control */}
       <div>
