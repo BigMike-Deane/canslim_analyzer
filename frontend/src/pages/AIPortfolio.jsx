@@ -993,6 +993,15 @@ function VerdictLedger({ summary, edge }) {
   // an unguarded toFixed here throws inside the app-wide ErrorBoundary — i.e.
   // one missing field blanks the entire app on the Overview tab.
   const pct = (v, d = 1) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`)
+  // `edge.as_of` is the last COMPLETE session the edge series measures to
+  // (date-only string). timeZone:'UTC' is required — without it a date-only
+  // string is parsed as UTC midnight then rendered in local time, which
+  // shows the previous day for anyone west of Greenwich (the owner is CT).
+  const asOfLabel = edge.as_of
+    ? new Date(`${edge.as_of}T00:00:00Z`).toLocaleDateString(undefined, {
+        timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric',
+      })
+    : null
   const proven = A?.significant_95
 
   // Alpha CI meter geometry: zero tick + point estimate pin, both as % of span.
@@ -1002,22 +1011,32 @@ function VerdictLedger({ summary, edge }) {
 
   return (
     <div className="mb-4 rounded-xl border border-dark-600 border-t-2 border-t-primary-500 bg-gradient-to-b from-dark-800 to-dark-850 p-4">
+      {/* Two measurements, deliberately kept apart (2026-09-09).
+          The headline is the LIVE book — the same number the Command Center
+          and the SummaryCard below show, so the page never contradicts
+          itself. The vs-SPY trio comes from /edge, which ends on the last
+          COMPLETE session on purpose: a partial day would make the alpha CI
+          and Sharpe wobble intraday, and this is the statistical gate.
+          Both are correct; they just measure to different days, so each is
+          labelled with the day it measures to instead of being pasted
+          together. Was: live value rendered with edge.total_return_pct
+          beside it, so the card read "$31,277.38 +25.9%" when that value is
+          +25.11% -- a 0.76pp contradiction inside one line. */}
       <div className="flex items-baseline gap-4 flex-wrap">
         <div>
           <div className="text-[10px] uppercase tracking-[.18em] text-dark-400">Portfolio value</div>
           <div className="text-3xl font-semibold text-dark-100 font-data">
             {formatCurrency(summary.total_value)}
-            <span className={`text-base font-semibold ml-2 ${edge.total_return_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {pct(edge.total_return_pct)}
-            </span>
+            {summary.total_return_pct != null && (
+              <span className={`text-base font-semibold ml-2 ${summary.total_return_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {pct(summary.total_return_pct, 2)}
+              </span>
+            )}
           </div>
-        </div>
-        <div className="text-sm text-dark-300">
-          SPY same window <b className="text-dark-100 font-data">{pct(edge.spy_return_pct)}</b>
         </div>
         <div
           className="ml-auto text-right"
-          title="Portfolio return minus SPY's return over the same date-aligned days, in percentage points. This is the raw scoreboard; the meters below say how confident to be that it's skill rather than luck."
+          title="Portfolio return minus SPY's return over the same date-aligned days, in percentage points. Measured through the last complete session — a partial day would move the alpha CI intraday. This is the raw scoreboard; the meters below say how confident to be that it's skill rather than luck."
         >
           <div className="text-[10px] uppercase tracking-[.18em] text-dark-400">Edge vs SPY</div>
           <div className="text-2xl font-bold text-primary-400 font-data">
@@ -1025,6 +1044,18 @@ function VerdictLedger({ summary, edge }) {
               : `${edge.excess_return_pct >= 0 ? '+' : ''}${edge.excess_return_pct.toFixed(1)} pp`}
           </div>
         </div>
+      </div>
+
+      {/* The edge trio reads together and is internally consistent
+          (portfolio - SPY = excess), which it would NOT be if the live
+          return were substituted here. */}
+      <div className="mt-2 text-xs text-dark-300 flex items-baseline gap-x-3 gap-y-1 flex-wrap">
+        <span className="text-dark-400">
+          vs SPY{asOfLabel ? <> through {asOfLabel}</> : null}
+        </span>
+        <span>Portfolio <b className="text-dark-100 font-data">{pct(edge.total_return_pct)}</b></span>
+        <span className="text-dark-500">·</span>
+        <span>SPY <b className="text-dark-100 font-data">{pct(edge.spy_return_pct)}</b></span>
       </div>
 
       <div className="mt-3 pt-3 border-t border-dark-700 text-xs text-dark-300">
