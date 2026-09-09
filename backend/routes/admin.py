@@ -1628,12 +1628,56 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"vintage: live-account sampling failed: {e}")
 
-    alphas = [r["alpha_pp"] for r in rows if r["alpha_pp"] is not None and r["days"] >= 1]
+    usable = [r for r in rows if r["alpha_pp"] is not None and r["days"] >= 1]
+
+    # ── Compare LIKE horizons only (2026-09-09) ──────────────────────────
+    # Dispersion grows with elapsed time: a 7-day stack physically cannot
+    # diverge as far as a 189-day one, so a spread taken across the whole
+    # population is inflated by horizon mixing, not by launch luck. Before
+    # this fix the clock reported 24.6pp spread / 8.9pp stdev over stacks
+    # ranging 7..189 days -- a number that looks alarming and cannot be
+    # gated on.
+    #
+    # The cohort is the LONGEST-horizon group whose members are within 2x of
+    # each other in elapsed days. Longest because more time = more realised
+    # divergence = a better floor for "how big must an arm's lead be before
+    # it is evidence?". On 2026-09-09 that selects the two live accounts
+    # (184d and 189d, same config, ~20 shared names) at 8.1pp apart -- the
+    # cleanest read available of pure path luck.
+    def _cohort(items, ratio=2.0):
+        best = []
+        for anchor in sorted(items, key=lambda r: -r["days"]):
+            grp = [r for r in items
+                   if r["days"] <= anchor["days"]
+                   and anchor["days"] <= r["days"] * ratio]
+            if len(grp) >= 2:
+                return grp          # first (longest) qualifying group wins
+            best = best or grp
+        return best
+
+    cohort = _cohort(usable)
+    alphas = [r["alpha_pp"] for r in cohort]
+    cohort_days = [r["days"] for r in cohort]
     return {
         "stacks": rows,
         "n": len(alphas),
         "spread_pp": round(max(alphas) - min(alphas), 2) if len(alphas) >= 2 else None,
         "stdev_pp": round(statistics.pstdev(alphas), 2) if len(alphas) >= 2 else None,
+        # Which stacks the headline numbers were actually computed over, so
+        # the comparison is auditable rather than implied.
+        "cohort": {
+            "labels": [r["label"] for r in cohort],
+            "days_min": min(cohort_days) if cohort_days else None,
+            "days_max": max(cohort_days) if cohort_days else None,
+            "rule": ("longest-horizon group whose elapsed days are within 2x "
+                     "of each other; dispersion grows with time, so mixing a "
+                     "7-day stack with a 189-day one overstates the spread"),
+        },
+        "all_stacks_spread_pp": (
+            round(max(r["alpha_pp"] for r in usable)
+                  - min(r["alpha_pp"] for r in usable), 2)
+            if len(usable) >= 2 else None
+        ),
         "note": ("alpha = return since its own start minus SPY over the same span; "
                  "spread/stdev across staggered starts of the SAME strategy = "
                  "launch-vintage luck, the confound behind three prior cohort reads. "

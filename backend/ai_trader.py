@@ -1641,7 +1641,17 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
                 is_growth_stock=position.is_growth_stock or False,
                 cost_basis=position.cost_basis,
                 realized_gain=position.gain_loss,
-                signal_factors={"sell_reason": "STOP LOSS", "gain_pct": round(gain_pct, 1), "stop_pct": round(position_stop_pct, 1)},
+                signal_factors={
+                    "sell_reason": "STOP LOSS",
+                    "gain_pct": round(gain_pct, 1),
+                    "stop_pct": round(position_stop_pct, 1),
+                    # How far past the effective stop this actually filled.
+                    # The realised loss is bound by detection granularity, not
+                    # by where the stop is set, so this is the number that
+                    # says whether the exit machinery is working.
+                    "slippage_pp": round(-gain_pct - position_stop_pct, 2),
+                    "detected_by": "fast_checker",
+                },
                 user_id=user_id,
                 holding_days=_hold_days
             )
@@ -2015,7 +2025,20 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
             sells.append({
                 "position": position,
                 "reason": f"STOP LOSS: Down {abs(gain_pct):.1f}%{market_note}{atr_note}",
-                "priority": 1  # High priority - cut losers fast
+                "priority": 1,  # High priority - cut losers fast
+                # Stop-slippage instrumentation (2026-09-09). The fast
+                # intraday checker recorded stop_pct; THIS path did not, so
+                # half of all stops had no effective-stop on record and
+                # slippage could only be estimated against the flat config
+                # stop -- which is wrong, because the effective stop is
+                # ATR-adjusted and tightened by the new-position guard.
+                # slippage_pp = how far past the stop it actually filled.
+                "stop_metrics": {
+                    "stop_pct": round(position_stop_pct, 2),
+                    "gain_pct": round(gain_pct, 2),
+                    "slippage_pp": round(-gain_pct - position_stop_pct, 2),
+                    "detected_by": "daily_cycle",
+                },
             })
             continue
 
@@ -3780,7 +3803,13 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
                     is_growth_stock=position.is_growth_stock or False,
                     cost_basis=position.cost_basis,
                     realized_gain=position.gain_loss,
-                    signal_factors={"sell_reason": categorize_sell_reason(sell["reason"]), "gain_pct": round(gain_pct_val, 1)},
+                    signal_factors={
+                        "sell_reason": categorize_sell_reason(sell["reason"]),
+                        "gain_pct": round(gain_pct_val, 1),
+                        # Carries stop_pct / slippage_pp when the decision was
+                        # a hard stop; absent for every other sell reason.
+                        **(sell.get("stop_metrics") or {}),
+                    },
                     is_paper=paper_mode,
                     user_id=user_id,
                     holding_days=_hold_days

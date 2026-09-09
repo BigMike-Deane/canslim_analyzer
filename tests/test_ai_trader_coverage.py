@@ -300,6 +300,20 @@ class TestSellsStopLoss:
         assert "STOP LOSS" in sells[0]["reason"]
         assert sells[0]["priority"] == 1  # highest
 
+        # Stop-slippage instrumentation (2026-09-09). This path used to carry
+        # no stop metrics at all, so half of all recorded stops had no
+        # effective stop on file and slippage could only be estimated against
+        # the flat config value -- wrong, because the effective stop is
+        # ATR-adjusted and tightened by the new-position guard.
+        m = sells[0]["stop_metrics"]
+        assert m["detected_by"] == "daily_cycle"
+        assert m["stop_pct"] > 0
+        # Filled at -7.5% against the effective stop: slippage is how far
+        # PAST the stop it went, so it must reconcile exactly.
+        assert m["gain_pct"] == pytest.approx(-7.5, abs=0.01)
+        assert m["slippage_pp"] == pytest.approx(
+            -m["gain_pct"] - m["stop_pct"], abs=0.01)
+
     def test_stop_loss_holds_above_threshold(
         self,
         db_session,

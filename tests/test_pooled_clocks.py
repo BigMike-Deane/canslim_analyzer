@@ -160,3 +160,57 @@ class TestLiveAccountsAsVintageSamples:
         for s in live:
             assert s["alpha_pp"] is not None
             assert s["days"] > 0
+
+
+class TestVintageHorizonCohort:
+    """Dispersion grows with elapsed time, so the spread must be taken over
+    LIKE horizons.
+
+    Before 2026-09-09 the clock pooled every stack regardless of age and
+    reported 24.6pp spread / 8.9pp stdev over a population ranging 7..189
+    days. That number looks alarming and cannot be gated on -- most of it is
+    horizon mixing, not launch luck.
+    """
+
+    @staticmethod
+    def _cohort_of(rows):
+        # Mirrors backend.routes.admin._vintage_spread's selector.
+        for anchor in sorted(rows, key=lambda r: -r["days"]):
+            grp = [r for r in rows
+                   if r["days"] <= anchor["days"]
+                   and anchor["days"] <= r["days"] * 2.0]
+            if len(grp) >= 2:
+                return grp
+        return []
+
+    def test_picks_the_longest_comparable_pair(self):
+        rows = [
+            {"label": "live u2", "days": 189, "alpha_pp": 20.60},
+            {"label": "live u1", "days": 184, "alpha_pp": 12.47},
+            {"label": "live u4", "days": 22, "alpha_pp": 1.93},
+            {"label": "baseline", "days": 21, "alpha_pp": -4.04},
+            {"label": "sep02", "days": 7, "alpha_pp": 1.49},
+        ]
+        c = self._cohort_of(rows)
+        assert [r["label"] for r in c] == ["live u2", "live u1"]
+        alphas = [r["alpha_pp"] for r in c]
+        assert round(max(alphas) - min(alphas), 2) == 8.13
+        # The naive all-stacks figure is 3x larger and is the number this
+        # change exists to stop anyone gating on.
+        allspread = max(r["alpha_pp"] for r in rows) - min(r["alpha_pp"] for r in rows)
+        assert round(allspread, 2) == 24.64
+
+    def test_a_lone_long_stack_does_not_form_a_cohort(self):
+        # One 200-day stack plus a 5-day one are not comparable; the selector
+        # must fall through rather than pair them.
+        rows = [
+            {"label": "old", "days": 200, "alpha_pp": 10.0},
+            {"label": "new", "days": 5, "alpha_pp": 0.5},
+        ]
+        assert self._cohort_of(rows) == []
+
+    def test_endpoint_reports_the_cohort_it_used(self, clocks):
+        v = clocks["vintage_spread"]
+        assert "cohort" in v
+        assert set(v["cohort"]) >= {"labels", "days_min", "days_max", "rule"}
+        assert "all_stacks_spread_pp" in v
