@@ -8,6 +8,8 @@ pandas>=2.0.0
 # would have reported every 2028 holiday as a trading day (see
 # backend/ai_trader.py _nyse_holidays_for_year). Rules are computed, not
 # tabulated, so no annual maintenance and no network access at import.
+# NOTE: the Docker image installs backend/requirements.txt, NOT this file.
+# Keep both in sync or the container silently falls back to the old table.
 pandas-market-calendars>=4.4.0
 numpy>=1.24.0
 requests>=2.33.1

@@ -144,3 +144,30 @@ class TestSessionClockUnchanged:
     def test_half_day_still_treated_as_a_full_session(self):
         # 2026-11-27, the day after Thanksgiving: real NYSE close is 13:00 ET.
         assert is_trading_day(_et(2026, 11, 27)) is True
+
+
+class TestTheDependencyShipsInTheImage:
+    """The container installs backend/requirements.txt, NOT the root one.
+
+    2026-09-09: the dependency was first added to the ROOT requirements.txt,
+    so the image built without it. Nothing failed loudly -- the fallback in
+    _nyse_holidays_for_year() quietly returned None and production kept using
+    the hardcoded 2026-2027 table, i.e. the bug was still live while the
+    tests were green. Graceful degradation hides packaging mistakes, so pin
+    the packaging too.
+    """
+
+    def test_calendar_dep_is_in_the_file_the_dockerfile_installs(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        dockerfile = (root / "Dockerfile").read_text()
+        assert "COPY backend/requirements.txt" in dockerfile, (
+            "Dockerfile no longer installs backend/requirements.txt; update "
+            "this test to point at whatever it installs now"
+        )
+        installed = (root / "backend" / "requirements.txt").read_text()
+        assert "pandas-market-calendars" in installed, (
+            "pandas-market-calendars missing from backend/requirements.txt -- "
+            "the image would silently fall back to the hardcoded holiday table"
+        )

@@ -7,6 +7,12 @@ sqlalchemy==2.0.23
 python-dotenv==1.2.2
 yfinance>=0.2.40
 pandas==2.1.3
+# NYSE session calendar. Replaces a hardcoded 2026-2027 holiday table that
+# would have reported every 2028 holiday as a trading day (see
+# backend/ai_trader.py _nyse_holidays_for_year). Rules are computed, not
+# tabulated, so no annual maintenance and no network access at import.
+# NOTE: the Dockerfile installs THIS file, not the root requirements.txt.
+pandas-market-calendars>=4.4.0
 numpy==1.26.2
 requests==2.33.1
 apscheduler==3.10.4
