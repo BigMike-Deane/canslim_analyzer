@@ -381,3 +381,72 @@ class TestCommandCenterSparklineSharesTheWindowAnchor:
         _seed_snapshot(day_offset=0, total_value=11000.0)
         spark = client.get("/api/command-center").json()["sparkline"]
         assert [pt["value"] for pt in spark] == [10000.0, 11000.0]
+
+
+class TestCommandCenterSparklineEndsOnTheLiveBook:
+    """The Command Center's 30d % and the AI Portfolio 30D slicer must agree
+    at BOTH ends of the window, not just the start.
+
+    2026-09-09: the anchor fix (75a6087) unified the window START via
+    _window_anchor_snapshot, but the Command Center still ENDED on the last
+    written snapshot while /window-returns ended on the live book. Snapshots
+    are only written during market hours; positions are re-priced by every
+    scan around the clock -- so in pre-market the two read -0.2% vs -1.05%
+    on the same book and the same Aug-10 anchor. The older tests in this
+    file all seeded current_cash == the last snapshot's value, which is why
+    they never caught it.
+    """
+
+    def test_last_point_is_the_live_book_not_the_last_snapshot(self):
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=10500.0)
+        _wipe()
+        _seed_snapshot(day_offset=30, total_value=10000.0)   # window anchor
+        _seed_snapshot(day_offset=1, total_value=11000.0)    # last snapshot, stale
+        # No snapshot today (pre-market): live book = current_cash = 10500.
+        spark = client.get("/api/command-center").json()["sparkline"]
+        assert [pt["value"] for pt in spark] == [10000.0, 11000.0, 10500.0]
+
+    def test_command_center_30d_equals_the_slicer_30d(self):
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=10500.0)
+        _wipe()
+        _seed_snapshot(day_offset=30, total_value=10000.0)
+        _seed_snapshot(day_offset=1, total_value=11000.0)
+        spark = client.get("/api/command-center").json()["sparkline"]
+        wr = client.get("/api/ai-portfolio/window-returns?window=30d").json()
+
+        # Both ends, on both surfaces -- the invariant that was broken.
+        assert wr["portfolio"]["start_value"] == spark[0]["value"]
+        assert wr["portfolio"]["current_value"] == spark[-1]["value"]
+
+        spark_pct = ((spark[-1]["value"] - spark[0]["value"])
+                     / spark[0]["value"]) * 100
+        assert round(spark_pct, 2) == round(wr["portfolio"]["return_pct"], 2)
+
+    def test_todays_snapshot_is_superseded_by_the_live_book(self):
+        # Mid-session there IS a snapshot today, but it is up to a scan-cycle
+        # stale. The live book wins that day slot rather than adding a point.
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=10500.0)
+        _wipe()
+        _seed_snapshot(day_offset=30, total_value=10000.0)
+        _seed_snapshot(day_offset=0, total_value=10900.0)    # today, stale
+        spark = client.get("/api/command-center").json()["sparkline"]
+        assert [pt["value"] for pt in spark] == [10000.0, 10500.0]
+
+    def test_unpriced_spy_sweep_keeps_the_last_real_snapshot(self):
+        # sweep_priced=False => a live SPY fetch failed and total_value is
+        # understated. Drawing that would paint a phantom drop on the
+        # sparkline, so the last real snapshot stands instead.
+        _ensure_user_and_config(starting_cash=10000.0, current_cash=10500.0)
+        _wipe()
+        _seed_snapshot(day_offset=30, total_value=10000.0)
+        _seed_snapshot(day_offset=1, total_value=11000.0)
+        understated = {
+            "cash": 10500.0, "positions_value": 0.0, "sweep_value": 0.0,
+            "sweep_priced": False, "total_value": 10500.0,
+            "positions_count": 0, "starting_cash": 10000.0,
+            "total_return": 500.0, "total_return_pct": 5.0,
+        }
+        with patch("backend.ai_trader.get_portfolio_value",
+                   return_value=understated):
+            spark = client.get("/api/command-center").json()["sparkline"]
+        assert [pt["value"] for pt in spark] == [10000.0, 11000.0]

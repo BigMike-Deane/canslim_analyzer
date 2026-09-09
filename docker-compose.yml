@@ -35,6 +35,21 @@ services:
       - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@canslim.local}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      # Leak hunt (2026-09-09), staged in the Sep-8 OOM work. glibc malloc
+      # opens up to 8 x ncores arenas, one per thread on demand; memory
+      # freed in one arena is neither returned to the OS nor reusable by
+      # another, so ~4k HTTP fetches/scan across threads accrete per-arena
+      # free lists that read exactly like a slow leak. Capping arenas
+      # forces reuse. CONTROL (build 75a6087, no cap, 2026-09-08 23:53 ->
+      # 2026-09-09 13:44): RSS 694 MB @1.0h -> 1050 MB @12.9h; marginal
+      # rate plateaued at ~23.6 MB/h over the last 4.5h, matching the
+      # ~23 MB/h of the run that OOM-killed. Compare the next run's slope:
+      # slope drops => fragmentation, job done; slope holds => a TRUE leak
+      # and the suspects are the weekly-history cache (096e73d), async
+      # fetch buffers and the shadow 12-stack rebuild per cycle.
+      # Runtime stage is Debian glibc 2.41, so this knob is live (musl
+      # would silently ignore it).
+      - MALLOC_ARENA_MAX=2
     depends_on:
       postgres:
         condition: service_healthy

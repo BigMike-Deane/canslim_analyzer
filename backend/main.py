@@ -6726,6 +6726,28 @@ async def get_command_center(current_user: User = Depends(get_current_active_use
         day_key = snap.timestamp.date() if snap.timestamp else None
         if day_key:
             daily_values[day_key] = snap.total_value
+
+    # Last point = the LIVE book value, not the last snapshot written.
+    # /api/ai-portfolio/window-returns ends its 30D on get_portfolio_value()
+    # -- positions are re-priced by EVERY scan, around the clock -- while
+    # snapshots are only written during market hours. So between the last
+    # snapshot of a session and the first of the next, the sparkline's end
+    # lagged the slicer's by a whole session of drift.
+    #
+    # 2026-09-09 (14 min into the session, no snapshot yet that day): the
+    # Command Center read 30d -0.2% (ending on the Sep-8 19:29 snapshot,
+    # $31,467.87) while the AI Portfolio 30D slicer read -1.05% (ending on
+    # the live $31,184.48) -- SAME book, SAME Aug-10 anchor. Fixing the
+    # anchor (75a6087) aligned only the window START; this aligns the END,
+    # so the Command Center's 30d equals window-returns' return_pct by
+    # construction instead of by coincidence of when you look.
+    #
+    # sweep_priced=False means a live SPY fetch failed and total_value is
+    # understated -- keep the last real snapshot rather than draw a phantom
+    # drop (the same distrust the drawdown circuit breaker applies to it).
+    if portfolio.get("sweep_priced", True) and portfolio.get("total_value") is not None:
+        daily_values[datetime.now(timezone.utc).date()] = portfolio["total_value"]
+
     sparkline = [{"date": d.isoformat(), "value": round(v, 2)} for d, v in sorted(daily_values.items())]
 
     # --- 4. Active Positions (dense) ---
