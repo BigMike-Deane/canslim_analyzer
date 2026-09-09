@@ -203,6 +203,7 @@ class TestGateInputCarriesRegimeData:
                 "regime_edge missing -- go-live criterion 1 would be "
                 "permanently blocked on a missing input")
             assert "regime_mix" in m, "regime_mix missing"
+
         finally:
             db.query(AIPortfolioSnapshot).filter_by(user_id=1).delete()
             db.query(AIPortfolioConfig).filter_by(user_id=1).delete()
@@ -212,5 +213,56 @@ class TestGateInputCarriesRegimeData:
                 MarketSnapshot.date >= date.today() - timedelta(days=440),
                 MarketSnapshot.date <= date.today() - timedelta(days=401),
             ).delete(synchronize_session=False)
+            db.commit()
+            db.close()
+
+    def test_leading_flat_days_are_trimmed(self):
+        """The gate must trim the pre-inception flat run like /edge does.
+
+        The book sits at exactly starting_cash between Initialize and the
+        first BUY. Those zero-return days inflate n and shrink the standard
+        error, making the t-stat look BETTER than it is. Prod 2026-09-09:
+        the gate read p_one_sided=0.179 while the Edge Scorecard read 0.295
+        on the same book -- the gate was more favourable, in the unsafe
+        direction, on the criterion that governs real money.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from backend.database import (
+            SessionLocal, User, AIPortfolioConfig, AIPortfolioSnapshot,
+        )
+
+        db = SessionLocal()
+        try:
+            db.query(AIPortfolioSnapshot).filter_by(user_id=1).delete()
+            db.query(AIPortfolioConfig).filter_by(user_id=1).delete()
+            if not db.query(User).filter_by(id=1).first():
+                db.add(User(id=1, email="owner@acct.example.org",
+                            display_name="Owner", is_active=True,
+                            is_admin=True, hashed_password=""))
+            db.add(AIPortfolioConfig(user_id=1, starting_cash=25000.0,
+                                     current_cash=25000.0, is_active=True))
+            # 20 dead-flat days at exactly starting_cash, then 20 live ones.
+            for i in range(40):
+                day = date.today() - timedelta(days=440 - i)
+                val = 25000.0 if i < 20 else 25000.0 + (i - 19) * 30
+                db.add(AIPortfolioSnapshot(
+                    user_id=1,
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=440 - i),
+                    date=day, total_value=val, cash=val, positions_value=0.0,
+                    positions_count=0, total_return=val - 25000.0,
+                    total_return_pct=(val - 25000.0) / 250.0,
+                ))
+            db.commit()
+
+            m = A._owner_edge_metrics(db)
+            assert m, "no edge metrics computed"
+            # 40 seeded days, 20 of them flat -> the curve must start after
+            # them, so trading_days reflects the live period only.
+            assert m.get("trading_days", 0) <= 21, (
+                f"leading flat days were not trimmed: trading_days="
+                f"{m.get('trading_days')} of 40 seeded (20 were flat)")
+        finally:
+            db.query(AIPortfolioSnapshot).filter_by(user_id=1).delete()
+            db.query(AIPortfolioConfig).filter_by(user_id=1).delete()
             db.commit()
             db.close()

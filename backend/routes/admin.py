@@ -1717,6 +1717,23 @@ def _owner_edge_metrics(db: Session) -> dict:
     if len(days_sorted) < 2:
         return {}
 
+    # Trim the leading flat run, EXACTLY as /api/ai-portfolio/edge does. The
+    # book sits at precisely starting_cash on every day between Initialize
+    # and the first BUY. Those are zero-return observations: they inflate n
+    # and shrink the standard error, so keeping them makes the t-stat look
+    # better than it is.
+    #
+    # Caught in prod 2026-09-09: the gate read p_one_sided=0.179 while the
+    # Edge Scorecard read 0.295 on the same book -- the gate was more
+    # favourable than the scorecard, in the UNSAFE direction, on the
+    # criterion that governs real money. Two surfaces disagreeing about the
+    # gate metric is the exact bug class this codebase spent the day removing.
+    from backend.edge_metrics import leading_flat_start_index
+    flat_start = leading_flat_start_index([by_day[x].total_value for x in days_sorted])
+    days_sorted = days_sorted[flat_start:]
+    if len(days_sorted) < 2:
+        return {}
+
     spy_by_date, spy_ma_by_date = {}, {}
     for ms in db.query(MarketSnapshot).filter(
             MarketSnapshot.spy_price.isnot(None)).all():
