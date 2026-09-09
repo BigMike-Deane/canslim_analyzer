@@ -7034,8 +7034,39 @@ app.include_router(push_router)
 # ============== Serve Frontend ==============
 
 frontend_path = Path(__file__).parent.parent / "frontend" / "dist"
+
+# Cache policy (2026-09-09). index.html and sw.js were served with NO
+# Cache-Control header at all -- only etag/last-modified -- so browsers fell
+# back to HEURISTIC caching (roughly 10% of the age since Last-Modified) and
+# kept serving a stale index.html, which references the OLD hashed bundle.
+# That is why a frontend deploy could stay invisible in an already-open
+# browser until a hard refresh.
+#
+# The service worker was NOT the cause: b961c7b (2026-05-04) already made
+# sw.js network-first for HTML with skipWaiting + updateViaCache:'none'.
+# The tell was that unregistering the SW and clearing its cache did not fix
+# it, but a cache-busting query param did -- i.e. plain HTTP caching.
+#
+# Hashed /assets/* are content-addressed (the name changes when the bytes
+# do), so they are safe to cache forever. index.html and sw.js must always
+# revalidate. "no-cache" means "revalidate before use", NOT "do not store" --
+# deliberately not "no-store", so the PWA can still serve them offline, and
+# the existing etag makes each revalidation a cheap 304.
+_CACHE_IMMUTABLE = "public, max-age=31536000, immutable"
+_CACHE_REVALIDATE = "no-cache"
+
+
+class _ImmutableAssets(StaticFiles):
+    """Hashed bundles never change under the same filename -- cache hard."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = _CACHE_IMMUTABLE
+        return response
+
+
 if frontend_path.exists():
-    app.mount("/assets", StaticFiles(directory=frontend_path / "assets"), name="assets")
+    app.mount("/assets", _ImmutableAssets(directory=frontend_path / "assets"), name="assets")
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
@@ -7043,8 +7074,13 @@ if frontend_path.exists():
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API endpoint not found")
 
+        # Everything routed here -- index.html, sw.js, manifest, icons -- is
+        # served under a STABLE name, so it must revalidate or a deploy can
+        # go unseen. Only the hashed /assets/* mount above is cacheable.
+        headers = {"Cache-Control": _CACHE_REVALIDATE}
+
         file_path = (frontend_path / full_path).resolve()
         # Prevent directory traversal: resolved path must stay within frontend_path
         if str(file_path).startswith(str(frontend_path.resolve())) and file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(frontend_path / "index.html")
+            return FileResponse(file_path, headers=headers)
+        return FileResponse(frontend_path / "index.html", headers=headers)

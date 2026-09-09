@@ -14,6 +14,7 @@ import threading
 import sys
 import os
 from typing import Optional
+from functools import lru_cache
 
 # Add parent directory to path for config_loader import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,7 +84,12 @@ def get_cst_now():
 
 
 def _get_us_market_holidays() -> set:
-    """Return set of date objects for US market holidays (NYSE closures) in 2026 and 2027.
+    """FALLBACK set of US market holidays (NYSE closures) for 2026 and 2027.
+
+    Only consulted when pandas_market_calendars is unavailable -- see
+    _nyse_holidays_for_year(), which derives closures for ANY year. Kept so
+    an import failure degrades to the previous behaviour instead of treating
+    every holiday as a trading day.
 
     Fixed holidays: New Year's Day, Juneteenth, Independence Day, Christmas.
     Floating holidays: MLK Day, Presidents Day, Good Friday, Memorial Day,
@@ -123,7 +129,68 @@ def _get_us_market_holidays() -> set:
 
     return holidays
 
-_US_MARKET_HOLIDAYS = _get_us_market_holidays()
+_FALLBACK_MARKET_HOLIDAYS = _get_us_market_holidays()
+
+
+@lru_cache(maxsize=64)
+def _nyse_holidays_for_year(year: int):
+    """NYSE weekday closures for one calendar year, or None if unavailable.
+
+    2026-09-09: the holiday list used to be hardcoded for 2026 and 2027 ONLY,
+    baked into a module-level constant. On 2028-01-01 that set contains
+    nothing for the current year, so is_trading_day()/is_market_open() would
+    silently report every holiday as a normal session -- the scheduler would
+    run trading cycles, stop-loss checks and snapshots against a closed
+    market. No crash, no alert, just wrong.
+
+    pandas_market_calendars computes NYSE rules programmatically (floating
+    holidays included), so this stays correct indefinitely with no annual
+    maintenance and no network access at import.
+
+    Closures are derived as "weekdays that are not sessions" rather than by
+    reading a holiday table, which also picks up the rules a handwritten list
+    gets wrong -- e.g. when New Year's Day falls on a Saturday the NYSE does
+    NOT close the preceding Friday, so 2028 has 9 closures, not 10.
+
+    Verified against the previous hardcoded table: identical for 2026 and
+    2027 (10/10 each), so this is not a behaviour change in the near term.
+    Cached per year; a long-running process crossing a year boundary simply
+    computes the new year on first use.
+    """
+    try:
+        import pandas_market_calendars as mcal
+    except Exception:
+        return None
+    try:
+        sessions = {
+            d.date()
+            for d in mcal.get_calendar("NYSE").valid_days(
+                f"{year}-01-01", f"{year}-12-31"
+            )
+        }
+        if not sessions:
+            return None
+        closures = set()
+        day = date(year, 1, 1)
+        while day.year == year:
+            if day.weekday() <= 4 and day not in sessions:
+                closures.add(day)
+            day += timedelta(days=1)
+        return frozenset(closures)
+    except Exception as e:
+        logger.warning(
+            "NYSE calendar unavailable for %s (%s); falling back to the "
+            "hardcoded 2026-2027 holiday table", year, e
+        )
+        return None
+
+
+def _is_market_holiday(day: date) -> bool:
+    """True when the NYSE is closed all day on ``day`` (a weekday)."""
+    closures = _nyse_holidays_for_year(day.year)
+    if closures is None:
+        return day in _FALLBACK_MARKET_HOLIDAYS
+    return day in closures
 
 
 def is_trading_day(now: Optional[datetime] = None) -> bool:
@@ -136,7 +203,7 @@ def is_trading_day(now: Optional[datetime] = None) -> bool:
     # Weekday check: Monday=0, Friday=4, Saturday=5, Sunday=6
     if now.weekday() > 4:
         return False
-    return now.date() not in _US_MARKET_HOLIDAYS
+    return not _is_market_holiday(now.date())
 
 
 def is_market_open() -> bool:
