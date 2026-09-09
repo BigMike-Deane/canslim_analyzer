@@ -167,7 +167,20 @@ class TestPerRouteLimits:
 
 
 class TestDefaultLimit:
-    """Routes without an explicit decorator inherit 60/minute."""
+    """Routes without an explicit decorator inherit 60/minute.
+
+    ⚑ This depends on frontend/dist existing. backend/main.py only registers
+    the SPA catch-all ("/{full_path:path}") when it does, and slowapi resolves
+    the default-limit bucket from the LAST route that matches the request.
+    With the catch-all present every undecorated path resolves to it and
+    shares one 60/min bucket; without it, undecorated API routes get no
+    default limit at all and this test fails with 200 != 429.
+
+    Production always ships dist, so the limit is live there (verified against
+    the running server on 2026-09-09: 30x200 then 429 on /health). CI builds
+    the frontend before pytest for the same reason -- otherwise it exercises a
+    different route table than the deployed app.
+    """
 
     def test_default_limit_is_sixty_per_minute(self, client):
         # Use an authenticated read route that has no per-route decorator.

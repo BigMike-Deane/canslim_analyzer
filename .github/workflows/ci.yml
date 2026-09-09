@@ -44,6 +44,26 @@ jobs:
           pip install -r requirements.txt
           pip install -r backend/requirements.txt
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        # REQUIRED, not cosmetic. backend/main.py only registers the SPA
+        # catch-all route ("/{full_path:path}") when frontend/dist exists, and
+        # slowapi resolves its default-limit bucket from the matched route
+        # handler. Without dist, undecorated API routes get NO default rate
+        # limit, and test_default_limit_is_sixty_per_minute fails -- which is
+        # exactly what happened on 2026-09-09. More importantly, without this
+        # step CI exercises a DIFFERENT route table than production, so every
+        # other test is measuring the wrong app too.
+        run: |
+          npm ci
+          npm run build
+
       - name: Run tests
         env:
           REQUIRE_AUTH: 'false'
