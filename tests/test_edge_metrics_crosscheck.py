@@ -40,6 +40,23 @@ ep = pytest.importorskip(
     "empyrical", reason="empyrical not installed; cross-check skipped"
 )
 np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
+
+# empyrical-reloaded requires pandas>=2.2.2 on py3.12, but backend/requirements
+# pins pandas==2.1.3 for production. Rather than run the cross-check against a
+# pandas the library does not support (silently wrong numbers are worse than a
+# visible skip), skip with a reason that says exactly what to do about it.
+_PANDAS_MIN = (2, 2, 2)
+_pandas_ver = tuple(int(x) for x in pd.__version__.split(".")[:3] if x.isdigit())
+pytestmark = pytest.mark.skipif(
+    _pandas_ver < _PANDAS_MIN,
+    reason=(
+        f"empyrical needs pandas>={'.'.join(map(str, _PANDAS_MIN))}, found "
+        f"{pd.__version__}. Production pins pandas==2.1.3, so this cross-check "
+        f"only runs where a newer pandas is available. To run it in CI, bump "
+        f"the pandas pin in backend/requirements.txt."
+    ),
+)
 
 
 def _curves(n=400, seed=20260909):

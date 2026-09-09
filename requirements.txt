@@ -43,6 +43,12 @@ scipy>=1.11.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0
+# starlette 1.6 TestClient needs an HTTP client and prefers httpx2; it was
+# declared in NEITHER requirements file and only worked locally because a
+# stray httpx happened to be installed. On a clean checkout every TestClient
+# module failed to COLLECT with "requires the httpx2 package" -- the whole
+# suite aborted in 87s. Found by CI on its first real run, 2026-09-09.
+httpx2>=2.12.0
 # TEST-ONLY: independent cross-check of backend/edge_metrics.py (Sharpe,
 # alpha, beta, max drawdown). Deliberately NOT in backend/requirements.txt --
 # it must not ship in the runtime image. tests/ skip gracefully without it.
