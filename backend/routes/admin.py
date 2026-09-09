@@ -1854,14 +1854,21 @@ def compute_experiment_gates(db: Session) -> dict:
             {"label": "cap-tier fires",
              "n": sum(1 for t in _rows(a.id, "SELL")
                       if "PARTIAL PROFIT (100" in (t.reason or "")
-                      or "+50" in (t.reason or "")), "target": 3},
+                      or "+50" in (t.reason or "")), "target": 3,
+             # RARE-EVENT lever: needs a +50% winner, which has not appeared
+             # in 21 days. Not blocked -- just waiting on a setup that may
+             # take quarters. Tagged so it stops reading as a pending
+             # verdict (2026-09-09 fleet review).
+             "kind": "dormant"},
         ],
         "shadow_chop_spy": lambda a: [
             {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
         ],
         "shadow_sector_relief": lambda a: [
             {"label": "count-exempt pyramids",
-             "n": _unmatched_vs_baseline(a.id, "PYRAMID"), "target": 5},
+             "n": _unmatched_vs_baseline(a.id, "PYRAMID"), "target": 5,
+             # RARE-EVENT lever: needs a sector-cap collision. 0 in 21 days.
+             "kind": "dormant"},
         ],
         "shadow_cs_window14": lambda a: [
             {"label": "CS buys in 8-14d band",
@@ -1911,7 +1918,10 @@ def compute_experiment_gates(db: Session) -> dict:
             {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
             {"label": "chop trims fired",
              "n": sum(1 for t in _rows(a.id, "SELL")
-                      if (t.reason or "").startswith("CHOP TRIM")), "target": 5},
+                      if (t.reason or "").startswith("CHOP TRIM")), "target": 5,
+             # RARE-EVENT lever: needs chop days AND a trim condition on the
+             # same name. 0 in 14 days (2026-09-09 fleet review).
+             "kind": "dormant"},
         ],
     })
 

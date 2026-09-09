@@ -2306,20 +2306,36 @@ shadow_strategy_profiles:
   # timing buckets while the best (10-14d) was alert-only. Gate
   # pre-registered on the nostate_cs_window14 profile comment. Clock starts
   # at this arm's own first trade (later than the Aug-18 fleet reset).
-  shadow_cs_window14:
-    parent_strategy: nostate_cs_window14
-    starting_value: 25000
-    description: "cs_bear + CS buy window widened to 14d pre-earnings — aug-20 candidate (v2 recal: 10-14d bucket 45% win +2.79% signal-quality, NOT P&L); gate: beat baseline over a mixed-regime cycle AND >=5 CS buys in the 8-14d band"
-    scorer_overrides: {}
+  # ARCHIVED 2026-09-09 (fleet review). Removing the key here
+  # soft-archives the stack via shadow_strategy_sync (archived_at
+  # = now); re-adding it REACTIVATES the same row with its history.
+  # shadow_cs_window14: lever never fired -- 0/5 in 20 days. Structurally
+  # blocked, not slow: the score floor screens CS names BEFORE the
+  # window/exempt code runs, so no amount of waiting fills this gate
+  # (diagnosed 2026-09-02). Re-enable only if the score floor moves.
+  # shadow_cs_window14:
+  # parent_strategy: nostate_cs_window14
+  # starting_value: 25000
+  # description: "cs_bear + CS buy window widened to 14d pre-earnings — aug-20 candidate (v2 recal: 10-14d bucket 45% win +2.79% signal-quality, NOT P&L); gate: beat baseline over a mixed-regime cycle AND >=5 CS buys in the 8-14d band"
+  # scorer_overrides: {}
+
   # Audit-#11 CS hold-through A/B (2026-08-20): makes the dead pre-earnings
   # CS exemption real via the earnings_tighten_cs_exempt profile flag. Gate
   # pre-registered on the nostate_cs_exempt profile comment. Slow-accruing
   # by nature — needs CS positions held into earnings windows.
-  shadow_cs_exempt:
-    parent_strategy: nostate_cs_exempt
-    starting_value: 25000
-    description: "cs_bear + CS positions hold through earnings (no pre-earnings stop tighten / 25% trim) — aug-20 audit-#11 candidate; gate: beat baseline over a mixed-regime cycle AND >=5 CS positions carried through an earnings print"
-    scorer_overrides: {}
+  # ARCHIVED 2026-09-09 (fleet review). Removing the key here
+  # soft-archives the stack via shadow_strategy_sync (archived_at
+  # = now); re-adding it REACTIVATES the same row with its history.
+  # shadow_cs_exempt: lever never fired -- 0/5 in 20 days. Structurally
+  # blocked, not slow: the score floor screens CS names BEFORE the
+  # window/exempt code runs, so no amount of waiting fills this gate
+  # (diagnosed 2026-09-02). Re-enable only if the score floor moves.
+  # shadow_cs_exempt:
+  # parent_strategy: nostate_cs_exempt
+  # starting_value: 25000
+  # description: "cs_bear + CS positions hold through earnings (no pre-earnings stop tighten / 25% trim) — aug-20 audit-#11 candidate; gate: beat baseline over a mixed-regime cycle AND >=5 CS positions carried through an earnings print"
+  # scorer_overrides: {}
+
   # ML veto kill-or-bless A/B (2026-08-20): the aug-20 review found live
   # cs_bear still vetoes ml_confidence<0.30 buys (Jul-4 demotion missed it).
   # This arm turns the veto OFF; baseline keeps it ON — the pre-registered

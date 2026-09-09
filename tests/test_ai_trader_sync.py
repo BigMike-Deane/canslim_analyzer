@@ -180,9 +180,19 @@ class TestPartialProfitTierDelta:
         assert prof, "nostate_cs_window14 profile missing from config"
         assert prof["cs_allow_buy_days"] == 14
         assert prof.get("hidden") is True  # shadow-only, keep out of picker
-        reg = yaml_config.get('shadow_strategy_profiles.shadow_cs_window14', {})
-        assert reg.get("parent_strategy") == "nostate_cs_window14"
-        assert reg.get("starting_value") == 25000
+        # ARCHIVED 2026-09-09 (fleet review): the shadow stack registration
+        # was removed from shadow_strategy_profiles, which soft-archives the
+        # row via shadow_strategy_sync. The lever never fired once -- 0/5 in
+        # 20 days -- because the score floor screens CS names BEFORE the
+        # window code runs, so waiting could never fill the gate.
+        #
+        # The PROFILE above is deliberately kept: re-adding the registration
+        # reactivates the same row with its trade history, so this stays a
+        # one-line reversal if the score floor ever moves.
+        assert yaml_config.get(
+            'shadow_strategy_profiles.shadow_cs_window14', {}) == {}, (
+            "shadow_cs_window14 was re-registered -- intentional? it was "
+            "archived because its lever is structurally unreachable")
         # The global CS window every other profile reads stays at 7
         assert yaml_config.get(
             'coiled_spring.earnings_window.allow_buy_days') == 7
@@ -196,9 +206,13 @@ class TestPartialProfitTierDelta:
         assert prof, "nostate_cs_exempt profile missing from config"
         assert prof["earnings_tighten_cs_exempt"] is True
         assert prof.get("hidden") is True
-        reg = yaml_config.get('shadow_strategy_profiles.shadow_cs_exempt', {})
-        assert reg.get("parent_strategy") == "nostate_cs_exempt"
-        assert reg.get("starting_value") == 25000
+        # ARCHIVED 2026-09-09 (fleet review) -- same blocker as
+        # shadow_cs_window14: 0/5 pre-earnings exits suppressed in 20 days.
+        # Profile kept so re-registering restores the row and its history.
+        assert yaml_config.get(
+            'shadow_strategy_profiles.shadow_cs_exempt', {}) == {}, (
+            "shadow_cs_exempt was re-registered -- intentional? it was "
+            "archived because its lever is structurally unreachable")
         # No other profile carries the flag — the exemption is arm-scoped
         for name, p in (yaml_config.get('strategy_profiles', {}) or {}).items():
             if name != 'nostate_cs_exempt' and isinstance(p, dict):
