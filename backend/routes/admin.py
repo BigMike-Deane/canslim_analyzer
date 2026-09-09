@@ -1689,6 +1689,217 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
     }
 
 
+
+def _owner_edge_metrics(db: Session) -> dict:
+    """Edge scorecard for the owner's book, built the same way
+    /api/ai-portfolio/edge builds it: one equity point per calendar day
+    (last snapshot of the day), SPY rebased to the same starting scale,
+    carry-forward over weekend/holiday gaps. Kept here so the go-live gate
+    reads the SAME numbers the Edge Scorecard shows -- two surfaces
+    disagreeing about the gate metric is exactly the class of bug this
+    codebase spent 2026-09-09 removing."""
+    from backend.database import AIPortfolioSnapshot, MarketSnapshot
+    from backend.edge_metrics import compute_edge_metrics
+
+    snaps = db.query(AIPortfolioSnapshot).filter(
+        AIPortfolioSnapshot.user_id == 1).all()
+    by_day = {}
+    for s in snaps:
+        day = s.date or (s.timestamp.date() if s.timestamp else None)
+        if day is None:
+            continue
+        cur = by_day.get(day)
+        cur_ts = (cur.timestamp or datetime.min) if cur else None
+        s_ts = s.timestamp or datetime.min
+        if cur is None or s_ts >= cur_ts:
+            by_day[day] = s
+    days_sorted = sorted(by_day)
+    if len(days_sorted) < 2:
+        return {}
+
+    spy_by_date = {
+        ms.date: ms.spy_price
+        for ms in db.query(MarketSnapshot).filter(
+            MarketSnapshot.spy_price.isnot(None)).all()
+    }
+    spy_anchor = base_value = None
+    if spy_by_date:
+        first_day = days_sorted[0]
+        spy_anchor = spy_by_date.get(first_day)
+        if spy_anchor is None:
+            earlier = [x for x in spy_by_date if x <= first_day]
+            if earlier:
+                spy_anchor = spy_by_date[max(earlier)]
+        base_value = by_day[first_day].total_value
+
+    def _spy_value_for(day):
+        if not spy_anchor or not base_value:
+            return None
+        price = spy_by_date.get(day)
+        if price is None:
+            earlier = [x for x in spy_by_date if x <= day]
+            if not earlier:
+                return None
+            price = spy_by_date[max(earlier)]
+        return base_value * (price / spy_anchor)
+
+    realized = [
+        g for (g,) in db.query(AIPortfolioTrade.realized_gain).filter(
+            AIPortfolioTrade.user_id == 1,
+            AIPortfolioTrade.action == "SELL",
+            AIPortfolioTrade.realized_gain.isnot(None),
+        ).all()
+    ]
+    try:
+        return compute_edge_metrics(
+            [by_day[x].total_value for x in days_sorted],
+            [_spy_value_for(x) for x in days_sorted],
+            realized,
+        ) or {}
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"go-live gate: edge metrics failed: {e}")
+        return {}
+
+# ── GO-LIVE THRESHOLDS (pre-registered 2026-09-09) ───────────────────────
+# The owner's standing gate was "no real money until edge vs SPY is
+# statistically proven", which at the measured effect size (d=0.054) needs
+# ~2,745 trading days -- about 10.5 years. He is not waiting that long, so
+# the rule is replaced with an explicit, multi-criteria threshold set
+# registered BEFORE the data that would tempt anyone to bend it.
+#
+# ALL criteria must hold. A single statistical test is too fragile to gate
+# money on, and each of these fails in a different way:
+#
+#   1. BLENDED edge, not trend-only, over a window with real chop in it.
+#      The trend-day edge reads +25.3 bps/day but chop reads -30.7, and at
+#      the observed 51.7% trend share (vs 54.8% breakeven) the BLENDED
+#      number is -1.8 bps/day. Gating on the trend split alone would be
+#      gating on a regime that has not been paying.
+#   2. Excess must clear the measured PATH-NOISE floor. Two identical books
+#      (owner and Karstell, same config, 5 days apart) sit 8.13pp apart
+#      after six months. An edge smaller than that is indistinguishable
+#      from launch luck.
+#   3. Drawdown no worse than SPY's by more than the stated margin --
+#      beating SPY on return while doubling its drawdown is not a win.
+#   4. Execution quality: stop slippage bounded. Instrumented 2026-09-09;
+#      the realised loss is bound by detection granularity, not by where
+#      the stop is set.
+#   5. Enough closed trades that the above are not reading noise.
+#
+# Confidence is 85% ONE-SIDED, deliberately not 95% two-sided: the question
+# is "is this better than SPY", which is directional, and 95% two-sided is
+# the bar that costs a decade. 85% one-sided accepts a ~15% chance of acting
+# on noise -- a risk the owner is taking knowingly, which is the whole point
+# of writing it down first.
+GO_LIVE_REGISTERED_ON = "2026-09-09"
+GO_LIVE_CONFIDENCE = 0.85          # one-sided
+GO_LIVE_MIN_CHOP_SHARE = 30.0      # % of days in the window
+GO_LIVE_MAX_DD_MARGIN_PP = 5.0     # portfolio DD vs SPY DD
+GO_LIVE_MAX_SLIPPAGE_PP = 1.5
+GO_LIVE_MIN_CLOSED_TRADES = 50
+
+
+def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
+    """Evaluate the pre-registered go-live criteria. Read-only, no verdict
+    beyond the arithmetic -- if all five hold, the gate says so and the
+    decision is still the owner's."""
+    from backend.database import AIPortfolioTrade
+
+    A = (edge or {}).get("alpha_significance") or {}
+    R = (edge or {}).get("regime_edge") or {}
+    M = (edge or {}).get("regime_mix") or {}
+
+    # 1. Blended edge positive at the registered one-sided confidence, over a
+    #    window that actually contains chop.
+    t_stat, p_two = A.get("t_stat"), A.get("p_value")
+    p_one = None
+    if t_stat is not None and p_two is not None:
+        p_one = (p_two / 2.0) if t_stat > 0 else (1.0 - p_two / 2.0)
+    trend_days = ((R.get("trend") or {}).get("n_days")) or 0
+    chop_days = ((R.get("chop") or {}).get("n_days")) or 0
+    total_days = trend_days + chop_days
+    chop_share = round(chop_days / total_days * 100, 1) if total_days else None
+    c1_met = bool(
+        p_one is not None and p_one < (1.0 - GO_LIVE_CONFIDENCE)
+        and chop_share is not None and chop_share >= GO_LIVE_MIN_CHOP_SHARE
+    )
+
+    # 2. Excess return must exceed the measured path-noise floor.
+    excess = (edge or {}).get("excess_return_pct")
+    c2_met = bool(excess is not None and noise_floor_pp is not None
+                  and excess > noise_floor_pp)
+
+    # 3. Drawdown not materially worse than SPY's.
+    dd, spy_dd = (edge or {}).get("max_drawdown_pct"), (edge or {}).get("spy_max_drawdown_pct")
+    dd_gap = round(abs(dd) - abs(spy_dd), 2) if dd is not None and spy_dd is not None else None
+    c3_met = bool(dd_gap is not None and dd_gap <= GO_LIVE_MAX_DD_MARGIN_PP)
+
+    # 4. Stop slippage bounded (needs the 2026-09-09 instrumentation).
+    slips = []
+    for t in db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == 1,
+        AIPortfolioTrade.action == "SELL",
+        AIPortfolioTrade.reason.like("STOP LOSS%"),
+    ).all():
+        sf = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+        if sf.get("split_artifact"):
+            continue
+        if sf.get("slippage_pp") is not None:
+            slips.append(float(sf["slippage_pp"]))
+    slip_avg = round(sum(slips) / len(slips), 2) if slips else None
+    c4_met = bool(slip_avg is not None and slip_avg <= GO_LIVE_MAX_SLIPPAGE_PP)
+
+    # 5. Enough closed trades.
+    closed = (edge or {}).get("closed_trades") or 0
+    c5_met = closed >= GO_LIVE_MIN_CLOSED_TRADES
+
+    criteria = [
+        {"key": "blended_edge", "met": c1_met,
+         "label": f"blended daily excess > 0 at {int(GO_LIVE_CONFIDENCE*100)}% one-sided, "
+                  f"window >= {GO_LIVE_MIN_CHOP_SHARE:.0f}% chop days",
+         "value": {"p_one_sided": round(p_one, 4) if p_one is not None else None,
+                   "chop_share_pct": chop_share,
+                   "blended_daily_excess_bps": M.get("blended_daily_excess_bps")},
+         "target": {"p_one_sided_below": round(1.0 - GO_LIVE_CONFIDENCE, 2),
+                    "chop_share_pct_min": GO_LIVE_MIN_CHOP_SHARE}},
+        {"key": "clears_noise_floor", "met": c2_met,
+         "label": "excess return exceeds measured path-noise floor",
+         "value": {"excess_return_pct": excess, "noise_floor_pp": noise_floor_pp},
+         "target": {"excess_above_pp": noise_floor_pp}},
+        {"key": "drawdown", "met": c3_met,
+         "label": f"max drawdown within {GO_LIVE_MAX_DD_MARGIN_PP:.0f}pp of SPY",
+         "value": {"portfolio_dd_pct": dd, "spy_dd_pct": spy_dd, "gap_pp": dd_gap},
+         "target": {"gap_pp_max": GO_LIVE_MAX_DD_MARGIN_PP}},
+        {"key": "stop_slippage", "met": c4_met,
+         "label": f"avg stop slippage <= {GO_LIVE_MAX_SLIPPAGE_PP}pp",
+         "value": {"avg_slippage_pp": slip_avg, "n_measured": len(slips)},
+         "target": {"avg_slippage_pp_max": GO_LIVE_MAX_SLIPPAGE_PP}},
+        {"key": "sample", "met": c5_met,
+         "label": f"at least {GO_LIVE_MIN_CLOSED_TRADES} closed trades",
+         "value": {"closed_trades": closed},
+         "target": {"closed_trades_min": GO_LIVE_MIN_CLOSED_TRADES}},
+    ]
+    unmet = [c["key"] for c in criteria if not c["met"]]
+    return {
+        "label": "Go-live thresholds (pre-registered)",
+        "registered_on": GO_LIVE_REGISTERED_ON,
+        "confidence_one_sided": GO_LIVE_CONFIDENCE,
+        "criteria": criteria,
+        "n_met": sum(1 for c in criteria if c["met"]),
+        "n_total": len(criteria),
+        "all_met": not unmet,
+        "blocking": unmet,
+        "note": ("ALL criteria must hold. Registered BEFORE the data that "
+                 "would tempt anyone to relax them. Meeting them is not an "
+                 "instruction to trade -- it removes the pre-registered "
+                 "objection to doing so; sizing remains a separate decision. "
+                 "At registration the blended daily excess was -1.8 bps at a "
+                 "51.7% trend share against a 54.8% breakeven, so criterion 1 "
+                 "is the binding one and no amount of waiting fixes it -- "
+                 "only a change in regime mix or the chop bleed does."),
+    }
+
+
 def compute_experiment_gates(db: Session) -> dict:
     """Live progress of every pre-registered promotion gate. 100% read-only.
 
@@ -2094,6 +2305,8 @@ def compute_experiment_gates(db: Session) -> dict:
                 "bar_pct": -10.0,
                 "verdict": stop_verdict,
             },
+            "go_live": _go_live_gate(
+                db, _owner_edge_metrics(db), (vintage or {}).get("spread_pp")),
             "stop_loss_recheck_pooled": {
                 "label": ("Exit-fix re-check, POOLED across champion-config "
                           "accounts (secondary; registered 2026-09-09)"),
