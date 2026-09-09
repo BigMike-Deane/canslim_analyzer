@@ -122,9 +122,23 @@ jobs:
         working-directory: frontend
         # --with-deps needs root, which the runner has (local dev does not --
         # see frontend/e2e/README.md for the LD_LIBRARY_PATH workaround).
+        #
+        # Retried because --with-deps shells out to apt, and the runner image
+        # carries Google's Chrome repo as a source. On 2026-09-09 that repo
+        # was mid-sync (release file 17:16, index 09:41) and apt aborted with
+        # "Hash Sum mismatch" -> exit 100, failing a job whose code was fine.
+        # A transient upstream mirror should not page the owner.
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          for attempt in 1 2 3; do
+            if npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::playwright browser install failed (attempt $attempt/3); retrying"
+            sleep 20
+          done
+          echo "::error::playwright browser install failed after 3 attempts"
+          exit 1
 
       - name: Run e2e
         working-directory: frontend
