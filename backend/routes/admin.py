@@ -6,6 +6,7 @@ from collections import deque
 from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import Optional
 
+import logging
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -21,6 +22,11 @@ from backend.rate_limiter import limiter
 from backend.trading_utils import get_strategy_profile
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# This module had two logger.* calls and no logger (both inside except
+# branches, so they would have raised NameError WHILE handling another
+# error and hidden the real cause). Found 2026-09-09.
+logger = logging.getLogger(__name__)
 
 
 @router.get("/users")
@@ -1553,15 +1559,89 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
             "alpha_pp": round(ret - spy_pct, 2) if ret is not None and spy_pct is not None else None,
             "n_positions": eq.get("n_positions"),
         })
+    # ── Real accounts as vintage samples (2026-09-09) ────────────────────
+    # The synthetic copies above are days old; the REAL accounts have been
+    # running the same champion strategy from different start dates for
+    # MONTHS, which is a far better-grounded read on launch luck. The owner
+    # and Karstell started 5 days apart, share ~20 of ~30 names, and sit
+    # 8.3pp of alpha apart -- that spread IS the confound this clock exists
+    # to measure, and it was sitting unread in the portfolio tables.
+    #
+    # Only accounts whose config MATCHES the champion are included. A book
+    # running a different min_score or stop is a different strategy, and
+    # folding it in would measure strategy difference as if it were vintage
+    # luck -- the precise error this whole clock guards against.
+    try:
+        from backend.database import AIPortfolioConfig, AIPortfolioSnapshot
+        from backend.ai_trader import get_portfolio_value
+
+        owner_cfg = db.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        # No owner config (fresh dev DB): nothing to compare against.
+        configs = db.query(AIPortfolioConfig).all() if owner_cfg is not None else []
+        for cfg in configs:
+            # The owner IS a vintage sample -- not excluded.
+            same = (
+                getattr(cfg, "strategy", None) == getattr(owner_cfg, "strategy", None)
+                and cfg.min_score_to_buy == owner_cfg.min_score_to_buy
+                and cfg.stop_loss_pct == owner_cfg.stop_loss_pct
+            )
+            if not same:
+                continue
+            first = db.query(AIPortfolioSnapshot).filter(
+                AIPortfolioSnapshot.user_id == cfg.user_id
+            ).order_by(
+                AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
+                AIPortfolioSnapshot.date.asc(),
+            ).first()
+            if first is None or not first.total_value:
+                continue
+            start_day = first.date or (
+                first.timestamp.date() if first.timestamp else None)
+            if start_day is None:
+                continue
+            try:
+                live_val = get_portfolio_value(db, user_id=cfg.user_id)["total_value"]
+            except Exception:
+                continue
+            ret = round((live_val / first.total_value - 1.0) * 100, 2)
+            spy_start_row = db.query(MarketSnapshot).filter(
+                MarketSnapshot.date <= start_day,
+                MarketSnapshot.spy_price.isnot(None),
+            ).order_by(MarketSnapshot.date.desc()).first()
+            spy_pct_u = None
+            if spy_now and spy_start_row and spy_start_row.spy_price:
+                spy_pct_u = round(
+                    (spy_now / float(spy_start_row.spy_price) - 1.0) * 100, 2)
+            rows.append({
+                "name": f"user:{cfg.user_id}",
+                "label": f"live u{cfg.user_id}",
+                "kind": "live_account",
+                "activated_at": start_day.isoformat(),
+                "days": (now_utc.date() - start_day).days,
+                "equity": round(live_val, 2),
+                "return_pct": ret,
+                "spy_pct": spy_pct_u,
+                "alpha_pp": (round(ret - spy_pct_u, 2)
+                             if spy_pct_u is not None else None),
+                "n_positions": None,
+            })
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"vintage: live-account sampling failed: {e}")
+
     alphas = [r["alpha_pp"] for r in rows if r["alpha_pp"] is not None and r["days"] >= 1]
     return {
         "stacks": rows,
         "n": len(alphas),
         "spread_pp": round(max(alphas) - min(alphas), 2) if len(alphas) >= 2 else None,
         "stdev_pp": round(statistics.pstdev(alphas), 2) if len(alphas) >= 2 else None,
-        "note": ("alpha = stack return since its own start minus SPY over the same "
-                 "span; spread/stdev across staggered starts of the SAME strategy = "
-                 "launch-vintage luck, the confound behind three prior cohort reads."),
+        "note": ("alpha = return since its own start minus SPY over the same span; "
+                 "spread/stdev across staggered starts of the SAME strategy = "
+                 "launch-vintage luck, the confound behind three prior cohort reads. "
+                 "Population is the synthetic vintage copies PLUS every live account "
+                 "whose config matches the champion (2026-09-09) -- the real books "
+                 "have months of divergence where the copies have days. Off-config "
+                 "accounts are excluded: their spread would be strategy difference "
+                 "wearing vintage luck's clothes."),
     }
 
 
@@ -1854,6 +1934,67 @@ def compute_experiment_gates(db: Session) -> dict:
     if stop_avg is not None and len(stop_pcts) >= 5:
         stop_verdict = "PASS" if stop_avg >= -10.0 else "FAIL"
 
+    # ── SECONDARY, POOLED stop-loss clock (pre-registered 2026-09-09) ─────
+    # The primary clock above is owner-only and has sat at n=2 for six weeks
+    # because a trending book produces no stops. Other accounts run the SAME
+    # champion config and their stops exercise the SAME exit code, so they are
+    # legitimate samples of "does the fix hold?" -- but only if the rule is
+    # fixed BEFORE the data is seen.
+    #
+    # So it is registered as a SECOND, clearly-labelled clock counting stops
+    # from TODAY FORWARD. It does NOT replace or override the primary.
+    # Pooling the already-observed stops to reach n>=5 would be exactly the
+    # post-hoc move pre-registration exists to prevent, so the historical
+    # pooled figure is reported separately as `observational_prior` and is
+    # explicitly NOT evidence.
+    #
+    # Population: accounts whose config MATCHES the champion (same strategy,
+    # min_score and stop_loss_pct as the owner). u3 runs min_score 73 and a
+    # 7% stop, so it is excluded -- its stops answer a different question.
+    # Same rule as the primary: n>=5 clean stops, PASS if avg >= -10%.
+    POOLED_REGISTERED_ON = datetime(2026, 9, 9, tzinfo=timezone.utc)
+    owner_cfg = db.query(AIPortfolioConfig).filter_by(user_id=1).first()
+
+    def _matches_champion(cfg):
+        if owner_cfg is None or cfg is None:
+            return False
+        return (
+            getattr(cfg, "strategy", None) == getattr(owner_cfg, "strategy", None)
+            and cfg.min_score_to_buy == owner_cfg.min_score_to_buy
+            and cfg.stop_loss_pct == owner_cfg.stop_loss_pct
+        )
+
+    champion_user_ids = sorted(
+        c.user_id for c in db.query(AIPortfolioConfig).all()
+        if _matches_champion(c)
+    )
+
+    def _clean_stop_pcts(user_ids, since):
+        rows = db.query(AIPortfolioTrade).filter(
+            AIPortfolioTrade.action == "SELL",
+            AIPortfolioTrade.user_id.in_(user_ids or [-1]),
+            AIPortfolioTrade.executed_at > since,
+            AIPortfolioTrade.reason.like("STOP LOSS%"),
+        ).all()
+        out = []
+        for s in rows:
+            sf = s.signal_factors if isinstance(s.signal_factors, dict) else {}
+            if sf.get("split_artifact"):
+                continue
+            cost = (s.cost_basis or 0) * (s.shares or 0)
+            if cost > 0 and s.realized_gain is not None:
+                out.append(s.realized_gain / cost * 100)
+        return out
+
+    pooled_pcts = _clean_stop_pcts(champion_user_ids, POOLED_REGISTERED_ON)
+    pooled_avg = round(sum(pooled_pcts) / len(pooled_pcts), 2) if pooled_pcts else None
+    pooled_verdict = None
+    if pooled_avg is not None and len(pooled_pcts) >= 5:
+        pooled_verdict = "PASS" if pooled_avg >= -10.0 else "FAIL"
+
+    prior_pcts = _clean_stop_pcts(champion_user_ids, STOP_RECHECK_CUTOFF)
+    prior_avg = round(sum(prior_pcts) / len(prior_pcts), 2) if prior_pcts else None
+
     # Date-based program clocks (PM program 2026-08-25): the pre-registered
     # re-check calendar lives in the product instead of session notes, so
     # each date self-reports on the Gate Progress card and the Monday email.
@@ -1898,6 +2039,32 @@ def compute_experiment_gates(db: Session) -> dict:
                 "avg_loss_pct": stop_avg,
                 "bar_pct": -10.0,
                 "verdict": stop_verdict,
+            },
+            "stop_loss_recheck_pooled": {
+                "label": ("Exit-fix re-check, POOLED across champion-config "
+                          "accounts (secondary; registered 2026-09-09)"),
+                "kind": "secondary",
+                "registered_on": "2026-09-09",
+                "user_ids": champion_user_ids,
+                "n": len(pooled_pcts), "target": 5,
+                "avg_loss_pct": pooled_avg,
+                "bar_pct": -10.0,
+                "verdict": pooled_verdict,
+                "observational_prior": {
+                    "n": len(prior_pcts),
+                    "avg_loss_pct": prior_avg,
+                    "since": "2026-06-24",
+                    "note": ("Already observed when this clock was registered, "
+                             "so it cannot count toward the verdict. Shown "
+                             "because 11 stops across two stop configs all "
+                             "landed inside the -10% bar (worst -9.86%), which "
+                             "is why a FAIL now looks unlikely -- NOT proof "
+                             "that it PASSES."),
+                },
+                "note": ("Does NOT override the owner-only primary clock. "
+                         "Counts only stops executed AFTER the registration "
+                         "date, and only accounts whose strategy, min_score "
+                         "and stop_loss_pct match the champion."),
             },
         },
         "arms": arm_payload,

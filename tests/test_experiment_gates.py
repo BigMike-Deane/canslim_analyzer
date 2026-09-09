@@ -357,6 +357,25 @@ class TestVintageSpread:
             "shadow_wide_trail": {"parent_strategy": "nostate_cs_bear"},
         })
 
+    @pytest.fixture(autouse=True)
+    def no_live_accounts(self, db_session):
+        """Isolate the SHADOW vintage population.
+
+        Since 2026-09-09 the vintage clock also samples live accounts whose
+        config matches the champion -- the real books carry months of
+        divergence where the synthetic copies carry days. These tests pin the
+        shadow-stack math specifically, so the live side is cleared here and
+        is covered separately in tests/test_pooled_clocks.py.
+
+        Without this the module passes alone but fails in the full suite,
+        depending on whether an earlier module happened to seed a
+        champion-config account.
+        """
+        from backend.database import AIPortfolioConfig
+        db_session.query(AIPortfolioConfig).delete()
+        db_session.commit()
+        yield
+
     @pytest.fixture
     def priced_stock(self, db_session):
         from backend.database import Stock
