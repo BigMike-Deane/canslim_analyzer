@@ -1,0 +1,46 @@
+# Alerting rules. These replace log-grepping for the failure modes that
+# actually bit us.
+groups:
+  - name: canslim-memory
+    rules:
+      # The Sep-8 incident: uvicorn grew to 2.87 GB over 91h and the kernel
+      # OOM-killed it host-wide. mem_limit=2560m now contains the blast
+      # radius, so this fires well before the cap.
+      - alert: CanslimMemoryHigh
+        expr: container_memory_working_set_bytes{name="canslim-analyzer"} > 1800e6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "canslim-analyzer working set above 1800 MB"
+          description: "Working set {{ $value | humanize1024 }}B against a 2560 MB cap. Check the leak hunt before it gets OOM-killed."
+
+      # Catches a leak EARLY: sustained growth regardless of absolute level.
+      # 15 MB/h over 6h is well above the ~23 MB/h steady rate measured on
+      # 2026-09-08/09, so this is a "getting worse than baseline" signal.
+      - alert: CanslimMemoryClimbing
+        expr: deriv(container_memory_working_set_bytes{name="canslim-analyzer"}[6h]) * 3600 > 40e6
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "canslim-analyzer memory climbing faster than baseline"
+          description: "Growing at {{ $value | humanize }}B/h; the measured no-cap baseline was ~23 MB/h."
+
+      - alert: CanslimContainerGone
+        expr: absent(container_last_seen{name="canslim-analyzer"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "canslim-analyzer not reporting to cAdvisor"
+          description: "Container missing for 5m -- crashed, OOM-killed, or stopped."
+
+      - alert: HostMemoryLow
+        expr: sum(container_memory_working_set_bytes{name=~".+"}) > 3200e6
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Containers collectively above 3200 MB on a 3806 MB host"
+          description: "This is how the Sep-8 host-wide OOM kill happened."

@@ -118,9 +118,91 @@ services:
       - canslim
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------
+  # Observability (2026-09-09). Added because the Sep-8 uvicorn OOM ran for
+  # 91h unnoticed, and because process_health.py's in-Redis RSS samples are
+  # wiped by every redeploy -- so measuring a leak RATE meant restarting the
+  # clock on each deploy. These containers live OUTSIDE canslim, so the
+  # series survives redeploys.
+  #
+  # Deploy them WITHOUT touching the app:
+  #     docker-compose up -d cadvisor prometheus grafana
+  # (naming the services means canslim is not recreated).
+  #
+  # Every service is mem_limit-capped ON PURPOSE: this is a 3806 MB host and
+  # canslim alone may legitimately reach its 2560m cap. Monitoring must never
+  # be what pushes the box into the host-wide OOM it exists to prevent.
+  # Prometheus and Grafana bind to the Tailscale IP only, same as postgres.
+  # ---------------------------------------------------------------------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: canslim-cadvisor
+    # No published port: only prometheus talks to it, over the compose network.
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    privileged: true
+    command:
+      # Trim collection to what the alerts actually use -- cAdvisor is the
+      # memory-hungry part of this stack if left at defaults.
+      - '--housekeeping_interval=30s'
+      - '--docker_only=true'
+      - '--disable_metrics=percpu,sched,tcp,udp,advtcp,process,hugetlb,referenced_memory,cpu_topology,resctrl'
+    mem_limit: 192m
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: canslim-prometheus
+    ports:
+      - "100.104.189.36:9090:9090"  # Tailscale-only
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      # 30d is plenty to read a leak slope, and the size cap protects the
+      # 16 GB of free disk on this box.
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=2GB'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - cadvisor
+    mem_limit: 512m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:11.1.0
+    container_name: canslim-grafana
+    ports:
+      - "100.104.189.36:3000:3000"  # Tailscale-only
+    volumes:
+      - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Set GRAFANA_ADMIN_PASSWORD in .env. Tailscale-bound, but do not ship
+      # the admin/admin default.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme-set-in-env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    depends_on:
+      - prometheus
+    mem_limit: 256m
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:
   backtest-cache:
   caddy-data:
   caddy-config:
+  prometheus-data:
+  grafana-data:
