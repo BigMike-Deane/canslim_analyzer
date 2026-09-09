@@ -1,0 +1,75 @@
+# CI for CANSLIM Analyzer.
+#
+# Added 2026-09-09. Until now the repo had NO automated checks at all: every
+# verification was somebody running pytest by hand and remembering to look at
+# the result. Three number-consistency bugs shipped to production that day,
+# and the regression tests written for them only help if something actually
+# runs them.
+#
+# Deliberately modest: the full suite plus a frontend build. No deploy step --
+# deploys stay manual and owner-driven.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        # Root requirements.txt is the dev/test set (it carries pytest and the
+        # empyrical cross-check). backend/requirements.txt is what the Docker
+        # image installs -- both are needed for the suite to run as it does
+        # locally. See TestTheDependencyShipsInTheImage for why that split
+        # matters.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r backend/requirements.txt
+
+      - name: Run tests
+        env:
+          REQUIRE_AUTH: 'false'
+          CANSLIM_ENV: development
+          DISABLE_SCHEDULER: 'true'
+        # Coverage reporting is configured in pytest.ini; disable it here so a
+        # coverage hiccup can never be the reason CI reports a failure.
+        run: python -m pytest tests/ -q --no-cov
+
+  frontend:
+    name: vite build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build
+        working-directory: frontend
+        # A broken JSX edit currently only surfaces at deploy time, when the
+        # Docker build runs vite. Catch it here instead.
+        run: |
+          npm ci
+          npm run build

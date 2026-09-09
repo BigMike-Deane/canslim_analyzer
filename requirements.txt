@@ -43,3 +43,7 @@ scipy>=1.11.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0
+# TEST-ONLY: independent cross-check of backend/edge_metrics.py (Sharpe,
+# alpha, beta, max drawdown). Deliberately NOT in backend/requirements.txt --
+# it must not ship in the runtime image. tests/ skip gracefully without it.
+empyrical-reloaded>=0.5.11
