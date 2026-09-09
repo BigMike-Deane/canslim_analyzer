@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { api, formatDate, formatDateTime, formatRelativeTime } from '../api'
 import Spinner from '../components/Spinner'
 
@@ -18,6 +18,151 @@ function _formatScanDuration(startIso, endIso) {
 import { useAuth } from '../auth'
 
 
+
+// Drill-down for one account. Answers "what is actually in the book, and how
+// did it get there?" -- the question the summary row cannot.
+function UserPortfolioDetail({ userId }) {
+  const [d, setD] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    api.getUserPortfolioDetail(userId)
+      .then(r => { if (alive) { setD(r); setError('') } })
+      .catch(e => { if (alive) setError(e?.message || 'failed to load') })
+    return () => { alive = false }
+  }, [userId])
+
+  if (error) return <div className="text-xs text-red-400 px-3 py-2">{error}</div>
+  if (!d) return <div className="px-3 py-2"><Spinner /></div>
+
+  const money = (v) => v == null ? '—' : `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const sign = (v, dp = 2) => v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(dp)}%`
+  const tone = (v) => v == null ? 'text-dark-500' : v >= 0 ? 'text-emerald-400' : 'text-red-400'
+
+  return (
+    <div className="bg-dark-850/60 border-t border-dark-700/50 px-3 py-3 space-y-4">
+      {/* Deployment: the "is this book actually invested?" answer. */}
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px]">
+        <span className="text-dark-400">Cash <b className="text-dark-100 font-data">{money(d.cash)}</b>
+          {d.cash_pct != null && <span className="text-dark-500"> ({d.cash_pct}%)</span>}</span>
+        <span className="text-dark-400">Invested <b className="text-dark-100 font-data">{money(d.positions_value)}</b></span>
+        <span className="text-dark-400">Positions <b className="text-dark-100 font-data">{d.holdings.length}/{d.max_positions}</b></span>
+        <span className="text-dark-400">Strategy <b className="text-dark-100 font-data">{d.strategy || '—'}</b></span>
+        <span className="text-dark-400">Min score <b className="text-dark-100 font-data">{d.min_score_to_buy ?? '—'}</b></span>
+      </div>
+
+      <div>
+        <h4 className="text-[10px] uppercase tracking-wider text-dark-500 mb-1">Holdings</h4>
+        {d.holdings.length === 0 ? (
+          <p className="text-[11px] text-dark-500">No open positions — fully in cash.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-dark-500 text-left">
+                  <th className="py-1 pr-3 font-medium">Ticker</th>
+                  <th className="py-1 pr-3 font-medium text-right">Value</th>
+                  <th className="py-1 pr-3 font-medium text-right">Weight</th>
+                  <th className="py-1 pr-3 font-medium text-right">Gain</th>
+                  <th className="py-1 pr-3 font-medium text-right">Held</th>
+                  <th className="py-1 font-medium">Bought</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.holdings.map(h => (
+                  <tr key={h.ticker} className="border-t border-dark-700/40">
+                    <td className="py-1 pr-3 text-dark-100 font-data">{h.ticker}</td>
+                    <td className="py-1 pr-3 text-right font-data text-dark-200">{money(h.value)}</td>
+                    <td className="py-1 pr-3 text-right font-data text-dark-400">{h.weight_pct != null ? `${h.weight_pct}%` : '—'}</td>
+                    <td className={`py-1 pr-3 text-right font-data ${tone(h.gain_pct)}`}>{sign(h.gain_pct)}</td>
+                    <td className="py-1 pr-3 text-right font-data text-dark-400">{h.days_held != null ? `${h.days_held}d` : '—'}</td>
+                    <td className="py-1 font-data text-dark-500">{h.purchased_on || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {d.exit_quality.length > 0 && (
+        <div>
+          <h4 className="text-[10px] uppercase tracking-wider text-dark-500 mb-1">
+            Exit quality by reason
+          </h4>
+          {/* Split by reason on purpose: an account-level win rate hides
+              which exit is doing the work, and exit logic is the #1 open
+              question on this program. */}
+          <div className="flex flex-wrap gap-2">
+            {d.exit_quality.map(e => (
+              <div key={e.reason} className="rounded-md border border-dark-700/60 px-2 py-1">
+                <div className="text-[9px] uppercase tracking-wider text-dark-500">{e.reason}</div>
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-sm font-data ${tone(e.avg_pct)}`}>{sign(e.avg_pct)}</span>
+                  <span className="text-[10px] text-dark-400 font-data">n={e.n}</span>
+                  {e.win_rate_pct != null && (
+                    <span className="text-[10px] text-dark-500 font-data">{e.win_rate_pct}% win</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <h4 className="text-[10px] uppercase tracking-wider text-dark-500 mb-1">
+          Recent transactions ({d.trade_count_shown})
+        </h4>
+        <div className="overflow-x-auto max-h-72 overflow-y-auto">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 bg-dark-850">
+              <tr className="text-[9px] uppercase tracking-wider text-dark-500 text-left">
+                <th className="py-1 pr-3 font-medium">When</th>
+                <th className="py-1 pr-3 font-medium">Ticker</th>
+                <th className="py-1 pr-3 font-medium">Action</th>
+                <th className="py-1 pr-3 font-medium text-right">Price</th>
+                <th className="py-1 pr-3 font-medium text-right">Value</th>
+                <th className="py-1 pr-3 font-medium text-right">Realized</th>
+                <th className="py-1 font-medium">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.trades.map((t, i) => (
+                <tr key={i} className="border-t border-dark-700/40">
+                  <td className="py-1 pr-3 font-data text-dark-500 whitespace-nowrap">
+                    {t.executed_at ? t.executed_at.slice(0, 10) : '—'}
+                  </td>
+                  <td className="py-1 pr-3 font-data text-dark-100">{t.ticker}</td>
+                  <td className="py-1 pr-3">
+                    <span className={`text-[9px] px-1 py-0.5 rounded ${
+                      t.action === 'BUY' ? 'bg-emerald-500/15 text-emerald-400'
+                        : t.action === 'SELL' ? 'bg-red-500/15 text-red-400'
+                        : 'bg-primary-500/15 text-primary-400'
+                    }`}>{t.action}</span>
+                  </td>
+                  <td className="py-1 pr-3 text-right font-data text-dark-300">{money(t.price)}</td>
+                  <td className="py-1 pr-3 text-right font-data text-dark-300">{money(t.value)}</td>
+                  <td className={`py-1 pr-3 text-right font-data ${tone(t.realized_gain)}`}>
+                    {t.realized_gain == null ? '—' : money(t.realized_gain)}
+                    {t.realized_pct != null && (
+                      <span className="text-dark-500"> ({sign(t.realized_pct, 1)})</span>
+                    )}
+                  </td>
+                  <td className="py-1 text-dark-400 max-w-[22rem] truncate" title={t.reason || ''}>
+                    {t.reason || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Per-user portfolio scoreboard ────────────────────────────────────────
 // Ranked by ALPHA VS SPY OVER EACH USER'S OWN WINDOW, never raw return.
 // Accounts started on different dates and launch vintage is worth roughly
@@ -29,6 +174,7 @@ function UserPortfolioScoreboard() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [showTest, setShowTest] = useState(false)
+  const [openUser, setOpenUser] = useState(null)
 
   useEffect(() => {
     let alive = true
@@ -74,6 +220,8 @@ function UserPortfolioScoreboard() {
                   <th className="py-1.5 pr-3 font-medium">Account</th>
                   <th className="py-1.5 pr-3 font-medium">Since</th>
                   <th className="py-1.5 pr-3 font-medium text-right">Value</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Cash</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Pos</th>
                   <th className="py-1.5 pr-3 font-medium text-right">Return</th>
                   <th className="py-1.5 pr-3 font-medium text-right">SPY</th>
                   <th className="py-1.5 pr-3 font-medium text-right">Alpha</th>
@@ -83,11 +231,13 @@ function UserPortfolioScoreboard() {
               </thead>
               <tbody>
                 {data.users.map(u => (
+                  <Fragment key={u.user_id}>
                   <tr
-                    key={u.user_id}
-                    className={`border-t border-dark-700/50 ${u.low_sample ? 'opacity-60' : ''}`}
+                    onClick={() => setOpenUser(openUser === u.user_id ? null : u.user_id)}
+                    className={`border-t border-dark-700/50 cursor-pointer hover:bg-dark-800/40 ${u.low_sample ? 'opacity-60' : ''}`}
                   >
                     <td className="py-1.5 pr-3">
+                      <span className="text-dark-500 mr-1">{openUser === u.user_id ? '▾' : '▸'}</span>
                       <span className="text-dark-100">{u.display_name}</span>
                       {u.is_test && (
                         <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400">
@@ -109,6 +259,17 @@ function UserPortfolioScoreboard() {
                         ? `$${u.current_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                         : '—'}
                     </td>
+                    <td className="py-1.5 pr-3 text-right font-data text-dark-300 whitespace-nowrap">
+                      {u.cash != null
+                        ? `$${u.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                        : '—'}
+                      {u.cash_pct != null && (
+                        <span className="text-dark-500"> ({u.cash_pct}%)</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-data text-dark-300">
+                      {u.open_positions}
+                    </td>
                     <td className={`py-1.5 pr-3 text-right font-data ${tone(u.return_pct)}`}>
                       {pct(u.return_pct)}
                     </td>
@@ -125,6 +286,14 @@ function UserPortfolioScoreboard() {
                       {u.win_rate_pct != null ? `${u.win_rate_pct}%` : '—'}
                     </td>
                   </tr>
+                  {openUser === u.user_id && (
+                    <tr>
+                      <td colSpan={10} className="p-0">
+                        <UserPortfolioDetail userId={u.user_id} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

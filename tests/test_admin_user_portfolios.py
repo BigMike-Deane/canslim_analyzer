@@ -30,6 +30,7 @@ from backend.main import app
 from backend.database import (
     init_db, SessionLocal, User,
     AIPortfolioConfig, AIPortfolioSnapshot, MarketSnapshot,
+    AIPortfolioPosition, AIPortfolioTrade,
 )
 from backend.auth import get_current_active_user, get_admin_user
 from tests.conftest import override_dependency
@@ -233,3 +234,94 @@ class TestTheTestHeuristicIsNotOverEager:
             db.close()
         assert _row(_fetch(), uid) is None
         assert _row(_fetch(include_test=True), uid)["is_test"] is True
+
+
+class TestDrillDown:
+    """The summary row cannot answer "is this book actually invested?".
+
+    Origin: the scoreboard showed Boot with "CLOSED 5" and that read as
+    "barely trading" when he was 91% deployed across 7 positions. Cash and
+    position count now sit on the summary row, and the drill-down carries
+    holdings, the trade tape and exit quality.
+    """
+
+    DRILL_ID = 99014
+
+    def _seed_book(self):
+        db = SessionLocal()
+        try:
+            uid = self.DRILL_ID
+            db.query(AIPortfolioConfig).filter_by(user_id=uid).delete()
+            db.query(AIPortfolioPosition).filter_by(user_id=uid).delete()
+            db.query(AIPortfolioTrade).filter_by(user_id=uid).delete()
+            if not db.query(User).filter_by(id=uid).first():
+                db.add(User(id=uid, email="drill@acct.example.org",
+                            display_name="Drill Account", is_active=True,
+                            is_admin=False, hashed_password=""))
+            db.add(AIPortfolioConfig(
+                user_id=uid, starting_cash=10000.0, current_cash=1000.0,
+                is_active=True, max_positions=8,
+            ))
+            db.add(AIPortfolioPosition(
+                user_id=uid, ticker="AAA", shares=10.0, cost_basis=100.0,
+                current_price=110.0, current_value=1100.0,
+                gain_loss=100.0, gain_loss_pct=10.0,
+                purchase_date=datetime.now(timezone.utc) - timedelta(days=12),
+            ))
+            for ticker, gain, reason in (
+                ("BBB", 50.0, "TRAILING STOP: Peak $10 -> $9"),
+                ("CCC", -80.0, "STOP LOSS: Down 8.0%"),
+                ("DDD", 120.0, "TRAILING STOP: Peak $20 -> $18"),
+            ):
+                db.add(AIPortfolioTrade(
+                    user_id=uid, ticker=ticker, action="SELL", shares=10.0,
+                    price=10.0, total_value=100.0, cost_basis=10.0,
+                    realized_gain=gain, reason=reason,
+                    executed_at=datetime.now(timezone.utc) - timedelta(days=3),
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+    def _detail(self):
+        r = client.get(f"/api/admin/user-portfolios/{self.DRILL_ID}")
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def test_cash_and_positions_are_on_the_summary_row(self):
+        self._seed_book()
+        row = _row(_fetch(), self.DRILL_ID)
+        assert row is not None
+        # 1000 cash + 1100 invested = 2100 -> 47.6% cash
+        assert row["cash"] == pytest.approx(1000.0, abs=0.01)
+        assert row["open_positions"] == 1
+        assert row["cash_pct"] == pytest.approx(47.6, abs=0.2)
+
+    def test_holdings_carry_weight_and_gain(self):
+        self._seed_book()
+        h = self._detail()["holdings"]
+        assert len(h) == 1
+        assert h[0]["ticker"] == "AAA"
+        assert h[0]["gain_pct"] == pytest.approx(10.0, abs=0.01)
+        assert h[0]["weight_pct"] == pytest.approx(52.4, abs=0.2)
+        assert h[0]["days_held"] == 12
+
+    def test_trade_tape_returned(self):
+        self._seed_book()
+        trades = self._detail()["trades"]
+        assert len(trades) == 3
+        assert {t["ticker"] for t in trades} == {"BBB", "CCC", "DDD"}
+
+    def test_exit_quality_split_by_reason(self):
+        # An account-level win rate (2/3) hides that STOP LOSS is the loser.
+        self._seed_book()
+        buckets = {e["reason"]: e for e in self._detail()["exit_quality"]}
+        assert "TRAILING STOP" in buckets
+        assert "STOP LOSS" in buckets
+        assert buckets["TRAILING STOP"]["n"] == 2
+        assert buckets["TRAILING STOP"]["win_rate_pct"] == 100.0
+        assert buckets["STOP LOSS"]["n"] == 1
+        assert buckets["STOP LOSS"]["win_rate_pct"] == 0.0
+
+    def test_unknown_user_is_404(self):
+        assert client.get("/api/admin/user-portfolios/987654").status_code == 404

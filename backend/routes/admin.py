@@ -2134,9 +2134,12 @@ async def get_user_portfolios(
             if executed:
                 start_day = min(executed).date()
 
+        live_cash = live_positions_value = None
         try:
             live = get_portfolio_value(db, user_id=user.id)
             end_value = live["total_value"]
+            live_cash = live.get("cash")
+            live_positions_value = live.get("positions_value")
         except Exception:
             end_value = None
 
@@ -2174,6 +2177,16 @@ async def get_user_portfolios(
             "spy_return_pct": round(spy_pct, 2) if spy_pct is not None else None,
             # The number worth ranking on.
             "alpha_pp": round(alpha_pp, 2) if alpha_pp is not None else None,
+            # Cash exposure belongs on the summary row, not behind a
+            # drill-down: "is this account actually deployed?" is the first
+            # question asked of any book, and a row showing only CLOSED
+            # trades reads as "barely invested" when it is 91% deployed.
+            "cash": round(live_cash, 2) if live_cash is not None else None,
+            "positions_value": round(live_positions_value, 2) if live_positions_value is not None else None,
+            "cash_pct": (
+                round(live_cash / end_value * 100, 1)
+                if live_cash is not None and end_value else None
+            ),
             "open_positions": db.query(AIPortfolioPosition).filter_by(
                 user_id=user.id).count(),
             "closed_trades": len(sells),
@@ -2193,4 +2206,132 @@ async def get_user_portfolios(
             "is worth ~7pp/month of sigma on this strategy. Rows flagged "
             "low_sample (<10 closed trades or <30 days) are not comparable."
         ),
+    }
+
+
+@router.get("/user-portfolios/{user_id}")
+async def get_user_portfolio_detail(
+    user_id: int,
+    trade_limit: int = Query(50, ge=1, le=500),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Drill-down for one account: holdings, trade tape, and exit quality.
+
+    Companion to /user-portfolios. That endpoint answers "who is ahead, and
+    is the lead real?"; this one answers "what is actually in the book, and
+    how did it get there?".
+
+    Exit quality is split by reason (STOP LOSS / TRAILING STOP / PARTIAL
+    PROFIT / TAKE PROFIT ...) because the owner's #1 open question is exit
+    logic, and an account-level win rate hides which exit is doing the work.
+    """
+    from backend.database import AIPortfolioPosition
+    from backend.ai_trader import get_portfolio_value
+
+    user = db.query(User).filter_by(id=user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    config = db.query(AIPortfolioConfig).filter_by(user_id=user_id).first()
+    if config is None:
+        raise HTTPException(status_code=404, detail="No portfolio for this user")
+
+    try:
+        live = get_portfolio_value(db, user_id=user_id)
+    except Exception:
+        live = {}
+    total_value = live.get("total_value")
+
+    positions = db.query(AIPortfolioPosition).filter_by(user_id=user_id).all()
+    holdings = []
+    for p in positions:
+        gain_pct = None
+        if p.cost_basis:
+            gain_pct = (p.current_price or 0) / p.cost_basis * 100 - 100
+        value = p.current_value or 0
+        holdings.append({
+            "ticker": p.ticker,
+            "shares": round(p.shares, 4) if p.shares else None,
+            "cost_basis": round(p.cost_basis, 2) if p.cost_basis else None,
+            "current_price": round(p.current_price, 2) if p.current_price else None,
+            "value": round(value, 2),
+            "gain_pct": round(gain_pct, 2) if gain_pct is not None else None,
+            "weight_pct": round(value / total_value * 100, 1) if total_value else None,
+            "purchased_on": p.purchase_date.date().isoformat() if p.purchase_date else None,
+            "days_held": (
+                (date_cls.today() - p.purchase_date.date()).days
+                if p.purchase_date else None
+            ),
+        })
+    holdings.sort(key=lambda h: h["value"], reverse=True)
+
+    rows = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == user_id
+    ).order_by(AIPortfolioTrade.executed_at.desc().nullslast()).limit(trade_limit).all()
+
+    trades = [{
+        "ticker": t.ticker,
+        "action": t.action,
+        "price": round(t.price, 2) if t.price else None,
+        "value": round(t.total_value, 2) if t.total_value else None,
+        "realized_gain": round(t.realized_gain, 2) if t.realized_gain is not None else None,
+        "realized_pct": (
+            round(t.realized_gain / (t.cost_basis * t.shares) * 100, 2)
+            if t.realized_gain is not None and t.cost_basis and t.shares else None
+        ),
+        "holding_days": t.holding_days,
+        "reason": t.reason,
+        "executed_at": t.executed_at.isoformat() + "Z" if t.executed_at else None,
+    } for t in rows]
+
+    # Exit quality by reason, over ALL sells (not just the page above).
+    all_sells = db.query(AIPortfolioTrade).filter(
+        AIPortfolioTrade.user_id == user_id,
+        AIPortfolioTrade.action == "SELL",
+    ).all()
+
+    buckets: dict = {}
+    for t in all_sells:
+        label = (t.reason or "UNKNOWN").split(":")[0].strip().upper()[:24]
+        pct = None
+        if t.realized_gain is not None and t.cost_basis and t.shares:
+            pct = t.realized_gain / (t.cost_basis * t.shares) * 100
+        b = buckets.setdefault(label, {"n": 0, "wins": 0, "pcts": [], "realized": 0.0})
+        b["n"] += 1
+        b["realized"] += t.realized_gain or 0.0
+        if (t.realized_gain or 0) > 0:
+            b["wins"] += 1
+        if pct is not None:
+            b["pcts"].append(pct)
+
+    exit_quality = sorted(
+        (
+            {
+                "reason": label,
+                "n": b["n"],
+                "win_rate_pct": round(b["wins"] / b["n"] * 100, 1) if b["n"] else None,
+                "avg_pct": round(sum(b["pcts"]) / len(b["pcts"]), 2) if b["pcts"] else None,
+                "realized_total": round(b["realized"], 2),
+            }
+            for label, b in buckets.items()
+        ),
+        key=lambda r: r["n"], reverse=True,
+    )
+
+    return {
+        "user_id": user_id,
+        "display_name": user.display_name or user.email,
+        "strategy": getattr(config, "strategy", None),
+        "is_active": bool(config.is_active),
+        "max_positions": config.max_positions,
+        "min_score_to_buy": config.min_score_to_buy,
+        "stop_loss_pct": config.stop_loss_pct,
+        "cash": round(live.get("cash"), 2) if live.get("cash") is not None else None,
+        "positions_value": round(live.get("positions_value"), 2) if live.get("positions_value") is not None else None,
+        "total_value": round(total_value, 2) if total_value is not None else None,
+        "cash_pct": round(live.get("cash") / total_value * 100, 1) if live.get("cash") is not None and total_value else None,
+        "holdings": holdings,
+        "trades": trades,
+        "trade_count_shown": len(trades),
+        "exit_quality": exit_quality,
     }

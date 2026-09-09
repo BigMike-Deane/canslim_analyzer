@@ -655,6 +655,10 @@ export const api = {
   getUserPortfolios: (includeTest = false) =>
     request(`/api/admin/user-portfolios${includeTest ? '?include_test=true' : ''}`),
 
+  // Drill-down for one account: holdings, trade tape, exit quality by reason.
+  getUserPortfolioDetail: (userId, tradeLimit = 50) =>
+    request(`/api/admin/user-portfolios/${userId}?trade_limit=${tradeLimit}`),
+
   createUser: async (userData) => {
     const result = await request('/api/admin/users', {
       method: 'POST',
