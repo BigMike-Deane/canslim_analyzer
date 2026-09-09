@@ -1717,11 +1717,12 @@ def _owner_edge_metrics(db: Session) -> dict:
     if len(days_sorted) < 2:
         return {}
 
-    spy_by_date = {
-        ms.date: ms.spy_price
-        for ms in db.query(MarketSnapshot).filter(
-            MarketSnapshot.spy_price.isnot(None)).all()
-    }
+    spy_by_date, spy_ma_by_date = {}, {}
+    for ms in db.query(MarketSnapshot).filter(
+            MarketSnapshot.spy_price.isnot(None)).all():
+        spy_by_date[ms.date] = ms.spy_price
+        if ms.spy_50_ma:
+            spy_ma_by_date[ms.date] = ms.spy_50_ma
     spy_anchor = base_value = None
     if spy_by_date:
         first_day = days_sorted[0]
@@ -1750,15 +1751,39 @@ def _owner_edge_metrics(db: Session) -> dict:
             AIPortfolioTrade.realized_gain.isnot(None),
         ).all()
     ]
+    port_values = [by_day[x].total_value for x in days_sorted]
+    spy_values = [_spy_value_for(x) for x in days_sorted]
     try:
-        return compute_edge_metrics(
-            [by_day[x].total_value for x in days_sorted],
-            [_spy_value_for(x) for x in days_sorted],
-            realized,
-        ) or {}
+        metrics = compute_edge_metrics(port_values, spy_values, realized) or {}
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"go-live gate: edge metrics failed: {e}")
         return {}
+
+    # regime_edge / regime_mix are NOT produced by compute_edge_metrics -- the
+    # /edge endpoint layers them on from SPY's distance to its 50MA. Without
+    # them the go-live gate's criterion 1 sees chop_share=None and can never
+    # pass, no matter how good the edge gets. It fails CLOSED, which is the
+    # safe direction, but it is still wrong: the criterion would be blocked
+    # for a missing input rather than a real shortfall. (Caught in prod
+    # verification 2026-09-09, minutes after the gate first deployed.)
+    def _spy_dist_for(day):
+        price, ma = spy_by_date.get(day), spy_ma_by_date.get(day)
+        if price is None or ma is None:
+            ep = [x for x in spy_by_date if x <= day]
+            em = [x for x in spy_ma_by_date if x <= day]
+            if not ep or not em:
+                return None
+            price, ma = spy_by_date[max(ep)], spy_ma_by_date[max(em)]
+        return ((price - ma) / ma * 100.0) if ma else None
+
+    try:
+        from backend.edge_metrics import regime_conditional_edge, regime_mix_summary
+        spy_dist = [_spy_dist_for(x) for x in days_sorted]
+        metrics["regime_edge"] = regime_conditional_edge(port_values, spy_values, spy_dist)
+        metrics["regime_mix"] = regime_mix_summary(spy_dist, metrics.get("regime_edge"))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"go-live gate: regime metrics failed: {e}")
+    return metrics
 
 # ── GO-LIVE THRESHOLDS (pre-registered 2026-09-09) ───────────────────────
 # The owner's standing gate was "no real money until edge vs SPY is

@@ -141,3 +141,76 @@ class TestThresholdsAreNotSilentlyLoosened:
         assert A.GO_LIVE_MAX_DD_MARGIN_PP == 5.0
         assert A.GO_LIVE_MAX_SLIPPAGE_PP == 1.5
         assert A.GO_LIVE_MIN_CLOSED_TRADES == 50
+
+
+class TestGateInputCarriesRegimeData:
+    """criterion 1 needs regime_edge/regime_mix, which compute_edge_metrics
+    does NOT produce -- the /edge endpoint layers them on from SPY's distance
+    to its 50MA.
+
+    Without them the gate sees chop_share=None and criterion 1 can never
+    pass, no matter how good the edge gets. It fails CLOSED (safe), but it
+    would be blocked by a missing input rather than a real shortfall. Caught
+    in prod verification minutes after the gate first deployed, 2026-09-09.
+    """
+
+    def test_owner_edge_metrics_includes_regime_keys(self):
+        from datetime import date, datetime, timedelta, timezone
+        from backend.database import (
+            SessionLocal, User, AIPortfolioConfig, AIPortfolioSnapshot,
+            MarketSnapshot,
+        )
+
+        db = SessionLocal()
+        try:
+            db.query(AIPortfolioSnapshot).filter_by(user_id=1).delete()
+            db.query(AIPortfolioConfig).filter_by(user_id=1).delete()
+            if not db.query(User).filter_by(id=1).first():
+                db.add(User(id=1, email="owner@acct.example.org",
+                            display_name="Owner", is_active=True,
+                            is_admin=True, hashed_password=""))
+            db.add(AIPortfolioConfig(user_id=1, starting_cash=25000.0,
+                                     current_cash=25000.0, is_active=True))
+            # 40 days of book + SPY WITH a 50MA, so regime classification has
+            # something to classify.
+            #
+            # Deliberately placed ~400 days back. MarketSnapshot is shared
+            # app-wide and keyed by date; seeding up to TODAY makes these rows
+            # the "latest market snapshot", which feeds market direction and
+            # broke three unrelated breakout/stock tests when this was first
+            # written. Old dates cannot become the latest row.
+            for i in range(40):
+                day = date.today() - timedelta(days=440 - i)
+                db.add(AIPortfolioSnapshot(
+                    user_id=1,
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=40 - i),
+                    date=day, total_value=25000.0 + i * 25,
+                    cash=1000.0, positions_value=24000.0 + i * 25,
+                    positions_count=1, total_return=i * 25.0,
+                    total_return_pct=i * 0.1,
+                ))
+                row = db.query(MarketSnapshot).filter_by(date=day).first()
+                price, ma = 500.0 + i, 495.0 + i * 0.9
+                if row:
+                    row.spy_price, row.spy_50_ma = price, ma
+                else:
+                    db.add(MarketSnapshot(date=day, spy_price=price, spy_50_ma=ma))
+            db.commit()
+
+            m = A._owner_edge_metrics(db)
+            assert m, "no edge metrics computed"
+            assert "regime_edge" in m, (
+                "regime_edge missing -- go-live criterion 1 would be "
+                "permanently blocked on a missing input")
+            assert "regime_mix" in m, "regime_mix missing"
+        finally:
+            db.query(AIPortfolioSnapshot).filter_by(user_id=1).delete()
+            db.query(AIPortfolioConfig).filter_by(user_id=1).delete()
+            # Remove the MarketSnapshot rows this test created, so it leaves
+            # the shared table exactly as it found it.
+            db.query(MarketSnapshot).filter(
+                MarketSnapshot.date >= date.today() - timedelta(days=440),
+                MarketSnapshot.date <= date.today() - timedelta(days=401),
+            ).delete(synchronize_session=False)
+            db.commit()
+            db.close()
