@@ -193,6 +193,46 @@ def _is_market_holiday(day: date) -> bool:
     return day in closures
 
 
+@lru_cache(maxsize=512)
+def _nyse_session_bounds(day: date):
+    """(open, close) as tz-aware datetimes for one session, or None.
+
+    2026-09-09 (owner-approved): hours used to be hardcoded 9:30-16:00 ET,
+    so on the ~2 early-close days a year -- the day after Thanksgiving and
+    Christmas Eve, both 13:00 ET -- the trader believed the market was open
+    for three hours after it shut, and could record simulated fills at a
+    price that was by then the day's close. Roughly 6-8 trade cycles a year
+    of fills that no broker could have given us. The whole program is a
+    measurement of edge vs SPY, so fictional fills contaminate the number
+    being measured.
+
+    The change is deliberately asymmetric: it only makes the system do
+    LESS. Its failure mode is a DEFERRED trade (a 2pm signal on a half-day
+    fills next session), never a wrong one. No backtest parity cost either
+    -- the backtester is daily-bar based and models no intraday hours at
+    all, so a half-day is one bar with a close there regardless.
+    """
+    try:
+        import pandas_market_calendars as mcal
+    except Exception:
+        return None
+    try:
+        schedule = mcal.get_calendar("NYSE").schedule(str(day), str(day))
+        if schedule.empty:
+            return None
+        row = schedule.iloc[0]
+        return (
+            row["market_open"].to_pydatetime(),
+            row["market_close"].to_pydatetime(),
+        )
+    except Exception as e:
+        logger.warning(
+            "NYSE session hours unavailable for %s (%s); falling back to a "
+            "fixed 9:30-16:00 ET session", day, e
+        )
+        return None
+
+
 def is_trading_day(now: Optional[datetime] = None) -> bool:
     """True on NYSE session days (Mon-Fri, not a holiday) -- the calendar
     half of is_market_open() without the 9:30-16:00 clock. ``now`` must be
@@ -209,8 +249,10 @@ def is_trading_day(now: Optional[datetime] = None) -> bool:
 def is_market_open() -> bool:
     """
     Check if US stock market is currently open.
-    Market hours: Monday-Friday, 9:30 AM - 4:00 PM Eastern Time.
-    Accounts for US market holidays (NYSE closures).
+    Monday-Friday during the NYSE session for that date. Accounts for
+    holiday closures AND early closes (13:00 ET the day after Thanksgiving
+    and on Christmas Eve) -- hours come from the exchange calendar, not a
+    fixed 9:30-16:00 assumption.
 
     Returns:
         True if market is open, False otherwise
@@ -222,11 +264,18 @@ def is_market_open() -> bool:
     if not is_trading_day(now):
         return False
 
-    # Market hours: 9:30 AM - 4:00 PM Eastern
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    # Real session hours for THIS date, so early closes are honoured.
+    # Both bounds are tz-aware, so the Eastern-vs-UTC comparison is safe.
+    bounds = _nyse_session_bounds(now.date())
+    if bounds is None:
+        # Calendar unavailable: degrade to the historical fixed session
+        # rather than refusing to trade at all.
+        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        return market_open <= now <= market_close
 
-    return market_open <= now <= market_close
+    session_open, session_close = bounds
+    return session_open <= now <= session_close
 
 
 from backend.database import (

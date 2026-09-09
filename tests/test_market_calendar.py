@@ -26,6 +26,7 @@ os.environ.setdefault("DISABLE_SCHEDULER", "true")
 
 from backend.ai_trader import (
     EASTERN_TZ,
+    _nyse_session_bounds,
     _get_us_market_holidays,
     _is_market_holiday,
     _nyse_holidays_for_year,
@@ -131,19 +132,71 @@ class TestFallbackWhenCalendarUnavailable:
             _nyse_holidays_for_year.cache_clear()
 
 
-class TestSessionClockUnchanged:
-    """The 9:30-16:00 clock is deliberately NOT touched by this change.
+class TestEarlyCloses:
+    """The NYSE closes at 13:00 ET the day after Thanksgiving and on
+    Christmas Eve. Hours used to be hardcoded 9:30-16:00, so the trader
+    believed the market was open for three hours after it shut and could
+    record simulated fills at what was by then the day's closing price --
+    roughly 6-8 trade cycles a year that no broker could have filled.
 
-    The NYSE closes at 13:00 on ~2 days a year (day after Thanksgiving,
-    Christmas Eve) and this code has never modelled that. Moving to
-    schedule-based hours would change LIVE TRADING behaviour on those days,
-    so it is a separate, owner-approved decision. This test pins the current
-    behaviour so that change cannot land by accident.
+    Owner-approved 2026-09-09. The change only ever makes the system do
+    LESS: a 2pm signal on a half-day is deferred to the next session, never
+    filled wrongly.
     """
 
-    def test_half_day_still_treated_as_a_full_session(self):
-        # 2026-11-27, the day after Thanksgiving: real NYSE close is 13:00 ET.
-        assert is_trading_day(_et(2026, 11, 27)) is True
+    def _freeze(self, monkeypatch, when):
+        from backend import ai_trader
+
+        class FixedDt(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return when if tz else when.replace(tzinfo=None)
+
+        monkeypatch.setattr(ai_trader, "datetime", FixedDt)
+        return ai_trader
+
+    @pytest.mark.parametrize(
+        "day", [date(2026, 11, 27), date(2026, 12, 24), date(2027, 11, 26)],
+        ids=["black-friday-2026", "christmas-eve-2026", "black-friday-2027"],
+    )
+    def test_half_day_closes_at_1pm(self, day):
+        bounds = _nyse_session_bounds(day)
+        assert bounds is not None
+        close_et = bounds[1].astimezone(EASTERN_TZ)
+        assert (close_et.hour, close_et.minute) == (13, 0), (
+            f"{day} closes at {close_et:%H:%M} ET, expected 13:00"
+        )
+
+    def test_open_before_the_early_close(self, monkeypatch):
+        ait = self._freeze(monkeypatch, _et(2026, 11, 27, 11))
+        assert ait.is_market_open() is True
+
+    def test_closed_after_the_early_close(self, monkeypatch):
+        # 14:00 on Black Friday. This returned True before the fix.
+        ait = self._freeze(monkeypatch, _et(2026, 11, 27, 14))
+        assert ait.is_market_open() is False
+
+    def test_a_normal_day_still_runs_to_4pm(self, monkeypatch):
+        # Guards against over-correcting: ordinary sessions are unchanged.
+        ait = self._freeze(monkeypatch, _et(2026, 11, 25, 15))
+        assert ait.is_market_open() is True
+
+    def test_still_closed_before_the_open(self, monkeypatch):
+        ait = self._freeze(monkeypatch, _et(2026, 11, 27, 8))
+        assert ait.is_market_open() is False
+
+    def test_half_day_is_still_a_trading_day(self, monkeypatch):
+        # It is a session, just a short one -- the scan throttle must not
+        # treat it as a weekend.
+        assert is_trading_day(_et(2026, 11, 27, 11)) is True
+
+    def test_falls_back_to_a_fixed_session_if_hours_unavailable(self, monkeypatch):
+        # Degrade to the historical 9:30-16:00 rather than refusing to trade.
+        from unittest.mock import patch as _patch
+
+        ait = self._freeze(monkeypatch, _et(2026, 11, 25, 15))
+        with _patch.object(ait, "_nyse_session_bounds", return_value=None):
+            assert ait.is_market_open() is True
 
 
 class TestTheDependencyShipsInTheImage:
