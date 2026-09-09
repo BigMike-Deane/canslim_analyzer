@@ -130,6 +130,16 @@ jobs:
         # A transient upstream mirror should not page the owner.
         run: |
           npm ci
+          # Drop Google's Chrome apt source first. Playwright downloads its
+          # OWN chromium; --with-deps only needs system libs from Ubuntu's
+          # repos, so this source is pure liability. On 2026-09-09 it was
+          # serving an index whose hash did not match its release file, and
+          # apt aborted with exit 100 on all three retry attempts -- the
+          # index was persistently broken, not momentarily flaky, so retrying
+          # the same source could never have worked.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome.sources || true
+          # Retry kept for genuinely transient mirror hiccups.
           for attempt in 1 2 3; do
             if npx playwright install --with-deps chromium; then
               exit 0
