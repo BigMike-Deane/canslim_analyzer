@@ -3821,6 +3821,48 @@ async def get_ai_portfolio_history(
             return None
         return spy_dist_by_date[max(earlier)]
 
+    # Final point = the LIVE book, so the chart's right edge is the same
+    # number the 30D slicer and the Command Center report. Snapshots are
+    # written only during market hours while positions are re-priced by
+    # EVERY scan, so without this the chart ended on the previous session's
+    # last snapshot all through pre-market -- the other half of the
+    # 2026-09-09 divergence (chart ended $31,467.87 while the slicer and
+    # the Command Center both read the live $31,170.03).
+    #
+    # Appended AFTER spy_anchor/base_value are taken from snapshots[0], so
+    # the SPY normalization baseline is untouched, and it flows through the
+    # same _spy_value_for/_spy_dist_for path as a real row. A plain
+    # namespace -- NOT an AIPortfolioSnapshot -- keeps it out of the
+    # session; an unpersisted ORM instance could be autoflushed into the
+    # table and become a phantom snapshot. sweep_priced=False means a live
+    # SPY fetch failed and the total is understated, so that case keeps the
+    # last real snapshot rather than drawing a phantom drop.
+    if snapshots:
+        from types import SimpleNamespace
+        from backend.ai_trader import get_portfolio_value as _live_book
+        try:
+            _live = _live_book(db, user_id=current_user.id)
+        except Exception as e:
+            logger.warning("ai-portfolio/history: live book unavailable (%s)", e)
+            _live = None
+        _now = dt.now(timezone.utc).replace(tzinfo=None)
+        if (_live and _live.get("sweep_priced", True)
+                and _live.get("total_value") is not None
+                and sort_key(snapshots[-1]) < _now):
+            snapshots = snapshots + [SimpleNamespace(
+                timestamp=_now,
+                date=_now.date(),
+                total_value=_live["total_value"],
+                cash=_live.get("cash"),
+                positions_value=_live.get("positions_value"),
+                positions_count=_live.get("positions_count"),
+                total_return=_live.get("total_return"),
+                total_return_pct=_live.get("total_return_pct"),
+                value_change=None,
+                value_change_pct=None,
+                is_live=True,
+            )]
+
     return [{
         "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else None,
         "date": s.date.isoformat() if s.date else (s.timestamp.date().isoformat() if s.timestamp else None),
@@ -3833,7 +3875,10 @@ async def get_ai_portfolio_history(
         "total_return": s.total_return,
         "total_return_pct": s.total_return_pct,
         "value_change": getattr(s, 'value_change', None) or getattr(s, 'day_change', None),
-        "value_change_pct": getattr(s, 'value_change_pct', None) or getattr(s, 'day_change_pct', None)
+        "value_change_pct": getattr(s, 'value_change_pct', None) or getattr(s, 'day_change_pct', None),
+        # True only for the appended live-book point: the chart's right
+        # edge, which has no stored snapshot behind it yet.
+        "is_live": getattr(s, 'is_live', False),
     } for s in snapshots]
 
 

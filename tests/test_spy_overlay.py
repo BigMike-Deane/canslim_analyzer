@@ -127,6 +127,14 @@ def _seed_market(day_offset, spy_price):
         db.close()
 
 
+def _seeded(rows):
+    """Drop the appended live-book point (2026-09-09): /history now ends on
+    the live portfolio value so the chart's right edge matches the 30D
+    slicer and the Command Center. These tests assert on stored snapshots,
+    so they filter it out rather than shift every index by one."""
+    return [r for r in rows if not r.get("is_live")]
+
+
 def _seed_snapshot_at(ts, total_value):
     db = _db()
     try:
@@ -170,7 +178,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=30")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 3
             for row in rows:
                 assert row["spy_value"] is None
@@ -188,7 +196,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=30")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 3
             # Sorted ascending by timestamp → day_offset=10 is rows[0]
             assert rows[0]["spy_value"] == round(25000.0 * (100.0 / 100.0), 2)
@@ -210,7 +218,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=30")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 4
             # Anchor = 100 at day 10; base_value = 30000
             assert rows[0]["spy_value"] == 30000.0  # day 10 (exact)
@@ -233,7 +241,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=30")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 2
             for row in rows:
                 assert row["spy_value"] is None
@@ -255,7 +263,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=7")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 2
             # Anchor = the first snapshot's tick (100), NOT the daily 999
             assert rows[0]["spy_value"] == 25000.0
@@ -276,7 +284,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=30")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 2
             assert rows[0]["spy_value"] == 30000.0  # daily anchor, daily price
             # Recent point prefers its tick (205) over the daily 210
@@ -294,7 +302,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=7")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 1
             assert rows[0]["spy_value"] is None
         finally:
@@ -320,7 +328,7 @@ class TestSpyOverlay:
         try:
             r = client.get("/api/ai-portfolio/history?days=30")
             assert r.status_code == 200
-            rows = r.json()
+            rows = _seeded(r.json())
             assert len(rows) == 3
             # After fix: anchor = 200 (day 33), base = 50000
             assert rows[0]["spy_value"] == round(50000.0 * (200.0 / 200.0), 2)
@@ -422,7 +430,7 @@ class TestAutoResolution:
         old_day, recent_day = self._seed_days()
         r = client.get("/api/ai-portfolio/history?days=30&resolution=auto")
         assert r.status_code == 200
-        rows = r.json()
+        rows = _seeded(r.json())
         old_rows = [x for x in rows if x["date"] == old_day]
         # Collapsed to the day's LAST snapshot
         assert len(old_rows) == 1
@@ -435,7 +443,7 @@ class TestAutoResolution:
         old_day, recent_day = self._seed_days()
         r = client.get("/api/ai-portfolio/history?days=30")
         assert r.status_code == 200
-        rows = r.json()
+        rows = _seeded(r.json())
         assert len([x for x in rows if x["date"] == old_day]) == 3
         assert len([x for x in rows if x["date"] == recent_day]) == 2
 
@@ -450,3 +458,97 @@ class TestAutoResolution:
         r = client.get("/api/ai-portfolio/history?days=3650&resolution=auto")
         assert r.status_code == 200
         assert len(r.json()) >= 3
+
+
+class TestHistoryEndsOnTheLiveBook:
+    """The chart's right edge must be the same number the 30D slicer and the
+    Command Center report.
+
+    2026-09-09: snapshots are written only during market hours while
+    positions are re-priced by EVERY scan, so all through pre-market the
+    chart ended on the previous session's last snapshot ($31,467.87) while
+    /window-returns and (after its own fix) the Command Center both read the
+    live book ($31,170.03). Same book, same anchor, different right edge.
+    """
+
+    @staticmethod
+    def _set_live_cash(value):
+        """The live book is current_cash + positions_value; this user holds
+        no positions, so cash alone pins get_portfolio_value()."""
+        from backend.database import AIPortfolioConfig
+        db = _db()
+        try:
+            db.query(AIPortfolioConfig).filter_by(
+                user_id=TEST_USER_A_ID).delete()
+            db.add(AIPortfolioConfig(
+                user_id=TEST_USER_A_ID, starting_cash=25000.0,
+                current_cash=value, is_active=True,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_final_point_is_the_live_book_not_the_last_snapshot(self):
+        _wipe_window()
+        self._set_live_cash(27777.0)
+        _seed_snapshot(day_offset=1, total_value=26000.0)
+        rows = client.get(
+            "/api/ai-portfolio/history?days=30&resolution=auto").json()
+        assert rows[-1]["total_value"] == 27777.0
+        assert rows[-1]["date"] == date.today().isoformat()
+        # The real snapshot is still there, immediately before it.
+        assert rows[-2]["total_value"] == 26000.0
+
+    def test_live_point_does_not_rebase_the_spy_benchmark(self):
+        # spy_anchor/base_value are taken from snapshots[0]; appending a
+        # final row must not shift the normalization baseline, or the whole
+        # SPY line would slide under the portfolio.
+        _wipe_window()
+        self._set_live_cash(27777.0)
+        _seed_snapshot(day_offset=10, total_value=25000.0)
+        _seed_snapshot(day_offset=1, total_value=26000.0)
+        _seed_market(day_offset=10, spy_price=500.0)
+        _seed_market(day_offset=1, spy_price=550.0)
+        rows = client.get(
+            "/api/ai-portfolio/history?days=30&resolution=auto").json()
+        # First point still anchors SPY at the first snapshot's value.
+        assert rows[0]["spy_value"] == 25000.0
+        # The appended row carries a SPY value from the same scale, not None.
+        assert rows[-1]["spy_value"] == 27500.0   # 25000 * (550/500)
+
+    def test_unpriced_sweep_keeps_the_last_real_snapshot(self):
+        # sweep_priced=False => live SPY fetch failed and total_value is
+        # understated; drawing it would paint a phantom drop.
+        _wipe_window()
+        self._set_live_cash(27777.0)
+        _seed_snapshot(day_offset=1, total_value=26000.0)
+        from unittest.mock import patch
+        understated = {
+            "cash": 27777.0, "positions_value": 0.0, "sweep_value": 0.0,
+            "sweep_priced": False, "total_value": 27777.0,
+            "positions_count": 0, "starting_cash": 25000.0,
+            "total_return": 2777.0, "total_return_pct": 11.1,
+        }
+        with patch("backend.ai_trader.get_portfolio_value",
+                   return_value=understated):
+            rows = client.get(
+                "/api/ai-portfolio/history?days=30&resolution=auto").json()
+        assert rows[-1]["total_value"] == 26000.0
+
+    def test_live_point_is_not_persisted_as_a_snapshot(self):
+        # The appended row is a plain namespace, never an ORM instance --
+        # an unpersisted AIPortfolioSnapshot could be autoflushed into the
+        # table and become a phantom snapshot in every later read.
+        _wipe_window()
+        self._set_live_cash(27777.0)
+        _seed_snapshot(day_offset=1, total_value=26000.0)
+        client.get("/api/ai-portfolio/history?days=30&resolution=auto")
+        db = _db()
+        try:
+            n = db.query(AIPortfolioSnapshot).filter(
+                AIPortfolioSnapshot.user_id == TEST_USER_A_ID,
+                AIPortfolioSnapshot.date >= date.today() - timedelta(days=40),
+            ).count()
+        finally:
+            db.close()
+        assert n == 1
