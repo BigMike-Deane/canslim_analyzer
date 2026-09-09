@@ -49,3 +49,11 @@ htmlcov/
 .pytest_cache/
 preview-copper-rebrand.html
 .draft-revert-pr-body.md
+
+# Playwright e2e artifacts (2026-09-09)
+# .auth.json holds a freshly minted test JWT written by scripts/e2e_server.py
+# on every run -- never commit a token, even a throwaway one.
+frontend/e2e/.auth.json
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/

@@ -812,7 +812,7 @@ export default function CommandCenter() {
               <span className={`absolute top-0 right-0 text-[9px] font-data ${
                 spark30dPct == null ? 'text-dark-500'
                   : spark30dPct >= 0 ? 'text-emerald-400' : 'text-red-400'
-              }`}>
+              }`} data-testid="cc-30d-return">
                 30d{spark30dPct != null && ` ${spark30dPct >= 0 ? '+' : ''}${spark30dPct.toFixed(1)}%`}
               </span>
             </div>
