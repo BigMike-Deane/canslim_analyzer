@@ -261,7 +261,12 @@ function BrokerMirrorCard() {
           {data.account && (
           <div className="text-xs">
             {mismatches.length === 0 ? (
-              <span className="text-emerald-400">✓ All {data.reconciliation.length} positions match the book</span>
+              <span className="text-emerald-400" title={data.reconciliation.filter(r => r.note).map(r => `${r.ticker}: ${r.note}`).join('\n')}>
+                ✓ All {data.reconciliation.length} positions match the book
+                {data.reconciliation.some(r => r.note) && (
+                  <span className="text-dark-400"> ({data.reconciliation.filter(r => r.note).length} rounded to whole shares)</span>
+                )}
+              </span>
             ) : (
               <div className="space-y-1">
                 <div className="text-amber-400">⚠ {mismatches.length} position(s) differ from the book</div>

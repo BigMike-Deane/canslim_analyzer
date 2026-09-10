@@ -2652,7 +2652,16 @@ def get_broker_mirror(
             key = p.ticker.replace("-", ".")
             internal[key] = internal.get(key, 0.0) + (p.shares or 0.0)
         broker = {p["symbol"]: float(p.get("qty") or 0) for p in broker_positions}
-        out["reconciliation"] = bm.reconcile(internal, broker)
+        # Only look up assets that actually differ (a few calls at most).
+        whole_share_only = set()
+        for r in bm.reconcile(internal, broker):
+            if not r["match"]:
+                try:
+                    if not client.asset(r["ticker"]).get("fractionable", True):
+                        whole_share_only.add(r["ticker"])
+                except Exception:
+                    pass
+        out["reconciliation"] = bm.reconcile(internal, broker, whole_share_only=whole_share_only)
     return out
 
 

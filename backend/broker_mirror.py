@@ -475,13 +475,27 @@ def run_mirror_cycle(db, client: AlpacaPaperClient = None) -> dict:
 
 # ---------------------------------------------------------------- read side
 
-def reconcile(internal: dict, broker: dict, tol: float = 1e-6) -> list:
-    """Per-ticker quantity diff between the internal book and the broker."""
+def reconcile(internal: dict, broker: dict, tol: float = 1e-6,
+              whole_share_only: set = frozenset()) -> list:
+    """Per-ticker quantity diff between the internal book and the broker.
+
+    ``whole_share_only`` names assets the broker won't trade fractionally.
+    Those are bought rounded DOWN (broker_qty), so a sub-share shortfall is
+    the designed outcome, not drift -- reported as a match with a note.
+    First seen live 2026-09-10: HWBK 108 at the broker vs 108.33 booked. A
+    reconciliation that warns permanently on expected rounding trains the
+    reader to ignore it.
+    """
     out = []
     for t in sorted(set(internal) | set(broker)):
         i, b = internal.get(t, 0.0), broker.get(t, 0.0)
-        out.append({"ticker": t, "internal_qty": round(i, 6), "broker_qty": round(b, 6),
-                    "diff": round(b - i, 6), "match": abs(b - i) <= max(tol, 1e-6 * max(i, b))})
+        exact = abs(b - i) <= max(tol, 1e-6 * max(i, b))
+        rounded = (not exact and t in whole_share_only and b <= i and (i - b) < 1.0)
+        row = {"ticker": t, "internal_qty": round(i, 6), "broker_qty": round(b, 6),
+               "diff": round(b - i, 6), "match": exact or rounded}
+        if rounded:
+            row["note"] = "rounded down to whole shares (not fractionable at broker)"
+        out.append(row)
     return out
 
 

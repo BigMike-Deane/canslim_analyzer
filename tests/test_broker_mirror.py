@@ -367,6 +367,23 @@ class TestPure:
         assert rec["A"]["match"] and not rec["B"]["match"] and not rec["C"]["match"]
         assert rec["B"]["diff"] == -2.0
 
+    def test_whole_share_rounding_is_a_match_with_a_note(self):
+        # Live 2026-09-10: HWBK is not fractionable -> 108 at the broker vs
+        # 108.33 booked. Expected, so it must not warn forever.
+        rec = bm.reconcile({"HWBK": 108.325758}, {"HWBK": 108.0},
+                           whole_share_only={"HWBK"})[0]
+        assert rec["match"] is True and "whole shares" in rec["note"]
+
+    def test_whole_share_exemption_does_not_hide_real_drift(self):
+        # A full share short, or the broker holding MORE, is drift even on a
+        # whole-share asset.
+        short = bm.reconcile({"X": 110.3}, {"X": 108.0}, whole_share_only={"X"})[0]
+        over = bm.reconcile({"X": 108.3}, {"X": 109.0}, whole_share_only={"X"})[0]
+        assert short["match"] is False and over["match"] is False
+        # And the exemption only applies to assets actually named.
+        other = bm.reconcile({"Y": 10.5}, {"Y": 10.0})[0]
+        assert other["match"] is False
+
 
 # ---------------------------------------------------------------- endpoints
 
