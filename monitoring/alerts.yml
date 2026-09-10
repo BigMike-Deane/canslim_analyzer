@@ -36,6 +36,43 @@ groups:
           summary: "canslim-analyzer not reporting to cAdvisor"
           description: "Container missing for 5m -- crashed, OOM-killed, or stopped."
 
+      # The leak FUSE (2026-09-10). The residual leak (~13 MB/h after the
+      # arena cap) is below CanslimMemoryClimbing's 40 MB/h bar, so that rule
+      # never fires on it -- but at that rate the container still walks into
+      # its cap in days. Projects the last 6h forward 24h against the cap --
+      # only once the container is 8h+ up: the post-restart warm-up climbs
+      # ~130 MB/h for its first hours and would trip this after every deploy.
+      - alert: CanslimMemoryWillHitCap
+        expr: >-
+          predict_linear(max by (name) (container_memory_working_set_bytes{name="canslim-analyzer"})[6h:5m], 24 * 3600)
+          > 2560e6
+          and on (name)
+          (time() - max by (name) (container_start_time_seconds{name="canslim-analyzer"})) > 8 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "canslim-analyzer projected to hit its 2560 MB cap within 24h"
+          description: "At the last 6h trend. Plan a restart (after the close) or chase the leak."
+
+      - alert: PostgresGone
+        expr: absent(container_last_seen{name="canslim-postgres"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "canslim-postgres not reporting to cAdvisor"
+          description: "Database container missing for 5m -- the app cannot trade or record."
+
+      - alert: RedisGone
+        expr: absent(container_last_seen{name="canslim-redis"})
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "canslim-redis not reporting to cAdvisor"
+          description: "Cache container missing for 10m -- the app degrades to DB/API fetches."
+
       - alert: HostMemoryLow
         expr: sum(container_memory_working_set_bytes{name=~".+"}) > 3200e6
         for: 10m

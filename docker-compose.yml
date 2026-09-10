@@ -206,6 +206,29 @@ services:
     mem_limit: 256m
     restart: unless-stopped
 
+  # Delivers monitoring/alerts.yml (2026-09-10) -- see monitoring/alertmanager.yml.
+  # Deploy without touching the app:  docker-compose up -d alertmanager prometheus
+  # The entrypoint writes secrets to 0600 files and fills the template; the
+  # whole script is ONE line on purpose (this file is CRLF, and a stray \r in
+  # a multi-line shell block would end up inside the secret files).
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: canslim-alertmanager
+    ports:
+      - "100.104.189.36:9093:9093"  # Tailscale-only (UI: silences)
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/template.yml:ro
+      - alertmanager-data:/alertmanager
+    environment:
+      - AM_SMTP_USER=${CANSLIM_EMAIL:-}
+      - AM_SMTP_TO=${CANSLIM_RECIPIENT:-}
+      - AM_SMTP_PASSWORD=${CANSLIM_APP_PASSWORD:-}
+      - AM_WEBHOOK_TOKEN=${OPS_WEBHOOK_TOKEN:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["umask 077 && printf '%s' \"$$AM_SMTP_PASSWORD\" > /tmp/smtp_password && printf '%s' \"$$AM_WEBHOOK_TOKEN\" > /tmp/webhook_token && sed -e \"s|__SMTP_USER__|$$AM_SMTP_USER|g\" -e \"s|__SMTP_TO__|$$AM_SMTP_TO|g\" /etc/alertmanager/template.yml > /tmp/alertmanager.yml && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager"]
+    mem_limit: 64m
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:
@@ -214,3 +237,4 @@ volumes:
   caddy-config:
   prometheus-data:
   grafana-data:
+  alertmanager-data:

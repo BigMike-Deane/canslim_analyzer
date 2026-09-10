@@ -7024,12 +7024,14 @@ from backend.routes.admin import router as admin_router
 from backend.routes.ml import router as ml_router
 from backend.routes.notifications import router as notifications_router
 from backend.routes.push import router as push_router
+from backend.routes.ops import router as ops_router
 app.include_router(fidelity_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(ml_router)
 app.include_router(notifications_router)
 app.include_router(push_router)
+app.include_router(ops_router)
 
 # ============== Serve Frontend ==============
 

@@ -1,0 +1,54 @@
+# Alertmanager (2026-09-10): the missing delivery half of monitoring/alerts.yml.
+#
+# Prometheus evaluated those rules since Sep-9, but with no Alertmanager a
+# firing alert reached nobody. Two channels:
+#   * app-push      -- every alert -> POST /api/ops/alerts -> send_ops_alert
+#                      (the owner's web push, same as every other ops alarm)
+#   * push-and-email -- critical alerts ALSO go by Gmail, because the most
+#                      important one ("canslim-analyzer is gone") is exactly
+#                      the one the app cannot push.
+#
+# This file is a TEMPLATE. The compose entrypoint writes the secrets
+# (Gmail app password, webhook token) to 0600 files under /tmp and fills in
+# __SMTP_USER__ / __SMTP_TO__ from the .env, so no address or secret lives
+# in git.
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: 'smtp.gmail.com:587'   # 465 is blocked from this VPS; 587 verified
+  smtp_from: '__SMTP_USER__'
+  smtp_auth_username: '__SMTP_USER__'
+  smtp_auth_password_file: /tmp/smtp_password
+  smtp_require_tls: true
+
+route:
+  receiver: app-push
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: push-and-email
+      repeat_interval: 1h
+
+receivers:
+  - name: app-push
+    webhook_configs:
+      - url: http://canslim:8001/api/ops/alerts
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /tmp/webhook_token
+
+  - name: push-and-email
+    webhook_configs:
+      - url: http://canslim:8001/api/ops/alerts
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /tmp/webhook_token
+    email_configs:
+      - to: '__SMTP_TO__'
+        send_resolved: true
