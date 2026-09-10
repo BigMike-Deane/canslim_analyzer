@@ -4,7 +4,7 @@ Authentication module: Google Sign-In verification, JWT tokens, user dependencie
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -130,6 +130,53 @@ def issue_refresh_token(db, user_id: int) -> str:
     return token
 
 
+# --- Read-only tooling token (2026-09-10) ---
+# A long-lived token for the canslim-api MCP (Claude's check-ins) so it can
+# read the same endpoints the Admin page does without minting a full-power
+# 30-minute JWT each session. Three properties, all enforced in
+# get_current_user:
+#   * READ-ONLY: any method but GET/HEAD/OPTIONS is refused (403), so a
+#     leaked copy can look but never trade, seed, delete or configure.
+#   * ONE LIVE TOKEN: its jti is recorded in SystemSetting; minting a new
+#     one replaces it (the old one dies), deleting the setting revokes it.
+#   * CANNOT REFRESH: type stays "access" and it carries no refresh jti row.
+READONLY_SCOPE = "read"
+READONLY_JTI_KEY = "readonly_api_token"
+READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def create_readonly_token(user_id: int = 1, days: int = 180) -> str:
+    import secrets
+    from backend.database import set_system_setting
+
+    jti = secrets.token_hex(16)
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=days)
+    if not set_system_setting(READONLY_JTI_KEY, {
+            "jti": jti, "user_id": user_id,
+            "issued_at": now.isoformat(), "expires_at": expire.isoformat()}):
+        raise RuntimeError("could not record the read-only token id")
+    return jwt.encode(
+        {"sub": str(user_id), "exp": expire, "type": "access",
+         "scope": READONLY_SCOPE, "jti": jti},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+
+
+def _enforce_scope(payload: dict, request: Optional[Request]):
+    """Tokens without a scope are ordinary full-access logins (unchanged).
+    A scoped token must be the current read-only one, on a read method."""
+    if payload.get("scope") != READONLY_SCOPE:
+        raise HTTPException(status_code=401, detail="Unknown token scope")
+    if request is None or request.method.upper() not in READONLY_METHODS:
+        raise HTTPException(status_code=403, detail="Read-only token")
+    from backend.database import get_system_setting
+    current = get_system_setting(READONLY_JTI_KEY, None) or {}
+    # Fail closed: a DB hiccup returns the default and rejects the token.
+    if not payload.get("jti") or current.get("jti") != payload.get("jti"):
+        raise HTTPException(status_code=401, detail="Read-only token revoked")
+
+
 # --- Pydantic schemas ---
 class Token(BaseModel):
     access_token: str
@@ -161,7 +208,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/google", auto_error=Fal
 
 def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
     """
     Get current authenticated user from JWT token.
@@ -200,6 +248,8 @@ def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if "scope" in payload:
+        _enforce_scope(payload, request)
 
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if user is None:
