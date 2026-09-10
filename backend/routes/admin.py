@@ -2593,6 +2593,8 @@ def _serialize_mirror_row(r) -> dict:
         "filled_qty": r.filled_qty, "filled_avg_price": r.filled_avg_price,
         "filled_at": _iso_utc(r.filled_at),
         "slippage_bps": r.slippage_bps, "note": r.note,
+        "stop_price": r.stop_price, "stop_pct": r.stop_pct, "cost_basis": r.cost_basis,
+        "pairing": r.pairing, "linked_order_id": r.linked_order_id,
     }
 
 
@@ -2641,8 +2643,39 @@ def get_broker_mirror(
     rows = db.query(BrokerMirrorOrder).filter(
         BrokerMirrorOrder.user_id == cfg["user_id"]
     ).order_by(BrokerMirrorOrder.id.desc()).all()
-    out["summary"] = bm.summarize(rows)
-    out["orders"] = [_serialize_mirror_row(r) for r in rows[:limit]]
+    # The app's own recorded stop slippage for trades a resting stop covered,
+    # so the card can put the two exits side by side.
+    covered_ids = [r.trade_id for r in rows if r.status == "covered" and r.trade_id]
+    internal_pp = {}
+    if covered_ids:
+        from backend.database import AIPortfolioTrade
+        for t in db.query(AIPortfolioTrade).filter(AIPortfolioTrade.id.in_(covered_ids)).all():
+            sf = t.signal_factors if isinstance(t.signal_factors, dict) else {}
+            if sf.get("slippage_pp") is not None:
+                internal_pp[t.id] = float(sf["slippage_pp"])
+    out["summary"] = bm.summarize(rows, internal_slippage_pp=internal_pp)
+    # Resting stops are re-placed daily -- they would bury the trade rows.
+    out["orders"] = [_serialize_mirror_row(r) for r in rows if r.action != "STOP"][:limit]
+    out["stop_events"] = [
+        {**_serialize_mirror_row(r), "slippage_pp": bm.stop_slippage_pp(r)}
+        for r in rows if r.action == "STOP" and r.status == "filled"][:limit]
+    out["resting_stops_enabled"] = bm.resting_stop_config()["enabled"]
+    working = [r for r in rows if r.action == "STOP" and r.status in bm.STOP_OPEN]
+    prices = {}
+    for p in (broker_positions or []):
+        prices[p["symbol"]] = float(p.get("current_price") or 0) or None
+    out["resting_stops"] = []
+    for r in sorted(working, key=lambda r: r.ticker):
+        px = prices.get(r.ticker) or prices.get(r.ticker.replace("-", "."))
+        out["resting_stops"].append({
+            "ticker": r.ticker, "qty": r.submitted_qty, "stop_price": r.stop_price,
+            "stop_pct": r.stop_pct, "cost_basis": r.cost_basis, "status": r.status,
+            "market_price": px,
+            # Room left before it fires, as % of the current price.
+            "cushion_pct": (round((px - r.stop_price) / px * 100, 2)
+                            if px and r.stop_price else None),
+            "placed_at": _iso_utc(r.submitted_at or r.created_at),
+        })
 
     if activation and broker_positions is not None:
         # Alpaca spells class shares BRK.B; the app spells them BRK-B.
@@ -2652,16 +2685,19 @@ def get_broker_mirror(
             key = p.ticker.replace("-", ".")
             internal[key] = internal.get(key, 0.0) + (p.shares or 0.0)
         broker = {p["symbol"]: float(p.get("qty") or 0) for p in broker_positions}
+        stopped_out = {k.replace("-", ".") for k in {r.ticker for r in rows if r.action == "STOP"}
+                       if bm.open_stop_exit(db, cfg["user_id"], k) is not None}
         # Only look up assets that actually differ (a few calls at most).
         whole_share_only = set()
-        for r in bm.reconcile(internal, broker):
-            if not r["match"]:
+        for r in bm.reconcile(internal, broker, stopped_out=stopped_out):
+            if not r["match"] and not r.get("divergence"):
                 try:
                     if not client.asset(r["ticker"]).get("fractionable", True):
                         whole_share_only.add(r["ticker"])
                 except Exception:
                     pass
-        out["reconciliation"] = bm.reconcile(internal, broker, whole_share_only=whole_share_only)
+        out["reconciliation"] = bm.reconcile(internal, broker, whole_share_only=whole_share_only,
+                                             stopped_out=stopped_out)
     return out
 
 

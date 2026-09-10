@@ -178,6 +178,9 @@ function BrokerMirrorCard() {
   const bps = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)} bps`)
   const bpsTone = (v) => (v == null ? 'text-dark-400' : v > 0 ? 'text-red-400' : 'text-emerald-400')
   const usd = (v) => (v == null ? '—' : `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
+  const pp = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)} pp`)
+  const px = (v) => (v == null ? '—' : `$${v.toFixed(v < 1 ? 4 : 2)}`)
+  const qty = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 }))
 
   const onSeed = async () => {
     if (!window.confirm(
@@ -196,7 +199,13 @@ function BrokerMirrorCard() {
   }
 
   const s = data?.summary
-  const mismatches = (data?.reconciliation || []).filter(r => !r.match)
+  const rs = s?.resting_stops
+  const recon = data?.reconciliation || []
+  // A position flat at the broker because its resting stop fired is a
+  // designed divergence (the broker stays out until the book exits), not drift.
+  const mismatches = recon.filter(r => !r.match && !r.divergence)
+  const stoppedOut = recon.filter(r => r.divergence === 'resting_stop')
+  const rounded = recon.filter(r => r.match && r.note)
 
   return (
     <div className="card space-y-3">
@@ -261,10 +270,10 @@ function BrokerMirrorCard() {
           {data.account && (
           <div className="text-xs">
             {mismatches.length === 0 ? (
-              <span className="text-emerald-400" title={data.reconciliation.filter(r => r.note).map(r => `${r.ticker}: ${r.note}`).join('\n')}>
-                ✓ All {data.reconciliation.length} positions match the book
-                {data.reconciliation.some(r => r.note) && (
-                  <span className="text-dark-400"> ({data.reconciliation.filter(r => r.note).length} rounded to whole shares)</span>
+              <span className="text-emerald-400" title={rounded.map(r => `${r.ticker}: ${r.note}`).join('\n')}>
+                ✓ {stoppedOut.length ? `Other ${recon.length - stoppedOut.length}` : `All ${recon.length}`} positions match the book
+                {rounded.length > 0 && (
+                  <span className="text-dark-400"> ({rounded.length} rounded to whole shares)</span>
                 )}
               </span>
             ) : (
@@ -277,7 +286,82 @@ function BrokerMirrorCard() {
                 ))}
               </div>
             )}
+            {stoppedOut.map(r => (
+              <div key={r.ticker} className="text-dark-300 mt-1">
+                {r.ticker} flat at broker by design — resting stop fired; book still holds {qty(r.internal_qty)}
+              </div>
+            ))}
           </div>
+          )}
+
+          {data.resting_stops_enabled && rs && (
+            <div className="space-y-2 border-t border-dark-700 pt-3">
+              <div>
+                <h3 className="text-xs font-semibold text-dark-200">Resting stops · {rs.working} working</h3>
+                <p className="text-[11px] text-dark-400 mt-0.5">
+                  The app&rsquo;s hard stop held as a day stop order at the broker — how far past the stop a real resting order fills.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div><div className="text-dark-400">Fired</div><div className="font-data text-dark-100">{rs.fired}</div></div>
+                <div title={'Average fill past the stop, % of cost basis (go-live criterion 4 units). ' +
+                  'Only exits where the app ALSO hard-stopped that day, so both sides are the same event.'}>
+                  <div className="text-dark-400">Past stop: broker / app ({rs.same_exit.n})</div>
+                  <div className="font-data text-dark-100">{pp(rs.same_exit.broker_slippage_pp)} / {pp(rs.same_exit.app_slippage_pp)}</div>
+                </div>
+                <div title={'The broker stop fired but the app did not hard-stop that day; the broker stayed flat. ' +
+                  'Positive = the broker exit was worse than where the app eventually sold.'}>
+                  <div className="text-dark-400">Whipsaws ({rs.whipsaw.n})</div>
+                  <div className={`font-data ${bpsTone(rs.whipsaw.avg_bps)}`}>{bps(rs.whipsaw.avg_bps)}</div>
+                </div>
+                <div title="The app hard-stopped while a broker stop was working and it never fired: the two stop levels disagreed. Should stay 0.">
+                  <div className="text-dark-400">Missed</div>
+                  <div className={`font-data ${rs.missed ? 'text-amber-400' : 'text-dark-100'}`}>{rs.missed ? `⚠ ${rs.missed}` : 0}</div>
+                </div>
+              </div>
+
+              {data.resting_stops.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="text-left text-dark-400 border-b border-dark-700">
+                        <th className="py-1 pr-3 font-medium">Ticker</th>
+                        <th className="py-1 pr-3 font-medium text-right">Qty</th>
+                        <th className="py-1 pr-3 font-medium text-right">Stop</th>
+                        <th className="py-1 pr-3 font-medium text-right">Below cost</th>
+                        <th className="py-1 font-medium text-right">Cushion</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.resting_stops.map(r => (
+                        <tr key={r.ticker} className="border-b border-dark-800/60"
+                            title={`Placed ${r.placed_at ? formatDateTime(r.placed_at) : '—'} · cost ${px(r.cost_basis)}`}>
+                          <td className="py-1 pr-3 text-dark-200">{r.ticker}{r.status === 'pending' && <span className="text-dark-400"> (sending)</span>}</td>
+                          <td className="py-1 pr-3 text-right font-data text-dark-300">{qty(r.qty)}</td>
+                          <td className="py-1 pr-3 text-right font-data text-dark-100">{px(r.stop_price)}</td>
+                          <td className="py-1 pr-3 text-right font-data text-dark-300">{r.stop_pct != null ? `${r.stop_pct.toFixed(1)}%` : '—'}</td>
+                          <td className="py-1 text-right font-data text-dark-300">{r.cushion_pct != null ? `${r.cushion_pct.toFixed(1)}%` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {data.resting_stops.length === 0 && rs.working === 0 && (
+                <div className="text-[11px] text-dark-400">No stop working — placed on the next minute tick once the app&rsquo;s stop level is known.</div>
+              )}
+
+              {data.stop_events.length > 0 && (
+                <div className="space-y-0.5 text-[11px]">
+                  {data.stop_events.slice(0, 5).map(e => (
+                    <div key={e.id} className="font-data text-dark-300">
+                      Fired {e.ticker} {qty(e.filled_qty)} @ {px(e.filled_avg_price)}
+                      <span className="text-dark-400"> · stop {px(e.stop_price)} · {pp(e.slippage_pp)} past · {e.filled_at ? formatDateTime(e.filled_at) : '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           {data.orders.length > 0 && (
@@ -301,7 +385,9 @@ function BrokerMirrorCard() {
                       <td className="py-1 pr-3 text-right font-data text-dark-300">{o.internal_price != null ? `$${o.internal_price.toFixed(2)}` : '—'}</td>
                       <td className="py-1 pr-3 text-right font-data text-dark-300">{o.filled_avg_price != null ? `$${o.filled_avg_price.toFixed(2)}` : '—'}</td>
                       <td className={`py-1 pr-3 text-right font-data ${bpsTone(o.slippage_bps)}`}>{bps(o.slippage_bps)}</td>
-                      <td className={`py-1 ${['error', 'rejected', 'canceled', 'expired'].includes(o.status) ? 'text-red-400' : 'text-dark-300'}`} title={o.note || ''}>{o.status}</td>
+                      <td className={`py-1 ${['error', 'rejected', 'canceled', 'expired'].includes(o.status) ? 'text-red-400' : 'text-dark-300'}`} title={o.note || ''}>
+                        {o.status}{o.pairing && <span className="text-dark-400"> · {o.pairing === 'same_exit' ? 'resting stop' : 'whipsaw'}</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

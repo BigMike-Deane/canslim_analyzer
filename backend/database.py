@@ -287,6 +287,12 @@ def run_migrations():
         # by CURRENT config membership, so strategy switches retroactively
         # reshuffled trade history; see AIPortfolioTrade.strategy comment).
         ("ai_portfolio_trades", "strategy", "VARCHAR"),
+        # Broker mirror phase 2 -- resting stops (Sep 2026).
+        ("broker_mirror_orders", "stop_price", "FLOAT"),
+        ("broker_mirror_orders", "stop_pct", "FLOAT"),
+        ("broker_mirror_orders", "cost_basis", "FLOAT"),
+        ("broker_mirror_orders", "linked_order_id", "INTEGER"),
+        ("broker_mirror_orders", "pairing", "VARCHAR"),
     ]
 
     # Build a cache of existing columns per table
@@ -1189,6 +1195,8 @@ class BrokerMirrorOrder(Base):
     broker_order_id = Column(String, nullable=True)
     # pending -> submitted -> filled | partially_filled | canceled | expired |
     # rejected; plus skipped (not mirrorable) and error (submit failed).
+    # STOP rows end "lapsed" (expired/canceled by design); a sell a fired
+    # resting stop already executed ends "covered".
     status = Column(String, nullable=False, default="pending", index=True)
     submitted_qty = Column(Float, nullable=True)
     submitted_at = Column(DateTime, nullable=True)
@@ -1199,6 +1207,14 @@ class BrokerMirrorOrder(Base):
     slippage_bps = Column(Float, nullable=True)
     note = Column(String, nullable=True)           # skip / rounding / error detail
     alerted = Column(Boolean, default=False)       # one ops alert per failed order
+    # Phase 2 (resting stops, 2026-09-10). STOP rows carry the level they
+    # were placed at; a sell "covered" by a fired stop links to it and says
+    # whether the app also hard-stopped that day (same_exit) or not (whipsaw).
+    stop_price = Column(Float, nullable=True)
+    stop_pct = Column(Float, nullable=True)
+    cost_basis = Column(Float, nullable=True)
+    linked_order_id = Column(Integer, nullable=True)
+    pairing = Column(String, nullable=True)        # same_exit | whipsaw
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),

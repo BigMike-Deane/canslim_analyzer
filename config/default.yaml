@@ -852,6 +852,16 @@ alerts:
 broker_mirror:
   enabled: true
   user_id: 1
+  # Phase 2 (2026-09-10): a DAY sell-stop resting AT THE BROKER on every
+  # mirrored position, at the app's effective HARD stop -- measures how far
+  # past the stop a real resting order fills (go-live criterion 4), incl.
+  # overnight gaps the 15-min checker only sees after the open. Hard stops
+  # only: live trailing stops fire once a day in the close window. Paper only.
+  resting_stops:
+    enabled: true                     # false = cancel every working stop
+    replace_tolerance_pct: 0.25       # re-place only when the level moves more
+    through_margin_pct: 0.2           # never place within this of the market
+    retry_minutes: 15                 # back-off after a refused placement
 
 # Notifications
 notifications:
