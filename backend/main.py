@@ -262,6 +262,11 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: stop queue worker
     backtest_queue.stop()
+    try:
+        from backend.broker_stream import stop_stream
+        stop_stream()
+    except Exception:
+        pass
     logger.info("Shutting down...")
 
 

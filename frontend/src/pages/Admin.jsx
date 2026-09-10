@@ -257,6 +257,18 @@ function BrokerMirrorCard() {
         <>
           <div className="text-[11px] text-dark-400">
             Active since {formatDateTime(data.activation.activated_at)} · from trade #{data.activation.watermark_trade_id}
+            {' · '}
+            {/* The stream only records fills sooner; the minute poll is what
+                keeps the table right, so "polling" is degraded, not broken. */}
+            {data.stream?.connected ? (
+              <span className="text-emerald-400" title={`Connected since ${data.stream.connected_since ? formatDateTime(data.stream.connected_since) : '—'} · ${data.stream.applied} fills applied live`}>
+                live fills{data.stream.last_event_at ? ` · last event ${formatDateTime(data.stream.last_event_at)}` : ''}
+              </span>
+            ) : (
+              <span title={data.stream?.last_error || ''}>
+                {data.stream?.running ? 'live fills reconnecting — polling every minute' : 'polling every minute'}
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
             <div><div className="text-dark-400">Mirrored / filled</div><div className="font-data text-dark-100">{s.n_mirrored} / {s.n_filled}</div></div>

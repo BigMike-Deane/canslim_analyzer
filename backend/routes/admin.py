@@ -2660,6 +2660,8 @@ def get_broker_mirror(
         {**_serialize_mirror_row(r), "slippage_pp": bm.stop_slippage_pp(r)}
         for r in rows if r.action == "STOP" and r.status == "filled"][:limit]
     out["resting_stops_enabled"] = bm.resting_stop_config()["enabled"]
+    from backend import broker_stream
+    out["stream"] = broker_stream.status()
     working = [r for r in rows if r.action == "STOP" and r.status in bm.STOP_OPEN]
     prices = {}
     for p in (broker_positions or []):

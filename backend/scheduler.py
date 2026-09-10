@@ -2857,6 +2857,18 @@ def start_broker_mirror_job():
 
     logger.info("Broker mirror scheduled (every 1 min; inert until activated)")
 
+    # Real-time fills (2026-09-10, backend/broker_stream.py): a websocket to
+    # Alpaca's paper trade_updates stream. The minute poll above stays the
+    # source of consistency; the stream only gets fills recorded sooner.
+    try:
+        from config_loader import config as _bm_config
+        if _bm_config.get("broker_mirror.stream_enabled", True):
+            from backend.broker_stream import start_stream
+            if start_stream():
+                logger.info("Broker stream thread started (inert until activated)")
+    except Exception as e:
+        logger.warning(f"Broker stream failed to start: {e}")
+
 
 def start_breakout_monitor_job():
     """Schedule intraday breakout checks every 5 minutes during market hours."""

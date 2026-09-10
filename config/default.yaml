@@ -852,6 +852,9 @@ alerts:
 broker_mirror:
   enabled: true
   user_id: 1
+  # Real-time fills over Alpaca's paper trade_updates websocket (2026-09-10).
+  # The 1-min poll stays authoritative; this only records fills sooner.
+  stream_enabled: true
   # Phase 2 (2026-09-10): a DAY sell-stop resting AT THE BROKER on every
   # mirrored position, at the app's effective HARD stop -- measures how far
   # past the stop a real resting order fills (go-live criterion 4), incl.
