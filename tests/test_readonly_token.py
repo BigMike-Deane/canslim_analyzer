@@ -95,9 +95,14 @@ class TestReadOnlyScope:
         assert client.get("/api/auth/me", headers=_h(tok)).status_code == 401
 
     def test_unknown_scope_is_refused(self):
-        tok = auth.create_access_token({"sub": str(UID), "scope": "admin"},
+        # Carries the CURRENT read token's jti, so only the scope check can
+        # stop it -- a future scope must never fall through to access.
+        read = auth.create_readonly_token(user_id=UID)
+        jti = jwt.decode(read, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])["jti"]
+        tok = auth.create_access_token({"sub": str(UID), "scope": "write", "jti": jti},
                                         expires_delta=timedelta(minutes=5))
-        assert client.get("/api/auth/me", headers=_h(tok)).status_code == 401
+        r = client.get("/api/auth/me", headers=_h(tok))
+        assert r.status_code == 401 and "scope" in r.json()["detail"]
 
     def test_ordinary_login_tokens_are_untouched(self):
         tok = auth.create_access_token({"sub": str(UID)}, expires_delta=timedelta(minutes=5))
