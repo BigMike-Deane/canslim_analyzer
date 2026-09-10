@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, Fragment } from 'react'
 import { api, formatDate, formatDateTime, formatRelativeTime } from '../api'
 import Spinner from '../components/Spinner'
+import useApi from '../hooks/useApi'
 
 // "4m 22s" / "1h 04m" / "23s" — duration between two ISO timestamps.
 function _formatScanDuration(startIso, endIso) {
@@ -159,6 +160,151 @@ function UserPortfolioDetail({ userId }) {
           </table>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Broker mirror (Alpaca PAPER) ─────────────────────────────────────────
+// Share-for-share copy of the owner's committed trades into a paper broker
+// account. The internal book stays the source of truth; this card measures
+// what a real broker filled against the price the app booked. Slippage is
+// signed so POSITIVE = worse for us (paid more / received less).
+function BrokerMirrorCard() {
+  const { data, error, loading, refetch } = useApi(
+    () => api.getBrokerMirror(), [], { pollMs: 60000 })
+  const [seeding, setSeeding] = useState(false)
+  const [seedError, setSeedError] = useState('')
+
+  const bps = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)} bps`)
+  const bpsTone = (v) => (v == null ? 'text-dark-400' : v > 0 ? 'text-red-400' : 'text-emerald-400')
+  const usd = (v) => (v == null ? '—' : `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
+
+  const onSeed = async () => {
+    if (!window.confirm(
+      'Activate the Alpaca PAPER mirror?\n\nThis places paper market orders copying the ' +
+      "owner's current holdings, then mirrors every later trade. Paper account only -- no real money."
+    )) return
+    setSeeding(true); setSeedError('')
+    try {
+      await api.seedBrokerMirror()
+      refetch()
+    } catch (e) {
+      setSeedError(e?.message || 'activation failed')
+    } finally {
+      setSeeding(false)
+    }
+  }
+
+  const s = data?.summary
+  const mismatches = (data?.reconciliation || []).filter(r => !r.match)
+
+  return (
+    <div className="card space-y-3">
+      <div>
+        <h2 className="text-sm font-semibold text-dark-100">Broker mirror · Alpaca paper</h2>
+        <p className="text-[11px] text-dark-400 mt-0.5">
+          Owner&rsquo;s trades copied share-for-share to a paper broker — real fills vs booked prices.
+        </p>
+      </div>
+
+      {error && <div className="text-xs text-red-400">{error}</div>}
+      {loading && !data && <div className="skeleton h-16" />}
+
+      {data && !data.configured && (
+        <div className="text-xs text-dark-300">
+          Not configured. Add <code className="text-dark-200">ALPACA_API_KEY_ID</code> and{' '}
+          <code className="text-dark-200">ALPACA_API_SECRET_KEY</code> (paper keys) to the VPS{' '}
+          <code className="text-dark-200">.env</code> and restart.
+        </div>
+      )}
+      {data?.account_error && (
+        <div className="text-xs text-red-400">Broker: {data.account_error}</div>
+      )}
+
+      {data?.account && (
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
+          <span className="text-dark-400">Equity <span className="text-dark-100 font-data">{usd(data.account.equity)}</span></span>
+          <span className="text-dark-400">Cash <span className="text-dark-100 font-data">{usd(data.account.cash)}</span></span>
+          <span className="text-dark-400">Account <span className="text-dark-200 font-data">{data.account.account_number}</span></span>
+          <span className="text-dark-400">Market <span className="text-dark-200">{data.market_open ? 'open' : 'closed'}</span></span>
+        </div>
+      )}
+
+      {data?.account && !data.activation && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={onSeed}
+            disabled={seeding}
+            className="px-3 py-1.5 rounded bg-primary-600 hover:bg-primary-500 text-white text-xs font-medium disabled:opacity-50"
+          >
+            {seeding ? 'Activating…' : 'Activate & copy current book'}
+          </button>
+          <span className="text-[11px] text-dark-400">One-shot. Mirroring starts from the next trade.</span>
+          {seedError && <span className="text-xs text-red-400">{seedError}</span>}
+        </div>
+      )}
+
+      {data?.activation && s && (
+        <>
+          <div className="text-[11px] text-dark-400">
+            Active since {formatDateTime(data.activation.activated_at)} · from trade #{data.activation.watermark_trade_id}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div><div className="text-dark-400">Mirrored / filled</div><div className="font-data text-dark-100">{s.n_mirrored} / {s.n_filled}</div></div>
+            <div><div className="text-dark-400">Avg slippage</div><div className={`font-data ${bpsTone(s.avg_slippage_bps)}`}>{bps(s.avg_slippage_bps)}</div></div>
+            <div><div className="text-dark-400">Stop sells ({s.stop_sells.n})</div><div className={`font-data ${bpsTone(s.stop_sells.avg_bps)}`}>{bps(s.stop_sells.avg_bps)}</div></div>
+            <div><div className="text-dark-400">Failed / skipped / open</div><div className={`font-data ${s.n_failed ? 'text-red-400' : 'text-dark-100'}`}>{s.n_failed} / {s.n_skipped} / {s.n_open}</div></div>
+          </div>
+
+          {/* No broker data -> say nothing, never "all match": an unreachable
+              broker must not read as a clean reconciliation. */}
+          {data.account && (
+          <div className="text-xs">
+            {mismatches.length === 0 ? (
+              <span className="text-emerald-400">✓ All {data.reconciliation.length} positions match the book</span>
+            ) : (
+              <div className="space-y-1">
+                <div className="text-amber-400">⚠ {mismatches.length} position(s) differ from the book</div>
+                {mismatches.map(r => (
+                  <div key={r.ticker} className="font-data text-dark-300">
+                    {r.ticker}: book {r.internal_qty} · broker {r.broker_qty}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          )}
+
+          {data.orders.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-left text-dark-400 border-b border-dark-700">
+                    <th className="py-1 pr-3 font-medium">When</th>
+                    <th className="py-1 pr-3 font-medium">Order</th>
+                    <th className="py-1 pr-3 font-medium text-right">Booked</th>
+                    <th className="py-1 pr-3 font-medium text-right">Filled</th>
+                    <th className="py-1 pr-3 font-medium text-right">Slippage</th>
+                    <th className="py-1 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.orders.slice(0, 15).map(o => (
+                    <tr key={o.id} className="border-b border-dark-800/60" title={o.reason || ''}>
+                      <td className="py-1 pr-3 text-dark-400 whitespace-nowrap">{o.internal_at ? formatDateTime(o.internal_at) : '—'}</td>
+                      <td className="py-1 pr-3 text-dark-200 whitespace-nowrap">{o.action} {o.ticker} <span className="text-dark-400">{o.submitted_qty ?? o.internal_qty}</span></td>
+                      <td className="py-1 pr-3 text-right font-data text-dark-300">{o.internal_price != null ? `$${o.internal_price.toFixed(2)}` : '—'}</td>
+                      <td className="py-1 pr-3 text-right font-data text-dark-300">{o.filled_avg_price != null ? `$${o.filled_avg_price.toFixed(2)}` : '—'}</td>
+                      <td className={`py-1 pr-3 text-right font-data ${bpsTone(o.slippage_bps)}`}>{bps(o.slippage_bps)}</td>
+                      <td className={`py-1 ${['error', 'rejected', 'canceled', 'expired'].includes(o.status) ? 'text-red-400' : 'text-dark-300'}`} title={o.note || ''}>{o.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -594,6 +740,7 @@ export default function Admin() {
   return (
     <div className="p-4 md:p-6 space-y-4">
       <UserPortfolioScoreboard />
+      <BrokerMirrorCard />
       {mlRibbon}
       {/* Scanner Control */}
       <div>

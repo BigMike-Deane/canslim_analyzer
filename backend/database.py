@@ -1159,6 +1159,52 @@ class AIPortfolioTrade(Base):
     )
 
 
+class BrokerMirrorOrder(Base):
+    """One broker order mirroring one internal trade (2026-09-10).
+
+    The internal book stays the source of truth for every strategy decision;
+    the broker account (Alpaca PAPER) receives a share-for-share copy of the
+    mirrored user's committed trades so real fills can be measured against
+    the prices the app booked. See backend/broker_mirror.py.
+
+    ``trade_id`` is deliberately NOT a foreign key: initialize_ai_portfolio
+    bulk-deletes a user's trades, and an FK would make that fail. SEED rows
+    (the one-time copy of the book held at activation) have no trade.
+    """
+    __tablename__ = "broker_mirror_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    trade_id = Column(Integer, nullable=True, unique=True, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)        # BUY | PYRAMID | SELL | SEED
+    side = Column(String, nullable=False)          # buy | sell
+    internal_qty = Column(Float, nullable=False)
+    internal_price = Column(Float, nullable=True)
+    internal_at = Column(DateTime, nullable=True)
+    reason = Column(String, nullable=True)
+    close_all = Column(Boolean, default=False)     # full exit -> close the broker position
+
+    client_order_id = Column(String, nullable=False, unique=True, index=True)
+    broker_order_id = Column(String, nullable=True)
+    # pending -> submitted -> filled | partially_filled | canceled | expired |
+    # rejected; plus skipped (not mirrorable) and error (submit failed).
+    status = Column(String, nullable=False, default="pending", index=True)
+    submitted_qty = Column(Float, nullable=True)
+    submitted_at = Column(DateTime, nullable=True)
+    filled_qty = Column(Float, nullable=True)
+    filled_avg_price = Column(Float, nullable=True)
+    filled_at = Column(DateTime, nullable=True)
+    # Positive = worse for us: paid more on a buy, received less on a sell.
+    slippage_bps = Column(Float, nullable=True)
+    note = Column(String, nullable=True)           # skip / rounding / error detail
+    alerted = Column(Boolean, default=False)       # one ops alert per failed order
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+
 class AIPortfolioSnapshot(Base):
     """AI Portfolio snapshots for performance chart - taken after each scan"""
     __tablename__ = "ai_portfolio_snapshots"

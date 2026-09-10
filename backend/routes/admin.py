@@ -2568,6 +2568,116 @@ async def delete_program_milestone(
     return {"deleted": milestone_id}
 
 
+# ── Broker mirror (Alpaca PAPER) ─────────────────────────────────────────
+# Sync `def`, not `async def`: these make blocking HTTP calls to the broker,
+# which FastAPI must run in its threadpool (the Jul-27 Research-tab freeze
+# was blocking calls inside an async handler).
+
+def _iso_utc(dt):
+    """Naive-UTC DB timestamp -> ISO string WITH an offset. A bare
+    '2026-09-11T15:51:00' is parsed by browsers as LOCAL time, which put
+    mirror fills 5 hours off on the owner's Central-time screen."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _serialize_mirror_row(r) -> dict:
+    return {
+        "id": r.id, "trade_id": r.trade_id, "ticker": r.ticker, "action": r.action,
+        "side": r.side, "internal_qty": r.internal_qty, "internal_price": r.internal_price,
+        "internal_at": _iso_utc(r.internal_at),
+        "reason": r.reason, "status": r.status, "submitted_qty": r.submitted_qty,
+        "filled_qty": r.filled_qty, "filled_avg_price": r.filled_avg_price,
+        "filled_at": _iso_utc(r.filled_at),
+        "slippage_bps": r.slippage_bps, "note": r.note,
+    }
+
+
+@router.get("/broker-mirror")
+def get_broker_mirror(
+    limit: int = Query(50, ge=1, le=500),
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Status, fill quality and position reconciliation for the Alpaca paper
+    mirror of the owner's book. Works (read-only) before activation, so the
+    card can show whether the keys are in place."""
+    from backend import broker_mirror as bm
+    from backend.database import BrokerMirrorOrder, AIPortfolioPosition
+
+    cfg = bm.mirror_config()
+    activation = bm.get_activation()
+    out = {
+        "enabled": cfg["enabled"],
+        "configured": bm.credentials() is not None,
+        "paper_base_url": bm.PAPER_BASE_URL,
+        "user_id": cfg["user_id"],
+        "activation": activation,
+        "account": None, "account_error": None, "market_open": None,
+        "reconciliation": [],
+    }
+    client = bm.get_client()
+    broker_positions = None
+    if client is not None:
+        try:
+            acct = client.account()
+            num = acct.get("account_number") or ""
+            out["account"] = {
+                "account_number": f"…{num[-4:]}" if num else None,
+                "status": acct.get("status"),
+                "equity": float(acct.get("equity") or 0),
+                "cash": float(acct.get("cash") or 0),
+                "buying_power": float(acct.get("buying_power") or 0),
+                "trading_blocked": acct.get("trading_blocked"),
+            }
+            out["market_open"] = bool(client.clock().get("is_open"))
+            broker_positions = client.positions()
+        except Exception as e:
+            out["account_error"] = str(e)[:300]
+
+    rows = db.query(BrokerMirrorOrder).filter(
+        BrokerMirrorOrder.user_id == cfg["user_id"]
+    ).order_by(BrokerMirrorOrder.id.desc()).all()
+    out["summary"] = bm.summarize(rows)
+    out["orders"] = [_serialize_mirror_row(r) for r in rows[:limit]]
+
+    if activation and broker_positions is not None:
+        # Alpaca spells class shares BRK.B; the app spells them BRK-B.
+        internal = {}
+        for p in db.query(AIPortfolioPosition).filter(
+                AIPortfolioPosition.user_id == cfg["user_id"]).all():
+            key = p.ticker.replace("-", ".")
+            internal[key] = internal.get(key, 0.0) + (p.shares or 0.0)
+        broker = {p["symbol"]: float(p.get("qty") or 0) for p in broker_positions}
+        out["reconciliation"] = bm.reconcile(internal, broker)
+    return out
+
+
+@router.post("/broker-mirror/seed")
+def seed_broker_mirror(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """ACTIVATE the mirror: copy the currently-held book to the paper
+    account and start mirroring every later trade. One-shot."""
+    from backend import broker_mirror as bm
+    try:
+        result = bm.seed(db)
+    except bm.AlpacaError as e:
+        raise HTTPException(status_code=502, detail=f"Broker rejected activation: {e}")
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error"))
+    try:
+        # Submit the seed orders now rather than on the next minute tick.
+        result["first_cycle"] = bm.run_mirror_cycle(db)
+    except Exception as e:
+        result["first_cycle"] = {"error": str(e)[:300]}
+    return result
+
+
 @router.get("/user-portfolios")
 async def get_user_portfolios(
     include_test: bool = Query(False, description="Include accounts flagged as test"),

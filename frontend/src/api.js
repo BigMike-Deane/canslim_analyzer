@@ -659,6 +659,11 @@ export const api = {
   getUserPortfolioDetail: (userId, tradeLimit = 50) =>
     request(`/api/admin/user-portfolios/${userId}?trade_limit=${tradeLimit}`),
 
+  // Alpaca PAPER mirror of the owner's book (2026-09-10): fill quality vs
+  // booked prices + position reconciliation. Seed = one-shot activation.
+  getBrokerMirror: () => request('/api/admin/broker-mirror'),
+  seedBrokerMirror: () => request('/api/admin/broker-mirror/seed', { method: 'POST' }),
+
   createUser: async (userData) => {
     const result = await request('/api/admin/users', {
       method: 'POST',

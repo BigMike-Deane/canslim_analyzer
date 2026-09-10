@@ -1929,6 +1929,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start intraday stop check job: {e}")
 
+    # Alpaca paper broker mirror (2026-09-10) -- inert until activated.
+    try:
+        start_broker_mirror_job()
+    except Exception as e:
+        logger.warning(f"Failed to start broker mirror job: {e}")
+
     # Weekly A/B eval snapshot emails DEMOTED to exception pings
     # (2026-09-01, owner): the Program Ledger + milestone push carry
     # program state now. Flip notifications.ab_eval_email.enabled to
@@ -2810,6 +2816,46 @@ def start_intraday_stop_check_job():
         scheduler.start()
 
     logger.info("Intraday stop-loss check scheduled (every 15 min, market hours only)")
+
+
+def _run_broker_mirror():
+    """Every minute: copy the mirrored user's newly committed trades to the
+    Alpaca PAPER account and poll open orders for fills (2026-09-10,
+    backend/broker_mirror.py). A single tiny query until the owner activates
+    the mirror; never touches the trade path."""
+    try:
+        from backend.broker_mirror import run_mirror_cycle
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            run_mirror_cycle(db)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Broker mirror job failed: {e}")
+
+
+def start_broker_mirror_job():
+    """Schedule the broker mirror every minute (inert until activated)."""
+    job_id = "broker_mirror"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    scheduler.add_job(
+        _run_broker_mirror,
+        IntervalTrigger(minutes=1),
+        id=job_id,
+        name="Broker Mirror (Alpaca paper)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    logger.info("Broker mirror scheduled (every 1 min; inert until activated)")
 
 
 def start_breakout_monitor_job():

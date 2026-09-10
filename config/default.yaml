@@ -843,6 +843,16 @@ alerts:
   price_change_significant_pct: 5
   volume_spike_ratio: 2.0
 
+# Broker mirror (2026-09-10) -- share-for-share copy of one live book's
+# committed trades into an Alpaca PAPER account, to measure real fills
+# against booked prices (backend/broker_mirror.py). Inert until BOTH the
+# ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY env vars are set AND the owner
+# activates it (Admin -> Broker Mirror -> Seed). Paper-only is enforced in
+# code, not here. Set enabled: false as the kill switch.
+broker_mirror:
+  enabled: true
+  user_id: 1
+
 # Notifications
 notifications:
   # Webhook notifications (push notifications via ntfy.sh, Pushover, etc.)
