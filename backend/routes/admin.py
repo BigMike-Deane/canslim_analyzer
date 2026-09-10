@@ -1518,6 +1518,51 @@ async def ml_demotion_cohort(
     }
 
 
+def _account_inception(db: Session, user_id: int) -> dict:
+    """Where a live book's ACTIVE window starts.
+
+    A paper book sits at exactly starting_cash from Initialize until its
+    first trade. Measuring from the first SNAPSHOT counts that idle stretch
+    as the account's own window -- SPY moves, the book cannot -- so alpha is
+    taken over a span the strategy never traded.
+
+    Caught 2026-09-10: the owner (first snapshot Mar-09) and Karstell
+    (Mar-04) both sat in cash until 2026-04-08 and made their first trades
+    that SAME day -- same tickers, same reasons. The scoreboard and the
+    vintage clock read them as a pair started 5 days apart, 8.4pp of alpha
+    apart. From inception they are a same-day twin pair, ~7.2pp apart.
+
+    Same construction as /api/ai-portfolio/edge and the go-live gate: one
+    point per calendar day (latest snapshot wins), then
+    ``leading_flat_start_index`` keeps the LAST flat day as the t0 anchor.
+    A book that has never deviated is not trimmed.
+
+    Returns {"start_day", "start_value", "created_day"}; all None when the
+    account has no snapshots.
+    """
+    from backend.database import AIPortfolioSnapshot
+    from backend.edge_metrics import leading_flat_start_index
+
+    by_day = {}
+    for s in db.query(AIPortfolioSnapshot).filter(
+            AIPortfolioSnapshot.user_id == user_id).all():
+        day = s.date or (s.timestamp.date() if s.timestamp else None)
+        if day is None or s.total_value is None:
+            continue
+        cur = by_day.get(day)
+        if cur is None or (s.timestamp or datetime.min) >= (cur.timestamp or datetime.min):
+            by_day[day] = s
+    if not by_day:
+        return {"start_day": None, "start_value": None, "created_day": None}
+    days = sorted(by_day)
+    i = leading_flat_start_index([by_day[d].total_value for d in days])
+    return {
+        "start_day": days[i],
+        "start_value": by_day[days[i]].total_value,
+        "created_day": days[0],
+    }
+
+
 def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
     """Launch-vintage luck, measured live (2026-09-02): the same champion
     strategy started on staggered dates. Each stack's mark-to-market return
@@ -1561,18 +1606,21 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
         })
     # ── Real accounts as vintage samples (2026-09-09) ────────────────────
     # The synthetic copies above are days old; the REAL accounts have been
-    # running the same champion strategy from different start dates for
-    # MONTHS, which is a far better-grounded read on launch luck. The owner
-    # and Karstell started 5 days apart, share ~20 of ~30 names, and sit
-    # 8.3pp of alpha apart -- that spread IS the confound this clock exists
-    # to measure, and it was sitting unread in the portfolio tables.
+    # running the same champion strategy for MONTHS, which is a far
+    # better-grounded read on path luck than copies that are days old.
+    #
+    # CORRECTED 2026-09-10: the owner and Karstell did NOT start 5 days
+    # apart. Both sat in cash until 2026-04-08 and first traded that same
+    # day, so they are a same-day TWIN pair and their ~7pp spread is pure
+    # sizing/fill path dependence, not launch vintage. Windows now start at
+    # each book's inception (_account_inception), not its first snapshot.
     #
     # Only accounts whose config MATCHES the champion are included. A book
     # running a different min_score or stop is a different strategy, and
     # folding it in would measure strategy difference as if it were vintage
     # luck -- the precise error this whole clock guards against.
     try:
-        from backend.database import AIPortfolioConfig, AIPortfolioSnapshot
+        from backend.database import AIPortfolioConfig
         from backend.ai_trader import get_portfolio_value
 
         owner_cfg = db.query(AIPortfolioConfig).filter_by(user_id=1).first()
@@ -1587,23 +1635,15 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
             )
             if not same:
                 continue
-            first = db.query(AIPortfolioSnapshot).filter(
-                AIPortfolioSnapshot.user_id == cfg.user_id
-            ).order_by(
-                AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
-                AIPortfolioSnapshot.date.asc(),
-            ).first()
-            if first is None or not first.total_value:
-                continue
-            start_day = first.date or (
-                first.timestamp.date() if first.timestamp else None)
-            if start_day is None:
+            inc = _account_inception(db, cfg.user_id)
+            start_day, start_value = inc["start_day"], inc["start_value"]
+            if start_day is None or not start_value:
                 continue
             try:
                 live_val = get_portfolio_value(db, user_id=cfg.user_id)["total_value"]
             except Exception:
                 continue
-            ret = round((live_val / first.total_value - 1.0) * 100, 2)
+            ret = round((live_val / start_value - 1.0) * 100, 2)
             spy_start_row = db.query(MarketSnapshot).filter(
                 MarketSnapshot.date <= start_day,
                 MarketSnapshot.spy_price.isnot(None),
@@ -1658,6 +1698,13 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
     cohort = _cohort(usable)
     alphas = [r["alpha_pp"] for r in cohort]
     cohort_days = [r["days"] for r in cohort]
+    # What the headline spread is actually measuring (2026-09-10). When every
+    # cohort member began trading on the same day, start-date luck is zero by
+    # construction and the whole spread is PATH noise -- sizing and fill
+    # differences compounding on identical signals. That is the noise a real
+    # account will show against its own paper twin, and it deserves to be
+    # named rather than filed under "vintage".
+    same_start = len(cohort) >= 2 and len({r["activated_at"] for r in cohort}) == 1
     return {
         "stacks": rows,
         "n": len(alphas),
@@ -1672,6 +1719,13 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
             "rule": ("longest-horizon group whose elapsed days are within 2x "
                      "of each other; dispersion grows with time, so mixing a "
                      "7-day stack with a 189-day one overstates the spread"),
+            "same_start": same_start,
+            "measures": (
+                "path noise: same config, same first-trade day -- the spread is "
+                "sizing/fill path dependence on identical signals"
+                if same_start else
+                "launch vintage + path noise: staggered starts of the same config"
+            ) if len(cohort) >= 2 else None,
         },
         "all_stacks_spread_pp": (
             round(max(r["alpha_pp"] for r in usable)
@@ -1942,7 +1996,7 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
     }
 
 
-def compute_experiment_gates(db: Session) -> dict:
+def compute_experiment_gates(db: Session) -> dict:
     """Live progress of every pre-registered promotion gate. 100% read-only.
 
     Pure function over a Session (same seam as compute_cap_delta_diagnostics)
@@ -2539,9 +2593,7 @@ async def get_user_portfolios(
     closed trades or under 30 days of history. The UI should mute those rows
     rather than let a 3-week account with 5 trades top the table.
     """
-    from backend.database import (
-        AIPortfolioSnapshot, AIPortfolioPosition, MarketSnapshot,
-    )
+    from backend.database import AIPortfolioPosition, MarketSnapshot
     from backend.ai_trader import get_portfolio_value
 
     # Token match, NOT substring: a bare "test" substring also matches a real
@@ -2586,20 +2638,13 @@ async def get_user_portfolios(
         if config is None:
             continue
 
-        first_snap = db.query(AIPortfolioSnapshot).filter(
-            AIPortfolioSnapshot.user_id == user.id
-        ).order_by(
-            AIPortfolioSnapshot.timestamp.asc().nullsfirst(),
-            AIPortfolioSnapshot.date.asc(),
-        ).first()
-
-        # Window start: first snapshot if there is one, else the first trade.
-        # Falls back to starting_cash so a freshly seeded book still renders.
-        start_value = first_snap.total_value if first_snap else config.starting_cash
-        start_day = None
-        if first_snap:
-            start_day = first_snap.date or (
-                first_snap.timestamp.date() if first_snap.timestamp else None)
+        # Window start: the book's INCEPTION (last all-cash day before its
+        # first trade), not its first snapshot -- see _account_inception for
+        # the 2026-09-10 twin-account finding. No snapshots -> first trade,
+        # and starting_cash so a freshly seeded book still renders.
+        inc = _account_inception(db, user.id)
+        start_day = inc["start_day"]
+        start_value = inc["start_value"] or config.starting_cash
 
         trades = db.query(AIPortfolioTrade).filter(
             AIPortfolioTrade.user_id == user.id
@@ -2646,6 +2691,10 @@ async def get_user_portfolios(
             "is_active": bool(config.is_active),
             "strategy": getattr(config, "strategy", None),
             "started_on": start_day.isoformat() if start_day else None,
+            # When the account was created (first snapshot). Differs from
+            # started_on by however long the book sat in cash before its
+            # first trade -- shown so that gap is visible, never measured.
+            "created_on": inc["created_day"].isoformat() if inc["created_day"] else None,
             "days_active": days_active,
             "start_value": round(start_value, 2) if start_value else None,
             "current_value": round(end_value, 2) if end_value is not None else None,

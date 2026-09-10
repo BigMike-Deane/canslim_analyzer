@@ -248,7 +248,12 @@ function UserPortfolioScoreboard() {
                         <span className="ml-1.5 text-[9px] text-dark-500">paused</span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-3 text-[11px] text-dark-400 font-data whitespace-nowrap">
+                    <td
+                      className="py-1.5 pr-3 text-[11px] text-dark-400 font-data whitespace-nowrap"
+                      title={u.created_on && u.created_on !== u.started_on
+                        ? `First trade window starts ${u.started_on}; account created ${u.created_on} (cash-only until then, not measured)`
+                        : undefined}
+                    >
                       {u.started_on || '—'}
                       {u.days_active != null && (
                         <span className="text-dark-500"> · {u.days_active}d</span>

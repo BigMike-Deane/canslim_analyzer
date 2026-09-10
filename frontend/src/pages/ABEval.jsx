@@ -758,6 +758,16 @@ function GateProgressCard() {
                 <span className="text-dark-500"> (n={data.program_clocks.vintage_spread.n})</span>
               </span>
             )}
+            {/* Same-day twins -> start luck is zero, the spread is pure path
+                noise. Named so it isn't read as launch vintage (2026-09-10). */}
+            {data.program_clocks.vintage_spread.cohort?.same_start && (
+              <span
+                className="px-1.5 py-0.5 rounded border border-dark-600 text-dark-300"
+                title={data.program_clocks.vintage_spread.cohort.measures}
+              >
+                same-day twins · path noise
+              </span>
+            )}
           </div>
         </div>
       )}
