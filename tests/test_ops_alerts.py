@@ -132,6 +132,22 @@ class TestMonitoringConfig:
         assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text)   # no email address
         assert "password_file" in text and "credentials_file" in text
 
+    def test_emails_are_readable_and_link_somewhere_reachable(self):
+        # Default template read "[FIRING:1] TEST_AlertDelivery (critical)"
+        # and linked to a Docker-internal hostname (owner's phone, Sep-10).
+        am = yaml.safe_load(open(os.path.join(ROOT, "monitoring/alertmanager.yml")))
+        [recv] = [x for x in am["receivers"] if x.get("email_configs")]
+        email = recv["email_configs"][0]
+        assert "canslim.subject" in email["headers"]["Subject"]
+        assert "canslim.html" in email["html"] and "canslim.text" in email["text"]
+        tmpl = open(os.path.join(ROOT, "monitoring/alertmanager-email.tmpl")).read()
+        for name in ("canslim.subject", "canslim.html", "canslim.text"):
+            assert '{{ define "%s" }}' % name in tmpl
+        svc = yaml.safe_load(open(os.path.join(ROOT, "docker-compose.yml")))["services"]["alertmanager"]
+        assert "--web.external-url=http://100.104.189.36:9093" in svc["command"][0]
+        assert "TZ=America/Chicago" in svc["environment"]
+        assert any(v.startswith("./monitoring/alertmanager-email.tmpl:") for v in svc["volumes"])
+
     def test_entrypoint_is_one_line(self):
         # docker-compose.yml is CRLF: a multi-line shell block risks a \r
         # landing inside the secret files the entrypoint writes.

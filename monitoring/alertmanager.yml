@@ -20,6 +20,10 @@ global:
   smtp_auth_password_file: /tmp/smtp_password
   smtp_require_tls: true
 
+# Plain-English subject/body, Central times -- monitoring/alertmanager-email.tmpl
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
 route:
   receiver: app-push
   group_by: [alertname]
@@ -52,3 +56,7 @@ receivers:
     email_configs:
       - to: '__SMTP_TO__'
         send_resolved: true
+        headers:
+          Subject: '{{ template "canslim.subject" . }}'
+        html: '{{ template "canslim.html" . }}'
+        text: '{{ template "canslim.text" . }}'

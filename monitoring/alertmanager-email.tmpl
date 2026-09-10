@@ -1,0 +1,28 @@
+{{/*
+  CANSLIM alert email (2026-09-10). Replaces Alertmanager's default template,
+  which read "[FIRING:1] TEST_AlertDelivery (critical) / 1 alert for
+  alertname=..." -- label syntax, not a message. The subject is the rule's own
+  plain-English summary; times are Central (the container runs TZ=America/
+  Chicago with the host's zoneinfo mounted). The link is the Tailscale
+  address (--web.external-url), so it opens on any device on the tailnet.
+*/}}
+
+{{ define "canslim.status" }}{{ if eq .Status "resolved" }}Resolved{{ else if eq .CommonLabels.severity "critical" }}CRITICAL{{ else }}Warning{{ end }}{{ end }}
+
+{{ define "canslim.subject" }}[CANSLIM] {{ template "canslim.status" . }}: {{ with index .Alerts 0 }}{{ or .Annotations.summary .Labels.alertname }}{{ end }}{{ if gt (len .Alerts) 1 }} ({{ len .Alerts }} alerts){{ end }}{{ end }}
+
+{{ define "canslim.when" }}{{ if eq .Status "firing" }}Since {{ .StartsAt.Local.Format "Mon Jan 2, 3:04 PM MST" }}{{ else }}Cleared {{ .EndsAt.Local.Format "Mon Jan 2, 3:04 PM MST" }} (started {{ .StartsAt.Local.Format "3:04 PM" }}){{ end }}{{ end }}
+
+{{ define "canslim.text" }}{{ range .Alerts }}{{ or .Annotations.summary .Labels.alertname }}
+{{ if eq .Status "firing" }}{{ .Annotations.description }}
+{{ end }}{{ template "canslim.when" . }}
+
+{{ end }}Alerts and silences (Tailscale): {{ .ExternalURL }}/#/alerts
+{{ end }}
+
+{{ define "canslim.html" }}<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.45;color:#1a1a1a">
+{{ range .Alerts }}<p style="margin:0 0 4px"><b>{{ or .Annotations.summary .Labels.alertname }}</b></p>
+{{ if eq .Status "firing" }}<p style="margin:0 0 4px">{{ .Annotations.description }}</p>
+{{ end }}<p style="margin:0 0 16px;color:#666;font-size:13px">{{ template "canslim.when" . }}</p>
+{{ end }}<p style="margin:16px 0 0;font-size:13px"><a href="{{ .ExternalURL }}/#/alerts">Alerts and silences</a> <span style="color:#666">(needs Tailscale)</span></p>
+</div>{{ end }}

@@ -218,14 +218,18 @@ services:
       - "100.104.189.36:9093:9093"  # Tailscale-only (UI: silences)
     volumes:
       - ./monitoring/alertmanager.yml:/etc/alertmanager/template.yml:ro
+      - ./monitoring/alertmanager-email.tmpl:/etc/alertmanager/templates/email.tmpl:ro
+      # Emails show Central time: the busybox image has no zoneinfo.
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
       - alertmanager-data:/alertmanager
     environment:
+      - TZ=America/Chicago
       - AM_SMTP_USER=${CANSLIM_EMAIL:-}
       - AM_SMTP_TO=${CANSLIM_RECIPIENT:-}
       - AM_SMTP_PASSWORD=${CANSLIM_APP_PASSWORD:-}
       - AM_WEBHOOK_TOKEN=${OPS_WEBHOOK_TOKEN:-}
     entrypoint: ["/bin/sh", "-c"]
-    command: ["umask 077 && printf '%s' \"$$AM_SMTP_PASSWORD\" > /tmp/smtp_password && printf '%s' \"$$AM_WEBHOOK_TOKEN\" > /tmp/webhook_token && sed -e \"s|__SMTP_USER__|$$AM_SMTP_USER|g\" -e \"s|__SMTP_TO__|$$AM_SMTP_TO|g\" /etc/alertmanager/template.yml > /tmp/alertmanager.yml && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager"]
+    command: ["umask 077 && printf '%s' \"$$AM_SMTP_PASSWORD\" > /tmp/smtp_password && printf '%s' \"$$AM_WEBHOOK_TOKEN\" > /tmp/webhook_token && sed -e \"s|__SMTP_USER__|$$AM_SMTP_USER|g\" -e \"s|__SMTP_TO__|$$AM_SMTP_TO|g\" /etc/alertmanager/template.yml > /tmp/alertmanager.yml && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager --web.external-url=http://100.104.189.36:9093"]
     mem_limit: 64m
     restart: unless-stopped
 
