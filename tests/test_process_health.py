@@ -175,6 +175,88 @@ class TestGetProcessHealth:
         assert h["alert_mb"] == ph.RSS_ALERT_MB
 
 
+# ---------------------------------------------------------------- leak diag
+
+class TestLeakDiag:
+    """LEAK_DIAG=1 (2026-09-10): split the residual ~13 MB/h RSS growth left
+    after MALLOC_ARENA_MAX=2 into Python-object growth vs free-but-held heap,
+    without tracemalloc (measured: too heavy for this box)."""
+
+    def _hours_ago(self, h):
+        ph._state["started_at"] = (datetime.now(UTC) - timedelta(hours=h)).isoformat()
+
+    def test_off_by_default_runs_no_probes(self, monkeypatch):
+        monkeypatch.setattr(ph, "LEAK_DIAG", False)
+        monkeypatch.setattr(ph, "read_memory", lambda: {"rss_mb": 900, "hwm_mb": 950})
+
+        def boom(*a, **k):
+            raise AssertionError("probe ran with LEAK_DIAG off")
+        monkeypatch.setattr(ph, "malloc_trim", boom)
+        monkeypatch.setattr(ph, "type_census", boom)
+        s = ph.record_scan_sample()
+        assert "py_blocks" not in s and "trim_freed_mb" not in s
+
+    def test_on_sample_carries_probes_and_rss_is_post_trim(self, monkeypatch):
+        monkeypatch.setattr(ph, "LEAK_DIAG", True)
+        monkeypatch.setattr(ph, "read_memory", lambda: {"rss_mb": 800, "hwm_mb": 950})
+        monkeypatch.setattr(ph, "malloc_trim",
+                            lambda: {"rss_pre_trim_mb": 900, "trim_freed_mb": 100})
+        monkeypatch.setattr(ph, "type_census", lambda: {"builtins.dict": 10})
+        s = ph.record_scan_sample()
+        assert s["rss_mb"] == 800                  # post-trim: what is truly retained
+        assert s["rss_pre_trim_mb"] == 900
+        assert s["trim_freed_mb"] == 100
+        assert isinstance(s["py_blocks"], int) and s["py_blocks"] > 0
+        assert s["gc_objects"] == 10
+        row = ph.get_process_health()["samples"][-1]
+        assert row["trim_freed_mb"] == 100 and "py_blocks" in row
+
+    def test_census_baseline_waits_for_warm_up(self, monkeypatch):
+        # Cache warm-up is growth too; a baseline taken at boot would name the
+        # caches as the leak.
+        monkeypatch.setattr(ph, "LEAK_DIAG", True)
+        monkeypatch.setattr(ph, "read_memory", lambda: {"rss_mb": 800, "hwm_mb": 950})
+        monkeypatch.setattr(ph, "malloc_trim", lambda: None)
+        counts = {"v": {"a.X": 1}}
+        monkeypatch.setattr(ph, "type_census", lambda: dict(counts["v"]))
+
+        self._hours_ago(ph.LEAK_DIAG_WARMUP_H - 1)
+        ph.record_scan_sample()
+        assert ph._state["census_baseline"] is None
+
+        self._hours_ago(ph.LEAK_DIAG_WARMUP_H + 1)
+        ph.record_scan_sample()
+        assert ph._state["census_baseline"] == {"a.X": 1}
+        assert ph._state["census_growth"] is None
+
+        counts["v"] = {"a.X": 5, "b.Y": 2}
+        ph.record_scan_sample()
+        growth = ph.get_process_health()["leak_diag"]["census_growth"]
+        assert [(g["type"], g["delta"]) for g in growth] == [("a.X", 4), ("b.Y", 2)]
+
+    def test_census_growth_ignores_shrinking_and_ranks(self):
+        g = ph.census_growth({"a": 10, "b": 5, "c": 1}, {"a": 3, "b": 9, "c": 50, "d": 2}, top=2)
+        assert [(x["type"], x["delta"]) for x in g] == [("c", 49), ("b", 4)]
+
+    def test_a_failing_probe_never_breaks_the_sample(self, monkeypatch):
+        monkeypatch.setattr(ph, "LEAK_DIAG", True)
+        monkeypatch.setattr(ph, "read_memory", lambda: {"rss_mb": 800, "hwm_mb": 950})
+
+        def boom():
+            raise RuntimeError("probe exploded")
+        monkeypatch.setattr(ph, "type_census", boom)
+        monkeypatch.setattr(ph, "malloc_trim", boom)
+        s = ph.record_scan_sample()
+        assert s is not None and s["rss_mb"] == 800
+
+    def test_real_probes_run_on_this_platform(self):
+        # Unpatched: must return a well-formed result or None, never raise.
+        census = ph.type_census()
+        assert census and all(isinstance(v, int) for v in census.values())
+        trim = ph.malloc_trim()
+        assert trim is None or trim["trim_freed_mb"] >= 0
+
+
 # ---------------------------------------------------------------- scan throttle
 
 class TestIsTradingDay:

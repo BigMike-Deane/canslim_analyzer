@@ -48,6 +48,31 @@ REDIS_SAMPLES_KEY = "canslim:process_memory"
 REDIS_START_KEY = "canslim:process_start"
 REDIS_CLEAN_KEY = "canslim:process_clean_shutdown"
 
+# ── Leak-hunt diagnostics (2026-09-10) ─────────────────────────────────
+# MALLOC_ARENA_MAX=2 cut RSS growth from ~23.6 to ~13 MB/h -- so part of
+# the growth was glibc fragmentation, and a residual remains. LEAK_DIAG=1
+# adds three cheap probes to every post-scan sample, which together split
+# the residual into its possible causes:
+#
+#   py_blocks      sys.getallocatedblocks() -- live Python allocations, O(1).
+#                  Climbing with RSS => Python objects are accumulating.
+#   trim_freed_mb  RSS released by glibc malloc_trim(0) -- free-but-held
+#                  heap. Large, and post-trim RSS flat => fragmentation, and
+#                  the trim itself is the fix.
+#   census growth  live gc-tracked objects by type vs a post-warm-up
+#                  baseline -- names WHAT is accumulating if py_blocks says
+#                  something is.
+#
+# ⚑ tracemalloc was measured and REJECTED for this box: on 1M small objects
+# it doubled traced memory (+280 MB of bookkeeping), slowed allocation ~8x,
+# and one snapshot peaked ~950 MB above baseline -- enough to push a
+# ~850 MB process through the 2560m container limit and OOM-kill the trader
+# it was meant to protect. Note the census cannot see dicts holding only
+# atomic values (CPython untracks them); py_blocks still counts those.
+LEAK_DIAG = os.environ.get("LEAK_DIAG", "0").strip().lower() in ("1", "true", "yes")
+LEAK_DIAG_WARMUP_H = float(os.environ.get("LEAK_DIAG_WARMUP_H", "3"))
+CENSUS_TOP = 10
+
 _lock = threading.Lock()
 _samples: deque = deque(maxlen=MAX_SAMPLES)
 _state = {
@@ -56,7 +81,11 @@ _state = {
     "previous": None,        # previous process start record (dict) or None
     "alerted_mb": None,      # RSS at which the one-shot alert fired
     "limit_mb": None,        # cgroup memory limit, resolved lazily
+    "census_baseline": None,     # {type: count} taken after warm-up
+    "census_baseline_at": None,
+    "census_growth": None,       # latest census_growth() result
 }
+_libc = {"handle": None, "tried": False}
 
 
 # ---------------------------------------------------------------- readers
@@ -160,6 +189,82 @@ def classify_start(previous: Optional[dict], clean_flag: bool, build: str) -> st
     if previous.get("build") != build:
         return "deploy"
     return "unclean"
+
+
+def census_growth(baseline: dict, current: dict, top: int = CENSUS_TOP) -> list:
+    """Types whose live object count grew most since ``baseline``, largest
+    first. Shrinking or unchanged types are omitted -- a leak only grows."""
+    grown = []
+    for name, count in current.items():
+        delta = count - baseline.get(name, 0)
+        if delta > 0:
+            grown.append({"type": name, "delta": delta, "count": count})
+    grown.sort(key=lambda g: -g["delta"])
+    return grown[:top]
+
+
+# ---------------------------------------------------------------- leak probes
+
+def type_census() -> dict:
+    """Live gc-tracked objects by fully-qualified type name. ~1 s on a few
+    million objects; the transient list is pointers only (no per-object
+    bookkeeping, unlike tracemalloc)."""
+    counts: dict = {}
+    for obj in gc.get_objects():
+        t = type(obj)
+        name = f"{t.__module__}.{t.__qualname__}"
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def malloc_trim() -> Optional[dict]:
+    """Ask glibc to return free heap pages to the OS; report RSS before and
+    after. None off-glibc (musl, macOS) or where /proc is unavailable."""
+    if not _libc["tried"]:
+        _libc["tried"] = True
+        try:
+            import ctypes
+            _libc["handle"] = ctypes.CDLL("libc.so.6")
+            _libc["handle"].malloc_trim  # AttributeError on non-glibc libc
+        except (OSError, AttributeError):
+            _libc["handle"] = None
+    if _libc["handle"] is None:
+        return None
+    before = read_memory()
+    if before is None:
+        return None
+    _libc["handle"].malloc_trim(0)
+    after = read_memory() or before
+    return {"rss_pre_trim_mb": before["rss_mb"],
+            "trim_freed_mb": max(before["rss_mb"] - after["rss_mb"], 0)}
+
+
+def _leak_diag_step(uptime_h: float) -> dict:
+    """Run the LEAK_DIAG probes. Best-effort: any failure yields a partial
+    dict, never an exception into the scan path."""
+    out: dict = {}
+    try:
+        import sys
+        out["py_blocks"] = sys.getallocatedblocks()
+    except Exception:
+        pass
+    try:
+        census = type_census()
+        if _state["census_baseline"] is None and uptime_h >= LEAK_DIAG_WARMUP_H:
+            _state["census_baseline"] = census
+            _state["census_baseline_at"] = datetime.now(timezone.utc).isoformat()
+        elif _state["census_baseline"] is not None:
+            _state["census_growth"] = census_growth(_state["census_baseline"], census)
+        out["gc_objects"] = sum(census.values())
+    except Exception as e:
+        logger.debug(f"process_health: census failed: {e}")
+    try:
+        trim = malloc_trim()
+        if trim:
+            out.update(trim)
+    except Exception as e:
+        logger.debug(f"process_health: malloc_trim failed: {e}")
+    return out
 
 
 # ---------------------------------------------------------------- persistence
@@ -288,6 +393,12 @@ def record_scan_sample(label: str = "scan") -> Optional[dict]:
         collected = gc.collect()
     except Exception:
         collected = -1
+    diag = None
+    if LEAK_DIAG and read_memory() is not None:
+        # Before the RSS read, so rss_mb below is POST-trim (what the process
+        # truly retains) and rss_pre_trim_mb keeps the untrimmed figure.
+        diag = _leak_diag_step(
+            (datetime.now(timezone.utc) - _parse_ts(_state["started_at"])).total_seconds() / 3600)
     mem = read_memory()
     if mem is None:
         return None
@@ -299,6 +410,8 @@ def record_scan_sample(label: str = "scan") -> Optional[dict]:
         "proc": _state["started_at"],
         "label": label,
     }
+    if diag:
+        sample.update(diag)
     with _lock:
         _samples.append(sample)
         snapshot = list(_samples)
@@ -310,6 +423,19 @@ def record_scan_sample(label: str = "scan") -> Optional[dict]:
         f"{f', limit {limit}' if limit else ''}) | gc freed {collected} | "
         f"trend {f'{rate:+.1f} MB/h' if rate is not None else 'n/a'} | uptime {uptime_h:.1f}h"
     )
+    if diag:
+        blocks = diag.get("py_blocks")
+        logger.info(
+            f"Leak diag: py blocks {f'{blocks / 1e6:.2f}M' if blocks is not None else 'n/a'} | "
+            f"gc objects {diag.get('gc_objects', 'n/a')} | "
+            f"trim freed {diag.get('trim_freed_mb', 'n/a')} MB "
+            f"(pre-trim RSS {diag.get('rss_pre_trim_mb', 'n/a')} MB)"
+        )
+        growth = _state["census_growth"]
+        if growth:
+            logger.info("Leak census vs %s baseline: %s" % (
+                (_state["census_baseline_at"] or "?")[:16],
+                ", ".join(f"{g['type']} +{g['delta']}" for g in growth[:6])))
     _persist_samples()
 
     if sample["rss_mb"] >= RSS_ALERT_MB and _state["alerted_mb"] is None:
@@ -352,8 +478,15 @@ def get_process_health(recent: int = 64) -> dict:
         "previous": _state["previous"],
         "growth_mb_per_hour": growth_rate_mb_per_hour(snapshot, _state["started_at"]),
         "sample_count": len(snapshot),
-        "samples": [{"ts": s["ts"], "rss_mb": s["rss_mb"], "proc": s.get("proc")}
+        "samples": [{"ts": s["ts"], "rss_mb": s["rss_mb"], "proc": s.get("proc"),
+                     **{k: s[k] for k in ("py_blocks", "rss_pre_trim_mb", "trim_freed_mb", "gc_objects")
+                        if k in s}}
                     for s in snapshot[-recent:]],
+        "leak_diag": {
+            "enabled": LEAK_DIAG,
+            "census_baseline_at": _state["census_baseline_at"],
+            "census_growth": _state["census_growth"],
+        },
     }
 
 
@@ -361,4 +494,5 @@ def _reset_for_tests():
     with _lock:
         _samples.clear()
     _state.update({"start_kind": None, "previous": None, "alerted_mb": None, "limit_mb": None,
-                   "started_at": datetime.now(timezone.utc).isoformat()})
+                   "started_at": datetime.now(timezone.utc).isoformat(),
+                   "census_baseline": None, "census_baseline_at": None, "census_growth": None})

@@ -49,7 +49,15 @@ services:
       # fetch buffers and the shadow 12-stack rebuild per cycle.
       # Runtime stage is Debian glibc 2.41, so this knob is live (musl
       # would silently ignore it).
+      # RESULT (2026-09-10, 16h undisturbed): ~13 MB/h marginal vs ~23.6
+      # control; 787 MB @12.8h vs 1050 @12.9h. Fragmentation was PART of it;
+      # a residual remains.
       - MALLOC_ARENA_MAX=2
+      # Residual split (2026-09-10): per-scan py_blocks + gc type census +
+      # malloc_trim(0) -- see backend/process_health.py. Read `Leak diag:` /
+      # `Leak census` log lines after >=12h. Remove once the residual is
+      # named. (tracemalloc measured too heavy for this box -- do not swap.)
+      - LEAK_DIAG=1
     depends_on:
       postgres:
         condition: service_healthy
