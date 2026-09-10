@@ -104,6 +104,15 @@ class TestMonitoringConfig:
             assert r["labels"]["severity"] in ("warning", "critical"), r["alert"]
             assert r["annotations"].get("summary"), r["alert"]
 
+    def test_memory_trend_rules_ignore_the_post_restart_warm_up(self):
+        # Warm-up climbs ~130 MB/h for hours; a trend rule without the
+        # uptime gate pages after every deploy (caught live on the first
+        # delivered evaluation, 2026-09-10).
+        rules = {r["alert"]: r["expr"] for r in self._rules()}
+        for name in ("CanslimMemoryClimbing", "CanslimMemoryWillHitCap"):
+            assert "container_start_time_seconds" in rules[name], name
+            assert "8 * 3600" in rules[name], name
+
     def test_the_alert_that_cannot_push_goes_by_email(self):
         am = yaml.safe_load(open(os.path.join(ROOT, "monitoring/alertmanager.yml")))
         crit = {r["alert"] for r in self._rules() if r["labels"]["severity"] == "critical"}

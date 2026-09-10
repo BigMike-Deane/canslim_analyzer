@@ -18,8 +18,14 @@ groups:
       # Catches a leak EARLY: sustained growth regardless of absolute level.
       # 15 MB/h over 6h is well above the ~23 MB/h steady rate measured on
       # 2026-09-08/09, so this is a "getting worse than baseline" signal.
+      # Uptime-gated (2026-09-10): the post-restart warm-up climbs ~130 MB/h,
+      # so without the gate every deploy reads as a leak -- harmless while
+      # nothing delivered alerts, a false page once Alertmanager did.
       - alert: CanslimMemoryClimbing
-        expr: deriv(container_memory_working_set_bytes{name="canslim-analyzer"}[6h]) * 3600 > 40e6
+        expr: >-
+          deriv(max by (name) (container_memory_working_set_bytes{name="canslim-analyzer"})[6h:5m]) * 3600 > 40e6
+          and on (name)
+          (time() - max by (name) (container_start_time_seconds{name="canslim-analyzer"})) > 8 * 3600
         for: 1h
         labels:
           severity: warning
