@@ -1237,6 +1237,17 @@ def fetch_live_price(ticker: str) -> float | None:
     except Exception as e:
         logger.warning(f"Yahoo price error for {ticker}: {e}")
 
+    # Last resort (2026-09-10): Alpaca's free real-time feed is IEX only --
+    # one venue, thin on small caps -- so it is trusted only when FMP and
+    # Yahoo both failed, and only for a trade printed in the last 15 min.
+    # That still beats the up-to-90-min-old scan price the caller falls
+    # back to next.
+    from backend import alpaca_data
+    price = alpaca_data.last_trade_price(ticker)
+    if price:
+        logger.info(f"Alpaca IEX last-resort price for {ticker}: ${price}")
+        return price
+
     return None
 
 
@@ -1434,6 +1445,33 @@ def refresh_ai_portfolio(db: Session, user_id: int = 1) -> dict:
     }
 
 
+def _daily_hlc_for_atr(ticker: str):
+    """(highs, lows, closes) daily bars for the ATR stop, oldest first, with
+    today's partial bar. Alpaca's consolidated tape first (2026-09-10:
+    official and keyed, the tape broker stops elect on -- Yahoo throttles
+    this box), Yahoo's chart API as the fallback. None when neither answers;
+    a Yahoo exception propagates to the caller's fallback, as before."""
+    from backend import alpaca_data
+    hlc = alpaca_data.daily_hlc(ticker)
+    if hlc is not None and len(hlc[0]) >= 15:
+        return hlc
+
+    import requests
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {"interval": "1d", "range": "1mo"}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, params=params, headers=headers, timeout=5)
+    if resp.status_code == 200:
+        result = resp.json().get("chart", {}).get("result", [])
+        if result:
+            quote_list = result[0].get("indicators", {}).get("quote", [])
+            if quote_list:
+                indicators = quote_list[0]
+                return (indicators.get("high", []), indicators.get("low", []),
+                        indicators.get("close", []))
+    return None
+
+
 def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) -> float:
     """
     Calculate ATR-based adaptive stop loss.
@@ -1449,48 +1487,35 @@ def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) 
     atr_multiplier = stop_config.get('atr_multiplier', 2.5)
     max_stop_pct = stop_config.get('max_stop_pct', 20.0)
 
-    # Try to get ATR from recent price data via Yahoo
     try:
-        import requests
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        params = {"interval": "1d", "range": "1mo"}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, params=params, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            result = data.get("chart", {}).get("result", [])
-            if result:
-                quote_list = result[0].get("indicators", {}).get("quote", [])
-                if not quote_list:
-                    return atr_stop_fallback(ticker, base_stop_pct)
-                indicators = quote_list[0]
-                highs = indicators.get("high", [])
-                lows = indicators.get("low", [])
-                closes = indicators.get("close", [])
+        hlc = _daily_hlc_for_atr(ticker)
+        if hlc is None:
+            return atr_stop_fallback(ticker, base_stop_pct)
+        highs, lows, closes = hlc
 
-                if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
-                    # Calculate 14-day ATR
-                    atr_period = stop_config.get('atr_period', 14)
-                    true_ranges = []
-                    for i in range(-atr_period, 0):
-                        if highs[i] and lows[i] and closes[i-1]:
-                            tr = max(
-                                highs[i] - lows[i],
-                                abs(highs[i] - closes[i-1]),
-                                abs(lows[i] - closes[i-1])
-                            )
-                            true_ranges.append(tr)
+        if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
+            # Calculate 14-day ATR
+            atr_period = stop_config.get('atr_period', 14)
+            true_ranges = []
+            for i in range(-atr_period, 0):
+                if highs[i] and lows[i] and closes[i-1]:
+                    tr = max(
+                        highs[i] - lows[i],
+                        abs(highs[i] - closes[i-1]),
+                        abs(lows[i] - closes[i-1])
+                    )
+                    true_ranges.append(tr)
 
-                    if true_ranges:
-                        atr = sum(true_ranges) / len(true_ranges)
-                        atr_pct = (atr / current_price) * 100 if current_price > 0 else 0
-                        atr_stop = atr_pct * atr_multiplier
-                        effective_stop = max(base_stop_pct, atr_stop)
-                        effective_stop = min(effective_stop, max_stop_pct)
-                        if effective_stop > base_stop_pct:
-                            logger.debug(f"{ticker}: ATR stop {effective_stop:.1f}% (ATR={atr:.2f}, base={base_stop_pct}%)")
-                        cache_atr_stop(ticker, effective_stop)
-                        return effective_stop
+            if true_ranges:
+                atr = sum(true_ranges) / len(true_ranges)
+                atr_pct = (atr / current_price) * 100 if current_price > 0 else 0
+                atr_stop = atr_pct * atr_multiplier
+                effective_stop = max(base_stop_pct, atr_stop)
+                effective_stop = min(effective_stop, max_stop_pct)
+                if effective_stop > base_stop_pct:
+                    logger.debug(f"{ticker}: ATR stop {effective_stop:.1f}% (ATR={atr:.2f}, base={base_stop_pct}%)")
+                cache_atr_stop(ticker, effective_stop)
+                return effective_stop
     except Exception as e:
         logger.debug(f"{ticker}: ATR calculation failed ({e}), using base stop {base_stop_pct}%")
 
