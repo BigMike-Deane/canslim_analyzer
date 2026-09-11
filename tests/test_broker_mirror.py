@@ -157,6 +157,12 @@ class FakeClient:
         for o in self.open_stops():
             o["status"] = "expired"
 
+    def reject_stops(self, symbol):
+        """Accepted earlier, refused later -- Alpaca re-checks queued stops
+        against the pre-market quote at 4 AM ET."""
+        for o in self.open_stops(symbol):
+            o["status"] = "rejected"
+
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
@@ -737,6 +743,58 @@ class TestRestingStops:
         bm.run_mirror_cycle(db, client)
         assert _rows(db, action="STOP")[0].status == "error"
         assert len(_isolate) == 1
+
+    @staticmethod
+    def _late_reject(db, client, monkeypatch, session_minutes):
+        """Working stop, then the broker rejects it later (Sep-11 STGW)."""
+        monkeypatch.setattr(bm, "_session_minutes", lambda c: session_minutes)
+        client.reject_stops("AAA")
+        bm.run_mirror_cycle(db, client)
+        return _rows(db, ticker="AAA", action="STOP")[0]
+
+    def _age(self, db, row, minutes=60):
+        row.created_at = row.created_at - timedelta(minutes=minutes)
+        db.commit()
+
+    def test_late_rejection_before_the_open_is_quiet(self, db, stops_on, _isolate, monkeypatch):
+        client = _held_and_mirrored(db)
+        row = self._late_reject(db, client, monkeypatch, session_minutes=None)
+        assert row.status == "rejected" and not row.alerted
+        assert _isolate == []
+
+    def test_late_rejection_replaced_is_never_reported(self, db, stops_on, _isolate, monkeypatch):
+        client = _held_and_mirrored(db)
+        row = self._late_reject(db, client, monkeypatch, session_minutes=None)
+        self._age(db, row)                                  # past the retry back-off
+        monkeypatch.setattr(bm, "_session_minutes", lambda c: 45.0)
+        bm.run_mirror_cycle(db, client)
+        db.refresh(row)
+        assert [r.status for r in _open_stop_rows(db)] == ["submitted"]
+        assert row.alerted and _isolate == []
+        assert len(client.stop_submits) == 2
+
+    def test_late_rejection_still_unprotected_into_the_session_alerts_once(
+            self, db, stops_on, _isolate, monkeypatch):
+        client = _held_and_mirrored(db)
+        self._late_reject(db, client, monkeypatch, session_minutes=10.0)
+        assert _isolate == []                               # inside the grace window
+        monkeypatch.setattr(bm, "_session_minutes", lambda c: 31.0)
+        bm.run_mirror_cycle(db, client)                     # still backing off: no stop
+        bm.run_mirror_cycle(db, client)
+        assert _open_stop_rows(db) == []
+        assert len(_isolate) == 1 and "STOP AAA" in _isolate[0][0][1]
+
+    def test_session_minutes_is_none_when_closed_or_unreachable(self):
+        class Closed:
+            def clock(self):
+                return {"is_open": False}
+
+        class Down:
+            def clock(self):
+                raise bm.AlpacaError(503, "unavailable")
+        assert bm._session_minutes(Closed()) is None
+        assert bm._session_minutes(Down()) is None
+        assert bm._session_minutes(FakeClient()) is not None
 
     def test_disabling_cancels_every_working_stop(self, db, stops_on, monkeypatch):
         client = _held_and_mirrored(db)

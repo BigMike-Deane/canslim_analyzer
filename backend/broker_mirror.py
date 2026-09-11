@@ -76,6 +76,7 @@ _BROKER_WORKING = {"new", "accepted", "pending_new", "accepted_for_bidding",
                    "held", "calculated", "pending_replace", "pending_cancel",
                    "replaced", "done_for_day", "partially_filled"}
 PENDING_ALERT_MINUTES = 30
+STOP_REJECT_GRACE_MINUTES = 30   # into the regular session, for late stop rejections
 # A resting stop's lifecycle. "lapsed" = expired at the close or canceled by
 # us (replaced / released for a sell) -- routine, never an alert.
 STOP_OPEN = ("pending",) + OPEN_STATUSES
@@ -870,7 +871,39 @@ def manage_resting_stops(db, client, user_id: int) -> dict:
     return out
 
 
-def alert_failures(db) -> int:
+def _session_minutes(client) -> Optional[float]:
+    """Minutes since today's 9:30 ET open while the market is open, else
+    None. Early closes move the close, never the open."""
+    from zoneinfo import ZoneInfo
+    try:
+        if not client.clock().get("is_open"):
+            return None
+    except (AlpacaError, requests.RequestException):
+        return None
+    now = datetime.now(ZoneInfo("America/New_York"))
+    return (now - now.replace(hour=9, minute=30, second=0, microsecond=0)).total_seconds() / 60
+
+
+def _stop_rejection_resolved(db, row) -> bool:
+    """A later STOP row for the ticker settled it (placed, fired, replaced,
+    or quietly refused as at/through the market -- the checker's exit), or
+    the book no longer holds the name."""
+    from backend.database import AIPortfolioPosition, BrokerMirrorOrder
+    if not db.query(AIPortfolioPosition).filter(
+            AIPortfolioPosition.user_id == row.user_id,
+            AIPortfolioPosition.ticker == row.ticker).first():
+        return True
+    return db.query(BrokerMirrorOrder).filter(
+        BrokerMirrorOrder.user_id == row.user_id,
+        BrokerMirrorOrder.ticker == row.ticker,
+        BrokerMirrorOrder.action == "STOP",
+        BrokerMirrorOrder.id > row.id,
+        BrokerMirrorOrder.status.in_(("submitted", "partially_filled", "filled",
+                                      "lapsed", "skipped")),
+    ).first() is not None
+
+
+def alert_failures(db, client=None) -> int:
     """One ops alert per failed order, plus orders stuck pending. A mirror
     that fails silently reads exactly like one with nothing to do."""
     from datetime import timedelta
@@ -882,6 +915,20 @@ def alert_failures(db) -> int:
         (BrokerMirrorOrder.status.in_(FAILED_STATUSES))
         | ((BrokerMirrorOrder.status == "pending") & (BrokerMirrorOrder.created_at < stale)),
     ).all()
+    # A resting stop the broker accepted and rejected LATER (Sep-11: STGW,
+    # refused at the 4 AM ET pre-market open against a thin quote) gets
+    # re-placed like any refused level. Speak only if the position is still
+    # unprotected STOP_REJECT_GRACE_MINUTES into the regular session.
+    late = [r for r in rows if r.action == "STOP" and r.status == "rejected"]
+    if late:
+        minutes = _session_minutes(client) if client is not None else None
+        for r in late:
+            if _stop_rejection_resolved(db, r):
+                r.alerted = True        # handled: nothing left to report
+                rows.remove(r)
+            elif minutes is None or minutes < STOP_REJECT_GRACE_MINUTES:
+                rows.remove(r)          # give the session and the retry a chance
+        db.commit()
     if not rows:
         return 0
     lines = [f"{r.action} {r.ticker} {r.internal_qty:g} -> {r.status}"
@@ -922,7 +969,7 @@ def run_mirror_cycle(db, client: AlpacaPaperClient = None) -> dict:
     # Market orders just sent: a filled buy can get its stop this same tick.
     polled += poll_open(db, client, include_stops=False)
     stops = manage_resting_stops(db, client, uid)
-    alerted = alert_failures(db)
+    alerted = alert_failures(db, client)
     if enqueued or sub["submitted"] or sub["errors"] or settled or stops["placed"] or stops["canceled"]:
         logger.info(f"Broker mirror: enqueued {enqueued}, settled {settled}, submitted "
                     f"{sub['submitted']}, skipped {sub['skipped']}, errors {sub['errors']}, "
