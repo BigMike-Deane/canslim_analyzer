@@ -2501,10 +2501,22 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
             # State is read/written in SystemState so it survives restart.
             # Live cycles only: a shadow arm's state write rolls back, so every
             # arm would see the same "change" and push it again.
+            #
+            # The stored state is the side we last ANNOUNCED. Buys still flip
+            # exactly at the 50MA (the check further down); the push waits
+            # until SPY clears the line by notify_band_pct, so a day spent
+            # hugging it doesn't ping every scan (Sep-10: three flips, all
+            # within 0.2% of the 50MA).
             if not _is_sandbox_run(user_id):
                 from backend.database import get_system_state, set_system_state
-                current_gate = "bullish" if spy_px >= spy_50 else "bearish"
+                band = regime_gate_config.get('notify_band_pct', 0.25) / 100.0
                 previous_gate = get_system_state(db, SPY_GATE_STATE_KEY)
+                if spy_px >= spy_50 * (1 + band):
+                    current_gate = "bullish"
+                elif spy_px <= spy_50 * (1 - band):
+                    current_gate = "bearish"
+                else:
+                    current_gate = previous_gate or ("bullish" if spy_px >= spy_50 else "bearish")
                 if previous_gate is not None and current_gate != previous_gate:
                     logger.info(f"SPY GATE CHANGE: {previous_gate} -> {current_gate} "
                                f"(SPY ${spy_px:.2f}, 50MA ${spy_50:.2f})")

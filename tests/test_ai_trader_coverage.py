@@ -961,7 +961,8 @@ class TestBuysGates:
 
 
 class TestSpyGateFlipNotification:
-    """The gate-flip push must fire once per real flip, from the live cycle only.
+    """The gate-flip push must fire once per real flip, from the live cycle
+    only, and only once SPY clears the 50MA by notify_band_pct (0.25%).
 
     Sep-11 2026 incident: shadow arms call evaluate_buys with SHADOW_USER_ID on
     a sandbox session they roll back. The gate-state write rolled back after
@@ -1015,6 +1016,51 @@ class TestSpyGateFlipNotification:
 
         assert pushes == ["bearish"]
         assert get_system_state(db_session, SPY_GATE_STATE_KEY) == "bearish"
+
+    @staticmethod
+    def _spy_at(monkeypatch, pct_vs_ma50):
+        """SPY `pct_vs_ma50` percent away from a 760.00 50MA."""
+        import data_fetcher
+        ma50 = 760.0
+        payload = {"success": True, "weighted_signal": 0.0, "indexes": {"SPY": {
+            "price": ma50 * (1 + pct_vs_ma50 / 100), "ma_50": ma50,
+            "ma_200": 700.0, "ema_21": ma50}}}
+        monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
+                            lambda *a, **k: payload)
+
+    def test_sep10_whipsaw_inside_band_stays_quiet(
+        self, monkeypatch, db_session, disable_atr_http,
+        disable_historical_data, pushes,
+    ):
+        """Sep-10 CT: -0.20% (09:09), +0.12% (10:33), -0.08% (13:12), then
+        +0.58% after hours. Each crossing pinged; none cleared 0.25%."""
+        from backend.ai_trader import SPY_GATE_STATE_KEY, evaluate_buys
+        from backend.database import get_system_state
+
+        self._flip_setup(db_session)  # announced side: bullish
+        for pct in (-0.20, 0.12, -0.08, 0.58):
+            self._spy_at(monkeypatch, pct)
+            buys = evaluate_buys(db_session, user_id=1)
+            if pct < 0:
+                assert buys == []  # the TRADING gate still flips at the line
+
+        assert pushes == []
+        assert get_system_state(db_session, SPY_GATE_STATE_KEY) == "bullish"
+
+    def test_clearing_the_band_pushes_once_each_way(
+        self, monkeypatch, db_session, disable_atr_http,
+        disable_historical_data, pushes,
+    ):
+        from backend.ai_trader import evaluate_buys
+
+        self._flip_setup(db_session)
+        for pct in (-0.30, -0.10, -0.40, 0.10, 0.30, 0.50):
+            self._spy_at(monkeypatch, pct)
+            evaluate_buys(db_session, user_id=1)
+
+        # -0.30 announces bearish; -0.10/-0.40/+0.10 hold it; +0.30 announces
+        # bullish (with the market-turn list only if bear-base names exist).
+        assert [p for p in pushes if p != "market_turn"] == ["bearish", "bullish"]
 
     def test_shadow_sentinel_counts_as_sandbox(self):
         from backend.ai_trader import _is_sandbox_run

@@ -410,6 +410,7 @@ ai_trader:
   # Kept for backward compatibility if market_state is disabled.
   market_regime_gate:
     enabled: true                    # Don't buy when SPY below 50-day MA
+    notify_band_pct: 0.25            # Flip PUSH only once SPY clears the 50MA by this %; buys still flip at the line
 
   # Conviction-based position sizing: higher scores get larger positions
   # Uses composite_score (typically 25-75 range, not CANSLIM 0-100)
