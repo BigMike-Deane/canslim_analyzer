@@ -232,8 +232,8 @@ def _fetch_quick_quotes(tickers: list) -> dict:
     """Fetch current prices for a list of tickers via yfinance (fast batch)."""
     try:
         import pandas as pd
-        import yfinance as yf
-        data = yf.download(tickers, period="1d", interval="1m", progress=False, group_by='ticker')
+        from backend.yf_util import download
+        data = download(tickers, period="1d", interval="1m", progress=False, group_by='ticker')
         prices = {}
         if data is None or data.empty:
             return prices

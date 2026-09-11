@@ -498,15 +498,15 @@ def check_position_correlation(
         return result
 
     try:
-        import yfinance as yf
         import pandas as pd
+        from backend.yf_util import download
 
         # Fetch price history for candidate + all held tickers in one batch
         all_tickers = [candidate_ticker] + held_tickers
         period = f"{lookback_days + 15}d"  # Extra buffer for weekends/holidays
 
         # Use yfinance download for batch efficiency
-        data = yf.download(all_tickers, period=period, progress=False, threads=True)
+        data = download(all_tickers, period=period, progress=False, threads=True)
         if data.empty:
             return result
 

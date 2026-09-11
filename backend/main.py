@@ -5466,11 +5466,11 @@ async def get_portfolio_correlation(
     tickers = [p.ticker for p in positions]
 
     try:
-        import yfinance as yf
         import numpy as np
         import pandas as pd
+        from backend.yf_util import download
 
-        data = yf.download(tickers, period="35d", progress=False, threads=True)
+        data = download(tickers, period="35d", progress=False, threads=True)
         if data.empty:
             return {"matrix": [], "tickers": tickers, "message": "No price data available"}
 
