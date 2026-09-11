@@ -313,6 +313,20 @@ _trading_cycle_meta_lock = threading.Lock()  # Protects access to _trading_cycle
 # next evaluation after each restart.
 SPY_GATE_STATE_KEY = "last_spy_gate_state"
 
+
+def _is_sandbox_run(user_id) -> bool:
+    """True when a shadow arm is replaying the live evaluators.
+
+    shadow_trader calls evaluate_buys/evaluate_sells with a negative sentinel
+    user_id (SHADOW_USER_ID) on a sandbox session that it rolls back. The
+    rollback undoes DB writes but can't recall a push that already went out,
+    so anything with an outside effect must check this first. Sep-11 2026:
+    the SPY gate state write rolled back after every arm, so each of the 10
+    arms re-sent the same "SPY Gate: BULLISH" + market-turn pair to every user.
+    """
+    return user_id is not None and user_id < 0
+
+
 # The live champion strategy. Single source of truth for what new
 # portfolios run and what UI surfaces (Backtest page) preselect — on a
 # champion promotion, flip this alongside the per-user rows (owner
@@ -2265,7 +2279,8 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         # If crash_result indicates not selling, send push notification if at consecutive threshold
         elif crash_result and not crash_result.get("should_sell"):
             consecutive_low = crash_result.get("consecutive_low", 0)
-            if consecutive_low >= 1 and consecutive_low < consecutive_required:
+            if (consecutive_low >= 1 and consecutive_low < consecutive_required
+                    and not _is_sandbox_run(user_id)):
                 # Send early warning push if at least 1 consecutive low scan but not yet confirmed
                 try:
                     from backend.email_utils import send_score_crash_warning_push
@@ -2484,32 +2499,35 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
             # Detect SPY gate state change and send notification.
             # State is read/written in SystemState so it survives restart.
-            from backend.database import get_system_state, set_system_state
-            current_gate = "bullish" if spy_px >= spy_50 else "bearish"
-            previous_gate = get_system_state(db, SPY_GATE_STATE_KEY)
-            if previous_gate is not None and current_gate != previous_gate:
-                logger.info(f"SPY GATE CHANGE: {previous_gate} -> {current_gate} "
-                           f"(SPY ${spy_px:.2f}, 50MA ${spy_50:.2f})")
-                try:
-                    from backend.email_utils import send_spy_gate_change_push
-                    send_spy_gate_change_push(current_gate, spy_px, spy_50)
-                except Exception as e:
-                    logger.warning(f"SPY gate change notification failed: {e}")
-
-                # On bullish flip: send bear base ready-to-buy list
-                if current_gate == "bullish" and previous_gate == "bearish":
+            # Live cycles only: a shadow arm's state write rolls back, so every
+            # arm would see the same "change" and push it again.
+            if not _is_sandbox_run(user_id):
+                from backend.database import get_system_state, set_system_state
+                current_gate = "bullish" if spy_px >= spy_50 else "bearish"
+                previous_gate = get_system_state(db, SPY_GATE_STATE_KEY)
+                if previous_gate is not None and current_gate != previous_gate:
+                    logger.info(f"SPY GATE CHANGE: {previous_gate} -> {current_gate} "
+                               f"(SPY ${spy_px:.2f}, 50MA ${spy_50:.2f})")
                     try:
-                        from backend.bear_base import get_bear_base_list
-                        from backend.email_utils import send_market_turn_ready_push
-                        ready_list = get_bear_base_list(db, limit=10)
-                        if ready_list:
-                            send_market_turn_ready_push(ready_list, spy_px, spy_50)
-                            logger.info(f"Market turn alert sent with {len(ready_list)} ready candidates")
+                        from backend.email_utils import send_spy_gate_change_push
+                        send_spy_gate_change_push(current_gate, spy_px, spy_50)
                     except Exception as e:
-                        logger.warning(f"Market turn ready-list notification failed: {e}")
-            if previous_gate != current_gate:
-                set_system_state(db, SPY_GATE_STATE_KEY, current_gate)
-                db.commit()
+                        logger.warning(f"SPY gate change notification failed: {e}")
+
+                    # On bullish flip: send bear base ready-to-buy list
+                    if current_gate == "bullish" and previous_gate == "bearish":
+                        try:
+                            from backend.bear_base import get_bear_base_list
+                            from backend.email_utils import send_market_turn_ready_push
+                            ready_list = get_bear_base_list(db, limit=10)
+                            if ready_list:
+                                send_market_turn_ready_push(ready_list, spy_px, spy_50)
+                                logger.info(f"Market turn alert sent with {len(ready_list)} ready candidates")
+                        except Exception as e:
+                            logger.warning(f"Market turn ready-list notification failed: {e}")
+                if previous_gate != current_gate:
+                    set_system_state(db, SPY_GATE_STATE_KEY, current_gate)
+                    db.commit()
 
             if spy_px < spy_50:
                 # SPY below 50MA — check for correction zone override

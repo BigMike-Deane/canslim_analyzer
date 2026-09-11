@@ -960,6 +960,71 @@ class TestBuysGates:
         assert buys == []
 
 
+class TestSpyGateFlipNotification:
+    """The gate-flip push must fire once per real flip, from the live cycle only.
+
+    Sep-11 2026 incident: shadow arms call evaluate_buys with SHADOW_USER_ID on
+    a sandbox session they roll back. The gate-state write rolled back after
+    each arm, so all 10 arms saw the same bearish -> bullish "change" and each
+    pushed "SPY Gate: BULLISH" + "MARKET TURN" to every user.
+    """
+
+    @pytest.fixture
+    def pushes(self, monkeypatch):
+        import backend.email_utils as email_utils
+        sent = []
+        monkeypatch.setattr(email_utils, "send_spy_gate_change_push",
+                            lambda state, px, ma: sent.append(state))
+        monkeypatch.setattr(email_utils, "send_market_turn_ready_push",
+                            lambda *a, **k: sent.append("market_turn"))
+        return sent
+
+    def _flip_setup(self, db):
+        from backend.ai_trader import SPY_GATE_STATE_KEY
+        from backend.database import set_system_state
+        _seed_config(db, strategy="nostate_optimized")
+        set_system_state(db, SPY_GATE_STATE_KEY, "bullish")
+        db.commit()
+
+    def test_shadow_arm_does_not_push_or_record_the_flip(
+        self, db_session, stub_market_bearish, disable_atr_http,
+        disable_historical_data, pushes,
+    ):
+        from backend.ai_trader import SPY_GATE_STATE_KEY, evaluate_buys
+        from backend.database import get_system_state
+        from backend.shadow_trader import SHADOW_USER_ID
+
+        self._flip_setup(db_session)
+        for _ in range(10):  # one call per active arm, like the 20:44 CT scan
+            assert evaluate_buys(db_session, user_id=SHADOW_USER_ID) == []
+
+        assert pushes == []
+        # The live cycle still owns the flip: state is untouched for it.
+        assert get_system_state(db_session, SPY_GATE_STATE_KEY) == "bullish"
+
+    def test_live_cycle_pushes_each_flip_once(
+        self, db_session, stub_market_bearish, disable_atr_http,
+        disable_historical_data, pushes,
+    ):
+        from backend.ai_trader import SPY_GATE_STATE_KEY, evaluate_buys
+        from backend.database import get_system_state
+
+        self._flip_setup(db_session)
+        evaluate_buys(db_session, user_id=1)
+        evaluate_buys(db_session, user_id=1)
+
+        assert pushes == ["bearish"]
+        assert get_system_state(db_session, SPY_GATE_STATE_KEY) == "bearish"
+
+    def test_shadow_sentinel_counts_as_sandbox(self):
+        from backend.ai_trader import _is_sandbox_run
+        from backend.shadow_trader import SHADOW_USER_ID
+
+        assert _is_sandbox_run(SHADOW_USER_ID)
+        assert not _is_sandbox_run(1)
+        assert not _is_sandbox_run(None)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier 1 — evaluate_buys candidate-ranking interior
 # ═══════════════════════════════════════════════════════════════════════════════

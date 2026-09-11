@@ -29,11 +29,15 @@ Architecture (Option C — synthetic-session wrapper):
                     └── PERSIST pending ShadowTrade rows via a clean session
 
 Side-effect containment:
-  - SPY-gate SystemState writes (ai_trader:2007-2030) hit the sandbox and roll back.
   - MLPrediction inserts (ai_trader:842) hit the sandbox and roll back.
   - In-place ORM mutations on AIPortfolioConfig/Position go to synthetic state.
-  - Notification webhooks are not in evaluate_buys/sells (those live in execute_trade,
-    which we do not call — shadow_trader writes ShadowTrade directly).
+  - Pushes a rollback can't undo: trade webhooks live in execute_trade, which we
+    do not call (shadow_trader writes ShadowTrade directly). evaluate_buys/sells
+    DO carry two pushes -- the SPY gate flip (+ market-turn list) and the
+    score-crash warning -- and skip them via ai_trader._is_sandbox_run(user_id)
+    because we pass SHADOW_USER_ID. Before that guard (fixed 2026-09-11) the
+    gate-state write rolled back after every arm, so all 10 arms re-sent the
+    same flip. Any new side effect in the evaluators needs the same check.
 
 Limitations (v1):
   - peak_price: the FIFO rebuild alone collapses peak to max(cost_basis,
