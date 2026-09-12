@@ -79,6 +79,58 @@ class TestAllCriteriaMustHold:
         assert g["confidence_one_sided"] == 0.85
 
 
+class TestCriterionOneReportsItsParts:
+    """The blend and the chop share come from DIFFERENT WINDOWS.
+
+    `blended_daily_excess_bps` is share(trailing window) x trend_mean +
+    (1 - share) x chop_mean, while `chop_share_pct` is the FULL history's day
+    mix. Read as one window they look contradictory, and in Sept 2026 a swing
+    from -1.7 to -4.2 bps/day was read as the strategy decaying when it was the
+    market's regime mix moving -- the means are multi-month averages and barely
+    budge week to week. Reconstructing the parts by hand from snapshots took a
+    session and got the chop mean wrong the first time (the pre-trade cash days
+    classify as chop and carry a spurious POSITIVE excess, because the
+    portfolio sat flat while SPY fell). So the parts are reported, and these
+    tests keep them reported.
+    """
+
+    def test_the_parts_of_the_blend_are_reported(self, db):
+        g = _gate(db, {
+            "regime_edge": {"trend": {"n_days": 70, "mean_daily_excess_bps": 22.2},
+                            "chop": {"n_days": 30, "mean_daily_excess_bps": -20.0}},
+            "regime_mix": {"blended_daily_excess_bps": -4.2,
+                           "breakeven_trend_share_pct": 47.4,
+                           "trend_share_pct": 48.3, "window_days": 60},
+        })
+        v = next(c for c in g["criteria"] if c["key"] == "blended_edge")["value"]
+        assert v["trend_mean_bps"] == 22.2
+        assert v["chop_mean_bps"] == -20.0
+        assert v["breakeven_trend_share_pct"] == 47.4
+        assert v["recent_trend_share_pct"] == 48.3
+        assert v["mix_window_days"] == 60
+
+    def test_which_window_each_share_came_from_is_stated(self, db):
+        # 30% chop over the whole history, 48.3% trend over the trailing 60 --
+        # both true, of different windows. The payload has to say so.
+        g = _gate(db, {"regime_mix": {"blended_daily_excess_bps": -4.2,
+                                      "trend_share_pct": 48.3, "window_days": 60}})
+        v = next(c for c in g["criteria"] if c["key"] == "blended_edge")["value"]
+        assert v["chop_share_pct"] == 30.0
+        assert v["recent_trend_share_pct"] == 48.3
+        assert "full history" in v["chop_share_basis"]
+
+    def test_the_parts_stay_present_when_unmeasured(self, db):
+        # A book with no regime means yet must still carry the keys, or a reader
+        # cannot tell "not measured" from "this build does not report it".
+        g = _gate(db, {"regime_edge": {"trend": {"n_days": 70}, "chop": {"n_days": 30}},
+                       "regime_mix": {"blended_daily_excess_bps": 4.2}})
+        v = next(c for c in g["criteria"] if c["key"] == "blended_edge")["value"]
+        for k in ("trend_mean_bps", "chop_mean_bps", "breakeven_trend_share_pct",
+                  "recent_trend_share_pct", "mix_window_days"):
+            assert k in v, k
+            assert v[k] is None
+
+
 class TestEachCriterionBlocks:
 
     def test_weak_significance_blocks(self, db):

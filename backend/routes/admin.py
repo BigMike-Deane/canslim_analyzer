@@ -1915,6 +1915,22 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
     chop_days = ((R.get("chop") or {}).get("n_days")) or 0
     total_days = trend_days + chop_days
     chop_share = round(chop_days / total_days * 100, 1) if total_days else None
+    # ⚑ THE TWO NUMBERS THIS CRITERION REPORTS COME FROM DIFFERENT WINDOWS, and
+    # reading them as one window cost a session half a day of archaeology.
+    # `chop_share_pct` is the FULL history's day mix -- regime_edge counts every
+    # classified day since the first live one. `blended_daily_excess_bps` weights
+    # those same full-history means by the TRAILING window's mix instead
+    # (regime_mix_summary, 60 days by default). So the blend moves when the recent
+    # tape changes while the means barely move: a swing from -1.7 to -4.2 bps/day
+    # over three days in Sept 2026 was the market's regime mix, NOT the strategy
+    # decaying, and it was read as decay until someone reconstructed the parts by
+    # hand. They are reported now so nobody has to. What they showed: trend +22.2
+    # and chop -20.0 bps/day put the breakeven trend share at ~47% while the
+    # market's own mix is ~48%, so this blend sits on zero and no amount of
+    # WAITING can pass it -- only a shallower chop bleed can. Every 1 bps off the
+    # chop mean buys ~1.1pp of breakeven share (-10 bps would put it near 31%).
+    trend_mean_bps = (R.get("trend") or {}).get("mean_daily_excess_bps")
+    chop_mean_bps = (R.get("chop") or {}).get("mean_daily_excess_bps")
     c1_met = bool(
         p_one is not None and p_one < (1.0 - GO_LIVE_CONFIDENCE)
         and chop_share is not None and chop_share >= GO_LIVE_MIN_CHOP_SHARE
@@ -1952,10 +1968,17 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
     criteria = [
         {"key": "blended_edge", "met": c1_met,
          "label": f"blended daily excess > 0 at {int(GO_LIVE_CONFIDENCE*100)}% one-sided, "
-                  f"window >= {GO_LIVE_MIN_CHOP_SHARE:.0f}% chop days",
+                  f"full-history window >= {GO_LIVE_MIN_CHOP_SHARE:.0f}% chop days",
          "value": {"p_one_sided": round(p_one, 4) if p_one is not None else None,
                    "chop_share_pct": chop_share,
-                   "blended_daily_excess_bps": M.get("blended_daily_excess_bps")},
+                   "blended_daily_excess_bps": M.get("blended_daily_excess_bps"),
+                   # the parts the blend is made of, so which half moved is readable
+                   "trend_mean_bps": trend_mean_bps,
+                   "chop_mean_bps": chop_mean_bps,
+                   "breakeven_trend_share_pct": M.get("breakeven_trend_share_pct"),
+                   "recent_trend_share_pct": M.get("trend_share_pct"),
+                   "mix_window_days": M.get("window_days"),
+                   "chop_share_basis": "full history; recent_trend_share_pct is the trailing mix_window_days"},
          "target": {"p_one_sided_below": round(1.0 - GO_LIVE_CONFIDENCE, 2),
                     "chop_share_pct_min": GO_LIVE_MIN_CHOP_SHARE}},
         {"key": "clears_noise_floor", "met": c2_met,
