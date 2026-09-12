@@ -80,47 +80,57 @@ one wasted most of a session. It is
   + (1 - share)            x chop_mean(full history)
 
 while the `chop_share_pct` printed beside it is the **full history's** day mix.
-`regime_conditional_edge` takes no window argument at all; `regime_mix_summary`
-takes `window_days=60`. So the weight moves with the recent tape while the means
-are multi-month averages that barely budge — which is why the figure fell from
-−1.7 to −4.2 bps/day in three days and was briefly read as the strategy
-decaying. It was the market's regime mix. Both numbers, and the parts they are
-built from, are now returned by the criterion (`trend_mean_bps`,
-`chop_mean_bps`, `breakeven_trend_share_pct`, `recent_trend_share_pct`,
-`mix_window_days`, `chop_share_basis`) so nobody reconstructs them by hand
-again. Guarded by `TestCriterionOneReportsItsParts`.
+`regime_conditional_edge` takes no window argument; `regime_mix_summary` takes
+`window_days=60`. So the weight moves with the recent tape while the means are
+multi-month averages that barely budge — which is why the figure fell from −1.7
+to −4.2 bps/day in three days and was briefly read as the strategy decaying.
+It was the regime mix. The criterion now returns its own parts
+(`trend_mean_bps`, `chop_mean_bps`, `breakeven_trend_share_pct`,
+`recent_trend_share_pct`, `mix_window_days`, `chop_share_basis`), guarded by
+`TestCriterionOneReportsItsParts`.
 
-**Measured on user 1, 108 live days (from 2026-04-08, leading flat days dropped):**
+**As served by the gate, 2026-09-12:**
 
-| quantity | value | days |
+| quantity | value |
+|---|---|
+| trend-day mean excess | **+25.3 bps/day** |
+| chop-day mean excess | **−31.8 bps/day** |
+| breakeven trend share | **55.7%** |
+| market's trailing-60 trend share | **48.3%** |
+| blended | **−4.2 bps/day** (= .483×25.3 + .517×−31.8) |
+
+⚑ **The market is 7.4pp BELOW the mix this strategy needs to break even.** That
+is a real deficit, not noise: the strategy wants 55.7% trend days and the tape
+is giving 48.3%. Waiting does not fix it — the long-run mix is not going to
+reorganise itself around our breakeven — so criterion 1 moves only when the
+chop bleed gets shallower.
+
+**What it would take.** breakeven = |chop| / (trend + |chop|), so at the current
+trend mean of +25.3:
+
+| chop_mean | breakeven trend share | vs the market's 48.3% |
 |---|---|---|
-| trend-day mean excess | **+22.2 bps/day** | 74 |
-| chop-day mean excess | **−20.0 bps/day** | 34 |
-| breakeven trend share | **47.4%** | — |
-| market's trailing-60 trend share | **48.3%** | 60 |
+| **−31.8 (today)** | **55.7%** | 7.4pp short |
+| −25 | 49.7% | still short |
+| −23 | 47.6% | parity |
+| −20 | 44.2% | passes with margin |
+| −15 | 37.2% | comfortable |
 
-**The blend therefore sits on zero**, and its sign is decided by a day or two
-entering or leaving the 60-day window. Two reasonable reconstructions landed 4.6
-bps apart on it — which is the point, not a discrepancy.
-
-⚑ **The consequence: criterion 1 cannot be passed by accumulating more days.**
-The strategy's breakeven regime mix is almost exactly the market's own long-run
-mix, so the blend cancels however long you wait. Only a shallower chop bleed
-moves it. Each 1 bps off `chop_mean` buys ~1.1pp of breakeven share:
-
-| chop_mean | breakeven trend share | vs market's ~48% |
-|---|---|---|
-| −20.0 (today) | 47.4% | coin-flip |
-| −15.0 | 40.3% | passes on a normal mix |
-| −10.0 | 31.1% | robustly positive |
-
-This is the measured case for the chop arms (`shadow_chop_spy`,
+So roughly a **27% reduction in chop bleed reaches parity, ~37% gives margin.**
+That is the measured case for the chop arms (`shadow_chop_spy`,
 `shadow_chop_damper`, `shadow_chop_entry_bar`, `shadow_chop_trim`) being the
-program that matters, rather than an intuition about chop. Their constraint is
-accrual: 7 of 15 chop days as of 2026-09-12.
+program that matters rather than an intuition about chop. Their constraint is
+accrual: 7 of 15 chop days as of 2026-09-12. Pushing the trend mean up is the
+weaker lever — it is already healthy.
 
-⚑ **Trap when recomputing this by hand:** the pre-first-trade cash days classify
-as *chop* and carry a spurious **positive** excess — the portfolio sits flat
-while SPY moves, and SPY fell over that stretch in March 2026. Including them
-lifted the chop mean from −20.0 to −11.4 and made the blend look positive. The
-gate drops them via `leading_flat_start_index`; any hand reconstruction must too.
+⚑ **Do not hand-reconstruct these from snapshots; read them off the gate.** A
+hand reconstruction on 2026-09-12 got trend +22.2 and chop −20.0, putting
+breakeven at 47.4% and making the blend look like a coin-flip sitting on zero —
+a materially wrong conclusion. Two causes, both easy to repeat: (1) the
+pre-first-trade cash days classify as **chop** and carry a spurious **positive**
+excess, because the book sat flat while SPY fell (the gate drops them via
+`leading_flat_start_index`); (2) the gate CARRIES SPY FORWARD on days with no
+market snapshot, where an inner join silently drops them — and those dropped
+days were disproportionately chop days with poor excess, which is what flattered
+the chop mean by 12 bps. The recent trend share (48.3%) reconstructed exactly;
+only the means were wrong.
