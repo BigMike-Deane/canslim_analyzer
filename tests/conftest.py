@@ -61,6 +61,58 @@ def override_dependency(dep, value):
             app.dependency_overrides.pop(dep, None)
 
 
+@pytest.fixture(autouse=True)
+def _always_a_trading_day():
+    """Neutralise the non-trading-day scan throttle for every test.
+
+    `run_continuous_scan` skips with "one refresh per weekend/holiday day"
+    once a scan has been recorded on a non-trading day. Thirty tests across
+    three files call `run_continuous_scan()` expecting it to actually scan, so
+    on a Saturday the FIRST of them consumed the day's single permitted scan
+    and every one after it returned early -- calling none of the mocks it was
+    asserting on, and so failing as though the product were broken.
+
+    That is how 2026-09-12 presented: 4 failures, of which 1 was a test not
+    reaching its later assertions and 3 were unrelated latch tests starved of
+    the scan. All four passed Mon-Fri, and CI (added the previous Wednesday)
+    met its first weekend that day and mailed the owner. The product code was
+    correct throughout; only the tests were day-dependent.
+
+    ⚑ DELIBERATELY NOT USING `monkeypatch`. An autouse fixture that requests
+    monkeypatch forces it to be instantiated before each test's OWN fixtures,
+    and fixtures unwind in reverse, so monkeypatch then undoes its patches
+    AFTER those fixtures tear down. That reordering broke
+    test_shadow_strategy_sync: it patches db.commit to raise "commit boom",
+    and its db_session teardown calls db.commit() -- which had been safe only
+    because monkeypatch used to unwind first. One ordering change, four errors,
+    three of them "database is locked" cascading off the first. Saving and
+    restoring by hand keeps this fixture out of that ordering entirely.
+
+    A test that wants the throttle to FIRE still patches the same name itself
+    inside its body (see test_process_health.py) and wins while it runs; tests
+    of the pure predicate `_should_skip_non_trading_day_scan` call it directly
+    and never see this.
+    """
+    try:
+        from backend import scheduler as _sch
+    except Exception:
+        yield
+        return
+    missing = object()
+    original = getattr(_sch, "_non_trading_day_skip_reason", missing)
+    _sch._non_trading_day_skip_reason = lambda: None
+    try:
+        yield
+    finally:
+        if original is missing:
+            try:
+                del _sch._non_trading_day_skip_reason
+            except Exception:
+                pass
+        else:
+            _sch._non_trading_day_skip_reason = original
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _disable_slowapi_in_tests():
     """Globally disable slowapi for the test session.
