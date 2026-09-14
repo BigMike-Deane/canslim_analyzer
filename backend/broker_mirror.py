@@ -770,6 +770,22 @@ def _submit_stop(client, row, symbol: str):
     return False
 
 
+# Alpaca re-checks queued stops at the 4 AM ET pre-market open against a
+# quote that stays thin until about 7 AM ET.
+PREMARKET_THIN_UNTIL_ET_HOUR = 7
+
+
+def _thin_premarket_since(now_utc: datetime) -> Optional[datetime]:
+    """Today's 4:00 AM ET as naive UTC while the pre-market quote is still
+    thin (4-7 AM ET), else None."""
+    from zoneinfo import ZoneInfo
+    et = now_utc.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    if not 4 <= et.hour < PREMARKET_THIN_UNTIL_ET_HOUR:
+        return None
+    start = et.replace(hour=4, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def manage_resting_stops(db, client, user_id: int) -> dict:
     """Keep exactly one working DAY sell-stop per broker-held position, at
     the app's effective hard stop. Placed, re-placed when the level or the
@@ -817,6 +833,17 @@ def manage_resting_stops(db, client, user_id: int) -> dict:
         BrokerMirrorOrder.action == "STOP",
         BrokerMirrorOrder.status.in_(("skipped", "rejected", "error")),
         BrokerMirrorOrder.created_at >= retry_after).all()}
+    thin_since = _thin_premarket_since(_utcnow())
+    if thin_since is not None:
+        # Sep-11 and Sep-14: STGW's queued stop was refused at the 4 AM ET
+        # re-check and every 15-minute retry was refused too -- 12 rows a
+        # morning -- until the quote filled in after 7 AM ET. A DAY stop
+        # cannot trigger before the open, so waiting costs no protection.
+        cooling |= {t for (t,) in db.query(BrokerMirrorOrder.ticker).filter(
+            BrokerMirrorOrder.user_id == user_id,
+            BrokerMirrorOrder.action == "STOP",
+            BrokerMirrorOrder.status.in_(("skipped", "rejected", "error")),
+            BrokerMirrorOrder.updated_at >= thin_since).all()}
 
     broker = {p["symbol"]: p for p in client.positions()}
     ctx = None

@@ -784,6 +784,41 @@ class TestRestingStops:
         assert _open_stop_rows(db) == []
         assert len(_isolate) == 1 and "STOP AAA" in _isolate[0][0][1]
 
+    def test_premarket_refusal_waits_for_the_quote_to_fill_in(
+            self, db, stops_on, _isolate, monkeypatch):
+        """Sep-14 STGW: the stop placed after Friday's close was refused at the
+        4 AM ET re-check, then 12 retries were refused every 15 minutes until
+        the quote filled in after 7 AM ET."""
+        client = _held_and_mirrored(db)
+        four_am_et = datetime(2026, 9, 14, 8, 0, 30)                 # 04:00 EDT
+        clock = {"now": four_am_et}
+        monkeypatch.setattr(bm, "_utcnow", lambda: clock["now"])
+        row = self._late_reject(db, client, monkeypatch, session_minutes=None)
+        row.created_at = datetime(2026, 9, 11, 20, 2)                # after Friday's close
+        row.updated_at = four_am_et + timedelta(seconds=5)           # refused at 04:00 ET
+        db.commit()
+        submits = len(client.stop_submits)
+        for minutes in (16, 60, 170):                                # 04:16 .. 06:50 EDT
+            clock["now"] = four_am_et + timedelta(minutes=minutes)
+            bm.run_mirror_cycle(db, client)
+        assert len(client.stop_submits) == submits
+        assert _open_stop_rows(db) == []
+
+        clock["now"] = four_am_et + timedelta(minutes=185)           # 07:05 EDT
+        bm.run_mirror_cycle(db, client)
+        assert len(client.stop_submits) == submits + 1
+        assert [r.status for r in _open_stop_rows(db)] == ["submitted"]
+        assert _isolate == []
+
+    def test_thin_premarket_window_is_4_to_7_am_eastern(self):
+        edt = lambda h, m=0: datetime(2026, 9, 14, h + 4, m)          # EDT = UTC-4
+        est = lambda h, m=0: datetime(2026, 12, 14, h + 5, m)         # EST = UTC-5
+        assert bm._thin_premarket_since(edt(3, 59)) is None
+        assert bm._thin_premarket_since(edt(4, 0)) == datetime(2026, 9, 14, 8, 0)
+        assert bm._thin_premarket_since(edt(6, 59)) == datetime(2026, 9, 14, 8, 0)
+        assert bm._thin_premarket_since(edt(7, 0)) is None
+        assert bm._thin_premarket_since(est(5, 30)) == datetime(2026, 12, 14, 9, 0)
+
     def test_session_minutes_is_none_when_closed_or_unreachable(self):
         class Closed:
             def clock(self):
