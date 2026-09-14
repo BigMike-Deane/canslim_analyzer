@@ -2238,6 +2238,20 @@ def compute_experiment_gates(db: Session) -> dict:
                       if _ml_closed[1] is not None else None)},
         ]
 
+    def _stop_band_days_since(start_dt, band_pct=0.25):
+        """SPY closes inside the stop-regime band (below the 50MA by less
+        than band_pct): days the stop-band arm keeps the normal stop where
+        live tightens to the bearish one."""
+        if start_dt is None:
+            return 0
+        snaps = db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= start_dt.date(),
+            MarketSnapshot.spy_price.isnot(None),
+            MarketSnapshot.spy_50_ma.isnot(None),
+        ).all()
+        return sum(1 for s in snaps if s.spy_50_ma and s.spy_50_ma > 0
+                   and -band_pct <= (s.spy_price - s.spy_50_ma) / s.spy_50_ma * 100 < 0)
+
     ARM_GATES.update({
         "shadow_chop_entry_bar": lambda a: [
             {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
@@ -2251,6 +2265,18 @@ def compute_experiment_gates(db: Session) -> dict:
                       if (t.reason or "").startswith("CHOP TRIM")), "target": 5,
              # RARE-EVENT lever: needs chop days AND a trim condition on the
              # same name. 0 in 14 days (2026-09-09 fleet review).
+             "kind": "dormant"},
+        ],
+        "shadow_stop_band": lambda a: [
+            # The lever only binds on these days (pre-registered on the
+            # nostate_stop_band profile): >=10, then vs shadow_vintage_sep16.
+            {"label": "SPY closes inside the stop band",
+             "n": _stop_band_days_since(a.activated_at), "target": 10},
+            # The exit the lever acts through. RARE-EVENT: needs a name 6-7%
+            # down while SPY sits just under its 50MA.
+            {"label": "stop-loss exits",
+             "n": sum(1 for t in _rows(a.id, "SELL")
+                      if (t.reason or "").startswith("STOP LOSS")), "target": 5,
              "kind": "dormant"},
         ],
     })

@@ -32,6 +32,7 @@ from backend.trading_utils import (
     MAX_POSITION_ALLOCATION,
     should_take_partial_on_trailing_stop,
     apply_sector_allocation_cap,
+    is_bearish_for_stops,
     select_effective_stop_loss_pct,
 )
 
@@ -1601,7 +1602,7 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
         spy_data = market_data.get("indexes", {}).get("SPY", {})
         spy_price = spy_data.get("price", 0)
         spy_ma_50 = spy_data.get("ma_50", 0)
-        is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
+        is_bearish_market = is_bearish_for_stops(spy_price, spy_ma_50, profile)
 
     # Get stop loss config, with strategy profile override
     from config_loader import config as yaml_config
@@ -1960,7 +1961,7 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
         spy_data = market_data.get("indexes", {}).get("SPY", {})
         spy_price = spy_data.get("price", 0)
         spy_ma_50 = spy_data.get("ma_50", 0)
-        is_bearish_market = spy_price < spy_ma_50 if spy_price > 0 and spy_ma_50 > 0 else False
+        is_bearish_market = is_bearish_for_stops(spy_price, spy_ma_50, profile)
 
     # Get stop loss config from YAML, with strategy profile override
     from config_loader import config as yaml_config

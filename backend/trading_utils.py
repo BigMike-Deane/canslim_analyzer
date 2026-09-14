@@ -175,6 +175,25 @@ def apply_sector_allocation_cap(
     return remaining_room * portfolio_value
 
 
+def is_bearish_for_stops(spy_price, spy_ma_50, profile: dict | None = None) -> bool:
+    """True when the bearish stop applies: SPY below its 50-day MA by more
+    than the profile's ``bearish_stop_band_pct``.
+
+    The default band of 0 is the historical rule (any print below the MA).
+    2026-09-14: with SPY sitting 0.03% under its 50MA the effective hard stop
+    flipped 7% -> 6% -> 7% within minutes, re-placing every broker stop. A
+    band asks for a clear break before tightening. Stateless on purpose --
+    shadow arms replay on a rolled-back session, so a remembered regime would
+    be undone on every pass.
+
+    Missing or non-positive inputs are NOT bearish (the live callers' guard).
+    """
+    if not spy_price or not spy_ma_50 or spy_price <= 0 or spy_ma_50 <= 0:
+        return False
+    band = float((profile or {}).get('bearish_stop_band_pct', 0) or 0)
+    return spy_price < spy_ma_50 * (1 - band / 100.0)
+
+
 def select_effective_stop_loss_pct(
     profile: dict,
     stop_loss_config: dict,

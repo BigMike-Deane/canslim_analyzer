@@ -343,6 +343,29 @@ class TestChopArmGates:
         assert sup["n"] == 1
 
 
+class TestStopBandArmGates:
+    """Gate metrics for the sep-14 stop-regime band arm."""
+
+    def test_counts_in_band_closes_and_stop_loss_exits(self, db_session):
+        arm = _arm(db_session, "shadow_stop_band", parent="nostate_stop_band")
+        ma = 760.0
+        d0 = T0.date()
+        _snap(db_session, d0 - timedelta(days=1), ma * 0.999, ma)         # before activation
+        _snap(db_session, d0, ma * (1 - 0.0003), ma)                      # -0.03%: in band
+        _snap(db_session, d0 + timedelta(days=1), ma * (1 - 0.0024), ma)  # -0.24%: in band
+        _snap(db_session, d0 + timedelta(days=2), ma * (1 - 0.0030), ma)  # -0.30%: both bearish
+        _snap(db_session, d0 + timedelta(days=3), ma, ma)                 # on the line: not below
+        _snap(db_session, d0 + timedelta(days=4), ma * 1.002, ma)         # above
+        _trade(db_session, arm.id, "AAA", "SELL", reason="STOP LOSS: Down 7.1%")
+        _trade(db_session, arm.id, "BBB", "SELL", reason="TRAILING STOP: test")
+        out = _call(db_session)
+        row = next(a for a in out["arms"] if a["name"] == "shadow_stop_band")
+        band = _metric(row, "SPY closes inside the stop band")
+        assert band["n"] == 2 and band["target"] == 10
+        stops = _metric(row, "stop-loss exits")
+        assert stops["n"] == 1 and stops["target"] == 5 and stops["kind"] == "dormant"
+
+
 class TestVintageSpread:
     """2026-09-02 vintage ensemble: role=benchmark stacks leave the arms list
     (no gate, no ledger rows) and report under program_clocks.vintage_spread

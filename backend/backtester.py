@@ -2685,7 +2685,10 @@ class BacktestEngine:
         # Get market condition for market-aware stop losses
         market = self.data_provider.get_market_direction(current_date)
         spy_data = market.get('spy', {})
-        is_bearish_market = spy_data.get('price', 0) < spy_data.get('ma_50', 0)
+        # Same band as trading_utils.is_bearish_for_stops, applied inline so the
+        # backtester keeps its unguarded price check (band 0 = unchanged).
+        _bear_band = float(self.profile.get('bearish_stop_band_pct', 0) or 0)
+        is_bearish_market = spy_data.get('price', 0) < spy_data.get('ma_50', 0) * (1 - _bear_band / 100.0)
 
         # Get stop loss config — strategy profile overrides YAML defaults
         stop_loss_config = config.get('ai_trader.stops', {})

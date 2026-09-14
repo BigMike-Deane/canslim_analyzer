@@ -365,6 +365,49 @@ class TestSellsStopLoss:
         # -6.5% breaches it.
         assert any("STOP LOSS" in s["reason"] and "bearish" in s["reason"] for s in sells)
 
+    @pytest.mark.parametrize("strategy,spy_pct,expect_stop", [
+        # Sep-14: SPY a hair under its 50MA. Live tightens to the 6% bearish
+        # stop; the band arm keeps the 7% stop until a 0.25% break.
+        ("nostate_cs_bear", -0.10, True),
+        ("nostate_stop_band", -0.10, False),
+        ("nostate_stop_band", -0.40, True),
+    ])
+    def test_stop_band_needs_a_clear_break_before_tightening(
+        self,
+        monkeypatch,
+        db_session,
+        disable_atr_http,
+        disable_historical_data,
+        strategy,
+        spy_pct,
+        expect_stop,
+    ):
+        from backend.ai_trader import evaluate_sells
+        import data_fetcher
+
+        ma50 = 760.0
+        payload = {"success": True, "weighted_signal": 0.0, "indexes": {"SPY": {
+            "price": ma50 * (1 + spy_pct / 100), "ma_50": ma50,
+            "ma_200": 700.0, "ema_21": ma50}}}
+        monkeypatch.setattr(data_fetcher, "get_cached_market_direction",
+                            lambda *a, **k: payload)
+        _seed_config(db_session, strategy=strategy, stop_loss_pct=7.0)
+        _seed_stock(db_session, "TEST")
+        _seed_position(
+            db_session,
+            "TEST",
+            current_price=93.5,
+            cost_basis=100.0,
+            gain_loss_pct=-6.5,   # through 6%, not through 7%
+            peak_price=100.0,
+        )
+
+        sells = evaluate_sells(db_session, user_id=1)
+        stopped = [s for s in sells if "STOP LOSS" in s["reason"]]
+        assert bool(stopped) is expect_stop
+        if stopped:
+            assert "bearish" in stopped[0]["reason"]
+
     def test_skip_position_with_nan_price(
         self,
         db_session,

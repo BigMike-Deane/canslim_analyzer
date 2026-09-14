@@ -580,7 +580,8 @@ def stop_context(db, user_id: int) -> dict:
     """Per-cycle inputs to the hard stop, resolved the way the live checker
     resolves them (ai_trader._check_and_execute_stop_losses_impl)."""
     from backend.database import AIPortfolioConfig
-    from backend.trading_utils import get_strategy_profile, select_effective_stop_loss_pct
+    from backend.trading_utils import (get_strategy_profile, is_bearish_for_stops,
+                                       select_effective_stop_loss_pct)
     from config_loader import config as yaml_config
 
     pcfg = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.user_id == user_id).first()
@@ -592,7 +593,7 @@ def stop_context(db, user_id: int) -> dict:
         md = get_cached_market_direction() or {}
         spy = md.get("indexes", {}).get("SPY", {}) if md.get("success") else {}
         price, ma50 = spy.get("price", 0), spy.get("ma_50", 0)
-        bearish = bool(price and ma50 and price < ma50)
+        bearish = is_bearish_for_stops(price, ma50, profile)
     except Exception as e:
         logger.debug(f"broker mirror: market direction unavailable ({e})")
     base = select_effective_stop_loss_pct(

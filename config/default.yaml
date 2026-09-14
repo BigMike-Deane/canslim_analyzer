@@ -1625,6 +1625,56 @@ strategy_profiles:
       veto_action: "skip"
     chop_trim: { enabled: true, band_pct: 1.5, min_ext_pct: 25, trim_pct: 30 }
 
+  # Stop-regime band (2026-09-14, owner: "proceed"): cs_bear clone where the
+  # bearish 6% hard stop needs SPY at least 0.25% below its 50MA. Live
+  # tightens on any print below it: on Sep-14 SPY sat 0.03% under and the
+  # effective stop flipped 7% -> 6% -> 7% within minutes (3 flips Sep-10..14).
+  # Question: does the 6% stop on a marginal break cut losers that would have
+  # recovered? Expected effect SMALL -- it only binds on a position 6-7% down
+  # while SPY is inside the band. Stateless on purpose (shadow sessions roll
+  # back, so a remembered regime would be undone every pass).
+  # Starts 2026-09-16, the same day as shadow_vintage_sep16, so the two share
+  # a launch day and the lever is the only difference (launch-vintage luck is
+  # ~7pp/month of sigma on this strategy).
+  # Gate, pre-registered: >=10 SPY closes inside the band (-0.25%..0% vs the
+  # 50MA) AND >=5 closed sells; then alpha vs shadow_vintage_sep16 (primary),
+  # shadow_baseline (context). Promote only if it beats vintage_sep16; kill if
+  # it trails, or if the band never binds by the Nov/Dec fleet review. No
+  # early call.
+  nostate_stop_band:
+    hidden: true
+    label: "NoState + CS Bear, stop band 0.25%"
+    description: "cs_bear with the bearish stop requiring SPY >= 0.25% below its 50MA (live shadow A/B, sep-14)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    bearish_stop_band_pct: 0.25   # THE LEVER (live cs_bear: absent = 0)
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -2386,4 +2436,12 @@ shadow_strategy_profiles:
     parent_strategy: nostate_chop_trim
     starting_value: 25000
     description: "cs_bear + one-time 30 pct trim of >=25 pct-extended holdings on chop days — aug-25 candidate (chop bleed = unrealized drift of held names); gate: beat baseline over a mixed-regime cycle w/ >=15 chop days AND >=5 trims fired"
+    scorer_overrides: {}
+  # Stop-regime band arm (sep-14). Same launch day as shadow_vintage_sep16 so
+  # the lever is the only difference. Gate pre-registered on nostate_stop_band.
+  shadow_stop_band:
+    parent_strategy: nostate_stop_band
+    activate_on: 2026-09-16
+    starting_value: 25000
+    description: "cs_bear with the bearish 6 pct stop only once SPY is >=0.25 pct below its 50MA -- sep-14 candidate (stop flipped 7/6/7 as SPY straddled the MA); gate: >=10 in-band SPY closes AND >=5 closed sells, then vs shadow_vintage_sep16 (same launch day)"
     scorer_overrides: {}

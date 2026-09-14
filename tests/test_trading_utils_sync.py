@@ -14,6 +14,7 @@ import pytest
 
 from backend.trading_utils import (
     apply_sector_allocation_cap,
+    is_bearish_for_stops,
     select_effective_stop_loss_pct,
     should_take_partial_on_trailing_stop,
     SECTOR_MIN_ROOM_FRACTION,
@@ -435,3 +436,36 @@ class TestNanSafe:
                 raise ValueError("array truth value ambiguous")
         weird = ValueErrorNeq()
         assert _nan_safe(weird) is weird
+
+
+# ── Bearish Stop Regime Band ──────────────────────────────────────────────────
+# Used by:
+#   - ai_trader._check_and_execute_stop_losses_impl and evaluate_sells
+#   - broker_mirror.stop_context (resting broker stops)
+#   - main.py exit plan (the position card)
+#   - backtester applies the same band inline (keeps its unguarded price check)
+
+class TestIsBearishForStops:
+    MA = 758.89
+
+    def test_default_band_is_the_historical_rule(self):
+        # Sep-14: SPY 758.66 vs 758.89 (-0.03%) -> bearish with no band.
+        assert is_bearish_for_stops(758.66, self.MA) is True
+        assert is_bearish_for_stops(758.66, self.MA, {}) is True
+        assert is_bearish_for_stops(self.MA, self.MA) is False
+        assert is_bearish_for_stops(760.0, self.MA) is False
+
+    def test_band_needs_a_clear_break_below_the_ma(self):
+        profile = {'bearish_stop_band_pct': 0.25}
+        line = self.MA * (1 - 0.25 / 100)
+        assert is_bearish_for_stops(758.66, self.MA, profile) is False   # -0.03%: in band
+        assert is_bearish_for_stops(line + 0.01, self.MA, profile) is False
+        assert is_bearish_for_stops(line - 0.01, self.MA, profile) is True
+
+    def test_missing_or_bad_inputs_are_not_bearish(self):
+        for price, ma in ((0, self.MA), (None, self.MA), (750.0, 0), (750.0, None), (-1, self.MA)):
+            assert is_bearish_for_stops(price, ma) is False
+            assert is_bearish_for_stops(price, ma, {'bearish_stop_band_pct': 0.25}) is False
+
+    def test_null_band_falls_back_to_zero(self):
+        assert is_bearish_for_stops(758.66, self.MA, {'bearish_stop_band_pct': None}) is True

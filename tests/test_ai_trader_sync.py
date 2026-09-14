@@ -241,6 +241,27 @@ class TestPartialProfitTierDelta:
         assert cs_bear_ml.get("min_confidence") == 0.30
         assert cs_bear_ml.get("log_only") is True
 
+    def test_stop_band_arm_is_cs_bear_plus_one_lever(self):
+        """The sep-14 stop-regime band arm: identical to live cs_bear except
+        the band itself (and its labels), launched the same day as the
+        Sept-16 vintage copy so the lever is the only difference."""
+        from config_loader import config as yaml_config
+
+        arm = yaml_config.get('strategy_profiles.nostate_stop_band', {})
+        live = yaml_config.get('strategy_profiles.nostate_cs_bear', {})
+        assert arm, "nostate_stop_band profile missing from config"
+        differing = {k for k in set(arm) | set(live) if arm.get(k) != live.get(k)}
+        assert differing == {"hidden", "label", "description", "bearish_stop_band_pct"}
+        assert arm["bearish_stop_band_pct"] == 0.25   # the lever
+        assert arm["hidden"] is True
+        # Control side: live cs_bear tightens on any print below the 50MA.
+        assert "bearish_stop_band_pct" not in live
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_stop_band', {})
+        vintage = yaml_config.get('shadow_strategy_profiles.shadow_vintage_sep16', {})
+        assert reg.get("parent_strategy") == "nostate_stop_band"
+        assert reg.get("starting_value") == 25000
+        assert str(reg.get("activate_on")) == str(vintage.get("activate_on")) == "2026-09-16"
+
 
 # ── 2. Trailing stop bands (champion config: 25/18/12/6/4) ───────────────────
 

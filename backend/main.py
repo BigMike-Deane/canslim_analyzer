@@ -3517,7 +3517,7 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
     # (SPY < 50MA ⇒ tighter bearish stop). Cached call — no extra fetch.
     from backend.exit_plan import compute_exit_plan
     from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening, get_cached_atr_stop
-    from backend.trading_utils import get_strategy_profile
+    from backend.trading_utils import get_strategy_profile, is_bearish_for_stops
     from config_loader import config as _yaml_config
     # Same YAML stops rung the live trader resolves through (parity with
     # ai_trader.evaluate_sells); exit_plan stays pure by taking it as input.
@@ -3525,11 +3525,11 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
     _md = get_cached_market_direction() or {}
     _spy = _md.get("indexes", {}).get("SPY", {}) if _md.get("success") else {}
     _spy_price, _spy_ma50 = _spy.get("price", 0), _spy.get("ma_50", 0)
-    is_bearish_market = (_spy_price < _spy_ma50) if (_spy_price and _spy_ma50) else False
     # Load the active strategy profile once so the trailing-stop threshold below
     # uses the REAL per-profile tiers (e.g. nostate_cs_bear 25/18/12/8) instead
     # of the stale hard-coded 15/12/10/8 — same source as ai_trader.evaluate_sells.
     _profile = get_strategy_profile(getattr(config, "strategy", None) or "balanced")
+    is_bearish_market = is_bearish_for_stops(_spy_price, _spy_ma50, _profile)
 
     # Build positions with stock data for insider/short signals
     positions_data = []
@@ -6253,7 +6253,8 @@ async def get_portfolio_summary(
     _md = get_cached_market_direction() or {}
     _spy = _md.get("indexes", {}).get("SPY", {}) if _md.get("success") else {}
     _spy_price, _spy_ma50 = _spy.get("price", 0), _spy.get("ma_50", 0)
-    is_bearish_market = (_spy_price < _spy_ma50) if (_spy_price and _spy_ma50) else False
+    from backend.trading_utils import is_bearish_for_stops
+    is_bearish_market = is_bearish_for_stops(_spy_price, _spy_ma50, profile)
     effective_stop = bearish_stop if is_bearish_market else base_stop
 
     # Portfolio totals
