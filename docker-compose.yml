@@ -53,11 +53,11 @@ services:
       # control; 787 MB @12.8h vs 1050 @12.9h. Fragmentation was PART of it;
       # a residual remains.
       - MALLOC_ARENA_MAX=2
-      # Residual split (2026-09-10): per-scan py_blocks + gc type census +
-      # malloc_trim(0) -- see backend/process_health.py. Read `Leak diag:` /
-      # `Leak census` log lines after >=12h. Remove once the residual is
-      # named. (tracemalloc measured too heavy for this box -- do not swap.)
-      - LEAK_DIAG=1
+      # LEAK_DIAG=1 retired 2026-09-14: the residual was named (yfinance's
+      # multitasking TASKS list, fixed aac74c9) -- 591 MB @43h, 2.0 MB/h.
+      # The last census deltas (pandas Holiday/Timestamp) were a one-time
+      # lazy import, flat across every reading. Re-add `- LEAK_DIAG=1` to
+      # re-arm the probes (backend/process_health.py).
     depends_on:
       postgres:
         condition: service_healthy
