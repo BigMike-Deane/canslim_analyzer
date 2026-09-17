@@ -97,6 +97,10 @@ class FakeClient:
             raise bm.AlpacaError(422, "client_order_id must be unique")
         if side == "sell" and qty > self.held.get(symbol, 0.0) - self._reserved(symbol) + 1e-9:
             raise bm.AlpacaError(403, "insufficient qty available for order")
+        if side == "buy" and self.open_stops(symbol):
+            # Alpaca's self-trade prevention: a buy cannot go in while a sell
+            # order on the same symbol is open (Sep-17, DSX pyramid).
+            raise bm.AlpacaError(403, "potential wash trade detected. use complex orders")
         self.submits.append((symbol, qty, side, client_order_id))
         order = {"id": f"o{len(self.orders)}", "client_order_id": client_order_id,
                  "symbol": symbol, "side": side, "qty": qty, "type": "market",
@@ -594,15 +598,61 @@ class TestRestingStops:
         assert [r.submitted_qty for r in _open_stop_rows(db)] == [pytest.approx(6)]
         assert client.held["AAA"] == pytest.approx(6)
 
-    def test_no_resize_while_a_buy_is_in_flight(self, db, stops_on):
+    def test_pyramid_cancels_the_stop_then_buys_then_resizes(self, db, stops_on):
+        # Sep-17, DSX: the fake broker refuses a buy while a sell stop is
+        # open, exactly like Alpaca's "potential wash trade" 403.
+        client = _held_and_mirrored(db)
+        stop = _open_stop_rows(db)[0]
+        t = _trade(db, "AAA", "PYRAMID", 2)
+        db.query(AIPortfolioPosition).filter_by(user_id=UID, ticker="AAA").update({"shares": 12})
+        db.commit()
+        bm.run_mirror_cycle(db, client)
+        buy = _rows(db, trade_id=t.id)[0]
+        assert buy.status == "filled" and buy.submitted_qty == 2
+        assert buy.linked_order_id == stop.id
+        db.refresh(stop)
+        assert stop.status == "lapsed" and "adding" in stop.note
+        assert [r.submitted_qty for r in _open_stop_rows(db)] == [pytest.approx(12)]
+        assert len(client.open_stops("AAA")) == 1
+        assert client.held["AAA"] == pytest.approx(12)
+
+    def test_pyramid_waits_while_the_stop_cancel_settles(self, db, stops_on):
+        client = _held_and_mirrored(db)
+        stop = _open_stop_rows(db)[0]
+        t = _trade(db, "AAA", "PYRAMID", 2)
+        db.query(AIPortfolioPosition).filter_by(user_id=UID, ticker="AAA").update({"shares": 12})
+        db.commit()
+        # The broker acknowledges the cancel but has not finished it.
+        real_cancel = client.cancel_order
+        def slow_cancel(order_id):
+            o = next(o for o in client.orders.values() if o["id"] == order_id)
+            o["status"] = "pending_cancel"
+        client.cancel_order = slow_cancel
+        bm.run_mirror_cycle(db, client)
+        buy = _rows(db, trade_id=t.id)[0]
+        assert buy.status == "pending" and "waiting" in buy.note
+        assert buy.client_order_id not in [s[3] for s in client.submits]
+        # ...and no fresh stop is placed on the old size meanwhile.
+        assert len(client.stop_submits) == 1
+        next(o for o in client.orders.values() if o["id"] == stop.broker_order_id)["status"] = "canceled"
+        client.cancel_order = real_cancel
+        bm.run_mirror_cycle(db, client)
+        db.refresh(buy)
+        assert buy.status == "filled"
+        assert [r.submitted_qty for r in _open_stop_rows(db)] == [pytest.approx(12)]
+
+    def test_no_new_stop_while_a_buy_is_in_flight(self, db, stops_on):
+        # The old stop had to go before the buy (wash-trade rule); no stop
+        # on the OLD size is placed while the buy is still working either.
         client = _held_and_mirrored(db)
         client.fill_on_submit = False
         t = _trade(db, "AAA", "PYRAMID", 2)
         db.query(AIPortfolioPosition).filter_by(user_id=UID, ticker="AAA").update({"shares": 12})
         db.commit()
         bm.run_mirror_cycle(db, client)
-        assert [r.submitted_qty for r in _open_stop_rows(db)] == [10]   # waits
+        assert _open_stop_rows(db) == [] and len(client.stop_submits) == 1   # waits
         buy = _rows(db, trade_id=t.id)[0]
+        assert buy.status == "submitted"
         client._fill(buy.client_order_id, "AAA", 2, "buy")
         bm.run_mirror_cycle(db, client)
         assert [r.submitted_qty for r in _open_stop_rows(db)] == [pytest.approx(12)]

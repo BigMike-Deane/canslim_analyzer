@@ -517,9 +517,11 @@ def submit_pending(db, client: AlpacaPaperClient) -> dict:
                 # queued for the open). Wait for it instead of skipping.
                 row.note = "waiting for the matching buy to fill"
                 continue
-            if row.side == "sell" and _open_stop(db, row.user_id, row.ticker) is not None:
-                # The stop still reserves the shares; settle_against_stops
-                # has asked the broker to cancel it.
+            if _open_stop(db, row.user_id, row.ticker) is not None:
+                # A sell: the stop still reserves the shares. A buy: the
+                # broker would refuse it as a wash trade while the sell
+                # stop is open. settle_against_stops has asked the broker
+                # to cancel it either way.
                 row.note = "waiting for the resting stop to cancel"
                 continue
             qty, note = broker_qty(row.internal_qty, bool(asset.get("fractionable")),
@@ -704,6 +706,11 @@ def settle_against_stops(db, client, user_id: int) -> int:
     * A sell whose ticker has a working stop: cancel the stop first (it
       reserves the shares). If the stop fired in the meantime, the sell is
       covered by it.
+    * A buy (pyramid) whose ticker has a working stop: cancel the stop first
+      too. Alpaca refuses a buy while a sell order on the same symbol is
+      open ("potential wash trade": self-trade prevention, nothing to do
+      with the tax rule) -- Sep-17, DSX. The stop is re-placed at the new
+      size once the buy fills (manage_resting_stops).
     * A sell or buy on a ticker the broker is flat on because a stop fired
       while the book held: covered (sell) / skipped (buy -- the broker stays
       flat until the book exits too).
@@ -719,20 +726,22 @@ def settle_against_stops(db, client, user_id: int) -> int:
     for row in rows:
         try:
             exited = open_stop_exit(db, user_id, row.ticker)
+            stop = _open_stop(db, user_id, row.ticker) if exited is None else None
+            if stop is not None:
+                row.linked_order_id = stop.id   # a stop was working at this order
+                _cancel_stop(client, stop, "canceled: the book is selling"
+                             if row.side == "sell" else "canceled: the book is adding")
+                if stop.status == "filled":
+                    exited = stop               # raced: it fired first
+                elif stop.status in STOP_OPEN:
+                    row.note = "waiting for the resting stop to cancel"
+                    continue                    # cancel still settling
             if row.side == "buy":
                 if exited is not None:
                     row.status, row.linked_order_id = "skipped", exited.id
                     row.note = "broker flat: resting stop fired while the book held"
                     n += 1
                 continue
-            stop = _open_stop(db, user_id, row.ticker)
-            if stop is not None:
-                row.linked_order_id = stop.id   # a stop was working at this exit
-                _cancel_stop(client, stop, "canceled: the book is selling")
-                if stop.status == "filled":
-                    exited = stop               # raced: it fired first
-                elif stop.status in STOP_OPEN:
-                    continue                    # cancel still settling
             if exited is not None:
                 _cover(row, exited)
                 n += 1
