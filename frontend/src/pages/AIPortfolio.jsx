@@ -429,6 +429,53 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
   const isPositive = (returnPct ?? 0) >= 0
   const windowLabel = WINDOW_LABELS[timeRange] || WINDOW_LABELS.all
 
+  const pills = (
+    <div className="flex bg-dark-850 rounded-lg p-0.5">
+      {WINDOW_PILLS.map(({ value, label }) => (
+        <button
+          key={value}
+          onClick={() => setTimeRange?.(value)}
+          className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+            timeRange === value
+              ? 'bg-primary-500 text-white'
+              : 'text-dark-400 hover:text-white'
+          }`}
+          aria-pressed={timeRange === value}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+
+  // With the VerdictLedger above, a second full card restated the same
+  // value (UI grammar: one hero number per screen). It keeps its real job --
+  // the window pills that drive the chart and position returns -- as a slim
+  // strip: windowed return + pills, then cash / invested / slots on one line.
+  if (heroInLedger) {
+    return (
+      <Card variant="glass" className="mb-4" padding="p-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div
+            data-testid="ai-window-return"
+            data-window={timeRange}
+            className={`text-sm flex items-center gap-1.5 font-data ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}
+          >
+            <span>{isPositive ? '+' : '-'}{formatCurrency(Math.abs(returnDollar ?? 0))}</span>
+            <span className="text-dark-400">({formatPercent(returnPct, true)})</span>
+            {loading && <span className="text-[10px] text-dark-500" aria-live="polite">…</span>}
+          </div>
+          {pills}
+        </div>
+        <div className="mt-2 text-xs text-dark-400 font-data flex flex-wrap gap-x-3 gap-y-1">
+          <span>Cash <b className="text-dark-200 font-medium">{formatCurrency(summary.cash)}</b></span>
+          <span>Invested <b className="text-dark-200 font-medium">{formatCurrency(summary.positions_value)}</b></span>
+          <span><b className="text-dark-200 font-medium">{summary.positions_count} / {config?.max_positions || 8}</b> slots</span>
+        </div>
+      </Card>
+    )
+  }
+
   return (
     <Card variant="glass" className="mb-4">
       {/* Compact pill row sits inside the card header so the controls and
@@ -442,29 +489,12 @@ function SummaryCard({ summary, config, windowReturns, timeRange, setTimeRange, 
           {loading && (
             <span className="text-[10px] text-dark-500 font-data" aria-live="polite">…</span>
           )}
-          <div className="flex bg-dark-850 rounded-lg p-0.5">
-            {WINDOW_PILLS.map(({ value, label }) => (
-              <button
-                key={value}
-                onClick={() => setTimeRange?.(value)}
-                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
-                  timeRange === value
-                    ? 'bg-primary-500 text-white'
-                    : 'text-dark-400 hover:text-white'
-                }`}
-                aria-pressed={timeRange === value}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          {pills}
         </div>
       </div>
-      {!heroInLedger && (
-        <div className="text-3xl font-bold font-data mt-1 mb-1">
-          {formatCurrency(summary.total_value)}
-        </div>
-      )}
+      <div className="text-3xl font-bold font-data mt-1 mb-1">
+        {formatCurrency(summary.total_value)}
+      </div>
       <div
         data-testid="ai-window-return"
         data-window={timeRange}
@@ -989,7 +1019,7 @@ function EdgeAttribution({ edge }) {
 // EdgeScorecard renders its banner stack only when this ledger is absent
 // (hideClocks prop). Every value derives from the live edge payload, so
 // the band rewrites itself on each fetch.
-function VerdictLedger({ summary, edge }) {
+function VerdictLedger({ summary, edge, onShowDetail }) {
   if (!edge || (edge.trading_days || 0) < 2 || summary?.total_value == null) return null
   const R = edge.regime_edge, P = edge.power, A = edge.alpha_significance
   // Null-safe like EdgeScorecard's pct: spy_return_pct is legitimately null
@@ -1007,11 +1037,9 @@ function VerdictLedger({ summary, edge }) {
       })
     : null
   const proven = A?.significant_95
-
-  // Alpha CI meter geometry: zero tick + point estimate pin, both as % of span.
-  const lo = A?.alpha_annualized_ci_low_pct, hi = A?.alpha_annualized_ci_high_pct
-  const span = (lo != null && hi != null && hi > lo) ? hi - lo : null
-  const ciX = (v) => `${(100 * (v - lo) / span).toFixed(1)}%`
+  // Only decides whether the "→ meters" link has anything to point at.
+  const span = (A?.alpha_annualized_ci_low_pct != null && A?.alpha_annualized_ci_high_pct != null
+    && A.alpha_annualized_ci_high_pct > A.alpha_annualized_ci_low_pct) ? 1 : null
 
   return (
     <div className="mb-4 rounded-xl border border-dark-600 border-t-2 border-t-primary-500 bg-gradient-to-b from-dark-800 to-dark-850 p-4">
@@ -1091,7 +1119,42 @@ function VerdictLedger({ summary, edge }) {
         )}
       </div>
 
-      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+      {/* Mobile declutter (2026-09-22, owner: "quite cluttered"): the
+          meters (trend-day clock, alpha CI, regime mix, bootstrap) moved to
+          the Analysis tab as EdgeMeters. The hero keeps the answer; the
+          evidence is one tap away. */}
+      {onShowDetail && (R?.trend || span != null || edge.regime_mix || edge.bootstrap_edge) && (
+        <button
+          type="button"
+          onClick={onShowDetail}
+          className="mt-3 text-xs text-primary-400 hover:text-primary-300 transition-colors"
+        >
+          Trend-day clock, alpha CI &amp; regime mix →
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ── Edge meters (Analysis tab) ──────────────────────────────────────
+// The evidence behind the VerdictLedger's one-line verdict: trend-day clock,
+// alpha CI, regime mix and the bootstrap check. Lived inside the ledger on
+// Overview until 2026-09-22, where it made the first phone screen a research
+// report; the ledger now links here.
+function EdgeMeters({ edge }) {
+  if (!edge || (edge.trading_days || 0) < 2) return null
+  const R = edge.regime_edge, A = edge.alpha_significance
+  const lo = A?.alpha_annualized_ci_low_pct, hi = A?.alpha_annualized_ci_high_pct
+  const span = (lo != null && hi != null && hi > lo) ? hi - lo : null
+  // Alpha CI meter geometry: zero tick + point estimate pin, both as % of span.
+  const ciX = (v) => `${(100 * (v - lo) / span).toFixed(1)}%`
+  if (!(R?.trend?.required_days > 0) && span == null
+      && edge.regime_mix?.trend_share_pct == null && !edge.bootstrap_edge) return null
+
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Is the edge real?" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
         {R?.trend?.required_days > 0 && (
           <div>
             <div className="flex justify-between text-[10px] uppercase tracking-[.12em] text-dark-400 mb-1">
@@ -1235,7 +1298,7 @@ function VerdictLedger({ summary, edge }) {
           </div>
         )}
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -1700,9 +1763,6 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
           // activation tier, or on older payloads) — degrade to nothing.
           const ts = position.trailing_stop
           const offPeak = ts?.drop_from_peak_pct
-          const offPeakTone = ts?.near_stop
-            ? 'text-red-400'
-            : (offPeak ?? 0) > 5 ? 'text-amber-400' : 'text-dark-500'
           // Severity stripe (direction A): red = deep drawdown or near stop,
           // amber = score fade ≥12pts. Same thresholds as NeedsAttention so
           // a striped row always has a matching chip above.
@@ -1742,17 +1802,20 @@ function PositionsList({ positions, windowReturns, timeRange, setTimeRange, load
                     </span>
                   )}
                 </div>
-                <div className="text-dark-400 text-[10px] font-data mt-0.5">
-                  {position.shares.toFixed(2)} shares @ {formatCurrency(position.cost_basis)}
-                  {offPeak != null && offPeak > 0 && (
-                    <span
-                      className={`${offPeakTone}`}
-                      title={`Peak ${ts.peak_price != null ? formatCurrency(ts.peak_price) : '—'}${ts.peak_date ? ` on ${new Date(ts.peak_date).toLocaleDateString()}` : ''}${ts.threshold_pct != null ? ` · trailing stop at −${ts.threshold_pct}%` : ''}`}
-                    >
-                      {' '}· ↓{offPeak.toFixed(1)}% off peak
-                    </span>
-                  )}
-                  <ExitPlanChip plan={position.exit_plan} />
+                {/* ONE line (2026-09-22, owner: "quite cluttered"): nearest
+                    exit + distance only. Off-peak moved to the tooltip -- at
+                    430px it truncated mid-number, and deep drops already get
+                    the red stripe + a NeedsAttention chip. Shares @ cost live
+                    in the tap-through modal. truncate, never wrap. */}
+                <div
+                  className="text-dark-400 text-[11px] font-data mt-0.5 truncate"
+                  title={offPeak != null && offPeak > 0
+                    ? `${offPeak.toFixed(1)}% off peak ${ts.peak_price != null ? formatCurrency(ts.peak_price) : '—'}${ts.peak_date ? ` on ${new Date(ts.peak_date).toLocaleDateString()}` : ''}${ts.threshold_pct != null ? ` · trailing stop at −${ts.threshold_pct}%` : ''}`
+                    : undefined}
+                >
+                  {position.exit_plan?.nearest_kind
+                    ? <ExitPlanChip plan={position.exit_plan} short />
+                    : <>{position.shares.toFixed(2)} sh @ {formatCurrency(position.cost_basis)}</>}
                 </div>
               </div>
               <div className="text-right shrink-0">
@@ -2182,7 +2245,11 @@ function ExitPlanSection({ plan }) {
 // positions list rows. Same server-computed data as ExitPlanSection (the card
 // in the detail modal) — presentation-only, never re-derives a threshold.
 // Renders nothing when the plan has no price trigger (e.g. data still loading).
-function ExitPlanChip({ plan }) {
+// Short labels for the one-line position row (2026-09-22): the long ones
+// wrapped to 3 lines on a phone, stranding "away)" on its own line.
+const EXIT_SHORT_LABEL = { stop_loss: 'Stop', trailing_stop: 'Trail', take_profit: 'Target', score_exit: 'Score' }
+
+function ExitPlanChip({ plan, short = false }) {
   if (!plan?.triggers?.length || !plan.nearest_kind) return null
   const t = plan.triggers.find((x) => x.kind === plan.nearest_kind)
   if (!t || t.price == null) return null
@@ -2197,11 +2264,16 @@ function ExitPlanChip({ plan }) {
   const dist = t.distance_pct != null
     ? (t.direction === 'up' ? `${t.distance_pct}% to go` : `${t.distance_pct}% away`)
     : null
+  const title = `Nearest exit trigger: ${t.label}${t.note ? ` — ${t.note}` : ''}`
+  if (short) {
+    return (
+      <span className={`font-data ${tone}`} title={title}>
+        {EXIT_SHORT_LABEL[t.kind] || t.label} {formatCurrency(t.price)}{dist ? ` · ${dist}` : ''}
+      </span>
+    )
+  }
   return (
-    <span
-      className={`font-data ${tone}`}
-      title={`Nearest exit trigger: ${t.label}${t.note ? ` — ${t.note}` : ''}`}
-    >
+    <span className={`font-data ${tone}`} title={title}>
       {' '}· {t.label} {formatCurrency(t.price)}{dist ? ` (${dist})` : ''}
     </span>
   )
@@ -2511,8 +2583,11 @@ const RECENT_TRADE_COLUMNS = [
   },
 ]
 
+const RECENT_TRADES_COLLAPSED = 8
+
 function TradeHistory({ trades }) {
   const [selectedTrade, setSelectedTrade] = useState(null)
+  const [showAll, setShowAll] = useState(false)
   const [exporting, setExporting] = useState(false)
   const toast = useToast()
 
@@ -2562,7 +2637,7 @@ function TradeHistory({ trades }) {
           Row click still opens the TradeDetailModal below. */}
       <DataTable
         columns={RECENT_TRADE_COLUMNS}
-        data={trades.slice(0, 20)}
+        data={trades.slice(0, showAll ? 20 : RECENT_TRADES_COLLAPSED)}
         keyField="id"
         compact
         defaultSort="executed_at"
@@ -2570,6 +2645,15 @@ function TradeHistory({ trades }) {
         onRowClick={setSelectedTrade}
         emptyMessage="No trades yet"
       />
+      {Math.min(trades.length, 20) > RECENT_TRADES_COLLAPSED && (
+        <button
+          type="button"
+          onClick={() => setShowAll(v => !v)}
+          className="mt-2 w-full text-xs text-primary-400 hover:text-primary-300 transition-colors"
+        >
+          {showAll ? 'Show fewer' : `Show all ${Math.min(trades.length, 20)}`}
+        </button>
+      )}
 
       {/* Trade Detail Modal */}
       <TradeDetailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />
@@ -2657,6 +2741,7 @@ function ConfigPanel({ config, positions, tradesCount, onUpdate, onInitialize, o
   const [refreshing, setRefreshing] = useState(false)
   const [changingStrategy, setChangingStrategy] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [startCash, setStartCash] = useState(config?.starting_cash || 25000)
 
   useEffect(() => {
@@ -2876,22 +2961,29 @@ function ConfigPanel({ config, positions, tradesCount, onUpdate, onInitialize, o
         </button>
       </div>
 
-      <button
-        onClick={openReset}
-        disabled={initializing}
-        className={`w-full py-2 mb-2 bg-dark-700 rounded-lg text-sm font-medium transition-colors text-dark-300 ${
-          fresh ? 'hover:bg-dark-600' : 'hover:bg-red-500/10 hover:text-red-400'
-        }`}
-      >
-        {initializing ? 'Resetting...' : fresh ? 'Set Starting Cash…' : 'Reset Portfolio…'}
-      </button>
-
-      <Link
-        to="/backtest"
-        className="block w-full py-2 bg-dark-700 hover:bg-dark-600 rounded-lg text-sm font-medium transition-colors text-center text-primary-400"
-      >
-        Run Historical Backtest
-      </Link>
+      {/* 2026-09-22 declutter: Reset (a wipe, behind a confirm modal) sits
+          behind "Advanced" once the book has trades; on a fresh book it IS
+          the setup step, so it stays in view. The old "Run Historical
+          Backtest" button duplicated the page's More → Run Backtest link. */}
+      {(fresh || showAdvanced) ? (
+        <button
+          onClick={openReset}
+          disabled={initializing}
+          className={`w-full py-2 mb-2 bg-dark-700 rounded-lg text-sm font-medium transition-colors text-dark-300 ${
+            fresh ? 'hover:bg-dark-600' : 'hover:bg-red-500/10 hover:text-red-400'
+          }`}
+        >
+          {initializing ? 'Resetting...' : fresh ? 'Set Starting Cash…' : 'Reset Portfolio…'}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(true)}
+          className="text-[11px] text-dark-400 hover:text-dark-200 transition-colors"
+        >
+          Advanced ▾
+        </button>
+      )}
 
       <Modal open={resetOpen} onClose={() => !initializing && setResetOpen(false)}
              title={fresh ? 'Set Up AI Portfolio' : 'Reset AI Portfolio'} size="sm">
@@ -3630,7 +3722,11 @@ export default function AIPortfolio() {
 
           {/* Direction-A hierarchy: the verdict ledger answers "am I
               beating SPY, and when will I know?" before anything else. */}
-          <VerdictLedger summary={portfolio?.summary} edge={edge} />
+          <VerdictLedger
+            summary={portfolio?.summary}
+            edge={edge}
+            onShowDetail={() => { setActiveTab('analysis'); window.scrollTo(0, 0) }}
+          />
 
           <SummaryCard
             summary={portfolio?.summary}
@@ -3699,10 +3795,12 @@ export default function AIPortfolio() {
           sector allocation. One tap from overview, out of its way. */}
       {activeTab === 'analysis' && (
         <>
-          {/* hideClocks here too: the verdict/clock content has exactly two
-              homes — the ledger's meters (overview) and the narrative's
-              prose (below). The scorecard contributes what only it has:
-              the metric grid and the expandable significance detail. */}
+          {/* The verdict/clock content has exactly two homes: EdgeMeters
+              here (moved off the Overview ledger 2026-09-22) and the
+              narrative's prose below. hideClocks keeps the scorecard to
+              what only it has: the metric grid and significance detail. */}
+          <EdgeMeters edge={edge} />
+
           <EdgeScorecard edge={edge} hideClocks />
 
           <PortfolioNarrative edge={edge} trades={trades} />
