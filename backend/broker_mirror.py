@@ -1095,12 +1095,20 @@ def summarize(rows: list, internal_slippage_pp: Optional[dict] = None) -> dict:
         "avg_slippage_bps": _avg([r.slippage_bps for r in filled]),
         "by_side": by_side,
         "stop_sells": {"n": len(stops), "avg_bps": _avg(stops)},
-        "n_failed": sum(1 for r in rows if r.status in FAILED_STATUSES),
+        # A resting stop the broker accepted and rejected LATER is almost
+        # always the 4 AM ET pre-market re-check against a thin quote
+        # (STGW nightly, Sep-10..17); it is re-placed at 7 AM ET and a DAY
+        # stop cannot trigger before the open, so no protection is lost.
+        # Counted apart so "failed" means orders that actually failed.
+        # alert_failures still alerts if one is unresolved into the session.
+        "n_failed": sum(1 for r in rows if r.status in FAILED_STATUSES
+                        and not (r.action == "STOP" and r.status == "rejected")),
         "n_skipped": sum(1 for r in trades if r.status == "skipped"),
         "n_open": sum(1 for r in trades if r.status in STOP_OPEN),
         "resting_stops": {
             "working": sum(1 for r in stop_rows.values() if r.status in OPEN_STATUSES),
             "fired": sum(1 for r in stop_rows.values() if r.status == "filled"),
+            "rejected_late": sum(1 for r in stop_rows.values() if r.status == "rejected"),
             "same_exit": {
                 "n": len(same),
                 "avg_bps_vs_booked": _avg([r.slippage_bps for r in same if r.slippage_bps is not None]),

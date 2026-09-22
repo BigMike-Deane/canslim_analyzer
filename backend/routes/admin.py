@@ -2252,6 +2252,20 @@ def compute_experiment_gates(db: Session) -> dict:
         return sum(1 for s in snaps if s.spy_50_ma and s.spy_50_ma > 0
                    and -band_pct <= (s.spy_price - s.spy_50_ma) / s.spy_50_ma * 100 < 0)
 
+    def _iwm_below_50ma_days_since(start_dt):
+        """Closes with IWM below its 50MA: the days the small-cap gate arm
+        refuses new buys where its control (shadow_vintage_sep23) may buy.
+        Rows without IWM data (pre-Sep-22 snapshots, fetch failures) are
+        skipped -- the lever fails open on them too."""
+        if start_dt is None:
+            return 0
+        snaps = db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= start_dt.date(),
+            MarketSnapshot.iwm_price.isnot(None),
+            MarketSnapshot.iwm_50_ma.isnot(None),
+        ).all()
+        return sum(1 for s in snaps if s.iwm_50_ma > 0 and 0 < s.iwm_price < s.iwm_50_ma)
+
     ARM_GATES.update({
         "shadow_chop_entry_bar": lambda a: [
             {"label": "chop days", "n": _chop_days_since(a.activated_at), "target": 15},
@@ -2278,6 +2292,12 @@ def compute_experiment_gates(db: Session) -> dict:
              "n": sum(1 for t in _rows(a.id, "SELL")
                       if (t.reason or "").startswith("STOP LOSS")), "target": 5,
              "kind": "dormant"},
+        ],
+        "shadow_small_cap_gate": lambda a: [
+            # The lever only binds on these days (pre-registered on the
+            # nostate_small_cap_gate profile): >=10, then vs shadow_vintage_sep23.
+            {"label": "IWM closes below its 50MA",
+             "n": _iwm_below_50ma_days_since(a.activated_at), "target": 10},
         ],
     })
 
@@ -2832,6 +2852,23 @@ async def get_user_portfolios(
         earlier = [d for d in spy_dates if d <= day]
         return spy_by_date[max(earlier)] if earlier else None
 
+    # IWM series: DIAGNOSTIC ONLY. The book holds small caps, so alpha vs IWM
+    # separates "the strategy lagged" from "small caps lagged" (Aug-13..Sep-22:
+    # SPY -0.6%, IWM -6%). Never used for ranking or any go-live criterion --
+    # those were pre-registered against SPY and stay there.
+    iwm_rows = db.query(MarketSnapshot).filter(
+        MarketSnapshot.iwm_price.isnot(None)
+    ).order_by(MarketSnapshot.date.asc()).all()
+    iwm_by_date = {m.date: m.iwm_price for m in iwm_rows}
+    iwm_dates = sorted(iwm_by_date)
+    iwm_latest = iwm_by_date[iwm_dates[-1]] if iwm_dates else None
+
+    def _iwm_on_or_before(day):
+        if not iwm_dates or day is None:
+            return None
+        earlier = [d for d in iwm_dates if d <= day]
+        return iwm_by_date[max(earlier)] if earlier else None
+
     out = []
     excluded_test = 0
     for user in db.query(User).order_by(User.id).all():
@@ -2883,6 +2920,13 @@ async def get_user_portfolios(
         if ret_pct is not None and spy_pct is not None:
             alpha_pp = ret_pct - spy_pct
 
+        iwm_start = _iwm_on_or_before(start_day)
+        iwm_pct = None
+        if iwm_start and iwm_latest:
+            iwm_pct = (iwm_latest / iwm_start - 1.0) * 100
+        alpha_iwm_pp = (ret_pct - iwm_pct
+                        if ret_pct is not None and iwm_pct is not None else None)
+
         wins = [t for t in sells if (t.realized_gain or 0) > 0]
         win_rate = round(len(wins) / len(sells) * 100, 1) if sells else None
 
@@ -2908,6 +2952,9 @@ async def get_user_portfolios(
             "spy_return_pct": round(spy_pct, 2) if spy_pct is not None else None,
             # The number worth ranking on.
             "alpha_pp": round(alpha_pp, 2) if alpha_pp is not None else None,
+            # Diagnostic: the same window against small caps (IWM). Not ranked.
+            "iwm_return_pct": round(iwm_pct, 2) if iwm_pct is not None else None,
+            "alpha_iwm_pp": round(alpha_iwm_pp, 2) if alpha_iwm_pp is not None else None,
             # Cash exposure belongs on the summary row, not behind a
             # drill-down: "is this account actually deployed?" is the first
             # question asked of any book, and a row showing only CLOSED

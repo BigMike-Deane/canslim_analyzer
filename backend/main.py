@@ -251,6 +251,22 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(auto_start_scanner())
 
+        async def iwm_backfill():
+            # One Yahoo call at boot, off the event loop; a failure only
+            # leaves history blank (the scoreboard shows IWM as n/a).
+            def _run():
+                bdb = SessionLocal()
+                try:
+                    backfill_iwm_snapshots(bdb)
+                except Exception as e:
+                    logger.warning(f"IWM backfill failed: {e}")
+                    bdb.rollback()
+                finally:
+                    bdb.close()
+            await asyncio.to_thread(_run)
+
+        asyncio.create_task(iwm_backfill())
+
     yield
 
     # Shutdown: flag first -- its absence at the next start is the crash signal
@@ -577,6 +593,50 @@ def get_score_trends_batch(db: Session, stock_ids: List[int], days: int = 7) -> 
     return results
 
 
+def backfill_iwm_snapshots(db: Session, closes_by_date: dict | None = None) -> int:
+    """Fill the IWM columns on market_snapshots rows written before IWM was
+    tracked (2026-09-22), so small-cap views have history from day one of
+    every book. Idempotent: only rows with iwm_price NULL are touched, and
+    once filled they are never rewritten. Returns the number of rows filled.
+
+    ``closes_by_date`` (date -> close, ascending trading days) is injectable
+    for tests; by default it comes from Yahoo's 2y daily chart. A snapshot
+    dated on a non-trading day carries back to the prior close, the same
+    convention the scoreboard uses for SPY. MAs are left NULL where fewer
+    than 50/200 closes precede the day, rather than guessed.
+    """
+    rows = db.query(MarketSnapshot).filter(MarketSnapshot.iwm_price.is_(None)).all()
+    if not rows:
+        return 0          # nothing to fill: no network call
+    if closes_by_date is None:
+        from data_fetcher import fetch_price_from_chart_api
+        chart = fetch_price_from_chart_api("IWM", range_="2y")
+        ts, cl = chart.get("timestamps") or [], chart.get("close_prices") or []
+        closes_by_date = {
+            datetime.fromtimestamp(t, tz=timezone.utc).date(): c
+            for t, c in zip(ts, cl) if t and c
+        }
+    if not closes_by_date:
+        return 0
+    days = sorted(closes_by_date)
+    closes = [closes_by_date[d] for d in days]
+
+    filled = 0
+    from bisect import bisect_right
+    for row in rows:
+        i = bisect_right(days, row.date) - 1
+        if i < 0:
+            continue
+        row.iwm_price = closes[i]
+        row.iwm_50_ma = sum(closes[i - 49:i + 1]) / 50 if i >= 49 else None
+        row.iwm_200_ma = sum(closes[i - 199:i + 1]) / 200 if i >= 199 else None
+        filled += 1
+    if filled:
+        db.commit()
+        logger.info(f"IWM backfill: filled {filled} market_snapshots rows")
+    return filled
+
+
 def update_market_snapshot(db: Session, force_refresh: bool = False):
     """
     Update market direction data using multi-index approach (SPY, QQQ, DIA).
@@ -624,6 +684,16 @@ def update_market_snapshot(db: Session, force_refresh: bool = False):
         snapshot.dia_50_ma = dia.get("ma_50", 0)
         snapshot.dia_200_ma = dia.get("ma_200", 0)
         snapshot.dia_signal = dia.get("signal", 0)
+
+        # IWM (diagnostic, zero weight). Written only when the fetch got a
+        # price: a failed refresh keeps the day's earlier value, and a day
+        # with none stays NULL (never 0, which would read as "below its MA").
+        iwm = indexes.get("IWM", {})
+        if iwm.get("price"):
+            snapshot.iwm_price = iwm["price"]
+            snapshot.iwm_50_ma = iwm.get("ma_50") or None
+            snapshot.iwm_200_ma = iwm.get("ma_200") or None
+            snapshot.iwm_signal = iwm.get("signal")
 
         # Combined metrics
         snapshot.weighted_signal = market_data.get("weighted_signal", 0)

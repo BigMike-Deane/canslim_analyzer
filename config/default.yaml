@@ -1675,6 +1675,61 @@ strategy_profiles:
       min_confidence: 0.30    # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # Small-cap gate (2026-09-22, owner: "address all action items"): cs_bear
+  # clone that takes NO new buys while IWM is below its 50MA. The book holds
+  # small caps; the Aug-13..Sep-22 drawdown was book -7.5%, IWM -6.0%, SPY
+  # -0.6%, and every SPY-keyed control (buy gate, correction zone) read it as
+  # a calm market. IWM closed below its 50MA every day from Aug-28 on; the
+  # live book bought 4 names in that stretch -- WSBF Sep-11 (stopped -6.1%),
+  # DSX Sep-16 and REPX Sep-17 (both ~-4% at launch) and HSHP Sep-1 (+4.6%,
+  # the one winner, which this gate would ALSO have blocked). n=4 is an
+  # anecdote, not evidence -- that is what this arm is for. Question: does waiting for small caps
+  # to reclaim their own trend cut the chop bleed without costing more in
+  # missed trend-day entries than it saves? Lever binds on new buys only
+  # (pyramids untouched -- the pyramid bearish gate was killed Aug-12).
+  # Fails open on missing IWM data. Mirrored in the backtester (IWM loads
+  # at zero M weight), but the verdict is the forward A/B, not a replay.
+  # Starts 2026-09-23 with its own same-day control shadow_vintage_sep23, so
+  # the lever is the only difference (launch-vintage luck ~7pp/month).
+  # Gate, pre-registered: >=10 closes with IWM below its 50MA while active
+  # AND >=5 closed sells; then alpha vs shadow_vintage_sep23 (primary),
+  # shadow_baseline (context). Promote only if it beats vintage_sep23; kill
+  # if it trails, or if the gate never binds by the Nov/Dec fleet review.
+  # No early call.
+  nostate_small_cap_gate:
+    hidden: true
+    label: "NoState + CS Bear, small-cap gate"
+    description: "cs_bear with no new buys while IWM is below its 50MA (live shadow A/B, sep-22)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    small_cap_gate: { enabled: true, index: IWM }   # THE LEVER (live cs_bear: absent)
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -2444,4 +2499,20 @@ shadow_strategy_profiles:
     activate_on: 2026-09-16
     starting_value: 25000
     description: "cs_bear with the bearish 6 pct stop only once SPY is >=0.25 pct below its 50MA -- sep-14 candidate (stop flipped 7/6/7 as SPY straddled the MA); gate: >=10 in-band SPY closes AND >=5 closed sells, then vs shadow_vintage_sep16 (same launch day)"
+    scorer_overrides: {}
+  # Small-cap gate arm (sep-22) + its same-day control. The control is an
+  # ordinary vintage copy (role=benchmark), so it also feeds vintage_spread.
+  # Gate pre-registered on nostate_small_cap_gate.
+  shadow_vintage_sep23:
+    parent_strategy: nostate_cs_bear
+    role: benchmark
+    activate_on: 2026-09-23
+    starting_value: 25000
+    description: "Champion copy, Sept-23 start — vintage benchmark (no gate); same-day control for shadow_small_cap_gate"
+    scorer_overrides: {}
+  shadow_small_cap_gate:
+    parent_strategy: nostate_small_cap_gate
+    activate_on: 2026-09-23
+    starting_value: 25000
+    description: "cs_bear with no new buys while IWM is below its 50MA -- sep-22 candidate (drawdown was IWM -6 pct vs SPY -0.6 pct; SPY gate never saw it); gate: >=10 IWM-below-50MA closes AND >=5 closed sells, then vs shadow_vintage_sep23 (same launch day)"
     scorer_overrides: {}

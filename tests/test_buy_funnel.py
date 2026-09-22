@@ -20,7 +20,10 @@ from backend.buy_funnel import (
     list_strategies, purge_now, CYCLE_TICKER, STAGE_ORDER, DEFAULT_CAP,
 )
 
-T0 = datetime(2026, 9, 1, 15, 0, tzinfo=timezone.utc)
+# Relative, not a fixed date: persist_funnel purges rows older than
+# RETENTION_DAYS (21) measured from NOW, so a pinned Sep-1 T0 aged out of
+# the window on 2026-09-22 and this file started failing on its own.
+T0 = (datetime.now(timezone.utc) - timedelta(days=2)).replace(microsecond=0)
 
 
 @pytest.fixture

@@ -34,6 +34,7 @@ from backend.trading_utils import (
     should_take_partial_on_trailing_stop,
     apply_sector_allocation_cap,
     select_effective_stop_loss_pct,
+    small_cap_gate_block,
 )
 
 # Shared trading engine logic (also used by ai_trader.py)
@@ -1922,6 +1923,18 @@ class BacktestEngine:
                         # Full bear: SPY below both 50MA and 200MA, or correction zone disabled
                         logger.debug(f"REGIME GATE: SPY ${spy_price:.2f} below 50MA ${spy_ma50:.2f}, skipping buys")
                         can_buy = False
+
+            # SMALL-CAP GATE -- mirrors ai_trader.evaluate_buys: no new buys
+            # while IWM is below its 50MA (profiles without the key: no-op).
+            # get_market_direction keys indexes lowercase; the helper reads
+            # the live shape ({"indexes": {"IWM": ...}}).
+            if can_buy and self.profile.get('small_cap_gate', {}).get('enabled', False):
+                _md = {"indexes": {k.upper(): v for k, v in (market_for_cash or {}).items()
+                                   if isinstance(v, dict)}}
+                _sc_block = small_cap_gate_block(self.profile, _md)
+                if _sc_block:
+                    logger.debug(f"SMALL-CAP GATE: {_sc_block}, skipping buys")
+                    can_buy = False
 
             # Score floor decay: track under-invested days in bull market
             decay_config = self.profile.get('score_floor_decay', {})

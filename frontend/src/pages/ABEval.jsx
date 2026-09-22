@@ -803,7 +803,7 @@ const FUNNEL_STAGE_LABELS = {
   sector_cap: 'sector cap', min_position_value: 'min position', bad_price: 'bad price',
   ml_veto: 'ML veto', chop_entry_bar: 'chop entry bar', duplicate_class: 'dup. share class',
   ranked: 'ranked (not taken)', exec_skipped: 'exec skipped', bought: 'bought',
-  market_gate: 'market gate', portfolio_full: 'book full', cash_reserve: 'cash reserve',
+  market_gate: 'market gate', small_cap_gate: 'small-cap gate', portfolio_full: 'book full', cash_reserve: 'cash reserve',
   circuit_breaker: 'circuit breaker', exec_stopped: 'execution stopped',
 }
 const funnelStageClass = (stage) => (

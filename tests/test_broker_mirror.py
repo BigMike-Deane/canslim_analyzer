@@ -464,6 +464,23 @@ class TestPure:
         other = bm.reconcile({"Y": 10.5}, {"Y": 10.0})[0]
         assert other["match"] is False
 
+    def test_late_stop_rejection_is_not_a_failure(self):
+        """Sep-10..22: every 'failed' row but one was a resting stop refused
+        at the 4 AM ET pre-market re-check and re-placed at 7 AM ET. Those
+        count apart; real failures (a 403 on a pyramid) still count."""
+        from types import SimpleNamespace as NS
+
+        def row(i, action, status, side="sell"):
+            return NS(id=i, action=action, status=status, side=side, reason="",
+                      slippage_bps=None, pairing=None, linked_order_id=None,
+                      trade_id=None)
+        rows = [row(1, "STOP", "rejected"), row(2, "STOP", "rejected"),
+                row(3, "PYRAMID", "error", side="buy"), row(4, "STOP", "lapsed")]
+        out = bm.summarize(rows)
+        assert out["n_failed"] == 1
+        assert out["resting_stops"]["rejected_late"] == 2
+
+
 
 # ---------------------------------------------------------------- endpoints
 

@@ -1671,10 +1671,10 @@ def fetch_weekly_price_history(ticker: str) -> list:
     return []
 
 
-def fetch_price_from_chart_api(ticker: str) -> dict:
+def fetch_price_from_chart_api(ticker: str, range_: str = "1y") -> dict:
     """Fallback: fetch basic price data from Yahoo chart API"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-    params = {"interval": "1d", "range": "1y"}
+    params = {"interval": "1d", "range": range_}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
     try:
@@ -1710,6 +1710,15 @@ MARKET_INDEX_WEIGHTS = {
     "QQQ": 0.30,  # NASDAQ 100 - tech/growth
     "DIA": 0.20,  # Dow Jones - blue chips
 }
+
+# Fetched alongside the weighted indexes but carrying NO weight: they never
+# move market_score, weighted_signal or market_trend (the M score). IWM
+# (Russell 2000) is here because the book is small caps -- the Aug-13..Sep-22
+# drawdown was IWM -6% while SPY was -0.6%, and every SPY-keyed view
+# (buy gate, scoreboard, go-live) read it as nothing. Consumers: the
+# small_cap_gate profile lever (trading_utils.small_cap_gate_block) and the
+# market snapshot / scoreboard diagnostics.
+DIAGNOSTIC_INDEXES = ("IWM",)
 
 
 def calculate_index_signal(price: float, ma_50: float, ma_200: float) -> int:
@@ -1798,7 +1807,10 @@ def fetch_market_direction_data() -> dict:
     weighted_signal_sum = 0
     weighted_m_sum = 0.0
 
-    for ticker, weight in MARKET_INDEX_WEIGHTS.items():
+    # Diagnostic indexes ride the same fetch with weight 0.0, which adds
+    # exactly nothing to the weighted sums below.
+    index_list = list(MARKET_INDEX_WEIGHTS.items()) + [(t, 0.0) for t in DIAGNOSTIC_INDEXES]
+    for ticker, weight in index_list:
         index_data = {
             "ticker": ticker,
             "price": 0,

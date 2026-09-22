@@ -274,7 +274,7 @@ function BrokerMirrorCard() {
             <div><div className="text-dark-400">Mirrored / filled</div><div className="font-data text-dark-100">{s.n_mirrored} / {s.n_filled}</div></div>
             <div><div className="text-dark-400">Avg slippage</div><div className={`font-data ${bpsTone(s.avg_slippage_bps)}`}>{bps(s.avg_slippage_bps)}</div></div>
             <div><div className="text-dark-400">Stop sells ({s.stop_sells.n})</div><div className={`font-data ${bpsTone(s.stop_sells.avg_bps)}`}>{bps(s.stop_sells.avg_bps)}</div></div>
-            <div><div className="text-dark-400">Failed / skipped / open</div><div className={`font-data ${s.n_failed ? 'text-red-400' : 'text-dark-100'}`}>{s.n_failed} / {s.n_skipped} / {s.n_open}</div></div>
+            <div title={s.resting_stops?.rejected_late ? `${s.resting_stops.rejected_late} resting stop(s) refused at the 4 AM ET pre-market re-check and re-placed at 7 AM ET -- routine, not counted as failed` : undefined}><div className="text-dark-400">Failed / skipped / open</div><div className={`font-data ${s.n_failed ? 'text-red-400' : 'text-dark-100'}`}>{s.n_failed} / {s.n_skipped} / {s.n_open}</div></div>
           </div>
 
           {/* No broker data -> say nothing, never "all match": an unreachable
@@ -474,6 +474,10 @@ function UserPortfolioScoreboard() {
                   <th className="py-1.5 pr-3 font-medium text-right">Return</th>
                   <th className="py-1.5 pr-3 font-medium text-right">SPY</th>
                   <th className="py-1.5 pr-3 font-medium text-right">Alpha</th>
+                  <th
+                    className="py-1.5 pr-3 font-medium text-right text-dark-500"
+                    title="Same window against small caps (IWM). Diagnostic only: ranking and go-live stay on SPY. The book holds small caps, so this separates 'the strategy lagged' from 'small caps lagged'."
+                  >vs IWM</th>
                   <th className="py-1.5 pr-3 font-medium text-right">Closed</th>
                   <th className="py-1.5 font-medium text-right">Win</th>
                 </tr>
@@ -533,6 +537,12 @@ function UserPortfolioScoreboard() {
                     <td className={`py-1.5 pr-3 text-right font-data font-semibold ${tone(u.alpha_pp)}`}>
                       {pp(u.alpha_pp)}
                     </td>
+                    <td
+                      className={`py-1.5 pr-3 text-right font-data ${u.alpha_iwm_pp != null ? tone(u.alpha_iwm_pp) : 'text-dark-500'} opacity-80`}
+                      title={u.iwm_return_pct != null ? `IWM ${pct(u.iwm_return_pct)} over the same window` : 'No IWM history for this window yet'}
+                    >
+                      {pp(u.alpha_iwm_pp)}
+                    </td>
                     <td className="py-1.5 pr-3 text-right font-data text-dark-300">
                       {u.closed_trades}
                     </td>
@@ -542,7 +552,7 @@ function UserPortfolioScoreboard() {
                   </tr>
                   {openUser === u.user_id && (
                     <tr>
-                      <td colSpan={10} className="p-0">
+                      <td colSpan={11} className="p-0">
                         <UserPortfolioDetail userId={u.user_id} />
                       </td>
                     </tr>

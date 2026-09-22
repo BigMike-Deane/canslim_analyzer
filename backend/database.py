@@ -154,6 +154,11 @@ def run_migrations():
         ("market_snapshots", "dia_50_ma", "FLOAT"),
         ("market_snapshots", "dia_200_ma", "FLOAT"),
         ("market_snapshots", "dia_signal", "INTEGER"),
+        # IWM: diagnostic only, no M-score weight (2026-09-22)
+        ("market_snapshots", "iwm_price", "FLOAT"),
+        ("market_snapshots", "iwm_50_ma", "FLOAT"),
+        ("market_snapshots", "iwm_200_ma", "FLOAT"),
+        ("market_snapshots", "iwm_signal", "INTEGER"),
         ("market_snapshots", "weighted_signal", "FLOAT"),
         ("ai_portfolio_positions", "peak_price", "FLOAT"),
         ("ai_portfolio_positions", "peak_date", "TIMESTAMP"),
@@ -1033,6 +1038,13 @@ class MarketSnapshot(Base):
     dia_50_ma = Column(Float)
     dia_200_ma = Column(Float)
     dia_signal = Column(Integer)
+
+    # Russell 2000 (IWM) - NO weight: diagnostic only, never in market_score.
+    # The book holds small caps; this is the index it actually moves with.
+    iwm_price = Column(Float)
+    iwm_50_ma = Column(Float)
+    iwm_200_ma = Column(Float)
+    iwm_signal = Column(Integer)
 
     # Combined market score (M in CANSLIM)
     market_score = Column(Float)  # 0-15 CANSLIM score

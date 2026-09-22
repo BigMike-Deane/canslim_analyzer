@@ -194,6 +194,32 @@ def is_bearish_for_stops(spy_price, spy_ma_50, profile: dict | None = None) -> b
     return spy_price < spy_ma_50 * (1 - band / 100.0)
 
 
+def small_cap_gate_block(profile: dict | None, market_data: dict | None) -> str | None:
+    """Why the profile's ``small_cap_gate`` blocks new buys this cycle, or
+    None when it doesn't.
+
+    The lever (2026-09-22): no new buys while the gate index (default IWM)
+    is below its 50-day MA. The book holds small caps, and the Aug-13..Sep-22
+    drawdown was IWM -6% while SPY was -0.6%: the SPY gate had nothing to
+    react to. Profiles without ``small_cap_gate.enabled`` never block.
+
+    Fails OPEN: a missing or non-positive quote does not block. On a data
+    outage the arm behaves like its control rather than inventing an effect.
+    Stateless for the same reason as is_bearish_for_stops.
+    """
+    cfg = (profile or {}).get('small_cap_gate') or {}
+    if not cfg.get('enabled', False):
+        return None
+    index = cfg.get('index', 'IWM')
+    info = ((market_data or {}).get('indexes') or {}).get(index) or {}
+    px, ma = info.get('price') or 0, info.get('ma_50') or 0
+    if px <= 0 or ma <= 0:
+        return None
+    if px < ma:
+        return f"{index} {px:.2f} < 50MA {ma:.2f}"
+    return None
+
+
 def select_effective_stop_loss_pct(
     profile: dict,
     stop_loss_config: dict,

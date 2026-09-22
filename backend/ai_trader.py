@@ -34,6 +34,7 @@ from backend.trading_utils import (
     apply_sector_allocation_cap,
     is_bearish_for_stops,
     select_effective_stop_loss_pct,
+    small_cap_gate_block,
 )
 
 # Shared trading engine logic (also used by backtester.py)
@@ -2559,6 +2560,17 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
                     logger.info(f"REGIME GATE: SPY ${spy_px:.2f} below 50MA ${spy_50:.2f}, skipping all buys")
                     _f.note("market_gate", f"SPY {spy_px:.2f} < 50MA {spy_50:.2f}")
                     return []
+
+    # SMALL-CAP GATE (shadow lever, 2026-09-22): no new buys while IWM sits
+    # below its 50MA. Profiles without small_cap_gate (live cs_bear) skip it.
+    # New buys only -- pyramids run elsewhere, as with the SPY gate above.
+    if profile.get('small_cap_gate', {}).get('enabled', False):
+        from data_fetcher import get_cached_market_direction
+        _sc_block = small_cap_gate_block(profile, get_cached_market_direction())
+        if _sc_block:
+            logger.info(f"SMALL-CAP GATE: {_sc_block}, skipping all buys")
+            _f.note("small_cap_gate", _sc_block)
+            return []
 
     # Build set of tickers to exclude (already own or own a duplicate)
     excluded_tickers = set(current_tickers) | cooldown_tickers

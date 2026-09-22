@@ -27,7 +27,11 @@ YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 # Market indexes for M score
-MARKET_INDEXES = ["SPY", "QQQ", "DIA"]
+# IWM carries no weight (MARKET_INDEX_WEIGHTS.get -> 0): loaded so the
+# small_cap_gate lever sees the same index the live trader does, never part
+# of the composite M score or weighted_signal. Mirrors data_fetcher's
+# DIAGNOSTIC_INDEXES (2026-09-22).
+MARKET_INDEXES = ["SPY", "QQQ", "DIA", "IWM"]
 MARKET_INDEX_WEIGHTS = {"SPY": 0.50, "QQQ": 0.30, "DIA": 0.20}
 
 # Earnings report delay (days after quarter end when data becomes available)

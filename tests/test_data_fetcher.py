@@ -1799,7 +1799,8 @@ class TestFetchMarketDirectionData:
 
         result = data_fetcher.fetch_market_direction_data()
         assert result["success"] is True
-        assert "indexes" in result and len(result["indexes"]) == 3
+        # SPY/QQQ/DIA weighted + IWM diagnostic (zero weight, 2026-09-22)
+        assert "indexes" in result and set(result["indexes"]) == {"SPY", "QQQ", "DIA", "IWM"}
         # All three indexes get the same chart → all signals == 2 (bullish).
         for ticker in ["SPY", "QQQ", "DIA"]:
             assert result["indexes"][ticker]["signal"] == 2
@@ -1807,6 +1808,26 @@ class TestFetchMarketDirectionData:
         assert result["weighted_signal"] == pytest.approx(2.0)
         assert result["market_score"] >= 12.0  # high M score
         assert result["market_trend"] in ("bullish", "cautious")
+
+    def test_iwm_is_fetched_but_never_moves_the_m_score(self, monkeypatch):
+        """IWM rides the fetch at weight 0: a collapsing IWM beside healthy
+        SPY/QQQ/DIA must leave market_score, weighted_signal and trend
+        exactly as they are without it. The M score feeds every scan."""
+        up = ([100] * 100 + [200] * 150)
+        up[-1] = 230
+        down = [200 - i * 0.5 for i in range(250)]
+        charts = {"SPY": _build_chart_data(up), "QQQ": _build_chart_data(up),
+                  "DIA": _build_chart_data(up), "IWM": _build_chart_data(down)}
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api",
+                            lambda t, **kw: charts[t])
+        with_iwm = data_fetcher.fetch_market_direction_data()
+        assert with_iwm["indexes"]["IWM"]["signal"] == -1
+        assert with_iwm["indexes"]["IWM"]["price"] < with_iwm["indexes"]["IWM"]["ma_50"]
+
+        monkeypatch.setattr(data_fetcher, "DIAGNOSTIC_INDEXES", ())
+        without = data_fetcher.fetch_market_direction_data()
+        for k in ("market_score", "weighted_signal", "market_trend", "success"):
+            assert with_iwm[k] == without[k], k
 
     def test_partial_data_50_to_200_uses_partial_status(self, monkeypatch):
         """50 ≤ len < 200 → status='partial', uses available data."""

@@ -49,6 +49,31 @@ class TestHistoricalDataProvider:
         assert provider._is_loaded is False
         assert len(provider._price_cache) == 0
 
+    def test_iwm_is_loaded_but_never_moves_the_m_score(self):
+        """2026-09-22 small_cap_gate mirror: IWM joins MARKET_INDEXES at
+        zero weight. A collapsing IWM beside healthy SPY/QQQ/DIA must leave
+        composite_m, weighted_signal and is_bullish exactly as they are
+        without it -- every backtest's M score runs through here."""
+        import pandas as pd
+        from datetime import date, timedelta
+        from backend.historical_data import HistoricalDataProvider
+
+        days = [date(2025, 1, 1) + timedelta(days=i) for i in range(250)]
+        up = pd.DataFrame({"date": days, "close": [100 + i * 0.5 for i in range(250)]})
+        down = pd.DataFrame({"date": days, "close": [300 - i * 0.5 for i in range(250)]})
+        as_of = days[-1]
+
+        with_iwm = HistoricalDataProvider([])
+        with_iwm._index_cache = {"SPY": up, "QQQ": up, "DIA": up, "IWM": down}
+        without = HistoricalDataProvider([])
+        without._index_cache = {"SPY": up, "QQQ": up, "DIA": up}
+
+        a = with_iwm._compute_market_direction(as_of)
+        b = without._compute_market_direction(as_of)
+        assert a["iwm"]["price"] < a["iwm"]["ma_50"]      # the gate's input exists
+        for k in ("composite_m", "weighted_signal", "is_bullish"):
+            assert a[k] == b[k], k
+
     def test_calculate_index_signal_bullish(self):
         """Test bullish signal calculation"""
         from backend.historical_data import HistoricalDataProvider

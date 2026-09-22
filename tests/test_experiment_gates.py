@@ -455,3 +455,28 @@ class TestVintageSpread:
         _arm(db_session, "shadow_wide_trail")
         vs = compute_experiment_gates(db_session)["program_clocks"]["vintage_spread"]
         assert vs["stacks"] == [] and vs["n"] == 0 and vs["spread_pp"] is None
+
+
+class TestSmallCapGateArmGates:
+    """Gate metric for the sep-22 small-cap gate arm: closes with IWM below
+    its 50MA since activation. Rows without IWM data are not counted."""
+
+    def test_counts_iwm_closes_below_50ma(self, db_session):
+        _arm(db_session, "shadow_small_cap_gate", parent="nostate_small_cap_gate")
+        d0 = T0.date()
+        rows = [
+            (d0 - timedelta(days=1), 280.0, 295.0),   # before activation
+            (d0, 280.0, 295.0),                       # below: counts
+            (d0 + timedelta(days=1), 294.9, 295.0),   # below: counts
+            (d0 + timedelta(days=2), 295.0, 295.0),   # on the line: no
+            (d0 + timedelta(days=3), 300.0, 295.0),   # above: no
+            (d0 + timedelta(days=4), None, None),     # no IWM data: no
+        ]
+        for d, px, ma in rows:
+            db_session.add(MarketSnapshot(date=d, spy_price=500.0, spy_50_ma=480.0,
+                                          iwm_price=px, iwm_50_ma=ma))
+        db_session.commit()
+        out = _call(db_session)
+        row = next(a for a in out["arms"] if a["name"] == "shadow_small_cap_gate")
+        m = _metric(row, "IWM closes below its 50MA")
+        assert m["n"] == 2 and m["target"] == 10

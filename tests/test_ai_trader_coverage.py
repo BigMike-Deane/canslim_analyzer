@@ -3928,3 +3928,83 @@ class TestBuyFunnelInstrumentation:
         from backend.ai_trader import evaluate_buys
         _seed_config(db_session, strategy="nostate_optimized")
         assert evaluate_buys(db_session, user_id=1) == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Small-cap gate lever (2026-09-22) — shadow_small_cap_gate: no new buys while
+# IWM is below its 50MA. Live cs_bear carries no small_cap_gate key.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSmallCapGateHelper:
+    def _md(self, px, ma):
+        return {"indexes": {"IWM": {"price": px, "ma_50": ma}}}
+
+    def test_disabled_profile_never_blocks(self):
+        from backend.trading_utils import small_cap_gate_block
+        assert small_cap_gate_block({}, self._md(280, 295)) is None
+        assert small_cap_gate_block({"small_cap_gate": {"enabled": False}},
+                                    self._md(280, 295)) is None
+        assert small_cap_gate_block(None, self._md(280, 295)) is None
+
+    def test_blocks_only_strictly_below_the_ma(self):
+        from backend.trading_utils import small_cap_gate_block
+        prof = {"small_cap_gate": {"enabled": True}}
+        assert "IWM 280.00 < 50MA 295.00" == small_cap_gate_block(prof, self._md(280, 295))
+        assert small_cap_gate_block(prof, self._md(295, 295)) is None   # on the line
+        assert small_cap_gate_block(prof, self._md(300, 295)) is None
+
+    def test_fails_open_on_missing_data(self):
+        from backend.trading_utils import small_cap_gate_block
+        prof = {"small_cap_gate": {"enabled": True}}
+        assert small_cap_gate_block(prof, None) is None
+        assert small_cap_gate_block(prof, {"indexes": {}}) is None
+        assert small_cap_gate_block(prof, self._md(0, 295)) is None
+        assert small_cap_gate_block(prof, self._md(280, 0)) is None
+
+    def test_index_is_configurable(self):
+        from backend.trading_utils import small_cap_gate_block
+        prof = {"small_cap_gate": {"enabled": True, "index": "QQQ"}}
+        md = {"indexes": {"QQQ": {"price": 90, "ma_50": 100},
+                          "IWM": {"price": 300, "ma_50": 200}}}
+        assert small_cap_gate_block(prof, md).startswith("QQQ")
+
+
+class TestSmallCapGateInEvaluateBuys:
+    """The lever as evaluate_buys applies it: SPY gate open, IWM decides."""
+
+    def _run(self, db_session, stub, strategy, iwm_px, iwm_ma):
+        from backend.ai_trader import evaluate_buys
+        from backend.buy_funnel import FunnelCollector
+        stub["indexes"]["IWM"] = {"price": iwm_px, "ma_50": iwm_ma, "ma_200": 280.0}
+        _seed_config(db_session, strategy=strategy)
+        _seed_stock(db_session, "AAA", canslim_score=85.0)
+        f = FunnelCollector()
+        out = evaluate_buys(db_session, user_id=1, funnel=f)
+        return out, [n["stage"] for n in f.notes]
+
+    def test_arm_skips_all_buys_when_iwm_below_50ma(
+        self, db_session, stub_market_bullish, disable_atr_http,
+        disable_historical_data, silence_webhooks,
+    ):
+        out, notes = self._run(db_session, stub_market_bullish,
+                               "nostate_small_cap_gate", 280.0, 295.0)
+        assert out == []
+        assert notes == ["small_cap_gate"]
+
+    def test_arm_proceeds_when_iwm_above_50ma(
+        self, db_session, stub_market_bullish, disable_atr_http,
+        disable_historical_data, silence_webhooks,
+    ):
+        _, notes = self._run(db_session, stub_market_bullish,
+                             "nostate_small_cap_gate", 300.0, 295.0)
+        assert "small_cap_gate" not in notes
+
+    def test_live_champion_ignores_iwm(
+        self, db_session, stub_market_bullish, disable_atr_http,
+        disable_historical_data, silence_webhooks,
+    ):
+        """Control side: live cs_bear must not react to IWM at all."""
+        _, notes = self._run(db_session, stub_market_bullish,
+                             "nostate_cs_bear", 280.0, 295.0)
+        assert "small_cap_gate" not in notes

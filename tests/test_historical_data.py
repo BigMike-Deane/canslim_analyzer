@@ -1467,8 +1467,9 @@ class TestPreloadData:
         # Trading days derived from SPY (31 days within range)
         assert len(provider._trading_days) == 31
         assert provider._trading_days == sorted(provider._trading_days)
-        # Progress callback fired for every loaded ticker (3 indexes + 2 stocks)
-        assert len(progress_calls) == 5
+        # Progress callback fired for every loaded ticker (4 indexes incl.
+        # zero-weight IWM, even when its fetch returns nothing + 2 stocks)
+        assert len(progress_calls) == 6
         assert progress_calls[-1] == pytest.approx(100.0, abs=1e-6)
 
     def test_returns_false_when_no_stocks_loaded(self, monkeypatch):

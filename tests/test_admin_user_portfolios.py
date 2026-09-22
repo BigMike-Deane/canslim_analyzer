@@ -154,6 +154,43 @@ class TestAlphaIsTheRankingNumber:
         assert alphas == sorted(alphas, reverse=True)
 
 
+class TestIwmIsADiagnosticNotARanking:
+    """2026-09-22: the book holds small caps, so the scoreboard also shows
+    the same window against IWM -- but SPY alpha stays the ranking number
+    and the go-live criteria never see IWM."""
+
+    def _seed_iwm(self, start, now):
+        db = SessionLocal()
+        try:
+            for days_ago, price in ((START_DAYS_AGO, start), (0, now)):
+                d = date.today() - timedelta(days=days_ago)
+                db.query(MarketSnapshot).filter_by(date=d).first().iwm_price = price
+            db.commit()
+        finally:
+            db.close()
+
+    def test_alpha_vs_iwm_over_the_same_window(self):
+        _seed()
+        self._seed_iwm(200.0, 190.0)          # IWM -5% while SPY +10%
+        row = _row(_fetch(), REAL_ID)
+        assert row["iwm_return_pct"] == pytest.approx(-5.0, abs=0.01)
+        assert row["alpha_iwm_pp"] == pytest.approx(30.0, abs=0.02)
+        # The ranking number is untouched by IWM.
+        assert row["alpha_pp"] == pytest.approx(15.0, abs=0.02)
+
+    def test_missing_iwm_history_reads_as_none_not_zero(self):
+        _seed()
+        db = SessionLocal()
+        try:
+            db.query(MarketSnapshot).update({MarketSnapshot.iwm_price: None})
+            db.commit()
+        finally:
+            db.close()
+        row = _row(_fetch(), REAL_ID)
+        assert row["iwm_return_pct"] is None and row["alpha_iwm_pp"] is None
+        assert row["alpha_pp"] == pytest.approx(15.0, abs=0.02)
+
+
 class TestSmallSampleHonesty:
     """A three-week account is measuring its launch window, not the strategy."""
 

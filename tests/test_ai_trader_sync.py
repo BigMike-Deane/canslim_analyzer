@@ -262,6 +262,29 @@ class TestPartialProfitTierDelta:
         assert reg.get("starting_value") == 25000
         assert str(reg.get("activate_on")) == str(vintage.get("activate_on")) == "2026-09-16"
 
+    def test_small_cap_gate_arm_is_cs_bear_plus_one_lever(self):
+        """The sep-22 small-cap gate arm: identical to live cs_bear except
+        the gate itself (and its labels), launched the same day as its own
+        control copy shadow_vintage_sep23."""
+        from config_loader import config as yaml_config
+
+        arm = yaml_config.get('strategy_profiles.nostate_small_cap_gate', {})
+        live = yaml_config.get('strategy_profiles.nostate_cs_bear', {})
+        assert arm, "nostate_small_cap_gate profile missing from config"
+        differing = {k for k in set(arm) | set(live) if arm.get(k) != live.get(k)}
+        assert differing == {"hidden", "label", "description", "small_cap_gate"}
+        assert arm["small_cap_gate"] == {"enabled": True, "index": "IWM"}   # the lever
+        assert arm["hidden"] is True
+        # Control side: live cs_bear never looks at IWM.
+        assert "small_cap_gate" not in live
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_small_cap_gate', {})
+        control = yaml_config.get('shadow_strategy_profiles.shadow_vintage_sep23', {})
+        assert reg.get("parent_strategy") == "nostate_small_cap_gate"
+        assert reg.get("starting_value") == 25000
+        assert control.get("parent_strategy") == "nostate_cs_bear"
+        assert control.get("role") == "benchmark"
+        assert str(reg.get("activate_on")) == str(control.get("activate_on")) == "2026-09-23"
+
 
 # ── 2. Trailing stop bands (champion config: 25/18/12/6/4) ───────────────────
 
