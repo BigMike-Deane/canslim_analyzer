@@ -45,7 +45,6 @@ const moreItems = [
   { to: '/bear-base', label: 'Bear Bases', icon: 'shield' },
   { to: '/analytics', label: 'Analytics', icon: 'chart' },
   { to: '/watchlist', label: 'Watchlist', icon: 'eye' },
-  { to: '/fidelity', label: 'Fidelity', icon: 'sync' },
   { to: '/docs', label: 'Documentation', icon: 'book' },
 ]
 

@@ -24,7 +24,8 @@ const CoiledSpringHistory = lazy(() => import('./pages/CoiledSpringHistory'))
 // FidelitySync retired 2026-08-25 (owner call: no brokerage integration until
 // the app earns real-money confidence; last CSV upload was 2026-03-03).
 // Page component + backend routes + data kept intact for revival — re-add the
-// lazy import, the /fidelity route, and the Sidebar entry to bring it back.
+// lazy import, the /fidelity route, the Sidebar entry and the BottomNav
+// "More" item to bring it back.
 const Admin = lazy(() => import('./pages/Admin'))
 const BearBase = lazy(() => import('./pages/BearBase'))
 const EarningsGapups = lazy(() => import('./pages/EarningsGapups'))
@@ -67,7 +68,7 @@ function AppContent() {
       />
 
       {/* Main Content */}
-      <main className="flex-1 min-w-0 pb-20 md:pb-0">
+      <main className="flex-1 min-w-0 pt-safe pb-nav">
         <div className="max-w-[1400px] mx-auto">
           <Suspense fallback={<RouteFallback />}>
           <Routes>

@@ -137,8 +137,32 @@ select {
 }
 
 /* ─── Safe Area Padding ─── */
+/* index.html sets viewport-fit=cover + a black-translucent status bar, so
+   the Home Screen app draws UNDER the iPhone status bar / Dynamic Island
+   (~59px on a Pro Max) and over the home indicator (~34px). env() is 0 in
+   a Safari tab and on desktop, so these are no-ops there. */
 .pb-safe {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Room for the fixed BottomNav: its ~3.9rem of tabs plus the same inset
+   its pb-safe adds. A flat pb-20 is ~16px short of the nav on notched
+   phones -- harmless on pages with their own bottom padding, clipping on
+   pages without it.
+   Scoped below md (where BottomNav is md:hidden): this file sits after
+   @tailwind utilities, so an unscoped rule would beat md:pb-0 on desktop. */
+@media (max-width: 767.98px) {
+  .pb-nav {
+    padding-bottom: calc(4.5rem + max(0.5rem, env(safe-area-inset-bottom)));
+  }
+}
+
+.top-safe-4 {
+  top: calc(1rem + env(safe-area-inset-top));
 }
 
 /* ─── Recharts Overrides ─── */
