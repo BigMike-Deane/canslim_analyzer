@@ -145,13 +145,19 @@ rarely and, in this sample, has blocked no winning pyramid. Script:
 session scratchpad `indcap.py`; re-run it at the readout.
 - **(recommended) E-a: concentration arm.** Sep-21 (−356 bps, the worst trend
   day) was 50% of the book in two Marine Shipping names, both pyramided twice
-  at +3–4% within days, plus 11% in oil E&P. The sector cap counts positions
-  per *sector*, not dollars per *industry*. Candidate lever: cap any single
+  at +3–4% within days, plus 11% in oil E&P. The sector cap is **50% of
+  equity per sector by design** (Feb-7 "concentrated portfolio", O'Neil:
+  follow the best sectors), so this was the strategy working as built, not a
+  broken guard (verified live 2026-09-23: Industrials 46%, cap 50%). Candidate
+  lever: cap any single
   industry at ≤ 30% of equity, enforced on new buys and pyramids only (never
   force-sells, so it is not a winner cap). Launch it with a same-day vintage
   control, one lever, standard gates. ⚑ This touches pyramids, which the
   Aug-12 bearish-gate kill covered. That verdict was about a *regime* gate on
   pyramids, not an exposure cap, but the owner should confirm the distinction.
+  **BUILT 2026-09-23:** `shadow_industry_cap` launches 2026-09-30 alongside its
+  same-day control `shadow_vintage_sep30` (gate pre-registered on
+  `nostate_industry_cap`), so it reads ~5 weeks earlier than a post-readout launch.
 - E-b: trend-regime-only real-money path. `real-money-gates.md` Gate 1
   already allows a ≤5% starter that mirrors buys only on trend days. That
   framework (Jul-22) and the Sep-9 go-live gate currently **both** claim to

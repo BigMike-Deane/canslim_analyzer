@@ -2307,6 +2307,18 @@ def compute_experiment_gates(db: Session, now: Optional[datetime] = None) -> dic
         return sum(1 for s in snaps if s.spy_50_ma and s.spy_50_ma > 0
                    and -band_pct <= (s.spy_price - s.spy_50_ma) / s.spy_50_ma * 100 < 0)
 
+    def _industry_cap_names(arm_id, start_dt):
+        """Distinct tickers the arm's buy funnel refused at industry_cap."""
+        from backend.database import BuyFunnelRow
+        if start_dt is None:
+            return 0
+        rows = db.query(BuyFunnelRow.ticker).filter(
+            BuyFunnelRow.shadow_strategy_id == arm_id,
+            BuyFunnelRow.stage == "industry_cap",
+            BuyFunnelRow.cycle_at >= start_dt,
+        ).distinct().all()
+        return len(rows)
+
     def _iwm_below_50ma_days_since(start_dt):
         """Closes with IWM below its 50MA: the days the small-cap gate arm
         refuses new buys where its control (shadow_vintage_sep23) may buy.
@@ -2353,6 +2365,13 @@ def compute_experiment_gates(db: Session, now: Optional[datetime] = None) -> dic
             # nostate_small_cap_gate profile): >=10, then vs shadow_vintage_sep23.
             {"label": "IWM closes below its 50MA",
              "n": _iwm_below_50ma_days_since(a.activated_at), "target": 10},
+        ],
+        "shadow_industry_cap": lambda a: [
+            # Pre-registered on nostate_industry_cap: the cap must actually
+            # bind on >=5 DISTINCT names (a name refused cycle after cycle
+            # is one decision), then vs shadow_vintage_sep30.
+            {"label": "names blocked by the industry cap",
+             "n": _industry_cap_names(a.id, a.activated_at), "target": 5},
         ],
     })
 

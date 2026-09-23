@@ -816,3 +816,26 @@ class TestPartialTrailingGateMigrated:
             assert should_take_partial_on_trailing_stop(
                 pyramid_count=pyramid_count, score=score
             ) is expected, f"helper boundary moved for ({pyramid_count}, {score})"
+
+
+class TestIndustryCapArmProfile:
+    def test_industry_cap_arm_is_cs_bear_plus_one_lever(self):
+        """The sep-23 industry-cap arm: identical to live cs_bear except the
+        cap (and labels), launched the same day as its control vintage_sep30."""
+        from config_loader import config as yaml_config
+        arm = yaml_config.get('strategy_profiles.nostate_industry_cap', {})
+        live = yaml_config.get('strategy_profiles.nostate_cs_bear', {})
+        assert arm, "nostate_industry_cap profile missing from config"
+        differing = {k for k in set(arm) | set(live) if arm.get(k) != live.get(k)}
+        assert differing == {"hidden", "label", "description", "industry_cap"}
+        assert arm["industry_cap"] == {"enabled": True, "max_allocation": 0.30}
+        assert arm["hidden"] is True
+        assert "industry_cap" not in live
+        reg = yaml_config.get('shadow_strategy_profiles.shadow_industry_cap', {})
+        control = yaml_config.get('shadow_strategy_profiles.shadow_vintage_sep30', {})
+        assert reg.get("parent_strategy") == "nostate_industry_cap"
+        assert reg.get("comparator") == "shadow_vintage_sep30"
+        assert reg.get("starting_value") == 25000
+        assert control.get("parent_strategy") == "nostate_cs_bear"
+        assert control.get("role") == "benchmark"
+        assert str(reg.get("activate_on")) == str(control.get("activate_on")) == "2026-09-30"

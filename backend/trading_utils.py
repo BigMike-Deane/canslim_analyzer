@@ -220,6 +220,26 @@ def small_cap_gate_block(profile: dict | None, market_data: dict | None) -> str 
     return None
 
 
+def industry_cap_limit(profile: dict | None) -> float | None:
+    """The profile's industry $-exposure cap as a fraction of equity, or None
+    when the lever is off.
+
+    The lever (2026-09-23): no buy or pyramid may take one INDUSTRY above
+    ``industry_cap.max_allocation`` (default 0.30) of equity. It sits UNDER
+    the Feb-7 concentration design (50% per sector, O'Neil "follow the best
+    sectors"): on Sep-21 two Marine Shipping names were 50% of the book and
+    lost 356 bps on a +1.55% SPY day. Retro check on u1+u2 (157 adds): a 30%
+    cap would have blocked 6, net -$551, 1/6 winners, vs +5.7% for the rest.
+    Enforced with the same squeeze-or-reject rule as the sector allocation
+    cap (apply_sector_allocation_cap). Never force-sells: it is not a winner
+    cap. Profiles without ``industry_cap.enabled`` (live cs_bear) never cap.
+    """
+    cfg = (profile or {}).get('industry_cap') or {}
+    if not cfg.get('enabled', False):
+        return None
+    return float(cfg.get('max_allocation', 0.30))
+
+
 def select_effective_stop_loss_pct(
     profile: dict,
     stop_loss_config: dict,

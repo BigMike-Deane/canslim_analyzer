@@ -35,6 +35,7 @@ from backend.trading_utils import (
     is_bearish_for_stops,
     select_effective_stop_loss_pct,
     small_cap_gate_block,
+    industry_cap_limit,
 )
 
 # Shared trading engine logic (also used by backtester.py)
@@ -798,6 +799,42 @@ def check_sector_limit(db: Session, ticker: str, buy_amount: float, user_id: int
     return buy_amount, ""
 
 
+def check_industry_cap(db: Session, ticker: str, buy_amount: float, user_id: int = 1,
+                       profile: dict | None = None) -> tuple[float, str]:
+    """Industry $-exposure cap (profile lever industry_cap, default off).
+    Returns (adjusted_amount, reason) like check_sector_limit. Fails open on
+    an unknown industry. Mirrored in backtester._evaluate_buys and
+    _evaluate_pyramids under the same profile key."""
+    limit = industry_cap_limit(profile)
+    if limit is None:
+        return buy_amount, ""
+    stock = db.query(Stock).filter(Stock.ticker == ticker).first()
+    industry = stock.industry if stock and stock.industry else None
+    if not industry:
+        return buy_amount, ""
+    portfolio_value = get_portfolio_value(db, user_id=user_id)["total_value"]
+    if portfolio_value <= 0:
+        return buy_amount, ""
+    positions = db.query(AIPortfolioPosition).filter(
+        AIPortfolioPosition.user_id == user_id).all()
+    held = [p.ticker for p in positions]
+    industry_of = {s.ticker: s.industry for s in
+                   db.query(Stock).filter(Stock.ticker.in_(held)).all()} if held else {}
+    current = sum((p.current_value or 0) for p in positions
+                  if industry_of.get(p.ticker) == industry)
+    adjusted = apply_sector_allocation_cap(
+        requested_position_value=buy_amount,
+        current_sector_value=current,
+        portfolio_value=portfolio_value,
+        max_sector_allocation=limit,
+    )
+    if adjusted == 0.0:
+        return 0, f"Industry {industry} at {current / portfolio_value * 100:.0f}% (max {limit * 100:.0f}%)"
+    if adjusted < buy_amount:
+        return adjusted, "Reduced for industry cap"
+    return buy_amount, ""
+
+
 def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
     """
     Evaluate existing positions for pyramid opportunities.
@@ -950,6 +987,13 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
         adjusted_amount, limit_reason = check_sector_limit(
             db, position.ticker, pyramid_amount, user_id=user_id,
             skip_count_arm=exempt_count_arm)
+        if adjusted_amount < 100:
+            continue
+        pyramid_amount = adjusted_amount
+
+        # Industry cap (shadow lever, 2026-09-23; live cs_bear: absent)
+        adjusted_amount, _ = check_industry_cap(
+            db, position.ticker, pyramid_amount, user_id=user_id, profile=_profile)
         if adjusted_amount < 100:
             continue
         pyramid_amount = adjusted_amount
@@ -3396,6 +3440,14 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
         if adjusted_value < 100:
             _f.reject(stock.ticker, "sector_cap", sector_reason, effective_score)
             continue  # Skip if sector limit would be exceeded
+        position_value = adjusted_value
+
+        # Industry cap (shadow lever, 2026-09-23; live cs_bear: absent)
+        adjusted_value, industry_reason = check_industry_cap(
+            db, stock.ticker, position_value, user_id=user_id, profile=profile)
+        if adjusted_value < 100:
+            _f.reject(stock.ticker, "industry_cap", industry_reason, effective_score)
+            continue
         position_value = adjusted_value
 
         # CORRELATION GUARD: Reduce position if highly correlated with existing holdings

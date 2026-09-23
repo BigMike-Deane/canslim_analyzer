@@ -800,7 +800,7 @@ const FUNNEL_STAGE_LABELS = {
   bear_exception_pool: 'bear-exception pool', soft_zone_det: 'soft zone (weak det.)',
   no_score: 'no score', quality_c: 'C filter', quality_l: 'L filter', quality_growth: 'growth C/A',
   volume_gate: 'volume gate', earnings_window: 'earnings window', cz_cs_only: 'CZ CS-only',
-  sector_cap: 'sector cap', min_position_value: 'min position', bad_price: 'bad price',
+  sector_cap: 'sector cap', industry_cap: 'industry cap', min_position_value: 'min position', bad_price: 'bad price',
   ml_veto: 'ML veto', chop_entry_bar: 'chop entry bar', duplicate_class: 'dup. share class',
   ranked: 'ranked (not taken)', exec_skipped: 'exec skipped', bought: 'bought',
   market_gate: 'market gate', small_cap_gate: 'small-cap gate', portfolio_full: 'book full', cash_reserve: 'cash reserve',

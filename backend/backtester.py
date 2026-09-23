@@ -35,6 +35,7 @@ from backend.trading_utils import (
     apply_sector_allocation_cap,
     select_effective_stop_loss_pct,
     small_cap_gate_block,
+    industry_cap_limit,
 )
 
 # Shared trading engine logic (also used by ai_trader.py)
@@ -996,6 +997,9 @@ class BacktestEngine:
 
             self.static_data[stock.ticker] = {
                 "sector": _snap('sector', stock.sector, "Unknown") or "Unknown",
+                # industry_cap lever (2026-09-23): industry is near-static, so
+                # the live row is used (snapshots don't carry it).
+                "industry": getattr(stock, "industry", None) or None,
                 "name": stock.name or stock.ticker,
                 "institutional_holders_pct": institutional_pct,
                 "roe": roe,
@@ -3442,7 +3446,7 @@ class BacktestEngine:
 
         # Funnel diagnostic counters (only active during decay idle periods)
         _funnel_diag = self.underinvested_days >= 15
-        _funnel = {"candidates": len(candidates), "no_price": 0, "cooldown": 0, "sector": 0,
+        _funnel = {"candidates": len(candidates), "no_price": 0, "cooldown": 0, "sector": 0, "industry": 0,
                    "c_filter": 0, "l_filter": 0, "volume": 0, "earnings_prox": 0, "passed": 0}
 
         for ticker, score_data in candidates:
@@ -3960,6 +3964,13 @@ class BacktestEngine:
                     continue
                 position_value = adjusted_value
 
+            # Industry cap (lever industry_cap; mirrors ai_trader.check_industry_cap)
+            _ind_room = self._industry_cap_room(ticker, position_value, portfolio_value, current_date)
+            if _ind_room < 100:
+                _funnel["industry"] += 1
+                continue
+            position_value = _ind_room
+
             # CORRELATION GUARD: Check price correlation with held positions
             corr_config = config.get('ai_trader.correlation_guard', {})
             if corr_config.get('enabled', True) and self.positions:
@@ -4354,6 +4365,11 @@ class BacktestEngine:
                 )
                 if pyramid_amount < 100:
                     continue
+
+            # Industry cap (lever industry_cap; mirrors ai_trader.check_industry_cap)
+            pyramid_amount = self._industry_cap_room(ticker, pyramid_amount, portfolio_value, current_date)
+            if pyramid_amount < 100:
+                continue
 
             shares = pyramid_amount / price
 
@@ -4809,6 +4825,29 @@ class BacktestEngine:
                 most_correlated = held_ticker
 
         return round(max_corr, 3), most_correlated
+
+    def _industry_cap_room(self, ticker: str, amount: float, portfolio_value: float,
+                           current_date) -> float:
+        """Amount allowed under the profile's industry_cap (unchanged when the
+        lever is off, the industry is unknown, or the book is empty of value).
+        Same squeeze-or-reject rule as the live check_industry_cap."""
+        limit = industry_cap_limit(self.profile)
+        if limit is None or portfolio_value <= 0:
+            return amount
+        industry = self.static_data.get(ticker, {}).get("industry")
+        if not industry:
+            return amount
+        held = sum(
+            p.shares * (self.data_provider.get_price_on_date(p.ticker, current_date) or p.cost_basis)
+            for p in self.positions.values()
+            if self.static_data.get(p.ticker, {}).get("industry") == industry
+        )
+        return apply_sector_allocation_cap(
+            requested_position_value=amount,
+            current_sector_value=held,
+            portfolio_value=portfolio_value,
+            max_sector_allocation=limit,
+        )
 
     def _check_sector_limit(self, sector: str) -> bool:
         """Check if we can add another position in this sector"""

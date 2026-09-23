@@ -1730,6 +1730,58 @@ strategy_profiles:
       min_confidence: 0.30    # match cs_bear: veto path ON
       veto_action: "skip"
 
+  # Industry cap (2026-09-23, owner decision E in docs/oct21-readout-rules.md):
+  # cs_bear clone where no new buy or pyramid may take one INDUSTRY above 30%
+  # of equity (squeeze-or-reject, same rule as the sector allocation cap; never
+  # force-sells). It sits UNDER the Feb-7 concentration design (50% per sector,
+  # O'Neil 'follow the best sectors'), so it tests one piece of that design, not
+  # a broken guard. Why: Sep-21, the worst trend day (-356 bps), was 50% of the
+  # book in two Marine Shipping names (HSHP; DSX pyramided twice at +3-4%)
+  # while SPY rose 1.55%; Sep-23 added a third (ECO, industry rank 97).
+  # Retro check (u1+u2, 157 adds): a 30% cap blocks 6, net -$551, 1/6 winners,
+  # vs +5.7% mean on the 151 it allows. n=6, u1 only, 4 still open: an arm, not
+  # a switch. Distinct from the Aug-12 pyramid bearish-gate kill (a REGIME gate
+  # that blocked 20 adds into leaders in W4); this binds on ~4% of adds.
+  # Gate, pre-registered: >=5 distinct names blocked by the cap AND >=5 closed
+  # sells; then alpha vs shadow_vintage_sep30 (same launch day) under the
+  # readout rules (+1 sigma of vintage path noise; mechanism check: the names
+  # it blocked must have lost money in the control). Kill if it trails by
+  # 1 sigma, or if the lever binds on <5 names by the first readout after
+  # 2026-11-30. No early call.
+  nostate_industry_cap:
+    hidden: true
+    label: "NoState + CS Bear, industry cap"
+    description: "cs_bear with no buy/pyramid taking one industry above 30 pct of equity (live shadow A/B, sep-23)"
+    min_score: 73
+    max_positions: 8
+    max_single_position_pct: 25
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    industry_cap: { enabled: true, max_allocation: 0.30 }   # THE LEVER (live cs_bear: absent)
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 4
+    seed_pct: 10
+    max_seed_investment_pct: 50
+    quality_filters: { min_c_score: 10, min_l_score: 8 }
+    scoring_weights: { growth_projection: 0.20, canslim_score: 0.25, momentum: 0.25, breakout: 0.20, base_quality: 0.10 }
+    score_crash_drop_required: 25
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone:
+      enabled: true
+      cs_only: true
+      min_cs_confidence: 60
+      position_mult: 0.50
+    ml_signal:
+      enabled: true
+      weight: 20
+      min_roc_auc: 0.55
+      log_only: true          # match cs_bear: bonus path OFF
+      min_confidence: 0.30    # match cs_bear: veto path ON
+      veto_action: "skip"
+
   # Exit-lab big-winner cap (2026-07-29): cs_bear clone with the partial-
   # profit top tier raised to a cumulative 100% target at +50% gain
   # (min_score: 0 — score strength cannot veto it). Live sell_pct semantics
@@ -2517,4 +2569,13 @@ shadow_strategy_profiles:
     comparator: shadow_vintage_sep23   # pre-registered same-day control (weekly email)
     starting_value: 25000
     description: "cs_bear with no new buys while IWM is below its 50MA -- sep-22 candidate (drawdown was IWM -6 pct vs SPY -0.6 pct; SPY gate never saw it); gate: >=10 IWM-below-50MA closes AND >=5 closed sells, then vs shadow_vintage_sep23 (same launch day)"
+    scorer_overrides: {}
+  # Industry-cap arm (sep-23) launches the same day as its control
+  # shadow_vintage_sep30. Gate pre-registered on nostate_industry_cap.
+  shadow_industry_cap:
+    parent_strategy: nostate_industry_cap
+    activate_on: 2026-09-30
+    comparator: shadow_vintage_sep30   # pre-registered same-day control (weekly email)
+    starting_value: 25000
+    description: "cs_bear with no buy/pyramid taking one industry above 30 pct of equity -- sep-23 candidate (Sep-21: 50 pct of book in 2 Marine Shipping names, -356 bps on a +1.55 pct SPY day); gate: >=5 names blocked AND >=5 closed sells, then vs shadow_vintage_sep30 (same launch day)"
     scorer_overrides: {}

@@ -527,3 +527,24 @@ class TestGateDaysAreSessionCloses:
         out = compute_experiment_gates(db_session, now=datetime(2026, 9, 22, tzinfo=timezone.utc))
         row = next(a for a in out["arms"] if a["name"] == "shadow_small_cap_gate")
         assert _metric(row, "IWM closes below its 50MA")["n"] == 1
+
+
+class TestIndustryCapArmGates:
+    """sep-23 industry-cap arm: distinct names its funnel refused at the cap."""
+
+    def test_counts_distinct_blocked_names_since_activation(self, db_session):
+        from backend.database import BuyFunnelRow
+        arm = _arm(db_session, "shadow_industry_cap", parent="nostate_industry_cap")
+        def row(t, stage, at):
+            db_session.add(BuyFunnelRow(cycle_at=at, strategy_name="nostate_industry_cap",
+                                        shadow_strategy_id=arm.id, ticker=t, stage=stage))
+        row("ECO", "industry_cap", T0 + timedelta(days=1))
+        row("ECO", "industry_cap", T0 + timedelta(days=2))   # same name again: one
+        row("GNK", "industry_cap", T0 + timedelta(days=2))
+        row("AAA", "sector_cap", T0 + timedelta(days=2))     # other stage: no
+        row("OLD", "industry_cap", T0 - timedelta(days=1))   # before activation: no
+        db_session.commit()
+        out = _call(db_session)
+        r = next(a for a in out["arms"] if a["name"] == "shadow_industry_cap")
+        m = _metric(r, "names blocked by the industry cap")
+        assert m["n"] == 2 and m["target"] == 5

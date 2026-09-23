@@ -46,6 +46,7 @@ STAGE_ORDER = [
     "earnings_window",
     "cz_cs_only",
     "sector_cap",
+    "industry_cap",
     "min_position_value",
     "bad_price",
     "ml_veto",

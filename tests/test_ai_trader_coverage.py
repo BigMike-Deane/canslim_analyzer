@@ -4008,3 +4008,99 @@ class TestSmallCapGateInEvaluateBuys:
         _, notes = self._run(db_session, stub_market_bullish,
                              "nostate_cs_bear", 280.0, 295.0)
         assert "small_cap_gate" not in notes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Industry cap lever (2026-09-23) — shadow_industry_cap: no buy/pyramid may
+# take one industry above 30% of equity. Live cs_bear carries no key.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIndustryCapLimit:
+    def test_off_unless_enabled(self):
+        from backend.trading_utils import industry_cap_limit
+        assert industry_cap_limit(None) is None
+        assert industry_cap_limit({}) is None
+        assert industry_cap_limit({"industry_cap": {"enabled": False}}) is None
+
+    def test_default_and_custom_limit(self):
+        from backend.trading_utils import industry_cap_limit
+        assert industry_cap_limit({"industry_cap": {"enabled": True}}) == 0.30
+        assert industry_cap_limit({"industry_cap": {"enabled": True, "max_allocation": 0.4}}) == 0.4
+
+
+class TestCheckIndustryCap:
+    """Book: $10k cash + two Marine Shipping names at $5k and $2.5k = $17.5k
+    equity, shipping at 42.9%. Same squeeze-or-reject rule as the sector cap."""
+    ON = {"industry_cap": {"enabled": True, "max_allocation": 0.30}}
+
+    def _book(self, db):
+        _seed_config(db, strategy="nostate_industry_cap")
+        _seed_stock(db, "SHP1", sector="Industrials", industry="Marine Shipping")
+        _seed_stock(db, "SHP2", sector="Industrials", industry="Marine Shipping")
+        _seed_stock(db, "SHP3", sector="Industrials", industry="Marine Shipping")
+        _seed_stock(db, "BNK1", sector="Financial Services", industry="Banks - Regional")
+        _seed_stock(db, "NOIND", sector="Industrials", industry=None)
+        _seed_position(db, "SHP1", current_value=5000.0)
+        _seed_position(db, "SHP2", current_value=2500.0)
+
+    def test_full_industry_rejects(self, db_session):
+        from backend.ai_trader import check_industry_cap
+        self._book(db_session)
+        amt, why = check_industry_cap(db_session, "SHP3", 2000.0, profile=self.ON)
+        assert amt == 0 and "Marine Shipping" in why and "max 30%" in why
+
+    def test_pyramid_into_a_held_name_is_capped_too(self, db_session):
+        from backend.ai_trader import check_industry_cap
+        self._book(db_session)
+        assert check_industry_cap(db_session, "SHP1", 1000.0, profile=self.ON)[0] == 0
+
+    def test_other_industry_unaffected(self, db_session):
+        from backend.ai_trader import check_industry_cap
+        self._book(db_session)
+        assert check_industry_cap(db_session, "BNK1", 2000.0, profile=self.ON) == (2000.0, "")
+
+    def test_squeezes_to_the_room_left(self, db_session):
+        from backend.ai_trader import check_industry_cap
+        self._book(db_session)
+        # 40% cap: room = 0.40*17.5k - 7.5k = -0.5k -> still full; 50% cap:
+        # room = 8.75k - 7.5k = 1.25k -> a 2k buy squeezes to 1.25k.
+        amt, why = check_industry_cap(db_session, "SHP3", 2000.0,
+                                      profile={"industry_cap": {"enabled": True, "max_allocation": 0.5}})
+        assert amt == pytest.approx(1250.0) and why == "Reduced for industry cap"
+
+    def test_lever_off_and_unknown_industry_fail_open(self, db_session):
+        from backend.ai_trader import check_industry_cap
+        self._book(db_session)
+        assert check_industry_cap(db_session, "SHP3", 2000.0, profile={}) == (2000.0, "")
+        assert check_industry_cap(db_session, "NOIND", 2000.0, profile=self.ON) == (2000.0, "")
+
+
+class TestIndustryCapInEvaluateBuys:
+    """The lever as evaluate_buys applies it: a candidate in a full industry
+    is refused at the 'industry_cap' funnel stage; live cs_bear never is."""
+
+    def _run(self, db_session, strategy):
+        from backend.ai_trader import evaluate_buys
+        from backend.buy_funnel import FunnelCollector
+        _seed_config(db_session, strategy=strategy, current_cash=20000.0)
+        _seed_growth_projection_stock(db_session, "SHP1", sector="Industrials",
+                                      industry="Marine Shipping")
+        _seed_growth_projection_stock(db_session, "AAA", sector="Industrials",
+                                      industry="Marine Shipping")
+        _seed_position(db_session, "SHP1", current_value=11000.0)   # 35% of $31k
+        f = FunnelCollector()
+        evaluate_buys(db_session, user_id=1, funnel=f)
+        return {r["ticker"]: r["stage"] for r in f._rows.values()}
+
+    def test_arm_refuses_a_full_industry(
+        self, db_session, stub_market_bullish, disable_atr_http,
+        disable_historical_data, disable_ml_and_yfinance, silence_webhooks,
+    ):
+        assert self._run(db_session, "nostate_industry_cap").get("AAA") == "industry_cap"
+
+    def test_live_champion_ignores_industry(
+        self, db_session, stub_market_bullish, disable_atr_http,
+        disable_historical_data, disable_ml_and_yfinance, silence_webhooks,
+    ):
+        assert self._run(db_session, "nostate_cs_bear").get("AAA") != "industry_cap"

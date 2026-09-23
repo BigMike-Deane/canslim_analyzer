@@ -3855,3 +3855,39 @@ class TestScoreHistoryClearedOnFullSell:
         # Still held -> history must persist across the partial.
         assert "AAPL" in engine.positions
         assert engine.score_history.get("AAPL") == [70.0, 72.0, 68.0]
+
+
+class TestIndustryCapMirror:
+    """backtester._industry_cap_room mirrors ai_trader.check_industry_cap."""
+
+    def _bt(self, profile):
+        from datetime import date as _d
+        from backend.backtester import BacktestEngine as Backtester, SimulatedPosition
+        bt = object.__new__(Backtester)
+        bt.profile = profile
+        bt.static_data = {"SHP1": {"industry": "Marine Shipping"},
+                          "SHP3": {"industry": "Marine Shipping"},
+                          "BNK1": {"industry": "Banks - Regional"},
+                          "NOIND": {}}
+        bt.positions = {"SHP1": SimulatedPosition(
+            ticker="SHP1", shares=50, cost_basis=100.0, purchase_date=_d(2026, 9, 1),
+            purchase_score=80, peak_price=100.0, peak_date=_d(2026, 9, 1))}
+        class _DP:
+            def get_price_on_date(self, t, d): return 150.0     # SHP1 worth $7.5k
+        bt.data_provider = _DP()
+        return bt
+
+    ON = {"industry_cap": {"enabled": True, "max_allocation": 0.30}}
+
+    def test_full_industry_rejects_and_others_pass(self):
+        bt = self._bt(self.ON)
+        assert bt._industry_cap_room("SHP3", 2000.0, 17500.0, None) == 0.0
+        assert bt._industry_cap_room("BNK1", 2000.0, 17500.0, None) == 2000.0
+
+    def test_squeeze_matches_live_rule(self):
+        bt = self._bt({"industry_cap": {"enabled": True, "max_allocation": 0.5}})
+        assert bt._industry_cap_room("SHP3", 2000.0, 17500.0, None) == pytest.approx(1250.0)
+
+    def test_off_and_unknown_fail_open(self):
+        assert self._bt({})._industry_cap_room("SHP3", 2000.0, 17500.0, None) == 2000.0
+        assert self._bt(self.ON)._industry_cap_room("NOIND", 2000.0, 17500.0, None) == 2000.0
