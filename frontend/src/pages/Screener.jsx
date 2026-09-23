@@ -10,16 +10,37 @@ import PageHeader from '../components/PageHeader'
 import { useToast } from '../components/Toast'
 import DataTable from '../components/DataTable'
 
+const SORT_LABELS = { canslim_score: 'Score', projected_growth: 'Growth', market_cap: 'Mkt cap' }
+
 function FilterBar({ filters, onFilterChange, sectors }) {
+  // Phone: a one-line summary that expands on tap (the open panel was 243px,
+  // a quarter-screen, before the first result). sm+: always open.
+  const [open, setOpen] = useState(false)
+  const summary = [
+    filters.sector || 'All sectors',
+    `${SORT_LABELS[filters.sort_by || 'canslim_score'] || 'Score'} ↓`,
+    filters.max_price ? `< $${filters.max_price}` : 'Any price',
+    `min ${filters.min_score || 0}`,
+  ].join(' · ')
   return (
     <Card variant="glass" className="mb-4">
-      <SectionLabel>Filters</SectionLabel>
-      <div className="space-y-3">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="sm:hidden w-full flex items-center justify-between gap-2 text-left"
+      >
+        <span className="text-[10px] tracking-wider uppercase font-semibold text-dark-400 shrink-0">Filters</span>
+        <span className="text-xs text-dark-200 truncate flex-1 text-right">{summary}</span>
+        <span className="text-dark-500 text-xs shrink-0">{open ? '▴' : '▾'}</span>
+      </button>
+      <div className="hidden sm:block"><SectionLabel>Filters</SectionLabel></div>
+      <div className={`${open ? 'mt-3' : 'hidden'} sm:block space-y-3`}>
         <div className="flex flex-col sm:flex-row gap-2">
           <select
             value={filters.sector || ''}
             onChange={(e) => onFilterChange({ ...filters, sector: e.target.value || null })}
-            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
+            className="flex-1 min-w-0 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
           >
             <option value="">All Sectors</option>
             {(sectors || []).map(sector => (
@@ -30,7 +51,7 @@ function FilterBar({ filters, onFilterChange, sectors }) {
           <select
             value={filters.sort_by || 'canslim_score'}
             onChange={(e) => onFilterChange({ ...filters, sort_by: e.target.value })}
-            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
+            className="flex-1 min-w-0 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
           >
             <option value="canslim_score">Score (High to Low)</option>
             <option value="projected_growth">Growth Potential</option>
@@ -40,7 +61,7 @@ function FilterBar({ filters, onFilterChange, sectors }) {
           <select
             value={filters.max_price || ''}
             onChange={(e) => onFilterChange({ ...filters, max_price: e.target.value ? Number(e.target.value) : null })}
-            className="flex-1 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
+            className="flex-1 min-w-0 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
             aria-label="Maximum share price"
           >
             <option value="">Any Price</option>
@@ -137,6 +158,13 @@ function WatchCell({ ticker, isWatched, onWatched }) {
   )
 }
 
+const STALE_MS = 24 * 3600 * 1000
+function isStale(iso) {
+  if (!iso) return false
+  const t = new Date(iso).getTime()
+  return Number.isFinite(t) && Date.now() - t > STALE_MS
+}
+
 function StockRow({ stock, isWatched, onWatched }) {
   const [expanded, setExpanded] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -168,24 +196,26 @@ function StockRow({ stock, isWatched, onWatched }) {
             <span className="font-semibold text-dark-50">{stock.ticker}</span>
             <span className="text-dark-500 text-[10px] font-data">{formatMarketCap(stock.market_cap)}</span>
           </div>
-          <div className="text-dark-400 text-sm truncate">{stock.name}</div>
-          {/* Info floor is text-dark-400 (UI grammar) — the old 500/600 pair
-              was near-invisible against the card background. */}
-          <div className="flex items-center gap-2 text-dark-400 text-[10px] tracking-wide">
-            <span>{stock.sector}</span>
-            {stock.last_updated && (
-              <span className="font-data text-dark-500">· {formatRelativeTime(stock.last_updated)}</span>
+          {/* Name and sector share one line (was two). Info floor is
+              text-dark-400 (UI grammar). The page header carries "Scores
+              updated Xh ago", so a row shows its own age only when it is
+              stale (>24h) -- the one case where it tells you something. */}
+          <div className="text-dark-400 text-sm truncate">
+            {stock.name}
+            {stock.sector && <span className="text-[10px] tracking-wide"> · {stock.sector}</span>}
+            {isStale(stock.last_updated) && (
+              <span className="text-[10px] font-data text-amber-400/80"> · {formatRelativeTime(stock.last_updated)}</span>
             )}
           </div>
         </div>
 
-        <div className="text-right ml-3 flex flex-col items-end gap-1">
-          <ScoreBadge score={stock.canslim_score} ticker={stock.ticker} size="md" />
+        <div className="ml-3 flex items-center gap-2 shrink-0">
           {stock.projected_growth != null && (
             <span className="text-[10px] text-emerald-400 font-data">
               +{stock.projected_growth.toFixed(0)}%
             </span>
           )}
+          <ScoreBadge score={stock.canslim_score} ticker={stock.ticker} size="md" />
         </div>
       </div>
 

@@ -248,12 +248,19 @@ export default function Notifications() {
                 : 'bg-transparent'
             }`} />
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <KindBadge kind={n.kind} />
-                <span className={`text-xs font-semibold ${!n.read_at ? 'text-dark-100' : 'text-dark-300'}`}>
+              {/* One line, never wrapping: badge and age are fixed, the title
+                  truncates between them (full text in its tooltip; details one
+                  tap away in the body). Wrapping put a breakout digest on four
+                  lines -- badge / title / title / age -- 128px per item. */}
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0"><KindBadge kind={n.kind} /></span>
+                <span
+                  className={`text-xs font-semibold truncate min-w-0 ${!n.read_at ? 'text-dark-100' : 'text-dark-300'}`}
+                  title={n.title}
+                >
                   {n.title}
                 </span>
-                <span className="text-[10px] text-dark-500" title={formatDateTime(n.created_at)}>
+                <span className="text-[10px] text-dark-500 whitespace-nowrap shrink-0" title={formatDateTime(n.created_at)}>
                   · {formatRelativeTime(n.created_at)}
                 </span>
               </div>
