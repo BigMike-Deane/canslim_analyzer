@@ -2980,9 +2980,38 @@ class TestClosingMark:
                             property(lambda self: True))
         monkeypatch.setattr(scheduler_mod, "_fill_shadow_equity", lambda *a, **k: 0)
         scheduler_mod.start_closing_mark_job()
-        assert [a[0] for a in added] == ["closing_mark_1605", "closing_mark_1620",
-                                         "closing_mark_1635"]
+        assert [a[0] for a in added] == ["closing_mark"]
         assert all("America/New_York" in a[1] for a in added)
+
+    def test_retry_grid_always_hits_a_scan_idle_gap(self):
+        """A full scan runs ~79 of every 90 min, leaving an ~11-min idle gap.
+        The retry grid must never leave a hole that long, and must stop
+        before 20:00 ET (UTC date rollover)."""
+        from apscheduler.triggers.cron import CronTrigger
+        from backend import scheduler as scheduler_mod
+        trig = CronTrigger(day_of_week="mon-fri", timezone=scheduler_mod._EASTERN,
+                           **scheduler_mod._CLOSING_MARK_CRON_ET)
+        t = datetime(2026, 9, 23, 15, 59, tzinfo=scheduler_mod._EASTERN)
+        fires = []
+        prev = None
+        while True:
+            nxt = trig.get_next_fire_time(prev, t)
+            if nxt.date() != t.date():
+                break
+            fires.append(nxt)
+            prev, t = nxt, nxt + timedelta(seconds=1)
+        assert (fires[0].hour, fires[0].minute) == (16, 5)
+        assert (fires[-1].hour, fires[-1].minute) == (19, 55)
+        assert max((b - a).total_seconds() for a, b in zip(fires, fires[1:])) <= 600
+
+    def test_shadow_fill_runs_even_while_scanning(self, patch_session_local, monkeypatch):
+        from backend import scheduler as scheduler_mod
+        self._setup(patch_session_local, monkeypatch)
+        monkeypatch.setitem(scheduler_mod._scan_config, "is_scanning", True)
+        seen = []
+        monkeypatch.setattr(scheduler_mod, "_fill_shadow_equity", lambda now=None: seen.append(now))
+        assert scheduler_mod._closing_mark(self.AFTER_CLOSE) == []
+        assert seen == [self.AFTER_CLOSE]
 
     def test_closing_mark_also_fills_shadow_equity(self, patch_session_local, monkeypatch):
         from backend import scheduler as scheduler_mod
@@ -2991,3 +3020,17 @@ class TestClosingMark:
         monkeypatch.setattr(scheduler_mod, "_fill_shadow_equity", lambda now=None: seen.append(now))
         scheduler_mod._closing_mark(self.AFTER_CLOSE)
         assert seen == [self.AFTER_CLOSE]
+
+
+def test_shadow_fill_skips_when_one_is_already_running(monkeypatch):
+    from backend import scheduler as scheduler_mod
+    import backend.shadow_equity as SE
+    calls = []
+    monkeypatch.setattr(SE, "fill_shadow_equity_marks", lambda db, now_utc=None: calls.append(1) or 0)
+    assert scheduler_mod._shadow_fill_lock.acquire(blocking=False)
+    try:
+        assert scheduler_mod._fill_shadow_equity() == 0 and calls == []
+    finally:
+        scheduler_mod._shadow_fill_lock.release()
+    scheduler_mod._fill_shadow_equity()
+    assert calls == [1]

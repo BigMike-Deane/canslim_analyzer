@@ -1794,9 +1794,12 @@ def _refresh_portfolio_prices():
 # the close -- landed at 14:50 CT on Sep-18/21 while SPY's is the 15:00
 # close; a mid-session restart (Sep-22) lost the last 45 minutes entirely.
 # One post-close snapshot at closing prices makes the book's close and SPY's
-# close the same moment. Retries at 16:05/16:20/16:35 ET cover a scan in
-# progress or a restart; each is a no-op once the mark exists.
-_CLOSING_MARK_TIMES_ET = ((16, 5), (16, 20), (16, 35))
+# close the same moment. A full scan runs ~79 of every 90 minutes and the mark
+# defers during one, so it retries every 5 minutes 16:05-19:55 ET: every scan
+# leaves an ~11-minute idle gap, which a 5-minute grid always hits. Each run is
+# one cheap query once the day is marked. The window stops before 20:00 ET,
+# where the container's UTC date (the snapshot's `date`) rolls over.
+_CLOSING_MARK_CRON_ET = {"hour": "16-19", "minute": "5-59/5"}
 
 
 def _closing_mark(now_utc=None):
@@ -1812,6 +1815,9 @@ def _closing_mark(now_utc=None):
         now_et = now_utc.astimezone(_EASTERN)
         if not is_trading_day(now_et) or (now_et.hour, now_et.minute) < (16, 0):
             return marked
+        # The shadow fill only reads trade logs and writes its own table, so
+        # it never waits on a scan (it self-limits to finished sessions).
+        _fill_shadow_equity(now_utc)
         if _scan_config.get("is_scanning"):
             logger.info("Closing mark deferred: scan in progress (next retry)")
             return marked
@@ -1838,17 +1844,23 @@ def _closing_mark(now_utc=None):
             db.close()
         if marked:
             logger.info(f"Closing mark taken for users {marked}")
-        _fill_shadow_equity(now_utc)
     except Exception as e:
         logger.error(f"Closing mark error: {e}")
     return marked
 
 
+_shadow_fill_lock = threading.Lock()
+
+
 def _fill_shadow_equity(now_utc=None):
     """Daily closing equity per shadow stack (backend.shadow_equity). Marks
-    only finished sessions whose SIP bar is complete, so the 16:05 ET pass
-    backfills through yesterday and the 16:20 retry marks today. Never
-    raises: a failure here must not cost the live closing mark."""
+    only finished sessions whose SIP bar is complete (>=16:17 ET), so early
+    passes backfill through yesterday and a later one marks today. Never
+    raises: a failure here must not cost the live closing mark. One fill at
+    a time (the boot backfill thread can overlap the 5-minute job); a
+    concurrent call just skips -- the next retry picks up anything missing."""
+    if not _shadow_fill_lock.acquire(blocking=False):
+        return 0
     try:
         from backend.database import SessionLocal
         from backend.shadow_equity import fill_shadow_equity_marks
@@ -1860,23 +1872,24 @@ def _fill_shadow_equity(now_utc=None):
     except Exception as e:
         logger.error(f"Shadow equity marks failed: {e}")
         return 0
+    finally:
+        _shadow_fill_lock.release()
 
 
 def start_closing_mark_job():
     from apscheduler.triggers.cron import CronTrigger
-    for h, m in _CLOSING_MARK_TIMES_ET:
-        job_id = f"closing_mark_{h:02d}{m:02d}"
-        scheduler.add_job(
-            _closing_mark,
-            CronTrigger(day_of_week="mon-fri", hour=h, minute=m, timezone=_EASTERN),
-            id=job_id, name=f"Closing mark {h}:{m:02d} ET", replace_existing=True,
-        )
+    scheduler.add_job(
+        _closing_mark,
+        CronTrigger(day_of_week="mon-fri", timezone=_EASTERN, **_CLOSING_MARK_CRON_ET),
+        id="closing_mark", name="Closing mark (16:05-19:55 ET, every 5 min)",
+        replace_existing=True,
+    )
     if not scheduler.running:
         scheduler.start()
     # Backfill shadow equity history once per boot (idempotent; finished
     # sessions only), off the startup path.
     threading.Thread(target=_fill_shadow_equity, daemon=True).start()
-    logger.info("Closing mark job scheduled (16:05/16:20/16:35 ET, session days)")
+    logger.info("Closing mark job scheduled (every 5 min 16:05-19:55 ET, session days)")
 
 
 def _sync_shadow_strategies_at_boot():
