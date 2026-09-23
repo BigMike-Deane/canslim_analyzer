@@ -134,3 +134,8 @@ market snapshot, where an inner join silently drops them — and those dropped
 days were disproportionately chop days with poor excess, which is what flattered
 the chop mean by 12 bps. The recent trend share (48.3%) reconstructed exactly;
 only the means were wrong.
+
+## Next readout
+
+The Oct-21 arm readout and what the program does with it are pre-registered in
+[`oct21-readout-rules.md`](oct21-readout-rules.md) (DRAFT 2026-09-23, pending owner sign-off).
