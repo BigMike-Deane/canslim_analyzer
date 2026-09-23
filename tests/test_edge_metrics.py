@@ -608,3 +608,44 @@ class TestRegimeMixSummary:
         assert out["window_days"] == 60
         assert out["trend_share_pct"] == 100.0
         assert regime_mix_summary([2.0] * 5, None) is None  # < 10 days
+
+
+# ── 2026-09-23: small-cap split of the regime excess ─────────────────────
+from backend.edge_metrics import regime_excess_split
+
+
+class TestRegimeExcessSplit:
+    """book - SPY = (book - IWM) + (IWM - SPY), per regime, exactly."""
+
+    def _series(self):
+        # 5 trend days (dist 3%) where IWM lags SPY by 1% and the book
+        # tracks IWM exactly: all of the "lost edge" is the small-cap tilt.
+        port, spy, iwm = [100.0], [100.0], [100.0]
+        for _ in range(5):
+            spy.append(spy[-1] * 1.01)
+            iwm.append(iwm[-1] * 1.00)
+            port.append(port[-1] * 1.00)
+        return port, spy, iwm, [3.0] * 6
+
+    def test_parts_sum_to_the_spy_excess(self):
+        port, spy, iwm, dist = self._series()
+        t = regime_excess_split(port, spy, iwm, dist)["trend"]
+        assert t["n_days"] == 5
+        assert t["excess_vs_spy_bps"] == pytest.approx(-100.0, abs=0.1)
+        assert t["book_vs_iwm_bps"] == pytest.approx(0.0, abs=0.1)
+        assert t["iwm_vs_spy_bps"] == pytest.approx(-100.0, abs=0.1)
+        assert t["book_vs_iwm_bps"] + t["iwm_vs_spy_bps"] == pytest.approx(
+            t["excess_vs_spy_bps"], abs=0.2)
+
+    def test_regimes_bucket_on_the_threshold(self):
+        port, spy, iwm, _ = self._series()
+        out = regime_excess_split(port, spy, iwm, [0.5] * 6)
+        assert out["trend"] is None and out["chop"]["n_days"] == 5
+
+    def test_days_missing_iwm_are_skipped(self):
+        port, spy, iwm, dist = self._series()
+        iwm[2] = None                       # drops return days 2 and 3
+        assert regime_excess_split(port, spy, iwm, dist)["trend"]["n_days"] == 3
+
+    def test_no_aligned_days_returns_none(self):
+        assert regime_excess_split([1.0, 1.1], [1.0, 1.1], [None, None], [3.0, 3.0]) is None

@@ -1788,10 +1788,12 @@ def _owner_edge_metrics(db: Session) -> dict:
     if len(days_sorted) < 2:
         return {}
 
-    spy_by_date, spy_ma_by_date = {}, {}
+    spy_by_date, spy_ma_by_date, iwm_by_date = {}, {}, {}
     for ms in db.query(MarketSnapshot).filter(
             MarketSnapshot.spy_price.isnot(None)).all():
         spy_by_date[ms.date] = ms.spy_price
+        if ms.iwm_price:
+            iwm_by_date[ms.date] = ms.iwm_price
         if ms.spy_50_ma:
             spy_ma_by_date[ms.date] = ms.spy_50_ma
     spy_anchor = base_value = None
@@ -1854,6 +1856,22 @@ def _owner_edge_metrics(db: Session) -> dict:
         metrics["regime_mix"] = regime_mix_summary(spy_dist, metrics.get("regime_edge"))
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"go-live gate: regime metrics failed: {e}")
+
+    # Small-cap split of the regime excess (2026-09-23, diagnostic only).
+    try:
+        from backend.edge_metrics import regime_excess_split
+
+        def _iwm_for(day):
+            if day in iwm_by_date:
+                return iwm_by_date[day]
+            earlier = [x for x in iwm_by_date if x <= day]
+            return iwm_by_date[max(earlier)] if earlier else None
+
+        metrics["regime_split"] = regime_excess_split(
+            port_values, spy_values, [_iwm_for(x) for x in days_sorted],
+            [_spy_dist_for(x) for x in days_sorted])
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"go-live gate: regime split failed: {e}")
     return metrics
 
 # ── GO-LIVE THRESHOLDS (pre-registered 2026-09-09) ───────────────────────
@@ -1892,7 +1910,17 @@ GO_LIVE_CONFIDENCE = 0.85          # one-sided
 GO_LIVE_MIN_CHOP_SHARE = 30.0      # % of days in the window
 GO_LIVE_MAX_DD_MARGIN_PP = 5.0     # portfolio DD vs SPY DD
 GO_LIVE_MAX_SLIPPAGE_PP = 1.5
+# AMENDED 2026-09-23 (owner-approved): criterion 4 read MET on a single
+# measured stop (0.12pp, n=1). One fill is not "execution quality"; the
+# stop-loss re-check already waits for n>=5, so this one does too. This
+# TIGHTENS the gate (4 of 5 -> 3 of 5 on the day it landed), never loosens.
+GO_LIVE_MIN_SLIPPAGE_N = 5
 GO_LIVE_MIN_CLOSED_TRADES = 50
+GO_LIVE_AMENDMENTS = [
+    {"on": "2026-09-23", "criterion": "stop_slippage",
+     "change": f"requires n_measured >= {GO_LIVE_MIN_SLIPPAGE_N} (was: any n >= 1)",
+     "direction": "tightened"},
+]
 
 
 def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
@@ -1959,7 +1987,8 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
         if sf.get("slippage_pp") is not None:
             slips.append(float(sf["slippage_pp"]))
     slip_avg = round(sum(slips) / len(slips), 2) if slips else None
-    c4_met = bool(slip_avg is not None and slip_avg <= GO_LIVE_MAX_SLIPPAGE_PP)
+    c4_met = bool(slip_avg is not None and slip_avg <= GO_LIVE_MAX_SLIPPAGE_PP
+                  and len(slips) >= GO_LIVE_MIN_SLIPPAGE_N)
 
     # 5. Enough closed trades.
     closed = (edge or {}).get("closed_trades") or 0
@@ -1978,7 +2007,9 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
                    "breakeven_trend_share_pct": M.get("breakeven_trend_share_pct"),
                    "recent_trend_share_pct": M.get("trend_share_pct"),
                    "mix_window_days": M.get("window_days"),
-                   "chop_share_basis": "full history; recent_trend_share_pct is the trailing mix_window_days"},
+                   "chop_share_basis": "full history; recent_trend_share_pct is the trailing mix_window_days",
+                   # diagnostic: excess = book-vs-IWM (picks) + IWM-vs-SPY (small-cap tilt)
+                   "small_cap_split": (edge or {}).get("regime_split")},
          "target": {"p_one_sided_below": round(1.0 - GO_LIVE_CONFIDENCE, 2),
                     "chop_share_pct_min": GO_LIVE_MIN_CHOP_SHARE}},
         {"key": "clears_noise_floor", "met": c2_met,
@@ -1990,9 +2021,11 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
          "value": {"portfolio_dd_pct": dd, "spy_dd_pct": spy_dd, "gap_pp": dd_gap},
          "target": {"gap_pp_max": GO_LIVE_MAX_DD_MARGIN_PP}},
         {"key": "stop_slippage", "met": c4_met,
-         "label": f"avg stop slippage <= {GO_LIVE_MAX_SLIPPAGE_PP}pp",
+         "label": f"avg stop slippage <= {GO_LIVE_MAX_SLIPPAGE_PP}pp "
+                  f"over >= {GO_LIVE_MIN_SLIPPAGE_N} measured stops",
          "value": {"avg_slippage_pp": slip_avg, "n_measured": len(slips)},
-         "target": {"avg_slippage_pp_max": GO_LIVE_MAX_SLIPPAGE_PP}},
+         "target": {"avg_slippage_pp_max": GO_LIVE_MAX_SLIPPAGE_PP,
+                    "n_measured_min": GO_LIVE_MIN_SLIPPAGE_N}},
         {"key": "sample", "met": c5_met,
          "label": f"at least {GO_LIVE_MIN_CLOSED_TRADES} closed trades",
          "value": {"closed_trades": closed},
@@ -2002,6 +2035,7 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
     return {
         "label": "Go-live thresholds (pre-registered)",
         "registered_on": GO_LIVE_REGISTERED_ON,
+        "amendments": GO_LIVE_AMENDMENTS,
         "confidence_one_sided": GO_LIVE_CONFIDENCE,
         "criteria": criteria,
         "n_met": sum(1 for c in criteria if c["met"]),

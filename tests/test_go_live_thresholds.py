@@ -57,7 +57,7 @@ def _gate(db, edge=None, floor=NOISE_FLOOR, slips=None):
     def _default_slips():
         class T:
             signal_factors = {"slippage_pp": 0.7}
-        return [T(), T()]
+        return [T()] * 5
 
     with patch.object(db, "query", return_value=_Q()):
         return A._go_live_gate(db, edge, floor)
@@ -167,6 +167,20 @@ class TestEachCriterionBlocks:
         g = _gate(db, slips=[T(), T()])
         assert "stop_slippage" in g["blocking"]
 
+    def test_too_few_measured_stops_block_even_when_clean(self, db):
+        # 2026-09-23 amendment: the live gate read MET on ONE 0.12pp fill.
+        class T:
+            signal_factors = {"slippage_pp": 0.12}
+        g = _gate(db, slips=[T()] * 4)
+        assert "stop_slippage" in g["blocking"]
+        g = _gate(db, slips=[T()] * 5)
+        assert "stop_slippage" not in g["blocking"]
+
+    def test_amendments_are_published_with_the_gate(self, db):
+        g = _gate(db)
+        assert g["amendments"] and all(a["direction"] == "tightened"
+                                       for a in g["amendments"])
+
     def test_unmeasured_slippage_blocks(self, db):
         # No instrumented stops at all => cannot assert execution quality.
         # Absence of evidence must not read as evidence of safety.
@@ -192,6 +206,7 @@ class TestThresholdsAreNotSilentlyLoosened:
         assert A.GO_LIVE_MIN_CHOP_SHARE == 30.0
         assert A.GO_LIVE_MAX_DD_MARGIN_PP == 5.0
         assert A.GO_LIVE_MAX_SLIPPAGE_PP == 1.5
+        assert A.GO_LIVE_MIN_SLIPPAGE_N == 5
         assert A.GO_LIVE_MIN_CLOSED_TRADES == 50
 
 

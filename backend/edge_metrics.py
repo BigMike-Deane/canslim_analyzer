@@ -647,6 +647,60 @@ def regime_conditional_edge(
             "threshold_pct": trend_threshold_pct}
 
 
+def regime_excess_split(
+    port_values: Sequence[float],
+    spy_values: Sequence[Optional[float]],
+    iwm_values: Sequence[Optional[float]],
+    spy_dist_pct: Sequence[Optional[float]],
+    trend_threshold_pct: float = 1.5,
+) -> Optional[dict]:
+    """Split each regime's daily excess vs SPY into two exact parts:
+
+        book - SPY  =  (book - IWM)  +  (IWM - SPY)
+                       stock picking    small-cap tilt
+
+    Why (2026-09-23): the trend-day edge fell from +42 bps (Jul) to +18 bps
+    and read as "the edge is decaying". On trend days the IWM-SPY spread
+    loads ~0.93 (t=3.8) on the book's excess -- ~2/3 of the Jul-Sep trend
+    shortfall was small caps lagging SPY, not the stock picks. This keeps
+    that split on the gate so the two are never confused again. Descriptive
+    only; criterion 1 still judges book vs SPY.
+
+    Days need all three series valid on i-1 and i plus a known regime, so
+    n here can be below regime_conditional_edge's n (IWM history is thinner).
+    Returns {'trend': {...}, 'chop': {...}} (a bucket is None with < 3 days),
+    or None when no day aligns.
+    """
+    n = min(len(port_values), len(spy_values), len(iwm_values), len(spy_dist_pct))
+    buckets: dict[str, list[tuple[float, float, float]]] = {"trend": [], "chop": []}
+    for i in range(1, n):
+        p0, p1 = port_values[i - 1], port_values[i]
+        s0, s1 = spy_values[i - 1], spy_values[i]
+        w0, w1 = iwm_values[i - 1], iwm_values[i]
+        dist = spy_dist_pct[i]
+        if not (p0 and p1 and s0 and s1 and w0 and w1) or dist is None:
+            continue
+        pr, sr, wr = p1 / p0 - 1.0, s1 / s0 - 1.0, w1 / w0 - 1.0
+        key = "trend" if dist > trend_threshold_pct else "chop"
+        buckets[key].append((pr - sr, pr - wr, wr - sr))
+    if not buckets["trend"] and not buckets["chop"]:
+        return None
+
+    def _stats(rows):
+        if len(rows) < 3:
+            return None
+        k = len(rows)
+        return {
+            "n_days": k,
+            "excess_vs_spy_bps": round(sum(r[0] for r in rows) / k * 1e4, 1),
+            "book_vs_iwm_bps": round(sum(r[1] for r in rows) / k * 1e4, 1),
+            "iwm_vs_spy_bps": round(sum(r[2] for r in rows) / k * 1e4, 1),
+        }
+
+    return {"trend": _stats(buckets["trend"]), "chop": _stats(buckets["chop"]),
+            "threshold_pct": trend_threshold_pct}
+
+
 def regime_mix_summary(
     spy_dist_pct: Sequence[Optional[float]],
     regime_edge: Optional[dict],
