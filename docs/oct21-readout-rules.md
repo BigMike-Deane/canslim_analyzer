@@ -62,6 +62,7 @@ trend-day mean is no worse than −1σ-equivalent. A chop arm that "wins" on
 trend days is a vintage accident, not a fix.
 
 ### OWNER DECISION A1 — multiple-comparisons bar for the chop family
+**DECIDED 2026-09-23: A1-a (+1.5σ plus the mechanism check).**
 The four chop arms test one hypothesis four ways. With four null arms,
 P(at least one clears +1σ by luck) ≈ **50%**.
 - **(recommended) A1-a:** the best chop arm must clear **+1.5σ** plus the
@@ -113,6 +114,8 @@ market's recent trend share):
 - **D3 — nothing wins.** Continue to E.
 
 ### OWNER DECISION D-clock — what history does go-live read after a promotion?
+**DECIDED 2026-09-23: keep the full history.** The post-promotion window is
+reported beside it for visibility but does not gate.
 - **(recommended) D-clock-a:** criterion 1 keeps the full history, and the
   gate also reports the post-promotion window separately. Go-live needs both
   the full-history pass AND a post-promotion blended edge ≥ 0 over ≥ 40
@@ -123,6 +126,8 @@ market's recent trend share):
 ## E. If criterion 1 is still blocked after the readout
 
 ### OWNER DECISION E — pick the next move now, not after the result
+**OPEN 2026-09-23:** the owner asked whether E-a differs from the Aug-12
+pyramid-gate kill. Settle it with the retro check in E-a before choosing.
 - **(recommended) E-a: concentration arm.** Sep-21 (−356 bps, the worst trend
   day) was 50% of the book in two Marine Shipping names, both pyramided twice
   at +3–4% within days, plus 11% in oil E&P. The sector cap counts positions
