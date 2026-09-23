@@ -184,6 +184,17 @@ session scratchpad `indcap.py`; re-run it at the readout.
   `GET /api/admin/shadow-equity/{name}` returns the marks and the arm-vs-
   comparator trend/chop split used by the mechanism check.
 
+## Known execution haircut (measured 2026-09-23)
+The app's books record every trade at the app's own quote: no spread or
+slippage. The Alpaca paper mirror measures what fills actually cost: 10 fills,
+**19 bps average** (buys 24.8, sells 13.2). At the owner book's real turnover
+(~$1,950/day on ~$30k equity since March) that is **~1.2–1.3 bps/day** of
+friction the gate never charges. Criterion 1's blended edge is therefore about
+1.3 bps/day **better** than real money would see (−5.7 as served ≈ −7.0 net).
+The pre-registered thresholds are unchanged; the readout reports the net figure
+beside the served one. Re-measure from `broker_mirror.summary` at the readout
+(paper fills are optimistic for thin small caps, so treat this as a floor).
+
 ## Data provenance for the readout
 - Gate day counts: finished NYSE sessions only (`81bc23c`).
 - Index closes: Yahoo with Alpaca gap-fill (`8a73347`); check
