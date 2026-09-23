@@ -513,6 +513,22 @@ def build_shadow_vs_baseline_snapshot_html(
     exp_sells = (exp_summary.get('realized_sell_pct') or {}).get('n', 0)
 
     warnings = []
+    # Start-date alignment (2026-09-23). A comparator launched earlier holds
+    # a different book on the arm's first day; staggered copies of the SAME
+    # strategy already spread 4-7pp apart in weeks (program_clocks
+    # .vintage_spread). A gap that size is launch luck, not the lever.
+    start_gap_days = None
+    if exp.activated_at and base.activated_at:
+        start_gap_days = abs((_naive_utc(exp.activated_at).date()
+                              - _naive_utc(base.activated_at).date()).days)
+        if start_gap_days >= 1:
+            warnings.append(
+                f"Launch mismatch: {shadow_name} started "
+                f"{_naive_utc(exp.activated_at).date()}, {baseline_name} "
+                f"{_naive_utc(base.activated_at).date()} ({start_gap_days}d apart). "
+                f"Their books differed from day one -- a return gap within the "
+                f"vintage spread (see Gate Progress) is launch luck, not the lever."
+            )
     if window_days < 21:
         warnings.append(
             f"Common window is only {window_days} days — verdict clocks are "
@@ -689,6 +705,8 @@ def build_shadow_vs_baseline_snapshot_html(
         'return_delta': return_delta,
         'sharpe_delta': sharpe_delta,
         'source': 'shadow_vs_baseline',
+        'comparator': baseline_name,
+        'start_gap_days': start_gap_days,
     }
 
 

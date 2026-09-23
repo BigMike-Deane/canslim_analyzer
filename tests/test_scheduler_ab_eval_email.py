@@ -264,3 +264,42 @@ class TestWeeklyABEvalEmailFanOut:
             scheduler_mod._run_weekly_ab_eval_email()
         assert any("Weekly A/B eval email outer failure" in str(c)
                    for c in mock_logger.error.call_args_list)
+
+
+class TestWeeklyFanOutComparators:
+    """2026-09-23: arms go to their pre-registered same-day control (YAML
+    `comparator:`), not always shadow_baseline; vintage benchmark copies are
+    controls and get no A/B email of their own."""
+
+    def test_comparator_routing_and_benchmarks_skipped(self, db_session, monkeypatch):
+        monkeypatch.setenv("CANSLIM_ENV", "development")
+        for n in ("shadow_baseline", "shadow_stop_band", "shadow_vintage_sep16",
+                  "shadow_chop_trim"):
+            db_session.add(_make_shadow(n))
+        db_session.commit()
+        from backend import shadow_strategy_sync as sss
+        monkeypatch.setattr(sss, "shadow_roles", lambda: {
+            "shadow_baseline": sss.ROLE_BENCHMARK,
+            "shadow_vintage_sep16": sss.ROLE_BENCHMARK})
+        monkeypatch.setattr(sss, "shadow_comparators", lambda: {
+            "shadow_stop_band": "shadow_vintage_sep16"})
+
+        from backend import scheduler as scheduler_mod
+        with patch('backend.ab_eval_email.send_ab_eval_snapshot',
+                   return_value=_ok_result()), \
+             patch('backend.ab_eval_email.send_shadow_vs_baseline_snapshot',
+                   return_value=_ok_shadow_result()) as mock_shadow:
+            scheduler_mod._run_weekly_ab_eval_email()
+
+        calls = {c.kwargs['shadow_name']: c.kwargs['baseline_name']
+                 for c in mock_shadow.call_args_list}
+        assert calls == {"shadow_stop_band": "shadow_vintage_sep16",
+                         "shadow_chop_trim": "shadow_baseline"}
+
+
+def test_yaml_declares_same_day_comparators():
+    """The two arms launched beside a vintage copy name it as comparator."""
+    from backend.shadow_strategy_sync import shadow_comparators
+    comps = shadow_comparators()
+    assert comps.get("shadow_stop_band") == "shadow_vintage_sep16"
+    assert comps.get("shadow_small_cap_gate") == "shadow_vintage_sep23"

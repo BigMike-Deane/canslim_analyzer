@@ -2599,13 +2599,21 @@ def _run_weekly_ab_eval_email():
             shadows = db.query(ShadowStrategy).filter(
                 ShadowStrategy.archived_at.is_(None)
             ).order_by(ShadowStrategy.id).all()
+            from backend.shadow_strategy_sync import (
+                shadow_roles, shadow_comparators, ROLE_BENCHMARK,
+            )
+            roles, comparators = shadow_roles(), shadow_comparators()
             for shadow in shadows:
                 if shadow.name == _AB_EVAL_SHADOW_BASELINE:
                     continue  # the baseline is the comparator, not a target
+                if roles.get(shadow.name) == ROLE_BENCHMARK:
+                    continue  # vintage copies are controls, not experiments
                 try:
                     result = send_shadow_vs_baseline_snapshot(
                         shadow_name=shadow.name,
                         db=db,
+                        baseline_name=comparators.get(
+                            shadow.name, _AB_EVAL_SHADOW_BASELINE),
                     )
                     logger.info(
                         f"Weekly A/B eval email (shadow {shadow.name}): "

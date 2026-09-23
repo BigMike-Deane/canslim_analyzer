@@ -924,3 +924,42 @@ class TestClocksCard:
             assert 'Side-by-side' in snap['html']
         finally:
             db.close()
+
+
+class TestShadowVsBaselineLaunchAlignment:
+    """2026-09-23: every arm was emailed against the Aug-19 shadow_baseline.
+    Staggered copies of the same strategy spread 4-7pp in weeks, so an arm
+    launched later reads launch luck as lever effect unless the email says
+    so. Same-day comparators (the YAML `comparator:`) carry no warning."""
+
+    _db = TestShadowVsBaselineSnapshot._db
+    _seed_stack = TestShadowVsBaselineSnapshot._seed_stack
+
+    def _stacks(self, db, exp_start, base_start):
+        base = self._seed_stack(db, "shadow_ctrl", [50.0, -30.0, 40.0, 60.0, -20.0], start_day=1)
+        exp = self._seed_stack(db, "shadow_exp", [80.0, 20.0, 60.0, 90.0, 10.0], start_day=1)
+        base.activated_at, exp.activated_at = base_start, exp_start
+        db.commit()
+
+    def test_mismatched_launch_is_flagged(self):
+        db = self._db()
+        try:
+            self._stacks(db, datetime(2026, 8, 25, 19, 24), datetime(2026, 8, 19, 1, 3))
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db, baseline_name="shadow_ctrl")
+            assert snap['start_gap_days'] == 6
+            assert snap['comparator'] == 'shadow_ctrl'
+            assert 'Launch mismatch' in snap['html'] and '6d apart' in snap['html']
+        finally:
+            db.close()
+
+    def test_same_day_control_is_not_flagged(self):
+        db = self._db()
+        try:
+            self._stacks(db, datetime(2026, 9, 23, 13, 5), datetime(2026, 9, 23, 13, 5))
+            from backend.ab_eval_email import build_shadow_vs_baseline_snapshot_html
+            snap = build_shadow_vs_baseline_snapshot_html("shadow_exp", db, baseline_name="shadow_ctrl")
+            assert snap['start_gap_days'] == 0
+            assert 'Launch mismatch' not in snap['html']
+        finally:
+            db.close()

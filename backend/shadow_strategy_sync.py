@@ -66,6 +66,20 @@ def shadow_roles() -> Dict[str, str]:
     return out
 
 
+def shadow_comparators() -> Dict[str, str]:
+    """{arm name: comparator stack} for arms whose YAML declares a
+    `comparator:` -- their pre-registered same-day control. Arms without one
+    are compared to shadow_baseline. (2026-09-23: the weekly email compared
+    EVERY arm to the Aug-19 baseline, so later-launched arms read vintage
+    luck -- measured at 4-7pp -- as lever effect.)"""
+    out: Dict[str, str] = {}
+    for name, entry in _load_yaml_section().items():
+        comp = entry.get("comparator") if isinstance(entry, dict) else None
+        if comp:
+            out[name] = str(comp)
+    return out
+
+
 def _activate_on(entry):
     """Optional YAML `activate_on: YYYY-MM-DD` — the stack is not inserted
     until that UTC date. Lets a staggered-vintage fleet be declared once and

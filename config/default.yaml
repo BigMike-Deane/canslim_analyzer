@@ -2497,6 +2497,7 @@ shadow_strategy_profiles:
   shadow_stop_band:
     parent_strategy: nostate_stop_band
     activate_on: 2026-09-16
+    comparator: shadow_vintage_sep16   # pre-registered same-day control (weekly email)
     starting_value: 25000
     description: "cs_bear with the bearish 6 pct stop only once SPY is >=0.25 pct below its 50MA -- sep-14 candidate (stop flipped 7/6/7 as SPY straddled the MA); gate: >=10 in-band SPY closes AND >=5 closed sells, then vs shadow_vintage_sep16 (same launch day)"
     scorer_overrides: {}
@@ -2513,6 +2514,7 @@ shadow_strategy_profiles:
   shadow_small_cap_gate:
     parent_strategy: nostate_small_cap_gate
     activate_on: 2026-09-23
+    comparator: shadow_vintage_sep23   # pre-registered same-day control (weekly email)
     starting_value: 25000
     description: "cs_bear with no new buys while IWM is below its 50MA -- sep-22 candidate (drawdown was IWM -6 pct vs SPY -0.6 pct; SPY gate never saw it); gate: >=10 IWM-below-50MA closes AND >=5 closed sells, then vs shadow_vintage_sep23 (same launch day)"
     scorer_overrides: {}
