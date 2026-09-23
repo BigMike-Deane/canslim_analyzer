@@ -1,11 +1,11 @@
 # Oct-21 Readout — Decision Rules (pre-registered)
 
-**Status: DRAFT 2026-09-23 — becomes binding when the owner signs below.**
+**Status: BINDING — approved by the owner 2026-09-23.** Any change needs a new dated amendment below.
 Written before any arm's gate has filled, so the read cannot be fitted to
 the result. Sections marked **OWNER DECISION** need a pick; the rest follows
 from rules already pre-registered on each arm's YAML profile.
 
-Sign-off: `[ ] approved by owner on ____ (edits: ____)`
+Sign-off: `[x] approved by owner on 2026-09-23 (edits: none)`
 
 ## Why this file exists
 

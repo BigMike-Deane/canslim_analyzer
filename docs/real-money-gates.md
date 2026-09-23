@@ -138,4 +138,4 @@ only the means were wrong.
 ## Next readout
 
 The Oct-21 arm readout and what the program does with it are pre-registered in
-[`oct21-readout-rules.md`](oct21-readout-rules.md) (DRAFT 2026-09-23, pending owner sign-off).
+[`oct21-readout-rules.md`](oct21-readout-rules.md) (BINDING — owner-approved 2026-09-23).
