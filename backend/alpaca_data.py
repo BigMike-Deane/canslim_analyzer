@@ -94,6 +94,57 @@ def daily_bars(ticker: str, days: int = 45, now: datetime = None) -> Optional[li
         return None
 
 
+def daily_closes_raw(tickers, start, end: datetime = None,
+                     chunk: int = 50) -> dict:
+    """{ticker: {date: close}} of UNADJUSTED consolidated-tape daily closes,
+    for many tickers in few requests (multi-symbol + page tokens).
+
+    Raw, not split-adjusted, on purpose: shadow_equity values share counts
+    from the trade log, which only change at a SPLIT row -- adjusted history
+    would misprice every pre-split day. Dates are the bar's ET session date.
+    {} on any failure; tickers Alpaca doesn't know are simply absent."""
+    headers = _headers()
+    if headers is None or not tickers:
+        return {}
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    end = end or (datetime.now(timezone.utc) - SIP_DELAY)
+    out: dict = {}
+    names = sorted({t for t in tickers if t})
+    for i in range(0, len(names), chunk):
+        batch = names[i:i + chunk]
+        back = {alpaca_symbol(t): t for t in batch}
+        params = {
+            "symbols": ",".join(back), "timeframe": "1Day", "feed": "sip",
+            "adjustment": "raw", "start": str(start), "end": end.isoformat(),
+            "limit": 10000,
+        }
+        token = None
+        for _ in range(50):                      # page guard
+            if token:
+                params["page_token"] = token
+            try:
+                r = requests.get(f"{DATA_BASE_URL}/v2/stocks/bars", headers=headers,
+                                 params=params, timeout=TIMEOUT * 3)
+                if r.status_code != 200:
+                    logger.debug(f"Alpaca raw closes: HTTP {r.status_code} {r.text[:120]}")
+                    break
+                body = r.json()
+            except Exception as e:
+                logger.debug(f"Alpaca raw closes failed: {e}")
+                break
+            for sym, bars in (body.get("bars") or {}).items():
+                tk = back.get(sym, sym)
+                for b in bars or []:
+                    ts = parse_ts(b.get("t", ""))
+                    if ts is not None and b.get("c") is not None:
+                        out.setdefault(tk, {})[ts.astimezone(et).date()] = float(b["c"])
+            token = body.get("next_page_token")
+            if not token:
+                break
+    return out
+
+
 def daily_hlc(ticker: str, days: int = 45) -> Optional[tuple]:
     """(highs, lows, closes), oldest first -- the shape calculate_atr_stop
     consumes -- or None."""

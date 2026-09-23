@@ -1838,9 +1838,28 @@ def _closing_mark(now_utc=None):
             db.close()
         if marked:
             logger.info(f"Closing mark taken for users {marked}")
+        _fill_shadow_equity(now_utc)
     except Exception as e:
         logger.error(f"Closing mark error: {e}")
     return marked
+
+
+def _fill_shadow_equity(now_utc=None):
+    """Daily closing equity per shadow stack (backend.shadow_equity). Marks
+    only finished sessions whose SIP bar is complete, so the 16:05 ET pass
+    backfills through yesterday and the 16:20 retry marks today. Never
+    raises: a failure here must not cost the live closing mark."""
+    try:
+        from backend.database import SessionLocal
+        from backend.shadow_equity import fill_shadow_equity_marks
+        db = SessionLocal()
+        try:
+            return fill_shadow_equity_marks(db, now_utc=now_utc)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Shadow equity marks failed: {e}")
+        return 0
 
 
 def start_closing_mark_job():
@@ -1854,6 +1873,9 @@ def start_closing_mark_job():
         )
     if not scheduler.running:
         scheduler.start()
+    # Backfill shadow equity history once per boot (idempotent; finished
+    # sessions only), off the startup path.
+    threading.Thread(target=_fill_shadow_equity, daemon=True).start()
     logger.info("Closing mark job scheduled (16:05/16:20/16:35 ET, session days)")
 
 

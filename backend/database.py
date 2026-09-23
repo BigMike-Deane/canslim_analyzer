@@ -1986,6 +1986,35 @@ class ShadowPositionPeak(Base):
     )
 
 
+class ShadowEquityMark(Base):
+    """Daily closing equity per shadow stack (2026-09-23).
+
+    Shadow equity was only ever marked "now" (shadow_trader.
+    shadow_stack_equity), so no arm had a daily return series -- and the
+    Oct-21 readout's mechanism check (does a chop arm win ON CHOP DAYS?)
+    needs one. Rows are derived from the trade log + raw daily closes by
+    backend.shadow_equity.fill_shadow_equity_marks: history backfills on
+    boot, each new session is marked after the close. Derived, not source:
+    a row can always be rebuilt from shadow_trades.
+    """
+    __tablename__ = "shadow_equity_marks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shadow_strategy_id = Column(Integer, ForeignKey("shadow_strategies.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False)
+    equity = Column(Float, nullable=False)
+    cash = Column(Float)
+    positions_value = Column(Float)
+    sweep_value = Column(Float)
+    n_positions = Column(Integer)
+    unpriced_positions = Column(Integer)   # carried at last trade price
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index('ux_shadow_equity_marks_strategy_date', 'shadow_strategy_id', 'date', unique=True),
+    )
+
+
 class RefreshTokenRecord(Base):
     """Server-side ledger of issued refresh tokens (single-use rotation).
 

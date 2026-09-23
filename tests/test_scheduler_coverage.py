@@ -2978,7 +2978,16 @@ class TestClosingMark:
                             lambda fn, trig, **kw: added.append((kw["id"], str(trig.timezone))))
         monkeypatch.setattr(type(scheduler_mod.scheduler), "running",
                             property(lambda self: True))
+        monkeypatch.setattr(scheduler_mod, "_fill_shadow_equity", lambda *a, **k: 0)
         scheduler_mod.start_closing_mark_job()
         assert [a[0] for a in added] == ["closing_mark_1605", "closing_mark_1620",
                                          "closing_mark_1635"]
         assert all("America/New_York" in a[1] for a in added)
+
+    def test_closing_mark_also_fills_shadow_equity(self, patch_session_local, monkeypatch):
+        from backend import scheduler as scheduler_mod
+        self._setup(patch_session_local, monkeypatch)
+        seen = []
+        monkeypatch.setattr(scheduler_mod, "_fill_shadow_equity", lambda now=None: seen.append(now))
+        scheduler_mod._closing_mark(self.AFTER_CLOSE)
+        assert seen == [self.AFTER_CLOSE]

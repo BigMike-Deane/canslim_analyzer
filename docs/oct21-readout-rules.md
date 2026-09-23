@@ -179,6 +179,10 @@ session scratchpad `indcap.py`; re-run it at the readout.
   be computed. The series can be rebuilt from `shadow_trades` + daily closes,
   so no history is lost by building it later, but it must exist and be tested
   before Oct-15.
+  **BUILT 2026-09-23:** `shadow_equity_marks` table + `backend/shadow_equity.py`
+  (backfills on boot, marks each session after the close).
+  `GET /api/admin/shadow-equity/{name}` returns the marks and the arm-vs-
+  comparator trend/chop split used by the mechanism check.
 
 ## Data provenance for the readout
 - Gate day counts: finished NYSE sessions only (`81bc23c`).

@@ -2582,6 +2582,39 @@ def compute_experiment_gates(db: Session, now: Optional[datetime] = None) -> dic
     }
 
 
+@router.get("/shadow-equity/{name}")
+@limiter.limit("30/minute")
+async def shadow_equity(
+    name: str,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    """Daily closing equity of one shadow stack, and the Oct-21 readout's
+    mechanism check vs its comparator (YAML `comparator:`, else
+    shadow_baseline): arm-minus-comparator daily excess on trend vs chop
+    days. Read-only."""
+    from backend.database import ShadowStrategy, ShadowEquityMark
+    from backend.shadow_equity import regime_excess_vs
+    from backend.shadow_strategy_sync import shadow_comparators
+    arm = db.query(ShadowStrategy).filter(ShadowStrategy.name == name).first()
+    if arm is None:
+        raise HTTPException(status_code=404, detail=f"shadow stack '{name}' not found")
+    comp_name = shadow_comparators().get(name, "shadow_baseline")
+    comp = db.query(ShadowStrategy).filter(ShadowStrategy.name == comp_name).first()
+    marks = db.query(ShadowEquityMark).filter(
+        ShadowEquityMark.shadow_strategy_id == arm.id).order_by(ShadowEquityMark.date).all()
+    return {
+        "name": name,
+        "comparator": comp_name,
+        "marks": [{"date": m.date.isoformat(), "equity": round(m.equity, 2),
+                   "n_positions": m.n_positions, "unpriced": m.unpriced_positions}
+                  for m in marks],
+        "vs_comparator": (regime_excess_vs(db, arm.id, comp.id)
+                          if comp is not None and comp.id != arm.id else None),
+    }
+
+
 @router.get("/experiment-gates")
 @limiter.limit("30/minute")
 async def experiment_gates(
