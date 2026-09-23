@@ -76,6 +76,13 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
   const url = new URL(event.request.url)
 
+  // Other origins (Google Fonts, CDNs) are none of this worker's business.
+  // 2026-09-23: the network-first branch below caught fonts.googleapis.com;
+  // its fetch failed in Chromium and it answered 504 "Offline", so the app
+  // silently rendered in the system font -- 0 font faces registered with
+  // the worker, 28 without it.
+  if (url.origin !== self.location.origin) return
+
   if (url.pathname.startsWith('/api/') || url.pathname === '/health') {
     return
   }
@@ -109,8 +116,12 @@ self.addEventListener('fetch', (event) => {
     }).catch(() =>
       caches.match(event.request).then((cached) => {
         if (cached) return cached
-        // Offline fallback for navigation requests
-        if (event.request.mode === 'navigate') return caches.match('/manifest.json')
+        // Offline navigation to a page never visited: serve the cached app
+        // shell (the SPA routes client-side). It used to return
+        // manifest.json, i.e. raw JSON as the page.
+        if (event.request.mode === 'navigate') {
+          return caches.match('/').then((shell) => shell || new Response('', { status: 504, statusText: 'Offline' }))
+        }
         return new Response('', { status: 504, statusText: 'Offline' })
       })
     )
