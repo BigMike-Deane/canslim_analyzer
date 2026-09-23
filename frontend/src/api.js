@@ -61,7 +61,26 @@ class APIError extends Error {
   }
 }
 
-async function request(endpoint, options = {}) {
+// In-flight de-duplication for cacheable GETs. The cache only helps once a
+// response has landed: two components asking for the same endpoint in the
+// same tick (BottomNav and the sidebar bell both poll unread-count; both are
+// mounted, one hidden by CSS) each went to the network. Concurrent callers now
+// share one promise. Keyed by cache generation, so a request that started
+// before a mutation's invalidate() is never handed to a caller after it.
+const inflight = new Map()
+
+function request(endpoint, options = {}) {
+  const method = options.method || 'GET'
+  if (method !== 'GET' || options.noCache) return requestNetwork(endpoint, options)
+  const key = `${cache.generation}|${endpoint}`
+  const pending = inflight.get(key)
+  if (pending) return pending
+  const p = requestNetwork(endpoint, options).finally(() => inflight.delete(key))
+  inflight.set(key, p)
+  return p
+}
+
+async function requestNetwork(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`
   const method = options.method || 'GET'
 
