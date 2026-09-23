@@ -2896,3 +2896,89 @@ class TestIntradayStopCheck:
              patch("backend.database.SessionLocal", return_value=session):
             sched._run_intraday_stop_check()  # must not raise
         assert mock_check.call_count == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2026-09-23 — closing mark: one post-close snapshot per session day
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestClosingMark:
+    """The book's daily close was the last 5-min tick (14:50 CT) while SPY's
+    is the 15:00 close; a mid-session restart lost the last 45 min. The
+    closing mark snapshots once after 16:00 ET on NYSE session days."""
+
+    # 2026-09-23 is a Wednesday; 20:05 UTC = 16:05 EDT.
+    AFTER_CLOSE = datetime(2026, 9, 23, 20, 5, tzinfo=timezone.utc)
+
+    def _setup(self, db, monkeypatch, users=(1,)):
+        import backend.ai_trader as ai_trader
+        from backend import scheduler as scheduler_mod
+        spy = MagicMock(return_value={"message": "ok"})
+        monkeypatch.setattr(ai_trader, "refresh_ai_portfolio", spy)
+        monkeypatch.setitem(scheduler_mod._scan_config, "is_scanning", False)
+        for u in users:
+            db.add(AIPortfolioConfig(user_id=u, is_active=True))
+        db.commit()
+        return spy
+
+    def test_marks_every_active_user_after_close(self, patch_session_local, monkeypatch):
+        from backend.scheduler import _closing_mark
+        spy = self._setup(patch_session_local, monkeypatch, users=(1, 2))
+        assert _closing_mark(self.AFTER_CLOSE) == [1, 2]
+        assert spy.call_count == 2
+
+    def test_not_before_the_close(self, patch_session_local, monkeypatch):
+        from backend.scheduler import _closing_mark
+        spy = self._setup(patch_session_local, monkeypatch)
+        assert _closing_mark(datetime(2026, 9, 23, 19, 55, tzinfo=timezone.utc)) == []
+        assert spy.call_count == 0
+
+    def test_not_on_weekends_or_holidays(self, patch_session_local, monkeypatch):
+        from backend.scheduler import _closing_mark
+        spy = self._setup(patch_session_local, monkeypatch)
+        assert _closing_mark(datetime(2026, 9, 26, 20, 5, tzinfo=timezone.utc)) == []  # Sat
+        assert _closing_mark(datetime(2026, 9, 7, 20, 5, tzinfo=timezone.utc)) == []   # Labor Day
+        assert spy.call_count == 0
+
+    def test_retry_is_a_noop_once_marked(self, patch_session_local, monkeypatch):
+        from backend.database import AIPortfolioSnapshot
+        from backend.scheduler import _closing_mark
+        spy = self._setup(patch_session_local, monkeypatch)
+        patch_session_local.add(AIPortfolioSnapshot(
+            user_id=1, date=date(2026, 9, 23), total_value=1.0, cash=0.0,
+            positions_value=1.0, positions_count=1,
+            timestamp=datetime(2026, 9, 23, 20, 5, 30)))   # naive UTC, after close
+        patch_session_local.commit()
+        assert _closing_mark(datetime(2026, 9, 23, 20, 20, tzinfo=timezone.utc)) == []
+        assert spy.call_count == 0
+
+    def test_a_pre_close_tick_does_not_count_as_the_mark(self, patch_session_local, monkeypatch):
+        from backend.database import AIPortfolioSnapshot
+        from backend.scheduler import _closing_mark
+        spy = self._setup(patch_session_local, monkeypatch)
+        patch_session_local.add(AIPortfolioSnapshot(
+            user_id=1, date=date(2026, 9, 23), total_value=1.0, cash=0.0,
+            positions_value=1.0, positions_count=1,
+            timestamp=datetime(2026, 9, 23, 19, 50)))       # the 14:50 CT tick
+        patch_session_local.commit()
+        assert _closing_mark(self.AFTER_CLOSE) == [1]
+
+    def test_deferred_while_scanning(self, patch_session_local, monkeypatch):
+        from backend import scheduler as scheduler_mod
+        spy = self._setup(patch_session_local, monkeypatch)
+        monkeypatch.setitem(scheduler_mod._scan_config, "is_scanning", True)
+        assert scheduler_mod._closing_mark(self.AFTER_CLOSE) == []
+        assert spy.call_count == 0
+
+    def test_jobs_registered_in_eastern_time(self, monkeypatch):
+        from backend import scheduler as scheduler_mod
+        added = []
+        monkeypatch.setattr(scheduler_mod.scheduler, "add_job",
+                            lambda fn, trig, **kw: added.append((kw["id"], str(trig.timezone))))
+        monkeypatch.setattr(type(scheduler_mod.scheduler), "running",
+                            property(lambda self: True))
+        scheduler_mod.start_closing_mark_job()
+        assert [a[0] for a in added] == ["closing_mark_1605", "closing_mark_1620",
+                                         "closing_mark_1635"]
+        assert all("America/New_York" in a[1] for a in added)

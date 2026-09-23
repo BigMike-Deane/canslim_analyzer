@@ -1788,6 +1788,75 @@ def _refresh_portfolio_prices():
         logger.error(f"Portfolio price refresh error: {e}")
 
 
+# Closing mark (2026-09-23). The 5-min refresh only runs while the market is
+# open and skips ticks during a scan, so the day's LAST snapshot -- the value
+# every daily-return metric (go-live criterion 1, edge scorecard) treats as
+# the close -- landed at 14:50 CT on Sep-18/21 while SPY's is the 15:00
+# close; a mid-session restart (Sep-22) lost the last 45 minutes entirely.
+# One post-close snapshot at closing prices makes the book's close and SPY's
+# close the same moment. Retries at 16:05/16:20/16:35 ET cover a scan in
+# progress or a restart; each is a no-op once the mark exists.
+_CLOSING_MARK_TIMES_ET = ((16, 5), (16, 20), (16, 35))
+
+
+def _closing_mark(now_utc=None):
+    """Take one post-close snapshot per active portfolio on NYSE session days.
+    Returns the user ids marked (for tests/logs)."""
+    marked = []
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from backend.ai_trader import is_trading_day, refresh_ai_portfolio
+        from backend.database import SessionLocal, AIPortfolioConfig, AIPortfolioSnapshot
+
+        now_utc = now_utc or _dt.now(_tz.utc)
+        now_et = now_utc.astimezone(_EASTERN)
+        if not is_trading_day(now_et) or (now_et.hour, now_et.minute) < (16, 0):
+            return marked
+        if _scan_config.get("is_scanning"):
+            logger.info("Closing mark deferred: scan in progress (next retry)")
+            return marked
+        close_utc = now_et.replace(hour=16, minute=0, second=0, microsecond=0) \
+            .astimezone(_tz.utc).replace(tzinfo=None)
+
+        db = SessionLocal()
+        try:
+            for cfg in db.query(AIPortfolioConfig).filter(
+                    AIPortfolioConfig.is_active == True).all():
+                uid = cfg.user_id or 1
+                done = db.query(AIPortfolioSnapshot.id).filter(
+                    AIPortfolioSnapshot.user_id == uid,
+                    AIPortfolioSnapshot.timestamp >= close_utc,
+                ).first()
+                if done:
+                    continue
+                try:
+                    refresh_ai_portfolio(db, user_id=uid)
+                    marked.append(uid)
+                except Exception as ue:
+                    logger.error(f"Closing mark failed for user {uid}: {ue}")
+        finally:
+            db.close()
+        if marked:
+            logger.info(f"Closing mark taken for users {marked}")
+    except Exception as e:
+        logger.error(f"Closing mark error: {e}")
+    return marked
+
+
+def start_closing_mark_job():
+    from apscheduler.triggers.cron import CronTrigger
+    for h, m in _CLOSING_MARK_TIMES_ET:
+        job_id = f"closing_mark_{h:02d}{m:02d}"
+        scheduler.add_job(
+            _closing_mark,
+            CronTrigger(day_of_week="mon-fri", hour=h, minute=m, timezone=_EASTERN),
+            id=job_id, name=f"Closing mark {h}:{m:02d} ET", replace_existing=True,
+        )
+    if not scheduler.running:
+        scheduler.start()
+    logger.info("Closing mark job scheduled (16:05/16:20/16:35 ET, session days)")
+
+
 def _sync_shadow_strategies_at_boot():
     """Reconcile shadow_strategy_profiles YAML → shadow_strategies table.
 
@@ -1952,6 +2021,13 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
         start_push_reachability_job()
     except Exception as e:
         logger.warning(f"Failed to start push reachability job: {e}")
+
+    # Closing mark: one post-close snapshot so the book's daily close lines
+    # up with SPY's (see _closing_mark).
+    try:
+        start_closing_mark_job()
+    except Exception as e:
+        logger.warning(f"Failed to start closing mark job: {e}")
 
     # Program milestone ledger: daily gate-diff pass after US close
     try:
