@@ -107,7 +107,7 @@ class TestChopDays:
     def test_counts_only_days_in_band_since_activation(self, db_session):
         _arm(db_session, "shadow_chop_damper", activated_at=T0)
         # in band (+1.0%), out of band (+3%), below MA (-1%), pre-activation in band
-        _snap(db_session, date(2026, 8, 2), 505.0, 500.0)
+        _snap(db_session, date(2026, 8, 5), 505.0, 500.0)
         _snap(db_session, date(2026, 8, 3), 515.0, 500.0)
         _snap(db_session, date(2026, 8, 4), 495.0, 500.0)
         _snap(db_session, date(2026, 7, 20), 505.0, 500.0)
@@ -349,8 +349,8 @@ class TestStopBandArmGates:
     def test_counts_in_band_closes_and_stop_loss_exits(self, db_session):
         arm = _arm(db_session, "shadow_stop_band", parent="nostate_stop_band")
         ma = 760.0
-        d0 = T0.date()
-        _snap(db_session, d0 - timedelta(days=1), ma * 0.999, ma)         # before activation
+        d0 = date(2026, 8, 3)   # Monday (T0 is a Saturday): d0..d0+4 = Mon-Fri
+        _snap(db_session, date(2026, 7, 31), ma * 0.999, ma)              # before activation
         _snap(db_session, d0, ma * (1 - 0.0003), ma)                      # -0.03%: in band
         _snap(db_session, d0 + timedelta(days=1), ma * (1 - 0.0024), ma)  # -0.24%: in band
         _snap(db_session, d0 + timedelta(days=2), ma * (1 - 0.0030), ma)  # -0.30%: both bearish
@@ -463,9 +463,9 @@ class TestSmallCapGateArmGates:
 
     def test_counts_iwm_closes_below_50ma(self, db_session):
         _arm(db_session, "shadow_small_cap_gate", parent="nostate_small_cap_gate")
-        d0 = T0.date()
+        d0 = date(2026, 8, 3)   # Monday (T0 is a Saturday): d0..d0+4 = Mon-Fri
         rows = [
-            (d0 - timedelta(days=1), 280.0, 295.0),   # before activation
+            (date(2026, 7, 31), 280.0, 295.0),        # before activation
             (d0, 280.0, 295.0),                       # below: counts
             (d0 + timedelta(days=1), 294.9, 295.0),   # below: counts
             (d0 + timedelta(days=2), 295.0, 295.0),   # on the line: no
@@ -480,3 +480,50 @@ class TestSmallCapGateArmGates:
         row = next(a for a in out["arms"] if a["name"] == "shadow_small_cap_gate")
         m = _metric(row, "IWM closes below its 50MA")
         assert m["n"] == 2 and m["target"] == 10
+
+
+class TestGateDaysAreSessionCloses:
+    """2026-09-23: market_snapshots has a row every CALENDAR day (weekends and
+    holidays carry Friday's close forward) and today's row is a pre-close
+    value until the evening refresh. The "chop days" / "closes" gates must
+    count finished NYSE sessions only -- by Sep-23 the chop gates read 13 of
+    15 on 9 real days."""
+
+    def _chop_rows(self, db):
+        in_band = (505.0, 500.0)
+        for d in (date(2026, 9, 4),    # Fri: counts
+                  date(2026, 9, 5),    # Sat: carried-forward copy
+                  date(2026, 9, 6),    # Sun: carried-forward copy
+                  date(2026, 9, 7),    # Labor Day: market closed
+                  date(2026, 9, 8)):   # Tue: counts once the session closes
+            _snap(db, d, *in_band)
+
+    def test_weekends_and_holidays_do_not_count(self, db_session):
+        from backend.routes.admin import compute_experiment_gates
+        _arm(db_session, "shadow_chop_damper", activated_at=T0)
+        self._chop_rows(db_session)
+        after = datetime(2026, 9, 9, 15, tzinfo=timezone.utc)
+        row = compute_experiment_gates(db_session, now=after)["arms"][0]
+        assert _metric(row, "chop days")["n"] == 2
+
+    def test_todays_row_waits_for_the_close(self, db_session):
+        from backend.routes.admin import compute_experiment_gates
+        _arm(db_session, "shadow_chop_damper", activated_at=T0)
+        self._chop_rows(db_session)
+        pre_market = datetime(2026, 9, 8, 12, 29, tzinfo=timezone.utc)   # 8:29 ET
+        after_close = datetime(2026, 9, 8, 20, 30, tzinfo=timezone.utc)  # 16:30 ET
+        pre = compute_experiment_gates(db_session, now=pre_market)["arms"][0]
+        post = compute_experiment_gates(db_session, now=after_close)["arms"][0]
+        assert _metric(pre, "chop days")["n"] == 1
+        assert _metric(post, "chop days")["n"] == 2
+
+    def test_iwm_gate_skips_weekend_copies(self, db_session):
+        from backend.routes.admin import compute_experiment_gates
+        _arm(db_session, "shadow_small_cap_gate", parent="nostate_small_cap_gate")
+        for d in (date(2026, 9, 18), date(2026, 9, 19), date(2026, 9, 20)):  # Fri, Sat, Sun
+            db_session.add(MarketSnapshot(date=d, spy_price=500.0, spy_50_ma=480.0,
+                                          iwm_price=284.1, iwm_50_ma=295.1))
+        db_session.commit()
+        out = compute_experiment_gates(db_session, now=datetime(2026, 9, 22, tzinfo=timezone.utc))
+        row = next(a for a in out["arms"] if a["name"] == "shadow_small_cap_gate")
+        assert _metric(row, "IWM closes below its 50MA")["n"] == 1

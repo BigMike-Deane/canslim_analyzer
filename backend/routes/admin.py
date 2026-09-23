@@ -2019,7 +2019,7 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
     }
 
 
-def compute_experiment_gates(db: Session) -> dict:
+def compute_experiment_gates(db: Session, now: Optional[datetime] = None) -> dict:
     """Live progress of every pre-registered promotion gate. 100% read-only.
 
     Pure function over a Session (same seam as compute_cap_delta_diagnostics)
@@ -2033,17 +2033,38 @@ def compute_experiment_gates(db: Session) -> dict:
     from backend.database import MarketSnapshot
     from backend.milestones import SUFFICIENCY_LABEL
 
-    now_utc = datetime.now(timezone.utc)
+    now_utc = now or datetime.now(timezone.utc)   # injectable for tests
+
+    def _session_closes(start_dt, *filters):
+        """market_snapshots rows since start_dt that are real, finished NYSE
+        sessions. The snapshot job writes a row every CALENDAR day (dated in
+        UTC), so weekends and holidays carry the prior close forward under a
+        new date, and today's row holds a pre-close (even pre-market) value
+        until the evening refresh. Counting those inflated the chop-day gates
+        13 vs 9 real days by 2026-09-23. Every "closes/days" gate goes
+        through here so a pre-registered N means N trading-day closes."""
+        from zoneinfo import ZoneInfo
+        from backend.ai_trader import is_trading_day
+        et = ZoneInfo("America/New_York")
+        now_et = now_utc.astimezone(et)
+        today_closed = now_et.hour >= 16
+        snaps = db.query(MarketSnapshot).filter(
+            MarketSnapshot.date >= start_dt.date(), *filters).all()
+        return [
+            s for s in snaps
+            if is_trading_day(datetime(s.date.year, s.date.month, s.date.day, 12, tzinfo=et))
+            and (s.date < now_et.date() or (s.date == now_et.date() and today_closed))
+        ]
 
     def _chop_days_since(start_dt, band_pct=1.5):
         """Trading days where SPY sat 0..band_pct% above its 50MA."""
         if start_dt is None:
             return 0
-        snaps = db.query(MarketSnapshot).filter(
-            MarketSnapshot.date >= start_dt.date(),
+        snaps = _session_closes(
+            start_dt,
             MarketSnapshot.spy_price.isnot(None),
             MarketSnapshot.spy_50_ma.isnot(None),
-        ).all()
+        )
         n = 0
         for s in snaps:
             if s.spy_50_ma and s.spy_50_ma > 0:
@@ -2244,11 +2265,11 @@ def compute_experiment_gates(db: Session) -> dict:
         live tightens to the bearish one."""
         if start_dt is None:
             return 0
-        snaps = db.query(MarketSnapshot).filter(
-            MarketSnapshot.date >= start_dt.date(),
+        snaps = _session_closes(
+            start_dt,
             MarketSnapshot.spy_price.isnot(None),
             MarketSnapshot.spy_50_ma.isnot(None),
-        ).all()
+        )
         return sum(1 for s in snaps if s.spy_50_ma and s.spy_50_ma > 0
                    and -band_pct <= (s.spy_price - s.spy_50_ma) / s.spy_50_ma * 100 < 0)
 
@@ -2259,11 +2280,11 @@ def compute_experiment_gates(db: Session) -> dict:
         skipped -- the lever fails open on them too."""
         if start_dt is None:
             return 0
-        snaps = db.query(MarketSnapshot).filter(
-            MarketSnapshot.date >= start_dt.date(),
+        snaps = _session_closes(
+            start_dt,
             MarketSnapshot.iwm_price.isnot(None),
             MarketSnapshot.iwm_50_ma.isnot(None),
-        ).all()
+        )
         return sum(1 for s in snaps if s.iwm_50_ma > 0 and 0 < s.iwm_price < s.iwm_50_ma)
 
     ARM_GATES.update({

@@ -124,7 +124,7 @@ class TestAutoWriter:
     def test_first_chop_day_fires_once(self, db_session):
         _arm(db_session, "shadow_chop_damper", activated_at=T0)
         db_session.add(MarketSnapshot(
-            date=date(2026, 8, 2), spy_price=505.0, spy_50_ma=500.0))
+            date=date(2026, 8, 5), spy_price=505.0, spy_50_ma=500.0))  # a Wednesday
         db_session.commit()
         record_auto_milestones(db_session)
         assert _noncal_keys(db_session) == {"gate:shadow_chop_damper:chop days:first"}
