@@ -126,8 +126,23 @@ reported beside it for visibility but does not gate.
 ## E. If criterion 1 is still blocked after the readout
 
 ### OWNER DECISION E — pick the next move now, not after the result
-**OPEN 2026-09-23:** the owner asked whether E-a differs from the Aug-12
-pyramid-gate kill. Settle it with the retro check in E-a before choosing.
+**DECIDED 2026-09-23 (rule set BEFORE the check ran):** E-a goes ahead only if
+a retro check on live u1/u2 history shows that the buys/pyramids an industry
+≤30% cap would have blocked were, in aggregate, **net losers**. If they were
+net winners, it is the Aug-12 lesson again ("adds to leaders earn the money")
+and E-a is dropped in favour of E-c.
+
+**Retro check RESULT (2026-09-23, u1+u2, 157 buys/pyramids since March;
+FIFO lot outcomes, open lots marked to the latest close):** at ≤30% the cap
+blocks **6 adds (4%)**: **−$551, mean −4.2%, 1 of 6 winners**, against +5.7% mean
+and a 51% win rate for the 151 it allows. At 25% it blocks 7 (−$645) and at 40% it
+blocks 4 (−$231). Blocked pyramids: 2, both DSX, both losers. **Per the rule
+above, E-a goes ahead.** Caveats: n=6, all Aug-6 or later, 4 of 6 still open,
+first-order only (it ignores what the freed cash would have bought), u1 only.
+That is why this is an arm to test and not a switch to flip. Unlike the Aug-12
+regime gate (which in W4 blocked 20 trades into leaders), this cap binds
+rarely and, in this sample, has blocked no winning pyramid. Script:
+session scratchpad `indcap.py`; re-run it at the readout.
 - **(recommended) E-a: concentration arm.** Sep-21 (−356 bps, the worst trend
   day) was 50% of the book in two Marine Shipping names, both pyramided twice
   at +3–4% within days, plus 11% in oil E&P. The sector cap counts positions
@@ -146,7 +161,9 @@ pyramid-gate kill. Settle it with the retro check in E-a before choosing.
   do nothing.)
 
 ## F. Housekeeping the owner should resolve before Oct-21
-- **Two frameworks.** `real-money-gates.md` (Gates 0–3, Jul-22) and the
+- **DECIDED 2026-09-23: the go-live gate governs real money.** Gate 1's
+  trend-days-only starter survives only as fallback option E-b.
+- **Two frameworks (resolved above).** `real-money-gates.md` (Gates 0–3, Jul-22) and the
   go-live gate (5 criteria, Sep-9) overlap and differ: Gate 1 needs trend-day
   t ≥ 1.5 and ignores the chop mix; go-live needs the blended edge. State
   which governs, or how they compose.
