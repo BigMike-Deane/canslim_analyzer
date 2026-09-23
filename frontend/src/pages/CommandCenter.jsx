@@ -508,7 +508,10 @@ function CandidateRow({ c, portfolio }) {
     >
       <div className="flex items-center gap-2 min-w-0">
         <span className="text-xs font-semibold text-primary-400 w-11 shrink-0 group-hover:text-primary-300">{c.ticker}</span>
-        <span className="text-[10px] text-dark-500 truncate max-w-[60px] shrink-0">{c.sector?.split(' ')[0]}</span>
+        {/* Sector is desktop (lg+) only: on a phone it truncated to "Communi…"
+            and crowded the chips that carry the decision (Sep-22 mobile audit
+            #6); at 768px, in the two-column layout, it overflowed rows 8-14px. */}
+        <span className="hidden lg:inline text-[10px] text-dark-500 truncate max-w-[60px] shrink-0">{c.sector?.split(' ')[0]}</span>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <ScoreBadge score={c.score} ticker={c.ticker} size="xs" />
@@ -517,16 +520,19 @@ function CandidateRow({ c, portfolio }) {
             +{c.projected_growth?.toFixed(0)}%
           </span>
         )}
-        {sizingActionable ? (
+        {/* Sizing chip is tablet+ only; a phone shows the plain price (with
+            the under-$25 colour cue) in its place. Sep-22 mobile audit #6. */}
+        {sizingActionable && (
           <span
-            className="text-[10px] font-data shrink-0 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+            className="hidden sm:inline-block text-[10px] font-data shrink-0 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
             title={`Suggested: BUY ${sizing.shares} ${c.ticker} @ $${sizing.limitPrice.toFixed(2)} (stop $${sizing.stopPrice.toFixed(2)}, risk ${sizing.riskPct}% of portfolio)`}
           >
             {sizing.shares}sh@${sizing.limitPrice.toFixed(2)}
           </span>
-        ) : price != null && (
+        )}
+        {price != null && (
           <span
-            className={`text-[10px] font-data shrink-0 ${priceColor}`}
+            className={`text-[10px] font-data shrink-0 ${priceColor}${sizingActionable ? ' sm:hidden' : ''}`}
             title={price < 25 ? 'Under $25 — matches owner filter' : `$${price.toFixed(2)}`}
           >
             ${price.toFixed(2)}
@@ -648,16 +654,16 @@ export default function CommandCenter() {
     return (
       <div className="p-4 md:p-6">
         <div className="skeleton h-8 w-48 mb-5 rounded-lg" />
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-4">
-          <div className="md:col-span-3 space-y-3">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 lg:gap-4">
+          <div className="lg:col-span-3 space-y-3">
             <div className="skeleton h-40 rounded-xl" />
             <div className="skeleton h-28 rounded-xl" />
           </div>
-          <div className="md:col-span-5 space-y-3">
+          <div className="lg:col-span-5 space-y-3">
             <div className="skeleton h-64 rounded-xl" />
             <div className="skeleton h-64 rounded-xl" />
           </div>
-          <div className="md:col-span-4 space-y-3">
+          <div className="lg:col-span-4 space-y-3">
             <div className="skeleton h-48 rounded-xl" />
             <div className="skeleton h-36 rounded-xl" />
             <div className="skeleton h-36 rounded-xl" />
@@ -857,10 +863,10 @@ export default function CommandCenter() {
       {/* ═══════════════════════════════════════════
           DESKTOP LAYOUT: 3-column grid
           ═══════════════════════════════════════════ */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 lg:gap-4">
 
         {/* ═══ LEFT COLUMN (desktop only for market/portfolio/risk) ═══ */}
-        <div className="md:col-span-3 space-y-3">
+        <div className="lg:col-span-3 space-y-3">
           {/* Market Regime */}
           <Card as="section" aria-labelledby="cc-market-heading" variant="glass" animate stagger={1}>
             <SectionLabel id="cc-market-heading">Market</SectionLabel>
@@ -961,7 +967,7 @@ export default function CommandCenter() {
         </div>
 
         {/* ═══ CENTER COLUMN ═══ */}
-        <div className="md:col-span-5 space-y-3">
+        <div className="lg:col-span-5 space-y-3">
           {/* Positions */}
           <Card as="section" aria-labelledby="cc-positions-heading" variant="glass" animate stagger={2}>
             <CollapsibleSection
@@ -1034,7 +1040,7 @@ export default function CommandCenter() {
         </div>
 
         {/* ═══ RIGHT COLUMN ═══ */}
-        <div className="md:col-span-4 space-y-3">
+        <div className="lg:col-span-4 space-y-3">
           {/* Coiled Spring */}
           <div className="animate-fade-in-up opacity-0 stagger-3">
             <CoiledSpringSection cs={coiled_spring} />
