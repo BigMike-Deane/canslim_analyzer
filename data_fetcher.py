@@ -1785,6 +1785,75 @@ def calculate_index_m_score(price: float, ma_50: float, ma_200: float) -> float:
     return composite
 
 
+def _alpaca_index_closes(ticker: str, since) -> dict:
+    """date -> consolidated-tape close from Alpaca, covering `since`..today.
+    {} on any failure (no keys, HTTP error): the caller then drops the gap
+    exactly as before, but loudly."""
+    try:
+        from zoneinfo import ZoneInfo
+        from backend.alpaca_data import daily_bars, parse_ts
+        et = ZoneInfo("America/New_York")
+        days = (datetime.now(timezone.utc).date() - since).days + 7
+        bars = daily_bars(ticker, days=min(max(days, 10), 400)) or []
+        out = {}
+        for b in bars:
+            ts = parse_ts(b.get("t", ""))
+            if ts is not None and b.get("c") is not None:
+                out[ts.astimezone(et).date()] = float(b["c"])
+        return out
+    except Exception as e:
+        logger.debug(f"Alpaca gap fill {ticker} failed: {e}")
+        return {}
+
+
+def index_closes(ticker: str, chart_data: dict, gap_fill=None) -> tuple:
+    """Daily closes for an index, oldest first, with Yahoo's missing bars
+    repaired. Returns (closes, info).
+
+    Why (2026-09-23): Yahoo's daily chart returned close=None for 2026-09-22
+    on SPY/QQQ/DIA/IWM, in every range, well into the next session. The old
+    code dropped the None and read close_prices[-1] -- so the 7:29 AM CT
+    fetch reported MONDAY's close as "today", and every 50/200MA silently
+    averaged the wrong window. The live SPY gate, stop regime and small-cap
+    gate all read this. Now each close stays paired with its bar date, a
+    None is filled from Alpaca's SIP bar for that date, and anything still
+    unfillable is dropped with a warning and listed in info["missing_dates"].
+
+    info: price_date (ISO date of the last close used), filled_dates,
+    missing_dates. Chart data without timestamps (tests, old fixtures) takes
+    the legacy path: Nones dropped, info empty.
+    """
+    closes = chart_data.get("close_prices") or []
+    stamps = chart_data.get("timestamps") or []
+    if not stamps or len(stamps) != len(closes):
+        return [c for c in closes if c is not None], {}
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    dated = [(datetime.fromtimestamp(t, et).date(), c) for t, c in zip(stamps, closes)]
+    gaps = [d for d, c in dated if c is None]
+    fills = {}
+    if gaps:
+        fills = (gap_fill or _alpaca_index_closes)(ticker, min(gaps)) or {}
+    out, filled, missing, price_date = [], [], [], None
+    for d, c in dated:
+        if c is None:
+            c = fills.get(d)
+            (filled if c is not None else missing).append(d.isoformat())
+        if c is not None:
+            out.append(c)
+            price_date = d
+    if filled:
+        logger.info(f"Market {ticker}: filled Yahoo gap(s) {filled} from Alpaca")
+    if missing:
+        logger.warning(f"Market {ticker}: Yahoo bars {missing} have no close and "
+                       f"no Alpaca fill -- dropped; MAs span one day further back")
+    return out, {
+        "price_date": price_date.isoformat() if price_date else None,
+        "filled_dates": filled,
+        "missing_dates": missing,
+    }
+
+
 def fetch_market_direction_data() -> dict:
     """
     Fetch market direction data for SPY, QQQ, and DIA.
@@ -1826,7 +1895,8 @@ def fetch_market_direction_data() -> dict:
             chart_data = fetch_price_from_chart_api(ticker)
 
             if chart_data.get("close_prices") and len(chart_data["close_prices"]) >= 50:
-                close_prices = [p for p in chart_data["close_prices"] if p is not None]
+                close_prices, bar_info = index_closes(ticker, chart_data)
+                index_data.update(bar_info)
 
                 if len(close_prices) >= 200:
                     index_data["price"] = close_prices[-1]

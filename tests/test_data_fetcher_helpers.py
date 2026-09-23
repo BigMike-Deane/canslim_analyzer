@@ -1136,3 +1136,74 @@ class TestFmpGetRetryExhaustion:
         assert resp.status_code == 429
         # 3 attempts × 1 request/attempt = 3 total requests tracked.
         assert data_fetcher.get_rate_limit_stats()["total_requests"] == 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2026-09-23 — Yahoo daily bars with close=None (SPY/QQQ/DIA/IWM 2026-09-22)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIndexClosesGapRepair:
+    """Yahoo returned close=None for 2026-09-22 on every index, in every
+    range. Dropping it made the pre-market fetch report Monday's close as the
+    latest price and shifted every MA window. index_closes keeps closes
+    paired with bar dates and fills holes from Alpaca's SIP bars."""
+
+    @staticmethod
+    def _chart(days_and_closes):
+        from datetime import datetime as _dt, timezone as _tz
+        stamps = [int(_dt(d.year, d.month, d.day, 13, 30, tzinfo=_tz.utc).timestamp())
+                  for d, _ in days_and_closes]
+        return {"close_prices": [c for _, c in days_and_closes], "timestamps": stamps}
+
+    def test_premarket_hole_on_latest_bar_is_filled(self):
+        # The 7:29 AM CT shape: last bar is yesterday's, and it has no close.
+        chart = self._chart([(date(2026, 9, 18), 761.69), (date(2026, 9, 21), 773.50),
+                             (date(2026, 9, 22), None)])
+        closes, info = data_fetcher.index_closes(
+            "SPY", chart, gap_fill=lambda t, since: {date(2026, 9, 22): 773.38})
+        assert closes == [761.69, 773.50, 773.38]
+        assert info == {"price_date": "2026-09-22", "filled_dates": ["2026-09-22"],
+                        "missing_dates": []}
+
+    def test_gap_fill_asked_from_the_earliest_hole(self):
+        seen = {}
+        chart = self._chart([(date(2026, 9, 1), None), (date(2026, 9, 2), 1.0),
+                             (date(2026, 9, 3), None)])
+        data_fetcher.index_closes("IWM", chart,
+                                  gap_fill=lambda t, since: seen.update(t=t, since=since) or {})
+        assert seen == {"t": "IWM", "since": date(2026, 9, 1)}
+
+    def test_unfillable_hole_is_dropped_and_reported(self, caplog):
+        chart = self._chart([(date(2026, 9, 21), 773.50), (date(2026, 9, 22), None),
+                             (date(2026, 9, 23), 769.46)])
+        with caplog.at_level("WARNING"):
+            closes, info = data_fetcher.index_closes("SPY", chart, gap_fill=lambda t, s: {})
+        assert closes == [773.50, 769.46]
+        assert info["missing_dates"] == ["2026-09-22"]
+        assert info["price_date"] == "2026-09-23"
+        assert "2026-09-22" in caplog.text
+
+    def test_no_gap_never_calls_the_filler(self):
+        chart = self._chart([(date(2026, 9, 21), 1.0), (date(2026, 9, 22), 2.0)])
+        def _boom(*_a):
+            raise AssertionError("gap fill called with no gap")
+        closes, info = data_fetcher.index_closes("SPY", chart, gap_fill=_boom)
+        assert closes == [1.0, 2.0] and info["filled_dates"] == []
+
+    def test_chart_without_timestamps_keeps_legacy_behaviour(self):
+        closes, info = data_fetcher.index_closes("SPY", {"close_prices": [1.0, None, 2.0]})
+        assert closes == [1.0, 2.0] and info == {}
+
+    def test_direction_data_uses_the_filled_close(self, monkeypatch):
+        from datetime import timedelta as _td
+        days = [date(2026, 1, 1) + _td(days=i) for i in range(210)]
+        closes = [100.0] * 209 + [None]            # latest bar missing its close
+        chart = self._chart(list(zip(days, closes)))
+        monkeypatch.setattr(data_fetcher, "fetch_price_from_chart_api", lambda *_a, **_k: chart)
+        monkeypatch.setattr(data_fetcher, "_alpaca_index_closes",
+                            lambda t, since: {days[-1]: 110.0})
+        spy = data_fetcher.fetch_market_direction_data()["indexes"]["SPY"]
+        assert spy["price"] == 110.0
+        assert spy["price_date"] == days[-1].isoformat()
+        assert spy["filled_dates"] == [days[-1].isoformat()]
