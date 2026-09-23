@@ -852,7 +852,7 @@ function BuyFunnelCard() {
         <select
           value={key}
           onChange={e => { setKey(e.target.value); setShowAll(false) }}
-          className="bg-dark-850 border border-dark-700 rounded px-2 py-1 text-dark-200"
+          className="min-w-0 max-w-full bg-dark-850 border border-dark-700 rounded px-2 py-1 text-dark-200"
           aria-label="Strategy"
         >
           <option value="">latest cycle (any strategy)</option>
@@ -989,6 +989,13 @@ function ProgramLedgerCard() {
   const [newDetail, setNewDetail] = useState('')
   const [newCategory, setNewCategory] = useState('decision')
   const [saving, setSaving] = useState(false)
+  const [openDetails, setOpenDetails] = useState(() => new Set())
+  const toggleDetail = (id) => setOpenDetails(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
   const toast = useToast()
 
   if (loading && !data) {
@@ -1105,8 +1112,10 @@ function ProgramLedgerCard() {
 
       <div className="space-y-2.5">
         {visible.map(r => (
-          <div key={r.id} className="flex items-start gap-3 min-w-0 group">
-            <span className="shrink-0 w-24 pt-0.5 text-[10px] tabular-nums text-dark-400">
+          // Phone: date sits above the entry (the 96px date column squeezed the
+          // text into a narrow strip -- ten entries were ~3 screens at 430px).
+          <div key={r.id} className="flex flex-col sm:flex-row sm:items-start gap-0.5 sm:gap-3 min-w-0 group">
+            <span className="sm:shrink-0 sm:w-24 sm:pt-0.5 text-[10px] tabular-nums text-dark-400">
               {ledgerDate(r.occurred_at)}
             </span>
             <div className="min-w-0 flex-1">
@@ -1122,7 +1131,15 @@ function ProgramLedgerCard() {
                 )}
               </div>
               {r.detail && (
-                <p className="mt-0.5 text-[11px] leading-snug text-dark-400">{r.detail}</p>
+                // Clamped to 2 lines; tap to read the rest (auto rows carry
+                // paragraph-length details).
+                <p
+                  onClick={() => toggleDetail(r.id)}
+                  title={openDetails.has(r.id) ? 'Collapse' : 'Tap to read all'}
+                  className={`mt-0.5 text-[11px] leading-snug text-dark-400 cursor-pointer ${openDetails.has(r.id) ? '' : 'line-clamp-2'}`}
+                >
+                  {r.detail}
+                </p>
               )}
             </div>
             {r.source === 'owner' && (
