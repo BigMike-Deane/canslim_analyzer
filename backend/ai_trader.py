@@ -4401,7 +4401,10 @@ def take_portfolio_snapshot(db: Session, user_id: int = 1):
     # Create new snapshot (one per scan)
     snapshot = AIPortfolioSnapshot(
         timestamp=get_cst_now(),  # Use CST timezone
-        date=date.today(),
+        # ET session date, not the container's UTC date: under EST a
+        # 19:00-19:55 ET closing mark would otherwise land on the next day
+        # (a Friday close becoming a Saturday row).
+        date=datetime.now(EASTERN_TZ).date(),
         total_value=portfolio["total_value"],
         cash=portfolio["cash"],
         positions_value=portfolio["positions_value"],

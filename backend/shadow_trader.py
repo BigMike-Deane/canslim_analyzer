@@ -1369,6 +1369,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         # same strategy would live and inflated its returns in trending tape.
         # Compute the reserve ONCE and reuse it for sweep liquidation sizing and
         # the buy loop so both keep the same cushion live does.
+        from backend.trading_engine import min_position_value
+        _total_value = 0.0  # min_position_value falls back to its $100 floor
         try:
             from backend.ai_trader import (get_portfolio_value, get_market_regime,
                                            compute_dynamic_reserve_pct)
@@ -1435,6 +1437,11 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             spendable = remaining_cash - min_cash_reserve
             if value > spendable:
                 value = spendable  # clamp last fill to the reserve floor (mirrors live)
+            # Live skips a buy below min_position_value AFTER the clamp; without
+            # this the shadow bought $0.34-$27 runts that held one of its 8 slots
+            # for weeks (Sep-24 audit). Skipped buys don't consume a slot, as live.
+            if value < min_position_value(_total_value):
+                continue
             if value <= 0 or value / price <= 0:
                 continue
             remaining_slots -= 1

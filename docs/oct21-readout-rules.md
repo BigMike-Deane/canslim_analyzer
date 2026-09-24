@@ -203,3 +203,31 @@ beside the served one. Re-measure from `broker_mirror.summary` at the readout
   use the last intraday tick (≈14:50 CT), a ±10-minute mismatch vs SPY
   (noise, not bias). Sep-22's close is the 14:15 CT tick (restart).
 - Weekly emails use each arm's same-day comparator (`ae67e9b`).
+
+## Amendment 2026-09-24 — shadow execution parity (owner-approved)
+The Sep-24 audit found two ways every shadow arm traded unlike the live book.
+Both are fixed for ALL arms at once, effective the **2026-09-25** session
+(deployed after the Sep-24 close), so arm-vs-comparator deltas stay like for
+like. No arm clock is reset and no shadow history is edited.
+
+1. **Off-hours fills.** Live trades only while `is_market_open()`; the shadow
+   phase had no gate and ran after every overnight/weekend scan. 175 of ~470
+   shadow fills Aug-18..Sep-24 were off-hours, mostly at the day's close after
+   full-day volume had confirmed the signal (a price live cannot get).
+   Against the next session's open (the earliest price live could get), per-arm
+   advantage was uneven: chop_entry_bar **+$237**, chop_trim **+$246**,
+   baseline/cap50/chop_damper/sector_relief +$97, wide_trail +$91,
+   chop_spy +$40, cs_exempt −$61, cs_window14 −$77, ml_veto_off −$62
+   (pooled +2 bps, sd 112: noise overall, not per arm).
+2. **Runt buys.** Live skips a buy below `min_position_value` (max $100,
+   1.5% of book ≈ $375) after the cash clamp; the shadow loop did not, and
+   bought $0.34–$274 positions that held one of the 8 slots for weeks (on
+   Sep-24 every arm except chop_entry_bar, ml_veto_off and wide_trail had one
+   open; stop_band and its comparator vintage_sep16 hold the same $0.34 FMAO).
+   Existing runts exit through normal sell rules.
+
+**Readout rule added:** each arm's Δ vs its comparator is reported (a) as
+measured and (b) minus the arm's off-hours advantage over its comparator from
+item 1 (re-measured at the readout with the same next-open method). An arm
+"beats" only if it clears its bar under **both**. The post-Sep-25 window is
+reported beside the full window for information; it is too short to govern.

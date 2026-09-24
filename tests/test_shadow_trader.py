@@ -771,6 +771,28 @@ class TestBuyExecutionGuard:
         # Reserve preserved: spent <= 25000 - 1250, never drives cash to $0.
         assert sum(r.total_value for r in rows) == pytest.approx(23750.0)
 
+    def test_clamped_runt_below_min_position_is_skipped(self, db_session, monkeypatch):
+        # Sep-24 audit: live skips a buy whose post-clamp value is under
+        # min_position_value; the shadow loop bought $0.34-$27 runts that sat
+        # in one of its 8 slots for weeks. $23.5k fills, the remaining $250
+        # (after the 5% reserve) is under the $375 floor (1.5% of $25k).
+        from backend import shadow_trader
+        from backend import ai_trader
+        strategy = _make_strategy(db_session, name="guard_runt_test")
+
+        decisions = [self._buy_decision("R0", value=23500.0),
+                     self._buy_decision("R1", value=5000.0),
+                     self._buy_decision("R2", value=5000.0)]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: decisions)
+        monkeypatch.setattr(ai_trader, "compute_dynamic_reserve_pct", lambda *a, **kw: 0.05)
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).all()
+        assert [r.ticker for r in rows] == ["R0"]
+
     def test_growth_buy_persists_growth_score_for_rebuild(self, db_session, monkeypatch):
         # Audit #10 (Zeno-class): buy_signal_factors carries no growth_mode_score
         # key, so the FIFO rebuild default was always None → growth-mode shadow

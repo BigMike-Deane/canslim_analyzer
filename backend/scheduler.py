@@ -1635,17 +1635,25 @@ def run_continuous_scan(force: bool = False):
         # Wrapped so a shadow failure cannot break the live save path; sandbox
         # rolls back any incidental writes (only ShadowTrade rows survive).
         # See backend/shadow_trader.py + docs/shadow-paper-trading-design.md.
+        # Same market-hours gate as live Phase 3: before 2026-09-25 the arms
+        # also traded after every overnight/weekend scan, filling at the close
+        # (after full-day volume confirmed the signal) -- a price live can
+        # never get. ~37% of shadow fills Aug-18..Sep-24 were off-hours.
         shadow_db = None
         try:
+            from backend.ai_trader import is_market_open
             from backend.shadow_trader import run_shadow_strategies
-            shadow_db = SessionLocal()
-            shadow_summary = run_shadow_strategies(shadow_db, analysis_results)
-            if shadow_summary.get("strategies_run"):
-                logger.info(
-                    f"Shadow paper-trading: {shadow_summary['strategies_run']} stack(s), "
-                    f"{shadow_summary['total_shadow_trades']} virtual trade(s), "
-                    f"{shadow_summary['errors']} error(s)"
-                )
+            if not is_market_open():
+                logger.info("Market closed - skipping shadow paper-trading")
+            else:
+                shadow_db = SessionLocal()
+                shadow_summary = run_shadow_strategies(shadow_db, analysis_results)
+                if shadow_summary.get("strategies_run"):
+                    logger.info(
+                        f"Shadow paper-trading: {shadow_summary['strategies_run']} stack(s), "
+                        f"{shadow_summary['total_shadow_trades']} virtual trade(s), "
+                        f"{shadow_summary['errors']} error(s)"
+                    )
         except Exception as e:
             logger.error(f"Shadow paper-trading failed: {e}", exc_info=True)
         finally:
@@ -1797,8 +1805,8 @@ def _refresh_portfolio_prices():
 # close the same moment. A full scan runs ~79 of every 90 minutes and the mark
 # defers during one, so it retries every 5 minutes 16:05-19:55 ET: every scan
 # leaves an ~11-minute idle gap, which a 5-minute grid always hits. Each run is
-# one cheap query once the day is marked. The window stops before 20:00 ET,
-# where the container's UTC date (the snapshot's `date`) rolls over.
+# one cheap query once the day is marked. The snapshot's `date` is the ET
+# session date (take_portfolio_snapshot), so the window is DST-safe.
 _CLOSING_MARK_CRON_ET = {"hour": "16-19", "minute": "5-59/5"}
 
 
