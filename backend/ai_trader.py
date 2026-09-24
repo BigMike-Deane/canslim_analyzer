@@ -1241,10 +1241,47 @@ def get_portfolio_value(db: Session, user_id: int = 1) -> dict:
     }
 
 
+# ticker -> ET date of the last trade behind the most recent live quote
+# (2026-09-24). Every source reports it: FMP `timestamp`, Yahoo
+# `regularMarketTime`, Alpaca only answers for a print in the last 15 min.
+# A bought-out or delisted name keeps quoting its final trade forever, so
+# the price alone cannot tell a live stock from a dead one; this can.
+_quote_trade_dates: dict = {}
+
+
+def _epoch_et_date(value):
+    try:
+        return datetime.fromtimestamp(int(value), timezone.utc).astimezone(EASTERN_TZ).date()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def stale_quote_reason(ticker: str, now: datetime = None) -> str | None:
+    """Why the last fetch_live_price quote is too old to trade on, else None.
+
+    Stale = the name has not traded since the previous NYSE session (a live
+    stock that has not printed yet this morning still shows yesterday). A
+    quote with no known trade date -- a patched test, a failed fetch -- is
+    never called stale: this guard only blocks what it can prove."""
+    trade_date = _quote_trade_dates.get(ticker)
+    if trade_date is None:
+        return None
+    today = (now or datetime.now(EASTERN_TZ)).astimezone(EASTERN_TZ).date()
+    prev = today - timedelta(days=1)
+    while not is_trading_day(datetime(prev.year, prev.month, prev.day, 12, tzinfo=EASTERN_TZ)):
+        prev -= timedelta(days=1)
+    if trade_date < prev:
+        return f"stale quote: last trade {trade_date}"
+    return None
+
+
 def fetch_live_price(ticker: str) -> float | None:
-    """Fetch current/live price - tries FMP first, then Yahoo as fallback"""
+    """Fetch current/live price - tries FMP first, then Yahoo as fallback.
+    Records the quote's last-trade date for stale_quote_reason()."""
     import requests
     import os
+
+    _quote_trade_dates.pop(ticker, None)
 
     # Try FMP first (more reliable, you have API key)
     fmp_api_key = os.environ.get('FMP_API_KEY', '')
@@ -1262,6 +1299,7 @@ def fetch_live_price(ticker: str) -> float | None:
                         price = data[0].get("price")
                         if price:
                             logger.info(f"FMP live price for {ticker}: ${price}")
+                            _quote_trade_dates[ticker] = _epoch_et_date(data[0].get("timestamp"))
                             return float(price)
                     break  # Got 200 but no price data — don't retry
                 elif resp.status_code == 429:
@@ -1293,6 +1331,7 @@ def fetch_live_price(ticker: str) -> float | None:
                 price = meta.get("regularMarketPrice") or meta.get("previousClose")
                 if price:
                     logger.info(f"Yahoo live price for {ticker}: ${price}")
+                    _quote_trade_dates[ticker] = _epoch_et_date(meta.get("regularMarketTime"))
                     return float(price)
     except Exception as e:
         logger.warning(f"Yahoo price error for {ticker}: {e}")
@@ -1306,6 +1345,7 @@ def fetch_live_price(ticker: str) -> float | None:
     price = alpaca_data.last_trade_price(ticker)
     if price:
         logger.info(f"Alpaca IEX last-resort price for {ticker}: ${price}")
+        _quote_trade_dates[ticker] = datetime.now(EASTERN_TZ).date()  # printed <15 min ago
         return price
 
     return None
@@ -4041,6 +4081,10 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
                 # Fetch live price
                 live_price = fetch_live_price(position.ticker)
+                _stale = stale_quote_reason(position.ticker)
+                if _stale:
+                    logger.warning(f"{position.ticker}: {_stale} -- no pyramid into a name that stopped trading")
+                    continue
                 if not live_price:
                     live_price = position.current_price
                 if not live_price or live_price <= 0:
@@ -4207,6 +4251,13 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
                 # Fetch live price for this specific stock
                 live_price = fetch_live_price(stock.ticker)
+                _stale = stale_quote_reason(stock.ticker)
+                if _stale:
+                    # A bought-out/delisted name keeps quoting its last trade
+                    # and the scanner keeps rescoring it (Sep-24: ATAI, FBRX).
+                    logger.warning(f"{stock.ticker}: {_stale} -- not buying a name that stopped trading")
+                    _funnel.exec_skip(stock.ticker, _stale)
+                    continue
                 if live_price:
                     logger.info(f"{stock.ticker}: Live price ${live_price:.2f}")
                 else:

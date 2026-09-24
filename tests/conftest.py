@@ -125,14 +125,22 @@ def _shadow_quotes_offline():
     except Exception:
         yield
         return
+    # Only if already imported: importing ai_trader here for EVERY test changes
+    # import order and hung test_ml_pipeline's training (thread-pool deadlock).
+    import sys as _sys
+    _ai = _sys.modules.get("backend.ai_trader")
     original = _st._live_price_fn
     _st._live_price_fn = lambda ticker: None
     _st._live_price_cache.clear()
+    if _ai is not None:
+        _ai._quote_trade_dates.clear()   # trade dates left by other tests' mocked quotes
     try:
         yield
     finally:
         _st._live_price_fn = original
         _st._live_price_cache.clear()
+        if _ai is not None:
+            _ai._quote_trade_dates.clear()
 
 
 @pytest.fixture(autouse=True, scope="session")

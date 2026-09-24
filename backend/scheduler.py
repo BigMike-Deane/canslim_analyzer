@@ -2078,6 +2078,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start corporate action job: {e}")
 
+    # Parity monitor: arms must keep trading exactly as live would.
+    try:
+        start_parity_monitor_job()
+    except Exception as e:
+        logger.warning(f"Failed to start parity monitor job: {e}")
+
     # Program milestone ledger: daily gate-diff pass after US close
     try:
         start_milestone_job()
@@ -2842,6 +2848,26 @@ def start_corporate_actions_job():
     from threading import Thread
     Thread(target=run_corporate_actions_sweep, daemon=True).start()
     logger.info("Corporate action sweep scheduled (13:10 UTC weekdays)")
+
+
+def start_parity_monitor_job():
+    """Daily live-vs-shadow parity checks (backend.parity_monitor) at 22:05
+    UTC on weekdays -- after the close in both EDT and EST, once the day's
+    last fills (live's 16:00 cycle, closing-window arms) are in."""
+    from apscheduler.triggers.cron import CronTrigger
+    from backend.parity_monitor import run_parity_monitor
+
+    job_id = "parity_monitor"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    scheduler.add_job(
+        run_parity_monitor,
+        CronTrigger(day_of_week="mon-fri", hour=22, minute=5),
+        id=job_id,
+        name="Parity Monitor",
+        replace_existing=True,
+    )
+    logger.info("Parity monitor scheduled (22:05 UTC weekdays)")
 
 
 def start_milestone_job():

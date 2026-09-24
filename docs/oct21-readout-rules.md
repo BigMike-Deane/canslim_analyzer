@@ -255,3 +255,20 @@ the **2026-09-25** session for all arms at once; no clock resets.
    snapshots from Sep-11 restated (not a gate book). shadow_ml_veto_off's
    trajectory after Aug-20 was distorted by up to two dead slots and should be
    read with that caveat.
+
+## Amendment 2026-09-24 (c) — stale-quote guard, mark repair, parity monitor
+- **Stale-quote guard (live AND every arm, same code).** A buy or pyramid is
+  skipped when the quote's last trade predates the previous NYSE session: a
+  bought-out name keeps quoting its final trade and the scanner keeps scoring
+  it. Only blocks what it can prove (unknown trade date = allowed). Applies
+  to both sides at once, so arm-vs-live comparability is unchanged.
+- **Late-bar mark repair.** A daily equity mark written before one holding's
+  bar arrived carried that holding at the prior close permanently (found:
+  shadow_vintage_sep23, Sep-23). Marks for the last 5 sessions now wait for
+  every holding's close and are rewritten once it lands; older marks stand,
+  flagged unpriced.
+- **Parity monitor** (weekdays 22:05 UTC, read-only): alerts on off-hours
+  fills, arm buys under live's minimum, unpriced latest marks, negative arm
+  cash, and live cash that doesn't reconcile to its ledger. Before the readout,
+  confirm it has reported nothing since 2026-09-25 (or that each report was
+  explained).

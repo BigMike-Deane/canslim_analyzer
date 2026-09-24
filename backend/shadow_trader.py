@@ -102,12 +102,15 @@ _live_price_cache: dict = {}
 _live_price_fn = None
 
 
-def _live_price(ticker: str, fallback: float) -> float:
+def _live_quote(ticker: str, fallback: float) -> tuple:
+    """(price, stale_reason) -- live's fetch_live_price + stale_quote_reason,
+    so an arm skips a name that stopped trading exactly when live would."""
     import time as _time
+    from backend.ai_trader import stale_quote_reason
     now = _time.monotonic()
     hit = _live_price_cache.get(ticker)
     if hit is not None and now - hit[0] < _LIVE_PRICE_TTL_S:
-        px = hit[1]
+        px, stale = hit[1], hit[2]
     else:
         fn = _live_price_fn
         if fn is None:
@@ -117,8 +120,9 @@ def _live_price(ticker: str, fallback: float) -> float:
         except Exception as e:
             logger.warning(f"shadow live price for {ticker} failed: {e}")
             px = None
-        _live_price_cache[ticker] = (now, px)
-    return float(px) if px and px > 0 else fallback
+        stale = stale_quote_reason(ticker)
+        _live_price_cache[ticker] = (now, px, stale)
+    return (float(px) if px and px > 0 else fallback), stale
 
 
 def _circuit_breaker_state(shadow_session, strategy, sandbox) -> tuple:
@@ -1408,7 +1412,9 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 continue
             _cash = float(getattr(shadow_session._synthetic_config, "current_cash", 0) or 0)
             actual_value = min(float(pyramid.get("amount", 0) or 0), _cash * 0.5)
-            _price = _live_price(position.ticker, getattr(position, "current_price", None) or 0)
+            _price, _stale = _live_quote(position.ticker, getattr(position, "current_price", None) or 0)
+            if _stale:
+                continue
             if actual_value < 100 or _price <= 0 or _cash < actual_value:
                 continue
             shadow_session.emit_shadow_pyramid(
@@ -1518,7 +1524,10 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             value = float(buy.get("value", 0) or 0) if isinstance(buy, dict) else 0
             if not ticker or value <= 0:
                 continue
-            price = _live_price(ticker, getattr(stock, "current_price", None) or 0)
+            price, stale = _live_quote(ticker, getattr(stock, "current_price", None) or 0)
+            if stale:
+                _funnel.exec_skip(ticker, stale)
+                continue
             if price <= 0:
                 continue
             spendable = remaining_cash - min_cash_reserve

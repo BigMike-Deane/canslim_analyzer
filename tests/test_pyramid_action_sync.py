@@ -71,10 +71,11 @@ class TestPyramidActionInSource:
             "test needs updating if the structure changed."
         )
         idx = src.index(marker)
-        # Look at the next ~2k chars (the pyramid execution loop). Strip
+        # The pyramid execution loop runs to its db.commit() (a fixed
+        # 2k-char window broke when a guard was added, 2026-09-24). Strip
         # comments so the assertion isn't fooled by documentation that
         # mentions the old shape.
-        block_lines = src[idx : idx + 2000].splitlines()
+        block_lines = src[idx : src.index("db.commit()", idx)].splitlines()
         block_code = "\n".join(
             line for line in block_lines if not line.lstrip().startswith("#")
         )

@@ -136,6 +136,9 @@ def last_markable_day(now_utc: datetime) -> date:
     return today if (now_et.hour, now_et.minute) >= MARK_READY_ET else today - timedelta(days=1)
 
 
+REPRICE_SESSIONS = 5
+
+
 def fill_shadow_equity_marks(db, now_utc: datetime | None = None, price_fn=None) -> int:
     """Insert every missing ShadowEquityMark for active stacks, from each
     stack's first session through the last markable day. Idempotent: existing
@@ -145,6 +148,11 @@ def fill_shadow_equity_marks(db, now_utc: datetime | None = None, price_fn=None)
 
     now_utc = now_utc or datetime.now(timezone.utc)
     through = last_markable_day(now_utc)
+    # Recent sessions whose mark lacked a holding's close are re-tried until
+    # the bar lands (Sep-23: marked at 16:20 ET before one holding's bar was
+    # in, carried at the prior close for good). Past this window a missing
+    # close is real (halt, delisting) and the mark stands, flagged unpriced.
+    recent = set(session_days(through - timedelta(days=14), through)[-REPRICE_SESSIONS:])
     todo = []
     for s in db.query(ShadowStrategy).filter(ShadowStrategy.archived_at.is_(None)).all():
         act_utc = _naive_utc(s.activated_at)
@@ -152,19 +160,20 @@ def fill_shadow_equity_marks(db, now_utc: datetime | None = None, price_fn=None)
             continue
         act = act_utc.replace(tzinfo=timezone.utc).astimezone(ET)
         first = act.date() if act.hour < 16 else act.date() + timedelta(days=1)
-        have = {r.date for r in db.query(ShadowEquityMark.date).filter(
+        rows = {r.date: r for r in db.query(ShadowEquityMark).filter(
             ShadowEquityMark.shadow_strategy_id == s.id)}
+        have = {d for d, r in rows.items() if not (r.unpriced_positions and d in recent)}
         missing = [d for d in session_days(first, through) if d not in have]
         if missing:
             trades = db.query(ShadowTrade).filter(
                 ShadowTrade.shadow_strategy_id == s.id).order_by(ShadowTrade.executed_at).all()
-            todo.append((s, missing, trades))
+            todo.append((s, missing, trades, rows))
     if not todo:
         return 0
 
-    tickers = {t.ticker for _, _, trades in todo for t in trades if t.ticker}
+    tickers = {t.ticker for _, _, trades, _ in todo for t in trades if t.ticker}
     tickers.add("SPY")
-    start = min(m[0] for _, m, _ in todo) - timedelta(days=10)
+    start = min(m[0] for _, m, _, _ in todo) - timedelta(days=10)
     if price_fn is None:
         from backend.alpaca_data import daily_closes_raw
         price_fn = daily_closes_raw
@@ -177,13 +186,20 @@ def fill_shadow_equity_marks(db, now_utc: datetime | None = None, price_fn=None)
     # later pass rather than written permanently at the prior day's prices.
     have_feed = set((closes.get("SPY") or {}).keys())
     written = 0
-    for s, missing, trades in todo:
+    for s, missing, trades, rows in todo:
         start_cash = float(s.starting_value or 25000.0)
         for d in missing:
             if d not in have_feed:
                 continue
             m = mark_for_day(trades, start_cash, d, closes)
-            db.add(ShadowEquityMark(shadow_strategy_id=s.id, date=d, **m))
+            if m["unpriced_positions"] and d in recent:
+                continue                      # a holding's bar isn't in yet
+            row = rows.get(d)
+            if row is None:
+                db.add(ShadowEquityMark(shadow_strategy_id=s.id, date=d, **m))
+            else:
+                for k, v in m.items():
+                    setattr(row, k, v)
             written += 1
         db.commit()
     logger.info(f"Shadow equity marks: wrote {written} rows for {len(todo)} stacks through {through}")

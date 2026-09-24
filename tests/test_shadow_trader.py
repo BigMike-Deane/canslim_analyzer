@@ -1182,3 +1182,17 @@ class TestLiveExecutionParitySep24:
             ShadowTrade.shadow_strategy_id == strategy.id).count() == 1
         db_session.expire_all()
         assert db_session.get(ShadowStrategy, strategy.id).peak_equity == pytest.approx(26000.0)
+
+    def test_stale_quote_is_not_bought(self, db_session, monkeypatch):
+        from datetime import date as _date
+        from backend import shadow_trader, ai_trader
+        strategy = _make_strategy(db_session, name="parity_stale")
+        self._patch(monkeypatch, [self._buy("DEADX", price=7.35), self._buy("LIVEX")])
+        shadow_trader._live_price_fn = lambda t: 7.35
+        ai_trader._quote_trade_dates["DEADX"] = _date(2020, 1, 2)
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).all()
+        assert [r.ticker for r in rows] == ["LIVEX"]

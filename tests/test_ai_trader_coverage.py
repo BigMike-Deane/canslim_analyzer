@@ -3759,6 +3759,37 @@ class TestRunAITradingCycle:
         cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
         assert cfg.current_cash == pytest.approx(15000.0)
 
+    def test_stale_quote_skips_buy(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """2026-09-24: a bought-out name keeps quoting its last trade (ATAI
+        froze at $7.35 after its Sep-11 cash merger) and the scanner keeps
+        rescoring it. A quote whose last trade predates the previous session
+        is not bought, however good the score."""
+        from datetime import date as _date
+        import backend.ai_trader as ai_trader
+
+        _seed_config(db_session, current_cash=20000.0,
+                     peak_portfolio_value=20000.0, starting_cash=20000.0)
+        _seed_stock(db_session, "DEADX", canslim_score=80.0, current_price=7.35)
+
+        def fake_buys(db, ftd_penalty_active=False, heat_penalty_active=False, user_id=1, funnel=None):
+            s = db.query(Stock).filter_by(ticker="DEADX").first()
+            return [{"stock": s, "reason": "Strong CANSLIM", "value": 5000.0,
+                     "shares": 100.0, "is_growth_stock": False, "signal_factors": {}}]
+
+        def frozen_quote(ticker):
+            ai_trader._quote_trade_dates[ticker] = _date(2020, 1, 2)
+            return 7.35
+        monkeypatch.setattr(ai_trader, "evaluate_buys", fake_buys)
+        monkeypatch.setattr(ai_trader, "fetch_live_price", frozen_quote)
+
+        result = ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        assert result["buys_executed"] == []
+        assert db_session.query(AIPortfolioPosition).filter_by(ticker="DEADX").count() == 0
+
     def test_buy_throttle_zero_limit_blocks_all_buys(
         self, db_session, reset_cycle_state, silence_cycle_seams,
         disable_atr_http, disable_historical_data, monkeypatch,

@@ -8,7 +8,7 @@ fill job's idempotency / readiness / feed guards, and the regime split.
 
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -174,3 +174,54 @@ class TestRegimeExcessVs:
         out = SE.regime_excess_vs(db, arm.id, comp.id)
         assert out["chop"] == {"n_days": 1, "mean_excess_bps": 100.0}    # arm +1%, comp 0
         assert out["trend"] == {"n_days": 1, "mean_excess_bps": -202.0}  # arm 0, comp +2.02%
+
+
+class TestLateHoldingBar:
+    """2026-09-23: a mark written before one holding's bar landed carried
+    that holding at the prior close for good. Recent sessions now wait for
+    every holding's close, and an existing recent unpriced mark is repaired;
+    older sessions keep the mark, flagged unpriced (a real halt/delisting)."""
+    FULL = {"AAA": {date(2026, 9, d): 100.0 + d for d in (21, 22, 23)},
+            "SPY": {date(2026, 9, d): 700.0 for d in (21, 22, 23)}}
+    AFTER = datetime(2026, 9, 23, 20, 30, tzinfo=timezone.utc)
+
+    def _late(self):
+        late = {k: dict(v) for k, v in self.FULL.items()}
+        del late["AAA"][date(2026, 9, 23)]
+        return late
+
+    def _setup(self, db):
+        s = _strategy(db)
+        _trade(db, s, "AAA", "BUY", 10, 100.0, datetime(2026, 9, 21, 14))
+        return s
+
+    def _mark(self, db, s, d):
+        return db.query(ShadowEquityMark).filter(
+            ShadowEquityMark.shadow_strategy_id == s.id, ShadowEquityMark.date == d).first()
+
+    def test_recent_session_waits_for_every_holding(self, db):
+        s = self._setup(db)
+        SE.fill_shadow_equity_marks(db, self.AFTER, lambda t, st: self._late())
+        assert self._mark(db, s, date(2026, 9, 23)) is None
+        SE.fill_shadow_equity_marks(db, self.AFTER, lambda t, st: self.FULL)
+        m = self._mark(db, s, date(2026, 9, 23))
+        assert m.unpriced_positions == 0 and m.positions_value == pytest.approx(10 * 123.0)
+
+    def test_existing_recent_unpriced_mark_is_repaired(self, db):
+        s = self._setup(db)
+        db.add(ShadowEquityMark(shadow_strategy_id=s.id, date=date(2026, 9, 23), equity=1.0,
+                                cash=0.0, positions_value=1.0, sweep_value=0.0,
+                                n_positions=1, unpriced_positions=1))
+        db.commit()
+        SE.fill_shadow_equity_marks(db, self.AFTER, lambda t, st: self.FULL)
+        db.expire_all()
+        m = self._mark(db, s, date(2026, 9, 23))
+        assert m.unpriced_positions == 0 and m.positions_value == pytest.approx(1230.0)
+
+    def test_old_session_keeps_its_mark_flagged(self, db):
+        s = self._setup(db)
+        later = datetime(2026, 10, 2, 20, 30, tzinfo=timezone.utc)   # 7 sessions on
+        closes = {"AAA": {date(2026, 9, 21): 121.0},
+                  "SPY": {date(2026, 9, 21) + timedelta(days=i): 700.0 for i in range(12)}}
+        SE.fill_shadow_equity_marks(db, later, lambda t, st: closes)
+        assert self._mark(db, s, date(2026, 9, 22)).unpriced_positions == 1
