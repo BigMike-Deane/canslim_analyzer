@@ -203,3 +203,36 @@ def test_no_asset_list_means_no_action(db):
     s = ca.run_sweep(db, active=set(), actions=ca.normalize_actions(ATAI),
                      quote_fn=_quote({}), today=TODAY, universe=False)
     assert s["error"] and s["closed"] == []
+
+
+def test_dead_marking_survives_the_scanner_inserting_the_same_ticker(db):
+    """Sep-24 deploy: the boot scan marked FEYE in delisted_tickers while the
+    sweep's quote loop ran; the sweep's insert then hit the unique key."""
+    db.add(Stock(ticker="DEAD"))
+    db.commit()
+
+    def racing_quote(tk):
+        other = SessionLocal()
+        other.add(DelistedTicker(ticker=tk, reason="no_price_data",
+                                 source="get_stock_data_async", failure_count=1))
+        other.commit()
+        other.close()
+        return _quote({tk: 30})(tk)
+
+    marked = ca.mark_dead_universe(db, ACTIVE, held=set(), quote_fn=racing_quote,
+                                   today=TODAY, pause_s=0)
+    assert marked == ["DEAD"]
+    db.expire_all()
+    row = db.query(DelistedTicker).filter(DelistedTicker.ticker == "DEAD").one()
+    assert row.failure_count >= 3 and row.reason.startswith("frozen quote")
+
+
+def test_a_dead_marking_failure_does_not_hide_the_closes(db, monkeypatch):
+    db.add(AIPortfolioConfig(user_id=3, starting_cash=25000.0, current_cash=0.0, is_active=True))
+    db.add(AIPortfolioPosition(user_id=3, ticker="ATAI", shares=10.0, cost_basis=7.0,
+                               current_price=7.35, purchase_date=datetime(2026, 8, 20)))
+    db.commit()
+    monkeypatch.setattr(ca, "mark_dead_universe", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    s = ca.run_sweep(db, active=ACTIVE, actions=ca.normalize_actions(ATAI),
+                     quote_fn=_quote({}), today=TODAY, universe=True)
+    assert [c["ticker"] for c in s["closed"]] == ["ATAI"] and "boom" in s["error"]

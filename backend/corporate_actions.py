@@ -291,7 +291,19 @@ def mark_dead_universe(db, active: set, held: set, quote_fn=fmp_quote,
         last = quote_trade_date(q)
         if q and last and (today - last).days < FROZEN_QUOTE_DAYS:
             continue                          # still trades somewhere Alpaca doesn't list
-        why = f"frozen quote (last trade {last or 'none'}), not listed by Alpaca"
+        _upsert_dead(db, tk, f"frozen quote (last trade {last or 'none'}), not listed by Alpaca", now)
+        marked.append(tk)
+    return marked
+
+
+def _upsert_dead(db, tk: str, why: str, now: datetime) -> None:
+    """One committed row per ticker. The scanner marks tickers in the same
+    table while this loop runs (Sep-24 deploy: it inserted FEYE mid-loop and
+    the batched insert died on the unique key), so a collision re-reads the
+    scanner's row and updates it instead."""
+    from sqlalchemy.exc import IntegrityError
+    from backend.database import DelistedTicker
+    for attempt in range(2):
         row = db.query(DelistedTicker).filter(DelistedTicker.ticker == tk).first()
         if row is None:
             row = DelistedTicker(ticker=tk, source="corporate_actions")
@@ -300,8 +312,13 @@ def mark_dead_universe(db, active: set, held: set, quote_fn=fmp_quote,
         row.failure_count = max(3, row.failure_count or 0)
         row.last_failed_at = now
         row.recheck_after = now + timedelta(days=DEAD_RECHECK_DAYS)
-        marked.append(tk)
-    return marked
+        try:
+            db.commit()
+            return
+        except IntegrityError:
+            db.rollback()
+            if attempt:
+                raise
 
 
 # ── Sweep ──────────────────────────────────────────────────────────────────
@@ -364,8 +381,13 @@ def run_sweep(db, *, active=None, actions=None, quote_fn=fmp_quote,
             summary["stale_held"].append(f"{tk}: last trade {last} ({len(silent)} sessions)")
 
     if universe:
-        summary["dead_marked"] = mark_dead_universe(db, active, held, quote_fn=quote_fn, today=today)
-        db.commit()
+        # Isolated: a failure here must not hide the closes committed above.
+        try:
+            summary["dead_marked"] = mark_dead_universe(db, active, held, quote_fn=quote_fn, today=today)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Dead-ticker marking failed: {e}", exc_info=True)
+            summary["error"] = f"dead-ticker marking: {e}"
     return summary
 
 
