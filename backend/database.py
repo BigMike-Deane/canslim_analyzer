@@ -298,6 +298,8 @@ def run_migrations():
         ("broker_mirror_orders", "cost_basis", "FLOAT"),
         ("broker_mirror_orders", "linked_order_id", "INTEGER"),
         ("broker_mirror_orders", "pairing", "VARCHAR"),
+        # Shadow drawdown circuit breaker (2026-09-24): live-parity equity peak
+        ("shadow_strategies", "peak_equity", "FLOAT"),
     ]
 
     # Build a cache of existing columns per table
@@ -1897,6 +1899,10 @@ class ShadowStrategy(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     activated_at = Column(DateTime)
     archived_at = Column(DateTime, index=True)
+    # High-water equity for the live drawdown circuit breaker (ai_trader
+    # drawdown_protection), ratcheted every shadow run like
+    # AIPortfolioConfig.peak_portfolio_value. NULL = starting_value.
+    peak_equity = Column(Float)
 
 
 class BuyFunnelRow(Base):

@@ -231,3 +231,27 @@ measured and (b) minus the arm's off-hours advantage over its comparator from
 item 1 (re-measured at the readout with the same next-open method). An arm
 "beats" only if it clears its bar under **both**. The post-Sep-25 window is
 reported beside the full window for information; it is too short to govern.
+
+## Amendment 2026-09-24 (b) — circuit breaker, fill quotes, corporate actions (owner-approved)
+Same principle as (a): arms execute exactly as the live book would. Effective
+the **2026-09-25** session for all arms at once; no clock resets.
+
+1. **Drawdown circuit breaker.** Live halts new buys and pyramids at 15%
+   below its equity peak and liquidates at 25% (`ai_trader.drawdown_protection`);
+   arms had no breaker. Each arm now keeps a peak (`shadow_strategies.peak_equity`,
+   seeded from its best daily mark) and applies live's rule after its sells.
+   On Sep-24 shadow_chop_spy was 10.4% below its peak.
+2. **Fill quotes.** Live fetches a fresh quote before every buy and pyramid;
+   arms filled at the scan price. Measured against the 1-minute tape at the
+   fill minute: live buys median 4 bps off, arm buys 66 bps (p90 197), arm
+   pyramids 43; signed means ≈ −7 bps (noise, not bias). Arms now use the same
+   fetch (`fetch_live_price`), one quote per name per tick shared by all arms.
+3. **Corporate actions.** Cash buyouts were never booked: positions froze at
+   the last trade and held a slot for good. A daily sweep now closes them at
+   the deal cash on the effective date (a CVR counts as $0) for live books and
+   arms alike. Retroactive corrections applied at the Sep-24 deploy:
+   shadow_ml_veto_off ATAI (eff Sep-11, $6.75) and FBRX (eff Aug-27, $77),
+   its equity marks rebuilt from those dates; live u3 ATAI likewise, with its
+   snapshots from Sep-11 restated (not a gate book). shadow_ml_veto_off's
+   trajectory after Aug-20 was distorted by up to two dead slots and should be
+   read with that caveat.

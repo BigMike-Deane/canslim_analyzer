@@ -113,6 +113,28 @@ def _always_a_trading_day():
             _sch._non_trading_day_skip_reason = original
 
 
+@pytest.fixture(autouse=True)
+def _shadow_quotes_offline():
+    """Shadow buys/pyramids fetch a live quote (shadow_trader._live_price,
+    2026-09-24 parity fix). Tests must never hit FMP/Yahoo: the stub returns
+    None, so fills fall back to the cached price the tests set up. Saved and
+    restored by hand for the same ordering reason as _always_a_trading_day.
+    A test that wants a quote sets shadow_trader._live_price_fn itself."""
+    try:
+        from backend import shadow_trader as _st
+    except Exception:
+        yield
+        return
+    original = _st._live_price_fn
+    _st._live_price_fn = lambda ticker: None
+    _st._live_price_cache.clear()
+    try:
+        yield
+    finally:
+        _st._live_price_fn = original
+        _st._live_price_cache.clear()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _disable_slowapi_in_tests():
     """Globally disable slowapi for the test session.

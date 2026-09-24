@@ -2072,6 +2072,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start closing mark job: {e}")
 
+    # Corporate actions: cash buyouts / renames the price feed never reports.
+    try:
+        start_corporate_actions_job()
+    except Exception as e:
+        logger.warning(f"Failed to start corporate action job: {e}")
+
     # Program milestone ledger: daily gate-diff pass after US close
     try:
         start_milestone_job()
@@ -2814,6 +2820,28 @@ def start_shadow_sync_job():
         replace_existing=True,
     )
     logger.info("Shadow profile sync job scheduled (13:05 UTC daily)")
+
+
+def start_corporate_actions_job():
+    """Daily corporate-action sweep (backend.corporate_actions), 13:10 UTC on
+    weekdays -- before the US open, after Alpaca publishes overnight actions.
+    Also one pass at boot so a deploy settles anything already effective."""
+    from apscheduler.triggers.cron import CronTrigger
+    from backend.corporate_actions import run_corporate_actions_sweep
+
+    job_id = "corporate_actions"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    scheduler.add_job(
+        run_corporate_actions_sweep,
+        CronTrigger(day_of_week="mon-fri", hour=13, minute=10),
+        id=job_id,
+        name="Corporate Action Sweep",
+        replace_existing=True,
+    )
+    from threading import Thread
+    Thread(target=run_corporate_actions_sweep, daemon=True).start()
+    logger.info("Corporate action sweep scheduled (13:10 UTC weekdays)")
 
 
 def start_milestone_job():

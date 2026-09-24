@@ -59,7 +59,7 @@ from backend.shadow_trader import (
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
-from backend.database import ShadowPositionPeak
+from backend.database import ShadowPositionPeak, ShadowEquityMark
 
 
 @pytest.fixture
@@ -68,6 +68,7 @@ def db_session():
     db = SessionLocal()
     # Clean shadow tables — they accumulate across tests if not cleared.
     db.query(ShadowPositionPeak).delete()
+    db.query(ShadowEquityMark).delete()
     db.query(ShadowTrade).delete()
     db.query(ShadowStrategy).delete()
     db.query(AIPortfolioTrade).delete()
@@ -79,6 +80,7 @@ def db_session():
         yield db
     finally:
         db.query(ShadowPositionPeak).delete()
+        db.query(ShadowEquityMark).delete()
         db.query(ShadowTrade).delete()
         db.query(ShadowStrategy).delete()
         db.query(AIPortfolioTrade).delete()
@@ -1083,3 +1085,100 @@ class TestSplitAdjustment:
         # Pre-split persisted peak 91 must come out as 45.5, so trailing
         # stops don't see a phantom -55% drop from peak.
         assert abs(pos.peak_price - 45.5) < 1e-6
+
+
+class TestLiveExecutionParitySep24:
+    """2026-09-24 audit: arms must execute as live would. Live runs the
+    drawdown circuit breaker after sells (halt new buys/pyramids at 15%,
+    liquidate at 25%) and fills buys at a freshly fetched quote; the shadow
+    loop did neither."""
+
+    @staticmethod
+    def _buy(ticker, value=2000.0, price=50.0):
+        stock = SimpleNamespace(ticker=ticker, current_price=price, canslim_score=80.0)
+        return {"stock": stock, "value": value, "reason": "test buy",
+                "signal_factors": None, "is_growth_stock": False}
+
+    def _patch(self, monkeypatch, buys):
+        from backend import ai_trader
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_pyramids", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: buys)
+        monkeypatch.setattr(ai_trader, "compute_dynamic_reserve_pct", lambda *a, **kw: 0.05)
+
+    def test_buy_fills_at_fetched_quote_not_scan_price(self, db_session, monkeypatch):
+        from backend import shadow_trader
+        strategy = _make_strategy(db_session, name="parity_quote")
+        self._patch(monkeypatch, [self._buy("QQ", price=50.0)])
+        shadow_trader._live_price_fn = lambda t: 55.0
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        row = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).one()
+        assert row.price == pytest.approx(55.0)
+        assert row.total_value == pytest.approx(2000.0)
+
+    def test_drawdown_past_halt_blocks_buys(self, db_session, monkeypatch):
+        from backend import shadow_trader
+        strategy = _make_strategy(db_session, name="parity_halt")
+        strategy.peak_equity = 30000.0     # $25k cash now -> 16.7% drawdown
+        db_session.commit()
+        self._patch(monkeypatch, [self._buy("HH")])
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        assert db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).count() == 0
+
+    def test_peak_seeds_from_best_daily_mark(self, db_session, monkeypatch):
+        from datetime import date as _date
+        from backend import shadow_trader
+        from backend.database import ShadowEquityMark
+        strategy = _make_strategy(db_session, name="parity_seed")
+        db_session.add(ShadowEquityMark(
+            shadow_strategy_id=strategy.id, date=_date(2026, 9, 1), equity=30000.0,
+            cash=30000.0, positions_value=0.0, sweep_value=0.0, n_positions=0,
+            unpriced_positions=0))
+        db_session.commit()
+        self._patch(monkeypatch, [self._buy("SS")])
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        assert db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).count() == 0
+        db_session.expire_all()
+        assert db_session.get(ShadowStrategy, strategy.id).peak_equity == pytest.approx(30000.0)
+
+    def test_drawdown_past_liquidate_sells_everything(self, db_session, monkeypatch):
+        from backend import shadow_trader
+        strategy = _make_strategy(db_session, name="parity_liq")
+        _add_shadow_trade(db_session, strategy.id, "LQ", "BUY", 100.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=5))
+        strategy.peak_equity = 27000.0     # $15k cash + 100 x $50 = $20k -> 25.9%
+        db_session.commit()
+        self._patch(monkeypatch, [self._buy("NEW")])
+
+        shadow_trader._run_one_strategy(
+            strategy.id, [{"ticker": "LQ", "current_price": 50.0, "total_score": 80}])
+
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id,
+            ShadowTrade.executed_at > datetime.now(timezone.utc) - timedelta(days=1)).all()
+        assert [(r.ticker, r.action) for r in rows] == [("LQ", "SELL")]
+        assert rows[0].price == pytest.approx(50.0)
+        assert rows[0].reason.startswith("CIRCUIT BREAKER")
+
+    def test_shallow_drawdown_trades_and_ratchets_peak(self, db_session, monkeypatch):
+        from backend import shadow_trader
+        strategy = _make_strategy(db_session, name="parity_ok")
+        strategy.peak_equity = 26000.0     # 3.8% drawdown: below every threshold
+        db_session.commit()
+        self._patch(monkeypatch, [self._buy("OK")])
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        assert db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).count() == 1
+        db_session.expire_all()
+        assert db_session.get(ShadowStrategy, strategy.id).peak_equity == pytest.approx(26000.0)

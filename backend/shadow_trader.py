@@ -91,6 +91,70 @@ logger = logging.getLogger(__name__)
 # skips the tick if a scan run is mid-flight.
 _shadow_run_lock = threading.Lock()
 
+# Fill-price parity (2026-09-24). Live fetches a fresh quote before every buy
+# and pyramid (ai_trader.fetch_live_price); shadows filled at the scan's cached
+# price, up to ~80 minutes old -- median 66 bps off the market at the fill
+# minute vs live's 4. Arms buying the same name in one tick share one quote.
+# A failed fetch is cached too (15 arms must not retry it 15 times) and falls
+# back to the cached price, exactly as live does. Tests stub _live_price_fn.
+_LIVE_PRICE_TTL_S = 120
+_live_price_cache: dict = {}
+_live_price_fn = None
+
+
+def _live_price(ticker: str, fallback: float) -> float:
+    import time as _time
+    now = _time.monotonic()
+    hit = _live_price_cache.get(ticker)
+    if hit is not None and now - hit[0] < _LIVE_PRICE_TTL_S:
+        px = hit[1]
+    else:
+        fn = _live_price_fn
+        if fn is None:
+            from backend.ai_trader import fetch_live_price as fn
+        try:
+            px = fn(ticker)
+        except Exception as e:
+            logger.warning(f"shadow live price for {ticker} failed: {e}")
+            px = None
+        _live_price_cache[ticker] = (now, px)
+    return float(px) if px and px > 0 else fallback
+
+
+def _circuit_breaker_state(shadow_session, strategy, sandbox) -> tuple:
+    """Live's drawdown circuit breaker (run_ai_trading_cycle, after sells):
+    returns (state, drawdown_pct, peak) with state 'ok' | 'halt' | 'liquidate'.
+    The peak ratchets like AIPortfolioConfig.peak_portfolio_value; a stack
+    with no stored peak seeds it from its best daily mark so history counts.
+    Unmodeled until 2026-09-24, when shadow_chop_spy sat 10.4% off its peak
+    with live's halt at 15%."""
+    from backend.ai_trader import get_portfolio_value
+    from backend.database import ShadowEquityMark
+    from config_loader import config as yaml_config
+    from sqlalchemy import func
+
+    pv = get_portfolio_value(shadow_session, user_id=SHADOW_USER_ID) or {}
+    total = float(pv.get("total_value") or 0)
+    peak = strategy.peak_equity
+    if peak is None:
+        best = sandbox.query(func.max(ShadowEquityMark.equity)).filter(
+            ShadowEquityMark.shadow_strategy_id == strategy.id).scalar()
+        peak = max(float(strategy.starting_value or 25000.0), float(best or 0))
+    if total <= 0:
+        # A failed valuation must never read as a 100% drawdown.
+        return "ok", 0.0, float(peak)
+    peak = max(float(peak), total)
+    dd = (peak - total) / peak * 100 if peak > 0 else 0.0
+    cfg = yaml_config.get('ai_trader.drawdown_protection', {}) or {}
+    n_pos = len(shadow_session._synthetic_positions or [])
+    if dd >= cfg.get('liquidate_all_pct', 25.0) and n_pos > 0:
+        # Live halts instead of liquidating when the SPY sweep is unpriced
+        # (total_value understated); same here.
+        return ("liquidate" if pv.get("sweep_priced", True) else "halt"), dd, peak
+    if dd >= cfg.get('halt_new_buys_pct', 15.0):
+        return "halt", dd, peak
+    return "ok", dd, peak
+
 
 def _as_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
     """Normalize aware/naive datetimes for comparison. ShadowTrade.executed_at
@@ -1297,6 +1361,26 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
 
         _emit_sell_decisions(shadow_session, sells)
 
+        # ── Drawdown circuit breaker (live order: after sells, before pyramids)
+        # liquidate: sell everything and end the cycle (live returns here);
+        # halt: no pyramids, no buys; the end-of-cycle SPY re-sweep still runs.
+        try:
+            cb_state, cb_dd, cb_peak = _circuit_breaker_state(shadow_session, strategy, sandbox)
+        except Exception as e:
+            logger.error(f"shadow circuit breaker check failed for {strategy.name}: {e}", exc_info=True)
+            cb_state, cb_dd, cb_peak = "ok", 0.0, None
+        if cb_state == "liquidate":
+            logger.warning(f"shadow[{strategy.name}]: CIRCUIT BREAKER {cb_dd:.1f}% drawdown -- liquidating")
+            for position in list(shadow_session._synthetic_positions or []):
+                if (position.current_price or 0) > 0 and (position.shares or 0) > 0:
+                    shadow_session.emit_shadow_sell(
+                        position=position, shares=position.shares,
+                        price=position.current_price,
+                        reason=f"CIRCUIT BREAKER: Portfolio drawdown {cb_dd:.1f}%")
+        elif cb_state == "halt":
+            logger.warning(f"shadow[{strategy.name}]: CIRCUIT BREAKER {cb_dd:.1f}% drawdown -- no pyramids or buys")
+            _funnel.note("circuit_breaker", f"{cb_dd:.1f}% drawdown")
+
         # ── PYRAMID phase (2026-08-18, Step 3+) ──────────────────────────────
         # Between sells and buys, matching live cycle order (run_ai_trading_
         # cycle: sells → pyramids → buys → sweep). Reuses the LIVE
@@ -1308,7 +1392,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         # its docstring for why the live query can't serve it here. The
         # drawdown circuit breaker stays unmodeled (docstring Limitations).
         try:
-            pyramids = evaluate_pyramids(shadow_session, user_id=SHADOW_USER_ID)
+            pyramids = (evaluate_pyramids(shadow_session, user_id=SHADOW_USER_ID)
+                        if cb_state == "ok" else [])
         except Exception as e:
             logger.error(f"shadow evaluate_pyramids failed for {strategy.name}: {e}", exc_info=True)
             pyramids = []
@@ -1323,7 +1408,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 continue
             _cash = float(getattr(shadow_session._synthetic_config, "current_cash", 0) or 0)
             actual_value = min(float(pyramid.get("amount", 0) or 0), _cash * 0.5)
-            _price = getattr(position, "current_price", None) or 0
+            _price = _live_price(position.ticker, getattr(position, "current_price", None) or 0)
             if actual_value < 100 or _price <= 0 or _cash < actual_value:
                 continue
             shadow_session.emit_shadow_pyramid(
@@ -1346,7 +1431,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 heat_penalty_active=False,
                 user_id=SHADOW_USER_ID,
                 funnel=_funnel,
-            )
+            ) if cb_state == "ok" else []
         except Exception as e:
             logger.error(f"shadow evaluate_buys failed for {strategy.name}: {e}", exc_info=True)
             buys = []
@@ -1431,8 +1516,10 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 continue
             ticker = getattr(stock, "ticker", None)
             value = float(buy.get("value", 0) or 0) if isinstance(buy, dict) else 0
-            price = getattr(stock, "current_price", None) or 0
-            if not ticker or value <= 0 or price <= 0:
+            if not ticker or value <= 0:
+                continue
+            price = _live_price(ticker, getattr(stock, "current_price", None) or 0)
+            if price <= 0:
                 continue
             spendable = remaining_cash - min_cash_reserve
             if value > spendable:
@@ -1476,7 +1563,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         try:
             from backend.trading_utils import get_strategy_profile
             profile = get_strategy_profile(strategy.parent_strategy)
-            if (profile.get('spy_sweep') or {}).get('enabled'):
+            # A liquidating cycle ends before the sweep, as live's returns early.
+            if (profile.get('spy_sweep') or {}).get('enabled') and cb_state != "liquidate":
                 from backend.ai_trader import handle_spy_sweep
                 pre_cash = float(getattr(cfg, "current_cash", 0) or 0)
                 pre_shares = float(getattr(cfg, "spy_sweep_shares", 0) or 0)
@@ -1507,6 +1595,16 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         # Funnel ledger for this arm's cycle (never raises).
         persist_funnel(persist, _funnel, strategy_name=strategy.name,
                        shadow_strategy_id=strategy_id)
+
+        # Circuit-breaker high-water mark ratchets every tick (sandbox rolls back).
+        if cb_peak is not None and (strategy.peak_equity is None or cb_peak > strategy.peak_equity):
+            try:
+                persist.query(ShadowStrategy).filter(ShadowStrategy.id == strategy_id).update(
+                    {"peak_equity": cb_peak}, synchronize_session=False)
+                persist.commit()
+            except Exception as e:
+                persist.rollback()
+                logger.error(f"shadow peak_equity persist failed (id={strategy_id}): {e}", exc_info=True)
 
         # Peak ratchet persists EVERY tick, trade or no trade — carrying the
         # session high forward is the whole point (see ShadowPositionPeak).
