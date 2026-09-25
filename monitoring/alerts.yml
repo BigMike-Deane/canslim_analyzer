@@ -21,11 +21,16 @@ groups:
       # Uptime-gated (2026-09-10): the post-restart warm-up climbs ~130 MB/h,
       # so without the gate every deploy reads as a leak -- harmless while
       # nothing delivered alerts, a false page once Alertmanager did.
+      # Window 6h -> 12h, gate 8h -> 14h (2026-09-25): shadow arms now trade
+      # only in market hours, so the trading path's caches first warm at the
+      # open after an evening deploy -- a one-time +150 MB STEP (Sep-25 9:55
+      # CT) that a 6h window reads as 41 MB/h. Over 12h the same step is ~18;
+      # a sustained 40 MB/h leak still fires. Backtest Sep-9..25: max 17.9.
       - alert: CanslimMemoryClimbing
         expr: >-
-          deriv(max by (name) (container_memory_working_set_bytes{name="canslim-analyzer"})[6h:5m]) * 3600 > 40e6
+          deriv(max by (name) (container_memory_working_set_bytes{name="canslim-analyzer"})[12h:5m]) * 3600 > 40e6
           and on (name)
-          (time() - max by (name) (container_start_time_seconds{name="canslim-analyzer"})) > 8 * 3600
+          (time() - max by (name) (container_start_time_seconds{name="canslim-analyzer"})) > 14 * 3600
         for: 1h
         labels:
           severity: warning

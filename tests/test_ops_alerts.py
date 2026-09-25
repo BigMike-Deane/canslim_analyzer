@@ -111,7 +111,20 @@ class TestMonitoringConfig:
         rules = {r["alert"]: r["expr"] for r in self._rules()}
         for name in ("CanslimMemoryClimbing", "CanslimMemoryWillHitCap"):
             assert "container_start_time_seconds" in rules[name], name
-            assert "8 * 3600" in rules[name], name
+            gate = re.search(r"container_start_time_seconds.*?> (\d+) \* 3600", rules[name], re.S)
+            assert gate and int(gate.group(1)) >= 8, name
+
+    def test_memory_climb_rule_survives_the_first_open_after_a_deploy(self):
+        # Shadow arms trade only in market hours (a69a2d9), so an evening
+        # deploy first warms the trading path at the next open: a one-time
+        # +150 MB step that a 6h deriv window read as 41 MB/h (false page
+        # 2026-09-25). The window must be long enough to dilute that step,
+        # and the uptime gate must cover the whole window.
+        expr = {r["alert"]: r["expr"] for r in self._rules()}["CanslimMemoryClimbing"]
+        window = int(re.search(r"\[(\d+)h:5m\]", expr).group(1))
+        gate = int(re.search(r"> (\d+) \* 3600", expr.split("container_start_time_seconds")[1]).group(1))
+        assert window >= 12
+        assert gate >= window
 
     def test_the_alert_that_cannot_push_goes_by_email(self):
         am = yaml.safe_load(open(os.path.join(ROOT, "monitoring/alertmanager.yml")))
