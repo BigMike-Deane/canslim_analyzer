@@ -91,6 +91,54 @@ class TestStopLoss:
         assert "may widen" in stop["note"]
 
 
+    _GUARD = {"enabled": True, "guard_days": 21, "guard_stop_pct": 8.0,
+              "skip_if_pyramided": True}
+
+    def test_new_position_guard_caps_atr_widened_stop(self):
+        # REPX Sep-26: ATR said 10%, but a 9-day-old un-pyramided position is
+        # capped at 8% by the live checker -- the card must show 8%, the level
+        # the trader (and the broker's resting stop) actually uses.
+        plan = compute_exit_plan(
+            cost_basis=43.0, current_price=40.55, strategy="nostate_cs_bear",
+            sell_score_threshold=45, stop_loss_pct=8, atr_stop_pct=9.75,
+            holding_days=9, new_position_guard=self._GUARD,
+        )
+        stop = _by_kind(plan, "stop_loss")
+        assert stop["price"] == pytest.approx(39.56, abs=0.01)
+        assert "new-position guard" in stop["note"]
+        assert "12d left" in stop["note"]
+
+    def test_guard_skips_pyramided_position(self):
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=95.0, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8, atr_stop_pct=12.0,
+            pyramid_count=1, holding_days=5, new_position_guard=self._GUARD,
+        )
+        stop = _by_kind(plan, "stop_loss")
+        assert stop["price"] == pytest.approx(88.0, abs=0.01)
+        assert "ATR-widened" in stop["note"]
+
+    def test_guard_expires_after_guard_days(self):
+        plan = compute_exit_plan(
+            cost_basis=100.0, current_price=95.0, strategy="nostate_cs_bear",
+            sell_score_threshold=60, stop_loss_pct=8, atr_stop_pct=12.0,
+            holding_days=22, new_position_guard=self._GUARD,
+        )
+        assert _by_kind(plan, "stop_loss")["price"] == pytest.approx(88.0, abs=0.01)
+
+    def test_guard_matches_live_helper(self):
+        # Display and trader must resolve through the same shared helper.
+        from backend.trading_engine import apply_new_position_guard
+        for atr, days, pyr in [(12.0, 3, 0), (6.5, 3, 0), (12.0, 30, 0), (12.0, 3, 2)]:
+            want = apply_new_position_guard(max(7.0, atr), guard_config=self._GUARD,
+                                            holding_days=days, pyramid_count=pyr)
+            plan = compute_exit_plan(
+                cost_basis=100.0, current_price=99.0, strategy="nostate_cs_bear",
+                sell_score_threshold=60, stop_loss_pct=8, atr_stop_pct=atr,
+                pyramid_count=pyr, holding_days=days, new_position_guard=self._GUARD,
+            )
+            assert _by_kind(plan, "stop_loss")["price"] == pytest.approx(100 - want, abs=0.01)
+
 class TestTrailingStop:
     def test_no_trailing_below_activation_tier(self):
         # Peak only +1.7% over cost → below the +5% tier → no trailing trigger.

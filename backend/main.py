@@ -3674,6 +3674,10 @@ async def get_ai_portfolio(current_user: User = Depends(get_current_active_user)
                 # process as the scheduler) — shows the widened stop the trader
                 # will actually honor, not just the base floor.
                 atr_stop_pct=get_cached_atr_stop(p.ticker),
+                # New-position guard, same inputs as the live stop checker.
+                holding_days=((datetime.now(timezone.utc).date() - p.purchase_date.date()).days
+                              if p.purchase_date else None),
+                new_position_guard=_yaml_config.get('ai_trader.new_position_guard', {}) or {},
             ),
             # Insider/Short signals from Stock table
             "insider_sentiment": stock.insider_sentiment if stock else None,

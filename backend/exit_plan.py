@@ -33,7 +33,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.trading_engine import get_trailing_stop_pct, apply_pyramid_widening
+from backend.trading_engine import (get_trailing_stop_pct, apply_pyramid_widening,
+                                    apply_new_position_guard)
 from backend.trading_utils import get_strategy_profile, select_effective_stop_loss_pct
 
 
@@ -58,6 +59,8 @@ def compute_exit_plan(
     stop_loss_config: Optional[dict] = None,
     is_bearish_market: bool = False,
     atr_stop_pct: Optional[float] = None,
+    holding_days: Optional[int] = None,
+    new_position_guard: Optional[dict] = None,
 ) -> dict:
     """Derive the active sell triggers for one position.
 
@@ -109,8 +112,27 @@ def compute_exit_plan(
         atr_widened = atr_stop_pct is not None and atr_stop_pct > stop_pct
         if atr_widened:
             effective_pct = atr_stop_pct
+        # New-position guard: both live stop paths cap a fresh, un-pyramided
+        # position at guard_stop_pct for its first guard_days AFTER the ATR
+        # widening (trading_engine.apply_new_position_guard). Skipping it here
+        # showed REPX at 10% / $38.81 while the trader and the broker's resting
+        # stop both sat at 8% / $39.56 (Sep-26).
+        guarded = False
+        if holding_days is not None and new_position_guard:
+            guarded_pct = apply_new_position_guard(
+                effective_pct, guard_config=new_position_guard,
+                holding_days=holding_days, pyramid_count=pyramid_count or 0,
+            )
+            guarded = guarded_pct < effective_pct
+            effective_pct = guarded_pct
         stop_price = cost_basis * (1 - effective_pct / 100.0)
-        if atr_widened:
+        if guarded:
+            days_left = max(0, int(new_position_guard.get('guard_days', 21)) - holding_days)
+            note = (
+                f"{effective_pct:.0f}% below entry · new-position guard"
+                f" ({days_left}d left, then ATR-widened stop applies)"
+            )
+        elif atr_widened:
             note = (
                 f"{effective_pct:.0f}% below entry · ATR-widened from {stop_pct:.0f}% base"
                 + (" · bearish market" if is_bearish_market else "")
