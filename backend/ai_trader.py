@@ -1622,6 +1622,42 @@ def calculate_atr_stop(ticker: str, current_price: float, base_stop_pct: float) 
     return atr_stop_fallback(ticker, base_stop_pct)
 
 
+def warm_atr_stop_cache(db: Session) -> dict:
+    """Fill the in-process ATR-stop cache for every held position at boot.
+
+    The cache (trading_engine._atr_stop_cache) starts empty on every restart,
+    and until the first market-hours stop check refills it: the Exit Plan
+    cards show the bare 7% base ("may widen"), and a failed bar fetch in the
+    live checker falls back to base instead of the last good ATR stop -- a
+    stop tighter than the real one. One fetch per held ticker, with the base
+    resolved the way the live checker resolves it (broker_mirror.stop_context).
+    Tickers the live cycle already cached are left alone.
+    """
+    from backend.broker_mirror import stop_context
+    from backend.trading_engine import get_cached_atr_stop
+
+    warmed, failed, seen = [], [], set()
+    configs = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.is_active == True).all()  # noqa: E712
+    for cfg in configs:
+        positions = db.query(AIPortfolioPosition).filter(
+            AIPortfolioPosition.user_id == cfg.user_id).all()
+        if not positions:
+            continue
+        ctx = stop_context(db, cfg.user_id)
+        if not ctx["use_atr"]:
+            continue
+        for p in positions:
+            price = p.current_price
+            if p.ticker in seen or not price or price != price or price <= 0:
+                continue
+            seen.add(p.ticker)
+            if get_cached_atr_stop(p.ticker) is not None:
+                continue
+            calculate_atr_stop(p.ticker, price, ctx["base_pct"])   # caches on success
+            (warmed if get_cached_atr_stop(p.ticker) is not None else failed).append(p.ticker)
+    return {"warmed": warmed, "failed": failed}
+
+
 def check_and_execute_stop_losses(db: Session, user_id: int = 1) -> dict:
     """
     Check stop loss conditions and execute sells if triggered.

@@ -267,6 +267,25 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(iwm_backfill())
 
+        async def atr_warmup():
+            # Refill the ATR-stop cache a restart empties, so the stop cards
+            # and the live checker's fetch-failure fallback use the widened
+            # stop from boot, not the 7% base (Sep-26 cold-cache quirk).
+            def _run():
+                wdb = SessionLocal()
+                try:
+                    from backend.ai_trader import warm_atr_stop_cache
+                    r = warm_atr_stop_cache(wdb)
+                    logger.info(f"ATR stop cache warmed: {len(r['warmed'])} tickers, "
+                                f"failed: {r['failed'] or 'none'}")
+                except Exception as e:
+                    logger.warning(f"ATR stop cache warm-up failed: {e}")
+                finally:
+                    wdb.close()
+            await asyncio.to_thread(_run)
+
+        asyncio.create_task(atr_warmup())
+
     yield
 
     # Shutdown: flag first -- its absence at the next start is the crash signal
