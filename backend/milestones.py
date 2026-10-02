@@ -241,6 +241,10 @@ _SEEDS = [
      "Two-book cohort stdev fell to 1.9pp as u1/u2 converged, which would ease every pass "
      "bar. Readout σ = max(measured, 4.4pp); go-live criterion 2 floored the same way at its 8.1pp registration value.",
      None),
+    ("2026-10-02", "verdict", "Correction: ML veto read is no-effect, not lever-loses",
+     "Post-deploy lever-trade check: baseline's losers (ELMD, EXPE, AIR...) were its Aug-19 "
+     "launch seeds, not displacement. Lever trades net +$87 (wash); vs second control 0.56σ. "
+     "Veto still kept (no-effect row).", None),
     ("2026-10-02", "decision", "Lever-trade check added for entry-filter arms (amendment)",
      "chop_entry_bar, small_cap_gate and industry_cap must also show substitutes beating "
      "skipped buys (lever_net > 0) to count as a win. Signed before chop_entry_bar's gate filled.",

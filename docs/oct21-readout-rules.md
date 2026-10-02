@@ -349,3 +349,21 @@ cs_bear; archive the arm.** The arm keeps running until the Oct-30 program
 archive, so its open vetoed lots close for the record. Those lots are
 informational only and do not reopen this decision. This closes the Jul-04
 kill-or-bless thread.
+
+### Correction 2026-10-02 (post-deploy, same day) — ml_veto_off read
+The lever-trade check (amendment (b)), run on ml_veto_off once deployed,
+showed the "slot displacement" explanation above is **wrong**. ELMD, EXPE,
+AIR, ARGX and ORMP were baseline's **Aug-19 launch seeds**, bought a day
+before the arm existed. They are launch mismatch, which is exactly why
+section A requires the second control for this arm. Positions only one
+stack opened after Aug-20: skipped 8 (−$455, −2.8% of cost), substitutes 16
+(−$368, −0.9%; FLXS open +$488 offsets the closed losers). lever_net
+**+$87 (+0.35pp): a wash**. The −5.9% figure above covers closed
+sub-0.30 lots only.
+
+**Outcome unchanged, reason restated.** ml_veto_off is *no detectable
+effect*. It clears +1σ only against baseline, and that lead is launch
+mismatch. Against the second control it is +2.46pp = 0.56σ, and its lever
+trades net ≈ 0. Section B's no-effect row: keep the veto, archive the arm.
+"The lever loses where it acts" overstated the evidence. The data says
+the veto neither clearly helps nor clearly hurts.
