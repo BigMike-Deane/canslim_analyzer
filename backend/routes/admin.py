@@ -1929,9 +1929,19 @@ GO_LIVE_MAX_SLIPPAGE_PP = 1.5
 # TIGHTENS the gate (4 of 5 -> 3 of 5 on the day it landed), never loosens.
 GO_LIVE_MIN_SLIPPAGE_N = 5
 GO_LIVE_MIN_CLOSED_TRADES = 50
+# AMENDED 2026-10-02 (owner-approved): criterion 2's floor is the spread of a
+# TWO-book cohort (u1/u2), which shrinks whenever those books converge
+# (8.1pp at registration on 2026-09-09, 3.8pp on 2026-10-02). The floor in
+# force is max(measured, the registration value), so the bar can never be
+# easier than the one registered. Same rule as the Oct-21 readout sigma floor.
+GO_LIVE_MIN_NOISE_FLOOR_PP = 8.1
 GO_LIVE_AMENDMENTS = [
     {"on": "2026-09-23", "criterion": "stop_slippage",
      "change": f"requires n_measured >= {GO_LIVE_MIN_SLIPPAGE_N} (was: any n >= 1)",
+     "direction": "tightened"},
+    {"on": "2026-10-02", "criterion": "clears_noise_floor",
+     "change": (f"floor = max(measured spread, {GO_LIVE_MIN_NOISE_FLOOR_PP}pp at "
+                "registration) (was: measured spread alone)"),
      "direction": "tightened"},
 ]
 
@@ -1978,9 +1988,13 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
     )
 
     # 2. Excess return must exceed the measured path-noise floor.
+    # An unmeasurable spread still blocks: the floor raises the bar, it
+    # never stands in for a missing measurement.
     excess = (edge or {}).get("excess_return_pct")
-    c2_met = bool(excess is not None and noise_floor_pp is not None
-                  and excess > noise_floor_pp)
+    floor_in_force = (max(noise_floor_pp, GO_LIVE_MIN_NOISE_FLOOR_PP)
+                      if noise_floor_pp is not None else None)
+    c2_met = bool(excess is not None and floor_in_force is not None
+                  and excess > floor_in_force)
 
     # 3. Drawdown not materially worse than SPY's.
     dd, spy_dd = (edge or {}).get("max_drawdown_pct"), (edge or {}).get("spy_max_drawdown_pct")
@@ -2027,8 +2041,10 @@ def _go_live_gate(db: Session, edge: dict, noise_floor_pp) -> dict:
                     "chop_share_pct_min": GO_LIVE_MIN_CHOP_SHARE}},
         {"key": "clears_noise_floor", "met": c2_met,
          "label": "excess return exceeds measured path-noise floor",
-         "value": {"excess_return_pct": excess, "noise_floor_pp": noise_floor_pp},
-         "target": {"excess_above_pp": noise_floor_pp}},
+         "value": {"excess_return_pct": excess, "noise_floor_pp": floor_in_force,
+                   "measured_spread_pp": noise_floor_pp,
+                   "floor_min_pp": GO_LIVE_MIN_NOISE_FLOOR_PP},
+         "target": {"excess_above_pp": floor_in_force}},
         {"key": "drawdown", "met": c3_met,
          "label": f"max drawdown within {GO_LIVE_MAX_DD_MARGIN_PP:.0f}pp of SPY",
          "value": {"portfolio_dd_pct": dd, "spy_dd_pct": spy_dd, "gap_pp": dd_gap},

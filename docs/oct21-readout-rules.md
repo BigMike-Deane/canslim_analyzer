@@ -290,11 +290,12 @@ stricter than signed, never easier. Served as
 `backend/routes/admin.py`). Every Δ in sections A–D is divided by it.
 A1-a's +1.5σ is therefore at least **+6.6pp**.
 
-**Not changed:** go-live criterion 2 (`clears_noise_floor`) reads
-`spread_pp` from the same two-book cohort and has the same weakness
-(8.1pp at registration on Sep-9, 3.8pp on Oct-2). It is governed by the
-Sep-9 go-live registration, not by this file. It is left for a separate
-owner decision.
+**Same fix on go-live criterion 2 (owner-approved, same day).**
+`clears_noise_floor` reads `spread_pp` from the same two-book cohort (8.1pp
+at registration on Sep-9, 3.8pp on Oct-2). Its floor in force is now
+**max(measured spread, 8.1pp)** (`GO_LIVE_MIN_NOISE_FLOOR_PP`), listed in
+`go_live.amendments` as tightened. It was already failing (2.9pp excess), so
+no result flipped.
 
 ## Arm read 2026-10-02 — shadow_ml_veto_off (owner decision: KEEP the veto)
 Gate met (15 sub-0.30 buys taken, 9 closed; ≥5 needed). Read from

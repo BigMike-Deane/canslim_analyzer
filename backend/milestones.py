@@ -237,9 +237,9 @@ _SEEDS = [
      "the lead was slot displacement (never owned baseline's losers). Fails the mechanism "
      "check and the +1σ second-control bar. Veto stays; arm archives Oct-30. Closes the Jul-04 thread.",
      None),
-    ("2026-10-02", "decision", "Readout σ floored at the signed 4.4pp (amendment)",
+    ("2026-10-02", "decision", "Noise yardsticks floored: readout σ 4.4pp, go-live 8.1pp",
      "Two-book cohort stdev fell to 1.9pp as u1/u2 converged, which would ease every pass "
-     "bar. Readout σ = max(measured, 4.4pp); go-live criterion 2 left for a separate call.",
+     "bar. Readout σ = max(measured, 4.4pp); go-live criterion 2 floored the same way at its 8.1pp registration value.",
      None),
 ]
 

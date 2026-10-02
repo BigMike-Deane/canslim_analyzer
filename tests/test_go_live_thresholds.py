@@ -156,6 +156,21 @@ class TestEachCriterionBlocks:
         g = _gate(db, {"excess_return_pct": 6.0})
         assert "clears_noise_floor" in g["blocking"]
 
+    def test_shrunken_spread_cannot_lower_the_floor(self, db):
+        # 2026-10-02 amendment: the two-book spread fell to 3.8pp as u1/u2
+        # converged. 5pp of excess clears 3.8 but not the 8.1pp registered floor.
+        g = _gate(db, {"excess_return_pct": 5.0}, floor=3.8)
+        assert "clears_noise_floor" in g["blocking"]
+        c2 = next(c for c in g["criteria"] if c["key"] == "clears_noise_floor")
+        assert c2["target"]["excess_above_pp"] == 8.1
+        assert c2["value"]["measured_spread_pp"] == 3.8
+        assert "clears_noise_floor" not in _gate(db, {"excess_return_pct": 8.2},
+                                                 floor=3.8)["blocking"]
+
+    def test_wider_measured_spread_still_governs(self, db):
+        g = _gate(db, {"excess_return_pct": 9.0}, floor=10.0)
+        assert "clears_noise_floor" in g["blocking"]
+
     def test_worse_drawdown_than_spy_blocks(self, db):
         # Beating SPY on return while doubling its drawdown is not a win.
         g = _gate(db, {"max_drawdown_pct": -32.0, "spy_max_drawdown_pct": -15.0})
