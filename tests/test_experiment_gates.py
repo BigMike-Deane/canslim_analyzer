@@ -447,6 +447,8 @@ class TestVintageSpread:
         assert by["shadow_vintage_sep02"]["return_pct"] == -0.4
         assert by["shadow_vintage_sep02"]["alpha_pp"] == -2.36
         assert vs["n"] == 2 and vs["spread_pp"] == 1.24 and vs["stdev_pp"] == 0.62
+        # Readout sigma never drops below the signed 4.4pp floor (amendment 2026-10-02).
+        assert vs["readout_sigma_pp"] == 4.4 and vs["readout_sigma_floor_pp"] == 4.4
 
     def test_no_benchmarks_yields_empty_spread(self, db_session, monkeypatch):
         from backend import shadow_strategy_sync as sss
@@ -455,6 +457,7 @@ class TestVintageSpread:
         _arm(db_session, "shadow_wide_trail")
         vs = compute_experiment_gates(db_session)["program_clocks"]["vintage_spread"]
         assert vs["stacks"] == [] and vs["n"] == 0 and vs["spread_pp"] is None
+        assert vs["readout_sigma_pp"] == 4.4
 
 
 class TestSmallCapGateArmGates:

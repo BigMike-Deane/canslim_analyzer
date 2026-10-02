@@ -232,6 +232,15 @@ _SEEDS = [
     ("2026-08-31", "infra", "Program Ledger went live",
      "Event-sourced milestone history in the admin surface; auto rows fire on gate "
      "threshold crossings, verdicts, and calendar clocks.", None),
+    ("2026-10-02", "verdict", "ML veto KEPT (owner) — arm 10 lever loses where it acts",
+     "shadow_ml_veto_off led baseline +5.55pp, but its 9 closed sub-0.30 buys averaged -5.9%; "
+     "the lead was slot displacement (never owned baseline's losers). Fails the mechanism "
+     "check and the +1σ second-control bar. Veto stays; arm archives Oct-30. Closes the Jul-04 thread.",
+     None),
+    ("2026-10-02", "decision", "Readout σ floored at the signed 4.4pp (amendment)",
+     "Two-book cohort stdev fell to 1.9pp as u1/u2 converged, which would ease every pass "
+     "bar. Readout σ = max(measured, 4.4pp); go-live criterion 2 left for a separate call.",
+     None),
 ]
 
 

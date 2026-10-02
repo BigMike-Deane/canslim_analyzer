@@ -272,3 +272,49 @@ the **2026-09-25** session for all arms at once; no clock resets.
   cash, and live cash that doesn't reconcile to its ledger. Before the readout,
   confirm it has reported nothing since 2026-09-25 (or that each report was
   explained).
+
+## Amendment 2026-10-02 — readout σ floor (owner-approved)
+**Problem.** Section A's σ is `vintage_spread.stdev_pp` "read on the readout
+day". The cohort behind it is two books (live u1 and u2, same config, same
+start), and the pstdev of two numbers is half their gap. So σ swings
+whenever those two books converge or diverge: 4.05pp on 2026-09-09, **4.4pp
+at sign-off (2026-09-23)**, **1.9pp on 2026-10-02**. A smaller σ makes every
+"clear win" easier. Read on Oct-2, it would have turned the ml_veto_off
+second-control result (+2.46pp) from 0.56σ into 1.3σ: a pass on a measurement
+artifact.
+
+**Rule.** The readout σ is **max(measured stdev on the readout day, 4.4pp)**.
+The floor is the value the owner signed against. The bar can only get
+stricter than signed, never easier. Served as
+`vintage_spread.readout_sigma_pp` (floor `READOUT_SIGMA_FLOOR_PP` in
+`backend/routes/admin.py`). Every Δ in sections A–D is divided by it.
+A1-a's +1.5σ is therefore at least **+6.6pp**.
+
+**Not changed:** go-live criterion 2 (`clears_noise_floor`) reads
+`spread_pp` from the same two-book cohort and has the same weakness
+(8.1pp at registration on Sep-9, 3.8pp on Oct-2). It is governed by the
+Sep-9 go-live registration, not by this file. It is left for a separate
+owner decision.
+
+## Arm read 2026-10-02 — shadow_ml_veto_off (owner decision: KEEP the veto)
+Gate met (15 sub-0.30 buys taken, 9 closed; ≥5 needed). Read from
+`shadow_equity_marks`, closes through 2026-10-01:
+- Δ vs shadow_baseline (Aug-20→): **+5.55pp**. Δ vs the second control
+  shadow_vintage_sep02 (Sep-2→): **+2.46pp** = 0.56σ at the 4.4pp floor.
+  This does **not** clear +1σ against the second control that section A
+  requires for launch-mismatched arms.
+- Off-hours adjustment (amendment 2026-09-24): the arm had *less* off-hours
+  edge than baseline (−$62 vs +$97), worth about +0.6pp to the arm. It does
+  not change the read.
+- **Mechanism check fails.** The lever acts only on the buys the veto
+  blocks. The 9 closed sub-0.30 lots averaged **−5.9%** (≈ −$1,060
+  realized: ATAI −323, EMBJ −261, GRMN −260, CYPH −149). The arm's lead came
+  from slot displacement: spending cash and slots on the vetoed names kept
+  it out of baseline's losers (ELMD −567, EXPE −527, AIR −311, ARGX −207,
+  ORMP −156). That is path luck, not evidence the veto discards good buys.
+
+**Outcome (section B, "no detectable effect" row): keep the 0.30 veto on
+cs_bear; archive the arm.** The arm keeps running until the Oct-30 program
+archive, so its open vetoed lots close for the record. Those lots are
+informational only and do not reopen this decision. This closes the Jul-04
+kill-or-bless thread.

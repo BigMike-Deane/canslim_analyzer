@@ -1563,6 +1563,14 @@ def _account_inception(db: Session, user_id: int) -> dict:
     }
 
 
+# Oct-21 readout yardstick floor (amendment 2026-10-02, docs/oct21-readout-rules.md).
+# The readout's sigma is the pstdev of a TWO-book cohort (live u1/u2), i.e. half
+# their alpha gap, so it swings as the books converge (4.4pp at sign-off on
+# 2026-09-23, 1.9pp on 2026-10-02). The readout uses max(measured, this floor)
+# so the pass bar can never be easier than the one the owner signed.
+READOUT_SIGMA_FLOOR_PP = 4.4
+
+
 def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
     """Launch-vintage luck, measured live (2026-09-02): the same champion
     strategy started on staggered dates. Each stack's mark-to-market return
@@ -1710,6 +1718,11 @@ def _vintage_spread(db: Session, stacks: list, now_utc) -> dict:
         "n": len(alphas),
         "spread_pp": round(max(alphas) - min(alphas), 2) if len(alphas) >= 2 else None,
         "stdev_pp": round(statistics.pstdev(alphas), 2) if len(alphas) >= 2 else None,
+        # What the Oct-21 readout divides by: the measured stdev, floored at
+        # the value signed on 2026-09-23 (never easier than the signed bar).
+        "readout_sigma_pp": (max(round(statistics.pstdev(alphas), 2), READOUT_SIGMA_FLOOR_PP)
+                             if len(alphas) >= 2 else READOUT_SIGMA_FLOOR_PP),
+        "readout_sigma_floor_pp": READOUT_SIGMA_FLOOR_PP,
         # Which stacks the headline numbers were actually computed over, so
         # the comparison is auditable rather than implied.
         "cohort": {

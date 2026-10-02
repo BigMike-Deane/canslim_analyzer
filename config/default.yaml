@@ -1502,6 +1502,9 @@ strategy_profiles:
   #   - Arm BEATS baseline under the same conditions -> the veto discards
   #     good CANSLIM buys: RETIRE it (min_confidence 0.0 on cs_bear).
   # Expected direction per current data: arm trails (veto helps).
+  # READ 2026-10-02 -> KEEP the veto (owner). Arm led baseline +5.55pp, but
+  # the 9 closed sub-0.30 lots averaged -5.9%: the lead was slot displacement,
+  # not good vetoed buys. See docs/oct21-readout-rules.md. Arm archives Oct-30.
   nostate_ml_veto_off:
     hidden: true
     label: "NoState ML Veto Off (shadow)"
