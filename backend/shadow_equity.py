@@ -240,3 +240,137 @@ def regime_excess_vs(db, arm_id: int, comparator_id: int,
 
     return {"sessions": len(days), "trend": _stats(buckets["trend"]),
             "chop": _stats(buckets["chop"]), "threshold_pct": trend_threshold_pct}
+
+
+# ── Lever trades (amendment 2026-10-02, docs/oct21-readout-rules.md) ──────
+# An arm's total return vs its comparator mostly measures WHICH names each
+# stack happened to hold: an entry filter that skips one buy frees cash and a
+# slot, and every later buy diverges from there. The Oct-2 ml_veto_off read
+# showed it: +5.55pp vs baseline while the buys the lever let through lost
+# -5.9%. So the readout also scores only the positions the two stacks did NOT
+# share: the comparator's buys the arm never made ("skipped") against the
+# arm's buys the comparator never made ("substitutes").
+LEVER_MATCH_DAYS = 5    # same ticker bought by both stacks within 5 days = shared
+
+
+def _position_outcome(trades, start_idx, price_fn_px):
+    """$ outcome of one position generation in one stack: from the BUY at
+    trades[start_idx] until that ticker's shares return to zero (or the log
+    ends). Pyramids into the position count (they exist only because the buy
+    did). Open shares are marked at `price_fn_px`, else the last trade price."""
+    from backend.shadow_trader import is_sweep_reason
+    tk = trades[start_idx].ticker
+    shares = cost = proceeds = 0.0
+    last_px = None
+    closed = False
+    for t in trades[start_idx:]:
+        if t.ticker != tk or is_sweep_reason(t.reason):
+            continue
+        q, px = float(t.shares or 0), float(t.price or 0)
+        if t.action in ("BUY", "PYRAMID"):
+            if t is not trades[start_idx] and t.action == "BUY" and shares <= 1e-9:
+                break                      # a later generation of the same name
+            shares += q
+            cost += q * px
+            last_px = px
+        elif t.action == "SELL":
+            take = min(q, shares)
+            proceeds += take * px
+            shares -= take
+            last_px = px
+            if shares <= 1e-9:
+                closed = True
+                break
+        elif t.action == "SPLIT":
+            factor = (t.signal_factors or {}).get("split_factor") if isinstance(t.signal_factors, dict) else None
+            factor = factor or q
+            if factor and factor > 0:
+                shares *= factor
+                if last_px:
+                    last_px /= factor
+    mark_px, priced = price_fn_px, price_fn_px is not None
+    if not closed and mark_px is None:
+        mark_px = last_px or 0.0
+    open_value = 0.0 if closed else shares * (mark_px or 0.0)
+    pnl = proceeds + open_value - cost
+    return {"ticker": tk, "bought_at": _naive_utc(trades[start_idx].executed_at).date().isoformat(),
+            "closed": closed, "cost": round(cost, 2), "pnl_usd": round(pnl, 2),
+            "pnl_pct": round(pnl / cost * 100.0, 2) if cost > 0 else None,
+            "priced": closed or priced}
+
+
+def _current_prices(db, tickers):
+    from backend.database import Stock
+    if not tickers:
+        return {}
+    return {s.ticker: s.current_price for s in
+            db.query(Stock).filter(Stock.ticker.in_(list(tickers)))
+            if s.current_price and s.current_price > 0}
+
+
+def lever_trades_vs(db, arm_id: int, comparator_id: int, price_fn=None) -> dict:
+    """Positions only one of the two stacks opened, scored entry to exit.
+
+    Window: BUYs at or after the later of the two activations. A BUY is
+    SHARED when the other stack bought the same ticker within
+    LEVER_MATCH_DAYS days; shared names are excluded even if sized
+    differently (sizing is path noise, not the lever). Returns the skipped
+    and substitute sets, and lever_net_usd = substitutes - skipped: positive
+    means what the arm bought instead beat what it passed up."""
+    from backend.database import ShadowStrategy, ShadowTrade
+    from backend.shadow_trader import is_sweep_reason
+
+    arm = db.get(ShadowStrategy, arm_id)
+    comp = db.get(ShadowStrategy, comparator_id)
+    if arm is None or comp is None:
+        return None
+    starts = [_naive_utc(x.activated_at) for x in (arm, comp) if x.activated_at]
+    since = max(starts) if starts else None
+
+    def _log(sid):
+        return db.query(ShadowTrade).filter(ShadowTrade.shadow_strategy_id == sid) \
+            .order_by(ShadowTrade.executed_at, ShadowTrade.id).all()
+
+    logs = {arm.id: _log(arm.id), comp.id: _log(comp.id)}
+
+    def _buys(sid):
+        return [(i, t) for i, t in enumerate(logs[sid])
+                if t.action == "BUY" and not is_sweep_reason(t.reason)
+                and (since is None or _naive_utc(t.executed_at) >= since)]
+
+    buys = {sid: _buys(sid) for sid in logs}
+    window = timedelta(days=LEVER_MATCH_DAYS)
+
+    def _unmatched(sid, other):
+        out = []
+        for i, t in buys[sid]:
+            at = _naive_utc(t.executed_at)
+            if not any(o.ticker == t.ticker and abs(_naive_utc(o.executed_at) - at) <= window
+                       for _, o in buys[other]):
+                out.append((i, t))
+        return out
+
+    skipped = _unmatched(comp.id, arm.id)
+    substitutes = _unmatched(arm.id, comp.id)
+    tickers = {t.ticker for _, t in skipped + substitutes}
+    prices = (price_fn or (lambda tks: _current_prices(db, tks)))(tickers) or {}
+
+    def _score(sid, rows):
+        items = [_position_outcome(logs[sid], i, prices.get(t.ticker)) for i, t in rows]
+        cost = sum(x["cost"] for x in items)
+        pnl = sum(x["pnl_usd"] for x in items)
+        return {"n": len(items), "n_open": sum(1 for x in items if not x["closed"]),
+                "n_unpriced": sum(1 for x in items if not x["priced"]),
+                "pnl_usd": round(pnl, 2),
+                "pnl_pct_of_cost": round(pnl / cost * 100.0, 2) if cost > 0 else None,
+                "positions": items}
+
+    sk, su = _score(comp.id, skipped), _score(arm.id, substitutes)
+    net = round(su["pnl_usd"] - sk["pnl_usd"], 2)
+    base = arm.starting_value or 25000.0
+    return {"since": since.date().isoformat() if since else None,
+            "match_days": LEVER_MATCH_DAYS,
+            "skipped": sk, "substitutes": su,
+            "lever_net_usd": net,
+            "lever_net_pp": round(net / base * 100.0, 2),
+            "lever_positive": net > 0}

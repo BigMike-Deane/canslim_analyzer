@@ -297,6 +297,36 @@ at registration on Sep-9, 3.8pp on Oct-2). Its floor in force is now
 `go_live.amendments` as tightened. It was already failing (2.9pp excess), so
 no result flipped.
 
+## Amendment 2026-10-02 (b) — lever-trade check for entry-filter arms (owner-approved)
+**Why.** An arm whose lever changes *which names get bought* frees cash and
+slots, and every later buy diverges. Its total Δ then mostly measures which
+names each stack happened to hold. The ml_veto_off read (below) showed it:
++5.55pp total while the buys its lever let through averaged −5.9%.
+
+**Rule.** For **chop_entry_bar, small_cap_gate and industry_cap**, a clear
+win (section A) additionally requires **lever_net_usd > 0**:
+- *skipped* = the comparator's buys the arm never made; *substitutes* = the
+  arm's buys the comparator never made. A buy is shared, and excluded, if
+  the other stack bought the same ticker within 5 days. Shared names count
+  on neither side, even if sized differently.
+- Each position is scored from entry to exit, pyramids included. If still
+  open at the readout, it is marked at the scanner's current price, or its
+  last trade price if there is none (flagged unpriced).
+- lever_net_usd = substitutes P&L − skipped P&L. Positive means what the arm
+  bought instead beat what it passed up.
+
+A total-Δ win with lever_net ≤ 0 reads as **no detectable effect**
+(displacement). The rule only adds a requirement, so it can never turn a
+non-win into a win. Window: buys on or after the later of the two
+activations. Served as `lever_trades` on `GET
+/api/admin/shadow-equity/{name}` (`backend/shadow_equity.lever_trades_vs`).
+Exit-side arms (wide_trail, cap50, stop_band) and the chop arms that keep
+the same names (chop_damper, chop_trim) are unchanged.
+
+**Signed before looking.** Committed during the 2026-10-02 session, before
+any lever-trade number for these three arms was computed. chop_entry_bar's
+15th chop day is that session's close (SPY +0.7% over its 50MA).
+
 ## Arm read 2026-10-02 — shadow_ml_veto_off (owner decision: KEEP the veto)
 Gate met (15 sub-0.30 buys taken, 9 closed; ≥5 needed). Read from
 `shadow_equity_marks`, closes through 2026-10-01:

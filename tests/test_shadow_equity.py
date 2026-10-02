@@ -225,3 +225,71 @@ class TestLateHoldingBar:
                   "SPY": {date(2026, 9, 21) + timedelta(days=i): 700.0 for i in range(12)}}
         SE.fill_shadow_equity_marks(db, later, lambda t, st: closes)
         assert self._mark(db, s, date(2026, 9, 22)).unpriced_positions == 1
+
+
+class TestLeverTradesVs:
+    """Amendment 2026-10-02: score only the positions one stack opened and
+    the other did not, so slot displacement can't pass for the lever."""
+
+    def _pair(self, db):
+        act = datetime(2026, 9, 1, 13, 5)
+        return (_strategy(db, "shadow_lever_arm", act),
+                _strategy(db, "shadow_lever_comp", act))
+
+    def test_skipped_and_substitutes_scored_entry_to_exit(self, db):
+        arm, comp = self._pair(db)
+        d = lambda day, h=15: datetime(2026, 9, day, h)
+        # Shared name (bought 2 days apart): excluded from both sides.
+        _trade(db, comp, "SHR", "BUY", 10, 100.0, d(2))
+        _trade(db, arm, "SHR", "BUY", 12, 101.0, d(4))
+        # Comparator-only loser, closed: skipped = -$100.
+        _trade(db, comp, "LOS", "BUY", 10, 50.0, d(3))
+        _trade(db, comp, "LOS", "SELL", 10, 40.0, d(10))
+        # Arm-only winner with a pyramid, still open at $30: substitute.
+        _trade(db, arm, "WIN", "BUY", 10, 20.0, d(3))
+        _trade(db, arm, "WIN", "PYRAMID", 5, 22.0, d(8))
+        r = SE.lever_trades_vs(db, arm.id, comp.id, price_fn=lambda tks: {"WIN": 30.0})
+        assert [p["ticker"] for p in r["skipped"]["positions"]] == ["LOS"]
+        assert r["skipped"]["pnl_usd"] == -100.0
+        # cost 200 + 110 = 310; open 15 sh x 30 = 450 -> +140
+        assert r["substitutes"]["pnl_usd"] == 140.0
+        assert r["substitutes"]["n_open"] == 1
+        assert r["lever_net_usd"] == 240.0 and r["lever_positive"] is True
+        assert r["lever_net_pp"] == round(240 / 25000 * 100, 2)
+
+    def test_displacement_win_reads_negative(self, db):
+        # The Oct-2 ml_veto_off shape: the arm's own extra buys lose, and the
+        # comparator's divergent buys lose MORE. lever_net is the difference.
+        arm, comp = self._pair(db)
+        d = lambda day: datetime(2026, 9, day, 15)
+        _trade(db, arm, "VET", "BUY", 10, 10.0, d(3))
+        _trade(db, arm, "VET", "SELL", 10, 9.0, d(9))        # -10
+        _trade(db, comp, "BAD", "BUY", 10, 10.0, d(3))
+        _trade(db, comp, "BAD", "SELL", 10, 8.0, d(9))       # -20
+        r = SE.lever_trades_vs(db, arm.id, comp.id, price_fn=lambda tks: {})
+        assert r["substitutes"]["pnl_usd"] == -10.0 and r["skipped"]["pnl_usd"] == -20.0
+        assert r["lever_net_usd"] == 10.0     # positive: substitutes lost less
+
+    def test_rebuy_is_a_new_generation(self, db):
+        arm, comp = self._pair(db)
+        d = lambda day: datetime(2026, 9, day, 15)
+        _trade(db, arm, "REB", "BUY", 10, 10.0, d(2))
+        _trade(db, arm, "REB", "SELL", 10, 12.0, d(5))       # +20
+        _trade(db, arm, "REB", "BUY", 10, 15.0, d(20))       # second generation
+        _trade(db, arm, "REB", "SELL", 10, 14.0, d(25))      # -10
+        r = SE.lever_trades_vs(db, arm.id, comp.id, price_fn=lambda tks: {})
+        assert sorted(p["pnl_usd"] for p in r["substitutes"]["positions"]) == [-10.0, 20.0]
+
+    def test_buys_before_the_later_activation_are_ignored(self, db):
+        arm = _strategy(db, "shadow_lever_arm", datetime(2026, 9, 10, 13, 5))
+        comp = _strategy(db, "shadow_lever_comp", datetime(2026, 9, 1, 13, 5))
+        _trade(db, comp, "OLD", "BUY", 10, 10.0, datetime(2026, 9, 3, 15))
+        r = SE.lever_trades_vs(db, arm.id, comp.id, price_fn=lambda tks: {})
+        assert r["skipped"]["n"] == 0 and r["since"] == "2026-09-10"
+
+    def test_open_position_without_a_quote_is_flagged(self, db):
+        arm, comp = self._pair(db)
+        _trade(db, arm, "NOQ", "BUY", 10, 10.0, datetime(2026, 9, 3, 15))
+        r = SE.lever_trades_vs(db, arm.id, comp.id, price_fn=lambda tks: {})
+        assert r["substitutes"]["n_unpriced"] == 1
+        assert r["substitutes"]["pnl_usd"] == 0.0   # marked at its own entry

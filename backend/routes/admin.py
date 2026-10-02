@@ -2624,7 +2624,7 @@ async def shadow_equity(
     shadow_baseline): arm-minus-comparator daily excess on trend vs chop
     days. Read-only."""
     from backend.database import ShadowStrategy, ShadowEquityMark
-    from backend.shadow_equity import regime_excess_vs
+    from backend.shadow_equity import regime_excess_vs, lever_trades_vs
     from backend.shadow_strategy_sync import shadow_comparators
     arm = db.query(ShadowStrategy).filter(ShadowStrategy.name == name).first()
     if arm is None:
@@ -2641,6 +2641,10 @@ async def shadow_equity(
                   for m in marks],
         "vs_comparator": (regime_excess_vs(db, arm.id, comp.id)
                           if comp is not None and comp.id != arm.id else None),
+        # Amendment 2026-10-02: score only the positions the two stacks did
+        # NOT share, so slot displacement cannot pass for the lever working.
+        "lever_trades": (lever_trades_vs(db, arm.id, comp.id)
+                         if comp is not None and comp.id != arm.id else None),
     }
 
 
