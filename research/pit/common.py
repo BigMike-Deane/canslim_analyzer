@@ -116,3 +116,37 @@ def sec_get(url):
 def fmp_get(endpoint, **params):
     params["apikey"] = dotenv_values(REPO / ".env")["FMP_API_KEY"]
     return _get_json(FMP_BASE + endpoint, params, None, _fmp_throttle)
+
+
+_PRICE_COLS = ["date", "Open", "High", "Low", "Close", "Volume"]
+
+
+def _load_rows(path: Path):
+    import gzip
+    import pandas as pd
+    if not path.exists():
+        return pd.DataFrame(columns=_PRICE_COLS[1:])
+    with gzip.open(path, "rt") as fh:
+        rows = json.load(fh)
+    if not rows:
+        return pd.DataFrame(columns=_PRICE_COLS[1:])
+    df = pd.DataFrame(rows, columns=_PRICE_COLS)
+    df["date"] = pd.to_datetime(df.date)
+    return df.set_index("date").sort_index().astype(float)
+
+
+def load_fmp_prices(symbol: str):
+    return _load_rows(FMP_DIR / "prices" / f"{symbol}.json.gz")
+
+
+def load_prices(symbol: str):
+    """Split-adjusted daily OHLCV: FMP, with Alpaca SIP bars filling dates FMP
+    lacks (delisted stocks FMP dropped; 2016+). See m1_alpaca_fill.py."""
+    import pandas as pd
+    fmp = load_fmp_prices(symbol)
+    alp = _load_rows(DATA_DIR / "alpaca" / f"{symbol}.json.gz")
+    if alp.empty:
+        return fmp
+    if fmp.empty:
+        return alp
+    return pd.concat([fmp, alp[~alp.index.isin(fmp.index)]]).sort_index()

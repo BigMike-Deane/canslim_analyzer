@@ -27,7 +27,7 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from common import FMP_DIR, META_DIR, REPO
+from common import FMP_DIR, META_DIR, REPO, load_prices
 
 sys.path.insert(0, str(REPO))
 from canslim_scorer import CANSLIMScorer  # noqa: E402
@@ -39,14 +39,7 @@ LOOKBACK = 252
 # ---------- prices ----------
 @lru_cache(maxsize=None)
 def prices(symbol: str) -> pd.DataFrame:
-    path = FMP_DIR / "prices" / f"{symbol}.json.gz"
-    if not path.exists():
-        return pd.DataFrame()
-    with gzip.open(path, "rt") as fh:
-        rows = json.load(fh)
-    df = pd.DataFrame(rows, columns=["date", "Open", "High", "Low", "Close", "Volume"])
-    df["date"] = pd.to_datetime(df.date)
-    return df.set_index("date").sort_index().astype(float)
+    return load_prices(symbol)
 
 
 def market_score_asof(d: pd.Timestamp) -> float:

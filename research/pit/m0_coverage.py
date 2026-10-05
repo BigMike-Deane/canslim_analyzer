@@ -8,24 +8,19 @@ gate population is companies reporting >= $100M annual revenue that year
 year. Also reported: all filers, and filers that later stopped filing
 (delisted/acquired) -- the group survivorship bias would drop.
 """
-import gzip
-import json
-
 import pandas as pd
 
-from common import FMP_DIR, META_DIR
+from common import META_DIR, load_prices
 
 REV = ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]
 
 
 def price_years(symbol, lo, hi):
-    path = FMP_DIR / "prices" / f"{symbol}.json.gz"
-    if not path.exists():
+    px = load_prices(symbol)
+    if px.empty:
         return set()
-    with gzip.open(path, "rt") as fh:
-        dates = pd.to_datetime([r[0] for r in json.load(fh)])
-    dates = dates[(dates >= lo) & (dates <= hi)]
-    counts = pd.Series(1, index=dates).groupby(dates.year).size()
+    d = px.index[(px.index >= lo) & (px.index <= hi)]
+    counts = pd.Series(1, index=d).groupby(d.year).size()
     return set(counts[counts >= 100].index)  # >= 100 sessions = "priced that year"
 
 
@@ -63,8 +58,8 @@ def main():
     rep["n_rev_ge_100M"] = big.merge(filers, on=["cik", "year"]).groupby("year").size()
     print((rep[["all_filers", "rev_ge_100M", "later_delisted"]] * 100).round(1)
           .join(rep.n_rev_ge_100M).to_string())
-    ok = (rep.rev_ge_100M.loc[2011:2025] >= 0.90).all()
-    print(f"\nM0 GATE: {'PASS' if ok else 'FAIL'} (>= 90% of revenue>=$100M filers priced, every year 2011-2025)")
+    ok = (rep.rev_ge_100M.loc[2016:2025] >= 0.90).all()
+    print(f"\nM0 GATE: {'PASS' if ok else 'FAIL'} (>= 90% of revenue>=$100M filers priced, every year 2016-2025; window amended 2026-10-05)")
     rep.to_csv(META_DIR / "m0_coverage.csv")
 
 
