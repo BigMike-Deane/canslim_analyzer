@@ -129,10 +129,11 @@ def _shares_table(cik: int) -> pd.DataFrame:
 
 # ---------- 13F institutional ----------
 @lru_cache(maxsize=1)
-def _inst() -> pd.DataFrame:
+def _inst() -> dict:
+    """cusip -> its 13F rows (period, known_date, inst_shares)."""
     i = pd.read_csv(META_DIR / "inst_13f.csv.gz", dtype={"cusip": str},
                     parse_dates=["period", "known_date"])
-    return i
+    return {c: g for c, g in i.groupby("cusip")}
 
 
 @lru_cache(maxsize=1)
@@ -145,8 +146,12 @@ def inst_pct_asof(cik: int, d: pd.Timestamp) -> float:
     if cik not in ident.index or not isinstance(ident.loc[cik, "cusips"], str):
         return 0.0
     cusips = ident.loc[cik, "cusips"].split()
-    i = _inst()
-    i = i[i.cusip.isin(cusips) & (i.known_date <= d)]
+    by_cusip = _inst()
+    parts = [by_cusip[c] for c in cusips if c in by_cusip]
+    if not parts:
+        return 0.0
+    i = pd.concat(parts)
+    i = i[i.known_date <= d]
     if i.empty:
         return 0.0
     latest = i[i.period == i.period.max()]
