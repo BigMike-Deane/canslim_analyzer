@@ -1221,6 +1221,8 @@ strategy_profiles:
   # 2026-07-30 rebase: originally cloned from nostate_optimized (no correction
   # zone, ML veto off), which confounded the A/B — it sat out every CZ entry
   # the cs_bear baseline could take. Now a faithful cs_bear clone + damper.
+  # READ 2026-10-05 -> no detectable effect (-0.05 sigma vs baseline). Archives
+  # Oct-30. See docs/oct21-readout-rules.md (chop family read).
   nostate_chop_damper:
     hidden: true
     label: "NoState Chop Damper (shadow)"
@@ -1268,6 +1270,8 @@ strategy_profiles:
   # cycle including >=15 chop days (SPY 0-1.5% above 50MA); promote only if
   # it beats BOTH (the sweep must add value beyond the damper alone); kill
   # if it trails shadow_baseline at that checkpoint. No early call.
+  # READ 2026-10-05 -> no detectable effect (-0.19 sigma vs baseline; trails
+  # chop_damper 0.64pp). Archives Oct-30. See docs/oct21-readout-rules.md.
   nostate_chop_spy:
     hidden: true
     label: "NoState Chop SPY (shadow)"
@@ -1549,6 +1553,9 @@ strategy_profiles:
   # shadow_baseline over >=1 full mixed-regime cycle including >=15 chop
   # days AND >=5 suppressed chop entries; promote only if it beats
   # baseline; kill if it trails at that checkpoint. No early call.
+  # READ 2026-10-05 -> no detectable effect: +1.30 sigma vs baseline (under the
+  # +1.5 sigma family bar; launch mismatch), -0.16 sigma vs vintage_sep02,
+  # lever_net -$55. Archives Oct-30. See docs/oct21-readout-rules.md.
   nostate_chop_entry_bar:
     hidden: true
     label: "NoState Chop Entry Bar (shadow)"
@@ -1595,6 +1602,8 @@ strategy_profiles:
   # shadow_baseline over >=1 full mixed-regime cycle including >=15 chop
   # days AND >=5 trims fired; promote only if it beats baseline (the trim
   # must pay for its lost trend upside); kill if it trails. No early call.
+  # READ 2026-10-05 -> structurally dormant (0 trims in 15 chop days).
+  # Archives Oct-30. See docs/oct21-readout-rules.md (chop family read).
   nostate_chop_trim:
     hidden: true
     label: "NoState Chop Trim (shadow)"

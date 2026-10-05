@@ -249,6 +249,11 @@ _SEEDS = [
      "chop_entry_bar, small_cap_gate and industry_cap must also show substitutes beating "
      "skipped buys (lever_net > 0) to count as a win. Signed before chop_entry_bar's gate filled.",
      None),
+    ("2026-10-05", "verdict", "Chop family read: nothing wins (D3) — all four archive Oct-30",
+     "chop_entry_bar +1.30σ vs baseline (bar +1.5σ), −0.16σ vs vintage_sep02, lever_net −$55; "
+     "its lead is baseline's launch (dormant chop_trim, same Aug-25 start, shows +1.13σ). "
+     "chop_spy −0.19σ, chop_damper −0.05σ, chop_trim dormant. Criterion 1 stays blocked; "
+     "E-a (industry cap arm) already running.", None),
 ]
 
 

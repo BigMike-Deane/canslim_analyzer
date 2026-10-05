@@ -367,3 +367,55 @@ mismatch. Against the second control it is +2.46pp = 0.56σ, and its lever
 trades net ≈ 0. Section B's no-effect row: keep the veto, archive the arm.
 "The lever loses where it acts" overstated the evidence. The data says
 the veto neither clearly helps nor clearly hurts.
+
+## Chop family read + program decision 2026-10-05
+All four chop arms had met their chop-day gate by the 2026-10-02 close
+(chop_spy and chop_damper 16, chop_entry_bar and chop_trim 15), so the program
+decision (sections C–E) runs now instead of on Oct-30. Read from
+`shadow_equity_marks`, closes through 2026-10-02. σ = 4.4pp (floor; measured
+1.52). A1-a bar: best chop arm ≥ +1.5σ = **+6.6pp**, plus the mechanism check.
+
+| Arm | Δ vs comparator | Δ vs vintage_sep02 (Sep-2→) | chop / trend excess (bps) | lever_net | Outcome |
+|---|---|---|---|---|---|
+| chop_entry_bar | +5.73pp (+1.30σ) vs baseline, Aug-25→ | −0.72pp (−0.16σ) | +8.9 / +53.6 | **−$55** | no detectable effect |
+| chop_trim | +4.98pp (+1.13σ) vs baseline, Aug-25→ | −1.41pp (−0.32σ) | +5.7 / +51.6 | −$195 | structurally dormant (0 trims) |
+| chop_spy | −0.86pp (−0.19σ) vs baseline, Aug-19→ | −4.66pp (−1.06σ) | −5.5 / +1.7 | −$166 | no detectable effect |
+| chop_damper | −0.22pp (−0.05σ) vs baseline, Aug-19→ | −4.03pp (−0.92σ) | −1.1 / −0.1 | $0 (same names) | no detectable effect |
+
+**chop_entry_bar fails three ways.** (1) +1.30σ is below the A1-a +1.5σ bar,
+and the off-hours adjustment (+$237 arm vs +$97 baseline = 0.56pp) takes it to
++5.17pp = 1.17σ. (2) It needs a clear win against the second control too, and
+against vintage_sep02 it is −0.16σ. (3) lever_net is −$55 (amendment (b)).
+Any one of these is enough.
+
+**The launch mismatch, measured.** chop_trim never fired a trim, so it is a
+plain champion copy launched on Aug-25, the same day as chop_entry_bar. It
+still "beats" baseline by +4.98pp, with nearly the same chop/trend profile
+(+5.7 / +51.6 bps). vintage_sep02, another champion copy, shows the same
+pattern vs baseline (+9.5 / +57.2 bps, lever_net +$296). So most of
+chop_entry_bar's +5.73pp is baseline's Aug-19 launch, not the entry bar.
+Against chop_trim (same day, lever never fired) chop_entry_bar is **+0.75pp
+(+0.17σ)**. This comparison was not pre-registered, so it is context, not the
+ruling. It agrees with the ruling.
+
+**Section B outcomes.** All four chop arms archive on 2026-10-30, per their
+rows. They keep running until then so open lots close for the record; those
+lots do not reopen this read. chop_trim archives as *structurally dormant*:
+0 trims in 15 chop days (dormant gate: ≥5), so the lever never acted. chop_spy's pre-registration also required beating chop_damper.
+It trails chop_damper by 0.64pp, so it fails that too.
+
+**Program decision: D3, nothing wins.** Criterion 1 stays blocked (served
+today: trend +18.4, chop −19.1 bps/day, breakeven trend share 50.9% vs the
+market's recent 43.3%, a 7.6pp gap). Section E was decided on 2026-09-23 and
+the retro check came out net-loser, so **E-a goes ahead.** It is already
+running: shadow_industry_cap vs shadow_vintage_sep30, launched 2026-09-30.
+No promotion, no new vintage, no change to the D-clock.
+
+**What the chop family says.** Four levers on the chop-bleed hypothesis
+(sizing, a cash sweep to SPY, entry filtering, trimming) and none moved chop
+days by more than noise. The served small-cap split points somewhere else.
+On chop days the book trails SPY by 19.1 bps, but trails IWM by only 7.2.
+The other **11.9 bps (62%) is IWM vs SPY**: the book's small-cap exposure
+on days when small caps lag. That is the small_cap_gate hypothesis
+(8/10 IWM-below-50MA closes, 0 buys so far, reads by its own gate). It is
+an observation for the next readout, not a new rule.
