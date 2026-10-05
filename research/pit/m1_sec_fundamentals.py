@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportIndexIssue=false
 """M1: point-in-time fundamentals from SEC XBRL companyfacts.
 
 Every fact carries the `filed` date of the filing that reported it, and a

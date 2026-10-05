@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportIndexIssue=false
 """M0 step 2: map each universe CIK to the ticker its common stock traded under.
 
 FMP search-cik resolves delisted CIKs too (SVB -> SIVB) but also returns

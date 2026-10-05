@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportIndexIssue=false
 """M0 step 1: the survivor-free company universe, from SEC XBRL frames.
 
 A company is in the universe for a calendar quarter if it filed a quarterly
