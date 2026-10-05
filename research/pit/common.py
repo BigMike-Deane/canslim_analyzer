@@ -43,10 +43,39 @@ class Throttle:
             self.next_at = max(now, self.next_at) + self.gap
 
 
+class ScannerAwareThrottle(Throttle):
+    """FMP pacing that yields to the live scanner, which shares the plan's
+    300/min budget and scans every 90 min around the clock (~50 min each,
+    limiter target 250/min). Slow while it scans, faster in the gaps.
+    Status is polled at most once a minute; unreachable -> assume scanning."""
+
+    STATUS_URL = "http://100.104.189.36:8001/api/scanner/status"
+
+    def __init__(self, busy_per_min: float, idle_per_min: float):
+        super().__init__(busy_per_min)
+        self.busy_gap, self.idle_gap = 60.0 / busy_per_min, 60.0 / idle_per_min
+        self.checked_at = 0.0
+
+    def wait(self):
+        if time.monotonic() - self.checked_at > 60:
+            self.checked_at = time.monotonic()
+            try:
+                # Same READ-ONLY token the canslim-api MCP uses (mcp/api_server.py).
+                tok = Path("~/.config/canslim/readonly_token").expanduser().read_text().strip()
+                scanning = requests.get(self.STATUS_URL, timeout=5,
+                                        headers={"Authorization": f"Bearer {tok}"}
+                                        ).json().get("is_scanning", True)
+            except Exception:
+                scanning = True
+            self.gap = self.busy_gap if scanning else self.idle_gap
+        super().wait()
+
+
 _sec_throttle = Throttle(per_minute=8 * 60)  # SEC fair access: <= 10 req/s
-# The live scanner shares the FMP plan's 300/min budget. Default to 60/min;
-# raise via PIT_FMP_PER_MIN only after market hours.
-_fmp_throttle = Throttle(per_minute=float(os.environ.get("PIT_FMP_PER_MIN", 60)))
+if "PIT_FMP_PER_MIN" in os.environ:  # explicit fixed rate wins
+    _fmp_throttle = Throttle(per_minute=float(os.environ["PIT_FMP_PER_MIN"]))
+else:
+    _fmp_throttle = ScannerAwareThrottle(busy_per_min=40, idle_per_min=150)
 
 
 def _get_json(url, params, headers, throttle, retries=4):

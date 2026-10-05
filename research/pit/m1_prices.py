@@ -13,7 +13,7 @@ import json
 
 import pandas as pd
 
-from common import FMP_DIR, META_DIR, fmp_get
+from common import FMP_DIR, META_DIR, cached, fmp_get
 
 INDEXES = ["SPY", "QQQ", "DIA", "IWM"]
 OUT = FMP_DIR / "prices"
@@ -35,13 +35,24 @@ def fetch(symbol):
     return rows
 
 
+def fetch_extras(symbol):
+    """Earnings history (surprise / beat streak, PIT-filterable by report date)
+    and profile (sector for the C/A thresholds; current value, accepted)."""
+    cached(FMP_DIR / "earnings" / f"{symbol}.json",
+           lambda: fmp_get("earnings", symbol=symbol, limit=200))
+    cached(FMP_DIR / "profile" / f"{symbol}.json",
+           lambda: fmp_get("profile", symbol=symbol))
+
+
 def main():
     tickers = pd.read_csv(META_DIR / "cik_tickers.csv.gz").dropna(subset=["symbol"])
     symbols = INDEXES + sorted(set(tickers.symbol) - set(INDEXES))
-    print(f"prices for {len(symbols):,} symbols", flush=True)
+    print(f"prices + earnings + profile for {len(symbols):,} symbols", flush=True)
     cov = []
     for i, sym in enumerate(symbols, 1):
         rows = fetch(sym)
+        if sym not in INDEXES:
+            fetch_extras(sym)
         cov.append((sym, len(rows), rows[-1][0] if rows else None, rows[0][0] if rows else None))
         if i % 500 == 0:
             print(f"  {i:,}/{len(symbols):,}", flush=True)
