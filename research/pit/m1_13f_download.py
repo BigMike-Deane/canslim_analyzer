@@ -48,8 +48,8 @@ def main():
     page = requests.get(f"{BASE}/data-research/sec-markets-data/fails-deliver-data",
                         headers=SEC_HEADERS, timeout=60).text
     ftd = sorted(set(h for h in re.findall(r'href="([^"]*cnsfails(\d{6})[ab]\.zip)"', page)
-                     if h[1] >= "201301"))
-    print(f"FTD files listed (2013->): {len(ftd)}", flush=True)
+                     if h[1] >= "200901"))
+    print(f"FTD files listed (2009->): {len(ftd)}", flush=True)
     n = 0
     for href, _ in ftd:
         name = href.rsplit("/", 1)[-1]
