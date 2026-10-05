@@ -71,3 +71,17 @@ a gate passes and the owner approves a change.
    first and add it later.
 2. **Where it runs:** local WSL (recommended: keeps prod's memory and FMP
    budget clear; the VPS has a 2.5 GB container limit) or the VPS.
+
+## Amendment 2026-10-05 — history window 2016–2026 (owner-approved)
+**Why.** The M0 survivorship gate failed for the early years. Among companies
+with revenue ≥ $100M, price coverage was 66% (2011) rising to 94% (2021+), and
+only 31% for companies that later disappeared. Cause: FMP carries few old
+delisted stocks (2011 gap of 732: 297 recovered tickers with no FMP prices,
+218 where FMP's series starts late or the ticker was reused, 204 with no
+ticker, including never-public filers like Publix). Alpaca SIP daily bars (free with
+the existing paper account) **do** keep delisted stocks (AET, MON, CELG
+verified), but only from 2016. No free source covers 2010–2015.
+**Rule.** The backtest window is **2016-01 → 2026**. M3: tune on **2016–2021**,
+test once on **2022–2026**. M0 gate years: 2016–2025. FMP prices are filled
+from Alpaca where FMP is missing or starts late. Decided before any M3 result
+existed. (The 13F/I data from 2013 is unaffected.)
