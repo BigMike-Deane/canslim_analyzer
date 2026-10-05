@@ -44,14 +44,18 @@ def main():
     for href in links:
         print(f"  {href.rsplit('/', 1)[-1]}: {download(BASE + href, F13_DIR / href.rsplit('/', 1)[-1])}", flush=True)
 
-    # Fails-to-deliver: cnsfailsYYYYMM{a,b}.zip, semi-monthly.
+    # Fails-to-deliver: semi-monthly cnsfailsYYYYMM{a,b}.zip, links from SEC's page.
+    page = requests.get(f"{BASE}/data-research/sec-markets-data/fails-deliver-data",
+                        headers=SEC_HEADERS, timeout=60).text
+    ftd = sorted(set(h for h in re.findall(r'href="([^"]*cnsfails(\d{6})[ab]\.zip)"', page)
+                     if h[1] >= "201301"))
+    print(f"FTD files listed (2013->): {len(ftd)}", flush=True)
     n = 0
-    for y in range(2013, 2027):
-        for m in range(1, 13):
-            for half in "ab":
-                name = f"cnsfails{y}{m:02d}{half}.zip"
-                status = download(f"{BASE}/files/data/fails-deliver-data/{name}", FTD_DIR / name)
-                n += status in ("ok", "cached")
+    for href, _ in ftd:
+        name = href.rsplit("/", 1)[-1]
+        status = download(BASE + href, FTD_DIR / name)
+        n += status in ("ok", "cached")
+        time.sleep(0.3)
     print(f"FTD files on disk: {n}", flush=True)
 
 
