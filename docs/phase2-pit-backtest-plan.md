@@ -524,3 +524,12 @@ M3, phase 3, batch 2, H5/H6 — with unchanged rules, and both versions are
 reported. v2 artifacts kept as `*_v2_oct06.*`. H7 runs on v3 only. Alpaca
 delisted-price fill is not re-run for the new CIKs (they are mostly current
 companies); coverage is re-checked.
+
+**v3 coverage gate (2026-10-06 ~6 PM CT):** the script's blended figure fell
+(2016: 84.8%) because the NetIncomeLoss additions bring ~150–450 non-traded
+revenue ≥ $100M filers per year (finance subsidiaries, privately held issuers
+of public debt) into the denominator — 55–73% of them priced. **Like-for-like
+on the original EPS-reporting universe the gate PASSES: 90.6 / 91.5 / 93.1 /
+93.9 / 90.2 / 94.3 / 95.3 / 94.8 / 94.5 / 95.9% (2016–2025)**, ≥ v2. The traded
+additions (Visa, Constellation Brands, …) enter the panel; the untradeable ones
+cannot, by construction.
