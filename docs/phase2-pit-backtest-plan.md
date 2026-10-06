@@ -404,3 +404,40 @@ issuance, momentum, composite) FAIL; batch 2 (value, low vol, quality, Score
 v2, large caps) FAIL. No tested approach beats SPY long-only after costs over
 2016–2026. Clean 2000–2015 data is available (Sharadar, ~$39–69 for one month)
 but there is no candidate strong enough to justify the spend.
+
+## "Test it the way it trades" pre-registration (2026-10-06, written before any number exists)
+
+Owner (Oct-6), not ready to stop: the live book's +20.7% vs SPY ≈ +18% since
+April rests on one trade (DELL +$3,877 ≈ 15.5 pp; all other realized trades
+≈ −$190). DELL entered through the **pre-breakout setup path** (score 69 < 72;
+"cup, 2% below pivot", "Est↑ +27%"). Prior tests measured *average* ranking;
+CANSLIM claims to find *outliers* and monetize them with exits. Fresh questions,
+never examined: big-winner odds, the setup signal, and the live rules as a
+strategy. Analyst-revision history is a data gap (vendor research running).
+
+**Panel:** corrected M3 panel v2 (same dates/universe). New fields per row, all
+known on D: live `TechnicalAnalyzer.detect_base_pattern` on the last 26 weekly
+bars (W-FRI resample of the stitched daily series ending at D — the live app
+reads 6 months of Yahoo weekly bars), `TechnicalAnalyzer.is_breaking_out` on the
+PIT StockData (`m2_adapter.stock_data_asof`), and `trading_engine.
+calculate_entry_signals` → `entry_type` ∈ {pre-breakout, breakout, standard}.
+Forward 120-session return r120 (same exclusions as M3: windows spanning a
+ticker change dropped; delisting = last price, flagged).
+
+**H5 big-winner odds (groups: G72 = total ≥ 72; GSET = entry_type
+pre-breakout; GSET65 = pre-breakout AND total ≥ 65):**
+- Per date: big-winner rate (r120 ≥ +50%) in the group minus the universe rate.
+  Every panel date, Newey–West t (12 lags).
+- **PASS** a group: mean difference > 0, **NW t ≥ 3**, > 0 in 2016–21 AND
+  2022–26, AND the group's blowup rate (r120 ≤ −30%) is not higher than the
+  universe's by more than its big-winner excess (net tail edge ≥ 0 in both halves).
+- Reporting only: +100% rate, mean r120 excess, group size per date.
+
+**H6 setup signal (GSET, GSET65; plus breakout):** per-date mean 60-session
+excess vs universe; **PASS** = NW t (6 lags) ≥ 3, > 0 in both halves, AND group
+equal-weight 60d return − SPY − 19 bps × turnover > 0 in both halves.
+
+A pass in H5/H6 is necessary but not sufficient: the decision gate is **H7**,
+the live rules simulated as a strategy vs SPY, pre-registered separately before
+it runs. **Nothing passes H5/H6 → H7 is still run once** (exits could monetize
+tails the averages miss), and its result is final for this program.
