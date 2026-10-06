@@ -148,3 +148,41 @@ constant within a date and is not evaluated here.
 **Verdict per the pre-registered rule: H1 FAIL → recommend index funds.**
 M4 (portfolio sim) is not run as a gate; the selection signal it would
 compound has no detectable edge over 10 years.
+
+## Market-timing test pre-registration (2026-10-06, written before any number exists)
+
+Owner chose (Oct-6, after M3 H1 FAIL): run the one CANSLIM piece M3 could not
+see — market timing — then a Phase 3 signal lab. This test asks only whether the
+timing *signal* beats holding SPY; it is not a simulation of the live book.
+
+**Rules (SPY ↔ cash, daily):**
+- **T1 (primary) = the live champion's gate:** in SPY when SPY close > its 50-day
+  simple average, else cash (`nostate_optimized` has market_state off → legacy
+  `market_regime_gate`, `ai_trader.py` "spy_px < spy_50").
+- **T2 (secondary) = the scorer's M:** in SPY when the composite M
+  (`data_fetcher.calculate_index_m_score` × `MARKET_INDEX_WEIGHTS` over
+  SPY/QQQ/DIA, renormalized over indexes with ≥ 200 sessions) ≥ 7.5 of 15.
+- Signals use split-adjusted closes (as live); returns use dividend-adjusted
+  closes (total return). Signal at close of day t → position held from close of
+  t+1 (one full day of lag; same-close execution reported as sensitivity only).
+- Cash earns the 3-month T-bill (FRED DTB3, annual % / 252 per session).
+- Cost: 5 bps per switch, each direction.
+
+**Periods:** A = 1994-01-03 → 2015-12-31 (never examined in this program),
+B1 = 2016–2021, B2 = 2022-01-03 → 2026-10-05. Data: FMP `historical-price-eod`
+dividend-adjusted + full, fetched Oct-6, in `~/canslim_pit_data/timing/`.
+
+**Pass rules (applied to T1; T2 reported by the same rule):**
+- **PASS (beats SPY):** timed CAGR > buy-and-hold SPY CAGR, after costs, in
+  **all three** periods A, B1, B2.
+- **RISK TOOL (does not meet the beat-SPY goal):** not PASS, but timed Sharpe >
+  buy-and-hold Sharpe AND timed max drawdown shallower, in all three periods.
+- **FAIL:** anything else.
+
+Reporting only: CAGR, Sharpe (excess of T-bill), max drawdown, % time invested,
+switches per year, worst whipsaw month, Memmel-corrected Jobson–Korkie test of
+the Sharpe difference over the full 1994–2026 span.
+
+Prior, stated before running: published work on 50/200-day trend rules in US
+large caps mostly finds lower drawdowns and lower-or-similar returns in
+bull-dominated decades, so RISK TOOL or FAIL is more likely than PASS.
