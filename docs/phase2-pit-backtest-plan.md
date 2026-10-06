@@ -85,3 +85,36 @@ verified), but only from 2016. No free source covers 2010–2015.
 test once on **2022–2026**. M0 gate years: 2016–2025. FMP prices are filled
 from Alpaca where FMP is missing or starts late. Decided before any M3 result
 existed. (The 13F/I data from 2013 is unaffected.)
+
+## M3 pre-registration (2026-10-05, written before any M3 number exists)
+**Panel.** Every 10th NYSE session from 2016-01-04 to the latest date with 60
+sessions of forward prices. Universe on each date: price > $3, market cap ≥
+$300M (close × SEC shares outstanding as known that day), and a fresh price.
+Scores come from `m2_adapter.score_asof` (the real scorer; passed M2). Forward
+returns are 10/20/60 sessions, close to close, from stitched prices. A stock
+that stops trading inside the window is marked at its last price and flagged
+(delisting returns are unknown: optimistic for bankruptcies, conservative for
+cash buyouts). "Excess" = stock return − equal-weight universe return that date.
+
+**H1 — does the score sort winners? (THE GATE)**
+Top-quintile minus bottom-quintile 20-session excess, on non-overlapping
+dates (every 2nd panel date). PASS needs **mean > 0 with t ≥ 2.0 over
+2016–2026 AND mean > 0 on 2022–2026 alone.** FAIL → recommend index funds
+(owner's rule). Reported beside it, not gating: the 72+ band vs the universe,
+10/60-session horizons, and the trend/chop split.
+
+**H2 — over-extension.** Mean 20-session excess of the 60–72 band minus the 72+
+band. Supported if > 0 with t ≥ 2 on 2016–2021 AND > 0 on 2022–2026.
+
+**H3 — reweighting.** On 2016–2021 only, grid-search integer weights 0–3 on
+C, A, N, S, L, I (M is the same for every stock on a date, so it can't rank).
+Objective: the H1 spread. Then **one** evaluation on 2022–2026 vs the current
+weights (all 1). Supported only if it beats current weights on 2022–2026.
+
+**H4 — momentum is regime-dependent.** Quintile spreads of L, N and S, split by
+SPY above/below its 50-day MA on the score date. Supported if the
+above-minus-below difference is > 0 with t ≥ 2 on 2016–2021 AND same sign on
+2022–2026.
+
+Every test also reports the 2016–2021 and 2022–2026 halves separately, and the
+residual survivorship caveat (later-delisted coverage 71–79%).
