@@ -77,6 +77,8 @@ class _AsOfFetcher:
 def _facts() -> pd.DataFrame:
     f = pd.read_csv(META_DIR / "sec_facts.csv.gz", low_memory=False,
                     usecols=["cik", "concept", "unit", "start", "end", "val", "filed", "form"])
+    f = f[f.concept.isin(["EarningsPerShareDiluted", "EarningsPerShareBasic",
+                          "EntityCommonStockSharesOutstanding"])]
     for c in ("start", "end", "filed"):
         f[c] = pd.to_datetime(f[c], errors="coerce")
     f["days"] = (f.end - f.start).dt.days

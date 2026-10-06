@@ -164,9 +164,28 @@ def load_cik_prices(cik: int):
     parts = []
     for s in seg.sort_values("n_obs").itertuples():  # low priority first
         px = load_prices(s.symbol)
-        parts.append(px[(px.index >= s.seg_from) & (px.index <= s.seg_to)])
+        parts.append(px[(px.index >= s.seg_from) & (px.index <= s.seg_to)].assign(symbol=s.symbol))
     out = pd.concat(parts)
     return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+_SPLITS: dict = {}
+
+
+def split_factor(symbol: str, d) -> float:
+    """Multiply a split-adjusted price on date d by this to get the actual
+    price then: product of every split ratio dated after d (FMP /splits)."""
+    import pandas as pd
+    if symbol not in _SPLITS:
+        p = FMP_DIR / "splits" / f"{symbol}.json"
+        rows = json.loads(p.read_text()) if p.exists() else None
+        _SPLITS[symbol] = [(pd.Timestamp(r["date"]), r["numerator"] / r["denominator"])
+                           for r in (rows or []) if r.get("numerator") and r.get("denominator")]
+    f = 1.0
+    for when, ratio in _SPLITS[symbol]:
+        if when > d:
+            f *= ratio
+    return f
 
 
 _SEG = None
