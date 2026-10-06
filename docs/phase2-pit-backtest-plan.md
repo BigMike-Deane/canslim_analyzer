@@ -255,3 +255,10 @@ Known caveats, stated before running: FMP epsEstimated is FMP's historical
 consensus (not verified PIT); FMP earnings are keyed by current symbol; residual
 survivorship as in M3 (later-delisted coverage 71–79%), which flatters
 long-only results.
+
+**Amendment before any result (2026-10-06):** FMP earnings EPS are
+*split-adjusted and rounded to cents* (NVDA 2016 epsActual 0.01–0.02; one 2016
+estimate 0.29 left unadjusted). S1's denominator is therefore the
+**split-adjusted** close on D (same basis as the EPS), not the actual close.
+Rounding makes S1 coarse for heavily split stocks and stray unadjusted
+estimates create outliers; quintile ranks limit the damage. Stated as a caveat.
