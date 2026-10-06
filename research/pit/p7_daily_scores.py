@@ -6,7 +6,9 @@ docs/phase2-pit-backtest-plan.md, "H7 pre-registration").
 Eligible = inside the identity window, fresh price on D, actual close > $3,
 market cap >= $300M as known (actual close x SEC shares). Scores come from the
 live CANSLIMScorer via m2_adapter (same as the M3 panel); eps_growth and
-annual_cagr replicate backtester.py's projected_growth inputs.
+annual_cagr replicate backtester.py's projected_growth inputs. Per-date values
+of the engine's static_data inputs ride along: surprise %, beat streak, 13F
+institutional %, and days to the next FMP-dated earnings report.
 
   python3 p7_daily_scores.py [--workers W] [--limit N]
 Output: META_DIR/daily/<chunk>.csv.gz (one per 25-CIK chunk; resumable)
@@ -18,9 +20,11 @@ import time
 import numpy as np
 import pandas as pd
 
+import json
+
 import m2_adapter as m
 from canslim_scorer import CANSLIMScorer
-from common import META_DIR, split_factor
+from common import FMP_DIR, META_DIR, split_factor
 
 START, END = "2016-01-04", "2026-10-05"
 MIN_PRICE, MIN_CAP = 3.0, 300e6
@@ -84,6 +88,8 @@ def work(chunk):
             if px.empty:
                 continue
             sh = m._shares_table(cik)
+            ep = FMP_DIR / "earnings" / f"{row.symbol}.json"
+            edates = sorted({x["date"] for x in (json.loads(ep.read_text()) if ep.exists() else []) if x.get("date")})
             for d in SESS:
                 if not (row.valid_from <= d <= row.valid_to):
                     continue
@@ -100,14 +106,20 @@ def work(chunk):
                 scorer = CANSLIMScorer(m._AsOfFetcher(d))
                 scorer._market_score, scorer._market_detail = MSCORE[d], "pit"
                 sc = scorer.score_stock(sd)
-                rows.append((cik, d.strftime("%Y-%m-%d"), row.symbol, round(sc.total_score, 2),
+                ds = d.strftime("%Y-%m-%d")
+                nxt = next((e for e in edates if e > ds), None)  # next report date (live sees the scheduled date)
+                rows.append((cik, ds, row.symbol, round(sc.total_score, 2),
                              sc.c_score, sc.a_score, sc.n_score, sc.s_score, sc.l_score, sc.i_score, sc.m_score,
                              round(eps_growth(sd.quarterly_earnings), 2), round(annual_cagr(sd.annual_earnings), 2),
-                             sd.sector, round(close * known.val.iloc[-1] / 1e6, 1)))
+                             sd.sector, round(close * known.val.iloc[-1] / 1e6, 1),
+                             round(sd.earnings_surprise_pct or 0, 2), int(sd.eps_beat_streak or 0),
+                             round(sd.institutional_holders_pct or 0, 2),
+                             (pd.Timestamp(nxt) - d).days if nxt else None))
         except Exception as e:
-            rows.append((cik, None, repr(e)[:150]) + (np.nan,) * 12)
+            rows.append((cik, None, repr(e)[:150]) + (np.nan,) * 16)
     pd.DataFrame(rows, columns=["cik", "date", "symbol", "total", "c", "a", "n", "s", "l", "i", "m",
-                                "eps_growth", "annual_cagr", "sector", "mcap_m"]).to_csv(path, index=False)
+                                "eps_growth", "annual_cagr", "sector", "mcap_m", "surprise_pct", "beat_streak",
+                                "inst_pct", "days_to_earnings"]).to_csv(path, index=False)
     return idx, len(rows)
 
 
