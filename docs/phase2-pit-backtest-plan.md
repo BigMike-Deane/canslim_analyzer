@@ -208,3 +208,50 @@ in every period, and neither has a higher Sharpe in all three. Trend timing on
 SPY does not beat holding SPY. Caveat for the live book: its gate only blocks
 *new buys* (positions exit by their own stops), so the live drag is smaller
 than T1's full-cash drag, but this offers no evidence the gate adds value.
+
+## Phase 3 signal-lab pre-registration (2026-10-06, written before any number exists)
+
+Owner chose (Oct-6) to look for an edge outside CANSLIM after M3 H1 FAIL and
+timing FAIL. Five hypotheses, fixed definitions, **no tuning**, one run.
+
+**Panel:** the M3 panel exactly (same 265 dates, same universe: actual price >
+$3, market cap ≥ $300M as known; same forward returns and exclusions).
+
+**Signals (all known strictly before the panel date D):**
+- **S1 PEAD (earnings-surprise drift):** (epsActual − epsEstimated) / actual
+  close on D, from the most recent FMP earnings report dated *strictly before* D
+  and within the last 63 sessions; else missing. Higher = better.
+- **S2 Gross profitability:** latest 10-K fiscal year (filed ≤ D): gross profit
+  ÷ total assets at that fiscal year end. Gross profit = GrossProfit, else
+  revenue − (CostOfRevenue | CostOfGoodsAndServicesSold | CostOfGoodsSold).
+  Assets = Assets at the same period end, same or earlier filing ≤ D. Missing if
+  either side missing or assets ≤ 0. Higher = better.
+- **S3 Net share issuance:** −log(shares_now / (shares_then × splits between)),
+  shares = dei EntityCommonStockSharesOutstanding as known on D vs as known on
+  D − 365 days, split ratios from FMP /splits (`common.split_factor`). Higher
+  (= buybacks) = better.
+- **S4 Momentum 12−1:** close(D − 21 sessions) / close(D − 252 sessions) − 1 on
+  the company's stitched price series; missing if fewer than 252 sessions.
+- **S5 Composite (fixed, untuned):** mean of the per-date percentile ranks of
+  S1–S4, requiring ≥ 3 of 4 present.
+
+**Tests (per signal, 20-session horizon, non-overlapping dates as in M3):**
+- **(a) Signal is real:** top − bottom quintile excess spread: full 2016–2026
+  **t ≥ 3.0** (raised from 2.0 because five hypotheses are tested and the
+  2022–26 holdout has been looked at once), AND mean > 0 in 2016–21 AND in
+  2022–26.
+- **(b) Usable long-only to beat SPY:** top-quintile equal-weight 20-session
+  return − SPY 20-session return − cost > 0 in 2016–21 AND in 2022–26.
+  Cost = top-quintile turnover between consecutive non-overlapping dates × 19
+  bps round trip (the program's cost assumption).
+- **PASS = (a) AND (b)** → the signal advances to M4 portfolio simulation
+  (8 positions, live-style exits, costs, vs SPY and IWM). **No signal passes →
+  recommend index funds and close the lab.**
+
+Reporting only: 10/60-session spreads, top-quintile vs IWM, coverage per
+signal, rank correlation of each signal with log market cap.
+
+Known caveats, stated before running: FMP epsEstimated is FMP's historical
+consensus (not verified PIT); FMP earnings are keyed by current symbol; residual
+survivorship as in M3 (later-delisted coverage 71–79%), which flatters
+long-only results.
