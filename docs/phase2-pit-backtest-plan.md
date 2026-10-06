@@ -186,3 +186,25 @@ the Sharpe difference over the full 1994–2026 span.
 Prior, stated before running: published work on 50/200-day trend rules in US
 large caps mostly finds lower drawdowns and lower-or-similar returns in
 bull-dominated decades, so RISK TOOL or FAIL is more likely than PASS.
+
+## Market-timing results (2026-10-06, single run, rules as pre-registered above)
+
+Script `research/pit/t1_timing.py`, log `~/canslim_pit_data/meta/t1_timing.log`.
+
+| Rule | Period | Timed CAGR | SPY CAGR | Sharpe (timed / SPY) | Max DD (timed / SPY) | Invested | Switches/yr |
+|---|---|---|---|---|---|---|---|
+| **T1** SPY>50MA | A 1994–2015 | +3.95% | +8.93% | 0.17 / 0.41 | −35.3% / −55.2% | 65% | 19.2 |
+| | B1 2016–21 | +10.14% | +17.28% | 0.87 / 0.92 | −15.2% / −33.7% | 76% | 14.7 |
+| | B2 2022–26 | +5.86% | +12.39% | 0.21 / 0.53 | −21.1% / −24.5% | 68% | 17.7 |
+| **T2** composite M≥7.5 | A 1994–2015 | +6.00% | +8.93% | 0.33 / 0.41 | −29.6% / −55.2% | 71% | 14.2 |
+| | B1 2016–21 | +11.30% | +17.28% | 0.90 / 0.92 | −12.7% / −33.7% | 85% | 10.3 |
+| | B2 2022–26 | +9.98% | +12.39% | 0.56 / 0.53 | −15.6% / −24.5% | 75% | 9.3 |
+
+Sharpe difference 1994–2026 (Memmel z): T1 −1.35, T2 −0.36. Same-close
+execution changes CAGR by < 1.5 pp and flips no verdict.
+
+**Verdict: T1 FAIL, T2 FAIL.** Both cut drawdowns but lose 2.4–7 pp/yr of CAGR
+in every period, and neither has a higher Sharpe in all three. Trend timing on
+SPY does not beat holding SPY. Caveat for the live book: its gate only blocks
+*new buys* (positions exit by their own stops), so the live drag is smaller
+than T1's full-cash drag, but this offers no evidence the gate adds value.

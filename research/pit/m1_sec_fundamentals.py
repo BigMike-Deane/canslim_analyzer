@@ -32,13 +32,13 @@ OUT = SEC_DIR / "facts"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-def fetch_one(cik):
-    path = OUT / f"{cik}.json.gz"
+def fetch_one(cik, keep=KEEP, out=OUT):
+    path = out / f"{cik}.json.gz"
     if path.exists():
         return "cached"
     data = sec_get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{str(cik).zfill(10)}.json")
     rows = []
-    for (tax, concept) in KEEP:
+    for (tax, concept) in keep:
         units = ((data or {}).get("facts", {}).get(tax, {}).get(concept) or {}).get("units", {})
         for unit, facts in units.items():
             for f in facts:
