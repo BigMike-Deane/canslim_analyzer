@@ -370,3 +370,8 @@ windows) with **Newey–West t-statistics, 6 lags**. 20 sessions reported only.
 
 Reporting only: S1–S4 re-run on this large-cap universe at 60 sessions (seen
 before, not evidence), coverage, rank correlation with log market cap.
+
+**Batch 2 amendment before any result (2026-10-06):** sample review found SEC
+unit errors (NPO E/P ±95,000; REAL accruals −102× assets). Glitch bounds:
+E/P set missing when |E/P| > 5; accruals set missing when |accruals| > 2×
+assets. Real extremes are kept (MTD ROE 35 from buyback-shrunk equity).
