@@ -375,3 +375,32 @@ before, not evidence), coverage, rank correlation with log market cap.
 unit errors (NPO E/P ±95,000; REAL accruals −102× assets). Glitch bounds:
 E/P set missing when |E/P| > 5; accruals set missing when |accruals| > 2×
 assets. Real extremes are kept (MTD ROE 35 from buyback-shrunk equity).
+
+## Batch 2 / Score v2 results (2026-10-06, single run, rules as pre-registered)
+
+Universe top 1,000 by market cap/date: 265,000 rows, 2,134 companies. Signals
+0 errors. Script `research/pit/p4_tests.py`, log `meta/p4_results.log`.
+
+| Hypothesis | (a) top−bottom 60d: full (NW t) / 2016–21 / 2022–26 | (b1) top EW − SPY net halves | (b2) cap-wt ex-bottom − SPY net halves | Verdict |
+|---|---|---|---|---|
+| V value (E/P + B/M) | +3 bps (t 0.03) / −47 / +71 | −81 / −96 | +47 / −14 | FAIL |
+| LV low volatility | −151 (t −1.16) / −126 / −185 | −143 / −212 | −161 / −101 | FAIL |
+| Q quality (ROE + low accruals) | +82 (t 1.95) / +135 / +11 | +7 / −139 | +3 / −40 | FAIL |
+| SCORE v2 (V, LV, Q, PEAD, issuance) | −4 (t −0.05) / −4 / −5 | −88 / −95 | +41 / −36 | FAIL |
+
+**Verdict: BATCH 2 FAIL → per the pre-registered rule, recommend index funds;
+research closes.** Low volatility was strongly *negative* (low-vol large caps
+trailed a high-beta, mega-cap-led decade) and cancelled the other inputs in
+Score v2. Reporting only (seen before): in large caps at 60d, S1 PEAD +108 bps
+(t 2.76) and S3 net issuance +139 (t 2.16) stay positive in both halves — the
+only consistent effects found in the program, neither at the t ≥ 3 bar and
+neither beats SPY long-only after costs.
+
+### Program summary (2026-10-05 → 10-06)
+Five pre-registered gates, all on point-in-time data with delisted names:
+CANSLIM score (M3 H1, t 0.41) FAIL; SPY market timing (T1 live gate, T2
+composite M, 1994–2026) FAIL; phase 3 lab (PEAD, gross profitability, net
+issuance, momentum, composite) FAIL; batch 2 (value, low vol, quality, Score
+v2, large caps) FAIL. No tested approach beats SPY long-only after costs over
+2016–2026. Clean 2000–2015 data is available (Sharadar, ~$39–69 for one month)
+but there is no candidate strong enough to justify the spend.
