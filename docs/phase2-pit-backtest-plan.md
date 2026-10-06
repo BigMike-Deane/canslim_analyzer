@@ -533,3 +533,25 @@ on the original EPS-reporting universe the gate PASSES: 90.6 / 91.5 / 93.1 /
 93.9 / 90.2 / 94.3 / 95.3 / 94.8 / 94.5 / 95.9% (2016–2025)**, ≥ v2. The traded
 additions (Visa, Constellation Brands, …) enter the panel; the untradeable ones
 cannot, by construction.
+
+## v3 re-runs on fully corrected data (2026-10-06 evening, rules unchanged)
+
+Panel v3: 701,326 rows, 5,454 companies (v2: 4,774), median 2,639 stocks/date,
+0 errors; META, DELL, JPM, V, CMCSA, PRU now present and correctly priced.
+Logs `meta/*_v3.log`. **Every verdict is unchanged:**
+
+| Test | v2 | v3 |
+|---|---|---|
+| M3 H1 total-score spread 20d | +16 bps, t 0.41 FAIL | **+17 bps, t 0.45 FAIL** (2016–21 −5, 2022–26 +47) |
+| M3 72+ band vs universe | +11 bps | +6 bps; H2/H3/H4 not supported |
+| S1 PEAD | t 2.69 FAIL | t 2.75 FAIL (both halves +42 bps) |
+| S2 / S3 / S4 / S5 | t 0.44 / 1.47 / 0.81 / 1.81 | t 0.35 / 1.51 / 0.89 / 1.93 — all FAIL |
+| V value 60d | t 0.03 FAIL | t −0.12 FAIL ((b2) passed, (a) did not → noise) |
+| LV low volatility | −151 bps, t −1.16 | −152 bps, t −1.16 FAIL |
+| Q quality | t 1.95 | t 2.19 FAIL (2022–26 +32 only) |
+| SCORE v2 | t −0.05 | t −0.01 FAIL |
+| H5 G72 big-winner odds | −0.11 pp | −0.01 pp FAIL |
+| H5 GSET / GSET65 | −1.92 / −1.71 pp (NW t −6.6 / −4.0) | −1.94 / −1.59 pp (NW t −6.7 / −5.1) FAIL |
+| H6 GSET / GSET65 / BRK | all FAIL | all FAIL (BRK − SPY net −183 bps, t −2.93) |
+
+The data fixes moved estimates by hundredths. H7 runs on v3.
