@@ -324,3 +324,49 @@ binding failure is (b): the equal-weight universe trailed SPY by ~26 bps/20d
 (≈ 3.4 %/yr) over 2016–2026, so even the best quintile only roughly matches SPY
 (S5 top − SPY ≈ 0; top − IWM +17 bps). Much of the spread is avoiding losers
 (bottom quintile), which a long-only portfolio cannot fully monetize.
+
+## Batch 2 / Score v2 pre-registration (2026-10-06, written before any number exists)
+
+Owner (Oct-6): step back and build our own score from what the tests showed;
+chose "batch 2 on free data now + research a clean 2000–2015 dataset". Value,
+low volatility and quality have **never been examined** in this program, so
+they are fresh tests on 2016–2026. Score v2 also contains S1/S3 (seen in phase
+3), so its result is labelled **partly in-sample** and cannot by itself justify
+real money; a fully clean test needs 2000–2015 data (vendor research pending).
+
+**Universe:** the corrected M3 panel (v2), restricted per date to the **1,000
+largest by market cap as known that day** (actual close × SEC shares).
+
+**Signals (known strictly before D unless stated; no tuning):**
+- **V value** = mean of per-date percentile ranks of (i) earnings yield = sum of
+  the latest 4 quarterly diluted EPS as known on D (distinct period ends, newest
+  within 15 months; derived Q4 as in M2) ÷ actual close on D, and (ii)
+  book-to-market = latest StockholdersEquity (instant, filed ≤ D) ÷ market cap.
+  Either alone if the other is missing.
+- **LV low volatility** = − standard deviation of daily returns over the last
+  252 sessions to D on the stitched series (≥ 200 returns required).
+- **Q quality** = mean of percentile ranks of (i) ROE = latest 10-K FY net
+  income ÷ StockholdersEquity at that FY end (equity > 0), and (ii) −accruals =
+  −(net income − operating cash flow) ÷ total assets, same 10-K FY. Either alone
+  if the other is missing.
+- **SCORE v2** = mean of percentile ranks of V, LV, Q, S1 (PEAD), S3 (net
+  issuance), requiring ≥ 4 of 5 present. Equal weights, fixed.
+
+**Horizon:** primary **60 sessions**, using every panel date (overlapping
+windows) with **Newey–West t-statistics, 6 lags**. 20 sessions reported only.
+
+**Pass rules (each of V, LV, Q, SCORE v2):**
+- **(a)** top − bottom quintile 60-session excess (vs equal-weight universe
+  mean): full 2016–2026 **NW t ≥ 3.0**, AND mean > 0 in 2016–21 AND 2022–26.
+- **(b)** a long-only version beats SPY after costs in **both** halves:
+  either (b1) top quintile equal-weight 60-session return − SPY − turnover × 19
+  bps, or (b2) "index minus losers": cap-weighted universe excluding the bottom
+  quintile − SPY − turnover × 19 bps. Turnover measured between panel dates 6
+  apart (non-overlapping 60-session rebalances).
+- **PASS = (a) AND (b).** A passing V/LV/Q is fresh evidence. A passing SCORE
+  v2 advances to (1) the clean 2000–2015 test if data is obtained, and (2) a
+  portfolio simulation + forward paper trading. **Nothing passes → index funds,
+  research closes.**
+
+Reporting only: S1–S4 re-run on this large-cap universe at 60 sessions (seen
+before, not evidence), coverage, rank correlation with log market cap.
