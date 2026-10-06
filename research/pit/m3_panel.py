@@ -109,7 +109,10 @@ def main():
     a = ap.parse_args()
     t0 = time.time()
     setup()
-    ciks = sorted(m.identity().index.unique())
+    ident = m.identity()
+    if "ambiguous" in ident:  # sibling filers left without a CUSIP of their own (m0_identity)
+        ident = ident[~ident.ambiguous.astype(bool)]
+    ciks = sorted(ident.index.unique())
     if a.limit:
         ciks = ciks[:: max(1, len(ciks) // a.limit)][: a.limit]
     chunks = [ciks[i:i + 25] for i in range(0, len(ciks), 25)]

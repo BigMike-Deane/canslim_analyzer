@@ -262,3 +262,33 @@ estimate 0.29 left unadjusted). S1's denominator is therefore the
 **split-adjusted** close on D (same basis as the EPS), not the actual close.
 Rounding makes S1 coarse for heavily split stocks and stray unadjusted
 estimates create outliers; quintile ranks limit the damage. Stated as a caveat.
+
+## Data-integrity fix found during phase 3 sample checks (2026-10-06, before any phase 3 result)
+
+Sample outlier review (S3) exposed an **identity bug that also touched M3**:
+a ticker reused by two SEC filers whose filing windows overlap (FI = Frank's
+International 2013–21, later Fiserv) handed *both* CIKs *both* CUSIPs, so
+Frank's/Expro was priced with Fiserv's series. Before the fix 243 CUSIPs were
+claimed by > 1 CIK (246 panel CIKs, ~6% of M3 rows), most of them sibling
+filers (subsidiaries, LPs, private funds such as two BlackRock credit funds on
+BLK) duplicating a listed parent.
+
+Fix (`m0_identity.py`): (1) when several issuers held the symbol inside the
+filing window, keep those whose FTD description shares a name token with the
+CIK's SEC names; (2) each still-shared CUSIP goes to the claimant whose SEC
+name is best explained by the description (≥ 0.6 of tokens, strict winner;
+ties → the CIK FMP's profile names); (3) a CIK left with no CUSIP of its own is
+`ambiguous` and excluded from the panel (60 panel CIKs, ~1.4% of rows; 12
+tickers lose all history, e.g. AGN, HDS). Shared CUSIPs after fix: 0.
+
+Consequences: symbol segments, the M3 panel and the M3 tests are **re-run on
+the corrected identity** with unchanged rules; both runs are reported (v1 =
+`m3_panel_v1_oct05.csv.gz`, results above). Noise of this kind biases spreads
+toward zero, so it could hide a weak signal but not create one.
+
+S3 definition hardening (same review, before results): split ratios are taken
+across every ticker the CIK used (a reverse split filed under the later ticker
+was missed); both share counts must be filed within 150 days of the date they
+stand for (stale 2016 count used for a 2018 "then"); S3 is missing if a
+bankruptcy ticker (4 letters + Q) trades inside the window (cancelled old
+equity looked like a buyback, VAL 2021).
