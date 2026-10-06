@@ -464,3 +464,36 @@ blowups AND significantly *fewer* big winners than the average stock (opposite
 of the outlier premise), with slightly negative mean returns. Breakouts lag.
 Per the pre-registration, **H7 (live rules as a strategy vs SPY) still runs
 once and is final for this program.**
+
+## H7 pre-registration — the live rules as a strategy (2026-10-06, before any build output)
+
+**Engine:** `backend/backtester.py` (the live trader's mirror) **unmodified in
+its trading logic**, subclassed only for data: a point-in-time data provider
+(stitched per-CIK prices incl. delisted, universe as of each date) and
+`_calculate_scores` served through the existing frozen-score path
+(`_build_score_from_frozen`) from a **daily PIT score table** (live
+`CANSLIMScorer` via `m2_adapter.score_asof`, every session 2016-01-04 →
+2026-10-05, every company eligible that day: fresh price, actual close > $3,
+market cap ≥ $300M as known). `projected_growth` uses the backtester's own
+formula (EPS growth × 0.30 + annual CAGR × 0.25 + RS momentum × 0.45) from PIT
+inputs. Earnings dates for avoidance / coiled-spring checks come from FMP
+earnings history (dated, PIT). No start-date survivorship filter (IPOs enter
+when eligible; delisted names exit at their last price).
+
+**Profile:** `nostate_cs_bear` (the owner's live config), $25,000 start.
+**Costs:** 0.095% per side added to every fill (19 bps round trip); the engine
+has none of its own.
+
+**Runs:** five launch vintages (start offsets 0/10/20/30/40 sessions from
+2016-01-04) to absorb path noise (twin live books diverge ~7 pp).
+
+**PASS (all required):** the **median vintage's** CAGR > SPY total-return CAGR
+(dividends included) over 2016–21, over 2022–26, and over the full period.
+Reported: CAGR, Sharpe, max drawdown vs SPY, trades, win rate, and the share of
+total profit from the single best trade (DELL-dependence check).
+
+**Known fidelity gaps (stated before running):** C uses GAAP EPS with no
+analyst-revision term (M2 C ρ 0.38–0.68); institutional % from 13F; live ML
+veto and growth-projection model not modeled; universe approximates the live
+index-plus-screener list. **FAIL → recommend index funds for real money; the
+program's strategy research closes** (paper trading may continue as a hobby).
