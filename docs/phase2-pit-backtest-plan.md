@@ -292,3 +292,35 @@ was missed); both share counts must be filed within 150 days of the date they
 stand for (stale 2016 count used for a 2018 "then"); S3 is missing if a
 bankruptcy ticker (4 letters + Q) trades inside the window (cancelled old
 equity looked like a buyback, VAL 2021).
+
+## M3 re-run on corrected identity (2026-10-06)
+
+Panel v2: 636,775 rows, 4,774 companies, 0 errors. H1 **FAIL** unchanged: total
+spread +16 bps/20d (t +0.41); 2016–21 −14, 2022–26 +56 (t +0.98). H2/H3/H4
+not supported (numbers within ±0.1 t of v1). 72+ band vs universe +11 bps.
+Log `meta/m3_results_v2.log`.
+
+## Phase 3 signal-lab results (2026-10-06, single run, rules as pre-registered)
+
+Script `research/pit/p3_tests.py`, log `meta/p3_results.log`. Coverage S1 85%,
+S2 54%, S3 91%, S4 97%, S5 87%.
+
+| Signal | (a) top−bottom 20d: full (t) / 2016–21 / 2022–26 | (b) top quintile − SPY net: 2016–21 / 2022–26 | Verdict |
+|---|---|---|---|
+| S1 PEAD | +42 bps (t 2.69) / +38 / +46 | +12 / −23 | FAIL (t < 3; (b) no) |
+| S2 gross profitability | +11 (t 0.44) / +49 / −39 | +18 / −68 | FAIL |
+| S3 net issuance | +47 (t 1.47) / +59 / +33 | +14 / −24 | FAIL |
+| S4 momentum 12−1 | +37 (t 0.81) / −19 / +111 | −8 / +3 | FAIL |
+| S5 composite | +57 (t 1.81) / +50 / +66 | +10 / −14 | FAIL |
+
+**Verdict: LAB FAIL — no signal passes → recommend index funds** (the
+pre-registered rule).
+
+Reporting-only observations (not passes; may motivate a new, separately
+pre-registered hypothesis, never a re-scored one): the signals *do* sort stocks
+at longer horizons — 60-session top−bottom spreads S1 +141 bps (t 5.06), S5
++154 (t 3.46), S3 +137 (t 2.53), positive in both halves for S1/S3/S5. The
+binding failure is (b): the equal-weight universe trailed SPY by ~26 bps/20d
+(≈ 3.4 %/yr) over 2016–2026, so even the best quintile only roughly matches SPY
+(S5 top − SPY ≈ 0; top − IWM +17 bps). Much of the spread is avoiding losers
+(bottom quintile), which a long-only portfolio cannot fully monetize.
