@@ -10,15 +10,13 @@ year. Also reported: all filers, and filers that later stopped filing
 """
 import pandas as pd
 
-from common import META_DIR, load_prices
+from common import META_DIR, load_cik_prices
 
 REV = ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]
 
 
-def price_years(symbol, lo, hi):
-    px = load_prices(symbol)
-    if px.empty:
-        return set()
+def price_years(cik, lo, hi):
+    px = load_cik_prices(cik)
     d = px.index[(px.index >= lo) & (px.index <= hi)]
     counts = pd.Series(1, index=d).groupby(d.year).size()
     return set(counts[counts >= 100].index)  # >= 100 sessions = "priced that year"
@@ -40,7 +38,7 @@ def main():
     ident = pd.read_csv(META_DIR / "identity.csv.gz", parse_dates=["valid_from", "valid_to"])
     covered = set()
     for r in ident.itertuples():
-        for y in price_years(r.symbol, r.valid_from, r.valid_to):
+        for y in price_years(r.cik, r.valid_from, r.valid_to):
             covered.add((r.cik, y))
 
     last = uq.groupby("cik").quarter.max()

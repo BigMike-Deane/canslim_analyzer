@@ -47,11 +47,11 @@ for line in sys.stdin:
 
 
 def need_list():
-    ident = pd.read_csv(META_DIR / "identity.csv.gz", parse_dates=["valid_from", "valid_to"])
+    seg = pd.read_csv(META_DIR / "symbol_segments.csv.gz", parse_dates=["seg_from", "seg_to"])
     today = pd.Timestamp.today().normalize()
     need = {}
-    for r in ident.itertuples():
-        lo, hi = max(r.valid_from, START), min(r.valid_to, today)
+    for r in seg.itertuples():
+        lo, hi = max(r.seg_from, START), min(r.seg_to, today)
         if hi - lo < pd.Timedelta(days=30):
             continue
         px = load_fmp_prices(r.symbol)

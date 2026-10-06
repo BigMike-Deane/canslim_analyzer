@@ -27,7 +27,7 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from common import FMP_DIR, META_DIR, REPO, load_prices
+from common import FMP_DIR, META_DIR, REPO, load_cik_prices, load_prices
 
 sys.path.insert(0, str(REPO))
 from canslim_scorer import CANSLIMScorer  # noqa: E402
@@ -40,6 +40,11 @@ LOOKBACK = 252
 @lru_cache(maxsize=None)
 def prices(symbol: str) -> pd.DataFrame:
     return load_prices(symbol)
+
+
+@lru_cache(maxsize=None)
+def cik_prices(cik: int) -> pd.DataFrame:
+    return load_cik_prices(cik)
 
 
 def market_score_asof(d: pd.Timestamp) -> float:
@@ -192,8 +197,8 @@ def stock_data_asof(cik: int, d: pd.Timestamp) -> StockData | None:
     row = ident.loc[cik]
     if not (row.valid_from <= d <= row.valid_to):
         return None
-    px = prices(row.symbol)
-    px = px.loc[max(row.valid_from, px.index.min() if len(px) else d): d].iloc[-LOOKBACK:]
+    px = cik_prices(cik)
+    px = px.loc[row.valid_from: d].iloc[-LOOKBACK:]
     if len(px) < 50 or px.index[-1] < d - pd.Timedelta(days=5):
         return None  # no fresh price on D: not tradeable/scannable that day
     sd = StockData(row.symbol)

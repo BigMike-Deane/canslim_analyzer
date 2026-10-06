@@ -47,11 +47,16 @@ def fetch_extras(symbol):
 def main():
     tickers = pd.read_csv(META_DIR / "cik_tickers.csv.gz").dropna(subset=["symbol"])
     symbols = INDEXES + sorted(set(tickers.symbol) - set(INDEXES))
+    seg_path = META_DIR / "symbol_segments.csv.gz"
+    hist_only = set()
+    if seg_path.exists():  # historical tickers (FTR before FYBR...): prices only
+        hist_only = set(pd.read_csv(seg_path).symbol) - set(symbols)
+        symbols += sorted(hist_only)
     print(f"prices + earnings + profile for {len(symbols):,} symbols", flush=True)
     cov = []
     for i, sym in enumerate(symbols, 1):
         rows = fetch(sym)
-        if sym not in INDEXES:
+        if sym not in INDEXES and sym not in hist_only:
             fetch_extras(sym)
         cov.append((sym, len(rows), rows[-1][0] if rows else None, rows[0][0] if rows else None))
         if i % 500 == 0:

@@ -124,12 +124,13 @@ _PRICE_COLS = ["date", "Open", "High", "Low", "Close", "Volume"]
 def _load_rows(path: Path):
     import gzip
     import pandas as pd
+    empty = pd.DataFrame(columns=_PRICE_COLS[1:], index=pd.DatetimeIndex([], name="date"), dtype=float)
     if not path.exists():
-        return pd.DataFrame(columns=_PRICE_COLS[1:])
+        return empty
     with gzip.open(path, "rt") as fh:
         rows = json.load(fh)
     if not rows:
-        return pd.DataFrame(columns=_PRICE_COLS[1:])
+        return empty
     df = pd.DataFrame(rows, columns=_PRICE_COLS)
     df["date"] = pd.to_datetime(df.date)
     return df.set_index("date").sort_index().astype(float)
@@ -150,3 +151,31 @@ def load_prices(symbol: str):
     if fmp.empty:
         return alp
     return pd.concat([fmp, alp[~alp.index.isin(fmp.index)]]).sort_index()
+
+
+def load_cik_prices(cik: int):
+    """A company's price series stitched across every ticker it used
+    (meta/symbol_segments.csv.gz). Where segments overlap, the ticker seen
+    most often in fails-to-deliver wins; the identity ticker fills the rest."""
+    import pandas as pd
+    seg = _segments().get(cik)
+    if seg is None:
+        return _load_rows(Path("/nonexistent"))
+    parts = []
+    for s in seg.sort_values("n_obs").itertuples():  # low priority first
+        px = load_prices(s.symbol)
+        parts.append(px[(px.index >= s.seg_from) & (px.index <= s.seg_to)])
+    out = pd.concat(parts)
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+_SEG = None
+
+
+def _segments():
+    global _SEG
+    if _SEG is None:
+        import pandas as pd
+        s = pd.read_csv(META_DIR / "symbol_segments.csv.gz", parse_dates=["seg_from", "seg_to"])
+        _SEG = {c: g for c, g in s.groupby("cik")}
+    return _SEG

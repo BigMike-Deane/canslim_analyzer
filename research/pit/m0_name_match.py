@@ -25,7 +25,8 @@ MIN_OVERLAP_DAYS = 120
 
 
 def norm(s: str) -> list[str]:
-    s = (s or "").upper().replace("&", " AND ")
+    s = (s or "").upper().replace("&", " AND ").replace("'", "")
+    s = re.sub(r"\([^)]*\)", " ", s)             # FTD state tags: FLIR SYSTEMS, INC. (DE)
     s = re.sub(r"/[A-Z]{2,3}/", " ", s)               # SEC state tags: AETNA INC /PA/
     s = re.sub(r"USD[\d.]+|\$[\d.]+|\d+(\.\d+)?%?", " ", s)
     s = re.sub(r"[^A-Z ]", " ", s)
@@ -38,8 +39,10 @@ def prefix_match(sec_toks, ftd_toks):
     name (last FTD token may itself be truncated) and >= 6 letters overall."""
     if not ftd_toks or not sec_toks:
         return False
-    if ftd_toks == sec_toks and len("".join(ftd_toks)) >= 3:
-        return True  # exact name (AETNA, CIGNA, DELL) is safe even when short
+    if ftd_toks == sec_toks and len("".join(ftd_toks)) >= 2:
+        return True  # exact name (AETNA, CIGNA, DELL, CA) is safe even when short
+    if len(sec_toks) >= 2 and ftd_toks[:len(sec_toks)] == sec_toks:
+        return True  # FTD adds words after the full SEC name (... COMMON, ... NON-VTG)
     if len("".join(ftd_toks)) < 6:
         return False
     head, last = ftd_toks[:-1], ftd_toks[-1]
@@ -92,6 +95,9 @@ def main():
                     cands.append((ov, -len(r.symbol), r.symbol, r.description, nm))
         if not cands:
             continue
+        exact = [c for c in cands if norm(c[3]) == norm(c[4])]
+        if exact:
+            cands = exact
         cands.sort(reverse=True)
         syms = {c[2] for c in cands}
         best = cands[0]
