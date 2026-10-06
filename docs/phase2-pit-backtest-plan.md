@@ -497,3 +497,30 @@ analyst-revision term (M2 C ρ 0.38–0.68); institutional % from 13F; live ML
 veto and growth-projection model not modeled; universe approximates the live
 index-plus-screener list. **FAIL → recommend index funds for real money; the
 program's strategy research closes** (paper trading may continue as a hobby).
+
+## Data-integrity fixes found while building H7 (2026-10-06, before any H7 output)
+
+Setting up H7 showed DELL (the owner's best live trade) absent from every
+panel. Root causes, all affecting **every test run today**:
+1. **No shares count for multi-class filers.** companyfacts omits per-class dei
+   `EntityCommonStockSharesOutstanding`; ~510 CIKs (META, DELL, Alphabet's
+   CIK…) had none, failed the market-cap filter, and never entered a panel.
+   Fix (`m2_adapter._shares_table`): fall back to weighted-average diluted
+   shares (all classes), dated by filing — recovers 495.
+2. **Wrong security picked.** FMP search-cik lists every security a CIK issues;
+   the first plain candidate was sometimes a note/ETN (JPM → AMJ MLP ETN,
+   Comcast → CCZ exchangeable notes, Prudential → PFH). Fix (`m0_ticker_fix.py`):
+   if the pick never traded under a CUSIP with issue number "1x" (common-stock
+   convention) and another plain candidate did (and traded ≥ half as often;
+   5-letter special-security codes excluded), switch — 99 CIKs (JPM, CMCSA,
+   PRU, HIG, DTE…).
+3. **Universe gap.** Filers reporting EPS only per class (Visa) have no
+   undimensioned EPS frame. Fix (`m0_universe.py`): also admit CIKs with
+   NetIncomeLoss frames (+3,431 CIKs, mostly non-traded; Visa, Constellation
+   Brands among them).
+
+**All gates and tests are re-run on the corrected data ("v3")** — M0 coverage,
+M3, phase 3, batch 2, H5/H6 — with unchanged rules, and both versions are
+reported. v2 artifacts kept as `*_v2_oct06.*`. H7 runs on v3 only. Alpaca
+delisted-price fill is not re-run for the new CIKs (they are mostly current
+companies); coverage is re-checked.

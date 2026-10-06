@@ -14,6 +14,10 @@ import pandas as pd
 from common import META_DIR, SEC_DIR, cached, sec_get
 
 CONCEPTS = ["EarningsPerShareDiluted", "EarningsPerShareBasic"]
+# Filers that report EPS only per share class (Visa) have no undimensioned EPS
+# frame; total net income catches them (2026-10-06 fix). Non-traded filers it
+# adds fall out later (no ticker / no price).
+EXTRA = [("NetIncomeLoss", "USD")]
 QUARTERS = [f"CY{y}Q{q}" for y in range(2009, 2027) for q in range(1, 5)]
 QUARTERS = [x for x in QUARTERS if x <= "CY2026Q2"]
 
@@ -23,6 +27,13 @@ def main():
     for concept in CONCEPTS:
         for q in QUARTERS:
             url = f"https://data.sec.gov/api/xbrl/frames/us-gaap/{concept}/USD-per-shares/{q}.json"
+            data = cached(SEC_DIR / "frames" / f"{concept}_{q}.json", lambda: sec_get(url))
+            for d in (data or {}).get("data", []):
+                rows.append((d["cik"], d.get("entityName", ""), q, concept))
+        print(f"{concept}: done")
+    for concept, unit in EXTRA:
+        for q in QUARTERS:
+            url = f"https://data.sec.gov/api/xbrl/frames/us-gaap/{concept}/{unit}/{q}.json"
             data = cached(SEC_DIR / "frames" / f"{concept}_{q}.json", lambda: sec_get(url))
             for d in (data or {}).get("data", []):
                 rows.append((d["cik"], d.get("entityName", ""), q, concept))

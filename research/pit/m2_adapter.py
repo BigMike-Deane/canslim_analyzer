@@ -78,7 +78,8 @@ def _facts() -> pd.DataFrame:
     f = pd.read_csv(META_DIR / "sec_facts.csv.gz", low_memory=False,
                     usecols=["cik", "concept", "unit", "start", "end", "val", "filed", "form"])
     f = f[f.concept.isin(["EarningsPerShareDiluted", "EarningsPerShareBasic",
-                          "EntityCommonStockSharesOutstanding"])]
+                          "EntityCommonStockSharesOutstanding",
+                          "WeightedAverageNumberOfDilutedSharesOutstanding"])]
     for c in ("start", "end", "filed"):
         f[c] = pd.to_datetime(f[c], errors="coerce")
     f["days"] = (f.end - f.start).dt.days
@@ -122,8 +123,15 @@ def eps_asof(cik: int, d: pd.Timestamp, kind: str, n: int) -> list[float]:
 
 @lru_cache(maxsize=None)
 def _shares_table(cik: int) -> pd.DataFrame:
+    """dei shares outstanding (cover page). Multi-class filers (META, DELL,
+    Alphabet) often report it only per class, which companyfacts omits; ~500
+    CIKs had none and silently left every panel. Fallback: quarterly/annual
+    weighted-average diluted shares (all classes), dated by filing."""
     f = _facts()
-    s = f[(f.cik == cik) & (f.concept == "EntityCommonStockSharesOutstanding")]
+    f = f[f.cik == cik]
+    s = f[f.concept == "EntityCommonStockSharesOutstanding"]
+    if s.empty:
+        s = f[(f.concept == "WeightedAverageNumberOfDilutedSharesOutstanding") & f.days.between(80, 380)]
     return s.sort_values("filed")[["filed", "end", "val"]]
 
 
