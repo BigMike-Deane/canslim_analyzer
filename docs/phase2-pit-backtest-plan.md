@@ -118,3 +118,33 @@ above-minus-below difference is > 0 with t ≥ 2 on 2016–2021 AND same sign on
 
 Every test also reports the 2016–2021 and 2022–2026 halves separately, and the
 residual survivorship caveat (later-delisted coverage 71–79%).
+
+## M3 results (2026-10-06, single run, rules as pre-registered above)
+
+Panel: 647,304 stock-dates, 265 dates (every 10th session 2016-01-04 → 2026-07-07),
+4,839 companies, median 2,419 stocks/date, 0 scoring errors; 0.39% of 20d windows
+cut short by delisting. Script `research/pit/m3_signal_tests.py`, data
+`~/canslim_pit_data/meta/m3_panel.csv.gz` (not in git), log `meta/m3_results.log`.
+
+| Test | Result | Numbers (20-session excess vs equal-weight universe, non-overlapping dates) |
+|---|---|---|
+| **H1 (gate)** total-score top − bottom quintile | **FAIL** | full +15 bps (t +0.40, n 133); 2016–21 −15 (t −0.29); 2022–26 +55 (t +0.97) |
+| H2 60–72 band − 72+ band | not supported | full −24 bps (t −0.89); 2016–21 −25; 2022–26 −22 (phase-1 "over-extension" did not replicate) |
+| H3 reweight C/A/N/S/L/I on 2016–21 | not supported | best train weights A3 N1 (train +30 bps) → 2022–26 +51 bps (t +0.96) vs current +55 (t +0.97) |
+| H4 L/N/S spread × SPY>50MA | not supported (all 3) | 2016–21 above−below L +227 (t 1.77), N +123 (t 1.08), S +121 (t 1.91); all flip negative 2022–26 |
+
+Reporting only: 10-session spread +7 bps (t 0.26); 60-session +91 bps (t 1.38).
+Components (full, 20d): C +16, A −5, N +10, S −30 (t −1.43), L +6, I −10 — none
+reach t 2. 72+ buy band vs universe +12 bps (t 0.38); universe vs SPY −26 bps
+(t −1.12) → the buy band trailed SPY by ~14 bps per 20 sessions.
+
+Caveats (none plausibly flips the verdict): C component fidelity is weakest
+(M2 ρ 0.38–0.68; GAAP not adjusted EPS, no analyst-revision term); residual
+survivorship (later-delisted coverage 71–79%) — missing delisted names are more
+likely low scorers, which biases the spread *up*, so the true spread is if
+anything lower. The test is cross-sectional: the M (market-timing) component is
+constant within a date and is not evaluated here.
+
+**Verdict per the pre-registered rule: H1 FAIL → recommend index funds.**
+M4 (portfolio sim) is not run as a gate; the selection signal it would
+compound has no detectable edge over 10 years.
