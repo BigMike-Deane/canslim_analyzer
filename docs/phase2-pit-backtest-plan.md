@@ -441,3 +441,26 @@ A pass in H5/H6 is necessary but not sufficient: the decision gate is **H7**,
 the live rules simulated as a strategy vs SPY, pre-registered separately before
 it runs. **Nothing passes H5/H6 → H7 is still run once** (exits could monetize
 tails the averages miss), and its result is final for this program.
+
+## H5 / H6 results (2026-10-06, single run, rules as pre-registered)
+
+Setup replay: 636,775 rows, 0 errors; pre-breakout 59% of stock-dates (live
+scanner today: ~50% of $3+/$300M+ stocks sit 0–15% below a detected pivot —
+replay faithful; "pre-breakout" is common by construction). Universe per-date
+rates over 120 sessions: big winner (≥ +50%) 6.47%, +100% 1.53%, blowup
+(≤ −30%) 10.05%. Log `meta/p5_results.log`.
+
+| Test | Group | Result |
+|---|---|---|
+| H5 big-winner odds | G72 score ≥ 72 (51/date) | −0.11 pp vs universe (NW t −0.18); blowups −2.7 pp; mean r120 excess −1.3% → **FAIL** |
+| | GSET pre-breakout (1,475/date) | **−1.92 pp (NW t −6.60)**; blowups −2.8 pp; r120 excess −2.4% → **FAIL** |
+| | GSET65 pre-breakout & score ≥ 65 (86/date) | **−1.71 pp (NW t −4.03)**; blowups −3.4 pp; r120 excess −2.7% → **FAIL** |
+| H6 setup 60d excess | GSET | −24 bps (t −0.79); EW − SPY net −113 → **FAIL** |
+| | GSET65 | +5 bps (t 0.11); EW − SPY net −85 → **FAIL** |
+| | BRK breaking out (23/date) | −77 bps (t −1.43); EW − SPY net −192 (t −3.13) → **FAIL** |
+
+Reading: CANSLIM setups and high scores select **quieter** stocks — fewer
+blowups AND significantly *fewer* big winners than the average stock (opposite
+of the outlier premise), with slightly negative mean returns. Breakouts lag.
+Per the pre-registration, **H7 (live rules as a strategy vs SPY) still runs
+once and is final for this program.**
