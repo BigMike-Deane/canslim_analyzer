@@ -599,3 +599,46 @@ t, 6 lags; 20 sessions reported only.
 Reporting only: AM combined with S1 (PEAD, seen before → in-sample) as mean
 percentile rank; FLAT group excess; coverage by year; rank correlation with
 log market cap; `grades-historical` monthly counts (2019+, too short to gate).
+
+## H7 results (2026-10-06 night, single run, rules as pre-registered)
+
+Engine fix before any vintage output: speedtest crashed writing trades
+(float32 panel values in `signal_factors` JSON) → cast to float (`643a08d`); no
+trading logic touched. Scored by `p7_score.py` (median vintage CAGR vs SPY TR
+over the same dates).
+
+| Vintage | CAGR 2016–21 | SPY | CAGR 2022–26 | SPY | CAGR full | SPY | Max DD | Trades | Best position share |
+|---|---|---|---|---|---|---|---|---|---|
+| 0  | 3.3% | 17.6% | 0.0% | 12.2% | 1.9% | 15.2% | 18.6% | 278 | SBCF 38% |
+| 10 | 10.0% | 19.0% | −3.0% | 12.2% | 4.0% | 16.0% | 19.6% | 831 | JYNT 22% |
+| 20 | 3.1% | 18.9% | 0.0% | 12.2% | 1.7% | 15.9% | 19.8% | 306 | TMUS 41% |
+| 30 | 2.0% | 18.8% | 0.0% | 12.2% | 1.1% | 15.8% | 24.0% | 208 | TMUS 62% |
+| 40 | 4.6% | 18.3% | 0.0% | 12.2% | 2.5% | 15.6% | 15.2% | 260 | TTC 30% |
+
+**H7 FAIL — 0/5 vintages beat SPY in any window.** Median full-period CAGR
+1.9% vs SPY TR 15.2%.
+
+**Every vintage froze permanently in cash** (0, 20, 30, 40 in Aug-2018 →
+May-2019; 10 in Oct-2022). Cause: the drawdown circuit breaker
+(`halt_new_buys_pct` 15%) measures against the all-time peak; once the book is
+flat, value cannot move, so the halt never lifts. The backtester's own escape
+("prevent circuit breaker doom loop", peak reset) sits in the market-state
+branch, which `nostate_*` profiles disable. **Live `ai_trader.py` has the same
+trap** (peak only ratchets up). The backtester additionally latches until
+drawdown < 10% while live re-decides at 15% every cycle — a parity divergence
+(did not change any vintage here: all froze above 15%). Live books Oct-6:
+u1 7.75%, u2 10.67%, u3 8.53%, u4 2.91% drawdown. Fix awaits owner decision.
+
+**The freeze is not why H7 fails.** Before freezing, while trading normally:
+
+| Vintage | Trading span | Strategy | SPY TR same dates | At strategy peak vs SPY same date |
+|---|---|---|---|---|
+| 0  | 2016-01 → 2019-05 | +21.8% (6.1%/yr) | +52.7% (13.5%/yr) | +46.6% vs +50.2% |
+| 10 | 2016-01 → 2022-10 | +52.0% (6.4%/yr) | +120.2% (12.4%/yr) | +87.2% vs +130.0% |
+| 20 | 2016-02 → 2018-12 | +19.9% (6.5%/yr) | +30.8% (9.7%/yr) | +49.5% vs +56.9% |
+| 30 | 2016-02 → 2018-08 | +12.4% (4.8%/yr) | +55.9% (19.4%/yr) | +40.5% vs +54.7% |
+| 40 | 2016-03 → 2019-05 | +29.8% (8.5%/yr) | +54.3% (14.6%/yr) | +49.9% vs +54.8% |
+
+Even at its best day no vintage was ahead of SPY. A labelled **diagnostic**
+(not the verdict; `--variant flat_reset`: re-base the peak when flat) re-runs
+all five to measure the rules without the trap — results appended when done.
