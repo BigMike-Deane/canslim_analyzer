@@ -1,0 +1,92 @@
+# Score v3 — a data-driven stock score, built from scratch (2026-10-07)
+
+**Owner goal (Oct-7):** drop the CANSLIM score if needed; build "an extremely
+educated and data driven estimate for the potential of a stock. Combining
+several of these highly scored stocks should drive success over the long term.
+It's ok if a few miss as long as we can narrow down on those big wins." Free
+data only. Diversified, actively traded (not an index).
+
+Everything below is **pre-registered before any v3 feature, model or portfolio
+number exists.** The PIT data, gates and lessons come from
+`docs/phase2-pit-backtest-plan.md` (every earlier pre-registered test failed).
+
+## Design
+
+**Universe (per panel date):** v3 PIT panel dates (every 10th session,
+2016-01 → 2026-09), companies with actual close > $5, market cap ≥ $1B as known
+that day (glitch rows dropped as in `m3_signal_tests.load()`), and 20-session
+average dollar volume ≥ $5M.
+
+**Target:** forward 60-session return minus SPY's 60-session total return,
+winsorized per date at the 1st/99th percentile (keeps the right skew the owner
+wants to capture; removes data glitches).
+
+**Features (frozen list; all known strictly before D; per-date percentile
+rank, centered; missing → 0):**
+
+| Group | Features |
+|---|---|
+| CANSLIM inputs | C, A, N, S, L, I letter scores; EPS growth; annual EPS CAGR; earnings surprise %; beat streak; institutional % |
+| Earnings / fundamentals | PEAD (S1); gross profitability (S2); net issuance (S3); earnings yield; book-to-market; ROE; −accruals |
+| Price / volume | return 1m (reversal); momentum 3m, 6m, 12-1; distance from 52-week high; realized vol 60d; max daily return 21d; beta 252d vs SPY; log market cap; log dollar volume; volume trend (20d / 120d) |
+| Setups | % from pivot; breaking out (live `detect_base_pattern`, as H6) |
+| Analyst | net rating changes 90d (AM, as H8); # brokers 365d |
+| Insider (new) | # distinct insiders with open-market purchases (Form 4 code P), prior 90d; net open-market $ (P − S) / market cap, prior 90d |
+| Short interest (new, from mid-2018) | short interest / shares; days to cover; 3-month change in short interest |
+| Market context (same for every stock on D; usable by the tree model only) | SPY vs 200-day MA; SPY 3-month return |
+
+**Models (both fit; settings fixed now):**
+- **M1 (primary): ridge regression** on the ranked features. Penalty chosen
+  inside each training window from {1, 10, 100, 1000} by using the last
+  training year as validation. Weights are printed every year (readable).
+- **M2: gradient-boosted trees** (`sklearn` HistGradientBoostingRegressor,
+  max_depth 3, learning_rate 0.05, max_iter 300, l2 1.0, min_samples_leaf
+  200) — can learn interactions (e.g. "momentum only in bull markets").
+
+**Walk-forward:** for each test year Y = 2019 … 2026, train on panel dates
+whose 60-session target window ends before Jan 1 of Y (embargo — no
+overlap), score every panel date in Y. Nothing from Y or later touches the
+model that scores Y.
+
+**Portfolio simulation (out-of-sample 2019-01 → 2026-09):** every 20
+sessions, rank by score; hold the **top 25 equal-weight**, at most 5 per
+sector; a holding is kept while it stays in the top 50 (cuts turnover).
+19 bps round-trip cost on all turnover. Delisted names exit at their last
+price. Compared against SPY total return over identical dates.
+
+## Pass rules (all required, for the model that is reported as the candidate)
+
+1. **Signal:** out-of-sample per-date Spearman IC (score vs 60-session excess)
+   averaged over 2019–2026, **Newey–West t ≥ 3.0** (6 lags), and mean IC > 0
+   in both 2019–22 and 2023–26.
+2. **Portfolio:** net CAGR **> SPY total-return CAGR** over 2019-01 → 2026-09.
+3. **Consistency:** the portfolio beats SPY in **≥ 5 of the 8** calendar
+   years (2026 year-to-date counts).
+4. **Risk:** max drawdown ≤ SPY's max drawdown + 10 pp over the same period.
+
+The candidate is whichever of M1/M2 has the higher mean OOS IC; both are
+reported in full. (Two models tried → the t ≥ 3 bar already covers the
+multiplicity.)
+
+**PASS → forward paper trading** as a shadow arm (same rules, live data) for
+**3 months** before any real money or app change. **FAIL → stop scoring
+research on free data;** the honest recommendation becomes index funds (or a
+paid deeper dataset for a new, fully out-of-sample test).
+
+## Reported, not gating
+
+- Big winners: share of portfolio picks gaining ≥ +50% within 120 sessions vs
+  the universe base rate; profit share of the best 1 / 5 positions.
+- Annual weights (M1) and feature importances (M2, permutation).
+- Each year's IC, hit rate, turnover, sector mix.
+- Same portfolio on the H7 universe (≥ $300M) as a robustness view.
+
+## Known limitations (stated before running)
+
+- Several features (PEAD, issuance, CANSLIM letters, momentum, AM) were
+  examined one by one on 2016–2026 in earlier tests, so the researcher has
+  seen their full-sample behaviour. The walk-forward fit is still genuinely
+  out-of-sample for the **weights**, but feature selection is not fully
+  blind. A pass is therefore confirmed only by forward paper trading.
+- 10 years of data, 8 test years; one market era (mega-cap led).
+- C uses GAAP EPS; no estimate-revision history; short interest from 2018.
