@@ -108,3 +108,45 @@ and two baselines showed the yardstick needs fixing:
   (t 2.06) on one seed → run 4 more placebo seeds and report M2's null spread
   beside the real t.
 Gates, features, models and settings are unchanged.
+
+## Results (2026-10-07 ~9:35 AM CT, single run, rules as pre-registered + amendment 1)
+
+Dividends added (median 60-session yield 0.12%, 53% of rows pay). Walk-forward
+2019–2026, 8 test years, 344k out-of-sample stock-dates.
+
+| | M1 ridge | M2 boosted trees | SPY TR |
+|---|---|---|---|
+| Mean OOS IC (NW t) | −0.0055 (t −0.30) | −0.0030 (t −0.13) | |
+| IC 2019–22 / 2023–26 | −0.037 / +0.031 | −0.037 / +0.036 | |
+| Portfolio CAGR | 7.1% | 5.3% | 17.2% |
+| Max drawdown | 62.3% | 69.5% | 31.0% |
+| Years beating SPY | 3/8 | 1/8 | |
+| Percentile among 200 random portfolios | 16th | 6th | (median 10.0%) |
+
+M1 by year: 2019 +27.7 vs +30.6 · 2020 +20.3 vs +14.0 · 2021 −17.2 vs +26.8 ·
+2022 −28.0 vs −12.4 · 2023 +11.9 vs +20.8 · 2024 +12.5 vs +28.4 · 2025 +20.7
+vs +16.3 · 2026 YTD +20.8 vs +11.5.
+
+**Score v3 FAIL — all four gates.** Both models did *worse than random picks*.
+
+**What the model learned (ridge weights, stable across years):** high beta
+(+2 to +4), smaller companies (log cap −1 to −2), expensive / low earnings yield
+(E/P −1 to −2), far below the 52-week high (−1 to −5), short-term losers (1-month
+return −1.3 to −2.6), plus N and A from CANSLIM. That is a **high-beta,
+small-cap "junk rebound" tilt** — it is what 2016–2020 training data rewarded,
+it paid hugely in the 2020 rebound (M2 +119%) and then crashed in 2021–22
+(M1 −17%/−28%, M2 −22%/−44%). The sign of the signal flipped with the regime:
+IC −0.037 in 2019–22, +0.03 in 2023–26. A score whose sign depends on an era it
+cannot see in advance is not a score.
+
+**Note, not evidence:** the 2023–26 half is positive for both models (IC
++0.03, and M1 beat SPY in 2025 and 2026 YTD), after training on 7+ years that
+include a crash and recovery. One half-period after a failure is a hypothesis,
+not a result; the pre-registered rule is FAIL.
+
+**Pre-registered consequence: stop scoring research on free data.** Across
+this program, every pre-registered test of stock selection on 2016–2026 has
+failed — single signals, CANSLIM letters, reweightings, the live rules, and now a
+learned multi-signal score with 38 inputs. What remains open needs either more
+history (a paid point-in-time dataset to test on years never touched) or forward
+paper trading.
