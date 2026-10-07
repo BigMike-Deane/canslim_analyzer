@@ -403,3 +403,23 @@ above the 90th percentile of 300 random tilts there. Pass both → Lab candidate
   generalizes (97–98th pct on ranks 501–1000, twice).
 - Ledger: 8 trials. Stock-selection edge on this data ≈ **+0.7 pp/yr**, consistent
   in sign, below a best-of-N luck bar.
+
+## Score v7 pre-registration — industry momentum sector tilt (2026-10-07 ~2:15 PM CT, before any v7 number)
+
+**Why:** v5b's diagnostics attribute most of its gains to sector allocation. v7
+tests sector allocation directly with a published rule (Moskowitz & Grinblatt
+1999, "Do Industries Explain Momentum?"), independent of the stock signals.
+
+**Rule:** every 20 sessions, within the 500 largest (corrected data): sector
+momentum = cap-weighted return of each FMP sector over the prior **126 sessions
+skipping the most recent 21** (6-1 momentum), from the stocks' own stitched
+prices. Rank the sectors; **top 3 sectors' weights × 1.5, bottom 3 × 0.5,
+others × 1**, renormalized; stocks keep cap weights inside their sector.
+Sectors with < 5 names in the 500 are left at × 1. Costs, total return,
+benchmark exactly as v5. No parameters fitted.
+
+**v7 = trial 9.** Gates: (1) CAGR > SPY TR; (2) ≥ 5/8 years; (3) active > 95th
+pct of the best of 9 random **sector** tilts (same × 1.5 / × 0.5 scheme with
+random sector rankings); (4) DD ≤ SPY + 10 pp; then (5) ranks 501–1000: same
+rule vs that universe's cap-weighted benchmark > 90th pct of 300 random sector
+tilts. Reported: v7 combined with v5b (stock tilt inside the sector tilt).
