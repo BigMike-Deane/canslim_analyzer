@@ -61,6 +61,12 @@ def load_daily():
     sym = d.drop_duplicates("cik").set_index("cik").symbol
     dup = set(sym[sym.duplicated(keep=False)].index)
     d["key"] = [f"{s}.{c}" if c in dup else s for c, s in zip(d.cik, d.symbol)]
+    # ~10M rows: keep only what the engine reads, in compact types
+    d = d.drop(columns=["symbol", "mcap_m"])
+    for c in ["total", "c", "a", "n", "s", "l", "i", "m", "eps_growth", "annual_cagr", "surprise_pct", "inst_pct",
+              "days_to_earnings"]:
+        d[c] = d[c].astype("float32")
+    d["beat_streak"] = d.beat_streak.astype("int16")
     return d
 
 
@@ -223,6 +229,7 @@ def main():
     db.add(bt)
     db.commit()
     eng = PITBacktester(db, bt.id, daily[daily.date >= str(pd.Timestamp(start) - pd.Timedelta(days=10))])
+    del daily  # the engine keeps its own per-date split
     eng.run_pit()
     trades = [{"date": str(t.date), "ticker": t.ticker, "action": t.action, "shares": t.shares, "price": t.price,
                "gain": t.realized_gain, "reason": t.reason}
