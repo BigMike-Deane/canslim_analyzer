@@ -323,3 +323,34 @@ errors. **Fix (`4f5b16e`): FMP's daily historical market cap is primary
 rules unchanged; v3-data results are kept (`*_v3_oct07`). Earlier programme
 verdicts (H1–H8) used the same caps; their equal-weighted tests are only mildly
 affected (universe membership), and will be noted, not re-litigated.
+
+## Re-runs on corrected ("v4") data (2026-10-07 1:35 PM CT, rules unchanged)
+
+Panel 727,669 rows / 5,209 CIKs (Alphabet present every year; AVGO $1.76T,
+KLAC $283B, MA $474B, ONC $34B as of 2026-07). v3 table 485,322 rows, median
+1,857 names/date. Placebo IC t +1.54 / +1.25 (null). Benchmark (cap-weighted
+500 largest, TR) 17.19%/yr vs SPY TR 17.23%.
+
+| Model | v3-data result | **Corrected result** | Verdict |
+|---|---|---|---|
+| v3 M1 / M2 | IC t −0.30 / −0.13 | IC t −0.35 / +0.07; 8.8% / 10.6% vs 17.2%; 35th / 57th pct of random | FAIL (unchanged) |
+| v4 | IC t −0.61, 12.1% | IC t +0.41, 8.3%, 4th pct of random | FAIL (unchanged) |
+| v5a | +0.11%/yr | −0.40%/yr, 5/8 yrs | FAIL |
+| **v5b** | +0.92%/yr, PASS at the margin | **+0.67%/yr, 6/8 yrs, IC t +1.59, TE 2.6%, IR 0.30; luck bar +0.71%** | **FAIL (gate 3 by 0.04 pp)** |
+| v5c (in-sample) | +1.68%/yr | +1.45%/yr, IC t 3.76 | n/a |
+
+v5b by year vs SPY: 2019 +1.9 · 2020 +4.8 · 2021 −6.0 · 2022 −3.0 (vs SPY; vs
+its own benchmark −0.3 / −1.1) · 2023 +2.4 · 2024 +3.7 · 2025 +2.3 · 2026 +0.4.
+
+**Diagnostics (corrected):** active vs benchmark +0.88%/yr; factor-adjusted
+alpha +0.25%/yr (t 0.66), R² 0.64; **beat-streak factor loading t +8.2** (that
+factor: +2.9%/yr long-short in large caps), anti-value t −2.8, anti-low-vol
+t −3.0. Ranks 501–1000 (never traded): +0.80%/yr vs own benchmark, **98th
+percentile** of random tilts (IC t 1.0).
+
+**Reading:** the stock-selection edge is real-looking but small — about +0.7
+pp/yr over SPY, consistent across years and in a universe it never traded,
+yet not distinguishable from the best of 6 tries on 2019–2026 alone. It is
+essentially the earnings-beat-streak effect. **Per the C1 pre-registration, C1
+is not run.** Next: forward paper (free, the only clean evidence) and a
+pre-registered v6 that targets the beat-streak mechanism directly.
