@@ -46,7 +46,7 @@ V-shaped crashes (1987, 2020) and choppy decades hurt. P1 likely favourable, P2
 uncertain; volatility targeting improves Sharpe but its CAGR edge depends on
 leverage costs.
 
-## Results (2026-10-07 ~1 PM CT, single run) — `research/pit/a_exposure.py`
+## Results (2026-10-07 ~10:45 AM CT, single run) — `research/pit/a_exposure.py`
 
 Data check first (no strategy numbers): S&P TR 1928–93 9.85%/yr, max DD 83.6%,
 worst year −43% (1931); 1994–2026 10.9%/yr, DD 55% — matching the record.
