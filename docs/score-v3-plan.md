@@ -150,3 +150,48 @@ failed — single signals, CANSLIM letters, reweightings, the live rules, and no
 learned multi-signal score with 38 inputs. What remains open needs either more
 history (a paid point-in-time dataset to test on years never touched) or forward
 paper trading.
+
+## Score v4 pre-registration — stable signals, equal weights, large caps (2026-10-07, before any v4 number)
+
+**Why v4 (owner: "find a better way of picking stocks"):** an exploratory
+per-signal scoreboard on the v3 table (`meta/v3_signal_scoreboard.csv`, full
+2016–2026, not a test) showed a handful of signals with consistent sign in both
+halves (beat streak t 3.9, low days-to-cover 3.6, low issuance 3.0, surprise
+2.9, ROE 2.8), while ridge in v3 put its weight on loud, regime-flipping
+factors (beta, size, value). Equal-weighting only *stable* signals is the
+standard remedy. **Honest label:** this is the second model family tried on
+the 2019–2026 test years, and its design was chosen after seeing the
+scoreboard. The selection itself is mechanical and walk-forward (below), but
+**a pass is confirmed only by forward paper trading.**
+
+**Universe (primary):** each date, the **500 largest** companies of the v3
+universe by market cap as known that day. (Reporting only: the full v3
+universe.) Rationale fixed in advance: the equal-weight mid-cap universe
+trailed SPY ~5 pp/yr over 2019–26 before any selection.
+
+**Signal selection (per test year Y, training dates only, 60-session embargo
+as v3):** candidate pool = all 38 v3 features (no hand-picking). For each
+feature compute per-date Spearman IC vs the winsorized 60-session excess
+return **within the 500-largest universe** over the training dates. **Keep it
+if NW t ≥ 2.0 (6 lags) and the mean IC has the same sign in the first and
+second halves of the training dates.** Direction = sign of its training IC.
+
+**Score:** equal-weight mean of the kept features' signed, centered per-date
+percentile ranks (missing → 0). If no feature is kept, hold the cap-weighted
+universe that year.
+
+**Portfolio (out-of-sample 2019-01 → 2026-09):** every 20 sessions take the
+top **30** by score; weights ∝ √(market cap), capped at 8% per name, ≤ 6 names
+per sector; a holding is kept while it ranks in the top 60. 19 bps round trip
+on turnover (weight-based). Returns are total return (dividends, amendment 1).
+Benchmark SPY TR over identical dates.
+
+**Gates (identical to v3):** (1) out-of-sample score IC in the 500-largest
+universe, NW t ≥ 3.0 and mean > 0 in both 2019–22 and 2023–26; (2) net CAGR >
+SPY TR; (3) beats SPY in ≥ 5 of 8 calendar years; (4) max DD ≤ SPY + 10 pp.
+Reported: luck-band percentile (200 random-score portfolios, same rules and
+universe), features kept each year, IC/portfolio on the full v3 universe.
+
+**Either way → forward paper trading** (owner, Oct-7): v4 (and v3 ridge for
+comparison) run as shadow arms on live data; a v4 PASS here is a candidate,
+not a proof.
