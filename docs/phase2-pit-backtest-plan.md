@@ -642,3 +642,43 @@ u1 7.75%, u2 10.67%, u3 8.53%, u4 2.91% drawdown. Fix awaits owner decision.
 Even at its best day no vintage was ahead of SPY. A labelled **diagnostic**
 (not the verdict; `--variant flat_reset`: re-base the peak when flat) re-runs
 all five to measure the rules without the trap — results appended when done.
+
+## H8 results (2026-10-07 ~1:45 AM CT, single run, rules as pre-registered)
+
+Grades fetch complete (14,188 symbols; 382,430 events on 1,935 universe CIKs;
+actions: maintain 306k, downgrade 40k, upgrade 37k). Coverage gate **PASS**
+(76% 2016 → 94% 2026). Mean names per date: UP 210, FLAT 462, DOWN 197.
+
+| Test | Full | 2016–21 | 2022–26 |
+|---|---|---|---|
+| (a) UP − DOWN 60d | −1 bps (NW t −0.04) | −16 | +20 |
+| (b1) UP EW − SPY, net | −63 bps | −32 | −104 |
+| (b2) cap-wt ex-DOWN − SPY, net | ~~−671~~ → **+5 bps** corrected | +40 | −40 |
+| UP excess 60d (reporting) | +33 bps (t 1.96) | +38 | +25 |
+| DOWN excess 60d (reporting) | +34 bps (t 2.01) | +55 | +5 |
+| AM + PEAD top−bot 60d (in-sample, reporting) | +71 bps (t 1.72) | +33 | +121 |
+
+**H8 FAIL** — upgrades and downgrades predict nothing at 60 sessions (stocks
+with net downgrades did as well as those with net upgrades). Rank corr with
+log mcap +0.02.
+
+**Data glitch found in the (b2) check (not a verdict change):** the v3 panel
+has ~1,080 rows (100 companies, 0.15%) with market caps 1,000× too large (SEC
+share-count unit errors: AJG/YUM/EIX on single dates; AIMC, NNBR, PNNT, CSBR,
+SKY, VSLR on every row) or broken prices (CLIS $330,000, BTDG $10,000). One
+row can take > 99% of a cap-weighted portfolio, so every **cap-weighted**
+number is invalid where they land (H8 b2 −671 bps; the plain cap-weighted
+top-1000 benchmark read −612 bps vs SPY). Filter (rows above 1.05 × the day's
+largest of AAPL/MSFT/NVDA/GOOG/AMZN, or > 20× / < 1/20 of the company's
+median) restores the benchmark to +4 bps vs SPY, and gives the corrected b2
+above. Equal-weighted tests (every (a) gate, M3, phase 3, batch 2) see ~1
+affected name per 1,000 per date — immaterial; batch 2's b2 values were sane
+(the glitch names mostly lacked those signals). No verdict in this program
+changes. Apply the filter in `m3_signal_tests.load()` before any future test.
+
+### Program status after H8
+
+Pre-registered tests run: M3 H1–H4, market timing T1/T2, phase 3 (S1–S4 +
+composite), batch 2 (V, LV, Q, Score v2), H5, H6, H7, H8 — **all FAIL.** The
+only consistently positive effects remain PEAD and net issuance at 60 sessions
+on large caps (t 2.2–2.8; neither clears t 3 nor beats SPY net of costs).
