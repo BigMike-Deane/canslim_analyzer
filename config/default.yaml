@@ -866,6 +866,21 @@ lab_strategies:
     risk_off: SGOV
     key_env: LAB_A1_ALPACA_KEY_ID
     secret_env: LAB_A1_ALPACA_SECRET_KEY
+  a5_dual_momentum:
+    kind: a5_dual_momentum
+    label: "A5 · Dual momentum"
+    description: "2× S&P (SSO) when the S&P is above its 200-day average AND its 12-month return beats T-bills; 1× (SPY) when only one is true; T-bills (SGOV) when neither. Passed 1928–93 (13.3% vs 9.6%/yr) and 1994–2026 (13.7% vs 10.9%/yr, max drawdown 37% vs 55%)."
+    enabled: true
+    starting_value: 25000
+    index: "^GSPC"
+    sma_days: 200
+    mom_days: 252
+    cash_proxy: BIL
+    risk_on_2x: SSO
+    risk_on_1x: SPY
+    risk_off: SGOV
+    key_env: LAB_A5_ALPACA_KEY_ID
+    secret_env: LAB_A5_ALPACA_SECRET_KEY
 
 broker_mirror:
   enabled: true

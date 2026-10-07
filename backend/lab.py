@@ -120,7 +120,29 @@ def a1_target(closes: list, today: date, cfg: dict) -> tuple:
                         "sma": round(sma, 2), "sma_days": n, "above": above}
 
 
-RULES = {"a1_trend_2x": a1_target}
+def _ret_over(series: list, today: date, n: int) -> Optional[float]:
+    prior = [c for d, c in series if d < today]
+    return prior[-1] / prior[-1 - n] - 1 if len(prior) > n else None
+
+
+def a5_target(closes: list, today: date, cfg: dict, spy_adj: list = None, cash_adj: list = None) -> tuple:
+    """A5 graded dual momentum (docs/exposure-plan.md, PASSED 1928-93 + 1994-2026):
+    signal 1 = prior S&P close > its 200-day SMA; signal 2 = S&P 12-month total return
+    (SPY dividend-adjusted) > cash's 12-month return (T-bill ETF, dividend-adjusted).
+    Both -> 2x fund, exactly one -> 1x S&P fund, neither -> T-bill ETF."""
+    _, a1 = a1_target(closes, today, cfg)
+    n = int(cfg.get("mom_days", 252))
+    r_mkt, r_cash = _ret_over(spy_adj or [], today, n), _ret_over(cash_adj or [], today, n)
+    if r_mkt is None or r_cash is None:
+        raise ValueError("need 12 months of SPY and cash-ETF history")
+    s1, s2 = bool(a1["above"]), r_mkt > r_cash
+    exposure = int(s1) + int(s2)
+    sym = {2: cfg.get("risk_on_2x", "SSO"), 1: cfg.get("risk_on_1x", "SPY"), 0: cfg.get("risk_off", "SGOV")}[exposure]
+    return {sym: 1.0}, {**a1, "mkt_12m": round(r_mkt * 100, 2), "cash_12m": round(r_cash * 100, 2),
+                        "momentum_positive": s2, "exposure": exposure}
+
+
+RULES = {"a1_trend_2x": a1_target, "a5_dual_momentum": a5_target}
 
 
 # ----------------------------------------------------------------- engine
@@ -152,7 +174,7 @@ def plan_orders(target: dict, holdings: dict, equity: float, prices: dict) -> li
 
 
 def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[date] = None,
-                      closes=None, price_fn=None) -> LabDecision:
+                      closes=None, price_fn=None, extra: Optional[dict] = None) -> LabDecision:
     """Idempotent per session: a second call the same day returns the existing decision."""
     if today is None:
         from backend.ai_trader import EASTERN_TZ
@@ -164,7 +186,12 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
     cfg = lab_config().get(strategy.name, {})
     rule = RULES[strategy.kind]
     closes = closes if closes is not None else fmp_daily(cfg.get("index", "^GSPC"))
-    target, inputs = rule(closes, today, cfg)
+    if strategy.kind == "a5_dual_momentum":
+        extra = extra or {"spy_adj": fmp_daily("SPY", days=420, adjusted=True),
+                          "cash_adj": fmp_daily(cfg.get("cash_proxy", "BIL"), days=420, adjusted=True)}
+        target, inputs = rule(closes, today, cfg, **extra)
+    else:
+        target, inputs = rule(closes, today, cfg)
     dec = LabDecision(strategy_id=strategy.id, date=today, inputs=inputs, target=target)
     db.add(dec)
     if client is None:
@@ -188,7 +215,9 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
             row = LabOrder(strategy_id=strategy.id, decision_id=dec.id, date=today, symbol=o["symbol"],
                            side=o["side"], qty=o["qty"], client_order_id=cid,
                            reason=f"target {target} ({'above' if inputs.get('above') else 'below'} "
-                                  f"{inputs.get('sma_days')}d avg)")
+                                  f"{inputs.get('sma_days')}d avg"
+                                  + (f", 12m momentum {'positive' if inputs.get('momentum_positive') else 'negative'}"
+                                     if 'momentum_positive' in inputs else "") + ")")
             db.add(row)
             try:
                 res = client.submit_moc_order(o["symbol"], o["qty"], o["side"], cid)

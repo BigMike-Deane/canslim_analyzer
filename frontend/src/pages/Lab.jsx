@@ -34,6 +34,11 @@ function Signal({ decision }) {
       {i.sma_days}-day average <span className="font-data">{i.sma?.toLocaleString()}</span> —{' '}
       <span className={i.above ? 'text-emerald-400' : 'text-red-400'}>{i.above ? 'above' : 'below'}</span>, so the
       target is <span className="font-semibold text-dark-50">{held}</span>
+      {i.exposure != null && (
+        <span className="text-dark-400">
+          {' '}— 12-month return {i.mkt_12m}% vs T-bills {i.cash_12m}% (momentum {i.momentum_positive ? 'positive' : 'negative'}), exposure {i.exposure}×
+        </span>
+      )}
       {decision.status === 'unchanged' && <span className="text-dark-400"> (already held)</span>}
       {decision.status === 'no_broker' && <span className="text-amber-400"> (not traded: broker not connected)</span>}
       {decision.status === 'error' && <span className="text-red-400"> (error: {decision.note})</span>}

@@ -162,3 +162,31 @@ def test_safe_error_never_leaks_api_key():
     resp = rq.Response()
     resp.status_code = 429
     assert lab.safe_error(rq.HTTPError("429 for url ...apikey=SECRET123", response=resp)) == "market data error: HTTP 429"
+
+
+A5 = {"kind": "a5_dual_momentum", "sma_days": 200, "mom_days": 252, "risk_on_2x": "SSO", "risk_on_1x": "SPY",
+      "risk_off": "SGOV"}
+
+
+def _series(n=400, start=100.0, step=0.1, end=date(2026, 10, 7)):
+    return closes(n=n, start=start, step=step, end=end)
+
+
+def test_a5_both_signals_2x():
+    target, inputs = lab.a5_target(_series(), date(2026, 10, 7), A5, spy_adj=_series(step=0.2), cash_adj=_series(step=0.01))
+    assert target == {"SSO": 1.0} and inputs["exposure"] == 2 and inputs["momentum_positive"] is True
+
+
+def test_a5_one_signal_1x_and_none_cash():
+    up, down = _series(), [(d, 300 - 0.3 * i) for i, (d, _) in enumerate(_series())]
+    # trend up, momentum below cash -> 1x
+    t1, i1 = lab.a5_target(up, date(2026, 10, 7), A5, spy_adj=down, cash_adj=_series(step=0.01))
+    assert t1 == {"SPY": 1.0} and i1["exposure"] == 1
+    # trend down, momentum below cash -> cash ETF
+    t0, i0 = lab.a5_target(down, date(2026, 10, 7), A5, spy_adj=down, cash_adj=_series(step=0.01))
+    assert t0 == {"SGOV": 1.0} and i0["exposure"] == 0
+
+
+def test_a5_needs_twelve_months():
+    with pytest.raises(ValueError):
+        lab.a5_target(_series(), date(2026, 10, 7), A5, spy_adj=_series(n=100), cash_adj=_series(n=100))
