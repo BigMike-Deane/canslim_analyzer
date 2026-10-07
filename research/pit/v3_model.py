@@ -29,12 +29,12 @@ TOP, KEEP, SECTOR_MAX, RT_COST = 25, 50, 5, 0.0019
 OUT = META_DIR / "v3"
 
 
-def prep(t, placebo):
+def prep(t, placebo, seed=0):
     t = t[t.y.notna()].copy()
     lo, hi = t.groupby("date").y.transform(lambda v: v.quantile(0.01)), t.groupby("date").y.transform(lambda v: v.quantile(0.99))
     t["yw"] = t.y.clip(lo, hi)
     if placebo:
-        rng = np.random.default_rng(0)
+        rng = np.random.default_rng(seed)
         t["yw"] = t.groupby("date").yw.transform(lambda v: rng.permutation(v.to_numpy()))
     for f in FEATURES:
         t["R_" + f] = t.groupby("date")[f].rank(pct=True) - 0.5
@@ -116,10 +116,12 @@ def stats(e):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--placebo", action="store_true")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--luck-runs", type=int, default=200)
     a = ap.parse_args()
-    tag = "placebo" if a.placebo else "real"
+    tag = f"placebo{a.seed}" if a.placebo else "real"
     OUT.mkdir(exist_ok=True)
-    t = prep(pd.read_csv(META_DIR / "v3_table.csv.gz", parse_dates=["date"]), a.placebo)
+    t = prep(pd.read_csv(META_DIR / "v3_table.csv.gz", parse_dates=["date"]), a.placebo, a.seed)
     from v3_assemble import spy_tr
     sess = spy_tr().index
     ends = window_end(pd.DatetimeIndex(sorted(t.date.unique())), sess)
@@ -148,6 +150,18 @@ def main():
               f"beat SPY {st['years_beat']}/{st['n_years']} yrs | turnover/rebalance {st['turnover']:.0%} | "
               f"missing returns {int(e.missing_ret.sum())}")
         print("  " + "  ".join(f"{y}: {r.port:+.1%} vs {r.spy:+.1%}" for y, r in st["by_year"].iterrows()))
+    # amendment 1: luck band -- the same portfolio rules on random scores
+    rng = np.random.default_rng(12345)
+    luck = []
+    for _ in range(a.luck_runs if not a.placebo else 0):
+        luck.append(stats(portfolio(s.assign(rnd=rng.random(len(s))), "rnd", sess))["cagr"])
+    if luck:
+        luck = np.array(luck)
+        print(f"\nluck band ({len(luck)} random-score portfolios, same rules): CAGR 5th {np.percentile(luck, 5):.1%} | "
+              f"median {np.median(luck):.1%} | 95th {np.percentile(luck, 95):.1%}")
+        for k in res:
+            res[k]["luck_pctile"] = float((luck < res[k]["cagr"]).mean() * 100)
+            print(f"  {k} portfolio CAGR {res[k]['cagr']:.1%} = {res[k]['luck_pctile']:.0f}th percentile of random")
     cand = max(res, key=lambda k: res[k]["ic"])
     r = res[cand]
     gates = {"1 signal (t>=3, both halves >0)": r["ic_t"] >= 3 and r["ic_h1"] > 0 and r["ic_h2"] > 0,

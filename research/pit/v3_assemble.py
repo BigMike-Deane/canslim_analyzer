@@ -116,6 +116,11 @@ def main():
                           "spy60_tr": fwd_spy(d), "spy20_tr": fwd_spy(d, 20)})
     c = pd.DataFrame({d: ctx(d) for d in sorted(dates)}).T.rename_axis("date").reset_index()
     t = t.merge(c, on="date", how="left")
+    # amendment 1: dividends -> total return on both sides
+    dv = pd.read_csv(META_DIR / "v3_dividends.csv.gz", parse_dates=["date"])
+    t = t.merge(dv, on=["cik", "date"], how="left")
+    t["r20"] = t.r20 + t.div20.fillna(0)
+    t["r60"] = t.r60 + t.div60.fillna(0)
     t["y"] = t.r60 - t.spy60_tr
 
     keep = ["cik", "date", "symbol", "sector", "close", "mcap", "dvol20", "r20", "r60", "cut60", "spy20_tr", "spy60_tr", "y"]
