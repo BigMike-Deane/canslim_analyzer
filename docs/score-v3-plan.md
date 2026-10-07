@@ -354,3 +354,36 @@ yet not distinguishable from the best of 6 tries on 2019–2026 alone. It is
 essentially the earnings-beat-streak effect. **Per the C1 pre-registration, C1
 is not run.** Next: forward paper (free, the only clean evidence) and a
 pre-registered v6 that targets the beat-streak mechanism directly.
+
+## Score v6 pre-registration — earnings-reaction signals (2026-10-07 ~1:50 PM CT, before any v6 number)
+
+Owner (Oct-7): "keep iterating until we get a better model and then put that in
+the Lab." v5b's corrected-data edge is essentially the earnings-beat-streak
+effect, so v6 targets the earnings mechanism with a **feature never examined in
+this program**:
+
+- **EAR (earnings-announcement return; Brandt, Kishore, Santa-Clara & Venkatachalam
+  2008):** the stock's return minus SPY's over the 3 sessions around its latest
+  report (close of session E−2 → close of E+1, E = FMP report date; timing
+  before/after the bell unknown, so the window spans both). Known on D only if
+  E+1 < D. Missing if the latest report is > 120 days old.
+- **days_since_report** (for recency weighting).
+- Revenue surprise was considered and **dropped before use**: FMP revenue
+  estimates are unreliable (20% of 2016+ rows off by > 30%; AAPL Oct-2021
+  estimate $118B vs actual $83B).
+
+**Variants (both = trials 7 and 8 in the ledger):**
+- **v6a:** v5b exactly, with EAR added to the candidate pool (the walk-forward
+  selection rule decides whether it is kept and its sign).
+- **v6b:** v6a, plus **recency weighting** of the earnings-event features
+  (beat streak, surprise %, PEAD, EAR): their centered rank × exp(−days since
+  report / 60); plus **sector-neutral ranks** (all features ranked within sector
+  on each date).
+Portfolio, costs, benchmark, universe (500 largest) and walk-forward exactly as
+v5. Corrected ("v4") data.
+
+**Gates (each variant):** (1) CAGR > SPY TR; (2) beats SPY ≥ 5/8 years; (3)
+active return > 95th percentile of the **best of 8** random-score tilts; (4) DD
+≤ SPY + 10 pp. **Then one confirmation on ranks 501–1000** (never used for
+selection): the same tilt vs that universe's cap-weighted benchmark must be
+above the 90th percentile of 300 random tilts there. Pass both → Lab candidate.
