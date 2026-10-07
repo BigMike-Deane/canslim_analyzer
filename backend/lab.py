@@ -17,6 +17,7 @@ Strategy kinds:
 """
 import logging
 import math
+import re
 import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -68,6 +69,16 @@ def get_client(name: str) -> Optional[AlpacaPaperClient]:
     key = os.environ.get(cfg.get("key_env", ""), "").strip()
     secret = os.environ.get(cfg.get("secret_env", ""), "").strip()
     return AlpacaPaperClient(key, secret) if key and secret else None
+
+
+_SECRET_RE = re.compile(r"(apikey|api_key|token|secret)=[^&\s'\"]+", re.I)
+
+
+def safe_error(e: Exception) -> str:
+    """Exception text safe to store/return: FMP errors embed the request URL, apikey included."""
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return f"market data error: HTTP {e.response.status_code}"
+    return _SECRET_RE.sub(r"\1=***", f"{type(e).__name__}: {e}")[:500]
 
 
 # ----------------------------------------------------------------- market data (patchable)
@@ -191,10 +202,10 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
     except Exception as e:  # never let one strategy break the job
         db.rollback()
         dec = LabDecision(strategy_id=strategy.id, date=today, inputs=inputs, target=target,
-                          status="error", note=str(e)[:500])
+                          status="error", note=safe_error(e))
         db.add(dec)
         db.commit()
-        logger.error(f"lab[{strategy.name}] decide failed: {e}", exc_info=True)
+        logger.error(f"lab[{strategy.name}] decide failed: {safe_error(e)}")
     return dec
 
 
@@ -269,7 +280,7 @@ def run_decision_job():
             from backend.ai_trader import EASTERN_TZ
             decide_and_submit(db, s, client, today=datetime.now(EASTERN_TZ).date())
     except Exception as e:
-        logger.error(f"lab decision job failed: {e}", exc_info=True)
+        logger.error(f"lab decision job failed: {safe_error(e)}")
     finally:
         db.close()
 
@@ -288,6 +299,6 @@ def run_close_job():
                     record_close(db, s, client, today=datetime.now(EASTERN_TZ).date())
                 except Exception as e:
                     db.rollback()
-                    logger.error(f"lab[{s.name}] record_close failed: {e}", exc_info=True)
+                    logger.error(f"lab[{s.name}] record_close failed: {safe_error(e)}")
     finally:
         db.close()

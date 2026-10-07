@@ -153,3 +153,12 @@ def test_api_lists_strategy_and_serves_history_and_edge():
         edge = client.get("/api/lab/strategies/lab_t_a1/edge").json()
         assert edge["status"] == "ok" and edge["total_return_pct"] == 2.4
         assert client.get("/api/lab/strategies/nope").status_code == 404
+
+
+def test_safe_error_never_leaks_api_key():
+    import requests as rq
+    e = rq.ConnectionError("HTTPSConnectionPool: /stable/quote?symbol=SSO&apikey=SECRET123 failed")
+    assert "SECRET123" not in lab.safe_error(e) and "apikey=***" in lab.safe_error(e)
+    resp = rq.Response()
+    resp.status_code = 429
+    assert lab.safe_error(rq.HTTPError("429 for url ...apikey=SECRET123", response=resp)) == "market data error: HTTP 429"
