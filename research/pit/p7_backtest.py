@@ -136,10 +136,12 @@ def make_classes():
                 r = day.loc[t] if (day is not None and t in day.index) else self.last_row.get(t)
                 if r is None:
                     continue
-                frozen = {"total_score": r.total, "c_score": r.c, "a_score": r.a, "n_score": r.n,
-                          "s_score": r.s, "l_score": r.l, "i_score": r.i, "m_score": r.m,
-                          "projected_growth": r.eps_growth * 0.30 + r.annual_cagr * 0.25
-                          + self._rs_momentum(t, current_date) * 0.45}
+                # python floats: float32 panel values would reach trade JSON (signal_factors) unserializable
+                frozen = {"total_score": float(r.total), "c_score": float(r.c), "a_score": float(r.a),
+                          "n_score": float(r.n), "s_score": float(r.s), "l_score": float(r.l),
+                          "i_score": float(r.i), "m_score": float(r.m),
+                          "projected_growth": float(r.eps_growth * 0.30 + r.annual_cagr * 0.25
+                                                    + self._rs_momentum(t, current_date) * 0.45)}
                 sd = self._build_score_from_frozen(t, current_date, frozen)
                 if sd:
                     out[t] = self._score_cache[t] = sd

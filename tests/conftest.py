@@ -2,6 +2,14 @@
 Pytest configuration and fixtures
 """
 
+import os
+import time
+
+# Run on the container's clock (TZ=UTC, as in prod and CI). Snapshot dates are UTC;
+# on a US-Central dev box local date.today() lags a day after 7 PM and date-math tests flake.
+os.environ["TZ"] = "UTC"
+time.tzset()
+
 import pytest
 import sys
 from contextlib import contextmanager
