@@ -555,3 +555,47 @@ Logs `meta/*_v3.log`. **Every verdict is unchanged:**
 | H6 GSET / GSET65 / BRK | all FAIL | all FAIL (BRK − SPY net −183 bps, t −2.93) |
 
 The data fixes moved estimates by hundredths. H7 runs on v3.
+
+## H8 pre-registration — analyst rating momentum (2026-10-06 night, written before any H8 number exists)
+
+Why: the only input the PIT program could not rebuild is the analyst term the
+live C score uses (estimate revisions; no free history). FMP `/stable/grades`
+gives **dated upgrades/downgrades per broker, 2012+** (`m1_grades.py`, fetch in
+progress at writing; no grade has been joined to a return yet). Rating changes
+are a different but related signal and are point-in-time by construction.
+Never examined in this program → fresh test on 2016–2026.
+
+**Universe / dates:** the v3 panel dates (every 10th session 2016→), restricted
+per date to the **1,000 largest by market cap as known that day** — same as
+batch 2.
+
+**Signal AM (no tuning):** for company X on date D, take grade events dated
+**strictly before D** in the prior **90 calendar days**; keep each broker's
+**latest** event; net = #brokers whose latest action is `upgrade` − #brokers
+whose latest action is `downgrade` (`maintain`, `initiate`, others = 0). AM is
+**missing** unless X had events from **≥ 3 distinct brokers in the prior 365
+days** (covered names only). Groups: **UP** = net ≥ +1, **DOWN** = net ≤ −1,
+**FLAT** = covered, net 0.
+
+**Coverage gate (checked first, reported):** AM present for ≥ 60% of the
+universe on panel dates in every year 2016–2026. Fail → H8 is reported as
+exploratory only (no pass possible).
+
+**Horizon:** primary 60 sessions, every panel date (overlapping), Newey–West
+t, 6 lags; 20 sessions reported only.
+
+**Pass rules (all required):**
+- **(a)** UP − DOWN 60-session excess (each vs equal-weight universe mean):
+  full 2016–2026 **NW t ≥ 3.0**, AND mean > 0 in 2016–21 AND 2022–26.
+- **(b)** long-only beats SPY after costs in **both** halves: (b1) UP
+  equal-weight 60-session return − SPY − turnover × 19 bps, or (b2)
+  cap-weighted universe excluding DOWN − SPY − turnover × 19 bps (turnover
+  between panel dates 6 apart).
+- **PASS → portfolio simulation + forward paper trading only** (every other
+  pre-registered test failed; one pass is not grounds for real money).
+  **FAIL → no further signal tests on this data; the program's conclusion
+  (index funds for real money) stands.**
+
+Reporting only: AM combined with S1 (PEAD, seen before → in-sample) as mean
+percentile rank; FLAT group excess; coverage by year; rank correlation with
+log market cap; `grades-historical` monthly counts (2019+, too short to gate).
