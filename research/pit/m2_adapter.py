@@ -27,7 +27,7 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from common import FMP_DIR, META_DIR, REPO, load_cik_prices, load_prices
+from common import FMP_DIR, META_DIR, REPO, load_cik_prices, load_prices, split_factor
 
 sys.path.insert(0, str(REPO))
 from canslim_scorer import CANSLIMScorer  # noqa: E402
@@ -130,9 +130,45 @@ def _shares_table(cik: int) -> pd.DataFrame:
     f = _facts()
     f = f[f.cik == cik]
     s = f[f.concept == "EntityCommonStockSharesOutstanding"]
-    if s.empty:
-        s = f[(f.concept == "WeightedAverageNumberOfDilutedSharesOutstanding") & f.days.between(80, 380)]
+    wa = f[(f.concept == "WeightedAverageNumberOfDilutedSharesOutstanding") & f.days.between(80, 380)]
+    if not s.empty:
+        # dei may start late (Alphabet: cover-page total only from 2024) -> fill earlier filings from wa
+        wa = wa[wa.filed < s.filed.min()]
+    s = pd.concat([s, wa])
     return s.sort_values("filed")[["filed", "end", "val"]]
+
+
+# ---------- market cap (FMP daily series primary; 2026-10-07 repair) ----------
+@lru_cache(maxsize=1)
+def _fmp_mcap() -> dict:
+    """symbol -> daily market cap (FMP historical-market-capitalization, m1_mcap.py).
+    ~6% of companies had SEC-derived caps off by > 2x (per-class / ADR-ratio share counts)."""
+    p = META_DIR / "fmp_mcap.csv.gz"
+    if not p.exists():
+        return {}
+    m = pd.read_csv(p, parse_dates=["date"])
+    return {sym: g.set_index("date").mcap.sort_index() for sym, g in m.groupby("symbol")}
+
+
+def fmp_mcap_asof(symbol: str, d: pd.Timestamp):
+    s = _fmp_mcap().get(symbol)
+    if s is None:
+        return None
+    s = s[:d]
+    if s.empty or s.index[-1] < d - pd.Timedelta(days=7):
+        return None
+    return float(s.iloc[-1])
+
+
+def mcap_asof(cik: int, symbol: str, d: pd.Timestamp, close: float):
+    """Market cap on D: FMP's series for the symbol traded on D, else actual close x SEC
+    shares as known (None if neither)."""
+    fm = fmp_mcap_asof(symbol, d)
+    if fm is not None:
+        return fm
+    sh = _shares_table(cik)
+    sh = sh[sh.filed <= d]
+    return float(close * sh.val.iloc[-1]) if not sh.empty and sh.val.iloc[-1] else None
 
 
 # ---------- 13F institutional ----------
@@ -165,9 +201,18 @@ def inst_pct_asof(cik: int, d: pd.Timestamp) -> float:
     latest = i[i.period == i.period.max()]
     sh = _shares_table(cik)
     sh = sh[sh.filed <= d]
-    if sh.empty or not sh.val.iloc[-1]:
+    shares = sh.val.iloc[-1] if not sh.empty and sh.val.iloc[-1] else None
+    if shares is None:  # no SEC count (multi-class before 2024 etc.): FMP cap / actual close
+        px = cik_prices(cik)
+        k = px.index.searchsorted(d, side="right") - 1 if not px.empty else -1
+        if k >= 0:
+            sym = px.symbol.iloc[k]
+            close = px.Close.iloc[k] * split_factor(sym, d)
+            fm = fmp_mcap_asof(sym, d)
+            shares = fm / close if fm and close > 0 else None
+    if not shares:
         return 0.0
-    return float(latest.inst_shares.sum() / sh.val.iloc[-1] * 100)
+    return float(latest.inst_shares.sum() / shares * 100)
 
 
 # ---------- FMP earnings + profile ----------

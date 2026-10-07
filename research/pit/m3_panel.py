@@ -65,7 +65,7 @@ def work(ciks):
             px = m.cik_prices(cik)
             if px.empty:
                 continue
-            sh = m._shares_table(cik)
+            sh = m._shares_table(cik)  # noqa: F841 (kept for p3-style callers)
             for d in DATES:
                 if not (row.valid_from <= d <= row.valid_to):
                     continue
@@ -74,11 +74,10 @@ def work(ciks):
                     continue
                 sym_d = px.symbol.iloc[k]
                 close = px.Close.iloc[k] * split_factor(sym_d, d)  # actual price then
-                s_known = sh[sh.filed <= d]
-                if close <= MIN_PRICE or s_known.empty:
+                if close <= MIN_PRICE:
                     continue
-                mcap = close * s_known.val.iloc[-1]  # actual price x shares as known then
-                if mcap < MIN_CAP:
+                mcap = m.mcap_asof(cik, sym_d, d, close)  # FMP daily cap, else close x SEC shares
+                if mcap is None or mcap < MIN_CAP:
                     continue
                 sc = m.score_asof(cik, d, m_score=MSCORE[d])
                 if sc is None:

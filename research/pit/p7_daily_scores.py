@@ -97,8 +97,10 @@ def work(chunk):
                 if k < 0 or px.index[k] < d - pd.Timedelta(days=5):
                     continue
                 close = px.Close.iloc[k] * split_factor(px.symbol.iloc[k], d)
-                known = sh[sh.filed <= d]
-                if close <= MIN_PRICE or known.empty or close * known.val.iloc[-1] < MIN_CAP:
+                if close <= MIN_PRICE:
+                    continue
+                mcap = m.mcap_asof(cik, px.symbol.iloc[k], d, close)  # FMP daily cap, else close x SEC shares
+                if mcap is None or mcap < MIN_CAP:
                     continue
                 sd = m.stock_data_asof(cik, d)
                 if sd is None:
@@ -111,7 +113,7 @@ def work(chunk):
                 rows.append((cik, ds, row.symbol, round(sc.total_score, 2),
                              sc.c_score, sc.a_score, sc.n_score, sc.s_score, sc.l_score, sc.i_score, sc.m_score,
                              round(eps_growth(sd.quarterly_earnings), 2), round(annual_cagr(sd.annual_earnings), 2),
-                             sd.sector, round(close * known.val.iloc[-1] / 1e6, 1),
+                             sd.sector, round(mcap / 1e6, 1),
                              round(sd.earnings_surprise_pct or 0, 2), int(sd.eps_beat_streak or 0),
                              round(sd.institutional_holders_pct or 0, 2),
                              (pd.Timestamp(nxt) - d).days if nxt else None))
