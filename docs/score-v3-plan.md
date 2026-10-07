@@ -195,3 +195,33 @@ universe), features kept each year, IC/portfolio on the full v3 universe.
 **Either way → forward paper trading** (owner, Oct-7): v4 (and v3 ridge for
 comparison) run as shadow arms on live data; a v4 PASS here is a candidate,
 not a proof.
+
+## Score v4 results (2026-10-07 ~10:30 AM CT, single run)
+
+Placebo first (3 seeds): OOS IC t −0.32 / −1.09 / −0.45 — clean; the t ≥ 2 rule
+still admits 1–5 noise features per year from 38 candidates.
+
+Features kept (500 largest, training years only): 2019 −AM; 2020–22 mixes of
+ROE, institutional %, analyst coverage, beat streak, −EPS growth, GP/A;
+2023–26 essentially **ROE alone** (± GP/A).
+
+| | v4 | SPY TR |
+|---|---|---|
+| OOS IC, 500 largest (NW t) | −0.0081 (t −0.61); 2019–22 +0.008, 2023–26 −0.027 | |
+| Portfolio CAGR | 12.1% | 17.2% |
+| Max drawdown | 33.3% | 31.0% |
+| Years beating SPY | 2/8 (2019, 2022) | |
+| Luck band (200 random 30-stock portfolios, same rules) | 56th percentile (5th 8.3%, median 11.8%, 95th 15.6%) | |
+| Full v3 universe IC (reporting) | +0.0084 (t 0.74) | |
+
+**Score v4 FAIL (gates 1–3; gate 4 passes).**
+
+**The decisive finding is the luck band, not the score:** the *median random*
+30-stock portfolio drawn from the 500 largest, √cap-weighted, returned 11.8%/yr
+vs SPY's 17.2% — a **~5.4 pp/yr structural gap** before any selection. 2019–26
+returns were concentrated in a handful of mega-caps held at index weight; a
+diversified 30-name book, random or smart, rarely holds them at that weight.
+The stable signals measured on the full universe (IC ≈ 0.02–0.04) are worth
+perhaps 1–2 pp/yr — not enough to close 5. **To beat SPY by stock selection in
+this era, the portfolio has to be built relative to SPY's own weights
+(overweight / underweight), not as a stand-alone list of picks.**
