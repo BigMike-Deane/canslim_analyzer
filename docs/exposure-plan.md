@@ -138,3 +138,26 @@ are doubled. All C-variants FAIL their gates. In this bull-dominated window only
 clearly ahead of SPY (+1.0 pp/yr; A4's monthly checks were too slow for 2020).
 
 **Candidate for the Lab: A5** (SSO when both signals, SPY when one, SGOV when none).
+
+## International replication pre-registration (2026-10-07 ~2:50 PM CT, before any number)
+
+**Why:** the strongest independent check of the exposure family — markets this
+programme has never touched, including Japan's 1990–2012 collapse.
+
+**Data (free):** FMP price indexes — Japan Nikkei 225 (1950→), UK FTSE 100 (1984→),
+Hong Kong Hang Seng (1986-12→), Euro Stoxx 50 (1986-12→). Local cash: Japan discount
+rate (FRED INTDSRJPM193N) to 1985-06 then call money (IRSTCI01JPM156N); UK 3-month
+interbank (IR3TIB01GBM156N); Euro Stoxx: German 3-month (IR3TIB01DEM156N) to 1993,
+then euro area (IR3TIB01EZM156N); Hong Kong: US 3-month T-bill (HKD pegged to USD
+since 1983). **Dividends:** the indexes are price-only, so a constant yield is accrued
+daily on both the strategy's invested leg and buy-and-hold: Japan 1.5%, UK 3.5%,
+Hong Kong 3.0%, Euro Stoxx 3.0% (long-run averages); sensitivity ±1 pp reported.
+
+**Rules:** A1, A4, A5 exactly as defined above (200-day / 10-month / 12-month vs
+local cash), same costs (local cash + 0.5% financing, 0.9% leverage fee, 5 bps
+per change), same one-day delay. Each market from its first date with a 252-session
+warm-up and a cash rate.
+
+**Pass (per rule):** beats local buy-and-hold CAGR in **≥ 3 of 4 markets** AND
+has a shallower max drawdown in **≥ 3 of 4**. Reported: per-market CAGR, DD,
+Sharpe, worst year, and Japan 1990–2012 separately.
