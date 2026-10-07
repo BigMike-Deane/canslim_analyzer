@@ -161,3 +161,25 @@ warm-up and a cash rate.
 **Pass (per rule):** beats local buy-and-hold CAGR in **≥ 3 of 4 markets** AND
 has a shallower max drawdown in **≥ 3 of 4**. Reported: per-market CAGR, DD,
 Sharpe, worst year, and Japan 1990–2012 separately.
+
+## International replication results (2026-10-07 ~2:55 PM CT, single run) — **FAIL**
+
+| Market (dividend assumed) | Buy & hold CAGR / DD | A1 excess | A4 excess | A5 excess | A5 DD |
+|---|---|---|---|---|---|
+| Japan 1954–2026 (1.5%) | 9.15% / 76.2% | **+2.46** | **+2.54** | **+2.79** | 69.0% |
+| — Japan 1990–2012 | −4.18% / 76.1% | A1 −0.96% | A4 −3.68% | A5 −1.60% | |
+| UK FTSE 1985–2026 (3.5%) | 9.09% / 47.2% | **−6.53** | **−2.47** | **−4.57** | 61.5% |
+| Hong Kong 1988–2026 (3.0%) | 9.24% / 64.2% | +0.82 | −2.38 | +0.48 | 68.1% |
+| Euro Stoxx 1988–2026 (3.0%) | 9.28% / 63.0% | +0.60 | +1.85 | +0.10 | 61.4% |
+
+Excess in pp/yr. Signs unchanged across ±1 pp dividend assumptions.
+**Tally: A1 beat 3/4, shallower DD 2/4; A4 2/4, 2/4; A5 3/4, 2/4 → all FAIL.**
+
+**What it means:** the exposure family's US result (98 years, both eras) does not
+generalize cleanly. It works where long trends dominate (Japan, including its
+1990–2012 bust) and fails badly in a range-bound, high-rate market (UK 1985–2026:
+leveraged trend paid 10–15% financing in the late 1980s and whipsawed through decades
+of sideways prices). **A1/A5 are downgraded from "validated" to "US-validated
+candidates"**: the Lab forward test is the deciding evidence, not a formality.
+Caveat: price indexes + constant assumed dividends; local leverage costs modelled
+with the same spread/fee as the US.
