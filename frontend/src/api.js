@@ -417,6 +417,13 @@ export const api = {
     return result
   },
 
+  // Lab (research strategies paper-traded on their own Alpaca accounts)
+  getLabStrategies: (opts) => request('/api/lab/strategies', opts),
+  getLabHistory: (name) => request(`/api/lab/strategies/${name}/history`),
+  getLabTrades: (name) => request(`/api/lab/strategies/${name}/trades`),
+  getLabDecisions: (name) => request(`/api/lab/strategies/${name}/decisions`),
+  getLabEdge: (name) => request(`/api/lab/strategies/${name}/edge`),
+
   // AI Portfolio
   getAIPortfolio: (opts) => request('/api/ai-portfolio', opts),
 

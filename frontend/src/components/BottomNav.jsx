@@ -37,6 +37,7 @@ function UnreadBadge({ count }) {
 }
 
 const moreItems = [
+  { to: '/lab', label: 'Lab', icon: 'flask' },
   { to: '/notifications', label: 'Notifications', icon: 'bell' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
   { to: '/screener', label: 'Screener', icon: 'filter' },
