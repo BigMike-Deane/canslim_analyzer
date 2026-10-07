@@ -45,3 +45,33 @@ beat buy-and-hold over 1928–2015 mainly by sidestepping 1929–32 and 2008; fa
 V-shaped crashes (1987, 2020) and choppy decades hurt. P1 likely favourable, P2
 uncertain; volatility targeting improves Sharpe but its CAGR edge depends on
 leverage costs.
+
+## Results (2026-10-07 ~1 PM CT, single run) — `research/pit/a_exposure.py`
+
+Data check first (no strategy numbers): S&P TR 1928–93 9.85%/yr, max DD 83.6%,
+worst year −43% (1931); 1994–2026 10.9%/yr, DD 55% — matching the record.
+
+| Rule | P1 1928–93 CAGR (vs 9.61%) | P1 max DD (vs 83.6%) | P2 1994–26 CAGR (vs 10.90%) | P2 max DD (vs 55.2%) | Sharpe P1 / P2 (vs 0.38 / 0.51) | 10-yr windows beating | Verdict |
+|---|---|---|---|---|---|---|---|
+| **A1 200d 2×** | **14.55%** | 79.9% | **12.33%** | 45.7% | 0.52 / 0.51 | **86%** | **PASS** |
+| A1r 200d 1× (ref) | 10.67% | 52.0% | 8.93% | 22.6% | 0.57 / 0.57 | 41% | ref |
+| A2 vol target | 9.58% | 60.3% | 9.95% | 48.3% | 0.40 / 0.49 | 43% | FAIL |
+| A3 trend + vol | 11.25% | 39.3% | 8.78% | 29.0% | 0.58 / 0.47 | 49% | FAIL |
+
+A1: invested 64% / 75% of days, 5.6 / 6.9 switches a year. Sensitivity
+(reporting): 1-day delay 14.93% / 11.11%, 3-day delay 13.31% / 11.07% — **P2
+edge shrinks to +0.2 pp/yr with slower execution**; 1.5× 12.52% / 10.48%, 3×
+17.30% / 14.87% (DD 93% / 65%).
+
+**A1 PASSES** — the published "leverage for the long run" result replicates on
+65 untouched years and on 1994–2026. **Caveats, in plain terms:**
+1. The 1994–26 gain is leverage, not better risk-adjusted performance (Sharpe
+   0.51 = 0.51); P1 is where the trend filter adds real Sharpe (0.52 vs 0.38).
+2. The P2 margin (+1.4 pp/yr) is thin and sensitive to execution speed.
+3. It still loses ~46–80% in the worst crashes; worst year −35.6% (P2).
+4. ~6 switches a year → short-term gains in a taxable account (fine in an IRA).
+5. Implementation = a 2× S&P fund (SSO) or margin, daily-rebalanced; the
+   simulation models daily leverage costs and decay.
+
+**Next:** combine A1 (when to lever) with v5b (what to hold) and run both as
+forward paper arms.
