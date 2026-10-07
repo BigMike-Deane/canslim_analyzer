@@ -97,3 +97,23 @@ TR; (3) C1 beats A1 in ≥ 5 of 8 calendar years; (4) C1 max DD ≤ A1 max DD +
 5 pp. Reported: Sharpe, tracking vs A1, and C1 with 1× (unlevered timing) for
 reference. **If v5b fails on the corrected data, C1 is not run** (no holdings
 edge to combine). PASS → third Lab strategy (needs a 4th Alpaca paper account).
+
+## Exposure family 2 pre-registration (2026-10-07 ~2:25 PM CT, before any number)
+
+Owner: "What combination will create a model that competes and can potentially do
+better than the SPY long term?" A1 passed, but its 1994–2026 edge fell to +0.2 pp/yr
+with a 1–3 day execution delay (≈ 7 switches a year). Two published refinements
+target exactly that; parameters from the papers, not tuned:
+
+- **A4 — Faber (2007) monthly rule, 2×:** at each month-end, 2× S&P if the index
+  closes above its 10-month simple average of month-end closes, else cash; held
+  for the whole next month (traded at the first close of the month).
+- **A5 — graded dual momentum (Antonacci 2014 absolute momentum + 200-day trend):**
+  each session, signal 1 = index above its 200-day average; signal 2 = index
+  12-month total return > the cash rate's 12-month return. Exposure 2× if both,
+  1× if exactly one, cash if neither.
+
+Same data, costs, delay, periods and gates as A1–A3 (CAGR > S&P TR in P1 and P2;
+≥ 60% of rolling 10-year windows; max DD ≤ S&P's in each period). Exposure ledger:
+A1–A3 tried → A4, A5 are trials 4–5 on the same 1928–2026 data, so a pass is
+reported with the count. Sensitivity (reporting): 1- and 3-day delays.
