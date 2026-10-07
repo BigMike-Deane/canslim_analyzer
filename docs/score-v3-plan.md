@@ -225,3 +225,38 @@ The stable signals measured on the full universe (IC ≈ 0.02–0.04) are worth
 perhaps 1–2 pp/yr — not enough to close 5. **To beat SPY by stock selection in
 this era, the portfolio has to be built relative to SPY's own weights
 (overweight / underweight), not as a stand-alone list of picks.**
+
+## Trial ledger + Score v5 pre-registration — SPY-relative tilt (2026-10-07, before any v5 number)
+
+Owner (Oct-7): "keep iterating and learning until we have a model that starts
+to have an edge on the SPY." Iterating on the same 2019–2026 test years raises
+the chance of a lucky winner, so every variant is logged here and the bar rises
+with the count.
+
+**Trial ledger (stock selection on 2019–2026 OOS):** 1 v3-M1 ridge, 2 v3-M2
+trees, 3 v4 stable EW (all FAIL). v5 adds 4 v5a, 5 v5b, 6 v5c.
+
+**Benchmark validated before any v5 number:** cap-weighted 500 largest of the v3
+universe, total return, 2019–26 = **17.2%/yr = SPY TR 17.2%**, tracking error
+1.7%/yr. v5 tilts are built on it.
+
+**Portfolio (all v5 variants):** every 20 sessions, weight w_i ∝ cap_i ×
+m_i with m_i = 1 + (2u_i − 1), u_i = score percentile in the 500 largest
+(bottom-scored → 0×, median → 1×, top → 2×; missing score → 1×). Long-only,
+fully invested. 19 bps per unit of one-way weight turnover. Total return.
+
+**Scores:**
+- **v5a:** v4's walk-forward stable-signal score (selection inside the 500 largest).
+- **v5b:** same selection rule, but IC measured on the **full v3 universe** (more
+  stocks → more power), score applied to the 500 largest.
+- **v5c:** fixed composite of the six signals with consistent sign in the
+  exploratory scoreboard (+beat streak, +surprise %, +PEAD, +low issuance (S3),
+  +ROE, −days to cover), equal weights. **In-sample by construction** (chosen
+  from a full-2016–26 look) — reported, but it cannot pass on its own.
+
+**Gates (v5a / v5b):** (1) CAGR > SPY TR, 2019-01 → 2026-09; (2) beats SPY in
+≥ 5 of 8 calendar years; (3) **luck-adjusted:** active return (CAGR − SPY TR)
+above the 95th percentile of the *best of 6* random-score tilts (6 = trials in
+the ledger so far; deflates for multiple tries); (4) max DD ≤ SPY + 10 pp.
+Reported: OOS IC in the 500 largest, tracking error, information ratio,
+turnover. A pass → forward paper as a candidate (not proof).
