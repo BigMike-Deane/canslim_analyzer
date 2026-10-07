@@ -19,8 +19,14 @@ TEST = ("2022-01-01", "2026-12-31")
 COMP = ["c", "a", "n", "s", "l", "i"]
 
 
-def load():
+def load(clean_mcap=True):
     d = pd.read_csv(META_DIR / "m3_panel.csv.gz", parse_dates=["date"])
+    if clean_mcap:
+        # SEC share-count unit errors / broken prices (~0.15% of rows, H8 write-up): drop rows bigger than
+        # the day's largest mega-cap, or > 20x / < 1/20 of the company's median. Off = pre-Oct-7 behaviour.
+        mega = d[d.symbol.isin(["AAPL", "MSFT", "NVDA", "GOOG", "GOOGL", "AMZN"])].groupby("date").mcap.max()
+        r = d.mcap / d.groupby("cik").mcap.transform("median")
+        d = d[~((d.mcap > 1.05 * d.date.map(mega)) | (r > 20) | (r < 0.05))].copy()
     for h in (10, 20, 60):
         d[f"r{h}"] = d[f"r{h}"].clip(-0.9, 3.0)
         d[f"x{h}"] = d[f"r{h}"] - d.groupby("date")[f"r{h}"].transform("mean")
