@@ -2021,6 +2021,84 @@ class ShadowEquityMark(Base):
     )
 
 
+class LabStrategy(Base):
+    """Lab tab (2026-10-07): research strategies paper-traded live, each on its
+    OWN Alpaca paper account (never the AI Portfolio mirror's). Rows are synced
+    from config `lab_strategies`; the engine lives in backend/lab.py."""
+    __tablename__ = "lab_strategies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, index=True)
+    kind = Column(String, nullable=False)          # e.g. "a1_trend_2x"
+    label = Column(String)
+    description = Column(Text)
+    starting_value = Column(Float, default=25000.0)
+    activated_at = Column(DateTime)                # first broker-backed decision
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class LabDecision(Base):
+    """One per strategy per session: the inputs the rule saw and the target it chose,
+    recorded BEFORE the close it trades at (forward-test evidence)."""
+    __tablename__ = "lab_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_id = Column(Integer, ForeignKey("lab_strategies.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False)
+    inputs = Column(JSON)                          # e.g. {"gspc_close":..., "sma200":..., "above": true}
+    target = Column(JSON)                          # {symbol: weight}
+    status = Column(String)                        # submitted | unchanged | no_broker | error
+    note = Column(Text)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index('ux_lab_decisions_strategy_date', 'strategy_id', 'date', unique=True),
+    )
+
+
+class LabOrder(Base):
+    """Broker orders a Lab decision placed (market-on-close, whole shares)."""
+    __tablename__ = "lab_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_id = Column(Integer, ForeignKey("lab_strategies.id"), nullable=False, index=True)
+    decision_id = Column(Integer, ForeignKey("lab_decisions.id"), index=True)
+    date = Column(Date, nullable=False)
+    symbol = Column(String, nullable=False)
+    side = Column(String, nullable=False)          # buy | sell
+    qty = Column(Float, nullable=False)
+    client_order_id = Column(String, unique=True, nullable=False)
+    broker_order_id = Column(String)
+    status = Column(String, default="submitted")
+    filled_qty = Column(Float)
+    filled_avg_price = Column(Float)
+    reason = Column(Text)
+    error = Column(Text)
+    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    filled_at = Column(DateTime)
+
+
+class LabEquityMark(Base):
+    """Daily closing account state per Lab strategy, read from its Alpaca account."""
+    __tablename__ = "lab_equity_marks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_id = Column(Integer, ForeignKey("lab_strategies.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False)
+    equity = Column(Float, nullable=False)
+    cash = Column(Float)
+    positions_value = Column(Float)
+    positions = Column(JSON)                       # [{symbol, qty, market_value, avg_entry_price}]
+    spy_close = Column(Float)
+    spy_adj_close = Column(Float)                  # dividend-adjusted (total-return benchmark)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index('ux_lab_equity_marks_strategy_date', 'strategy_id', 'date', unique=True),
+    )
+
+
 class RefreshTokenRecord(Base):
     """Server-side ledger of issued refresh tokens (single-use rotation).
 

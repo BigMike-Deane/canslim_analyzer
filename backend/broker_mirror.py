@@ -194,6 +194,18 @@ class AlpacaPaperClient:
             "client_order_id": client_order_id,
         })
 
+    def submit_moc_order(self, symbol: str, qty: float, side: str, client_order_id: str) -> dict:
+        """Market-on-close, whole shares only (Alpaca rejects fractional cls).
+        Used by the Lab (backend/lab.py) on its own paper accounts."""
+        return self._req("POST", "/v2/orders", json={
+            "symbol": symbol,
+            "qty": str(int(qty)),
+            "side": side,
+            "type": "market",
+            "time_in_force": "cls",
+            "client_order_id": client_order_id,
+        })
+
     def cancel_order(self, order_id: str):
         return self._req("DELETE", f"/v2/orders/{order_id}")
 

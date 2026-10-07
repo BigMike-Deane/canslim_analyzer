@@ -2097,6 +2097,12 @@ def start_continuous_scanning(source: str = "sp500", interval_minutes: int = 15)
     except Exception as e:
         logger.warning(f"Failed to start shadow sync job: {e}")
 
+    # Lab tab: research strategies paper-traded on their own Alpaca accounts.
+    try:
+        start_lab_jobs()
+    except Exception as e:
+        logger.warning(f"Failed to start lab jobs: {e}")
+
     logger.info(f"Continuous scanning started: {source} every {interval_minutes} minutes")
 
     # Run first scan immediately (forced: a boot/manual scan always runs,
@@ -2807,6 +2813,28 @@ def start_push_reachability_job():
         scheduler.start()
 
     logger.info("Push reachability job scheduled (12:30 UTC daily)")
+
+
+def start_lab_jobs():
+    """Lab (backend/lab.py): a decision check every 5 min, 12:00-15:55 ET on
+    weekdays (acts once per session, ~15 min before the close, so early-close
+    days work), and the close recorder at 16:35 + 17:35 ET (the second pass
+    catches late fill reports)."""
+    from apscheduler.triggers.cron import CronTrigger
+    from backend.lab import run_close_job, run_decision_job
+
+    for job_id, fn, trig, name in (
+        ("lab_decision", run_decision_job,
+         CronTrigger(day_of_week="mon-fri", hour="12-15", minute="*/5", timezone="America/New_York"),
+         "Lab Decision"),
+        ("lab_close", run_close_job,
+         CronTrigger(day_of_week="mon-fri", hour="16,17", minute=35, timezone="America/New_York"),
+         "Lab Close Mark"),
+    ):
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+        scheduler.add_job(fn, trig, id=job_id, name=name, replace_existing=True)
+    logger.info("Lab jobs scheduled (decision 12:00-15:55 ET /5min, close 16:35+17:35 ET)")
 
 
 def start_shadow_sync_job():

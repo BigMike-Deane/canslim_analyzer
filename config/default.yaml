@@ -850,6 +850,23 @@ alerts:
 # ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY env vars are set AND the owner
 # activates it (Admin -> Broker Mirror -> Seed). Paper-only is enforced in
 # code, not here. Set enabled: false as the kill switch.
+# Lab tab (2026-10-07): research strategies paper-traded live, each on its OWN
+# Alpaca paper account (credentials are env var NAMES here, values only in the
+# VPS .env). Engine: backend/lab.py. Evidence: docs/exposure-plan.md.
+lab_strategies:
+  a1_trend_2x:
+    kind: a1_trend_2x
+    label: "A1 · Trend 2×"
+    description: "Hold SSO (2× S&P 500) when the S&P 500 closed above its 200-day average on the prior session, else SGOV (T-bills). Market-on-close orders. Passed 1928–93 (14.6% vs 9.6%/yr) and 1994–2026 (12.3% vs 10.9%/yr)."
+    enabled: true
+    starting_value: 25000
+    index: "^GSPC"
+    sma_days: 200
+    risk_on: SSO
+    risk_off: SGOV
+    key_env: LAB_A1_ALPACA_KEY_ID
+    secret_env: LAB_A1_ALPACA_SECRET_KEY
+
 broker_mirror:
   enabled: true
   user_id: 1
