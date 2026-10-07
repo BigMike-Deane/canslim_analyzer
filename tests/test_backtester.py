@@ -1945,6 +1945,46 @@ class TestDrawdownCircuitBreaker:
         # Halt should be lifted since drawdown < recovery threshold
         assert engine.drawdown_halt is False
 
+    def test_halt_lifts_below_halt_threshold_like_live(self):
+        """Parity with live: the halt is re-decided daily (no latch). At 12% DD
+        live buys again; the backtester used to stay halted until < 10%."""
+        from backend.backtester import BacktestEngine, SimulatedPosition
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 7000.0
+        engine.peak_portfolio_value = 25000.0
+        engine.drawdown_halt = True
+        # $7K cash + 100 x $150 = $22K -> 12% DD (between recovery 10 and halt 15)
+        engine.positions["MID"] = SimulatedPosition(
+            ticker="MID", shares=100, cost_basis=140.0,
+            purchase_date=date.today() - timedelta(days=30),
+            purchase_score=80.0, peak_price=155.0,
+            peak_date=date.today() - timedelta(days=3), sector="Technology"
+        )
+        self._setup_data_provider(engine, price=150.0, signal=1.5)
+        engine.static_data = {"MID": {"sector": "Technology"}}
+
+        engine._simulate_day(date.today())
+        assert engine.drawdown_halt is False
+
+    def test_flat_book_rebases_peak(self):
+        """All-cash book at 20% DD: re-base the peak instead of a permanent halt
+        (H7 replay froze every vintage in cash for 4-8 years)."""
+        from backend.backtester import BacktestEngine
+
+        mock_session, mock_backtest = make_mock_db(min_score=72)
+        engine = BacktestEngine(mock_session, 1)
+        engine.cash = 20000.0
+        engine.peak_portfolio_value = 25000.0
+        engine.drawdown_halt = True
+        self._setup_data_provider(engine, price=150.0, signal=1.5)
+        engine.static_data = {}
+
+        engine._simulate_day(date.today())
+        assert engine.drawdown_halt is False
+        assert engine.peak_portfolio_value == pytest.approx(20000.0)
+
     def test_circuit_breaker_blocks_pyramids(self):
         """drawdown_halt=True, verify no pyramids"""
         from backend.backtester import BacktestEngine, SimulatedPosition

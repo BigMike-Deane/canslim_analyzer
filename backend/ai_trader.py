@@ -4096,6 +4096,15 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             db.commit()
             logger.warning(f"CIRCUIT BREAKER: All positions liquidated. Cash: ${config.current_cash:.2f}")
             return results
+        elif (current_drawdown >= halt_threshold and position_count == 0
+              and (getattr(config, 'spy_sweep_shares', 0) or 0) <= 0):
+            # Flat book: all cash can never climb back to the old peak, so the
+            # halt would be permanent (PIT replay: every H7 vintage froze in
+            # cash for 4-8 years). Re-base the peak on the flat book; the
+            # backtester and shadow arms do the same.
+            logger.warning(f"CIRCUIT BREAKER: flat book at {current_drawdown:.1f}% drawdown - "
+                           f"re-basing peak ${peak_value:,.0f} -> ${total_value:,.0f}, buys resume")
+            config.peak_portfolio_value = total_value
         elif current_drawdown >= halt_threshold:
             logger.warning(f"CIRCUIT BREAKER: {current_drawdown:.1f}% drawdown - halting new buys and pyramids")
             drawdown_halt = True

@@ -3678,6 +3678,53 @@ class TestRunAITradingCycle:
         assert pyr_calls == []
         assert buy_calls == []
 
+    def test_flat_book_rebases_peak_instead_of_permanent_halt(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """Branch: DD >= 15% with NO positions and no SPY sweep → peak re-based
+        to the flat book and buys are evaluated. All cash can never climb back to
+        the old peak, so a halt here would be permanent (H7 replay: every vintage
+        froze in cash for 4-8 years)."""
+        import backend.ai_trader as ai_trader
+        from backend.database import AIPortfolioConfig
+        buy_calls = []
+        monkeypatch.setattr(ai_trader, "evaluate_buys",
+                            lambda *a, **kw: buy_calls.append(1) or [])
+
+        # Peak $25k, all cash $20k → 20% DD, flat
+        _seed_config(db_session, current_cash=20000.0,
+                     peak_portfolio_value=25000.0, starting_cash=25000.0,
+                     spy_sweep_shares=0.0)
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        assert cfg.peak_portfolio_value == pytest.approx(20000.0)
+        assert buy_calls == [1]
+
+    def test_flat_book_with_spy_sweep_still_halts(
+        self, db_session, reset_cycle_state, silence_cycle_seams,
+        disable_atr_http, disable_historical_data, monkeypatch,
+    ):
+        """A book holding SPY sweep shares can still recover, so the normal
+        halt applies and the peak is NOT re-based."""
+        import backend.ai_trader as ai_trader
+        from backend.database import AIPortfolioConfig
+        buy_calls = []
+        monkeypatch.setattr(ai_trader, "evaluate_buys",
+                            lambda *a, **kw: buy_calls.append(1) or [])
+        monkeypatch.setattr(ai_trader, "get_portfolio_value",
+                            lambda db, user_id=1: {"total_value": 20000.0, "sweep_priced": True})
+
+        _seed_config(db_session, current_cash=10000.0,
+                     peak_portfolio_value=25000.0, starting_cash=25000.0,
+                     spy_sweep_shares=20.0)
+        ai_trader.run_ai_trading_cycle(db_session, user_id=1)
+
+        cfg = db_session.query(AIPortfolioConfig).filter_by(user_id=1).first()
+        assert cfg.peak_portfolio_value == pytest.approx(25000.0)
+        assert buy_calls == []
+
     # ── Buys path branches ────────────────────────────────────────────────
 
     def test_cash_below_dynamic_reserve_skips_buys(

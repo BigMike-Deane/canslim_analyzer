@@ -1122,31 +1122,58 @@ class TestLiveExecutionParitySep24:
     def test_drawdown_past_halt_blocks_buys(self, db_session, monkeypatch):
         from backend import shadow_trader
         strategy = _make_strategy(db_session, name="parity_halt")
-        strategy.peak_equity = 30000.0     # $25k cash now -> 16.7% drawdown
+        _add_shadow_trade(db_session, strategy.id, "HP", "BUY", 100.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=5))
+        strategy.peak_equity = 30000.0     # $15k cash + 100 x $100 = $25k -> 16.7% drawdown
         db_session.commit()
         self._patch(monkeypatch, [self._buy("HH")])
+        shadow_trader._live_price_fn = lambda t: 50.0
+
+        shadow_trader._run_one_strategy(
+            strategy.id, [{"ticker": "HP", "current_price": 100.0, "total_score": 80}])
+
+        assert db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id,
+            ShadowTrade.ticker == "HH").count() == 0
+
+    def test_flat_book_rebases_peak_and_trades(self, db_session, monkeypatch):
+        """All cash at 16.7% DD: live re-bases the peak (a flat book can never
+        recover, so the halt would be permanent); the arm must too."""
+        from backend import shadow_trader
+        strategy = _make_strategy(db_session, name="parity_flat")
+        strategy.peak_equity = 30000.0     # $25k cash, no positions -> 16.7% drawdown
+        db_session.commit()
+        self._patch(monkeypatch, [self._buy("FB")])
+        shadow_trader._live_price_fn = lambda t: 50.0
 
         shadow_trader._run_one_strategy(strategy.id, [])
 
         assert db_session.query(ShadowTrade).filter(
-            ShadowTrade.shadow_strategy_id == strategy.id).count() == 0
+            ShadowTrade.shadow_strategy_id == strategy.id).count() == 1
+        db_session.expire_all()
+        assert db_session.get(ShadowStrategy, strategy.id).peak_equity == pytest.approx(25000.0)
 
     def test_peak_seeds_from_best_daily_mark(self, db_session, monkeypatch):
         from datetime import date as _date
         from backend import shadow_trader
         from backend.database import ShadowEquityMark
         strategy = _make_strategy(db_session, name="parity_seed")
+        _add_shadow_trade(db_session, strategy.id, "SP", "BUY", 100.0, 100.0,
+                          executed_at=datetime.now(timezone.utc) - timedelta(days=5))
         db_session.add(ShadowEquityMark(
             shadow_strategy_id=strategy.id, date=_date(2026, 9, 1), equity=30000.0,
             cash=30000.0, positions_value=0.0, sweep_value=0.0, n_positions=0,
             unpriced_positions=0))
         db_session.commit()
         self._patch(monkeypatch, [self._buy("SS")])
+        shadow_trader._live_price_fn = lambda t: 50.0
 
-        shadow_trader._run_one_strategy(strategy.id, [])
+        shadow_trader._run_one_strategy(
+            strategy.id, [{"ticker": "SP", "current_price": 100.0, "total_score": 80}])
 
         assert db_session.query(ShadowTrade).filter(
-            ShadowTrade.shadow_strategy_id == strategy.id).count() == 0
+            ShadowTrade.shadow_strategy_id == strategy.id,
+            ShadowTrade.ticker == "SS").count() == 0
         db_session.expire_all()
         assert db_session.get(ShadowStrategy, strategy.id).peak_equity == pytest.approx(30000.0)
 

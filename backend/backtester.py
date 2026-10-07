@@ -1569,11 +1569,22 @@ class BacktestEngine:
             self._take_snapshot(current_date)
             return
 
-        if adjusted_drawdown >= halt_threshold:
+        # Mirrors live (run_ai_trading_cycle): the halt is re-decided every day,
+        # no latch -- live resumes below halt_threshold, not recovery_pct.
+        if (adjusted_drawdown >= halt_threshold and not self.positions
+                and self.spy_sweep_shares <= 0):
+            # Flat book: all cash can never climb back to the old peak, so the
+            # halt would be permanent. Re-base the peak (live + shadow do too).
+            logger.info(f"CIRCUIT BREAKER: flat book at {adjusted_drawdown:.1f}% drawdown - "
+                        f"re-basing peak ${self.peak_portfolio_value:,.0f} -> ${portfolio_value:,.0f}")
+            self.peak_portfolio_value = portfolio_value
+            self.experimental_realized_losses = 0.0  # baked into the new peak
+            self.drawdown_halt = False
+        elif adjusted_drawdown >= halt_threshold:
             if not self.drawdown_halt:
                 logger.warning(f"CIRCUIT BREAKER: {adjusted_drawdown:.1f}% drawdown - halting new buys")
             self.drawdown_halt = True
-        elif self.drawdown_halt and adjusted_drawdown < recovery_threshold:
+        elif self.drawdown_halt:
             logger.info(f"CIRCUIT BREAKER LIFTED: Drawdown recovered to {adjusted_drawdown:.1f}%")
             self.drawdown_halt = False
 

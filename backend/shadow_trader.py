@@ -156,6 +156,10 @@ def _circuit_breaker_state(shadow_session, strategy, sandbox) -> tuple:
         # (total_value understated); same here.
         return ("liquidate" if pv.get("sweep_priced", True) else "halt"), dd, peak
     if dd >= cfg.get('halt_new_buys_pct', 15.0):
+        if n_pos == 0 and (getattr(getattr(shadow_session, '_synthetic_config', None), 'spy_sweep_shares', 0) or 0) <= 0:
+            # Live re-bases the peak on a flat (all-cash) book instead of a
+            # permanent halt; same here. Caller persists the lowered peak.
+            return "rebase", 0.0, total
         return "halt", dd, peak
     return "ok", dd, peak
 
@@ -1381,6 +1385,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                         position=position, shares=position.shares,
                         price=position.current_price,
                         reason=f"CIRCUIT BREAKER: Portfolio drawdown {cb_dd:.1f}%")
+        elif cb_state == "rebase":
+            logger.warning(f"shadow[{strategy.name}]: CIRCUIT BREAKER flat book -- peak re-based to ${cb_peak:,.0f}")
         elif cb_state == "halt":
             logger.warning(f"shadow[{strategy.name}]: CIRCUIT BREAKER {cb_dd:.1f}% drawdown -- no pyramids or buys")
             _funnel.note("circuit_breaker", f"{cb_dd:.1f}% drawdown")
@@ -1397,7 +1403,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
         # drawdown circuit breaker stays unmodeled (docstring Limitations).
         try:
             pyramids = (evaluate_pyramids(shadow_session, user_id=SHADOW_USER_ID)
-                        if cb_state == "ok" else [])
+                        if cb_state in ("ok", "rebase") else [])
         except Exception as e:
             logger.error(f"shadow evaluate_pyramids failed for {strategy.name}: {e}", exc_info=True)
             pyramids = []
@@ -1437,7 +1443,7 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                 heat_penalty_active=False,
                 user_id=SHADOW_USER_ID,
                 funnel=_funnel,
-            ) if cb_state == "ok" else []
+            ) if cb_state in ("ok", "rebase") else []
         except Exception as e:
             logger.error(f"shadow evaluate_buys failed for {strategy.name}: {e}", exc_info=True)
             buys = []
@@ -1606,7 +1612,8 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
                        shadow_strategy_id=strategy_id)
 
         # Circuit-breaker high-water mark ratchets every tick (sandbox rolls back).
-        if cb_peak is not None and (strategy.peak_equity is None or cb_peak > strategy.peak_equity):
+        if cb_peak is not None and (strategy.peak_equity is None or cb_peak > strategy.peak_equity
+                                    or cb_state == "rebase"):
             try:
                 persist.query(ShadowStrategy).filter(ShadowStrategy.id == strategy_id).update(
                     {"peak_equity": cb_peak}, synchronize_session=False)
