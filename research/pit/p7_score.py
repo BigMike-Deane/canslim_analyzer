@@ -75,11 +75,13 @@ def best_trade_share(trades, profit):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-vintages", type=int, default=5)
+    ap.add_argument("--variant", default="none", help="flat_reset = labeled diagnostic (meta/h7_flat_reset), never the verdict")
     a = ap.parse_args()
     spy = spy_tr()
+    src = META_DIR / ("h7" if a.variant == "none" else f"h7_{a.variant}")
     vint = []
     for o in (0, 10, 20, 30, 40):
-        f = META_DIR / "h7" / f"vintage_{o}.json"
+        f = src / f"vintage_{o}.json"
         if f.exists():
             vint.append(json.load(open(f)))
     if len(vint) < a.min_vintages:
@@ -112,7 +114,7 @@ def main():
                       "vintages_beating_spy": sum(r[w]["excess"] > 0 for r in rows)}
     final = all(verdict[w]["pass"] for w in WINDOWS) and len(rows) == 5
 
-    print(f"H7 — {len(rows)} vintages\n")
+    print(f"H7{'' if a.variant == 'none' else ' DIAGNOSTIC (' + a.variant + ', not the verdict)'} — {len(rows)} vintages\n")
     print(f"{'off':>4} {'window':>8} {'CAGR':>7} {'SPY':>7} {'excess':>7} {'Sharpe':>6} {'SPYsh':>6} "
           f"{'maxDD':>6} {'SPYdd':>6}")
     for r in rows:
@@ -128,9 +130,9 @@ def main():
         print(f"{w:>8}: median CAGR {x['median_cagr']:.1%} vs SPY TR {x['spy_cagr']:.1%} -> "
               f"{'PASS' if x['pass'] else 'FAIL'} (median excess {x['median_excess']:+.1%}, "
               f"{x['vintages_beating_spy']}/{len(rows)} vintages beat SPY)")
-    print(f"\nH7 VERDICT: {'PASS' if final else 'FAIL'}")
+    print(f"\nH7 {'VERDICT' if a.variant == 'none' else 'diagnostic outcome'}: {'PASS' if final else 'FAIL'}")
     json.dump({"vintages": rows, "verdict": verdict, "pass": final},
-              open(META_DIR / "h7" / "h7_score.json", "w"), indent=1, default=str)
+              open(src / "h7_score.json", "w"), indent=1, default=str)
 
 
 if __name__ == "__main__":
