@@ -139,7 +139,7 @@ clearly ahead of SPY (+1.0 pp/yr; A4's monthly checks were too slow for 2020).
 
 **Candidate for the Lab: A5** (SSO when both signals, SPY when one, SGOV when none).
 
-## International replication pre-registration (2026-10-07 ~2:50 PM CT, before any number)
+## International replication pre-registration (2026-10-07 ~2:30 PM CT, before any number)
 
 **Why:** the strongest independent check of the exposure family — markets this
 programme has never touched, including Japan's 1990–2012 collapse.
@@ -162,7 +162,7 @@ warm-up and a cash rate.
 has a shallower max drawdown in **≥ 3 of 4**. Reported: per-market CAGR, DD,
 Sharpe, worst year, and Japan 1990–2012 separately.
 
-## International replication results (2026-10-07 ~2:55 PM CT, single run) — **FAIL**
+## International replication results (2026-10-07 ~2:38 PM CT, single run) — **FAIL**
 
 | Market (dividend assumed) | Buy & hold CAGR / DD | A1 excess | A4 excess | A5 excess | A5 DD |
 |---|---|---|---|---|---|
