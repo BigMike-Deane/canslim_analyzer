@@ -117,3 +117,24 @@ Same data, costs, delay, periods and gates as A1–A3 (CAGR > S&P TR in P1 and P
 ≥ 60% of rolling 10-year windows; max DD ≤ S&P's in each period). Exposure ledger:
 A1–A3 tried → A4, A5 are trials 4–5 on the same 1928–2026 data, so a pass is
 reported with the count. Sensitivity (reporting): 1- and 3-day delays.
+
+## Exposure family 2 + combination results (2026-10-07 ~2:35 PM CT)
+
+| Rule | P1 1928–93 (S&P 9.61%) | P2 1994–26 (S&P 10.90%) | P2 max DD (S&P 55.2%) | Sharpe P1 / P2 | Switches/yr | 10-yr windows | P2 at 1 / 3 / 5-day delay | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| A4 Faber monthly 2× | 11.99% | **14.04%** | 48.6% | 0.42 / 0.55 | 1.4 | 73% | 14.69 / 14.79 / 14.11% | **PASS** |
+| **A5 graded dual momentum** | **13.30%** | **13.67%** | **37.3%** | 0.49 / 0.55 | 4.1 | 80% | 12.10 / 13.21 / 14.40% | **PASS** |
+| A1 (ref) | 14.55% | 12.33% | 45.7% | 0.52 / 0.51 | 6.9 | 86% | 11.11 / 11.07 / 12.85% | PASS |
+
+Exposure ledger: 5 rules tried on 1928–2026, **3 pass** — the trend/absolute-momentum
++ leverage family works broadly, not one lucky rule. A5 has the best risk profile
+(DD 37% vs 55%, worst year −30.5% vs −36.8%) and is delay-robust.
+
+**Combinations (exploratory — C1's pre-registration said skip if v5b failed; run at
+the owner's request), 2019-01 → 2026-09:** SPY TR 17.25%; A1 17.53% / on v5b book
+17.56%; A4 13.89% / 13.31%; **A5 18.23% / 18.22%**. Holding the v5b book instead of
+the S&P adds nothing under leverage: its weak years (2021 −6 pp, 2022 −3 pp vs SPY)
+are doubled. All C-variants FAIL their gates. In this bull-dominated window only A5 is
+clearly ahead of SPY (+1.0 pp/yr; A4's monthly checks were too slow for 2020).
+
+**Candidate for the Lab: A5** (SSO when both signals, SPY when one, SGOV when none).

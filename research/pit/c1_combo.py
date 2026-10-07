@@ -66,31 +66,33 @@ def main():
     lo, hi = scores.date.min(), pd.Timestamp("2026-09-30")
     book = book_daily(scores, sess)
     book = book[(book.index > lo) & (book.index <= hi)]
-    above = (px > px.rolling(200).mean()).astype(float)
-    res = {}
-    for name, sleeve, lev in (("SPY TR (buy & hold)", tr, None), ("A1: 2x S&P / cash", tr, 2.0),
-                              ("C1: 2x v5b book / cash", book, 2.0), ("C1 1x (reference)", book, 1.0),
-                              ("v5b book (buy & hold)", book, None)):
-        sl = sleeve.reindex(book.index).fillna(0)
-        if lev is None:
-            r = sl
-        else:
-            r, _ = A.run(px.reindex(book.index), sl, rate.reindex(book.index), (lev * above).reindex(book.index).fillna(0))
+    import a_exposure2 as A2
+    expos = {"A1": 2 * (px > px.rolling(200).mean()).astype(float), "A4": A2.a4_exposure(px),
+             "A5": A2.a5_exposure(px, tr, rate)}
+    idx = book.index
+    def simulate(sleeve, ex):
+        r, _ = A.run(px.reindex(idx), sleeve.reindex(idx).fillna(0), rate.reindex(idx), ex.reindex(idx).fillna(0))
+        return r
+    def summarize(name, r):
         eq = (1 + r).cumprod()
         yrs = (eq.index[-1] - eq.index[0]).days / 365.25
         ex = r - rate.reindex(r.index) / 252
-        res[name] = {"cagr": eq.iloc[-1] ** (1 / yrs) - 1, "dd": float((1 - eq / eq.cummax()).max()),
-                     "sharpe": float(ex.mean() / ex.std() * np.sqrt(252)),
-                     "years": r.groupby(r.index.year).apply(lambda v: (1 + v).prod() - 1)}
-        print(f"{name:26s} CAGR {res[name]['cagr']:.2%} | max DD {res[name]['dd']:.1%} | Sharpe {res[name]['sharpe']:.2f}")
-    a1, c1 = res["A1: 2x S&P / cash"], res["C1: 2x v5b book / cash"]
-    beat_years = int((c1["years"] > a1["years"]).sum())
-    print("\nby year (C1 vs A1): " + "  ".join(f"{y}: {c1['years'][y]:+.1%} vs {a1['years'][y]:+.1%}" for y in c1["years"].index))
-    gates = {"1 C1 CAGR > A1": c1["cagr"] > a1["cagr"], "2 C1 CAGR > SPY TR": c1["cagr"] > res["SPY TR (buy & hold)"]["cagr"],
-             "3 C1 beats A1 >= 5/8 yrs": beat_years >= 5, "4 C1 DD <= A1 DD + 5pp": c1["dd"] <= a1["dd"] + 0.05}
-    for k, v in gates.items():
-        print(f"  gate {k}: {'PASS' if v else 'FAIL'}")
-    print(f"\n=> C1 {'PASS' if all(gates.values()) else 'FAIL'}")
+        out = {"cagr": eq.iloc[-1] ** (1 / yrs) - 1, "dd": float((1 - eq / eq.cummax()).max()),
+               "sharpe": float(ex.mean() / ex.std() * np.sqrt(252)),
+               "years": r.groupby(r.index.year).apply(lambda v: (1 + v).prod() - 1)}
+        print(f"{name:34s} CAGR {out['cagr']:.2%} | max DD {out['dd']:.1%} | Sharpe {out['sharpe']:.2f}")
+        return out
+    spy = summarize("SPY TR (buy & hold)", tr.reindex(idx).fillna(0))
+    summarize("v5b book (buy & hold)", book)
+    res = {}
+    for k, ex in expos.items():
+        res[k] = (summarize(f"{k} on S&P", simulate(tr, ex)), summarize(f"{k} on v5b book (C-{k})", simulate(book, ex)))
+    for k, (a, c) in res.items():
+        beat = int((c["years"] > a["years"]).sum())
+        g = {"C CAGR > exposure-on-S&P": c["cagr"] > a["cagr"], "C CAGR > SPY TR": c["cagr"] > spy["cagr"],
+             "C beats exposure-on-S&P >= 5/8 yrs": beat >= 5, "C DD <= its S&P version + 5pp": c["dd"] <= a["dd"] + 0.05}
+        print(f"\nC-{k} vs {k}-on-S&P: " + "  ".join(f"{y}: {c['years'][y]:+.1%} vs {a['years'][y]:+.1%}" for y in c["years"].index))
+        print("  " + " | ".join(f"{n}: {'PASS' if v else 'FAIL'}" for n, v in g.items()) + f" => {'PASS' if all(g.values()) else 'FAIL'}")
 
 
 if __name__ == "__main__":
