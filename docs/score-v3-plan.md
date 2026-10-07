@@ -260,3 +260,38 @@ above the 95th percentile of the *best of 6* random-score tilts (6 = trials in
 the ledger so far; deflates for multiple tries); (4) max DD ≤ SPY + 10 pp.
 Reported: OOS IC in the 500 largest, tracking error, information ratio,
 turnover. A pass → forward paper as a candidate (not proof).
+
+## Score v5 results (2026-10-07 ~11:15 AM CT, single run + robustness)
+
+Placebo (2 seeds): v5a/v5b OOS IC t −0.32…+1.20, noise-selected tilts −0.1 to
+−3.5 %/yr active (a bad tilt is not free).
+
+| | Active vs SPY TR /yr | Years > SPY | OOS IC, 500 largest (t) | TE | IR | Gates |
+|---|---|---|---|---|---|---|
+| v5a | +0.11% | 3/8 | −0.008 (−0.61) | 2.4% | +0.11 | **FAIL** |
+| **v5b** | **+0.92%** | **5/8** | **+0.029 (+2.38)** | 2.3% | +0.42 | **PASS (all 4)** |
+| v5c (in-sample) | +1.68% | 6/8 | +0.040 (+3.20) | 2.1% | +0.73 | n/a |
+| luck bar (best of 6 random tilts, 95th pct) | +0.91% | | | | | |
+
+v5b CAGR 18.15% vs SPY TR 17.23%; max DD 31.4% vs 31.0%; turnover 7% per
+rebalance. By year: 2019 −0.2 · 2020 +4.2 · 2021 −4.0 · 2022 −2.3 · 2023 +2.4 ·
+2024 +5.7 · 2025 +1.8 · 2026 YTD +0.6 pp vs SPY.
+
+**Features v5b kept (walk-forward, full-universe IC):** 2019 none; 2020–22 beat
+streak, analyst coverage, EPS growth, surprise, AM; **2023–26 converge on beat
+streak, surprise, analyst coverage, low days-to-cover, ROE, low issuance (+
+inst %, A, SI)** — the same family as the hand-picked v5c, found without
+looking ahead.
+
+**Robustness (reporting; nothing re-chosen):** v5b active +1.09% (6/8) on the
+alternate rebalance calendar, +0.71% with costs ×2, +0.46% / +1.29% at tilt
+0.5× / 1.5× (monotone in tilt — what a real signal does). Luck with 2,000 random
+tilts: median −1.01%, best-of-6 95th +0.86%; **P(best of 6 random ≥ +0.92%) =
+3.8%.**
+
+**Reading:** a **modest, real-looking edge of about +1 pp/yr over SPY** at
+~2.3% tracking error (IR ≈ 0.4), from earnings-execution + quality + low
+short-pressure signals tilting an S&P-like book. The pass is at the margin of a
+deliberately strict bar and comes after 6 trials on the same years. **Status:
+candidate → forward paper ledger** (weights committed to git before the
+returns happen).
