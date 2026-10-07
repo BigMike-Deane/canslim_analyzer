@@ -90,3 +90,21 @@ paid deeper dataset for a new, fully out-of-sample test).
   blind. A pass is therefore confirmed only by forward paper trading.
 - 10 years of data, 8 test years; one market era (mega-cap led).
 - C uses GAAP EPS; no estimate-revision history; short interest from 2018.
+
+## Amendment 1 — before the real run (2026-10-07, after the placebo only)
+
+The placebo run (target shuffled within date; no real score result exists yet)
+and two baselines showed the yardstick needs fixing:
+- **Dividends.** Stock returns are split-adjusted *price* returns while SPY is
+  total return. Over the test dates the cap-weighted universe returned 14.7%/yr
+  price-only vs SPY TR 17.2%; ~1.5 pp/yr of that is missing dividends — enough
+  to decide gate 2. **Fix: add each stock's cash dividends (FMP `/stable/dividends`,
+  ex-dates inside the window) to r20/r60**, so both sides are total return.
+- **Luck band.** Three random top-25 portfolios returned 13.6%, 9.7% and 4.0%/yr
+  over the same rebalances. Portfolio CAGR alone is a noisy judge. **Added to the
+  report (not a gate): the model portfolio's percentile among 200 random-score
+  portfolios** built by the identical rules.
+- **Placebo calibration.** M1 placebo IC +0.0003 (t 0.19). M2 placebo IC +0.0036
+  (t 2.06) on one seed → run 4 more placebo seeds and report M2's null spread
+  beside the real t.
+Gates, features, models and settings are unchanged.
