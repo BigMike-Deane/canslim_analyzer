@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XAxis, YAxis, ResponsiveContainer, Tooltip, Area, AreaChart, Line } from 'recharts'
+import { XAxis, YAxis, ResponsiveContainer, Tooltip, Area, ComposedChart } from 'recharts'
 import { api, formatCurrency, formatPercent } from '../api'
 import useApi from '../hooks/useApi'
 import Card, { CardHeader } from '../components/Card'
@@ -48,7 +48,7 @@ function EquityChart({ history }) {
   return (
     <div className="h-56">
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+        <ComposedChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="labEq" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={chartColors.brand} stopOpacity={0.35} />
@@ -60,9 +60,9 @@ function EquityChart({ history }) {
                  domain={['auto', 'auto']} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
           <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle}
                    formatter={(v, k) => [formatCurrency(v), k === 'equity' ? 'Strategy' : 'SPY (total return)']} />
-          <Area type="monotone" dataKey="equity" stroke={chartColors.brand} fill="url(#labEq)" strokeWidth={2} />
-          <Line type="monotone" dataKey="spy_value" stroke={chartColors.spy} dot={false} strokeWidth={1.5} />
-        </AreaChart>
+          <Area type="monotone" dataKey="equity" stroke={chartColors.brand} fill="url(#labEq)" strokeWidth={2} isAnimationActive={false} />
+          <Area type="monotone" dataKey="spy_value" stroke={chartColors.spy} fill="none" strokeWidth={1.5} isAnimationActive={false} />
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   )
@@ -160,12 +160,12 @@ function StrategyView({ s }) {
           <div>
             <div className="text-[11px] text-dark-400">Equity{s.as_of ? ` · ${s.as_of}` : ''}</div>
             <div className="text-2xl font-semibold font-data text-dark-50">{s.equity != null ? formatCurrency(s.equity) : '—'}</div>
-            <div className="text-xs mt-1">
+            {s.days > 0 && <div className="text-xs mt-1">
               <span className={pnl(s.total_return_pct)}>{formatPercent(s.total_return_pct, true)}</span>
               <span className="text-dark-400"> vs SPY </span>
               <span className={pnl(s.spy_return_pct)}>{formatPercent(s.spy_return_pct, true)}</span>
               <span className="text-dark-400"> · {s.days} day{s.days === 1 ? '' : 's'}</span>
-            </div>
+            </div>}
           </div>
           {!s.broker_connected && <AlertChip tone="ok" label="Broker" value="Waiting for Alpaca keys" />}
         </div>
