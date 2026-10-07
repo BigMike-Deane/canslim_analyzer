@@ -119,7 +119,8 @@ def work(chunk):
             rows.append((cik, None, repr(e)[:150]) + (np.nan,) * 16)
     pd.DataFrame(rows, columns=["cik", "date", "symbol", "total", "c", "a", "n", "s", "l", "i", "m",
                                 "eps_growth", "annual_cagr", "sector", "mcap_m", "surprise_pct", "beat_streak",
-                                "inst_pct", "days_to_earnings"]).to_csv(path, index=False)
+                                "inst_pct", "days_to_earnings"]).to_csv(tmp := path.with_suffix(".tmp.gz"), index=False)
+    tmp.replace(path)  # atomic: a restart never leaves a half-written chunk that looks finished
     return idx, len(rows)
 
 

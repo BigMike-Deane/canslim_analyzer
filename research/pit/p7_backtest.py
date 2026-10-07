@@ -32,12 +32,12 @@ import sys
 import time
 from datetime import date
 
-SCRATCH = "/tmp/claude-1000/-mnt-c-Users-bayer/4212ef52-36cb-40c4-8e8d-10b3d3c7302c/scratchpad"
-
 import pandas as pd  # noqa: E402
 
 import m2_adapter as m  # noqa: E402  (sets sys.path to the repo root)
-from common import META_DIR, load_prices  # noqa: E402
+from common import DATA_DIR, META_DIR, load_prices  # noqa: E402
+
+SCRATCH = DATA_DIR / "h7_db"  # throwaway SQLite per vintage; survives restarts, never production
 
 COST = 0.00095
 START, END = "2016-01-04", "2026-10-05"
@@ -45,6 +45,7 @@ SCORE_FLOOR = 35  # lowest effective_min_score the engine can reach (score-floor
 
 
 def _db(offset):
+    SCRATCH.mkdir(exist_ok=True)
     os.environ["DATABASE_URL"] = f"sqlite:///{SCRATCH}/h7_v{offset}.db"
     sys.path.insert(0, str(m.REPO / "backend"))
     from backend.database import Base, SessionLocal, engine
