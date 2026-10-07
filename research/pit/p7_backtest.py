@@ -37,6 +37,7 @@ import pandas as pd  # noqa: E402
 import m2_adapter as m  # noqa: E402  (sets sys.path to the repo root)
 from common import DATA_DIR, META_DIR, load_prices  # noqa: E402
 
+VARIANT = "none"  # set from --variant in main(); "flat_reset" = labeled diagnostic, never the H7 verdict
 SCRATCH = DATA_DIR / "h7_db"  # throwaway SQLite per vintage; survives restarts, never production
 
 COST = 0.00095
@@ -46,7 +47,7 @@ SCORE_FLOOR = 35  # lowest effective_min_score the engine can reach (score-floor
 
 def _db(offset):
     SCRATCH.mkdir(exist_ok=True)
-    os.environ["DATABASE_URL"] = f"sqlite:///{SCRATCH}/h7_v{offset}.db"
+    os.environ["DATABASE_URL"] = f"sqlite:///{SCRATCH}/h7{'' if VARIANT == 'none' else '_' + VARIANT}_v{offset}.db"
     sys.path.insert(0, str(m.REPO / "backend"))
     from backend.database import Base, SessionLocal, engine
     Base.metadata.drop_all(engine)
@@ -109,6 +110,7 @@ def make_classes():
             self.key_to_cik = daily.drop_duplicates("key").set_index("key").cik.to_dict()
             self.last_row: dict = {}
             self.equity: list = []
+            self.flat_resets: list = []
 
         # ---- data plumbing -------------------------------------------------
         def _rs_momentum(self, t, d):
@@ -164,6 +166,13 @@ def make_classes():
 
         def _simulate_day(self, current_date):
             self._refresh_static(current_date)
+            if VARIANT == "flat_reset" and self.drawdown_halt and not self.positions:
+                # DIAGNOSTIC ONLY (not the pre-registered H7 rules): an all-cash book cannot recover from a
+                # drawdown, so the halt is permanent. Re-base the peak on the flat book and lift it, as the
+                # engine's own market-state path does ("prevent circuit breaker doom loop").
+                self.peak_portfolio_value = self._get_portfolio_value(current_date)
+                self.drawdown_halt = False
+                self.flat_resets.append(str(current_date))
             super()._simulate_day(current_date)
             self.equity.append((str(current_date), self._get_portfolio_value(current_date)))
 
@@ -217,7 +226,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--end", default=END)
+    ap.add_argument("--variant", default="none", choices=["none", "flat_reset"])
     a = ap.parse_args()
+    global VARIANT
+    VARIANT = a.variant
     db = _db(a.offset)
     from backend.database import BacktestRun, BacktestTrade
     _, PITBacktester = make_classes()
@@ -237,9 +249,9 @@ def main():
     trades = [{"date": str(t.date), "ticker": t.ticker, "action": t.action, "shares": t.shares, "price": t.price,
                "gain": t.realized_gain, "reason": t.reason}
               for t in db.query(BacktestTrade).filter(BacktestTrade.backtest_id == bt.id).all()]
-    out = META_DIR / "h7"
+    out = META_DIR / ("h7" if VARIANT == "none" else f"h7_{VARIANT}")
     out.mkdir(exist_ok=True)
-    json.dump({"offset": a.offset, "start": start, "end": a.end, "equity": eng.equity, "trades": trades,
+    json.dump({"offset": a.offset, "start": start, "end": a.end, "equity": eng.equity, "trades": trades, "variant": VARIANT, "flat_resets": eng.flat_resets,
                "total_return_pct": bt.total_return_pct, "max_drawdown_pct": bt.max_drawdown_pct},
               open(out / f"vintage_{a.offset}.json", "w"))
     print(f"done: {len(trades)} trades, final ${eng.equity[-1][1]:,.0f}, {time.time() - t0:.0f}s", flush=True)

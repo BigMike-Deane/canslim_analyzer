@@ -682,3 +682,25 @@ Pre-registered tests run: M3 H1–H4, market timing T1/T2, phase 3 (S1–S4 +
 composite), batch 2 (V, LV, Q, Score v2), H5, H6, H7, H8 — **all FAIL.** The
 only consistently positive effects remain PEAD and net issuance at 60 sessions
 on large caps (t 2.2–2.8; neither clears t 3 nor beats SPY net of costs).
+
+### H7 diagnostic — breaker trap removed (2026-10-07 ~3:20 AM CT; NOT the verdict)
+
+`p7_backtest.py --variant flat_reset`: identical to H7 except that when the
+book is flat and halted, the peak is re-based on the flat book (the engine's own
+doom-loop escape, applied to `nostate`). Resets fired 2–4× per vintage (Aug/Dec
+2018, Mar 2020, Sep/Oct 2022, May 2023).
+
+| Vintage | CAGR full | SPY TR | Sharpe | SPY Sharpe | Max DD | SPY DD | Trades | Best position share |
+|---|---|---|---|---|---|---|---|---|
+| 0  | 8.6% | 15.2% | 0.63 | 0.89 | 39.7% | 33.7% | 1,180 | MTZ 19% |
+| 10 | 5.1% | 16.0% | 0.40 | 0.93 | 38.3% | 33.7% | 1,347 | MTZ 29% |
+| 20 | 5.8% | 15.9% | 0.46 | 0.93 | 26.9% | 33.7% | 1,305 | MTZ 24% |
+| 30 | 4.1% | 15.8% | 0.33 | 0.92 | 36.8% | 33.7% | 1,276 | HCI 33% |
+| 40 | 9.4% | 15.6% | 0.66 | 0.91 | 40.6% | 33.7% | 1,206 | MTZ 18% |
+
+Median: 2016–21 10.0% vs 19.0%; 2022–26 1.5% vs 12.2%; full 5.8% vs 15.9%.
+**0/5 vintages beat SPY in any window, with deeper drawdowns than SPY in 4/5.**
+Profit is not one-trade-dependent (best position 18–33%), so this is not a
+"missed the DELL" artefact: across ~1,200–1,350 trades per decade the live
+rules earn roughly a third of SPY's return. The breaker trap is a real live
+defect worth fixing, but fixing it does not make the strategy beat the index.
