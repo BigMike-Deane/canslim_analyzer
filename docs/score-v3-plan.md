@@ -387,3 +387,19 @@ active return > 95th percentile of the **best of 8** random-score tilts; (4) DD
 ≤ SPY + 10 pp. **Then one confirmation on ranks 501–1000** (never used for
 selection): the same tilt vs that universe's cap-weighted benchmark must be
 above the 90th percentile of 300 random tilts there. Pass both → Lab candidate.
+
+## Score v6 results (2026-10-07 ~2:05 PM CT, single run; placebo IC t +0.68 / +0.20)
+
+| | Active vs SPY | Yrs > SPY | OOS IC (t) | TE | Luck bar (best of 8) | Ranks 501–1000 | Verdict |
+|---|---|---|---|---|---|---|---|
+| v6a | +0.67%/yr | 6/8 | +0.022 (1.58) | 2.6% | miss (+0.84%) | +0.80%/yr, **97th pct ✓** | FAIL |
+| v6b | +0.86%/yr | 5/8 | +0.018 (1.78) | 2.1% | **pass** | +0.01%/yr, 49th pct ✗ | FAIL |
+
+- **EAR was never kept** by the walk-forward selection (no consistent IC t ≥ 2), so
+  v6a reproduces v5b exactly. The earnings-announcement-return effect adds nothing
+  beyond beat streak + surprise in 2016–26 large caps.
+- v6b's large-cap improvement did **not** survive the held-out mid-cap universe —
+  the signature of fitting noise. The plain v5b/v6a signal set is the one that
+  generalizes (97–98th pct on ranks 501–1000, twice).
+- Ledger: 8 trials. Stock-selection edge on this data ≈ **+0.7 pp/yr**, consistent
+  in sign, below a best-of-N luck bar.
