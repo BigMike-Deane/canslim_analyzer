@@ -75,3 +75,25 @@ edge shrinks to +0.2 pp/yr with slower execution**; 1.5× 12.52% / 10.48%, 3×
 
 **Next:** combine A1 (when to lever) with v5b (what to hold) and run both as
 forward paper arms.
+
+## C1 pre-registration — A1 exposure × v5b holdings (2026-10-07 ~12:20 PM CT, before the corrected-data v5b numbers exist)
+
+**Question:** does holding the v5b tilted book instead of the index improve A1?
+
+**Rule C1:** each session, exposure from A1 (2× when the S&P closed above its
+200-day average on the prior session, cash otherwise, same 1-day delay); the
+invested sleeve holds **the v5b tilted portfolio** (re-weighted every 20
+sessions exactly as v5b) instead of the S&P. Leverage, financing (cash rate +
+0.5%), 0.9%/yr leverage fee and 5 bps per exposure change as A1; v5b's 19 bps
+turnover cost on rebalances.
+
+**Data / period:** v5b's out-of-sample years only, **2019-01 → 2026-09**, on the
+**corrected ("v4") data** — the v5b re-run in `run_v4data.sh`. Daily returns
+of the v5b book: each rebalance's weights × daily stock total returns until the
+next rebalance (weights drift).
+
+**Pass (all):** (1) C1 CAGR > A1 CAGR over the same dates; (2) C1 CAGR > SPY
+TR; (3) C1 beats A1 in ≥ 5 of 8 calendar years; (4) C1 max DD ≤ A1 max DD +
+5 pp. Reported: Sharpe, tracking vs A1, and C1 with 1× (unlevered timing) for
+reference. **If v5b fails on the corrected data, C1 is not run** (no holdings
+edge to combine). PASS → third Lab strategy (needs a 4th Alpaca paper account).
