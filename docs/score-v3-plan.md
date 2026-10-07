@@ -295,3 +295,31 @@ short-pressure signals tilting an S&P-like book. The pass is at the margin of a
 deliberately strict bar and comes after 6 trials on the same years. **Status:
 candidate → forward paper ledger** (weights committed to git before the
 returns happen).
+
+## v5b diagnostics → data repair (2026-10-07 ~12 PM CT)
+
+`v5_diagnostics.py` (nothing chosen; v5b's yearly selections reused):
+1. **Factor attribution** (active vs cap-weighted 500 largest, +1.10%/yr raw):
+   alpha after factors +0.25%/yr (t 0.57), R² 0.56. Main loadings: **beat-streak
+   factor +0.099 (t 6.3; the factor returned +3.3%/yr long-short in large caps)**
+   and **anti-low-volatility −0.042 (t −4.8; low-vol returned −10%/yr in 2019–26
+   — partly an era exposure)**. Size/value/momentum/quality loadings ~0.
+2. **Losing years:** active vs its own benchmark was positive every year except
+   2022 (−1.2 pp); mostly sector allocation (+0.9 to +1.7 pp/yr). The large
+   "losses" vs SPY in 2021 came from the **benchmark proxy** (−5.6 pp vs SPY in
+   2021, +3.9 pp in 2020), not the tilt.
+3. **Generalization to ranks 501–1000** (never traded): IC +0.029 (t 2.02),
+   tilt +0.66%/yr vs that universe's cap-weighted benchmark, 90th percentile of
+   300 random tilts. Supportive, not decisive.
+
+**Data defect found via (2):** market caps built from SEC share counts were off
+by > 2× for ~6% of companies (170 of 2,791 checked against FMP): per-class or
+scaled counts (AVGO 0.08×, KLAC 0.11×, MA 0.13×, CRWD 0.18×, V 0.24×), ADR
+ratios (ONC/BeiGene 11.6×), and **Alphabet absent 2016 → mid-2024** (no combined
+SEC share count before 2024). The full-period proxy matched SPY by offsetting
+errors. **Fix (`4f5b16e`): FMP's daily historical market cap is primary
+(`m2_adapter.mcap_asof`), SEC shares the fallback.** Every stage is rebuilt
+("v4 data", `run_v4data.sh`) and v3, v4, v5 and the diagnostics re-run with
+rules unchanged; v3-data results are kept (`*_v3_oct07`). Earlier programme
+verdicts (H1–H8) used the same caps; their equal-weighted tests are only mildly
+affected (universe membership), and will be noted, not re-litigated.
