@@ -190,3 +190,21 @@ def test_a5_one_signal_1x_and_none_cash():
 def test_a5_needs_twelve_months():
     with pytest.raises(ValueError):
         lab.a5_target(_series(), date(2026, 10, 7), A5, spy_adj=_series(n=100), cash_adj=_series(n=100))
+
+
+def test_flip_notifies_only_when_target_changes(monkeypatch):
+    import backend.email_utils as eu
+    sent = []
+    monkeypatch.setattr(eu, "create_notification", lambda **kw: sent.append(kw) or True)
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        lab.decide_and_submit(db, s, None, today=date(2026, 10, 6), closes=closes(end=date(2026, 10, 6)))
+        lab.decide_and_submit(db, s, None, today=date(2026, 10, 7), closes=closes())   # same target: no alert
+        assert sent == []
+        falling = [(d, 200 - 0.2 * i) for i, (d, _) in enumerate(closes(end=date(2026, 10, 8)))]
+        lab.decide_and_submit(db, s, None, today=date(2026, 10, 8), closes=falling)    # SSO -> SGOV
+        assert len(sent) == 1 and sent[0]["kind"] == "lab_signal" and "SGOV" in sent[0]["title"]
+        assert "Was SSO" in sent[0]["body"] and sent[0]["user_id"] == 1
+    finally:
+        db.close()

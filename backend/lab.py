@@ -145,6 +145,41 @@ def a5_target(closes: list, today: date, cfg: dict, spy_adj: list = None, cash_a
 RULES = {"a1_trend_2x": a1_target, "a5_dual_momentum": a5_target}
 
 
+# ----------------------------------------------------------------- alerts
+
+def _describe(target: dict, inputs: dict) -> str:
+    sym = next(iter(target), "?")
+    lev = {2: "2×", 1: "1×", 0: "cash"}.get(inputs.get("exposure"), "")
+    return f"{sym}{f' ({lev})' if lev else ''}"
+
+
+def notify_flip(db, strategy: LabStrategy, dec: LabDecision) -> bool:
+    """Push + in-app notification when the target differs from the previous session's."""
+    prev = (db.query(LabDecision).filter(LabDecision.strategy_id == strategy.id, LabDecision.date < dec.date,
+                                         LabDecision.status != "error")
+            .order_by(LabDecision.date.desc()).first())
+    if prev is None or prev.target == dec.target:
+        return False
+    i = dec.inputs or {}
+    body = (f"{i.get('index', 'S&P')} {i.get('index_close')} vs {i.get('sma_days')}-day avg {i.get('sma')} "
+            f"({'above' if i.get('above') else 'below'})")
+    if "momentum_positive" in i:
+        body += f"; 12-month {i.get('mkt_12m')}% vs T-bills {i.get('cash_12m')}%"
+    body += f". Was {_describe(prev.target, prev.inputs or {})}."
+    if dec.status == "no_broker":
+        body += " (Not traded: broker not connected.)"
+    try:
+        from backend.email_utils import create_notification
+        cfg = lab_config().get(strategy.name, {})
+        return bool(create_notification(
+            user_id=int(cfg.get("notify_user_id", 1)), kind="lab_signal",
+            title=f"Lab {strategy.label}: switching to {_describe(dec.target, i)}", body=body,
+            data={"strategy": strategy.name, "date": dec.date.isoformat(), "target": dec.target, "url": "/lab"}))
+    except Exception as e:
+        logger.warning(f"lab[{strategy.name}] flip notification failed: {safe_error(e)}")
+        return False
+
+
 # ----------------------------------------------------------------- engine
 
 def _positions(client) -> dict:
@@ -197,6 +232,7 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
     if client is None:
         dec.status, dec.note = "no_broker", "Alpaca paper credentials not configured"
         db.commit()
+        notify_flip(db, strategy, dec)
         return dec
     try:
         acct = client.account()
@@ -228,6 +264,7 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
         if strategy.activated_at is None:
             strategy.activated_at = datetime.now(timezone.utc)
         db.commit()
+        notify_flip(db, strategy, dec)
     except Exception as e:  # never let one strategy break the job
         db.rollback()
         dec = LabDecision(strategy_id=strategy.id, date=today, inputs=inputs, target=target,

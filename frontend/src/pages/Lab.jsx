@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XAxis, YAxis, ResponsiveContainer, Tooltip, Area, ComposedChart } from 'recharts'
+import { XAxis, YAxis, ResponsiveContainer, Tooltip, Area, ComposedChart, Legend } from 'recharts'
 import { api, formatCurrency, formatPercent } from '../api'
 import useApi from '../hooks/useApi'
 import Card, { CardHeader } from '../components/Card'
@@ -46,7 +46,72 @@ function Signal({ decision }) {
   )
 }
 
-function EquityChart({ history }) {
+const RANGES = ['1M', '3M', 'YTD', 'All']
+const SERIES_COLORS = [chartColors.brand, chartColors.accent, chartColors.pnlUpSoft, chartColors.pnlDownSoft]
+
+function inRange(rows, range) {
+  if (!rows?.length || range === 'All') return rows || []
+  const last = new Date(rows[rows.length - 1].date)
+  const from = range === 'YTD' ? new Date(Date.UTC(last.getUTCFullYear(), 0, 1))
+    : new Date(last.getTime() - (range === '1M' ? 31 : 92) * 86400000)
+  return rows.filter((r) => new Date(r.date) >= from)
+}
+
+function RangeButtons({ range, setRange }) {
+  return (
+    <div className="flex gap-1">
+      {RANGES.map((r) => (
+        <button key={r} onClick={() => setRange(r)}
+                className={`px-2 py-0.5 rounded text-[11px] border ${range === r ? 'border-primary-500 text-primary-400' : 'border-dark-700 text-dark-400'}`}>
+          {r}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// All Lab strategies + SPY as % return from the start of the selected range.
+function CompareChart({ strategies, range }) {
+  const { data: histories } = useApi(
+    () => Promise.all(strategies.map((s) => api.getLabHistory(s.name))),
+    [strategies.map((s) => s.name).join(',')], { pollMs: 300000 })
+  if (!histories) return <div className="skeleton h-48 rounded-xl" />
+  const byDate = {}
+  let spySeries = null
+  histories.forEach((h, i) => {
+    const rows = inRange(h, range)
+    if (rows.length < 2) return
+    const base = rows[0].equity
+    rows.forEach((r) => { (byDate[r.date] ||= { date: r.date })[strategies[i].name] = (r.equity / base - 1) * 100 })
+    if (!spySeries || rows.length > spySeries.length) spySeries = rows
+  })
+  if (spySeries) {
+    const b = spySeries.find((r) => r.spy_value)?.spy_value
+    if (b) spySeries.forEach((r) => { if (r.spy_value && byDate[r.date]) byDate[r.date].SPY = (r.spy_value / b - 1) * 100 })
+  }
+  const data = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
+  if (data.length < 2) return <div className="h-48 flex items-center justify-center text-dark-400 text-sm">Comparison starts after the second daily close.</div>
+  return (
+    <div className="h-60">
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <XAxis dataKey="date" tick={{ fill: chartAxis.tick, fontSize: 10 }} axisLine={{ stroke: chartAxis.axisLine }} tickLine={false} minTickGap={40} />
+          <YAxis tick={{ fill: chartAxis.tick, fontSize: 10 }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `${v.toFixed(0)}%`} />
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle}
+                   formatter={(v, k) => [`${v >= 0 ? '+' : ''}${v.toFixed(2)}%`, strategies.find((s) => s.name === k)?.label || k]} />
+          <Legend formatter={(k) => strategies.find((s) => s.name === k)?.label || k} wrapperStyle={{ fontSize: 11 }} />
+          {strategies.map((s, i) => (
+            <Area key={s.name} type="monotone" dataKey={s.name} stroke={SERIES_COLORS[i % SERIES_COLORS.length]} fill="none" strokeWidth={2} isAnimationActive={false} connectNulls />
+          ))}
+          <Area type="monotone" dataKey="SPY" stroke={chartColors.spy} fill="none" strokeWidth={1.5} strokeDasharray="4 3" isAnimationActive={false} connectNulls />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function EquityChart({ history: all, range }) {
+  const history = inRange(all, range)
   if (!history || history.length < 2) {
     return <div className="h-48 flex items-center justify-center text-dark-400 text-sm">Chart starts after the second daily close.</div>
   }
@@ -153,7 +218,7 @@ function Trades({ trades }) {
   )
 }
 
-function StrategyView({ s }) {
+function StrategyView({ s, range, setRange }) {
   const { data: history } = useApi(() => api.getLabHistory(s.name), [s.name], { pollMs: 300000 })
   const { data: edge } = useApi(() => api.getLabEdge(s.name), [s.name], { pollMs: 300000 })
   const { data: trades } = useApi(() => api.getLabTrades(s.name), [s.name], { pollMs: 300000 })
@@ -178,8 +243,9 @@ function StrategyView({ s }) {
         {s.description && <div className="mt-2 text-xs text-dark-400">{s.description}</div>}
       </Card>
       <Card variant="glass" className="mb-4">
-        <CardHeader title="Equity vs SPY" subtitle="SPY = same starting money, dividends reinvested" />
-        <EquityChart history={history} />
+        <CardHeader title="Equity vs SPY" subtitle="SPY = same starting money, dividends reinvested"
+                    action={<RangeButtons range={range} setRange={setRange} />} />
+        <EquityChart history={history} range={range} />
       </Card>
       <EdgeCard edge={edge} />
       <Card variant="glass" className="mb-4">
@@ -203,6 +269,7 @@ function StrategyView({ s }) {
 export default function Lab() {
   const { data: strategies, error, loading } = useApi(() => api.getLabStrategies(), [], { pollMs: 300000 })
   const [active, setActive] = useState(null)
+  const [range, setRange] = useState('All')
   const list = strategies || []
   const current = list.find((s) => s.name === active) || list[0]
   return (
@@ -210,6 +277,13 @@ export default function Lab() {
       <PageHeader title="Lab" subtitle="Research strategies paper-trading live — each decision is recorded before the close it trades at" />
       {loading && !strategies && <div className="skeleton h-40 rounded-xl mb-4" />}
       {error && <Card className="mb-4 text-red-400 text-sm">Couldn't load Lab strategies: {String(error.message || error)}</Card>}
+      {list.length > 1 && (
+        <Card variant="glass" className="mb-4">
+          <CardHeader title="All strategies vs SPY" subtitle="% return from the start of the range"
+                      action={<RangeButtons range={range} setRange={setRange} />} />
+          <CompareChart strategies={list} range={range} />
+        </Card>
+      )}
       {list.length > 1 && (
         <div className="flex gap-2 mb-4 overflow-x-auto">
           {list.map((s) => (
@@ -223,7 +297,7 @@ export default function Lab() {
       {current && (
         <>
           {list.length === 1 && <div className="text-sm font-semibold text-dark-100 mb-2">{current.label}</div>}
-          <StrategyView key={current.name} s={current} />
+          <StrategyView key={current.name} s={current} range={range} setRange={setRange} />
         </>
       )}
       {!loading && strategies && !list.length && <Card className="text-sm text-dark-400">No Lab strategies configured.</Card>}
