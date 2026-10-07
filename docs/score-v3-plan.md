@@ -423,3 +423,23 @@ pct of the best of 9 random **sector** tilts (same × 1.5 / × 0.5 scheme with
 random sector rankings); (4) DD ≤ SPY + 10 pp; then (5) ranks 501–1000: same
 rule vs that universe's cap-weighted benchmark > 90th pct of 300 random sector
 tilts. Reported: v7 combined with v5b (stock tilt inside the sector tilt).
+
+## Score v7 results (2026-10-07 ~2:25 PM CT, single run)
+
+v7 industry-momentum sector tilt: CAGR 17.16% vs SPY TR 17.23% (**active −0.07%/yr**),
+4/8 years, DD 30.6% vs 31.0%; luck bar (best of 9 random sector tilts) +1.36%;
+ranks 501–1000 −0.17%/yr (83rd pct). **FAIL (gates 1, 2, 3, 5).** Reporting: v7 +
+v5b stock tilt +0.78%/yr (4/8) — no gain over v5b alone. Industry momentum did not
+work in 2019–26; v5b's sector gains came from its stock signals, not from momentum.
+
+### Stock-selection programme status after 9 trials (2026-10-07)
+
+On free 2016–2026 point-in-time data, the best stock-selection result is **v5b/v6a:
+an S&P-relative tilt toward earnings-consistent (beat streak, surprise), quality
+(ROE, buybacks), well-covered, low-short-pressure companies — about +0.7 pp/yr over
+SPY, positive in 6 of 8 years, confirmed out-of-universe on ranks 501–1000 (97–98th
+pct, twice), but below a best-of-N luck bar** on 2019–26 alone. Every attempt to
+improve it (learned weights, pick lists, EAR, recency, sector-neutral, sector
+momentum) failed or did not generalize. Further iterations on the same years mostly
+raise the bar. What could move it: forward data (paper trading), estimate-revision
+history (must be logged going forward), or clean pre-2016 data (paid).
