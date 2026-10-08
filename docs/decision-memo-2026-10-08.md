@@ -10,6 +10,12 @@ I'll just put all of my money into an index."
 - **Market exposure (how much to hold in stocks):** two rules passed US history from 1928.
   They are paper-trading now, on day 1.
 
+> **DECISION (owner, 2026-10-08 ~4:10 PM CT): Option A.**
+> - Real money stays in index funds.
+> - The app becomes the A1/A5 forward-test platform; AI Portfolio keeps paper trading.
+> - Stock-picking research stops.
+> - Shadow strategies get archived after the binding Oct-21 readout (owner approves the archive).
+
 ## What was tested
 
 | Test | Result |
