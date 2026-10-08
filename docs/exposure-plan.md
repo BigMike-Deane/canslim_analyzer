@@ -254,6 +254,21 @@ and fix, then note it here. It is not evidence about the edge.
 - **P2** Lab drawdown deeper than the rule's 1994–2026 backtest maximum (A1 45.7%,
   A5 37.3%): **REVIEW**.
 
+### Breach log
+
+- **2026-10-08 (first order day): M2 + M3 breached on both strategies. Mechanics, not edge.**
+  - Both submitted 344-share SSO market-on-close orders at 2:45 PM CT (on time).
+  - Alpaca paper gave each **one partial fill at 15:59:58 ET** at the then-quote, then expired
+    the rest at 16:02 ET:
+    - A1: 288 shares @ $71.28, 82% invested
+    - A5: 259 shares @ $71.30, 74% invested
+  - The two accounts got different prices in the same second, so the paper engine fills cls
+    orders against quotes rather than simulating the closing auction. A real closing-auction
+    order would fill fully at the official close.
+  - Nothing was changed on Oct-8. On Oct-9, `plan_orders` tops up automatically (the gap is
+    >5% of target). Those smaller orders show whether partial fills scale with order size.
+  - Fix is pending an owner decision. Rules M2/M3 are unchanged (no loosening).
+
 **What each level means.**
 - **REVIEW:** push to the owner. Within a week, a note here says whether it is a known
   failure mode: a V-shaped rebound while in T-bills, a whipsaw, or a crash at 2×. The
