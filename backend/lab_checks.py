@@ -88,7 +88,10 @@ def check_m2(db, s, today, rules=None) -> dict:
     if open_today:
         return _check("M2", "pending", open_today, 0,
                       f"{open_today} of today's orders not yet reported filled" + tail)
-    return _check("M2", "ok", 0, 0, "every order filled" + (" since the noted breach" + tail[1:] if noted else ""))
+    if noted:
+        return _check("M2", "ok", 0, 0, f"every order filled except {len(noted)} noted in the breach log "
+                                        f"({'; '.join(noted[-3:])})")
+    return _check("M2", "ok", 0, 0, "every order filled")
 
 
 def check_m3(db, s, today, rules) -> dict:

@@ -279,7 +279,7 @@ def test_m2_breach_noted_in_the_breach_log_is_not_an_open_bug():
         noted = {**RULES, "noted_breaches": {MON.isoformat(): "breach log"}}
         assert lc.check_m2(db, s, MON + timedelta(days=1))["level"] == "breach"
         c = lc.check_m2(db, s, MON + timedelta(days=1), noted)
-        assert c["level"] == "ok" and "noted in the breach log" in c["detail"]
+        assert c["level"] == "ok" and c["detail"] == "every order filled except 1 noted in the breach log (2026-10-05 buy SSO (expired))"
         _order(db, s, MON + timedelta(days=1), status="expired", qty=56)    # a new, un-noted one still breaches
         c = lc.check_m2(db, s, MON + timedelta(days=2), noted)
         assert c["level"] == "breach" and c["value"] == 1 and "2026-10-06" in c["detail"]
