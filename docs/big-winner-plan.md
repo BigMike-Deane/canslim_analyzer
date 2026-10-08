@@ -91,3 +91,32 @@ it puts idle cash to work.
 - Part 2 PASS → that exit policy becomes a shadow arm candidate.
 - Everything FAILS → the live outperformance is most likely luck. The owner decides
   between the index and the A5 track.
+
+## Part 1 results (2026-10-08 ~9:20 AM CT, single run) — **FAIL (0 of 6)**
+
+Panel: 708,604 stock-dates, 5,171 companies, 258 dates; 126-session outcome known for
+99.7%. Base rates: big winner (≥ +50%) 7.8% / 6.0% and big loser (≤ −25%) 11.9% / 16.6%
+in 2016–20 / 2021–26.
+
+| Signal (top 10%) | Win lift 2016–20 / 2021–26 (need ≥ 1.5) | Skew lift (need ≥ 1.25) | Mean 6-mo return, top vs all | Verdict |
+|---|---|---|---|---|
+| App composite score | 0.73 / 0.87 | 1.02 / 1.36 | +7.5 vs +15.0% / +4.8 vs +2.7% | fail |
+| Beat streak | 0.78 / 0.77 | 1.21 / 1.05 | +9.2 vs +15.0 / +3.2 vs +2.7 | fail |
+| Earnings surprise | 1.42 / 1.43 | 1.29 / 1.13 | +9.9 vs +15.0 / +2.3 vs +2.7 | fail |
+| Earnings momentum (combo) | 0.88 / 1.19 | 1.00 / 1.42 | +8.0 vs +15.0 / +5.2 vs +2.7 | fail |
+| **6-mo price momentum** | **1.59 / 1.98** | **1.12** / 1.36 | **+24.1 vs +15.1 / +6.7 vs +2.9** | fail (skew, 2016–20) |
+| Near 52-week high | 0.66 / 0.70 | 0.92 / 1.08 | +6.4 vs +15.2 / +3.1 vs +3.3 | fail |
+| *Control: 60-day volatility* | 2.19 / 2.29 | 0.94 / 0.91 | (means outlier-driven) | lottery |
+| *Control: max 1-day gain (21d)* | 1.91 / 2.01 | 0.99 / 0.94 | | lottery |
+
+**What it says:**
+- **The app's score does not find big winners.** Its top decile holds *fewer* +50%
+  stocks than the average stock, and fewer big losers: it selects steadier names.
+- **6-month price momentum is the only signal that finds big winners and earns more on
+  average** in both halves. But in 2016–20 it found big losers almost as fast (skew
+  1.12 < 1.25), so it fails the pre-registered bar. It is the near-miss worth noting,
+  not a pass.
+- Volatility-type signals find big winners and big losers equally (skew ≈ 0.9–1.0):
+  a lottery, as in the v3 scoreboard.
+- Means here are equal-weighted and include small caps, so a few extreme outliers move
+  them. Medians are in `meta/bigwin/b1_results.json`.
