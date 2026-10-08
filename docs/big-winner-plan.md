@@ -120,3 +120,63 @@ in 2016–20 / 2021–26.
   a lottery, as in the v3 scoreboard.
 - Means here are equal-weighted and include small caps, so a few extreme outliers move
   them. Medians are in `meta/bigwin/b1_results.json`.
+
+## Part 3 pre-registration — momentum entries + the app's exits (2026-10-08, before any number) — `research/pit/b3_momentum.py`
+
+**Why:** Part 1 found the app's score picks *fewer* big winners than average, while
+6-month momentum roughly doubles the big-winner rate (12% vs 6–8%) but also raises the
+big-loser rate. The app's exits (cut at −7%, trail, trim, let the last slice run) are
+built for big winners. **Question:** do the app's exits cut momentum's losers early
+while its winners run?
+
+**Simulation (standalone, daily closes, 2016-01 → 2026-10):**
+- **Universe** (refreshed each 10th session): the M3 universe (price > $3, market cap ≥
+  $300M, delisted names included) + 20-day average dollar volume ≥ $5M.
+- **Candidates:** top 10% by 6-month momentum (close[t−21] / close[t−126] − 1), highest
+  first.
+- **Buys:** only when SPY closes above its 50-day average (the app's gate). Buy the
+  highest-ranked candidate not held and not exited in the last 10 sessions, at the next
+  session's close, sized at 1/8 of current equity (or the remaining cash). Max 8
+  positions.
+- **Exits (the app's rules, on each day's close):**
+  - stop at −7% from cost
+  - trailing stop from the peak close, by peak gain: ≥ 50% → 25%; 30–50% → 18%;
+    20–30% → 12%; 10–20% → 6%; 5–10% → 4%
+  - partial profits: sell 25% of the original shares at +25%, to 50% at +40%, and to
+    75% at +50% (the app's tiers; its score conditions are dropped because there is no
+    score here)
+  - a ticker change or delisting exits at the last price
+- **Costs and cash:** 0.095% per side; idle cash earns nothing.
+
+**Variants:**
+
+| Variant | Entries | Exits |
+|---|---|---|
+| **M1** (the hypothesis) | momentum | the app's |
+| M2 (do the exits help?) | momentum | hold 126 sessions, no stops or partials |
+| R (is momentum the reason?) | random draw from the eligible universe, 20 seeds | the app's |
+
+M1 and M2 use start offsets 0 / 20 / 40 sessions; R uses offset 0.
+
+**Score:** as Part 2. Calendar-year excess vs SPY TR, median across vintages, 2016–2025.
+
+**PASS (M1) requires all of:**
+- **(a)** the average yearly excess is > 0
+- **(b)** ≥ 3 years with excess ≥ +20 pp
+- **(c)** no year worse than −15 pp
+- **(d)** M1's full-period CAGR (offset 0) is above the 90th percentile of the 20
+  random-entry runs
+
+**Reported, not gated:**
+- M1 vs M2: do the stops help?
+- Big-winner capture: exits ≥ +50% and ≥ +100%, and their share of profit
+- Max drawdown
+- Sensitivities: 20 slots, a 10% stop, idle cash in SPY
+
+**Prior (stated before running):** momentum entries should beat random entries (Part 1
+and the published literature). The open question is the app's tight early trailing
+stops (4–6% below the peak), which may shake momentum winners out before they run. I
+lean towards them hurting, i.e. M2 ≥ M1.
+
+**PASS →** a shadow-arm or Lab candidate, with its own forward test.
+**FAIL →** the big-winner framing has no tested strategy on free data yet.
