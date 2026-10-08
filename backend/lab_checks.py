@@ -68,8 +68,11 @@ def check_m1(db, s, today) -> dict:
                   else f"decision recorded every session since {start.isoformat()}")
 
 
-def check_m2(db, s, today) -> dict:
-    bad, open_today = [], 0
+def check_m2(db, s, today, rules=None) -> dict:
+    # Breaches already written up in the exposure-plan breach log ({order date: note}) stop
+    # counting as open bugs; anything not listed still breaches.
+    noted_dates = {str(d) for d in ((rules or {}).get("noted_breaches") or {})}
+    bad, noted, open_today = [], [], 0
     for o in db.query(LabOrder).filter(LabOrder.strategy_id == s.id, LabOrder.date <= today).all():
         st = (o.status or "").lower()
         if st == "filled":
@@ -77,12 +80,15 @@ def check_m2(db, s, today) -> dict:
         if o.date == today and st not in _TERMINAL_BAD:
             open_today += 1          # a closing-auction fill can report late; 17:35 ET pass decides
             continue
-        bad.append(f"{o.date.isoformat()} {o.side} {o.symbol} ({st or 'unknown'})")
+        desc = f"{o.date.isoformat()} {o.side} {o.symbol} ({st or 'unknown'})"
+        (noted if o.date.isoformat() in noted_dates else bad).append(desc)
+    tail = f"; {len(noted)} noted in the breach log ({'; '.join(noted[-3:])})" if noted else ""
     if bad:
-        return _check("M2", "breach", len(bad), 0, "orders not filled: " + "; ".join(bad[-5:]))
+        return _check("M2", "breach", len(bad), 0, "orders not filled: " + "; ".join(bad[-5:]) + tail)
     if open_today:
-        return _check("M2", "pending", open_today, 0, f"{open_today} of today's orders not yet reported filled")
-    return _check("M2", "ok", 0, 0, "every order filled")
+        return _check("M2", "pending", open_today, 0,
+                      f"{open_today} of today's orders not yet reported filled" + tail)
+    return _check("M2", "ok", 0, 0, "every order filled" + (" since the noted breach" + tail[1:] if noted else ""))
 
 
 def check_m3(db, s, today, rules) -> dict:
@@ -110,8 +116,10 @@ def check_m3(db, s, today, rules) -> dict:
 def check_c1(db, s, rules, daily: Callable) -> dict:
     review, stop, n_min = (float(rules.get("fill_cost_review_bps", 7)), float(rules.get("fill_cost_stop_bps", 14)),
                            int(rules.get("min_fills", 6)))
-    fills = (db.query(LabOrder).filter(LabOrder.strategy_id == s.id, LabOrder.status == "filled",
-                                       LabOrder.filled_avg_price.isnot(None)).all())
+    # every execution counts, including the filled part of an order that later expired or was canceled
+    fills = [o for o in db.query(LabOrder).filter(LabOrder.strategy_id == s.id,
+                                                  LabOrder.filled_avg_price.isnot(None)).all()
+             if (o.filled_qty or 0) > 0 or (o.status or "").lower() == "filled"]
     closes, num, den, n = {}, 0.0, 0.0, 0
     for o in fills:
         if o.symbol not in closes:
@@ -125,7 +133,7 @@ def check_c1(db, s, rules, daily: Callable) -> dict:
             continue
         sign = 1 if o.side == "buy" else -1                     # paying above / selling below the close = cost
         bps = sign * (o.filled_avg_price - official) / official * 1e4
-        w = (o.filled_qty or o.qty) * o.filled_avg_price
+        w = (o.filled_qty or o.qty) * o.filled_avg_price          # shares actually filled
         num, den, n = num + bps * w, den + w, n + 1
     avg = round(num / den, 2) if den else None
     detail = f"{n} fills measured vs the official close" + (f", average {avg:+.1f} bps" if avg is not None else "")
@@ -217,7 +225,7 @@ def evaluate(db, s: LabStrategy, rules: dict, today: date, daily: Callable, gaps
         marks = [m for m in marks if m.date >= start]
     if gaps is None:
         gaps = {n: _safe_gap(daily, n) for n in (126, 252)}
-    return [check_m1(db, s, today), check_m2(db, s, today), check_m3(db, s, today, rules),
+    return [check_m1(db, s, today), check_m2(db, s, today, rules), check_m3(db, s, today, rules),
             check_c1(db, s, rules, daily), check_c2(rules, gaps), check_p1(marks, rules), check_p2(marks, rules)]
 
 

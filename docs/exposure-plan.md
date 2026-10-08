@@ -265,9 +265,18 @@ and fix, then note it here. It is not evidence about the edge.
   - The two accounts got different prices in the same second, so the paper engine fills cls
     orders against quotes rather than simulating the closing auction. A real closing-auction
     order would fill fully at the official close.
-  - Nothing was changed on Oct-8. On Oct-9, `plan_orders` tops up automatically (the gap is
-    >5% of target). Those smaller orders show whether partial fills scale with order size.
-  - Fix is pending an owner decision. Rules M2/M3 are unchanged (no loosening).
+  - **Cause (Alpaca paper docs):** "When orders are eligible to be filled, they will receive
+    partial fills for a random size 10% of the time", and quantity "is not checked against the
+    NBBO quantities". A cls order gets no second fill before the close, so the rest expires.
+    This is random simulator behaviour, not liquidity and not the strategy.
+  - Trading code unchanged: on Oct-9 `plan_orders` tops up automatically (gap >5% of target),
+    so M3 clears once that fills.
+  - **Check-code fixes (same day):**
+    - C1 skipped fills whose order ended `expired`. Now every execution counts, as the rule
+      says ("over all fills").
+    - M2 now lists breaches recorded here under `stop_rules.noted_breaches`, so they no
+      longer show as open bugs. Any new breach still fires.
+    - Rule thresholds are unchanged (no loosening).
 
 **What each level means.**
 - **REVIEW:** push to the owner. Within a week, a note here says whether it is a known

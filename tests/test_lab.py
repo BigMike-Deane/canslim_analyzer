@@ -271,6 +271,37 @@ def test_m2_open_today_is_pending_but_a_dead_order_is_a_breach():
         db.close()
 
 
+def test_m2_breach_noted_in_the_breach_log_is_not_an_open_bug():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        _order(db, s, MON, status="expired", qty=288)                       # paper partial fill, rest expired
+        noted = {**RULES, "noted_breaches": {MON.isoformat(): "breach log"}}
+        assert lc.check_m2(db, s, MON + timedelta(days=1))["level"] == "breach"
+        c = lc.check_m2(db, s, MON + timedelta(days=1), noted)
+        assert c["level"] == "ok" and "noted in the breach log" in c["detail"]
+        _order(db, s, MON + timedelta(days=1), status="expired", qty=56)    # a new, un-noted one still breaches
+        c = lc.check_m2(db, s, MON + timedelta(days=2), noted)
+        assert c["level"] == "breach" and c["value"] == 1 and "2026-10-06" in c["detail"]
+    finally:
+        db.close()
+
+
+def test_c1_counts_the_filled_part_of_an_expired_order():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        db.query(LabOrder).filter(LabOrder.strategy_id == s.id).delete()
+        db.commit()
+        _order(db, s, MON, status="expired", qty=288, px=100.1)           # 288 of 344 filled at +10 bps
+        _order(db, s, MON + timedelta(days=1), status="expired", qty=0, px=None)   # nothing filled: not a fill
+        closes = {MON + timedelta(days=k): 100.0 for k in range(5)}
+        c = lc.check_c1(db, s, RULES, lambda sym, adj: list(closes.items()))
+        assert c["detail"].startswith("1 fills measured") and abs(c["value"] - 10) < 0.01
+    finally:
+        db.close()
+
+
 def test_m3_target_share_and_stray_holdings():
     db = SessionLocal()
     try:
