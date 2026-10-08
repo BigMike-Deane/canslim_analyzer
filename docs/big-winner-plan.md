@@ -217,3 +217,52 @@ idle cash parked in SPY 15.8%** (DD 57%).
 **Status:** M2 and "M1 + SPY parking" came out of this run as controls and
 sensitivities. They are **new hypotheses, not passes**. Promoting either needs its own
 pre-registration and a test it hasn't seen (forward paper or a holdout).
+
+## Part 4 pre-registration — exit rules for momentum entries, company-split holdout (2026-10-08, before any number) — `research/pit/b4_exits.py`
+
+**Why:** Part 3 showed the app's exits cut momentum's edge (11.3% vs 15.4%/yr held).
+Searching exits on the same stocks and years would overfit, so **the companies are split
+before anything is run**:
+- **Half A** = sha256(CIK) mod 2 == 0. Every choice is made here.
+- **Half B** = the rest. One confirmation run of the single chosen rule.
+
+**Entries:** exactly Part 3, with the universe and the top-10% momentum ranking
+restricted to the half being run:
+- next-session close execution
+- the SPY > 50-day gate
+- 8 slots
+- a 10-session cooldown
+- 0.095% per side
+
+**Exit family (5 rules from the momentum and trend-following literature, no tuning):**
+
+| Rule | Exit |
+|---|---|
+| X0 | the app's exits (Part 3 M1), reference only, not selectable |
+| X1 | hold 126 sessions (the standard 6-month momentum hold) |
+| X2 | X1 + a −25% disaster stop from cost |
+| X3 | 25% trailing stop below the peak close, no time limit |
+| X4 | hold while still a leader: sell at the first 10th-session ranking where the stock is no longer in the top 30% by momentum |
+
+X1–X4 are each run with idle cash as cash and with idle cash parked in SPY (total
+return, while uninvested). That makes 8 selectable variants.
+
+**Selection (half A only):** highest median full-period CAGR across start offsets
+0 / 20 / 40. All 8 are reported.
+
+**Confirmation (half B, the chosen variant, run once; same 3 offsets).**
+**PASS requires all of:**
+- **(a)** the average of the median-vintage yearly excess vs SPY TR, 2016–2025, is > 0
+- **(b)** ≥ 3 years ≥ +20 pp
+- **(c)** no year worse than −15 pp
+- **(d)** CAGR (offset 0) is above the 90th percentile of 20 random-entry runs on half B
+  with the same exit
+- **(e)** the median-vintage CAGR exceeds SPY TR's CAGR over the same dates
+
+Reported label if only (c) fails: **"passes except the drawdown tolerance."** Momentum
+books are known to have deep bad years, so the owner decides whether that tolerance
+moves. The label is set now, not after the fact.
+
+**Prior (stated before running):** X1/X3 beat X0 on half A. Parking in SPY helps. On
+half B the chosen rule beats random picks (d), but (c) fails: Part 3's best version had
+a −55 pp year. Passing (e) is roughly a coin flip.
