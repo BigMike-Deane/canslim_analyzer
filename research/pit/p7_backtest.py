@@ -38,6 +38,12 @@ import m2_adapter as m  # noqa: E402  (sets sys.path to the repo root)
 from common import DATA_DIR, META_DIR, load_prices  # noqa: E402
 
 VARIANT = "none"  # set from --variant in main(); "flat_reset" = labeled diagnostic, never the H7 verdict
+# Big-winner study Part 2 (docs/big-winner-plan.md): exit-policy variants E0-E5.
+# cap = sell the WHOLE position at the first close >= +cap% (replaces any other sell that day);
+# sweep = park idle cash in SPY via the engine's own spy_sweep.
+EXITS = {"E0": (None, False), "E1": (20.0, False), "E2": (30.0, False), "E3": (40.0, False),
+         "E4": (30.0, True), "E5": (None, True)}
+EXIT = None
 SCRATCH = DATA_DIR / "h7_db"  # throwaway SQLite per vintage; survives restarts, never production
 
 COST = 0.00095
@@ -47,7 +53,8 @@ SCORE_FLOOR = 35  # lowest effective_min_score the engine can reach (score-floor
 
 def _db(offset):
     SCRATCH.mkdir(exist_ok=True)
-    os.environ["DATABASE_URL"] = f"sqlite:///{SCRATCH}/h7{'' if VARIANT == 'none' else '_' + VARIANT}_v{offset}.db"
+    tag = ('' if VARIANT == 'none' else '_' + VARIANT) + ('' if EXIT is None else '_' + EXIT)
+    os.environ["DATABASE_URL"] = f"sqlite:///{SCRATCH}/h7{tag}_v{offset}.db"
     sys.path.insert(0, str(m.REPO / "backend"))
     from backend.database import Base, SessionLocal, engine
     Base.metadata.drop_all(engine)
@@ -73,7 +80,7 @@ def load_daily():
 
 
 def make_classes():
-    from backend.backtester import BacktestEngine
+    from backend.backtester import BacktestEngine, SimulatedTrade
     from backend.historical_data import MARKET_INDEXES, HistoricalDataProvider
 
     def _frame(px):
@@ -105,7 +112,10 @@ def make_classes():
 
     class PITBacktester(BacktestEngine):
         def __init__(self, db, backtest_id, daily):
-            super().__init__(db, backtest_id)
+            cap, sweep = EXITS[EXIT] if EXIT else (None, False)
+            super().__init__(db, backtest_id,
+                             profile_overrides={"spy_sweep": {"enabled": True, "min_idle_pct": 10}} if sweep else None)
+            self.exit_cap = cap
             self.daily = {k: g.set_index("key") for k, g in daily.groupby("date")}
             self.key_to_cik = daily.drop_duplicates("key").set_index("key").cik.to_dict()
             self.last_row: dict = {}
@@ -176,6 +186,22 @@ def make_classes():
             super()._simulate_day(current_date)
             self.equity.append((str(current_date), self._get_portfolio_value(current_date)))
 
+        def _evaluate_sells(self, current_date, scores):
+            sells = super()._evaluate_sells(current_date, scores)
+            if self.exit_cap is None:
+                return sells
+            capped = {}
+            for t, pos in self.positions.items():
+                price = self.data_provider.get_price_on_date(t, current_date)
+                if price and price == price and pos.cost_basis > 0:
+                    gain = (price / pos.cost_basis - 1) * 100
+                    if gain >= self.exit_cap:
+                        tr = SimulatedTrade(ticker=t, action="SELL", shares=pos.shares, price=price,
+                                            reason=f"CAP {self.exit_cap:.0f}%: Up {gain:.1f}%", score=0, priority=1)
+                        tr._signal_factors = {"sell_reason": "CAP", "gain_pct": round(gain, 1)}
+                        capped[t] = tr
+            return [s for s in sells if s.ticker not in capped] + list(capped.values())
+
         # ---- costs ---------------------------------------------------------
         def _execute_buy(self, current_date, trade):
             trade.price *= 1 + COST
@@ -227,9 +253,10 @@ def main():
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--end", default=END)
     ap.add_argument("--variant", default="none", choices=["none", "flat_reset"])
+    ap.add_argument("--exit", default=None, choices=sorted(EXITS), help="big-winner study exit variant")
     a = ap.parse_args()
-    global VARIANT
-    VARIANT = a.variant
+    global VARIANT, EXIT
+    VARIANT, EXIT = a.variant, a.exit
     db = _db(a.offset)
     from backend.database import BacktestRun, BacktestTrade
     _, PITBacktester = make_classes()
@@ -250,8 +277,11 @@ def main():
                "gain": t.realized_gain, "reason": t.reason}
               for t in db.query(BacktestTrade).filter(BacktestTrade.backtest_id == bt.id).all()]
     out = META_DIR / ("h7" if VARIANT == "none" else f"h7_{VARIANT}")
+    if EXIT:
+        out = META_DIR / "bigwin" / EXIT
+        out.mkdir(parents=True, exist_ok=True)
     out.mkdir(exist_ok=True)
-    json.dump({"offset": a.offset, "start": start, "end": a.end, "equity": eng.equity, "trades": trades, "variant": VARIANT, "flat_resets": eng.flat_resets,
+    json.dump({"offset": a.offset, "start": start, "end": a.end, "equity": eng.equity, "trades": trades, "variant": VARIANT, "exit": EXIT, "flat_resets": eng.flat_resets,
                "total_return_pct": bt.total_return_pct, "max_drawdown_pct": bt.max_drawdown_pct},
               open(out / f"vintage_{a.offset}.json", "w"))
     print(f"done: {len(trades)} trades, final ${eng.equity[-1][1]:,.0f}, {time.time() - t0:.0f}s", flush=True)

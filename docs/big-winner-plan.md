@@ -1,4 +1,4 @@
-# Big-winner study — pre-registration (2026-10-08 ~9:40 AM CT, before any number)
+# Big-winner study — pre-registration (2026-10-08 ~9:05 AM CT, before any number)
 
 **Owner reframing (Oct-8):** the goal is not to beat SPY every year. It is to **find the big
 winners** (DELL +110%, CARE, ECO) and accept uneven years, e.g. −5% vs SPY one year and
