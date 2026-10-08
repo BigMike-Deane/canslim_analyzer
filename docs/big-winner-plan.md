@@ -331,3 +331,13 @@ half B. Testing a second pick after seeing the first fail would spend the holdou
 **Status:** big-winner hunting with momentum entries has no exit rule that holds up out of
 sample in this data. Part 2 (exit caps and SPY parking on the app's own entries) resumes
 for completeness.
+
+## Part 2 — stopped unscored (2026-10-08 ~2:15 PM CT)
+
+Stopped at 7 of 18 runs (E0 and E1 complete, E2 1 of 3). It was never scored. Reasons:
+- It re-tests a question already answered (caps below +40% destroyed value, Jul-29 and earlier).
+- It uses the app's own entries, which Part 1 showed hold fewer big winners.
+- It picks a best-of-6 with no holdout, the setup Part 4 just showed misleads.
+
+It can resume (`nohup setsid bash ~/canslim_pit_data/meta/run_bigwin.sh &`; finished runs are
+skipped). See `docs/decision-memo-2026-10-08.md`.
