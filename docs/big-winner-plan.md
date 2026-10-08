@@ -266,3 +266,68 @@ moves. The label is set now, not after the fact.
 **Prior (stated before running):** X1/X3 beat X0 on half A. Parking in SPY helps. On
 half B the chosen rule beats random picks (d), but (c) fails: Part 3's best version had
 a −55 pp year. Passing (e) is roughly a coin flip.
+
+## Part 4 results (2026-10-08 ~10:39 AM CT, single run) — **FAIL (0 of 5)**; half A's winner was a few outlier stocks
+
+Split: half A 2,603 companies, half B 2,606. SPY TR 15.2–15.9%/yr depending on the start offset.
+
+**Half A (selection), median of offsets 0 / 20 / 40:**
+
+| Variant | CAGR | Yearly excess: mean / years ≥ +20 / worst | Max DD | Doublers | Profit share ≥ +50% |
+|---|---|---|---|---|---|
+| X0 app exits (reference) | 5.2% | −7.2 / 2 / −45.9 | 64% | 5 | 36% |
+| X1 hold 126 | 7.7% | −1.2 / 2 / −44.5 | 76% | 12 | 75% |
+| X1 + SPY | 8.8% | −0.0 / 2 / −43.2 | 76% | 12 | 75% |
+| X2 hold 126 + −25% stop | 7.1% | −8.8 / 2 / −70.4 | 73% | 23 | 86% |
+| X2 + SPY | 7.0% | −9.9 / 0 / −73.6 | 72% | 20 | 87% |
+| X3 25% trail | 24.5% | +17.1 / 3 / −26.2 | 54% | 15 | 70% |
+| X3 + SPY | 27.8% | +20.7 / 3 / −25.5 | 59% | 15 | 69% |
+| X4 leader hold | 30.6% | +17.6 / 4 / −56.7 | 73% | 14 | 84% |
+| **X4 + SPY (chosen)** | **33.1%** | +20.3 / 4 / −53.6 | 72% | 14 | 84% |
+
+**Half B (confirmation, X4 + SPY, run once):**
+- CAGR 0.0 / 0.6 / 0.3% (offsets 0 / 20 / 40) against SPY 15.2 / 15.9 / 15.6%
+- max DD 71%, 253 trades, 7 doublers
+- yearly excess (median vintage): 2016 −9.0, 2017 +10.1, 2018 −18.8, 2019 +4.2,
+  2020 −15.1, 2021 −58.9, 2022 −7.0, 2023 −36.1, 2024 +10.8, 2025 +29.8, 2026 (partial) −42.5
+- random entries with the same exit (20 seeds): median 5.5%, 90th percentile 16.3%
+
+**Gate:**
+
+| Rule | Result | Pass? |
+|---|---|---|
+| (a) mean yearly excess > 0 | −9.0 | ✗ |
+| (b) ≥ 3 years ≥ +20 pp | 1 | ✗ |
+| (c) no year worse than −15 pp | −58.9 | ✗ |
+| (d) beats the 90th pct of random entries | 0.03% vs 16.3% | ✗ |
+| (e) beats SPY TR CAGR | 0.3% vs 15.6% | ✗ |
+
+→ **FAIL**.
+
+**Why the halves differ (trade-level diagnostic, offset 0, scratch script, reporting only):**
+- **Half A** ($25k → $507k): its gain is a handful of real outlier runs, not data errors.
+  The top 5 trades = **113% of net gain** (the other 232 trades lost money in total):
+  - SEZL +661% (2024–25)
+  - AXTI +481% (still open)
+  - KOD +297% (still open)
+  - NVAX +595% (2020)
+  - BE +174%
+- **Half B** ($25k → $24.7k): it drew no outliers that size. Its best trade was IMMU +272%
+  ($8k), and the total over 261 trades was −$4k.
+- **Takeaway:** a loose momentum exit is a bet on owning one of a few extreme runners. Which
+  half of the companies contained them decided the result. Selecting on half A rewarded
+  that luck, and the company split caught it, as designed.
+
+**Prior check:**
+- **Matched the prior:** X1 and X3 beat X0 on half A, and parking in SPY helped (except X2).
+  (c) failed, as predicted.
+- **Worse than the prior:** (d) failed. On half B, momentum entries did *worse* than random
+  entries with the same exit. Part 3's "momentum beats random" (full universe, app exits)
+  does not survive this split.
+
+**Not done, by design:** X3 + SPY (second on half A, worst year −25.5) is **not** run on
+half B. Testing a second pick after seeing the first fail would spend the holdout twice.
+
+**Status:** big-winner hunting with momentum entries has no exit rule that holds up out of
+sample in this data. Part 2 (exit caps and SPY parking on the app's own entries) resumes
+for completeness.
