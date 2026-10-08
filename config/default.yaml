@@ -866,6 +866,18 @@ lab_strategies:
     risk_off: SGOV
     key_env: LAB_A1_ALPACA_KEY_ID
     secret_env: LAB_A1_ALPACA_SECRET_KEY
+    # Pre-registered stop rules (docs/exposure-plan.md, 2026-10-08; calibrated by
+    # research/pit/lab_stop_calibration.py). Never loosen after a breach.
+    stop_rules:
+      target_share_min: 0.90
+      fill_cost_review_bps: 7
+      fill_cost_stop_bps: 14
+      min_fills: 6
+      tracking_review_pct: -1.71
+      tracking_breakeven_pct: -1.71
+      max_dd_review_pct: 45.7
+      excess_review_pct: {63: -21.4, 126: -29.2, 252: -44.0, 756: -58.1}
+      excess_stop_pct: {63: -40.8, 126: -45.0, 252: -46.0, 756: -72.5}
   a5_dual_momentum:
     kind: a5_dual_momentum
     label: "A5 · Dual momentum"
@@ -881,6 +893,18 @@ lab_strategies:
     risk_off: SGOV
     key_env: LAB_A5_ALPACA_KEY_ID
     secret_env: LAB_A5_ALPACA_SECRET_KEY
+    # Pre-registered stop rules (docs/exposure-plan.md, 2026-10-08; calibrated by
+    # research/pit/lab_stop_calibration.py). Never loosen after a breach.
+    stop_rules:
+      target_share_min: 0.90
+      fill_cost_review_bps: 13
+      fill_cost_stop_bps: 27
+      min_fills: 6
+      tracking_review_pct: -1.71
+      tracking_breakeven_pct: -3.47
+      max_dd_review_pct: 37.3
+      excess_review_pct: {63: -16.0, 126: -20.7, 252: -28.3, 756: -35.7}
+      excess_stop_pct: {63: -40.0, 126: -47.7, 252: -46.3, 756: -72.2}
 
 broker_mirror:
   enabled: true

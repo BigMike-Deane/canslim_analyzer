@@ -300,6 +300,8 @@ def run_migrations():
         ("broker_mirror_orders", "pairing", "VARCHAR"),
         # Shadow drawdown circuit breaker (2026-09-24): live-parity equity peak
         ("shadow_strategies", "peak_equity", "FLOAT"),
+        # Lab stop rules (2026-10-08, docs/exposure-plan.md): per-mark check results
+        ("lab_equity_marks", "checks", "JSON"),
     ]
 
     # Build a cache of existing columns per table
@@ -2092,6 +2094,7 @@ class LabEquityMark(Base):
     positions = Column(JSON)                       # [{symbol, qty, market_value, avg_entry_price}]
     spy_close = Column(Float)
     spy_adj_close = Column(Float)                  # dividend-adjusted (total-return benchmark)
+    checks = Column(JSON)                          # stop-rule results (backend/lab_checks.py), set after the close
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (

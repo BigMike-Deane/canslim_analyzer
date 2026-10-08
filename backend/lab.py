@@ -21,7 +21,7 @@ import re
 import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -351,20 +351,43 @@ def run_decision_job():
         db.close()
 
 
+def cached_daily() -> Callable:
+    """fmp_daily memoized for one job run: (symbol, adjusted) -> [(date, close)].
+    Raw closes reach back ~11 years so fill-cost checks (C1) see every fill's close."""
+    cache = {}
+
+    def daily(symbol: str, adjusted: bool):
+        if (symbol, adjusted) not in cache:
+            cache[(symbol, adjusted)] = fmp_daily(symbol, days=420 if adjusted else 4000, adjusted=adjusted)
+        return cache[(symbol, adjusted)]
+    return daily
+
+
 def run_close_job():
     from backend.ai_trader import EASTERN_TZ, is_trading_day
     from backend.database import SessionLocal
+    from backend.lab_checks import _safe_gap, run_checks
     if not is_trading_day(datetime.now(EASTERN_TZ)):
         return
     db = SessionLocal()
+    today = datetime.now(EASTERN_TZ).date()
+    daily, gaps = cached_daily(), None
     try:
         for s in sync_strategies(db):
             client = get_client(s.name)
             if s.is_active and client is not None:
                 try:
-                    record_close(db, s, client, today=datetime.now(EASTERN_TZ).date())
+                    record_close(db, s, client, today=today)
                 except Exception as e:
                     db.rollback()
                     logger.error(f"lab[{s.name}] record_close failed: {safe_error(e)}")
+                    continue
+                try:   # stop rules (docs/exposure-plan.md): never let a check failure break the marks
+                    if gaps is None:
+                        gaps = {n: _safe_gap(daily, n) for n in (126, 252)}
+                    run_checks(db, s, today, daily, gaps)
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"lab[{s.name}] stop-rule checks failed: {safe_error(e)}")
     finally:
         db.close()

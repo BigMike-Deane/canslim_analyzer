@@ -423,6 +423,7 @@ export const api = {
   getLabTrades: (name) => request(`/api/lab/strategies/${name}/trades`),
   getLabDecisions: (name) => request(`/api/lab/strategies/${name}/decisions`),
   getLabEdge: (name) => request(`/api/lab/strategies/${name}/edge`),
+  getLabChecks: (name) => request(`/api/lab/strategies/${name}/checks`),
 
   // AI Portfolio
   getAIPortfolio: (opts) => request('/api/ai-portfolio', opts),

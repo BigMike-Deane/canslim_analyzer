@@ -218,11 +218,53 @@ function Trades({ trades }) {
   )
 }
 
+// Pre-registered stop rules (docs/exposure-plan.md, backend/lab_checks.py), evaluated after each close.
+const RULE_LABELS = {
+  M1: 'Decision every session', M2: 'Orders filled', M3: 'Holding the target fund',
+  C1: 'Fill cost vs the close', C2: 'SSO tracking vs the model', P1: 'Trailing excess vs SPY', P2: 'Drawdown',
+}
+const LEVEL = {
+  ok: { cls: 'text-emerald-400', text: 'OK' },
+  pending: { cls: 'text-dark-400', text: 'Waiting for data' },
+  review: { cls: 'text-amber-400', text: 'Review' },
+  breach: { cls: 'text-red-400', text: 'Bug — fix' },
+  stop: { cls: 'text-red-400', text: 'STOP' },
+}
+
+function StopRules({ checks }) {
+  if (!checks) return null
+  const overall = LEVEL[checks.level] || LEVEL.pending
+  return (
+    <Card variant="glass" className="mb-4">
+      <CardHeader title="Stop rules" subtitle={checks.as_of ? `Checked after the ${checks.as_of} close` : 'First check runs after the first close'}
+                  action={<span className={`text-sm font-semibold ${overall.cls}`}>{overall.text}</span>} />
+      {checks.checks?.length > 0 && (
+        <div className="divide-y divide-dark-700/50">
+          {checks.checks.map((c) => {
+            const lv = LEVEL[c.level] || LEVEL.pending
+            return (
+              <div key={c.rule} className="py-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-dark-200">{RULE_LABELS[c.rule] || c.rule}</span>
+                  <span className={`text-xs font-semibold ${lv.cls}`}>{lv.text}</span>
+                </div>
+                <div className="text-xs text-dark-400 mt-0.5 break-words">{c.detail}</div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <div className="mt-2 text-[11px] text-dark-500">Set before the first trade. Review = look into it; Bug = fix the plumbing; STOP = the strategy ends.</div>
+    </Card>
+  )
+}
+
 function StrategyView({ s, range, setRange }) {
   const { data: history } = useApi(() => api.getLabHistory(s.name), [s.name], { pollMs: 300000 })
   const { data: edge } = useApi(() => api.getLabEdge(s.name), [s.name], { pollMs: 300000 })
   const { data: trades } = useApi(() => api.getLabTrades(s.name), [s.name], { pollMs: 300000 })
   const { data: decisions } = useApi(() => api.getLabDecisions(s.name), [s.name])
+  const { data: checks } = useApi(() => api.getLabChecks(s.name), [s.name], { pollMs: 300000 })
   return (
     <>
       <Card variant="glass" className="mb-4">
@@ -248,6 +290,7 @@ function StrategyView({ s, range, setRange }) {
         <EquityChart history={history} range={range} />
       </Card>
       <EdgeCard edge={edge} />
+      <StopRules checks={checks} />
       <Card variant="glass" className="mb-4">
         <CardHeader title="Positions" />
         <Positions positions={s.positions} equity={s.equity} />

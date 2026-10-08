@@ -271,3 +271,32 @@ and fix, then note it here. It is not evidence about the edge.
 separate the edge from luck. The evidence for the edge is the 1928–2026 backtest, with
 the international caveat above. The Lab's job is to show that live execution matches
 the model, and that the owner can hold a 2× position through a drawdown.
+
+**Implementation (2026-10-08, same day, no threshold changes):**
+- Code: `backend/lab_checks.py`, thresholds in `config/default.yaml` `lab_strategies.<name>.stop_rules`.
+- When: runs after each Lab close mark (16:35 + 17:35 ET).
+- Where results go: stored on `lab_equity_marks.checks`, served at
+  `/api/lab/strategies/<name>/checks` and shown as the "Stop rules" card on the Lab page.
+- Alerts: pushes `lab_stop_rule` to the owner only when a rule reaches review or worse,
+  and only when that is worse than the previous evaluation.
+- Not automated: M4 (monthly, research side) and the C2 STOP re-run.
+
+## Diagnostic: timing or just leverage? (2026-10-08, reporting only) — `research/pit/a_constant_leverage.py`
+
+A1's 1994–2026 Sharpe equals the S&P's (0.51 = 0.51), so is the edge simply "hold more
+market"? Each rule vs **constant leverage at the same volatility**:
+
+| Period | S&P TR | A1 | A5 | Constant leverage, same vol |
+|---|---|---|---|---|
+| 1928–93 | 9.61% (DD 84%) | **14.55%** (DD 80%) | **13.30%** (DD 66%) | ~9.1% (1.24–1.31×, DD 91%) |
+| 1994–2026 | 10.90% (DD 55%) | **12.33%** (DD 46%) | **13.67%** (DD 37%) | ~11.2% (1.27–1.30×, DD 67–68%) |
+| 2009–2026 | 14.91% (DD 34%) | 14.76% (DD 41%) | 15.33% (DD 36%) | **~17.5%** (1.33–1.37×, DD 43–44%) |
+
+**The timing is real, but all of it comes from big slow bear markets** (1929–32, 2000–02,
+2008). In those the rules beat equal-risk leverage by 1–5 pp/yr and cut drawdowns
+from ~70–90% to 37–80%. In the 2009–2026 bull market, including the V-shaped 2020 crash,
+timing **cost** ~2.5 pp/yr against plain 1.35× leverage, and A1 trailed SPY itself.
+
+These are crash insurance whose premium is paid in bull markets. They beat SPY over full
+cycles (86% / 80% of 10-year windows), **not year by year**. If the next decade looks like
+2009–2026, expect them to trail.

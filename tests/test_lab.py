@@ -15,7 +15,12 @@ init_db()
 
 CFG = {"lab_t_a1": {"kind": "a1_trend_2x", "label": "A1 test", "enabled": True, "starting_value": 25000,
                     "index": "^GSPC", "sma_days": 200, "risk_on": "SSO", "risk_off": "SGOV",
-                    "key_env": "LAB_TEST_KEY", "secret_env": "LAB_TEST_SECRET"}}
+                    "key_env": "LAB_TEST_KEY", "secret_env": "LAB_TEST_SECRET",
+                    "stop_rules": {"target_share_min": 0.90, "fill_cost_review_bps": 7, "fill_cost_stop_bps": 14,
+                                   "min_fills": 6, "tracking_review_pct": -1.71, "tracking_breakeven_pct": -1.71,
+                                   "max_dd_review_pct": 45.7,
+                                   "excess_review_pct": {63: -21.4, 126: -29.2},
+                                   "excess_stop_pct": {63: -40.8, 126: -45.0}}}}
 
 
 def closes(n=260, start=100.0, step=0.1, end=date(2026, 10, 7)):
@@ -208,3 +213,190 @@ def test_flip_notifies_only_when_target_changes(monkeypatch):
         assert "Was SSO" in sent[0]["body"] and sent[0]["user_id"] == 1
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------- stop rules (backend/lab_checks.py)
+
+from backend import lab_checks as lc  # noqa: E402
+
+RULES = CFG["lab_t_a1"]["stop_rules"]
+MON = date(2026, 10, 5)   # Mon Oct-5 .. Fri Oct-9 2026: all NYSE sessions
+
+
+def _dec(db, s, d, status="submitted", target=None):
+    row = LabDecision(strategy_id=s.id, date=d, inputs={}, target=target or {"SSO": 1.0}, status=status)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _order(db, s, d, sym="SSO", side="buy", qty=100, status="filled", px=None):
+    db.add(LabOrder(strategy_id=s.id, date=d, symbol=sym, side=side, qty=qty, status=status, filled_qty=qty,
+                    filled_avg_price=px, client_order_id=f"t-{s.id}-{d}-{sym}-{side}-{px}-{status}-{qty}"))
+    db.commit()
+
+
+def _mark(db, s, d, equity=25000.0, positions=None, spy=600.0):
+    db.add(LabEquityMark(strategy_id=s.id, date=d, equity=equity, spy_close=spy, spy_adj_close=spy,
+                         positions=positions if positions is not None else []))
+    db.commit()
+
+
+def test_m1_flags_a_session_without_a_traded_decision():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        assert lc.check_m1(db, s, MON)["level"] == "pending"        # no broker-backed decision yet
+        _dec(db, s, MON)
+        _dec(db, s, MON + timedelta(days=1), status="error")
+        _dec(db, s, MON + timedelta(days=2), status="unchanged")
+        c = lc.check_m1(db, s, MON + timedelta(days=2))
+        assert c["level"] == "breach" and c["value"] == 1 and "2026-10-06" in c["detail"]
+        assert lc.check_m1(db, s, MON)["level"] == "ok"
+    finally:
+        db.close()
+
+
+def test_m2_open_today_is_pending_but_a_dead_order_is_a_breach():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        _order(db, s, MON, status="accepted")
+        assert lc.check_m2(db, s, MON)["level"] == "pending"
+        assert lc.check_m2(db, s, MON + timedelta(days=1))["level"] == "breach"    # never filled
+        _order(db, s, MON + timedelta(days=1), sym="SGOV", status="rejected")
+        c = lc.check_m2(db, s, MON + timedelta(days=1))
+        assert c["level"] == "breach" and c["value"] == 2 and "rejected" in c["detail"]
+    finally:
+        db.close()
+
+
+def test_m3_target_share_and_stray_holdings():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        _dec(db, s, MON)
+        _mark(db, s, MON, positions=[{"symbol": "SSO", "market_value": 24400.0}])
+        assert lc.check_m3(db, s, MON, RULES)["level"] == "ok"
+        _dec(db, s, MON + timedelta(days=1), target={"SGOV": 1.0})
+        _mark(db, s, MON + timedelta(days=1), positions=[{"symbol": "SGOV", "market_value": 22000.0},
+                                                         {"symbol": "SSO", "market_value": 2500.0}])
+        c = lc.check_m3(db, s, MON + timedelta(days=1), RULES)
+        assert c["level"] == "breach" and "also holds SSO" in c["detail"] and c["value"] == 0.88
+    finally:
+        db.close()
+
+
+def test_c1_fill_cost_vs_official_close_levels():
+    def run(bps, n):
+        db = SessionLocal()
+        try:
+            s = _strategy(db)
+            for m in (LabOrder,):
+                db.query(m).filter(m.strategy_id == s.id).delete()
+            db.commit()
+            for i in range(n):
+                side = "buy" if i % 2 == 0 else "sell"
+                fill = 100 * (1 + bps / 1e4) if side == "buy" else 100 * (1 - bps / 1e4)   # adverse both ways
+                _order(db, s, MON + timedelta(days=i % 5), side=side, px=fill, qty=10 + i)
+            closes = {MON + timedelta(days=k): 100.0 for k in range(5)}
+            return lc.check_c1(db, s, RULES, lambda sym, adj: list(closes.items()))
+        finally:
+            db.close()
+    assert run(10, 5)["level"] == "pending"                       # rule needs 6 fills
+    c = run(10, 6)
+    assert c["level"] == "review" and abs(c["value"] - 10) < 0.01
+    assert run(15, 6)["level"] == "stop"
+    assert run(3, 6)["level"] == "ok"
+
+
+def _prices(n, daily_ret):
+    d0, out, v = date(2025, 1, 2), [], 100.0
+    for i in range(n):
+        out.append((d0 + timedelta(days=i), v))
+        v *= 1 + daily_ret
+    return out
+
+
+def test_tracking_gap_matches_the_backtest_cost_model():
+    spy, bil = _prices(300, 0.0004), _prices(300, 0.04 / 252)
+    model = 2 * 0.0004 - (0.04 / 252 + 0.005 / 252) - 0.018 / 252
+    exact = {"SPY": spy, "BIL": bil, "SSO": _prices(300, model)}
+    assert abs(lc.tracking_gap(lambda sym, adj: exact[sym], 126)) < 0.01
+    lagging = dict(exact, SSO=_prices(300, model - 0.03 / 252))
+    assert abs(lc.tracking_gap(lambda sym, adj: lagging[sym], 126) - (-3.0)) < 0.01
+    assert lc.tracking_gap(lambda sym, adj: exact[sym], 400) is None
+    c = lc.check_c2(RULES, {126: -3.0, 252: -2.5})
+    assert c["level"] == "review" and "STOP candidate" in c["detail"]
+    assert lc.check_c2(RULES, {126: 0.6, 252: 0.5})["level"] == "ok"
+
+
+class _M:
+    def __init__(self, equity, spy):
+        self.equity, self.spy_adj_close, self.spy_close = equity, spy, spy
+
+
+def test_p1_trailing_excess_levels_and_p2_drawdown():
+    flat = [_M(25000, 600) for _ in range(40)]
+    assert lc.check_p1(flat, RULES)["level"] == "pending"
+    down25 = [_M(25000 * (1 - 0.25 * i / 63), 600) for i in range(64)]       # -25% vs flat SPY over 63 sessions
+    c = lc.check_p1(down25, RULES)
+    assert c["level"] == "review" and "63d -25.0%" in c["detail"]
+    down45 = [_M(25000 * (1 - 0.45 * i / 63), 600) for i in range(64)]
+    assert lc.check_p1(down45, RULES)["level"] == "stop"
+    up = [_M(25000 * (1 + 0.1 * i / 63), 600 * (1 + 0.05 * i / 63)) for i in range(64)]
+    assert lc.check_p1(up, RULES)["level"] == "ok"
+    assert lc.check_p2(down25, RULES)["level"] == "ok"
+    assert lc.check_p2([_M(25000, 1), _M(13000, 1), _M(14000, 1)], RULES)["level"] == "review"   # 48% > 45.7%
+
+
+def test_run_checks_stores_and_pushes_only_when_a_rule_gets_worse(monkeypatch):
+    import backend.email_utils as eu
+    sent = []
+    monkeypatch.setattr(eu, "create_notification", lambda **kw: sent.append(kw) or True)
+    flat = {"SSO": _prices(300, 0.0), "SPY": _prices(300, 0.0), "BIL": _prices(300, 0.0)}
+    daily = lambda sym, adj: flat.get(sym, [])  # noqa: E731
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        _dec(db, s, MON)
+        _mark(db, s, MON, positions=[{"symbol": "SSO", "market_value": 24500.0}])
+        checks = lc.run_checks(db, s, MON, daily)
+        assert {c["rule"] for c in checks} == {"M1", "M2", "M3", "C1", "C2", "P1", "P2"}
+        assert lc.worst(checks) in ("ok", "pending") and sent == []
+        stored = db.query(LabEquityMark).filter(LabEquityMark.strategy_id == s.id, LabEquityMark.date == MON).one()
+        assert stored.checks == checks
+        # next day: no decision recorded -> M1 breach, pushed once
+        _mark(db, s, MON + timedelta(days=1), positions=[{"symbol": "SSO", "market_value": 24500.0}])
+        lc.run_checks(db, s, MON + timedelta(days=1), daily)
+        assert len(sent) == 1 and sent[0]["kind"] == "lab_stop_rule" and "BREACH on M1" in sent[0]["title"]
+        assert sent[0]["priority"] == "high"
+        lc.run_checks(db, s, MON + timedelta(days=1), daily)            # 2nd evening pass, same state: quiet
+        assert len(sent) == 1
+    finally:
+        db.close()
+
+
+def test_api_serves_latest_checks():
+    from backend.main import app
+    client = TestClient(app)
+    with override_dependency(get_current_user, lambda: User(id=TEST_USER_A_ID, is_admin=False)):
+        db = SessionLocal()
+        try:
+            s = _strategy(db)
+        finally:
+            db.close()
+        assert client.get("/api/lab/strategies/lab_t_a1/checks").json() == {"as_of": None, "level": "pending",
+                                                                           "checks": []}
+        db = SessionLocal()
+        try:
+            s = _strategy(db)
+            db.add(LabEquityMark(strategy_id=s.id, date=MON, equity=25000.0,
+                                 checks=[{"rule": "M1", "level": "breach", "value": 1, "threshold": 0, "detail": "x"},
+                                         {"rule": "P1", "level": "pending", "value": None, "threshold": None,
+                                          "detail": "y"}]))
+            db.commit()
+        finally:
+            db.close()
+        body = client.get("/api/lab/strategies/lab_t_a1/checks").json()
+        assert body["as_of"] == "2026-10-05" and body["level"] == "breach" and len(body["checks"]) == 2

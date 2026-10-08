@@ -128,6 +128,18 @@ def strategy_decisions(name: str, db: Session = Depends(get_db), user=Depends(ge
              "note": d.note} for d in rows]
 
 
+@router.get("/strategies/{name}/checks")
+def strategy_checks(name: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Pre-registered stop rules (docs/exposure-plan.md), as evaluated after the latest close."""
+    from backend.lab_checks import worst
+    s = _strategy(db, name)
+    m = (db.query(LabEquityMark).filter(LabEquityMark.strategy_id == s.id, LabEquityMark.checks.isnot(None))
+         .order_by(LabEquityMark.date.desc()).first())
+    if m is None:
+        return {"as_of": None, "level": "pending", "checks": []}
+    return {"as_of": m.date.isoformat(), "level": worst(m.checks), "checks": m.checks}
+
+
 @router.get("/strategies/{name}/edge")
 def strategy_edge(name: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Same scorecard as /api/ai-portfolio/edge (backend.edge_metrics), on the Lab account."""
