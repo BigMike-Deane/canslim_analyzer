@@ -183,3 +183,91 @@ of sideways prices). **A1/A5 are downgraded from "validated" to "US-validated
 candidates"**: the Lab forward test is the deciding evidence, not a formality.
 Caveat: price indexes + constant assumed dividends; local leverage costs modelled
 with the same spread/fee as the US.
+
+## Lab stop rules — pre-registration (2026-10-08 ~9:00 AM CT, before the first Lab order or fill)
+
+**Why:** the Lab (A1 and A5 on their own Alpaca paper accounts) cannot prove an edge
+quickly: the strategies switch ~4–7 times a year, and even in 1994–2026, where they
+work, A1 trailed SPY by more than 44% over a year in 1% of windows. What the Lab
+CAN test is whether live trading matches the backtest's assumptions. These rules say,
+in advance, what counts as a bug, what weakens the case, and what ends a strategy.
+Committed before any Lab fill; **no rule may be loosened after this commit.**
+Thresholds may be tightened only with a written reason, and never in response to a
+breach.
+
+### Calibration (history the Lab never sees) — `research/pit/lab_stop_calibration.py`
+
+- **Real SSO vs the backtest's cost model** (2× S&P TR − (T-bill + 0.5%) − 2 × 0.9% fee):
+  SSO did **better** than modelled, +1.41%/yr since 2009 and +0.65%/yr in 2021–26.
+  Trailing 126-session gap: 5th pct +0.37%/yr, worst −4.10%/yr. SPY vs the 1× leg
+  +0.07%/yr; SGOV / BIL vs the 3-month T-bill −0.10 / −0.11%/yr. The backtest's
+  leverage costs were conservative, so the leveraged edge is understated if anything:
+  charging the 2021–26 gap, the 1994–2026 edge would be A1 +1.97% (was +1.43%) and A5 +3.29%
+  (was +2.77%).
+- **Break-even costs (1994–2026 edge → 0):** A1 trades 13.8× its equity a year → edge gone at
+  **14 bps** per unit traded (the model assumes 5), or at 1.71%/yr extra drag on the 2×
+  leg. A5 (11.4×/yr): **27 bps**, or 3.47%/yr. **A1's edge is fragile to execution cost.**
+- **Live code = research code:** on 894 sampled sessions 2009–2026, `backend/lab.py`
+  reproduces the research rule on 100.0% (A1) / 99.3% (A5) of sessions; all 6 A5
+  differences fall within 0.2 pp of the momentum tie (SPY + BIL proxies vs S&P TR +
+  T-bill rate).
+- **Normal bad stretches** (trailing excess vs S&P TR, compounded):
+
+| Sessions | A1 1994–26 1st pct | A1 1994–26 worst | A5 1994–26 1st pct | A5 1994–26 worst |
+|---|---|---|---|---|
+| 63 | −21.4% | −40.8% (2009-06) | −16.0% | −40.0% (2009-06) |
+| 126 | −29.2% | −45.0% (2009-09) | −20.7% | −47.7% (2009-09) |
+| 252 | −44.0% | −46.0% (2000-09) | −28.3% | −46.3% (2010-03) |
+| 756 | −58.1% | −72.5% (2012-03) | −35.7% | −72.2% (2012-03) |
+
+  1928–2026 worsts (1932–33 rebound) exceed −100%, so they would never fire; the modern
+  era is the yardstick.
+
+### Rules (per strategy, from its first broker-backed decision, 2026-10-08)
+
+**M: mechanics.** Checked automatically every session. A breach is a **bug**: pause
+and fix, then note it here. It is not evidence about the edge.
+- **M1** A decision is recorded every NYSE session before the close.
+- **M2** Every order placed is `filled` by the 17:35 ET mark (not canceled, expired,
+  rejected or errored).
+- **M3** After the close, ≥ 90% of equity is in the decision's target fund and no
+  other fund is held.
+- **M4** (monthly, research side) Each live decision is reproduced by the research
+  rule; A5 differences are allowed only within 0.25 pp of the momentum tie.
+
+**C: costs.** Checked automatically. These test the backtest's assumptions.
+- **C1 Fill cost:** the notional-weighted adverse gap between fill price and the fund's
+  official close, over all fills, once ≥ 6 fills exist. **REVIEW** above half the
+  break-even (A1 > 7 bps, A5 > 13 bps). **STOP** at or above break-even (A1 ≥ 14 bps, A5 ≥ 27 bps).
+  Caveat: Alpaca paper *simulates* closing-auction fills. Passing here is necessary,
+  not sufficient, for real money.
+- **C2 Fund tracking:** SSO's trailing 126-session return minus the modelled 2× leg
+  (2× SPY TR − (BIL return + 0.5%) − 1.8%/yr), annualized. **REVIEW** below −1.71%/yr
+  (A1's whole edge). **STOP** for a strategy when the trailing 252-session gap is below
+  its break-even (A1 −1.71%, A5 −3.47%/yr) **and** the 1994–2026 backtest re-run with
+  that gap shows edge ≤ 0.
+
+**P: performance vs SPY total return.** Checked automatically from the daily marks.
+- **P1** Trailing excess (Lab equity return − SPY TR, compounded) at 63 / 126 / 252 /
+  756 sessions, once that many marks exist. **REVIEW** below the 1994–2026 1st
+  percentile. **STOP** below the 1994–2026 worst (both from the table above).
+- **P2** Lab drawdown deeper than the rule's 1994–2026 backtest maximum (A1 45.7%,
+  A5 37.3%): **REVIEW**.
+
+**What each level means.**
+- **REVIEW:** push to the owner. Within a week, a note here says whether it is a known
+  failure mode: a V-shaped rebound while in T-bills, a whipsaw, or a crash at 2×. The
+  strategy keeps running and no rule changes.
+- **STOP:** the strategy is disabled (`enabled: false`) and its account moves to
+  SGOV. Any revived or re-tuned version is a new pre-registered trial, counted in the
+  ledger.
+
+**Real-money readiness** (the owner's decision; this is the bar for recommending it):
+- ≥ 63 live sessions
+- ≥ 2 executed signal changes (or ≥ 126 sessions if fewer happen)
+- no open M breach, C1 below REVIEW, no STOP
+
+**This is deliberately not a performance test.** One year of live returns cannot
+separate the edge from luck. The evidence for the edge is the 1928–2026 backtest, with
+the international caveat above. The Lab's job is to show that live execution matches
+the model, and that the owner can hold a 2× position through a drawdown.
