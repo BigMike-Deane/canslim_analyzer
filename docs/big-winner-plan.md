@@ -180,3 +180,40 @@ lean towards them hurting, i.e. M2 ≥ M1.
 
 **PASS →** a shadow-arm or Lab candidate, with its own forward test.
 **FAIL →** the big-winner framing has no tested strategy on free data yet.
+
+## Part 3 results (2026-10-08 ~9:50 AM CT, single run) — **M1 FAIL**; the controls are the finding
+
+SPY TR 2016-01 → 2026-10: 15.2–15.9%/yr depending on the start offset. Small caps (IWM,
+price only) 9.2%/yr.
+
+| Version | CAGR (offset 0 / 20 / 40) | Max DD | Exits ≥ +50% / ≥ +100% | Profit share from ≥ +50% | Median yearly excess: mean / years ≥ +20 / worst |
+|---|---|---|---|---|---|
+| **M1 momentum + app exits** | 11.3 / 11.4 / 9.1% | 53–57% | 29 / 7 | 32% | −0.9 / 2 / **−43.2** (2019) |
+| M2 momentum, hold 6 months | **15.4 / 15.6 / 14.0%** | 56% | 34 / **12** | **85%** | **+7.0 / 3** / −54.9 (2023) |
+| R random picks + app exits (20 seeds) | median 5.0%, 90th pct 8.5%, best 9.8% | | | | |
+
+Sensitivities (offset 0, reporting only): 20 slots 6.8%; 10% stop 5.0%; **M1 with
+idle cash parked in SPY 15.8%** (DD 57%).
+
+**Gate:** M1 (a) fail, (b) fail, (c) fail, (d) pass (11.3% > random 90th pct 8.5%)
+→ **FAIL**.
+
+**What it says:**
+1. **Momentum entries beat random entries by a wide margin** (11.3% vs the random median
+   5.0%; better than all 20 random runs). The data does push big-winner picking past
+   chance.
+2. **The app's exits destroy most of that edge.** The same momentum picks held for 6
+   months earned 15.4%/yr against 11.3% with the app's stops and trails. Holding caught
+   12 doublers against 7; 85% of its profit came from ≥ +50% winners, against 32%. The
+   tight early trailing stops (4–6% below the peak) shake winners out before they run.
+   This matches the prior and Part 2's E0 profile. A wider 10% hard stop did not fix it.
+3. **Even the best version only ties SPY over 2016–26.** It is far ahead of its own
+   small/mid-cap universe (random 5%, IWM ~10% with dividends), but SPY's mega-cap decade
+   (15%) set a high bar. Its years are exactly the "uneven" shape: +82, +46, +25 pp in
+   2024 / 2025 / 2022. But the bad years run to −55 (2023) and −26 (2017), not −5.
+4. **Idle cash is a big lever:** parking M1's idle cash in SPY added ~4.5 pp/yr (single
+   run, sensitivity only). Part 2's E4/E5 test this on the app's real rules.
+
+**Status:** M2 and "M1 + SPY parking" came out of this run as controls and
+sensitivities. They are **new hypotheses, not passes**. Promoting either needs its own
+pre-registration and a test it hasn't seen (forward paper or a holdout).
