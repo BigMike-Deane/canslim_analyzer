@@ -100,7 +100,7 @@ def _seed_universe(db, n=6):
     for i in range(n):
         t = f"{PFX}{i}"
         db.add(Stock(ticker=t, name=f"Test {i}", sector="Tech", current_price=50.0, market_cap=(i + 2) * 1e9))
-        db.add(StockDataCache(ticker=t, earnings_beat_streak=i, latest_surprise_pct=float(i), roe=0.05 * i))
+        db.add(StockDataCache(ticker=t, earnings_beat_streak=i, latest_surprise_pct=float(i), roe=0.05 * i))   # i=0 -> roe 0.0 = missing
         db.add(Canslim2Input(ticker=t, s3=0.01 * i, dtc=10.0 - i, n_brokers=i * 3, dvol20=20e6))
     db.add(Stock(ticker=f"{PFX}THIN", current_price=50.0, market_cap=9e9))
     db.add(Canslim2Input(ticker=f"{PFX}THIN", dvol20=1e6))               # fails the $5M dollar-volume screen
@@ -116,6 +116,8 @@ def test_compute_scores_applies_the_universe_screen_and_replaces_the_day(monkeyp
         rows = c2.universe_rows(db)
         mine = {r["ticker"] for r in rows if r["ticker"].startswith(PFX)}
         assert f"{PFX}THIN" not in mine and f"{PFX}PENNY" not in mine and f"{PFX}5" in mine
+        by = {r["ticker"]: r for r in rows}
+        assert by[f"{PFX}0"]["roe"] is None and by[f"{PFX}1"]["roe"] == pytest.approx(0.05)   # FMP's 0 placeholder = missing
         monkeypatch.setattr(c2, "universe_rows", lambda db: [r for r in rows if r["ticker"].startswith(PFX)])
         day = date(2099, 1, 2)
         assert c2.compute_scores(db, day) == 6

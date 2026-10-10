@@ -273,7 +273,10 @@ def universe_rows(db) -> list:
     for t, cap, px, bs, sp, roe, s3, dtc, nb, dv in q.all():
         out.append({"ticker": t, "market_cap": cap, "price": px,
                     "beat_streak": bs or 0, "surprise_pct": sp or 0.0,     # research default: no report -> 0
-                    "roe": roe, "s3": s3, "dtc": dtc, "n_brokers": nb if nb is not None else 0, "dvol20": dv})
+                    # the FMP fetch stores a MISSING returnOnEquity as 0 ("or 0"); research treats
+                    # missing as NaN -> median, so an exact 0 counts as missing (143 of 2,376 on Oct-10)
+                    "roe": roe if roe else None,
+                    "s3": s3, "dtc": dtc, "n_brokers": nb if nb is not None else 0, "dvol20": dv})
     return out
 
 
