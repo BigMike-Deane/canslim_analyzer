@@ -46,10 +46,11 @@ export function C2Chip({ c2 }) {
   const p = Math.round(c2.score_pct)
   const tone = p >= 80 ? 'text-emerald-400 border-emerald-500/30' : p >= 40 ? 'text-dark-200 border-dark-600' : 'text-red-400 border-red-500/30'
   const ch = c2.change
+  const small = c2.segment === 'small'
   return (
-    <span className={`inline-flex items-center gap-1 text-[10px] font-data px-1.5 py-0.5 rounded border ${tone}`}
-          title={`CANSLIM 2.0: ${p}/100${ch != null ? `, ${ch >= 0 ? '+' : ''}${ch} since the previous day` : ''}`}>
-      <span className="text-dark-400">2.0</span>{p}
+    <span className={`inline-flex items-center gap-1 text-[10px] font-data px-1.5 py-0.5 rounded border ${tone} ${small ? 'border-dashed' : ''}`}
+          title={`CANSLIM 2.0: ${p}/100${small ? ' among small caps' : ''}${ch != null ? `, ${ch >= 0 ? '+' : ''}${ch} since the previous day` : ''}${c2.label ? ` — ${c2.label}` : ''}`}>
+      <span className="text-dark-400">2.0{small ? 'ˢ' : ''}</span>{p}
       {ch != null && Math.abs(ch) >= 5 && <span className={ch > 0 ? 'text-emerald-400' : 'text-red-400'}>{ch > 0 ? '▲' : '▼'}{Math.abs(Math.round(ch))}</span>}
     </span>
   )
@@ -84,7 +85,7 @@ export default function Canslim2Card({ ticker }) {
       <Card variant="glass" className="mb-4">
         <CardHeader title="CANSLIM 2.0" />
         <div className="text-sm text-dark-400">
-          Not scored: CANSLIM 2.0 covers US stocks over $5 with a $1B+ market cap and $5M+ daily dollar volume.{' '}
+          Not scored: CANSLIM 2.0 covers stocks over $5 with a market cap of $100M or more.{' '}
           <Link to="/canslim2" className="text-primary-400">How it works</Link>
         </div>
       </Card>
@@ -101,8 +102,14 @@ export default function Canslim2Card({ ticker }) {
         <span className="text-sm text-dark-400">/100</span>
         <span className="text-sm text-dark-300 ml-1">
           {top < 1 ? 'Top 1%' : `Top ${Math.ceil(top)}%`} · #{data.rank} of {data.universe?.toLocaleString()}
+          {data.segment === 'small' ? ' small caps' : ''}
         </span>
       </div>
+      {data.label && (
+        <div className="text-xs text-amber-400/90 mb-2 flex gap-1.5">
+          <span aria-hidden>◔</span><span>{data.label}</span>
+        </div>
+      )}
       {data.in_tilt && (
         <div className="text-xs text-dark-400 mb-3">
           Model portfolio holds it at <span className="font-data text-dark-200">{fmt(data.tilt_mult, 2)}×</span> its market weight

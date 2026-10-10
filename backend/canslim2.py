@@ -44,6 +44,21 @@ FEATURES = (("beat_streak", 1, "C"), ("surprise_pct", 1, "C"), ("roe", 1, "A"),
             ("s3", 1, "S"), ("dtc", -1, "S"), ("n_brokers", 1, "I"))
 LETTERS = ("C", "A", "S", "I")
 MIN_PRICE, MIN_MCAP, MIN_DVOL = 5.0, 1e9, 5e6
+# Provisional "small" segment (Oct-10): price > $5, cap >= $100M, outside the core universe; ranked
+# among themselves. Research the same day: the formula carries over to $250M-$1B (IC t 2.06, tilt
+# +0.72%/yr at the 100th pct of random); untested below $250M. Never traded.
+SMALL_MIN_MCAP, SMALL_CONFIRMED_MCAP, THIN_DVOL = 1e8, 2.5e8, 1e6
+
+
+def segment_label(segment: str, market_cap, dvol20) -> Optional[str]:
+    if segment != "small":
+        return None
+    base = ("Provisional: formula confirmed for $250M-$1B companies in 2016-26 testing"
+            if (market_cap or 0) >= SMALL_CONFIRMED_MCAP else "Provisional: untested below $250M market cap")
+    if (market_cap or 0) >= MIN_MCAP:
+        base = "Provisional: under $5M/day traded, outside the tested universe"
+    return base + ("; thinly traded (under $1M/day)" if dvol20 is not None and dvol20 < THIN_DVOL else "") + \
+        ". Ranked among small caps, not traded by any portfolio."
 TILT_TOP, REBALANCE_SESSIONS, COST = 500, 20, 0.0019
 STRATEGY = "canslim2_tilt"
 FMP_PAUSE = 0.25            # ~240 calls/min, well under the plan limit, leaves room for the scanner
@@ -158,8 +173,9 @@ def _fmp_get(path: str, **params):
 # ----------------------------------------------------------------- universe + weekly refresh
 
 def candidates(db) -> list:
-    """Tickers that pass the price / market-cap screen (dollar volume is checked from bars)."""
-    rows = db.query(Stock.ticker).filter(Stock.current_price > MIN_PRICE, Stock.market_cap >= MIN_MCAP).all()
+    """Tickers whose inputs the weekly refresh keeps: core candidates (cap >= $1B; dollar volume is
+    checked from bars) and the provisional small segment (cap >= $100M)."""
+    rows = db.query(Stock.ticker).filter(Stock.current_price > MIN_PRICE, Stock.market_cap >= SMALL_MIN_MCAP).all()
     return sorted(t for (t,) in rows if t)
 
 
@@ -227,7 +243,7 @@ def _pct_rank(values: dict) -> dict:
     return out
 
 
-def score_universe(rows: list) -> list:
+def score_universe(rows: list, tilt: bool = True) -> list:
     """rows: [{ticker, market_cap, beat_streak, surprise_pct, roe, s3, dtc, n_brokers}] already in
     the universe. Returns the rows with score, score_pct, rank, letter pcts, in_tilt, tilt_mult."""
     if not rows:
@@ -254,7 +270,7 @@ def score_universe(rows: list) -> list:
         r["score_pct"] = round(sp[t] * 100, 1)
         for L in LETTERS:
             r[f"{L.lower()}_pct"] = round(lp[L][t] * 100, 1)
-    big = sorted(rows, key=lambda r: -(r.get("market_cap") or 0))[:TILT_TOP]
+    big = sorted(rows, key=lambda r: -(r.get("market_cap") or 0))[:TILT_TOP] if tilt else []
     bp = _pct_rank({r["ticker"]: r["score"] for r in big})
     for r in rows:
         r["in_tilt"] = r["ticker"] in bp
@@ -262,14 +278,22 @@ def score_universe(rows: list) -> list:
     return rows
 
 
-def universe_rows(db) -> list:
-    """Universe members with their raw signals (StockDataCache + Canslim2Input)."""
+def universe_rows(db, segment: str = "core") -> list:
+    """Members of a segment with their raw signals (StockDataCache + Canslim2Input).
+    core: price > $5, cap >= $1B, 20d $ volume >= $5M (the tested universe).
+    small: price > $5, cap >= $100M, not core (provisional)."""
+    from sqlalchemy import or_
     q = (db.query(Stock.ticker, Stock.market_cap, Stock.current_price, StockDataCache.earnings_beat_streak,
                   StockDataCache.latest_surprise_pct, StockDataCache.roe, Canslim2Input.s3, Canslim2Input.dtc,
                   Canslim2Input.n_brokers, Canslim2Input.dvol20)
          .join(Canslim2Input, Canslim2Input.ticker == Stock.ticker)
          .outerjoin(StockDataCache, StockDataCache.ticker == Stock.ticker)
-         .filter(Stock.current_price > MIN_PRICE, Stock.market_cap >= MIN_MCAP, Canslim2Input.dvol20 >= MIN_DVOL))
+         .filter(Stock.current_price > MIN_PRICE))
+    if segment == "core":
+        q = q.filter(Stock.market_cap >= MIN_MCAP, Canslim2Input.dvol20 >= MIN_DVOL)
+    else:
+        q = q.filter(Stock.market_cap >= SMALL_MIN_MCAP,
+                     or_(Stock.market_cap < MIN_MCAP, Canslim2Input.dvol20 < MIN_DVOL, Canslim2Input.dvol20.is_(None)))
     out = []
     for t, cap, px, bs, sp, roe, s3, dtc, nb, dv in q.all():
         out.append({"ticker": t, "market_cap": cap, "price": px,
@@ -291,7 +315,8 @@ def compute_scores(db, today: Optional[date] = None) -> int:
     """Score today's universe and replace today's Canslim2Score rows (re-run after every scan).
     Each row carries the previous scored date's percentile. Returns the row count."""
     today = today or _et_today()
-    rows = score_universe(universe_rows(db))
+    rows = [dict(r, segment="core") for r in score_universe(universe_rows(db, "core"))]
+    small = [dict(r, segment="small") for r in score_universe(universe_rows(db, "small"), tilt=False)] if rows else []
     if not rows:
         logger.warning("canslim2: empty universe (inputs not refreshed yet?)")
         return 0
@@ -299,15 +324,21 @@ def compute_scores(db, today: Optional[date] = None) -> int:
     prev = dict(db.query(Canslim2Score.ticker, Canslim2Score.score_pct).filter(Canslim2Score.date == prev_day).all()) if prev_day else {}
     now = datetime.now(timezone.utc)
     db.query(Canslim2Score).filter(Canslim2Score.date == today).delete(synchronize_session=False)
-    for r in rows:
+    for r in rows + small:
         db.add(Canslim2Score(
-            date=today, ticker=r["ticker"], score=r["score"], score_pct=r["score_pct"], rank=r["rank"],
+            date=today, ticker=r["ticker"], segment=r["segment"], score=r["score"], score_pct=r["score_pct"], rank=r["rank"],
             c_pct=r["c_pct"], a_pct=r["a_pct"], s_pct=r["s_pct"], i_pct=r["i_pct"], market_cap=r["market_cap"],
             in_tilt=r["in_tilt"], tilt_mult=r["tilt_mult"], prev_score_pct=prev.get(r["ticker"]), scored_at=now,
             inputs={f: r.get(f) for f, _, _ in FEATURES} | {"dvol20": r.get("dvol20")}))
     db.commit()
-    logger.info(f"canslim2: scored {len(rows)} stocks for {today}")
-    return len(rows)
+    logger.info(f"canslim2: scored {len(rows)} stocks for {today} (+{len(small)} provisional small caps)")
+    return len(rows) + len(small)
+
+
+def core_only():
+    """SQL filter: the tested universe only. EVERY trading path uses it (Lab tilt + picks, AI engine)."""
+    from sqlalchemy import or_
+    return or_(Canslim2Score.segment == "core", Canslim2Score.segment.is_(None))
 
 
 def latest_map(db, tickers) -> dict:
@@ -318,7 +349,9 @@ def latest_map(db, tickers) -> dict:
     out = {}
     for r in db.query(Canslim2Score).filter(Canslim2Score.date == d, Canslim2Score.ticker.in_(list(tickers))).all():
         chg = (r.score_pct - r.prev_score_pct) if r.score_pct is not None and r.prev_score_pct is not None else None
+        seg = r.segment or "core"
         out[r.ticker] = {"score_pct": r.score_pct, "rank": r.rank, "change": round(chg, 1) if chg is not None else None,
+                         "segment": seg, "label": segment_label(seg, r.market_cap, (r.inputs or {}).get("dvol20")),
                          "letters": {"C": r.c_pct, "A": r.a_pct, "S": r.s_pct, "I": r.i_pct}}
     return out
 
@@ -326,7 +359,7 @@ def latest_map(db, tickers) -> dict:
 def tilt_weights(db, day: date) -> dict:
     """{ticker: weight} for the model portfolio from `day`'s scores (sums to 1)."""
     rows = db.query(Canslim2Score.ticker, Canslim2Score.market_cap, Canslim2Score.tilt_mult).filter(
-        Canslim2Score.date == day, Canslim2Score.in_tilt.is_(True)).all()
+        Canslim2Score.date == day, Canslim2Score.in_tilt.is_(True), core_only()).all()
     raw = {t: (cap or 0) * (m or 0) for t, cap, m in rows}
     tot = sum(raw.values())
     return {t: w / tot for t, w in raw.items() if w > 0} if tot > 0 else {}
@@ -399,7 +432,7 @@ def picks_universe(db, day: date) -> list:
     """Today's scored universe, best first: [{ticker, score_pct, sector}]."""
     rows = (db.query(Canslim2Score.ticker, Canslim2Score.score_pct, Stock.sector)
             .outerjoin(Stock, Stock.ticker == Canslim2Score.ticker)
-            .filter(Canslim2Score.date == day).order_by(Canslim2Score.score.desc()).all())
+            .filter(Canslim2Score.date == day, core_only()).order_by(Canslim2Score.score.desc()).all())
     return [{"ticker": t, "score_pct": p, "sector": sec or "Unknown"} for t, p, sec in rows]
 
 

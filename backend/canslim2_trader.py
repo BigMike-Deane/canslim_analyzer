@@ -41,11 +41,12 @@ def rules(profile: dict) -> dict:
 
 def c2_pcts(db) -> dict:
     """{ticker: score percentile} from the latest CANSLIM 2.0 scoring run."""
+    from backend.canslim2 import core_only
     from backend.database import Canslim2Score
     d = db.query(func.max(Canslim2Score.date)).scalar()
     if d is None:
         return {}
-    return dict(db.query(Canslim2Score.ticker, Canslim2Score.score_pct).filter(Canslim2Score.date == d).all())
+    return dict(db.query(Canslim2Score.ticker, Canslim2Score.score_pct).filter(Canslim2Score.date == d, core_only()).all())
 
 
 def stop_price(cost_basis: float, profile: dict) -> float:
@@ -81,6 +82,7 @@ def engine_buys(db, user_id: int, profile: dict, portfolio: dict, positions: lis
     """Buy decisions in evaluate_buys' shape ({stock, value, reason, effective_score, signal_factors}).
     `stock` is a proxy whose canslim_score is the CANSLIM 2.0 percentile, so trades and new
     positions record the score the engine actually used."""
+    from backend.canslim2 import core_only
     from backend.database import AIPortfolioTrade, Canslim2Score, Stock
     r = rules(profile)
     n_max = int(profile.get("max_positions", 20))
@@ -93,7 +95,7 @@ def engine_buys(db, user_id: int, profile: dict, portfolio: dict, positions: lis
         AIPortfolioTrade.user_id == user_id, AIPortfolioTrade.action == "SELL",
         AIPortfolioTrade.executed_at >= since).all()}
     rows = (db.query(Canslim2Score, Stock).join(Stock, Stock.ticker == Canslim2Score.ticker)
-            .filter(Canslim2Score.date == d, Canslim2Score.score_pct >= r["buy_pct"])
+            .filter(Canslim2Score.date == d, Canslim2Score.score_pct >= r["buy_pct"], core_only())
             .order_by(Canslim2Score.score.desc()).all())
     sectors = dict(db.query(Stock.ticker, Stock.sector).filter(Stock.ticker.in_(list(held))).all()) if held else {}
     per_sector = Counter((sectors.get(t) or "Unknown") for t in held)

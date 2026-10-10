@@ -286,6 +286,7 @@ def run_migrations():
         # CANSLIM 2.0 rescoring after every scan (2026-10-10)
         ("canslim2_scores", "prev_score_pct", "FLOAT"),
         ("canslim2_scores", "scored_at", "TIMESTAMP"),
+        ("canslim2_scores", "segment", "TEXT DEFAULT 'core'"),
         # Analyst price-target range (May 2026 — surfaced on StockDetail's
         # Analyst Consensus card). consensus was already cached; high/low are
         # the new spread bounds for the range bar.
@@ -2147,6 +2148,10 @@ class Canslim2Score(Base):
     inputs = Column(JSON)              # raw signal values
     prev_score_pct = Column(Float)     # score_pct on the previous scored date (for "moved since")
     scored_at = Column(DateTime)       # last rescore (after every scan + the 17:20 ET close run)
+    # "core" = the tested universe (all trading uses only these); "small" = provisional scores for
+    # price > $5, cap >= $100M stocks outside it, ranked AMONG THEMSELVES (as in the Oct-10
+    # small-cap confirmation: formula carries over to $250M-$1B; untested below $250M).
+    segment = Column(String, default="core", index=True)
 
     __table_args__ = (
         Index('ux_canslim2_scores_date_ticker', 'date', 'ticker', unique=True),

@@ -1399,7 +1399,8 @@ async def get_stocks(
     if sort_by == "canslim2":   # CANSLIM 2.0 (backend/canslim2.py): only stocks in its universe
         from backend.database import Canslim2Score
         c2_day = db.query(func.max(Canslim2Score.date)).scalar()
-        query = query.join(Canslim2Score, (Canslim2Score.ticker == Stock.ticker) & (Canslim2Score.date == c2_day))
+        from backend.canslim2 import core_only   # the tested universe; small caps keep their provisional chip
+        query = query.join(Canslim2Score, (Canslim2Score.ticker == Stock.ticker) & (Canslim2Score.date == c2_day) & core_only())
         query = query.order_by(desc(Canslim2Score.score) if sort_dir == "desc" else Canslim2Score.score)
     else:
         sort_column = getattr(Stock, sort_by, Stock.canslim_score)

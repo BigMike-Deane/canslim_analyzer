@@ -16,6 +16,7 @@ const VIEWS = [
   { key: 'up', label: 'Biggest risers', params: { limit: 50, movers: 'up' } },
   { key: 'down', label: 'Biggest fallers', params: { limit: 50, movers: 'down' } },
   { key: 'bottom', label: 'Bottom 50', params: { limit: 50, bottom: true } },
+  { key: 'small', label: 'Small caps (provisional)', params: { limit: 50, segment: 'small' } },
 ]
 
 const timeOf = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null)
@@ -90,6 +91,13 @@ export default function Canslim2() {
           </button>
         ))}
       </div>
+
+      {view === 'small' && meta?.small_caps && (
+        <Card variant="glass" className="mb-3">
+          <div className="text-xs text-amber-400/90 flex gap-1.5"><span aria-hidden>◔</span><span>{meta.small_caps}</span></div>
+          {meta.small_universe != null && <div className="text-[11px] text-dark-400 mt-1">{meta.small_universe.toLocaleString()} small caps scored today.</div>}
+        </Card>
+      )}
 
       <Card variant="glass" padding="p-0" className="mb-4 overflow-hidden">
         {loading && !list && <div className="skeleton h-64" />}

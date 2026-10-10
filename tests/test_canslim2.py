@@ -121,7 +121,7 @@ def test_compute_scores_applies_the_universe_screen_and_replaces_the_day(monkeyp
         assert f"{PFX}THIN" not in mine and f"{PFX}PENNY" not in mine and f"{PFX}5" in mine
         by = {r["ticker"]: r for r in rows}
         assert by[f"{PFX}0"]["roe"] is None and by[f"{PFX}1"]["roe"] == pytest.approx(0.05)   # FMP's 0 placeholder = missing
-        monkeypatch.setattr(c2, "universe_rows", lambda db: [r for r in rows if r["ticker"].startswith(PFX)])
+        monkeypatch.setattr(c2, "universe_rows", lambda db, segment="core": [r for r in rows if r["ticker"].startswith(PFX)] if segment == "core" else [])
         day = date(2099, 1, 2)
         assert c2.compute_scores(db, day) == 6
         assert c2.compute_scores(db, day) == 6                           # re-run replaces, no duplicates
@@ -298,7 +298,7 @@ def test_rescore_keeps_the_previous_days_percentile(monkeypatch):
     try:
         _seed_universe(db)
         rows = [r for r in c2.universe_rows(db) if r["ticker"].startswith(PFX)]
-        monkeypatch.setattr(c2, "universe_rows", lambda db: [dict(r) for r in rows])
+        monkeypatch.setattr(c2, "universe_rows", lambda db, segment="core": [dict(r) for r in rows] if segment == "core" else [])
         d1, d2 = date(2099, 2, 1), date(2099, 2, 2)
         c2.compute_scores(db, d1)
         c2.compute_scores(db, d2)
@@ -357,3 +357,42 @@ def test_screener_sorts_by_canslim2_and_watchlist_shows_it():
         assert [w["canslim2"]["score_pct"] for w in wl if w["ticker"] == f"{PFX}S1"] == [99.0]
         mv = client.get("/api/canslim2/top", params={"movers": "up", "limit": 5}).json()
         assert "stocks" in mv
+
+
+# ---------------------------------------------------------------- provisional small caps
+
+def test_small_caps_are_ranked_among_themselves_labelled_and_never_traded(monkeypatch):
+    from backend import canslim2_trader as ct
+    db = SessionLocal()
+    try:
+        _seed_universe(db)                                   # 6 core names (+ THIN: $9B but $1M/day)
+        for i, cap in enumerate((3e8, 6e8, 1.5e8)):          # two confirmed-band small caps, one micro
+            t = f"{PFX}SM{i}"
+            db.add(Stock(ticker=t, name=t, sector="Banks", current_price=30.0, market_cap=cap))
+            db.add(StockDataCache(ticker=t, earnings_beat_streak=10 + i, latest_surprise_pct=50.0, roe=0.3))
+            db.add(Canslim2Input(ticker=t, s3=0.05, dtc=1.0, n_brokers=1, dvol20=2e6 if i < 2 else 5e5))
+        db.commit()
+        core = {r["ticker"] for r in c2.universe_rows(db, "core") if r["ticker"].startswith(PFX)}
+        small = {r["ticker"] for r in c2.universe_rows(db, "small") if r["ticker"].startswith(PFX)}
+        assert core == {f"{PFX}{i}" for i in range(6)}
+        assert small == {f"{PFX}SM0", f"{PFX}SM1", f"{PFX}SM2", f"{PFX}THIN"}   # PENNY: price < $5
+        rows_c = [r for r in c2.universe_rows(db, "core") if r["ticker"].startswith(PFX)]
+        rows_s = [r for r in c2.universe_rows(db, "small") if r["ticker"].startswith(PFX)]
+        monkeypatch.setattr(c2, "universe_rows", lambda db, segment="core": [dict(r) for r in (rows_c if segment == "core" else rows_s)])
+        day = date(2099, 5, 1)
+        assert c2.compute_scores(db, day) == 10
+        got = {r.ticker: r for r in db.query(Canslim2Score).filter(Canslim2Score.date == day)}
+        assert {t for t, r in got.items() if r.segment == "small"} == small
+        assert all(not r.in_tilt for r in got.values() if r.segment == "small")
+        assert sorted(r.rank for r in got.values() if r.segment == "small") == [1, 2, 3, 4]   # ranked among themselves
+        assert "confirmed for $250M-$1B" in c2.segment_label("small", 3e8, 2e6)
+        assert "untested below $250M" in c2.segment_label("small", 1.5e8, 5e5) and "thinly traded" in c2.segment_label("small", 1.5e8, 5e5)
+        assert c2.segment_label("core", 5e9, 1e8) is None
+        # no trading path sees a small cap
+        assert not small & {r["ticker"] for r in c2.picks_universe(db, day)}
+        assert not small & set(c2.tilt_weights(db, day))
+        assert not small & set(ct.c2_pcts(db))
+        prof = {"engine": "canslim2_picks", "max_positions": 20, "canslim2": {"buy_pct": 0, "sector_max": 20}}
+        assert not small & {b["stock"].ticker for b in ct.engine_buys(db, TEST_USER_A_ID, prof, {"total_value": 1e5}, [])}
+    finally:
+        db.close()

@@ -4,7 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_user
-from backend.canslim2 import EVIDENCE, EXPLAIN, FEATURES, LETTERS, REBALANCE_SESSIONS, TILT_TOP
+from backend.canslim2 import EVIDENCE, EXPLAIN, FEATURES, LETTERS, REBALANCE_SESSIONS, TILT_TOP, core_only, segment_label
 from backend.database import Canslim2Score, Stock, get_db
 
 router = APIRouter(prefix="/api/canslim2", tags=["canslim2"])
@@ -32,7 +32,9 @@ def _latest_date(db):
 
 def _row(r, name=None, sector=None):
     chg = (r.score_pct - r.prev_score_pct) if r.score_pct is not None and r.prev_score_pct is not None else None
+    seg = r.segment or "core"
     return {"ticker": r.ticker, "name": name, "sector": sector, "score_pct": r.score_pct, "rank": r.rank,
+            "segment": seg, "label": segment_label(seg, r.market_cap, (r.inputs or {}).get("dvol20")),
             "prev_score_pct": r.prev_score_pct, "change": round(chg, 1) if chg is not None else None,
             "letters": {"C": r.c_pct, "A": r.a_pct, "S": r.s_pct, "I": r.i_pct},
             "market_cap": r.market_cap, "in_tilt": r.in_tilt, "tilt_mult": r.tilt_mult, "inputs": r.inputs}
@@ -41,10 +43,15 @@ def _row(r, name=None, sector=None):
 @router.get("/meta")
 def meta(db: Session = Depends(get_db), user=Depends(get_current_user)):
     d = _latest_date(db)
-    n = db.query(func.count(Canslim2Score.id)).filter(Canslim2Score.date == d).scalar() if d else 0
+    n = db.query(func.count(Canslim2Score.id)).filter(Canslim2Score.date == d, core_only()).scalar() if d else 0
+    n_small = db.query(func.count(Canslim2Score.id)).filter(Canslim2Score.date == d, Canslim2Score.segment == "small").scalar() if d else 0
     at = db.query(func.max(Canslim2Score.scored_at)).filter(Canslim2Score.date == d).scalar() if d else None
     return {
-        "as_of": d.isoformat() if d else None, "universe": n,
+        "as_of": d.isoformat() if d else None, "universe": n, "small_universe": n_small,
+        "small_caps": ("Provisional scores for stocks over $5 with a $100M+ market cap outside the tested universe, "
+                       "ranked among themselves. 2016-26 test (Oct-10): the unchanged formula carries over to "
+                       "$250M-$1B companies (tilt +0.72%/yr vs their own index, beat all 300 random versions; ranking "
+                       "t = 2.06). Untested below $250M. No portfolio trades them."),
         "scored_at": (at.isoformat() + ("" if at.tzinfo else "Z")) if at else None,
         "rescore": "after every scan (~90 min) and at 5:20 PM ET; slow inputs refresh Saturdays",
         "universe_rule": "US-listed, price > $5, market cap >= $1B, 20-day dollar volume >= $5M",
@@ -63,13 +70,13 @@ def meta(db: Session = Depends(get_db), user=Depends(get_current_user)):
 
 @router.get("/top")
 def top(limit: int = Query(50, ge=1, le=500), tilt_only: bool = False, bottom: bool = False,
-        movers: str = Query(None, enum=["up", "down"]),
+        movers: str = Query(None, enum=["up", "down"]), segment: str = Query("core", enum=["core", "small"]),
         db: Session = Depends(get_db), user=Depends(get_current_user)):
     d = _latest_date(db)
     if d is None:
         return {"as_of": None, "stocks": []}
     q = (db.query(Canslim2Score, Stock.name, Stock.sector).outerjoin(Stock, Stock.ticker == Canslim2Score.ticker)
-         .filter(Canslim2Score.date == d))
+         .filter(Canslim2Score.date == d, core_only() if segment == "core" else Canslim2Score.segment == "small"))
     if tilt_only:
         q = q.filter(Canslim2Score.in_tilt.is_(True))
     if movers:   # biggest change vs the previous scored date
@@ -87,7 +94,8 @@ def stock(ticker: str, db: Session = Depends(get_db), user=Depends(get_current_u
     t = ticker.upper()
     r = db.query(Canslim2Score).filter(Canslim2Score.date == d, Canslim2Score.ticker == t).first() if d else None
     if r is None:
-        raise HTTPException(status_code=404, detail=f"{t} is not in the CANSLIM 2.0 universe "
-                                                    "(price > $5, market cap >= $1B, 20-day $ volume >= $5M)")
-    n = db.query(func.count(Canslim2Score.id)).filter(Canslim2Score.date == d).scalar()
+        raise HTTPException(status_code=404, detail=f"{t} is not scored by CANSLIM 2.0 "
+                                                    "(needs price > $5 and market cap >= $100M)")
+    seg_f = core_only() if (r.segment or "core") == "core" else Canslim2Score.segment == "small"
+    n = db.query(func.count(Canslim2Score.id)).filter(Canslim2Score.date == d, seg_f).scalar()
     return {"as_of": d.isoformat(), "universe": n, **_row(r)}
