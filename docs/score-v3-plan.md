@@ -584,3 +584,24 @@ definitions; am coverage 39%, dtc/si 77%, roe 83%, s3 87%, others ~100%).
 used to build or test it, and the size of the edge matches the ≥ $1B result (~+0.7%/yr). The IC
 clears the bar only just (t 2.06): a consistent small edge, not a strong one. App: sub-$1B scores
 are labelled "provisional — formula confirmed $250M–$1B in 2016–26 testing"; below $250M untested.
+
+## Score v9 results — volume (2026-10-10 ~4:15 PM CT, single run; placebo first): FAIL
+
+Placebo (seed 2): no volume feature kept on noise; noise tilt −2.33%/yr — pipeline clean.
+Features: vspike 100%, turnover 98% (shares on the split-adjusted basis = mcap / adjusted close),
+ear_vol 88% coverage.
+
+| Feature | IC | NW t | 2016–20 | 2021–26 |
+|---|---|---|---|---|
+| vspike | +0.0068 | +1.57 | −0.0029 | +0.0155 |
+| turnover | −0.0113 | −0.75 | +0.0153 | −0.0355 |
+| lowvol_mom | +0.0120 | +0.68 | −0.0207 | +0.0417 |
+| ear_vol | +0.0102 | +1.06 | +0.0339 | −0.0113 |
+
+Every documented volume effect **flips sign between the two halves** — real in one regime,
+reversed in the other (the low-volume-winner and low-turnover effects are strong 2021–26 only).
+**v9 (trial 11) FAIL (gate 3):** +0.50%/yr (6/8 yrs, IC t 1.19) vs luck bar +0.96% (best of 11);
+v5b in the same script +0.67% — adding volume made it worse (ear_vol kept 2019/21/22, then
+reversed). Ranks 501–1000: +0.65% (94th pct). 2026 selection keeps no volume feature → CANSLIM 2.0
+unchanged. Data audit the same day ruled out bad data (FMP = consolidated tape within ~1%).
+Ledger: 11 trials.
