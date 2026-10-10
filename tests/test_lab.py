@@ -140,6 +140,22 @@ def test_decide_submits_moc_once_per_session_then_record_marks():
         db.close()
 
 
+def test_spy_total_return_is_chain_linked_so_dividends_count():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        d1, d2 = date(2026, 10, 6), date(2026, 10, 7)
+        db.add(LabEquityMark(strategy_id=s.id, date=d1, equity=25000.0, spy_close=100.0, spy_adj_close=100.0))
+        db.commit()
+        # SPY paid $1 on d2: the back-adjusted series now shows d1 at 99, and d2's latest point = raw 100
+        lvl = lab.chain_spy_adj(db, s.id, d2, [(d1, 99.0), (d2, 100.0)])
+        assert lvl == pytest.approx(100.0 * 100.0 / 99.0)       # +1.01% total return, not 0%
+        assert lab.chain_spy_adj(db, s.id, d1 - timedelta(days=5), [(d1 - timedelta(days=5), 98.0)]) == 98.0  # chain start
+        assert lab.chain_spy_adj(db, s.id, d2, [(d1, 99.0)]) is None                                          # no bar today
+    finally:
+        db.close()
+
+
 def test_topup_after_a_short_filled_close_order_goes_as_a_market_order():
     db = SessionLocal()
     try:

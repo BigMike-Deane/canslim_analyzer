@@ -295,6 +295,26 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
     return dec
 
 
+def chain_spy_adj(db, strategy_id: int, today: date, spy_adj: list) -> Optional[float]:
+    """SPY total-return level for today's mark, chain-linked to the previous mark.
+    A dividend-adjusted series is back-adjusted: its LATEST point always equals the raw
+    close, so storing each day's latest value silently drops every dividend. Instead:
+    previous stored level x (adj today / adj on the previous mark's date), both read from
+    the same fetch (same adjustment basis). First mark (or a gap the fetch can't span):
+    today's adjusted close starts the chain."""
+    adj = dict(spy_adj or [])
+    if today not in adj:
+        return None
+    prev = (db.query(LabEquityMark).filter(LabEquityMark.strategy_id == strategy_id, LabEquityMark.date < today,
+                                           LabEquityMark.spy_adj_close.isnot(None))
+            .order_by(LabEquityMark.date.desc()).first())
+    if prev is not None and adj.get(prev.date):
+        return prev.spy_adj_close * adj[today] / adj[prev.date]
+    if prev is not None:
+        logger.warning(f"lab: SPY adjusted series lacks {prev.date}; restarting the TR chain at {today}")
+    return adj[today]
+
+
 def record_close(db, strategy: LabStrategy, client=None, today: Optional[date] = None,
                  spy_closes=None, spy_adj=None) -> Optional[LabEquityMark]:
     """Refresh order fills, then upsert today's LabEquityMark from the account."""
@@ -316,9 +336,9 @@ def record_close(db, strategy: LabStrategy, client=None, today: Optional[date] =
     acct = client.account()
     pos = client.positions()
     spy_closes = spy_closes if spy_closes is not None else fmp_daily("SPY", days=10)
-    spy_adj = spy_adj if spy_adj is not None else fmp_daily("SPY", days=10, adjusted=True)
+    spy_adj = spy_adj if spy_adj is not None else fmp_daily("SPY", days=40, adjusted=True)
     spy_c = dict(spy_closes).get(today)
-    spy_a = dict(spy_adj).get(today)
+    spy_a = chain_spy_adj(db, strategy.id, today, spy_adj)
     mark = db.query(LabEquityMark).filter(LabEquityMark.strategy_id == strategy.id,
                                           LabEquityMark.date == today).first() or LabEquityMark(
         strategy_id=strategy.id, date=today, equity=0.0)
@@ -351,7 +371,7 @@ def run_decision_job():
     db = SessionLocal()
     try:
         for s in sync_strategies(db):
-            if not s.is_active:
+            if not s.is_active or s.kind not in RULES:   # simulated kinds (canslim2_tilt) run their own job
                 continue
             client = get_client(s.name)
             if client is not None:
