@@ -26,7 +26,10 @@ export function letterFacts(key, i = {}) {
     case 'A':
       return i.roe == null ? 'Return on equity not available' : `Return on equity ${fmt(i.roe * 100)}%`
     case 'S': {
-      const sh = i.s3 == null ? 'share count n/a' : `share count ${i.s3 >= 0 ? '−' : '+'}${fmt(Math.abs((1 - Math.exp(-i.s3)) * 100))}% in a year`
+      const chg = i.s3 == null ? null : (Math.exp(-i.s3) - 1) * 100   // s3 = -log(now / a year ago)
+      const sh = chg == null ? 'share count n/a'
+        : Math.abs(chg) < 0.1 ? 'share count flat over the year'
+        : `share count ${chg < 0 ? '−' : '+'}${fmt(Math.abs(chg))}% in a year${chg < 0 ? ' (buybacks)' : ''}`
       const dtc = i.dtc == null ? 'days to cover n/a' : `${fmt(i.dtc)} days to cover`
       return `${sh} · ${dtc}`
     }
