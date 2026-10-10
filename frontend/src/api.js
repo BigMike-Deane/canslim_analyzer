@@ -425,8 +425,8 @@ export const api = {
   getLabEdge: (name) => request(`/api/lab/strategies/${name}/edge`),
   getLabChecks: (name) => request(`/api/lab/strategies/${name}/checks`),
   getCanslim2Meta: () => request('/api/canslim2/meta'),
-  getCanslim2Top: ({ limit = 50, tiltOnly = false, bottom = false } = {}) =>
-    request(`/api/canslim2/top?limit=${limit}&tilt_only=${tiltOnly}&bottom=${bottom}`),
+  getCanslim2Top: ({ limit = 50, tiltOnly = false, bottom = false, movers = null } = {}) =>
+    request(`/api/canslim2/top?limit=${limit}&tilt_only=${tiltOnly}&bottom=${bottom}${movers ? `&movers=${movers}` : ''}`),
   getCanslim2Stock: (ticker) => request(`/api/canslim2/stock/${encodeURIComponent(ticker)}`),
 
   // AI Portfolio

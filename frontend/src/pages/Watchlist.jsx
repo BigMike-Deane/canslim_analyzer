@@ -4,6 +4,7 @@ import { api, formatCurrency, formatDate, formatRelativeTime } from '../api'
 import { saveStockListContext } from '../stockListContext'
 import Card, { SectionLabel } from '../components/Card'
 import { ScoreBadge } from '../components/Badge'
+import { C2Chip } from '../components/Canslim2Card'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -45,7 +46,10 @@ function WatchlistItem({ item, onRemove }) {
           {hasData ? (
             <>
               <span className="font-semibold font-data text-dark-50">{formatCurrency(item.current_price)}</span>
-              <ScoreBadge score={item.canslim_score} ticker={item.ticker} size="xs" />
+              <div className="flex items-center gap-1">
+                <C2Chip c2={item.canslim2} />
+                <ScoreBadge score={item.canslim_score} ticker={item.ticker} size="xs" />
+              </div>
             </>
           ) : (
             <div className="text-dark-500 text-sm">No data</div>

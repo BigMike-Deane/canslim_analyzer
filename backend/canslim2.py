@@ -31,6 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import requests
+from sqlalchemy import func
 
 from backend.database import (Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabOrder, LabStrategy,
                               Stock, StockDataCache)
@@ -168,7 +169,7 @@ def refresh_inputs(db, today: Optional[date] = None, tickers: Optional[list] = N
     """Weekly: dollar volume (Alpaca), days to cover (FINRA, one bulk pull), and per ticker
     buybacks + analyst coverage (two FMP calls). Upserts Canslim2Input; returns counts."""
     from backend.alpaca_data import daily_bars_multi
-    today = today or date.today()
+    today = today or _et_today()
     tickers = tickers if tickers is not None else candidates(db)
     bars = (bars_fn or daily_bars_multi)(tickers, today - timedelta(days=40), adjustment="raw")
     try:
@@ -280,23 +281,46 @@ def universe_rows(db) -> list:
     return out
 
 
+def _et_today() -> date:
+    """The ET session date (the container clock is UTC: an evening scan must not stamp tomorrow)."""
+    from backend.ai_trader import EASTERN_TZ
+    return datetime.now(EASTERN_TZ).date()
+
+
 def compute_scores(db, today: Optional[date] = None) -> int:
-    """Score today's universe and replace today's Canslim2Score rows. Returns the row count."""
-    today = today or date.today()
+    """Score today's universe and replace today's Canslim2Score rows (re-run after every scan).
+    Each row carries the previous scored date's percentile. Returns the row count."""
+    today = today or _et_today()
     rows = score_universe(universe_rows(db))
     if not rows:
         logger.warning("canslim2: empty universe (inputs not refreshed yet?)")
         return 0
+    prev_day = db.query(func.max(Canslim2Score.date)).filter(Canslim2Score.date < today).scalar()
+    prev = dict(db.query(Canslim2Score.ticker, Canslim2Score.score_pct).filter(Canslim2Score.date == prev_day).all()) if prev_day else {}
+    now = datetime.now(timezone.utc)
     db.query(Canslim2Score).filter(Canslim2Score.date == today).delete(synchronize_session=False)
     for r in rows:
         db.add(Canslim2Score(
             date=today, ticker=r["ticker"], score=r["score"], score_pct=r["score_pct"], rank=r["rank"],
             c_pct=r["c_pct"], a_pct=r["a_pct"], s_pct=r["s_pct"], i_pct=r["i_pct"], market_cap=r["market_cap"],
-            in_tilt=r["in_tilt"], tilt_mult=r["tilt_mult"],
+            in_tilt=r["in_tilt"], tilt_mult=r["tilt_mult"], prev_score_pct=prev.get(r["ticker"]), scored_at=now,
             inputs={f: r.get(f) for f, _, _ in FEATURES} | {"dvol20": r.get("dvol20")}))
     db.commit()
     logger.info(f"canslim2: scored {len(rows)} stocks for {today}")
     return len(rows)
+
+
+def latest_map(db, tickers) -> dict:
+    """{ticker: compact CANSLIM 2.0 summary} from the latest scored date (Screener / Watchlist rows)."""
+    d = db.query(func.max(Canslim2Score.date)).scalar()
+    if d is None or not tickers:
+        return {}
+    out = {}
+    for r in db.query(Canslim2Score).filter(Canslim2Score.date == d, Canslim2Score.ticker.in_(list(tickers))).all():
+        chg = (r.score_pct - r.prev_score_pct) if r.score_pct is not None and r.prev_score_pct is not None else None
+        out[r.ticker] = {"score_pct": r.score_pct, "rank": r.rank, "change": round(chg, 1) if chg is not None else None,
+                         "letters": {"C": r.c_pct, "A": r.a_pct, "S": r.s_pct, "I": r.i_pct}}
+    return out
 
 
 def tilt_weights(db, day: date) -> dict:
@@ -487,6 +511,69 @@ def _adjusted_closes(tickers, start) -> dict:
     return {t: {d: v["c"] for d, v in b.items()} for t, b in daily_bars_multi(tickers, start, adjustment="all").items()}
 
 
+# ----------------------------------------------------------------- score-move alerts
+
+MOVE_ALERT_POINTS = 20      # percentile points between two scoring runs
+
+
+def latest_pcts(db) -> dict:
+    d = db.query(func.max(Canslim2Score.date)).scalar()
+    return dict(db.query(Canslim2Score.ticker, Canslim2Score.score_pct).filter(Canslim2Score.date == d).all()) if d else {}
+
+
+def score_move_alerts(db, before: dict, notify: Optional[Callable] = None) -> int:
+    """Push each user once per ticker per day when a stock they hold (AI Portfolio) or watch moved
+    >= MOVE_ALERT_POINTS percentile points since the previous scoring run. Returns pushes sent."""
+    from backend.database import AIPortfolioPosition, Notification, Watchlist
+    if not before:
+        return 0
+    d = db.query(func.max(Canslim2Score.date)).scalar()
+    after = {r.ticker: r for r in db.query(Canslim2Score).filter(Canslim2Score.date == d).all()}
+    moved = {t: r for t, r in after.items() if t in before and before[t] is not None and r.score_pct is not None
+             and abs(r.score_pct - before[t]) >= MOVE_ALERT_POINTS}
+    if not moved:
+        return 0
+    if notify is None:
+        from backend.email_utils import create_notification as notify
+    interest = {}
+    for uid, t in (db.query(AIPortfolioPosition.user_id, AIPortfolioPosition.ticker).all()
+                   + db.query(Watchlist.user_id, Watchlist.ticker).all()):
+        if uid and t in moved:
+            interest.setdefault(uid, set()).add(t)
+    since = datetime.now(timezone.utc) - timedelta(hours=20)
+    sent = 0
+    for uid, tickers in interest.items():
+        done = {(n.data or {}).get("ticker") for n in db.query(Notification).filter(
+            Notification.user_id == uid, Notification.kind == "canslim2_move", Notification.created_at >= since).all()}
+        for t in sorted(tickers - done):
+            r, was = moved[t], before[t]
+            up = r.score_pct > was
+            notify(user_id=uid, kind="canslim2_move",
+                   title=f"{t} CANSLIM 2.0 {'up' if up else 'down'}: {was:.0f} → {r.score_pct:.0f}",
+                   body=f"C {r.c_pct:.0f} · A {r.a_pct:.0f} · S {r.s_pct:.0f} · I {r.i_pct:.0f}"
+                        f" (beat streak {(r.inputs or {}).get('beat_streak')}, surprise {(r.inputs or {}).get('surprise_pct') or 0:+.1f}%)",
+                   data={"ticker": t, "url": f"/stock/{t}", "from": was, "to": r.score_pct})
+            sent += 1
+    return sent
+
+
+def run_after_scan():
+    """Rescore on the latest scan's earnings data, then alert on big moves (held / watched)."""
+    from backend.database import SessionLocal
+    db = SessionLocal()
+    try:
+        before = latest_pcts(db)
+        if compute_scores(db):
+            n = score_move_alerts(db, before)
+            if n:
+                logger.info(f"canslim2: {n} score-move alerts")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"canslim2 rescore after scan failed: {type(e).__name__}: {str(e)[:200]}")
+    finally:
+        db.close()
+
+
 # ----------------------------------------------------------------- scheduler entry points
 
 def run_refresh_job():
@@ -513,8 +600,7 @@ def run_daily_job():
     today = now.date()
     db = SessionLocal()
     try:
-        if not db.query(Canslim2Score).filter(Canslim2Score.date == today).first():
-            compute_scores(db, today)
+        compute_scores(db, today)          # fresh at the close: the trades use this run's scores
         strategies = {x.kind: x for x in sync_strategies(db) if x.is_active}
         spy_c, spy_a = fmp_daily("SPY", days=10), fmp_daily("SPY", days=40, adjusted=True)
     except Exception as e:

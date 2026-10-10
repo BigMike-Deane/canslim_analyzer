@@ -283,6 +283,9 @@ def run_migrations():
         # forward-only; existing 1.6M rows stay NULL and are ignored by the
         # shadow override path until they age out of the eval window.
         ("stock_scores", "c_score_uncapped", "FLOAT"),
+        # CANSLIM 2.0 rescoring after every scan (2026-10-10)
+        ("canslim2_scores", "prev_score_pct", "FLOAT"),
+        ("canslim2_scores", "scored_at", "TIMESTAMP"),
         # Analyst price-target range (May 2026 — surfaced on StockDetail's
         # Analyst Consensus card). consensus was already cached; high/low are
         # the new spread bounds for the range bar.
@@ -2142,6 +2145,8 @@ class Canslim2Score(Base):
     in_tilt = Column(Boolean, default=False)
     tilt_mult = Column(Float)          # 0x (worst of the 500) .. 2x (best); weight = cap x mult
     inputs = Column(JSON)              # raw signal values
+    prev_score_pct = Column(Float)     # score_pct on the previous scored date (for "moved since")
+    scored_at = Column(DateTime)       # last rescore (after every scan + the 17:20 ET close run)
 
     __table_args__ = (
         Index('ux_canslim2_scores_date_ticker', 'date', 'ticker', unique=True),

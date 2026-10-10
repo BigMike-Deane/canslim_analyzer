@@ -13,8 +13,12 @@ import { pctColor } from '../components/Canslim2Card'
 const VIEWS = [
   { key: 'top', label: 'Top 50', params: { limit: 50 } },
   { key: 'big', label: 'Top of the 500 largest', params: { limit: 50, tiltOnly: true } },
+  { key: 'up', label: 'Biggest risers', params: { limit: 50, movers: 'up' } },
+  { key: 'down', label: 'Biggest fallers', params: { limit: 50, movers: 'down' } },
   { key: 'bottom', label: 'Bottom 50', params: { limit: 50, bottom: true } },
 ]
+
+const timeOf = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null)
 
 function MiniBars({ letters }) {
   return (
@@ -43,7 +47,9 @@ export default function Canslim2() {
 
       {meta && (
         <Card variant="glass" className="mb-4">
-          <CardHeader title="What the evidence shows" subtitle={meta.as_of ? `Scores as of ${meta.as_of} · ${meta.universe?.toLocaleString()} stocks` : 'First scores after the first data refresh'} />
+          <CardHeader title="What the evidence shows" subtitle={meta.as_of
+            ? `${meta.universe?.toLocaleString()} stocks · updated ${timeOf(meta.scored_at) || meta.as_of} · rescored ${meta.rescore}`
+            : 'First scores after the first data refresh'} />
           <div className="text-sm text-dark-200">{meta.evidence}</div>
           <div className="mt-2 text-xs text-dark-400">Universe: {meta.universe_rule}.</div>
         </Card>
@@ -99,7 +105,14 @@ export default function Canslim2() {
                 <div className="text-[11px] text-dark-400 truncate">{s.name || '—'}{s.market_cap ? ` · $${(s.market_cap / 1e9).toFixed(0)}B` : ''}</div>
               </div>
               <MiniBars letters={s.letters} />
-              <div className="w-10 text-right font-data text-sm text-dark-100">{Math.round(s.score_pct)}</div>
+              <div className="w-12 text-right">
+                <div className="font-data text-sm text-dark-100">{Math.round(s.score_pct)}</div>
+                {s.change != null && Math.abs(s.change) >= 1 && (
+                  <div className={`text-[10px] font-data ${s.change > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {s.change > 0 ? '▲' : '▼'}{Math.abs(Math.round(s.change))}
+                  </div>
+                )}
+              </div>
             </button>
           ))}
         </div>

@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from backend import canslim2 as c2
 from backend import lab
 from backend.auth import get_current_user
-from backend.database import (Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabOrder, LabStrategy, SessionLocal,
-                              Stock, StockDataCache, User, init_db)
+from backend.database import (AIPortfolioPosition, Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabOrder,
+                              LabStrategy, Notification, SessionLocal, Stock, StockDataCache, User, Watchlist, init_db)
 from tests.conftest import TEST_USER_A_ID, override_dependency
 
 init_db()
@@ -32,8 +32,10 @@ def _clean(monkeypatch):
             for m in (LabOrder, LabDecision, LabEquityMark):
                 db.query(m).filter(m.strategy_id.in_(ids)).delete(synchronize_session=False)
             db.query(LabStrategy).filter(LabStrategy.name.in_(["lab_t_c2", "lab_t_c2p"])).delete(synchronize_session=False)
-            for m in (Canslim2Score, Canslim2Input, StockDataCache, Stock):
+            for m in (Canslim2Score, Canslim2Input, StockDataCache, Stock, Watchlist, AIPortfolioPosition):
                 db.query(m).filter(m.ticker.like(f"{PFX}%")).delete(synchronize_session=False)
+            db.query(Notification).filter(Notification.kind == "canslim2_move",
+                                          Notification.user_id == TEST_USER_A_ID).delete(synchronize_session=False)
             db.query(Canslim2Score).filter(Canslim2Score.date >= date(2099, 1, 1)).delete(synchronize_session=False)
             db.commit()
         finally:
@@ -280,3 +282,78 @@ def test_picks_skip_the_mark_without_scores_or_closes():
         assert c2.mark_picks(db, s, d1, lambda t, st: {}, lambda t, st: {}, [], [], scores_fn=lambda db, d: top) is None
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------- rescoring, movers, alerts, Screener / Watchlist
+
+def _score_rows(db, day, pcts):
+    for t, p in pcts.items():
+        db.add(Canslim2Score(date=day, ticker=t, score=p / 100 - 0.5, score_pct=p, rank=1, c_pct=p, a_pct=p, s_pct=p,
+                             i_pct=p, market_cap=2e9, in_tilt=False, inputs={"beat_streak": 3, "surprise_pct": 5.0}))
+    db.commit()
+
+
+def test_rescore_keeps_the_previous_days_percentile(monkeypatch):
+    db = SessionLocal()
+    try:
+        _seed_universe(db)
+        rows = [r for r in c2.universe_rows(db) if r["ticker"].startswith(PFX)]
+        monkeypatch.setattr(c2, "universe_rows", lambda db: [dict(r) for r in rows])
+        d1, d2 = date(2099, 2, 1), date(2099, 2, 2)
+        c2.compute_scores(db, d1)
+        c2.compute_scores(db, d2)
+        r = db.query(Canslim2Score).filter(Canslim2Score.date == d2, Canslim2Score.ticker == f"{PFX}5").one()
+        assert r.prev_score_pct == r.score_pct == 100.0 and r.scored_at is not None
+    finally:
+        db.close()
+
+
+def test_score_move_alerts_once_per_user_ticker_for_held_or_watched_only():
+    db = SessionLocal()
+    try:
+        day = date(2099, 3, 1)
+        _score_rows(db, day, {f"{PFX}HELD": 92.0, f"{PFX}WATCH": 30.0, f"{PFX}OTHER": 95.0, f"{PFX}SMALL": 55.0})
+        db.add(AIPortfolioPosition(user_id=TEST_USER_A_ID, ticker=f"{PFX}HELD", shares=1, cost_basis=10))
+        db.add(Watchlist(user_id=TEST_USER_A_ID, ticker=f"{PFX}WATCH"))
+        db.add(Watchlist(user_id=TEST_USER_A_ID, ticker=f"{PFX}SMALL"))
+        db.commit()
+        before = {f"{PFX}HELD": 60.0, f"{PFX}WATCH": 70.0, f"{PFX}OTHER": 10.0, f"{PFX}SMALL": 50.0}
+        sent = []
+
+        def notify(**kw):
+            sent.append(kw)
+            db.add(Notification(user_id=kw["user_id"], kind=kw["kind"], title=kw["title"], body=kw["body"], data=kw["data"]))
+            db.commit()
+        assert c2.score_move_alerts(db, before, notify=notify) == 2       # OTHER not held/watched, SMALL moved 5
+        assert {x["data"]["ticker"] for x in sent} == {f"{PFX}HELD", f"{PFX}WATCH"}
+        assert "60 → 92" in [x for x in sent if x["data"]["ticker"] == f"{PFX}HELD"][0]["title"]
+        assert c2.score_move_alerts(db, before, notify=notify) == 0       # once per ticker per day
+    finally:
+        db.close()
+
+
+def test_screener_sorts_by_canslim2_and_watchlist_shows_it():
+    from backend.main import app
+    db = SessionLocal()
+    try:
+        for i, p in enumerate((40.0, 99.0, 70.0)):
+            db.add(Stock(ticker=f"{PFX}S{i}", name=f"S{i}", current_price=20.0, market_cap=5e9, canslim_score=50 + i,
+                         last_updated=__import__("datetime").datetime.now()))
+        db.commit()
+        _score_rows(db, date(2099, 4, 1), {f"{PFX}S0": 40.0, f"{PFX}S1": 99.0, f"{PFX}S2": 70.0})
+        db.add(Watchlist(user_id=TEST_USER_A_ID, ticker=f"{PFX}S1"))
+        db.commit()
+    finally:
+        db.close()
+    from backend.auth import get_current_active_user
+    client = TestClient(app)
+    u = lambda: User(id=TEST_USER_A_ID, is_admin=False, is_active=True)
+    with override_dependency(get_current_user, u), override_dependency(get_current_active_user, u):
+        rows = client.get("/api/stocks", params={"sort_by": "canslim2", "limit": 200}).json()["stocks"]
+        mine = [r["ticker"] for r in rows if r["ticker"].startswith(PFX)]
+        assert mine == [f"{PFX}S1", f"{PFX}S2", f"{PFX}S0"]
+        assert rows[[r["ticker"] for r in rows].index(f"{PFX}S1")]["canslim2"]["score_pct"] == 99.0
+        wl = client.get("/api/watchlist").json()["items"]
+        assert [w["canslim2"]["score_pct"] for w in wl if w["ticker"] == f"{PFX}S1"] == [99.0]
+        mv = client.get("/api/canslim2/top", params={"movers": "up", "limit": 5}).json()
+        assert "stocks" in mv

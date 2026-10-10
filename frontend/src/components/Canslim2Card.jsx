@@ -40,6 +40,21 @@ export function letterFacts(key, i = {}) {
   }
 }
 
+// Compact CANSLIM 2.0 score for list rows (Screener, Watchlist): "2.0 99 ▲12".
+export function C2Chip({ c2 }) {
+  if (!c2 || c2.score_pct == null) return null
+  const p = Math.round(c2.score_pct)
+  const tone = p >= 80 ? 'text-emerald-400 border-emerald-500/30' : p >= 40 ? 'text-dark-200 border-dark-600' : 'text-red-400 border-red-500/30'
+  const ch = c2.change
+  return (
+    <span className={`inline-flex items-center gap-1 text-[10px] font-data px-1.5 py-0.5 rounded border ${tone}`}
+          title={`CANSLIM 2.0: ${p}/100${ch != null ? `, ${ch >= 0 ? '+' : ''}${ch} since the previous day` : ''}`}>
+      <span className="text-dark-400">2.0</span>{p}
+      {ch != null && Math.abs(ch) >= 5 && <span className={ch > 0 ? 'text-emerald-400' : 'text-red-400'}>{ch > 0 ? '▲' : '▼'}{Math.abs(Math.round(ch))}</span>}
+    </span>
+  )
+}
+
 export function LetterBar({ letter, label, pct, facts }) {
   return (
     <div>

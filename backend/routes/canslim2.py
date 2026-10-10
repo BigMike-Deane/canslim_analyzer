@@ -31,7 +31,9 @@ def _latest_date(db):
 
 
 def _row(r, name=None, sector=None):
+    chg = (r.score_pct - r.prev_score_pct) if r.score_pct is not None and r.prev_score_pct is not None else None
     return {"ticker": r.ticker, "name": name, "sector": sector, "score_pct": r.score_pct, "rank": r.rank,
+            "prev_score_pct": r.prev_score_pct, "change": round(chg, 1) if chg is not None else None,
             "letters": {"C": r.c_pct, "A": r.a_pct, "S": r.s_pct, "I": r.i_pct},
             "market_cap": r.market_cap, "in_tilt": r.in_tilt, "tilt_mult": r.tilt_mult, "inputs": r.inputs}
 
@@ -40,8 +42,11 @@ def _row(r, name=None, sector=None):
 def meta(db: Session = Depends(get_db), user=Depends(get_current_user)):
     d = _latest_date(db)
     n = db.query(func.count(Canslim2Score.id)).filter(Canslim2Score.date == d).scalar() if d else 0
+    at = db.query(func.max(Canslim2Score.scored_at)).filter(Canslim2Score.date == d).scalar() if d else None
     return {
         "as_of": d.isoformat() if d else None, "universe": n,
+        "scored_at": (at.isoformat() + ("" if at.tzinfo else "Z")) if at else None,
+        "rescore": "after every scan (~90 min) and at 5:20 PM ET; slow inputs refresh Saturdays",
         "universe_rule": "US-listed, price > $5, market cap >= $1B, 20-day dollar volume >= $5M",
         "letters": {L: {**LETTER_INFO[L]} for L in LETTERS},
         "not_scored": NOT_SCORED,
@@ -58,6 +63,7 @@ def meta(db: Session = Depends(get_db), user=Depends(get_current_user)):
 
 @router.get("/top")
 def top(limit: int = Query(50, ge=1, le=500), tilt_only: bool = False, bottom: bool = False,
+        movers: str = Query(None, enum=["up", "down"]),
         db: Session = Depends(get_db), user=Depends(get_current_user)):
     d = _latest_date(db)
     if d is None:
@@ -66,7 +72,12 @@ def top(limit: int = Query(50, ge=1, le=500), tilt_only: bool = False, bottom: b
          .filter(Canslim2Score.date == d))
     if tilt_only:
         q = q.filter(Canslim2Score.in_tilt.is_(True))
-    q = q.order_by(Canslim2Score.score.asc() if bottom else Canslim2Score.score.desc()).limit(limit)
+    if movers:   # biggest change vs the previous scored date
+        chg = Canslim2Score.score_pct - Canslim2Score.prev_score_pct
+        q = q.filter(Canslim2Score.prev_score_pct.isnot(None)).order_by(chg.desc() if movers == "up" else chg.asc())
+    else:
+        q = q.order_by(Canslim2Score.score.asc() if bottom else Canslim2Score.score.desc())
+    q = q.limit(limit)
     return {"as_of": d.isoformat(), "stocks": [_row(r, n, s) for r, n, s in q.all()]}
 
 

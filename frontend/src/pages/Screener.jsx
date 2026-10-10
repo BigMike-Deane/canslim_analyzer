@@ -9,8 +9,9 @@ import { MiniStat } from '../components/StatGrid'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../components/Toast'
 import DataTable from '../components/DataTable'
+import { C2Chip } from '../components/Canslim2Card'
 
-const SORT_LABELS = { canslim_score: 'Score', projected_growth: 'Growth', market_cap: 'Mkt cap' }
+const SORT_LABELS = { canslim_score: 'Score', canslim2: 'CANSLIM 2.0', projected_growth: 'Growth', market_cap: 'Mkt cap' }
 
 function FilterBar({ filters, onFilterChange, sectors }) {
   // Phone: a one-line summary that expands on tap (the open panel was 243px,
@@ -54,6 +55,7 @@ function FilterBar({ filters, onFilterChange, sectors }) {
             className="flex-1 min-w-0 text-sm bg-dark-800 border border-dark-700/50 rounded-lg px-3 py-2.5 text-dark-100 focus:border-primary-500/40 focus:outline-none transition-colors"
           >
             <option value="canslim_score">Score (High to Low)</option>
+            <option value="canslim2">CANSLIM 2.0 (High to Low)</option>
             <option value="projected_growth">Growth Potential</option>
             <option value="market_cap">Market Cap</option>
           </select>
@@ -215,6 +217,7 @@ function StockRow({ stock, isWatched, onWatched }) {
               +{stock.projected_growth.toFixed(0)}%
             </span>
           )}
+          <C2Chip c2={stock.canslim2} />
           <ScoreBadge score={stock.canslim_score} ticker={stock.ticker} size="md" />
         </div>
       </div>
@@ -410,6 +413,10 @@ export default function Screener() {
       key: 'last_updated', label: 'Updated', align: 'right',
       render: (v) => v ? formatRelativeTime(v) : '-',
       className: 'text-[10px] text-dark-400 whitespace-nowrap font-data',
+    },
+    {
+      key: 'canslim2', label: '2.0', align: 'center',
+      render: (v) => <C2Chip c2={v} />,
     },
     {
       key: 'canslim_score', label: 'Score', align: 'center',

@@ -1727,6 +1727,13 @@ def run_continuous_scan(force: bool = False):
         except Exception as e:
             logger.error(f"Watchlist alert check failed: {e}")
 
+        # CANSLIM 2.0: rescore on this scan's earnings data + score-move alerts (backend/canslim2.py)
+        try:
+            from backend.canslim2 import run_after_scan
+            run_after_scan()
+        except Exception as e:
+            logger.error(f"CANSLIM 2.0 rescore failed: {e}")
+
         # Phase 5.5: Score-integrity telemetry (mass component-wipe detector)
         _check_component_wipe(scan_started_at)
 

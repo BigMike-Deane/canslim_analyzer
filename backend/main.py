@@ -1364,7 +1364,7 @@ async def reset_rate_limit_stats(current_user: User = Depends(get_admin_user)):
 async def get_stocks(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
-    sort_by: str = Query("canslim_score", enum=["canslim_score", "projected_growth", "current_price", "name"]),
+    sort_by: str = Query("canslim_score", enum=["canslim_score", "canslim2", "projected_growth", "current_price", "name"]),
     sort_dir: str = Query("desc", enum=["asc", "desc"]),
     sector: Optional[str] = None,
     min_score: Optional[float] = None,
@@ -1396,11 +1396,17 @@ async def get_stocks(
         query = query.filter(Stock.current_price >= min_price)
 
     # Apply sorting
-    sort_column = getattr(Stock, sort_by, Stock.canslim_score)
-    if sort_dir == "desc":
-        query = query.order_by(desc(sort_column))
+    if sort_by == "canslim2":   # CANSLIM 2.0 (backend/canslim2.py): only stocks in its universe
+        from backend.database import Canslim2Score
+        c2_day = db.query(func.max(Canslim2Score.date)).scalar()
+        query = query.join(Canslim2Score, (Canslim2Score.ticker == Stock.ticker) & (Canslim2Score.date == c2_day))
+        query = query.order_by(desc(Canslim2Score.score) if sort_dir == "desc" else Canslim2Score.score)
     else:
-        query = query.order_by(sort_column)
+        sort_column = getattr(Stock, sort_by, Stock.canslim_score)
+        if sort_dir == "desc":
+            query = query.order_by(desc(sort_column))
+        else:
+            query = query.order_by(sort_column)
 
     # Get total count
     total = query.count()
@@ -1410,6 +1416,8 @@ async def get_stocks(
 
     # Filter duplicate tickers (GOOG/GOOGL) - keep highest scorer
     stocks = filter_duplicate_stocks(stocks_raw, limit)
+    from backend.canslim2 import latest_map
+    c2 = latest_map(db, [s.ticker for s in stocks])
 
     return {
         "stocks": [{
@@ -1431,6 +1439,7 @@ async def get_stocks(
             "l_score": s.l_score,
             "i_score": s.i_score,
             "m_score": current_m_score,  # Use current market M score
+            "canslim2": c2.get(s.ticker),
             "last_updated": (s.last_updated.isoformat() + "Z") if s.last_updated else None
         } for s in stocks],
         "total": total,
@@ -4660,6 +4669,8 @@ async def get_watchlist(current_user: User = Depends(get_current_active_user), d
     if tickers:
         stocks = db.query(Stock).filter(Stock.ticker.in_(tickers)).all()
         stocks_by_ticker = {s.ticker: s for s in stocks}
+    from backend.canslim2 import latest_map
+    c2 = latest_map(db, tickers)
 
     items = []
     for w in watchlist:
@@ -4676,6 +4687,7 @@ async def get_watchlist(current_user: User = Depends(get_current_active_user), d
             "projected_growth": stock.projected_growth if stock else None,
             "name": stock.name if stock else None,
             "sector": stock.sector if stock else None,
+            "canslim2": c2.get(w.ticker),
         })
 
     last_updates = [s.last_updated for s in stocks_by_ticker.values() if s.last_updated]
