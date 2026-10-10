@@ -42,4 +42,5 @@ export const chartColors = {
   pnlDownSoft: '#f87171',  // pnl.down-soft
   spy: '#5eead4',          // SPY benchmark — cool teal, hue-separated from amber
   muted: '#847a64',        // dark-400 — neutral series
+  violet: '#a78bfa',       // 3rd comparison series — hue-separated from amber, P&L green/red and SPY teal
 }

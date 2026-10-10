@@ -69,7 +69,7 @@ function Signal({ decision, simulated }) {
 }
 
 const RANGES = ['1M', '3M', 'YTD', 'All']
-const SERIES_COLORS = [chartColors.brand, chartColors.accent, chartColors.pnlUpSoft, chartColors.pnlDownSoft]
+const SERIES_COLORS = [chartColors.brand, chartColors.accent, chartColors.violet, chartColors.muted]
 
 function inRange(rows, range) {
   if (!rows?.length || range === 'All') return rows || []
@@ -118,7 +118,7 @@ function CompareChart({ strategies, range }) {
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <XAxis dataKey="date" tick={{ fill: chartAxis.tick, fontSize: 10 }} axisLine={{ stroke: chartAxis.axisLine }} tickLine={false} minTickGap={40} />
-          <YAxis tick={{ fill: chartAxis.tick, fontSize: 10 }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `${v.toFixed(0)}%`} />
+          <YAxis tick={{ fill: chartAxis.tick, fontSize: 10 }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `${v.toFixed(Math.abs(v) < 5 ? 1 : 0)}%`} />
           <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle}
                    formatter={(v, k) => [`${v >= 0 ? '+' : ''}${v.toFixed(2)}%`, strategies.find((s) => s.name === k)?.label || k]} />
           <Legend formatter={(k) => strategies.find((s) => s.name === k)?.label || k} wrapperStyle={{ fontSize: 11 }} />
@@ -215,8 +215,8 @@ function WeightedPositions({ positions }) {
   )
 }
 
-function Positions({ positions, equity }) {
-  if (!positions?.length) return <div className="text-sm text-dark-400">No positions (all cash).</div>
+function Positions({ positions, equity, simulated }) {
+  if (!positions?.length) return <div className="text-sm text-dark-400">{simulated ? 'Not started — positions appear after the first rebalance.' : 'No positions (all cash).'}</div>
   if (positions[0].weight != null) return <WeightedPositions positions={positions} />
   return (
     <div className="divide-y divide-dark-700/50">
@@ -339,7 +339,7 @@ function StrategyView({ s, range, setRange }) {
       {!simulated && <StopRules checks={checks} />}
       <Card variant="glass" className="mb-4">
         <CardHeader title="Positions" subtitle={simulated && s.positions?.length ? `${s.positions.length} stocks, largest first` : undefined} />
-        <Positions positions={s.positions} equity={s.equity} />
+        <Positions positions={s.positions} equity={s.equity} simulated={simulated} />
       </Card>
       {!simulated && (
         <div className="mb-4">
