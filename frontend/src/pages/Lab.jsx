@@ -23,8 +23,30 @@ const VERDICT = {
   inconclusive_small_sample: { tone: 'ok', text: 'Too few days to judge yet.' },
 }
 
-function Signal({ decision }) {
-  if (!decision) return <div className="text-sm text-dark-400">No decision recorded yet — the first runs ~15 minutes before the next close.</div>
+const SIMULATED = new Set(['canslim2_tilt'])   // simulated at closing prices (no broker)
+
+function Rebalance({ decision }) {
+  const i = decision.inputs || {}
+  return (
+    <div className="text-sm text-dark-200">
+      <span className="text-dark-400">{decision.date}: </span>
+      rebalanced to <span className="font-semibold text-dark-50">{i.names}</span> stocks
+      <span className="text-dark-400"> — turnover {((i.turnover ?? 0) * 100).toFixed(1)}%, cost {formatCurrency(i.cost)}</span>
+      {i.top_weights?.length > 0 && (
+        <div className="text-xs text-dark-400 mt-0.5">
+          Largest: {i.top_weights.slice(0, 6).map(([t, w]) => `${t} ${(w * 100).toFixed(1)}%`).join(' · ')}
+        </div>
+      )}
+      {decision.note && <div className="text-xs text-dark-400 mt-0.5">{decision.note}</div>}
+    </div>
+  )
+}
+
+function Signal({ decision, simulated }) {
+  if (!decision) return <div className="text-sm text-dark-400">{simulated
+    ? 'No rebalance yet — the first runs after the next close (5:20 PM ET).'
+    : 'No decision recorded yet — the first runs ~15 minutes before the next close.'}</div>
+  if (decision.inputs?.kind === 'rebalance') return <Rebalance decision={decision} />
   const i = decision.inputs || {}
   const held = Object.keys(decision.target || {}).join(', ')
   return (
@@ -173,8 +195,29 @@ function EdgeCard({ edge }) {
   )
 }
 
+function WeightedPositions({ positions }) {
+  const shown = positions.slice(0, 15)
+  return (
+    <div className="divide-y divide-dark-700/50">
+      {shown.map((p) => (
+        <div key={p.symbol} className="flex items-center justify-between py-2 text-sm">
+          <div className="font-semibold text-dark-50">{p.symbol}</div>
+          <div className="text-right">
+            <div className="font-data text-dark-100">{formatCurrency(p.market_value)}</div>
+            <div className="text-[11px] text-dark-400">{(p.weight * 100).toFixed(2)}% of book</div>
+          </div>
+        </div>
+      ))}
+      {positions.length > shown.length && (
+        <div className="py-2 text-xs text-dark-400">…and {positions.length - shown.length} more</div>
+      )}
+    </div>
+  )
+}
+
 function Positions({ positions, equity }) {
   if (!positions?.length) return <div className="text-sm text-dark-400">No positions (all cash).</div>
+  if (positions[0].weight != null) return <WeightedPositions positions={positions} />
   return (
     <div className="divide-y divide-dark-700/50">
       {positions.map((p) => (
@@ -265,6 +308,7 @@ function StrategyView({ s, range, setRange }) {
   const { data: trades } = useApi(() => api.getLabTrades(s.name), [s.name], { pollMs: 300000 })
   const { data: decisions } = useApi(() => api.getLabDecisions(s.name), [s.name])
   const { data: checks } = useApi(() => api.getLabChecks(s.name), [s.name], { pollMs: 300000 })
+  const simulated = SIMULATED.has(s.kind)
   return (
     <>
       <Card variant="glass" className="mb-4">
@@ -279,9 +323,11 @@ function StrategyView({ s, range, setRange }) {
               <span className="text-dark-400"> · {s.days} day{s.days === 1 ? '' : 's'}</span>
             </div>}
           </div>
-          {!s.broker_connected && <AlertChip tone="ok" label="Broker" value="Waiting for Alpaca keys" />}
+          {simulated
+            ? <AlertChip tone="ok" label="Simulated" value="Closing prices, no broker" />
+            : !s.broker_connected && <AlertChip tone="ok" label="Broker" value="Waiting for Alpaca keys" />}
         </div>
-        <div className="mt-3"><Signal decision={s.latest_decision} /></div>
+        <div className="mt-3"><Signal decision={s.latest_decision} simulated={simulated} /></div>
         {s.description && <div className="mt-2 text-xs text-dark-400">{s.description}</div>}
       </Card>
       <Card variant="glass" className="mb-4">
@@ -290,19 +336,22 @@ function StrategyView({ s, range, setRange }) {
         <EquityChart history={history} range={range} />
       </Card>
       <EdgeCard edge={edge} />
-      <StopRules checks={checks} />
+      {!simulated && <StopRules checks={checks} />}
       <Card variant="glass" className="mb-4">
-        <CardHeader title="Positions" />
+        <CardHeader title="Positions" subtitle={simulated && s.positions?.length ? `${s.positions.length} stocks, largest first` : undefined} />
         <Positions positions={s.positions} equity={s.equity} />
       </Card>
-      <div className="mb-4">
-        <CollapsedDrawer title="Orders" badge={trades?.length ? `${trades.length}` : undefined}>
-          <Trades trades={trades} />
-        </CollapsedDrawer>
-      </div>
-      <CollapsedDrawer title="Daily decision log" badge={decisions?.length ? `${decisions.length} days` : undefined}>
+      {!simulated && (
+        <div className="mb-4">
+          <CollapsedDrawer title="Orders" badge={trades?.length ? `${trades.length}` : undefined}>
+            <Trades trades={trades} />
+          </CollapsedDrawer>
+        </div>
+      )}
+      <CollapsedDrawer title={simulated ? 'Rebalance log' : 'Daily decision log'}
+                       badge={decisions?.length ? `${decisions.length} ${simulated ? 'rebalances' : 'days'}` : undefined}>
         <div className="divide-y divide-dark-700/50">
-          {(decisions || []).map((d) => <div key={d.date} className="py-2"><Signal decision={d} /></div>)}
+          {(decisions || []).map((d) => <div key={d.date} className="py-2"><Signal decision={d} simulated={simulated} /></div>)}
         </div>
       </CollapsedDrawer>
     </>

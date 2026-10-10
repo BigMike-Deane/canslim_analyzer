@@ -38,6 +38,7 @@ function UnreadBadge({ count }) {
 
 const moreItems = [
   { to: '/lab', label: 'Lab', icon: 'flask' },
+  { to: '/canslim2', label: 'CANSLIM 2.0', icon: 'chart' },
   { to: '/notifications', label: 'Notifications', icon: 'bell' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
   { to: '/screener', label: 'Screener', icon: 'filter' },

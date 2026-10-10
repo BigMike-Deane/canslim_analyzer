@@ -19,6 +19,7 @@ const navGroups = [
   {
     label: 'RESEARCH',
     items: [
+      { to: '/canslim2', icon: 'chart', label: 'CANSLIM 2.0' },
       { to: '/screener', icon: 'filter', label: 'Screener' },
       { to: '/breakouts', icon: 'trending', label: 'Breakouts' },
       { to: '/gapups', icon: 'trending', label: 'Earnings Gap-Ups' },

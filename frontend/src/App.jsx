@@ -18,6 +18,7 @@ const Watchlist = lazy(() => import('./pages/Watchlist'))
 const Documentation = lazy(() => import('./pages/Documentation'))
 const AIPortfolio = lazy(() => import('./pages/AIPortfolio'))
 const Lab = lazy(() => import('./pages/Lab'))
+const Canslim2 = lazy(() => import('./pages/Canslim2'))
 const Breakouts = lazy(() => import('./pages/Breakouts'))
 const Backtest = lazy(() => import('./pages/Backtest'))
 const Analytics = lazy(() => import('./pages/Analytics'))
@@ -79,6 +80,7 @@ function AppContent() {
             <Route path="/portfolio" element={<Navigate to="/ai-portfolio" replace />} />
             <Route path="/ai-portfolio" element={<AIPortfolio />} />
             <Route path="/lab" element={<Lab />} />
+            <Route path="/canslim2" element={<Canslim2 />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/breakouts" element={<Breakouts />} />
             <Route path="/docs" element={<Documentation />} />

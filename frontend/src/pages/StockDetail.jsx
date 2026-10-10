@@ -13,6 +13,7 @@ import CollapsibleSection from '../components/CollapsibleSection'
 import { useToast } from '../components/Toast'
 import PositionSizingCard from '../components/PositionSizingCard'
 import { computePositionSizing } from '../positionSizing'
+import Canslim2Card from '../components/Canslim2Card'
 
 /* ─── Held-position hero (ui-revamp) ──────────────────────────────────
    The page's job is "buy / hold / sell — and why?". When the AI already
@@ -1773,6 +1774,8 @@ export default function StockDetail() {
           supporting research cluster — same first-glance vs drill-down
           ordering as the portfolio pages. */}
       <TechnicalAnalysis stock={stock} />
+
+      <Canslim2Card ticker={stock.ticker || ticker} />
 
       <CANSLIMDetail stock={stock} />
 
