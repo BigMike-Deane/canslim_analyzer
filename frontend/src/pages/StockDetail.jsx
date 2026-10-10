@@ -978,7 +978,10 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
 /* ─── Market Signals (Insider + Short Interest) ────────────────────── */
 
 function InsiderShortSection({ stock }) {
-  const hasInsider = stock.insider_sentiment || stock.insider_buy_count > 0 || stock.insider_sell_count > 0
+  // Insider fetching was switched off 2026-07-22 (no trading use; research: no signal), so the
+  // stored counts froze. Never show frozen numbers as current: hide them once > 30 days old.
+  const insiderFresh = stock.insider_updated_at && (Date.now() - new Date(stock.insider_updated_at)) < 30 * 86400000
+  const hasInsider = insiderFresh && (stock.insider_sentiment || stock.insider_buy_count > 0 || stock.insider_sell_count > 0)
   const hasShort = stock.short_interest_pct != null || stock.short_ratio != null
   const hasStrength = stock.rs_3m != null || stock.rs_12m != null
     || stock.eps_estimate_revision_pct != null || stock.industry_group_rank != null

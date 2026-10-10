@@ -359,8 +359,8 @@ def latest_map(db, tickers) -> dict:
 
 def short_display(db, stock) -> dict:
     """Stock-page short interest: FINRA's latest published settlement (weekly refresh) where we have
-    it -- the scanner's Yahoo fields stopped updating 2026-07-22 -- else the stored Yahoo values,
-    labelled. Display only: classic scoring keeps its own field until the Oct-22 switch."""
+    it, else the stored Yahoo values labelled with their date. The scanner's Yahoo fetch was switched
+    off on purpose 2026-07-22 (38793da: no trading path used it since May), which froze those fields."""
     row = db.query(Canslim2Input).filter(Canslim2Input.ticker == stock.ticker).first()
     if row is not None and row.dtc_settle is not None:
         pct = (row.short_shares / row.shares_now * 100) if row.short_shares and row.shares_now else None
