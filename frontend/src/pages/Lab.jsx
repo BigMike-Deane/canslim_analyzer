@@ -23,7 +23,7 @@ const VERDICT = {
   inconclusive_small_sample: { tone: 'ok', text: 'Too few days to judge yet.' },
 }
 
-const SIMULATED = new Set(['canslim2_tilt'])   // simulated at closing prices (no broker)
+const SIMULATED = new Set(['canslim2_tilt', 'canslim2_picks'])   // simulated at closing prices (no broker)
 
 function Rebalance({ decision }) {
   const i = decision.inputs || {}
@@ -42,11 +42,34 @@ function Rebalance({ decision }) {
   )
 }
 
+function TradeDay({ decision }) {
+  const i = decision.inputs || {}
+  return (
+    <div className="text-sm text-dark-200">
+      <span className="text-dark-400">{decision.date}: </span>
+      {(i.buys || []).length > 0 && (
+        <span>bought <span className="text-emerald-400">{i.buys.map(([t, , sc]) => `${t} (${Math.round(sc)})`).join(', ')}</span></span>
+      )}
+      {(i.buys || []).length > 0 && (i.sells || []).length > 0 && '; '}
+      {(i.sells || []).length > 0 && (
+        <span>sold {i.sells.map(([t, why, pnl]) => (
+          <span key={t}><span className="text-red-400">{t}</span> <span className="text-dark-400">({why}, </span>
+            <span className={pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatPercent(pnl * 100, true)}</span><span className="text-dark-400">) </span></span>
+        ))}</span>
+      )}
+      {!(i.buys || []).length && !(i.sells || []).length && <span className="text-dark-400">no trades</span>}
+      <span className="text-dark-400"> · {i.holdings} held, cash {formatCurrency(i.cash)}</span>
+      {decision.note && <div className="text-xs text-dark-400 mt-0.5">{decision.note}</div>}
+    </div>
+  )
+}
+
 function Signal({ decision, simulated }) {
   if (!decision) return <div className="text-sm text-dark-400">{simulated
-    ? 'No rebalance yet — the first runs after the next close (5:20 PM ET).'
+    ? 'Not started — the first trades run after the next close (5:20 PM ET).'
     : 'No decision recorded yet — the first runs ~15 minutes before the next close.'}</div>
   if (decision.inputs?.kind === 'rebalance') return <Rebalance decision={decision} />
+  if (decision.inputs?.kind === 'trades') return <TradeDay decision={decision} />
   const i = decision.inputs || {}
   const held = Object.keys(decision.target || {}).join(', ')
   return (
@@ -201,10 +224,16 @@ function WeightedPositions({ positions }) {
     <div className="divide-y divide-dark-700/50">
       {shown.map((p) => (
         <div key={p.symbol} className="flex items-center justify-between py-2 text-sm">
-          <div className="font-semibold text-dark-50">{p.symbol}</div>
+          <div>
+            <div className="font-semibold text-dark-50">{p.symbol}</div>
+            {p.entry_date && <div className="text-[11px] text-dark-400">since {p.entry_date}{p.sector ? ` · ${p.sector}` : ''}</div>}
+          </div>
           <div className="text-right">
             <div className="font-data text-dark-100">{formatCurrency(p.market_value)}</div>
-            <div className="text-[11px] text-dark-400">{(p.weight * 100).toFixed(2)}% of book</div>
+            <div className="text-[11px] text-dark-400">
+              {(p.weight * 100).toFixed(2)}% of book
+              {p.unrealized_plpc != null && <> · <span className={pnl(p.unrealized_plpc)}>{formatPercent(p.unrealized_plpc * 100, true)}</span></>}
+            </div>
           </div>
         </div>
       ))}
@@ -309,6 +338,7 @@ function StrategyView({ s, range, setRange }) {
   const { data: decisions } = useApi(() => api.getLabDecisions(s.name), [s.name])
   const { data: checks } = useApi(() => api.getLabChecks(s.name), [s.name], { pollMs: 300000 })
   const simulated = SIMULATED.has(s.kind)
+  const showOrders = !simulated || s.kind === 'canslim2_picks'   // the picks strategy records each simulated trade
   return (
     <>
       <Card variant="glass" className="mb-4">
@@ -341,15 +371,15 @@ function StrategyView({ s, range, setRange }) {
         <CardHeader title="Positions" subtitle={simulated && s.positions?.length ? `${s.positions.length} stocks, largest first` : undefined} />
         <Positions positions={s.positions} equity={s.equity} simulated={simulated} />
       </Card>
-      {!simulated && (
+      {showOrders && (
         <div className="mb-4">
           <CollapsedDrawer title="Orders" badge={trades?.length ? `${trades.length}` : undefined}>
             <Trades trades={trades} />
           </CollapsedDrawer>
         </div>
       )}
-      <CollapsedDrawer title={simulated ? 'Rebalance log' : 'Daily decision log'}
-                       badge={decisions?.length ? `${decisions.length} ${simulated ? 'rebalances' : 'days'}` : undefined}>
+      <CollapsedDrawer title={s.kind === 'canslim2_tilt' ? 'Rebalance log' : s.kind === 'canslim2_picks' ? 'Trade log' : 'Daily decision log'}
+                       badge={decisions?.length ? `${decisions.length} ${s.kind === 'canslim2_tilt' ? 'rebalances' : 'days'}` : undefined}>
         <div className="divide-y divide-dark-700/50">
           {(decisions || []).map((d) => <div key={d.date} className="py-2"><Signal decision={d} simulated={simulated} /></div>)}
         </div>

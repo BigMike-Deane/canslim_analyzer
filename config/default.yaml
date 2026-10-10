@@ -913,6 +913,12 @@ lab_strategies:
     description: "The 500 largest US stocks, weighted like the market but tilted toward high CANSLIM 2.0 scores (earnings beats, profitability, buybacks, low short pressure, analyst coverage): top-scored 2x, bottom ~0x. Rebalanced every 20 sessions; simulated at closing prices, no broker. Research 2016-2026: about +0.7%/yr over SPY out of sample, below a strict luck bar."
     enabled: true
     starting_value: 25000
+  canslim2_picks:
+    kind: canslim2_picks
+    label: "CANSLIM 2.0 · 20 picks"
+    description: "20 equal-weight stocks from the top 10% of CANSLIM 2.0 scores (max 5 per sector). Sells when a score falls below the 70th percentile or a holding is down 15% from cost; refills from the top 10%. Simulated at closing prices with 0.1% cost per trade, no broker. Pre-registered Oct-10 (docs/canslim2-forward-plan.md). Research: concentrated lists trailed SPY 2019-26, so expect noise and possibly a lag."
+    enabled: true
+    starting_value: 25000
 
 broker_mirror:
   enabled: true

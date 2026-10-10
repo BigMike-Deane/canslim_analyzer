@@ -32,8 +32,8 @@ from typing import Callable, Optional
 
 import requests
 
-from backend.database import (Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabStrategy, Stock,
-                              StockDataCache)
+from backend.database import (Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabOrder, LabStrategy,
+                              Stock, StockDataCache)
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +364,124 @@ def mark_model(db, s: LabStrategy, today: date, closes_fn: Callable, spy_closes:
     return mark
 
 
+# ----------------------------------------------------------------- 20-stock picks (Lab, simulated)
+# Pre-registered in docs/canslim2-forward-plan.md (2026-10-10, before any trade). Changing any of
+# these makes a NEW strategy; never edit them in place.
+PICKS = "canslim2_picks"
+PICKS_N, PICKS_BUY_PCT, PICKS_SELL_PCT, PICKS_STOP, PICKS_SECTOR_MAX, PICKS_COST = 20, 90.0, 70.0, -0.15, 5, 0.001
+
+
+def picks_universe(db, day: date) -> list:
+    """Today's scored universe, best first: [{ticker, score_pct, sector}]."""
+    rows = (db.query(Canslim2Score.ticker, Canslim2Score.score_pct, Stock.sector)
+            .outerjoin(Stock, Stock.ticker == Canslim2Score.ticker)
+            .filter(Canslim2Score.date == day).order_by(Canslim2Score.score.desc()).all())
+    return [{"ticker": t, "score_pct": p, "sector": sec or "Unknown"} for t, p, sec in rows]
+
+
+def mark_picks(db, s: LabStrategy, today: date, closes_fn: Callable, raw_fn: Callable, spy_closes: list,
+               spy_adj: list, scores_fn: Callable = picks_universe) -> Optional[LabEquityMark]:
+    """Idempotent per day. Grow holdings on dividend-adjusted closes; sell below the 70th
+    percentile, on leaving the universe, or at -15% vs cost; then fill up to 20 holdings from the
+    top 10% (max 5 per sector, equal dollars = equity / 20). Trades are recorded as filled
+    LabOrders at the raw close (so the Lab's order list and win rate work)."""
+    from collections import Counter
+    from backend.lab import chain_spy_adj
+    if db.query(LabEquityMark).filter(LabEquityMark.strategy_id == s.id, LabEquityMark.date == today).first():
+        return None
+    scores = scores_fn(db, today)
+    if not scores:
+        logger.error(f"canslim2 picks: no scores for {today}; mark skipped")
+        return None
+    prev = (db.query(LabEquityMark).filter(LabEquityMark.strategy_id == s.id, LabEquityMark.date < today)
+            .order_by(LabEquityMark.date.desc()).first())
+    pos = {p["symbol"]: dict(p) for p in (prev.positions or [])} if prev else {}
+    cash = float(prev.cash or 0.0) if prev else float(s.starting_value or 25000)
+    note = None
+    if pos:
+        px = closes_fn(sorted(pos), prev.date - timedelta(days=7))
+        missing = [t for t in pos if not ((px.get(t) or {}).get(today) and (px.get(t) or {}).get(prev.date))]
+        if len(missing) > 0.2 * len(pos):
+            logger.error(f"canslim2 picks: {len(missing)}/{len(pos)} holdings lack closes for {today}; mark skipped")
+            return None
+        for t, p in pos.items():
+            if t not in missing:
+                c = px[t]
+                p["market_value"] = p["market_value"] * c[today] / c[prev.date]
+        if missing:
+            note = f"{len(missing)} holdings without a close carried flat: {', '.join(sorted(missing))}"
+    by = {r["ticker"]: r for r in scores}
+    sells, buys = [], []
+    for t in sorted(pos):
+        p, r = pos[t], by.get(t)
+        pnl = p["market_value"] / p["cost"] - 1
+        reason = ("left the universe" if r is None else "stop: -15% from cost" if pnl <= PICKS_STOP
+                  else f"score fell to {r['score_pct']:.0f}" if r["score_pct"] < PICKS_SELL_PCT else None)
+        if reason:
+            proceeds = p["market_value"] * (1 - PICKS_COST)
+            cash += proceeds
+            sells.append({"ticker": t, "reason": reason, "pnl": proceeds / p["cost"] - 1, "qty": p.get("qty")})
+            del pos[t]
+    equity = cash + sum(p["market_value"] for p in pos.values())
+    per_sector = Counter(p.get("sector") for p in pos.values())
+    sold = {x["ticker"] for x in sells}
+    slot = equity / PICKS_N
+    for r in scores:                                   # best first
+        if len(pos) >= PICKS_N or r["score_pct"] is None or r["score_pct"] < PICKS_BUY_PCT:
+            break
+        t = r["ticker"]
+        if t in pos or t in sold or per_sector[r["sector"]] >= PICKS_SECTOR_MAX:
+            continue
+        amt = min(cash, slot)
+        if amt < 0.25 * slot:                          # no dust positions when cash runs out
+            break
+        cash -= amt
+        pos[t] = {"symbol": t, "market_value": amt * (1 - PICKS_COST), "cost": amt, "entry_date": today.isoformat(),
+                  "sector": r["sector"], "entry_score": r["score_pct"]}
+        per_sector[r["sector"]] += 1
+        buys.append({"ticker": t, "amount": amt, "score_pct": r["score_pct"]})
+    if buys or sells:
+        raw = raw_fn(sorted({x["ticker"] for x in buys + sells}), today - timedelta(days=7))
+        now = datetime.now(timezone.utc)
+        for x in buys:
+            price = (raw.get(x["ticker"]) or {}).get(today)
+            qty = x["amount"] / price if price else None
+            pos[x["ticker"]]["qty"] = qty
+            db.add(LabOrder(strategy_id=s.id, date=today, symbol=x["ticker"], side="buy", qty=qty or 0.0,
+                            client_order_id=f"sim-{s.name}-{today:%Y%m%d}-{x['ticker']}-buy", status="filled",
+                            filled_qty=qty, filled_avg_price=price, submitted_at=now, filled_at=now,
+                            reason=f"score {x['score_pct']:.0f} (top 10%)"))
+        for x in sells:
+            price = (raw.get(x["ticker"]) or {}).get(today)
+            db.add(LabOrder(strategy_id=s.id, date=today, symbol=x["ticker"], side="sell", qty=x["qty"] or 0.0,
+                            client_order_id=f"sim-{s.name}-{today:%Y%m%d}-{x['ticker']}-sell", status="filled",
+                            filled_qty=x["qty"], filled_avg_price=price, submitted_at=now, filled_at=now,
+                            reason=f"{x['reason']} ({x['pnl'] * 100:+.1f}%)"))
+    equity = cash + sum(p["market_value"] for p in pos.values())
+    if buys or sells or prev is None:
+        db.add(LabDecision(strategy_id=s.id, date=today, status="simulated", note=note,
+                           target={t: round(p["market_value"] / equity, 4) for t, p in pos.items()},
+                           inputs={"kind": "trades", "holdings": len(pos), "cash": round(cash, 2),
+                                   "buys": [[x["ticker"], round(x["amount"], 2), x["score_pct"]] for x in buys],
+                                   "sells": [[x["ticker"], x["reason"], round(x["pnl"], 4)] for x in sells]}))
+        if s.activated_at is None:
+            s.activated_at = datetime.now(timezone.utc)
+    positions = sorted(({**p, "market_value": round(p["market_value"], 2), "weight": round(p["market_value"] / equity, 6),
+                         "unrealized_plpc": round(p["market_value"] / p["cost"] - 1, 4)} for p in pos.values()),
+                       key=lambda p: -p["market_value"])
+    mark = LabEquityMark(strategy_id=s.id, date=today, equity=equity, cash=cash,
+                         positions_value=equity - cash, positions=positions,
+                         spy_close=dict(spy_closes or []).get(today), spy_adj_close=chain_spy_adj(db, s.id, today, spy_adj))
+    db.add(mark)
+    db.commit()
+    return mark
+
+
+def _raw_closes(tickers, start) -> dict:
+    from backend.alpaca_data import daily_bars_multi
+    return {t: {d: v["c"] for d, v in b.items()} for t, b in daily_bars_multi(tickers, start, adjustment="raw").items()}
+
+
 def _adjusted_closes(tickers, start) -> dict:
     from backend.alpaca_data import daily_bars_multi
     return {t: {d: v["c"] for d, v in b.items()} for t, b in daily_bars_multi(tickers, start, adjustment="all").items()}
@@ -385,7 +503,7 @@ def run_refresh_job():
 
 
 def run_daily_job():
-    """After the close: score, then mark the model portfolio (trading days only)."""
+    """After the close: score, then mark the tilt and the 20-stock picks (trading days only)."""
     from backend.ai_trader import EASTERN_TZ, is_trading_day
     from backend.database import SessionLocal
     from backend.lab import fmp_daily, safe_error, sync_strategies
@@ -397,11 +515,21 @@ def run_daily_job():
     try:
         if not db.query(Canslim2Score).filter(Canslim2Score.date == today).first():
             compute_scores(db, today)
-        s = next((x for x in sync_strategies(db) if x.kind == STRATEGY and x.is_active), None)
-        if s is not None:
-            mark_model(db, s, today, _adjusted_closes, fmp_daily("SPY", days=10), fmp_daily("SPY", days=40, adjusted=True))
+        strategies = {x.kind: x for x in sync_strategies(db) if x.is_active}
+        spy_c, spy_a = fmp_daily("SPY", days=10), fmp_daily("SPY", days=40, adjusted=True)
     except Exception as e:
         db.rollback()
         logger.error(f"canslim2 daily job failed: {safe_error(e)}")
+        db.close()
+        return
+    try:
+        for kind, run in ((STRATEGY, lambda s: mark_model(db, s, today, _adjusted_closes, spy_c, spy_a)),
+                          (PICKS, lambda s: mark_picks(db, s, today, _adjusted_closes, _raw_closes, spy_c, spy_a))):
+            if kind in strategies:
+                try:   # one strategy failing never blocks the other
+                    run(strategies[kind])
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"canslim2 {kind} mark failed: {safe_error(e)}")
     finally:
         db.close()

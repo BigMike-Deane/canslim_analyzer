@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from backend import canslim2 as c2
 from backend import lab
 from backend.auth import get_current_user
-from backend.database import (Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabStrategy, SessionLocal,
+from backend.database import (Canslim2Input, Canslim2Score, LabDecision, LabEquityMark, LabOrder, LabStrategy, SessionLocal,
                               Stock, StockDataCache, User, init_db)
 from tests.conftest import TEST_USER_A_ID, override_dependency
 
@@ -17,7 +17,8 @@ init_db()
 
 PFX = "ZC2"
 TODAY = date(2026, 10, 9)
-CFG = {"lab_t_c2": {"kind": "canslim2_tilt", "label": "C2 test", "enabled": True, "starting_value": 25000}}
+CFG = {"lab_t_c2": {"kind": "canslim2_tilt", "label": "C2 test", "enabled": True, "starting_value": 25000},
+       "lab_t_c2p": {"kind": "canslim2_picks", "label": "C2 picks test", "enabled": True, "starting_value": 10000}}
 
 
 @pytest.fixture(autouse=True)
@@ -27,10 +28,10 @@ def _clean(monkeypatch):
     def wipe():
         db = SessionLocal()
         try:
-            ids = db.query(LabStrategy.id).filter(LabStrategy.name == "lab_t_c2")
-            for m in (LabDecision, LabEquityMark):
+            ids = db.query(LabStrategy.id).filter(LabStrategy.name.in_(["lab_t_c2", "lab_t_c2p"]))
+            for m in (LabOrder, LabDecision, LabEquityMark):
                 db.query(m).filter(m.strategy_id.in_(ids)).delete(synchronize_session=False)
-            db.query(LabStrategy).filter(LabStrategy.name == "lab_t_c2").delete(synchronize_session=False)
+            db.query(LabStrategy).filter(LabStrategy.name.in_(["lab_t_c2", "lab_t_c2p"])).delete(synchronize_session=False)
             for m in (Canslim2Score, Canslim2Input, StockDataCache, Stock):
                 db.query(m).filter(m.ticker.like(f"{PFX}%")).delete(synchronize_session=False)
             db.query(Canslim2Score).filter(Canslim2Score.date >= date(2099, 1, 1)).delete(synchronize_session=False)
@@ -221,3 +222,61 @@ def test_api_meta_top_and_stock():
         one = client.get(f"/api/canslim2/stock/{PFX.lower()}5").json()
         assert one["rank"] == 1 and one["universe"] == 6
         assert client.get(f"/api/canslim2/stock/{PFX}THIN").status_code == 404
+
+
+# ---------------------------------------------------------------- 20-stock picks (pre-registered rules)
+
+def _picks(db):
+    return [s for s in lab.sync_strategies(db) if s.name == "lab_t_c2p"][0]
+
+
+def test_picks_buy_top_decile_with_sector_cap_then_sell_on_score_stop_and_exit(monkeypatch):
+    monkeypatch.setattr(c2, "PICKS_N", 3)
+    monkeypatch.setattr(c2, "PICKS_SECTOR_MAX", 2)
+    db = SessionLocal()
+    try:
+        s = _picks(db)
+        d0, d1 = date(2026, 10, 12), date(2026, 10, 13)
+        day0 = [{"ticker": "A", "score_pct": 99.0, "sector": "Tech"}, {"ticker": "B", "score_pct": 98.0, "sector": "Tech"},
+                {"ticker": "C", "score_pct": 97.0, "sector": "Tech"},      # 3rd Tech: sector cap -> skipped
+                {"ticker": "D", "score_pct": 95.0, "sector": "Energy"}, {"ticker": "E", "score_pct": 91.0, "sector": "Energy"},
+                {"ticker": "F", "score_pct": 50.0, "sector": "Energy"}]
+        raw = lambda t, st: {k: {d0: 10.0, d1: 10.0} for k in "ABCDEFG"}
+        spy = ([(d0, 600.0)], [(d0, 600.0)])
+        m0 = c2.mark_picks(db, s, d0, lambda t, st: {}, raw, *spy, scores_fn=lambda db, d: day0)
+        assert sorted(p["symbol"] for p in m0.positions) == ["A", "B", "D"]
+        assert m0.cash == pytest.approx(10000 - 3 * 10000 / 3) and m0.equity == pytest.approx(10000 * (1 - 0.001))
+        buys = db.query(LabOrder).filter(LabOrder.strategy_id == s.id, LabOrder.side == "buy").all()
+        assert len(buys) == 3 and all(o.status == "filled" and o.filled_avg_price == 10.0 for o in buys)
+        assert buys[0].filled_qty == pytest.approx(10000 / 3 / 10.0)
+        dec = db.query(LabDecision).filter(LabDecision.strategy_id == s.id).one()
+        assert dec.inputs["kind"] == "trades" and len(dec.inputs["buys"]) == 3
+        assert c2.mark_picks(db, s, d0, lambda t, st: {}, raw, *spy, scores_fn=lambda db, d: day0) is None   # idempotent
+        # day 1: A drops to 65th pct (sell), B -20% (stop), D gone from the universe; C/E/G refill
+        day1 = [{"ticker": "C", "score_pct": 99.0, "sector": "Tech"}, {"ticker": "B", "score_pct": 96.0, "sector": "Tech"},
+                {"ticker": "G", "score_pct": 94.0, "sector": "Health"}, {"ticker": "E", "score_pct": 92.0, "sector": "Energy"},
+                {"ticker": "A", "score_pct": 65.0, "sector": "Tech"}]
+        adj = lambda t, st: {"A": {d0: 10.0, d1: 11.0}, "B": {d0: 10.0, d1: 8.0}, "D": {d0: 10.0, d1: 10.0}}
+        m1 = c2.mark_picks(db, s, d1, adj, raw, [(d1, 600.0)], [(d0, 600.0), (d1, 600.0)], scores_fn=lambda db, d: day1)
+        sells = {o.symbol: o.reason for o in db.query(LabOrder).filter(LabOrder.strategy_id == s.id, LabOrder.side == "sell")}
+        assert set(sells) == {"A", "B", "D"}
+        assert sells["A"].startswith("score fell to 65") and sells["B"].startswith("stop") and sells["D"].startswith("left")
+        assert sorted(p["symbol"] for p in m1.positions) == ["C", "E", "G"]          # B (sold today) not re-bought
+        slot = 10000 / 3 * 0.999
+        proceeds = (slot * 1.1 + slot * 0.8 + slot) * 0.999
+        assert m1.equity == pytest.approx(proceeds * (1 - 0.001 * 3 / 3), rel=1e-3)
+    finally:
+        db.close()
+
+
+def test_picks_skip_the_mark_without_scores_or_closes():
+    db = SessionLocal()
+    try:
+        s = _picks(db)
+        d0, d1 = date(2026, 10, 12), date(2026, 10, 13)
+        assert c2.mark_picks(db, s, d0, lambda t, st: {}, lambda t, st: {}, [], [], scores_fn=lambda db, d: []) is None
+        top = [{"ticker": f"T{i}", "score_pct": 99.0 - i * 0.1, "sector": f"S{i}"} for i in range(20)]
+        c2.mark_picks(db, s, d0, lambda t, st: {}, lambda t, st: {}, [(d0, 600.0)], [(d0, 600.0)], scores_fn=lambda db, d: top)
+        assert c2.mark_picks(db, s, d1, lambda t, st: {}, lambda t, st: {}, [], [], scores_fn=lambda db, d: top) is None
+    finally:
+        db.close()
