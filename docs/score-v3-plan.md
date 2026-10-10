@@ -528,3 +528,43 @@ estimate for the same signal family is v5b's +0.67%/yr.
 selection**: +beat_streak, +surprise_pct (C), +roe (A), +s3 buybacks, −dtc days-to-cover
 (S), +n_brokers analyst coverage (I); equal feature weights; labelled "best available,
 below the luck bar". Ledger: 10 trials. Letter-variant research on 2016–26 is complete.
+
+## Small-cap confirmation of CANSLIM 2.0 (pre-registered 2026-10-10 ~3 PM CT, before any number)
+
+Owner (Oct-10): score stocks below the $1B cutoff "for research purposes". The app will show
+provisional scores for them; this test says whether those scores mean anything. **It confirms
+an existing formula on data never used to build or test it (no selection) — not a ledger trial.**
+
+- **Band:** each v3 panel date (2016–2026), close > $5, market cap ≥ $250M and < $1B (panel
+  mcap, FMP primary), 20-day dollar volume ≥ $1M.
+- **Formula (frozen):** for each test year 2019–2026, v5b's walk-forward selection AS ALREADY
+  CHOSEN on the ≥ $1B universe (kept features + signs from `report_v8_real.json` → v5b), score =
+  mean signed centered rank, ranks computed within the band. Same feature definitions as v3.
+- **Target:** 60-session excess vs SPY (price returns both sides; dividends for the band are
+  not in the data — ranks are unaffected; the tilt compares against the band's own benchmark).
+- **Measures:** (1) OOS IC 2019–2026 vs 60-session excess, NW t, sign in 2019–22 and 2023–26;
+  (2) cap-weighted band tilt (w ∝ cap × 2u, every 20 sessions, 19 bps/turnover) vs the band's
+  cap-weighted benchmark, active %/yr and percentile among 300 random-score tilts;
+  (3) reporting: equal-weight top-minus-bottom quintile 60-session excess.
+- **Verdict:** "carries over" iff IC NW t ≥ 2.0 AND tilt active > 0 at ≥ 90th percentile of
+  random. Otherwise the app labels sub-$1B scores "formula not supported below $1B".
+
+## Score v9 pre-registration — documented volume effects (trial 11; 2026-10-10 ~3 PM CT, before any number)
+
+Owner (Oct-10): "I have a hard time believing that there's no signal in volume." Data audit the
+same day: FMP volume = Alpaca consolidated tape within ~1% (12 names, 41 days), split-adjusted
+consistently with price. v3 tested only voltrend, logdvol, ud_vol50, breakout volume. v9 tests
+the volume effects in the literature that were never examined, on the v3 universe (≥ $1B):
+
+| Feature | Definition (as known on D) | Source |
+|---|---|---|
+| `vspike` | log(mean volume, last 5 sessions / mean volume, sessions 6–55 before D) | Gervais–Kaniel–Mingelgrin 2001 (high-volume return premium) |
+| `turnover` | mean daily share volume, last 252 sessions ÷ shares outstanding (SEC as known; else FMP cap / close) | Datar–Naik–Radcliffe 1998 |
+| `lowvol_mom` | centered rank of 12-1 momentum (s4) − centered rank of turnover (same date) | Lee–Swaminathan 2000 (low-volume winners) |
+| `ear_vol` | log(mean volume E−1..E+1 / mean volume E−60..E−11), E = latest FMP report with E+1 < D, within 63 sessions | Garfinkel–Sokobin 2006 |
+
+Stage 1 (reporting): per-feature IC scoreboard as in v8. **Stage 2 — v9 = trial 11:** v5b's rule
+with the candidate pool = 38 v3 features + these 4 (v8's variants excluded: they failed);
+same tilt, costs, gates; luck bar = 95th pct of the **best of 11** random tilts; placebo first.
+A volume feature joins CANSLIM 2.0 only if v9 passes all four gates AND the 2026 selection keeps
+it. No definition, window, clip or gate changes after the first number.
