@@ -870,7 +870,7 @@ lab_strategies:
     # research/pit/lab_stop_calibration.py). Never loosen after a breach.
     stop_rules:
       target_share_min: 0.90
-      noted_breaches: {"2026-10-08": "Alpaca paper random partial fill on the MOC buy; exposure-plan breach log"}
+      noted_breaches: {"2026-10-08": "Alpaca paper random partial fill on the MOC buy; exposure-plan breach log", "2026-10-09": "Alpaca paper expired the 54-share MOC top-up unfilled; exposure-plan breach log"}
       fill_cost_review_bps: 7
       fill_cost_stop_bps: 14
       min_fills: 6

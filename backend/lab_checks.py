@@ -84,7 +84,12 @@ def check_m2(db, s, today, rules=None) -> dict:
         (noted if o.date.isoformat() in noted_dates else bad).append(desc)
     tail = f"; {len(noted)} noted in the breach log ({'; '.join(noted[-3:])})" if noted else ""
     if bad:
-        return _check("M2", "breach", len(bad), 0, "orders not filled: " + "; ".join(bad[-5:]) + tail)
+        # an order the paper broker let expire is its known random short fill, not our code: say so
+        # plainly in the push (still a breach until written up; the next session repairs it)
+        hint = (" -- Alpaca paper short-filled the order (known simulator quirk, see breach log); "
+                "the next session tops up with a regular market order, no action needed"
+                if all(b.endswith("(expired)") for b in bad) else "")
+        return _check("M2", "breach", len(bad), 0, "orders not filled: " + "; ".join(bad[-5:]) + tail + hint)
     if open_today:
         return _check("M2", "pending", open_today, 0,
                       f"{open_today} of today's orders not yet reported filled" + tail)

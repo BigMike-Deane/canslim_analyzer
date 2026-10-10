@@ -277,6 +277,19 @@ and fix, then note it here. It is not evidence about the edge.
     - M2 now lists breaches recorded here under `stop_rules.noted_breaches`, so they no
       longer show as open bugs. Any new breach still fires.
     - Rule thresholds are unchanged (no loosening).
+- **2026-10-09: M2 breached on A1 again. Mechanics, not edge.**
+  - The automatic top-ups went in at 2:45 PM CT as market-on-close orders. A5's 83 shares
+    filled in full (@ $72.10, 97.8% invested). A1's 54 shares got **zero** fill and expired at
+    16:00:58 ET, so A1 stays 82.3% invested.
+  - Same order type, same minute; A1 had $4,471 cash ($17,885 buying power), the account was
+    ACTIVE, no other orders. Paper simulator again. Smaller orders do not avoid it: 3 of the
+    first 4 closing orders came back short.
+  - **Mechanics fix (no threshold change):** an order that finishes the previous session's short
+    fill now goes in as a regular market order at the same time (~15:45 ET), which paper fills
+    in full (`backend/lab.py` `short_filled_order`). Signal trades stay market-on-close, so C1
+    still measures the closing fill the backtest assumes; a repair fill counts in C1 at its
+    real price (small notional, so little weight). The M2 push now says in plain words when
+    the only problem is a paper short fill.
 
 **What each level means.**
 - **REVIEW:** push to the owner. Within a week, a note here says whether it is a known

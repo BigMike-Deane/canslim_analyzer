@@ -41,7 +41,13 @@ class FakeClient:
                  "unrealized_plpc": "0.04"} for s, q in self.pos.items()]
 
     def submit_moc_order(self, symbol, qty, side, cid):
-        self.orders[cid] = {"id": f"b-{cid}", "status": "accepted", "symbol": symbol, "qty": qty, "side": side}
+        self.orders[cid] = {"id": f"b-{cid}", "status": "accepted", "symbol": symbol, "qty": qty, "side": side,
+                            "tif": "cls"}
+        return self.orders[cid]
+
+    def submit_order(self, symbol, qty, side, cid):
+        self.orders[cid] = {"id": f"b-{cid}", "status": "accepted", "symbol": symbol, "qty": qty, "side": side,
+                            "tif": "day"}
         return self.orders[cid]
 
     def order_by_client_id(self, cid):
@@ -130,6 +136,43 @@ def test_decide_submits_moc_once_per_session_then_record_marks():
         db.refresh(o)
         assert o.status == "filled" and o.filled_avg_price == 50.0
         assert m.equity == 25000.0 and m.spy_adj_close == 598.0 and m.positions[0]["symbol"] == "SSO"
+    finally:
+        db.close()
+
+
+def test_topup_after_a_short_filled_close_order_goes_as_a_market_order():
+    db = SessionLocal()
+    try:
+        s, fc = _strategy(db), FakeClient()
+        prev, today = date(2026, 10, 6), date(2026, 10, 7)
+        db.add(LabOrder(strategy_id=s.id, date=prev, symbol="SSO", side="buy", qty=245, status="expired",
+                        filled_qty=200, client_order_id="t-short"))      # paper short fill, rest expired
+        db.commit()
+        fc.pos = {"SSO": 200.0}
+        lab.decide_and_submit(db, s, fc, today=today, closes=closes(), price_fn=lambda sym: 100.0)
+        (o,) = fc.orders.values()
+        assert (o["symbol"], o["side"], o["qty"], o["tif"]) == ("SSO", "buy", 45, "day")
+        row = db.query(LabOrder).filter(LabOrder.strategy_id == s.id, LabOrder.date == today).one()
+        assert "finishing the 2026-10-06 order" in row.reason
+    finally:
+        db.close()
+
+
+def test_signal_trades_stay_market_on_close():
+    db = SessionLocal()
+    try:
+        s = _strategy(db)
+        db.add(LabOrder(strategy_id=s.id, date=date(2026, 10, 6), symbol="SSO", side="buy", qty=245,
+                        status="filled", filled_qty=245, client_order_id="t-full"))
+        db.add(LabOrder(strategy_id=s.id, date=date(2026, 10, 1), symbol="SGOV", side="buy", qty=100,
+                        status="expired", filled_qty=90, client_order_id="t-old-short"))
+        db.commit()
+        # a filled previous order, or a short fill older than the previous order day, is no repair
+        assert lab.short_filled_order(db, s.id, date(2026, 10, 7), "SSO", "buy") is None
+        assert lab.short_filled_order(db, s.id, date(2026, 10, 7), "SGOV", "buy") is None
+        fc = FakeClient()
+        lab.decide_and_submit(db, s, fc, today=date(2026, 10, 7), closes=closes(), price_fn=lambda sym: 100.0)
+        assert [o["tif"] for o in fc.orders.values()] == ["cls"]
     finally:
         db.close()
 
@@ -283,6 +326,9 @@ def test_m2_breach_noted_in_the_breach_log_is_not_an_open_bug():
         _order(db, s, MON + timedelta(days=1), status="expired", qty=56)    # a new, un-noted one still breaches
         c = lc.check_m2(db, s, MON + timedelta(days=2), noted)
         assert c["level"] == "breach" and c["value"] == 1 and "2026-10-06" in c["detail"]
+        assert "known simulator quirk" in c["detail"]                       # the push explains itself
+        _order(db, s, MON + timedelta(days=2), sym="SGOV", status="rejected")
+        assert "simulator quirk" not in lc.check_m2(db, s, MON + timedelta(days=3), noted)["detail"]
     finally:
         db.close()
 

@@ -208,6 +208,22 @@ def plan_orders(target: dict, holdings: dict, equity: float, prices: dict) -> li
     return orders
 
 
+def short_filled_order(db, strategy_id: int, today: date, symbol: str, side: str) -> Optional[LabOrder]:
+    """The previous session's order for this fund and side, if it ended short (expired or
+    canceled before every share filled). Alpaca paper short-fills closing orders at random
+    (exposure-plan breach log, Oct-8/9), so the order that finishes it is a regular market
+    order, which paper fills in full. Normal signal trades stay market-on-close."""
+    prev_day = (db.query(LabOrder.date).filter(LabOrder.strategy_id == strategy_id, LabOrder.date < today)
+                .order_by(LabOrder.date.desc()).limit(1).scalar())
+    if prev_day is None:
+        return None
+    for o in db.query(LabOrder).filter(LabOrder.strategy_id == strategy_id, LabOrder.date == prev_day,
+                                       LabOrder.symbol == symbol, LabOrder.side == side).all():
+        if (o.status or "").lower() in ("expired", "canceled", "cancelled") and (o.filled_qty or 0) < (o.qty or 0):
+            return o
+    return None
+
+
 def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[date] = None,
                       closes=None, price_fn=None, extra: Optional[dict] = None) -> LabDecision:
     """Idempotent per session: a second call the same day returns the existing decision."""
@@ -248,15 +264,19 @@ def decide_and_submit(db, strategy: LabStrategy, client=None, today: Optional[da
         db.flush()
         for o in orders:
             cid = f"lab-{strategy.name}-{today:%Y%m%d}-{o['symbol']}-{o['side']}-{uuid.uuid4().hex[:6]}"
+            short = short_filled_order(db, strategy.id, today, o["symbol"], o["side"])
             row = LabOrder(strategy_id=strategy.id, decision_id=dec.id, date=today, symbol=o["symbol"],
                            side=o["side"], qty=o["qty"], client_order_id=cid,
                            reason=f"target {target} ({'above' if inputs.get('above') else 'below'} "
                                   f"{inputs.get('sma_days')}d avg"
                                   + (f", 12m momentum {'positive' if inputs.get('momentum_positive') else 'negative'}"
-                                     if 'momentum_positive' in inputs else "") + ")")
+                                     if 'momentum_positive' in inputs else "") + ")"
+                                  + (f"; market order finishing the {short.date.isoformat()} order the paper "
+                                     f"broker short-filled" if short else ""))
             db.add(row)
             try:
-                res = client.submit_moc_order(o["symbol"], o["qty"], o["side"], cid)
+                submit = client.submit_order if short else client.submit_moc_order
+                res = submit(o["symbol"], o["qty"], o["side"], cid)
                 row.broker_order_id, row.status = res.get("id"), res.get("status", "submitted")
             except AlpacaError as e:
                 row.status, row.error = "error", str(e)
