@@ -53,3 +53,27 @@ Research: the tilt ≈ +0.7%/yr over SPY out of sample (6 of 8 years). Every con
 (25–30 names) trailed SPY 2019–26 by several points a year — the mega-cap gap — and the
 signals favour steady, profitable companies over the explosive big winners. The most likely
 outcome for picks is trailing SPY; that answer is still worth having on fresh data.
+
+## Strategy 3 — AI Portfolio pivot: `canslim2_picks_live` (added 2026-10-10, before activation)
+
+Owner (Oct-10): approved pivoting the AI Portfolio to CANSLIM 2.0 after the binding Oct-21
+readout, trading the way the AI Portfolio does (intraday, live prices, Alpaca paper mirror).
+
+- **Activation:** automatically at the first trading cycle on/after **2026-10-22** (config
+  `canslim2_pivot`): every real user portfolio (user_id > 0) on `nostate_cs_bear` flips to
+  `canslim2_picks_live`, and new portfolios default to it (owner policy Aug-21: all portfolios
+  run the same strategy). Shadow arms (sandbox ids < 0) are never touched.
+- **Rules = Strategy 2's**, executed live: up to 20 positions, buys from the top 10% (max 5
+  per sector), equal dollars = portfolio value / 20, sells when the score percentile < 70, the
+  stock leaves the universe, or price ≤ cost × 0.85 (checked by the intraday stop job and by
+  each trade cycle). No trailing stops, no take-profit, no pyramids, no SPY sweep, no cash
+  reserve, no circuit breaker, no buy throttle, no seeds, no ML veto, no correction-zone rule.
+  No same-day re-buy of a name sold that day.
+- **Execution:** every trade cycle (~90 min, market hours) at the live quote; the Alpaca paper
+  mirror copies each trade; its resting hard stop sits at cost × 0.85.
+- **Transition:** existing holdings are judged by the same sell rules at the first cycle
+  (kept only if their CANSLIM 2.0 percentile is ≥ 70 and they are above −15%).
+- **Comparison:** vs SPY total return and vs Strategy 2 (same rules, close-only). Live vs
+  close-only measures what intraday execution adds or costs. Reviews on the same calendar.
+- **Backtester:** not run here (`backtester.py` refuses the engine); the research test of
+  these signals is research/pit (docs/score-v3-plan.md).
