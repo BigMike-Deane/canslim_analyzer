@@ -907,6 +907,12 @@ lab_strategies:
       max_dd_review_pct: 37.3
       excess_review_pct: {63: -16.0, 126: -20.7, 252: -28.3, 756: -35.7}
       excess_stop_pct: {63: -40.0, 126: -47.7, 252: -46.3, 756: -72.2}
+  canslim2_tilt:
+    kind: canslim2_tilt
+    label: "CANSLIM 2.0 · Stock tilt"
+    description: "The 500 largest US stocks, weighted like the market but tilted toward high CANSLIM 2.0 scores (earnings beats, profitability, buybacks, low short pressure, analyst coverage): top-scored 2x, bottom ~0x. Rebalanced every 20 sessions; simulated at closing prices, no broker. Research 2016-2026: about +0.7%/yr over SPY out of sample, below a strict luck bar."
+    enabled: true
+    starting_value: 25000
 
 broker_mirror:
   enabled: true

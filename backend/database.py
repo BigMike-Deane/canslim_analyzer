@@ -2102,6 +2102,52 @@ class LabEquityMark(Base):
     )
 
 
+class Canslim2Input(Base):
+    """CANSLIM 2.0 inputs the scanner doesn't keep (backend/canslim2.py), refreshed weekly:
+    buybacks (s3, FMP quarterly diluted share counts), analyst coverage (n_brokers, FMP
+    grades), days-to-cover (FINRA consolidated short interest), 20-day dollar volume
+    (Alpaca bars; universe filter)."""
+    __tablename__ = "canslim2_inputs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, unique=True, nullable=False, index=True)
+    s3 = Column(Float)                 # -log(shares now / shares ~1y earlier); + = buybacks
+    shares_now = Column(Float)
+    shares_then = Column(Float)
+    shares_asof = Column(Date)         # period end of the latest quarter used
+    n_brokers = Column(Integer)        # distinct brokers with a rating action in the prior 365 days
+    dtc = Column(Float)                # FINRA days to cover (latest published settlement)
+    dtc_settle = Column(Date)
+    dvol20 = Column(Float)             # mean close x volume, last 20 sessions
+    fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Canslim2Score(Base):
+    """Daily CANSLIM 2.0 scores (docs/score-v3-plan.md: v5b's 2026 selection; v8 FAILED so
+    nothing was added). Percentiles are within that day's universe (price > $5, cap >= $1B,
+    20d $ volume >= $5M); in_tilt marks the 500 largest the model portfolio holds."""
+    __tablename__ = "canslim2_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    ticker = Column(String, nullable=False, index=True)
+    score = Column(Float)              # mean signed centered rank of the six signals (-0.5..0.5)
+    score_pct = Column(Float)          # 0-100 percentile in the universe
+    rank = Column(Integer)             # 1 = best in the universe
+    c_pct = Column(Float)              # letter percentiles (0-100)
+    a_pct = Column(Float)
+    s_pct = Column(Float)
+    i_pct = Column(Float)
+    market_cap = Column(Float)
+    in_tilt = Column(Boolean, default=False)
+    tilt_mult = Column(Float)          # 0x (worst of the 500) .. 2x (best); weight = cap x mult
+    inputs = Column(JSON)              # raw signal values
+
+    __table_args__ = (
+        Index('ux_canslim2_scores_date_ticker', 'date', 'ticker', unique=True),
+    )
+
+
 class RefreshTokenRecord(Base):
     """Server-side ledger of issued refresh tokens (single-use rotation).
 

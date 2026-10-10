@@ -7125,6 +7125,7 @@ from backend.routes.notifications import router as notifications_router
 from backend.routes.push import router as push_router
 from backend.routes.ops import router as ops_router
 from backend.routes.lab import router as lab_router
+from backend.routes.canslim2 import router as canslim2_router
 app.include_router(fidelity_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -7133,6 +7134,7 @@ app.include_router(notifications_router)
 app.include_router(push_router)
 app.include_router(ops_router)
 app.include_router(lab_router)
+app.include_router(canslim2_router)
 
 # ============== Serve Frontend ==============
 

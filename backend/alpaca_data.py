@@ -145,6 +145,51 @@ def daily_closes_raw(tickers, start, end: datetime = None,
     return out
 
 
+def daily_bars_multi(tickers, start, adjustment: str = "raw", end: datetime = None,
+                     chunk: int = 50) -> dict:
+    """{ticker: {date: {"c": close, "v": volume}}} of consolidated-tape daily bars for many
+    tickers (multi-symbol + page tokens). adjustment: "raw" | "split" | "all" (splits AND
+    dividends -- close-to-close ratios are total returns). {} on failure; tickers Alpaca
+    doesn't know are absent. Used by CANSLIM 2.0 (dollar volume, model-portfolio marks)."""
+    headers = _headers()
+    if headers is None or not tickers:
+        return {}
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    end = end or (datetime.now(timezone.utc) - SIP_DELAY)
+    out: dict = {}
+    names = sorted({t for t in tickers if t})
+    for i in range(0, len(names), chunk):
+        back = {alpaca_symbol(t): t for t in names[i:i + chunk]}
+        params = {"symbols": ",".join(back), "timeframe": "1Day", "feed": "sip", "adjustment": adjustment,
+                  "start": str(start), "end": end.isoformat(), "limit": 10000}
+        token = None
+        for _ in range(50):                      # page guard
+            if token:
+                params["page_token"] = token
+            try:
+                r = requests.get(f"{DATA_BASE_URL}/v2/stocks/bars", headers=headers, params=params,
+                                 timeout=TIMEOUT * 3)
+                if r.status_code != 200:
+                    logger.debug(f"Alpaca bars multi: HTTP {r.status_code} {r.text[:120]}")
+                    break
+                body = r.json()
+            except Exception as e:
+                logger.debug(f"Alpaca bars multi failed: {e}")
+                break
+            for sym, bars in (body.get("bars") or {}).items():
+                tk = back.get(sym, sym)
+                for b in bars or []:
+                    ts = parse_ts(b.get("t", ""))
+                    if ts is not None and b.get("c") is not None:
+                        out.setdefault(tk, {})[ts.astimezone(et).date()] = {"c": float(b["c"]),
+                                                                          "v": float(b.get("v") or 0)}
+            token = body.get("next_page_token")
+            if not token:
+                break
+    return out
+
+
 def daily_hlc(ticker: str, days: int = 45) -> Optional[tuple]:
     """(highs, lows, closes), oldest first -- the shape calculate_atr_stop
     consumes -- or None."""

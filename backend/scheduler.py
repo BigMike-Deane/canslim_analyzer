@@ -2835,6 +2835,40 @@ def start_lab_jobs():
             scheduler.remove_job(job_id)
         scheduler.add_job(fn, trig, id=job_id, name=name, replace_existing=True)
     logger.info("Lab jobs scheduled (decision 12:00-15:55 ET /5min, close 16:35+17:35 ET)")
+    start_canslim2_jobs()
+
+
+def start_canslim2_jobs():
+    """CANSLIM 2.0 (backend/canslim2.py): inputs refresh Saturdays 08:00 ET (FMP shares +
+    grades, FINRA days-to-cover, Alpaca dollar volume); score + model-portfolio mark after
+    the close at 17:20 ET (18:20 ET second pass; idempotent). If the inputs table is empty
+    (first deploy), one refresh runs 45 minutes after boot (after the boot scan's FMP burst)."""
+    from datetime import datetime, timedelta
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.date import DateTrigger
+    from backend.canslim2 import run_daily_job, run_refresh_job
+    from backend.database import Canslim2Input, SessionLocal
+
+    jobs = [("canslim2_daily", run_daily_job,
+             CronTrigger(day_of_week="mon-fri", hour="17,18", minute=20, timezone="America/New_York"),
+             "CANSLIM 2.0 Score + Model Mark"),
+            ("canslim2_refresh", run_refresh_job,
+             CronTrigger(day_of_week="sat", hour=8, minute=0, timezone="America/New_York"),
+             "CANSLIM 2.0 Inputs Refresh")]
+    db = SessionLocal()
+    try:
+        empty = db.query(Canslim2Input.id).first() is None
+    finally:
+        db.close()
+    if empty:
+        jobs.append(("canslim2_boot_refresh", run_refresh_job,
+                     DateTrigger(run_date=datetime.now() + timedelta(minutes=45)), "CANSLIM 2.0 First Refresh"))
+    for job_id, fn, trig, name in jobs:
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+        scheduler.add_job(fn, trig, id=job_id, name=name, replace_existing=True)
+    logger.info(f"CANSLIM 2.0 jobs scheduled (daily 17:20+18:20 ET, refresh Sat 08:00 ET"
+                f"{', first refresh in 45 min' if empty else ''})")
 
 
 def start_shadow_sync_job():
