@@ -490,3 +490,41 @@ if v8 passes all four gates **and** the 2026 selection keeps it. Otherwise CANSL
 uses v5b's 2026 selection (surprise, beat streak, buybacks, ROE, analyst coverage,
 low days-to-cover) and is labelled "best available, below the luck bar." No feature
 definition, clip, threshold or gate changes after the first number.
+
+## Score v8 results (2026-10-10 ~12:40 AM CT, single run; placebo first)
+
+Placebo (seed 1, shuffled target): no new feature kept, v8 = v5b selection on noise,
+active −1.23%/yr — pipeline clean. Features: 485,322 rows, 0 errors, coverage 66–100%.
+
+**Stage 1 (new letter variants, full v3 universe, IC vs 60-session excess):**
+
+| Letter | Feature | IC | NW t | 2016–20 | 2021–26 |
+|---|---|---|---|---|---|
+| C | eps_accel | +0.0016 | +0.40 | −0.0034 | +0.0062 (flips) |
+| C | sue (estimate-free surprise) | +0.0010 | +0.12 | −0.0213 | +0.0213 (flips) |
+| C | rev_growth | −0.0020 | −0.13 | +0.0108 | −0.0137 (flips) |
+| C | rev_accel | +0.0052 | +0.62 | −0.0043 | +0.0138 (flips) |
+| A | eps_stable (EPS up each of 3 yrs) | +0.0121 | +1.44 | +0.0124 | +0.0117 |
+| S | ud_vol50 (accumulation) | +0.0000 | +0.00 | +0.0068 | −0.0061 (flips) |
+| I | inst_chg | **−0.0227** | **−2.56** | −0.0020 | −0.0415 |
+| I | breadth_chg | +0.0014 | +0.13 | −0.0012 | +0.0037 (flips) |
+
+Growth, acceleration, accumulation and sponsorship breadth carry no signal. The only
+consistent new effect runs **against** O'Neil's "I": stocks whose institutional share
+count just rose did *worse* (crowding), mostly since 2021. EPS stability is weakly positive.
+
+**Stage 2 — v8 (trial 10): FAIL (gate 3).** +0.42%/yr vs SPY TR (6/8 yrs, IC t 1.46,
+TE 2.6%, DD 31.5% vs 31.0%); luck bar (best of 10) +0.96%. Same-script v5b reference
++0.67%/yr — adding the variants made it **worse by 0.25 pp/yr** (inst_chg kept with a
+negative sign from 2023; eps_accel/eps_stable kept once each). Ranks 501–1000: v8 +0.81%
+(98th pct), v5b +0.80% (98th pct).
+
+**Reporting (in-sample by construction):** c2 CANSLIM 2.0 letter composite +1.88%/yr,
+IC t 3.72, 6/8 yrs; ranks 501–1000 +2.19%/yr. The scoreboard that chose c2 covered the
+whole universe and period, so neither number is out of sample; the honest out-of-sample
+estimate for the same signal family is v5b's +0.67%/yr.
+
+**Decision (pre-registered):** v8 failed → the app's CANSLIM 2.0 score uses **v5b's 2026
+selection**: +beat_streak, +surprise_pct (C), +roe (A), +s3 buybacks, −dtc days-to-cover
+(S), +n_brokers analyst coverage (I); equal feature weights; labelled "best available,
+below the luck bar". Ledger: 10 trials. Letter-variant research on 2016–26 is complete.
