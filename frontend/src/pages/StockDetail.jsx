@@ -979,7 +979,7 @@ function ScoreHistory({ history, resolution = 'daily', onResolutionChange }) {
 
 function InsiderShortSection({ stock }) {
   const hasInsider = stock.insider_sentiment || stock.insider_buy_count > 0 || stock.insider_sell_count > 0
-  const hasShort = stock.short_interest_pct != null
+  const hasShort = stock.short_interest_pct != null || stock.short_ratio != null
   const hasStrength = stock.rs_3m != null || stock.rs_12m != null
     || stock.eps_estimate_revision_pct != null || stock.industry_group_rank != null
 
@@ -1036,7 +1036,7 @@ function InsiderShortSection({ stock }) {
             <div>
               <div className="text-dark-400 text-[10px] uppercase tracking-wide mb-1">Short Interest</div>
               <span className={`font-data text-sm font-semibold ${getShortColor(stock.short_interest_pct)}`}>
-                {stock.short_interest_pct?.toFixed(1)}% of float
+                {stock.short_interest_pct != null ? `${stock.short_interest_pct.toFixed(1)}% of ${stock.short_basis === 'shares' ? 'shares' : 'float'}` : '-'}
               </span>
             </div>
             <div>
@@ -1044,6 +1044,7 @@ function InsiderShortSection({ stock }) {
               <span className="font-data text-sm font-semibold text-dark-200">
                 {stock.short_ratio?.toFixed(1) || '-'} days
               </span>
+              {stock.short_source && <div className="text-[10px] text-dark-400 mt-0.5">{stock.short_source}</div>}
             </div>
           </>
         )}

@@ -287,6 +287,7 @@ def run_migrations():
         ("canslim2_scores", "prev_score_pct", "FLOAT"),
         ("canslim2_scores", "scored_at", "TIMESTAMP"),
         ("canslim2_scores", "segment", "TEXT DEFAULT 'core'"),
+        ("canslim2_inputs", "short_shares", "FLOAT"),
         # Analyst price-target range (May 2026 — surfaced on StockDetail's
         # Analyst Consensus card). consensus was already cached; high/low are
         # the new spread bounds for the range bar.
@@ -2122,6 +2123,7 @@ class Canslim2Input(Base):
     n_brokers = Column(Integer)        # distinct brokers with a rating action in the prior 365 days
     dtc = Column(Float)                # FINRA days to cover (latest published settlement)
     dtc_settle = Column(Date)
+    short_shares = Column(Float)       # FINRA short position (shares) at dtc_settle
     dvol20 = Column(Float)             # mean close x volume, last 20 sessions
     fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

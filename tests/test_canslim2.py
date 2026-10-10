@@ -36,6 +36,8 @@ def _clean(monkeypatch):
                 db.query(m).filter(m.ticker.like(f"{PFX}%")).delete(synchronize_session=False)
             db.query(Notification).filter(Notification.kind == "canslim2_move",
                                           Notification.user_id == TEST_USER_A_ID).delete(synchronize_session=False)
+            db.query(Notification).filter(Notification.kind.in_(["canslim2_alarm", "canslim2_status"]),
+                                          Notification.user_id == c2.OWNER_ID).delete(synchronize_session=False)
             db.query(Canslim2Score).filter(Canslim2Score.date >= date(2099, 1, 1)).delete(synchronize_session=False)
             db.commit()
         finally:
@@ -68,12 +70,12 @@ def test_n_brokers_counts_distinct_brokers_in_the_prior_365_days_only():
 
 
 def test_latest_dtc_uses_only_published_settlements_and_drops_no_volume_code():
-    rows = [{"symbolCode": "AAA", "settlementDate": "2026-09-15", "daysToCoverQuantity": 2.5},
+    rows = [{"symbolCode": "AAA", "settlementDate": "2026-09-15", "daysToCoverQuantity": 2.5, "currentShortPositionQuantity": 1e6},
             {"symbolCode": "AAA", "settlementDate": "2026-09-30", "daysToCoverQuantity": 3.5},   # published Oct-12: not yet
             {"symbolCode": "BBB", "settlementDate": "2026-09-15", "daysToCoverQuantity": 999.99}]
     d = c2.latest_dtc(rows, TODAY)
-    assert d["AAA"] == (2.5, date(2026, 9, 15)) and d["BBB"] == (None, date(2026, 9, 15))
-    assert c2.latest_dtc(rows, date(2026, 10, 12))["AAA"] == (3.5, date(2026, 9, 30))
+    assert d["AAA"] == (2.5, date(2026, 9, 15), 1e6) and d["BBB"] == (None, date(2026, 9, 15), None)
+    assert c2.latest_dtc(rows, date(2026, 10, 12))["AAA"] == (3.5, date(2026, 9, 30), None)
 
 
 # ---------------------------------------------------------------- scoring rule
@@ -394,5 +396,59 @@ def test_small_caps_are_ranked_among_themselves_labelled_and_never_traded(monkey
         assert not small & set(ct.c2_pcts(db))
         prof = {"engine": "canslim2_picks", "max_positions": 20, "canslim2": {"buy_pct": 0, "sector_max": 20}}
         assert not small & {b["stock"].ticker for b in ct.engine_buys(db, TEST_USER_A_ID, prof, {"total_value": 1e5}, [])}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------- mechanics alarms (pre-registered)
+
+def test_mechanics_alarms_missing_mark_first_trades_and_turnover(monkeypatch):
+    db = SessionLocal()
+    try:
+        tilt, picks = _strategy(db), _picks(db)
+        sent = []
+
+        def notify(**kw):
+            sent.append(kw)
+            db.add(Notification(user_id=kw["user_id"], kind=kw["kind"], title=kw["title"], body=kw["body"]))
+            db.commit()
+        d0, d1 = date(2026, 10, 12), date(2026, 10, 13)
+        # day 0: picks marked (first mark), tilt missed
+        db.add(LabEquityMark(strategy_id=picks.id, date=d0, equity=10000.0, cash=0.0, positions=[{"symbol": "A"}]))
+        db.add(LabOrder(strategy_id=picks.id, date=d0, symbol="A", side="buy", qty=1000, status="filled", filled_qty=1000,
+                        filled_avg_price=10.0, client_order_id="t-open"))
+        db.commit()
+        got = c2.check_mechanics(db, d0, notify=notify)
+        assert any("C2 test: no mark" in t for t in got) and any(t == "C2 picks test started" for t in got)
+        assert [x["priority"] for x in sent if "started" in x["title"]] == ["default"]
+        assert c2.check_mechanics(db, d0, notify=notify) == []          # deduped
+        # day 1: picks churned 1.5x the book after the opening buys -> turnover alarm; no second "started"
+        db.add(LabEquityMark(strategy_id=picks.id, date=d1, equity=10000.0, cash=0.0, positions=[]))
+        db.add(LabEquityMark(strategy_id=tilt.id, date=d1, equity=25000.0, cash=0.0, positions=[{"symbol": "X"}]))
+        for i, side in enumerate(("sell", "buy", "sell")):
+            db.add(LabOrder(strategy_id=picks.id, date=d1, symbol=f"T{i}", side=side, qty=1000, status="filled",
+                            filled_qty=1000, filled_avg_price=10.0, client_order_id=f"t-churn-{i}"))
+        db.commit()
+        got = c2.check_mechanics(db, d1, notify=notify)
+        assert got == ["C2 test started", "C2 picks test: turnover 150% in 30 days"]
+    finally:
+        db.close()
+
+
+def test_stock_page_short_interest_prefers_finra_and_labels_the_fallback():
+    from types import SimpleNamespace
+    db = SessionLocal()
+    try:
+        db.add(Canslim2Input(ticker=f"{PFX}SI", dtc=9.6, dtc_settle=date(2026, 9, 15), short_shares=2e5, shares_now=6.9e6))
+        db.commit()
+        old = SimpleNamespace(ticker=f"{PFX}SI", short_interest_pct=1.3, short_ratio=4.3,
+                              short_updated_at=__import__("datetime").datetime(2026, 7, 22, 21, 31))
+        d = c2.short_display(db, old)
+        assert d["short_ratio"] == 9.6 and d["short_interest_pct"] == pytest.approx(2.9, abs=0.01)
+        assert d["short_basis"] == "shares" and d["short_source"] == "FINRA, settled 2026-09-15"
+        none = SimpleNamespace(ticker=f"{PFX}NOPE", short_interest_pct=1.3, short_ratio=4.3,
+                               short_updated_at=__import__("datetime").datetime(2026, 7, 22, 21, 31))
+        f = c2.short_display(db, none)
+        assert f["short_ratio"] == 4.3 and f["short_basis"] == "float" and f["short_source"] == "Yahoo, 2026-07-22"
     finally:
         db.close()

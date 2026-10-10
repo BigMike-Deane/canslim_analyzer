@@ -116,8 +116,8 @@ def n_brokers_from_grades(rows: list, today: date) -> int:
 
 
 def latest_dtc(rows: list, today: date) -> dict:
-    """{symbol: (dtc, settle)} from FINRA rows, using only settlements published by today
-    (settlement + 12 days, as in research/pit/v3_short_interest.py); 999.99 = 'no volume'."""
+    """{symbol: (dtc, settle, short_shares)} from FINRA rows, using only settlements published by
+    today (settlement + 12 days, as in research/pit/v3_short_interest.py); 999.99 = 'no volume'."""
     out = {}
     for r in rows or []:
         try:
@@ -128,7 +128,8 @@ def latest_dtc(rows: list, today: date) -> dict:
         if not sym or dtc is None or settle + timedelta(days=12) > today:
             continue
         if sym not in out or settle > out[sym][1]:
-            out[sym] = (float(dtc) if float(dtc) < 999 else None, settle)
+            si = r.get("currentShortPositionQuantity")
+            out[sym] = (float(dtc) if float(dtc) < 999 else None, settle, float(si) if si is not None else None)
     return out
 
 
@@ -136,7 +137,7 @@ def fetch_finra(today: date, session=None) -> list:
     """FINRA consolidated short interest for settlements in the last ~5 weeks (free API)."""
     http = session or requests
     rows, offset = [], 0
-    body = {"limit": 5000, "fields": ["symbolCode", "settlementDate", "daysToCoverQuantity"],
+    body = {"limit": 5000, "fields": ["symbolCode", "settlementDate", "daysToCoverQuantity", "currentShortPositionQuantity"],
             "dateRangeFilters": [{"fieldName": "settlementDate",
                                   "startDate": (today - timedelta(days=40)).isoformat(),
                                   "endDate": (today - timedelta(days=12)).isoformat()}]}
@@ -203,7 +204,7 @@ def refresh_inputs(db, today: Optional[date] = None, tickers: Optional[list] = N
             n["dvol"] += 1
         if dtc is not None:
             d = dtc.get(t.replace("-", ".")) or dtc.get(t)
-            row.dtc, row.dtc_settle = (d if d else (None, None))
+            row.dtc, row.dtc_settle, row.short_shares = (d if d else (None, None, None))
             n["dtc"] += bool(d and d[0] is not None)
         inc = fmp("income-statement", symbol=t, period="quarter", limit=6)
         if isinstance(inc, list):
@@ -354,6 +355,22 @@ def latest_map(db, tickers) -> dict:
                          "segment": seg, "label": segment_label(seg, r.market_cap, (r.inputs or {}).get("dvol20")),
                          "letters": {"C": r.c_pct, "A": r.a_pct, "S": r.s_pct, "I": r.i_pct}}
     return out
+
+
+def short_display(db, stock) -> dict:
+    """Stock-page short interest: FINRA's latest published settlement (weekly refresh) where we have
+    it -- the scanner's Yahoo fields stopped updating 2026-07-22 -- else the stored Yahoo values,
+    labelled. Display only: classic scoring keeps its own field until the Oct-22 switch."""
+    row = db.query(Canslim2Input).filter(Canslim2Input.ticker == stock.ticker).first()
+    if row is not None and row.dtc_settle is not None:
+        pct = (row.short_shares / row.shares_now * 100) if row.short_shares and row.shares_now else None
+        return {"short_interest_pct": round(pct, 2) if pct is not None else None, "short_ratio": row.dtc,
+                "short_updated_at": row.dtc_settle.isoformat(), "short_basis": "shares",
+                "short_source": f"FINRA, settled {row.dtc_settle.isoformat()}"}
+    at = stock.short_updated_at
+    return {"short_interest_pct": stock.short_interest_pct, "short_ratio": stock.short_ratio,
+            "short_updated_at": (at.isoformat() + "Z") if at else None, "short_basis": "float",
+            "short_source": f"Yahoo, {at.date().isoformat()}" if at else "Yahoo"}
 
 
 def tilt_weights(db, day: date) -> dict:
@@ -607,6 +624,61 @@ def run_after_scan():
         db.close()
 
 
+# ----------------------------------------------------------------- mechanics alarms
+# Pre-registered (docs/canslim2-forward-plan.md, "Mechanics alarms"): a missed daily mark, > 20% of
+# holdings without a close (the mark is then skipped -> same alarm), picks turnover > 100% a month.
+# Checked on the LAST after-close pass (18:20 ET), so the 17:20 run's own retry has happened.
+OWNER_ID = 1
+
+
+def _push(db, title: str, body: str, kind: str = "canslim2_alarm", priority: str = "high", notify=None) -> bool:
+    """Owner push, deduped by kind + title over 20h. Returns True when sent."""
+    from backend.database import Notification
+    since = datetime.now(timezone.utc) - timedelta(hours=20)
+    if db.query(Notification.id).filter(Notification.user_id == OWNER_ID, Notification.kind == kind,
+                                         Notification.title == title, Notification.created_at >= since).first():
+        return False
+    if notify is None:
+        from backend.email_utils import create_notification as notify
+    notify(user_id=OWNER_ID, kind=kind, title=title, body=body, priority=priority, data={"url": "/lab"})
+    return True
+
+
+def check_mechanics(db, today: date, notify=None) -> list:
+    """Run the alarms for the simulated CANSLIM 2.0 strategies; returns the titles pushed."""
+    from backend.lab import sync_strategies
+    sent = []
+    for s in sync_strategies(db):
+        if not s.is_active or s.kind not in (STRATEGY, PICKS):
+            continue
+        mark = db.query(LabEquityMark).filter(LabEquityMark.strategy_id == s.id, LabEquityMark.date == today).first()
+        if mark is None:
+            t = f"{s.label}: no mark for {today}"
+            if _push(db, t, "The after-close run recorded nothing today: no CANSLIM 2.0 scores, or more than 20% of "
+                            "holdings had no closing price. Search the server log for 'canslim2'.", notify=notify):
+                sent.append(t)
+            continue
+        if db.query(LabEquityMark).filter(LabEquityMark.strategy_id == s.id).count() == 1:
+            t = f"{s.label} started"
+            if _push(db, t, f"First trades at the {today} close: {len(mark.positions or [])} stocks, equity "
+                            f"${mark.equity:,.0f}. Watch it in the Lab.", kind="canslim2_status", priority="default",
+                     notify=notify):
+                sent.append(t)
+        if s.kind == PICKS and mark.equity:
+            first = db.query(func.min(LabEquityMark.date)).filter(LabEquityMark.strategy_id == s.id).scalar()
+            since = today - timedelta(days=30)
+            traded = sum((o.filled_qty or 0) * (o.filled_avg_price or 0) for o in db.query(LabOrder).filter(
+                LabOrder.strategy_id == s.id, LabOrder.status == "filled", LabOrder.date > since, LabOrder.date > first))
+            turnover = traded / 2 / mark.equity
+            if turnover > 1.0:
+                t = f"{s.label}: turnover {turnover:.0%} in 30 days"
+                if _push(db, t, "More than 100% of the book traded in a month (pre-registered alarm): the score is "
+                                "churning holdings across the 70/90 band. Mechanics, not evidence; review the trade log.",
+                         notify=notify):
+                    sent.append(t)
+    return sent
+
+
 # ----------------------------------------------------------------- scheduler entry points
 
 def run_refresh_job():
@@ -618,6 +690,11 @@ def run_refresh_job():
     except Exception as e:
         db.rollback()
         logger.error(f"canslim2 refresh failed: {type(e).__name__}: {str(e)[:200]}")
+        try:
+            _push(db, "CANSLIM 2.0 weekly data refresh failed", f"{type(e).__name__}: {str(e)[:200]}. Scores keep "
+                      "using last week's buybacks / coverage / short-interest inputs until the next run.")
+        except Exception:
+            pass
     finally:
         db.close()
 
@@ -639,6 +716,11 @@ def run_daily_job():
     except Exception as e:
         db.rollback()
         logger.error(f"canslim2 daily job failed: {safe_error(e)}")
+        if now.hour >= 18:   # the last pass of the day: say so
+            try:
+                _push(db, f"CANSLIM 2.0 after-close run failed {today}", safe_error(e)[:300])
+            except Exception:
+                pass
         db.close()
         return
     try:
@@ -650,5 +732,11 @@ def run_daily_job():
                 except Exception as e:
                     db.rollback()
                     logger.error(f"canslim2 {kind} mark failed: {safe_error(e)}")
+        if now.hour >= 18:   # last pass (18:20 ET): pre-registered mechanics alarms + first-trade confirmation
+            try:
+                check_mechanics(db, today)
+            except Exception as e:
+                db.rollback()
+                logger.error(f"canslim2 mechanics check failed: {safe_error(e)}")
     finally:
         db.close()

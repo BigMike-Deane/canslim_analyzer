@@ -1884,6 +1884,16 @@ async def get_improving_radar(
 
 # ============== Single Stock Analysis ==============
 
+def _short_display_for(db, stock) -> dict:
+    try:
+        from backend.canslim2 import short_display
+        return short_display(db, stock)
+    except Exception as e:   # never let a display helper break the stock page
+        logger.warning(f"short_display failed for {stock.ticker}: {e}")
+        return {"short_interest_pct": stock.short_interest_pct, "short_ratio": stock.short_ratio,
+                "short_updated_at": None, "short_basis": "float", "short_source": "Yahoo"}
+
+
 @app.get("/api/stocks/{ticker}")
 async def get_stock(
     ticker: str,
@@ -2064,10 +2074,8 @@ async def get_stock(
         "insider_sentiment": stock.insider_sentiment,
         "insider_updated_at": (stock.insider_updated_at.isoformat() + "Z") if stock.insider_updated_at else None,
 
-        # Short interest
-        "short_interest_pct": stock.short_interest_pct,
-        "short_ratio": stock.short_ratio,
-        "short_updated_at": (stock.short_updated_at.isoformat() + "Z") if stock.short_updated_at else None,
+        # Short interest: FINRA (weekly CANSLIM 2.0 refresh) where available; Yahoo fields went stale Jul-22
+        **_short_display_for(db, stock),
 
         # Relative strength / estimate revisions / group leadership — scanner
         # populates these Stock columns but they were never surfaced (Jul-23
