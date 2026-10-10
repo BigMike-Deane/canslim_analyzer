@@ -66,7 +66,7 @@ def engine_sells(db, positions: list, profile: dict) -> list:
         pct = pcts.get(p.ticker)
         price, cost = p.current_price, p.cost_basis
         if pct is None:
-            reason = "CANSLIM 2.0: left the scored universe"
+            reason = "CANSLIM 2.0: not scored (needs price > $5, market cap >= $1B, $5M/day volume)"
         elif price and cost and price <= stop_price(cost, profile):
             reason = f"CANSLIM 2.0 STOP: -{r['stop_pct']:.0f}% from cost (${cost:.2f} -> ${price:.2f})"
         elif pct < r["sell_pct"]:

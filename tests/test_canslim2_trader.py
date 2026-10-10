@@ -49,7 +49,7 @@ def test_engine_sells_on_score_stop_and_leaving_the_universe(db):
     db.commit()
     out = {s["position"].ticker: s["reason"] for s in ct.engine_sells(db, [keep, fade, drop, gone], ENGINE_PROFILE)}
     assert set(out) == {"FADE", "DROP", "GONE"}
-    assert "score fell to 65" in out["FADE"] and "STOP" in out["DROP"] and "left the scored universe" in out["GONE"]
+    assert "score fell to 65" in out["FADE"] and "STOP" in out["DROP"] and "not scored" in out["GONE"]
     assert ct.engine_sells(db, [keep], ENGINE_PROFILE) == []
     # no scores at all (fresh install): hold everything rather than dump the book
     db.query(Canslim2Score).delete()
