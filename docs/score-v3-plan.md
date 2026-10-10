@@ -443,3 +443,50 @@ improve it (learned weights, pick lists, EAR, recency, sector-neutral, sector
 momentum) failed or did not generalize. Further iterations on the same years mostly
 raise the bar. What could move it: forward data (paper trading), estimate-revision
 history (must be logged going forward), or clean pre-2016 data (paid).
+
+## Score v8 pre-registration — CANSLIM letter variants (2026-10-09 ~11 PM CT, before any v8 number)
+
+Owner (Oct-9): "take this back to the roots… enhance each of the letters in CANSLIM…
+get really granular with each letter." The v3 scoreboard already maps the letters:
+C → beat streak / surprise (consistent), A → ROE (consistent; growth rates not),
+N → 52-week-high / breakout / pivot (fail), S → buybacks (s3) and low days-to-cover
+(consistent), L → 3/6/12-1 momentum and industry momentum (fail), I → analyst
+coverage (consistent; inst % level weak), M → A1/A5 (PASS, separate). v8 adds the
+granular letter variants **never examined in this programme**:
+
+| Letter | Feature | Definition (point-in-time; missing if inputs missing) |
+|---|---|---|
+| C | `eps_accel` | g0 − g1, g_k = (E_k − E_{k+4}) / max(\|E_{k+4}\|, 0.05), each g clipped to [−3, 3]; E_k = k-th latest SEC quarterly diluted EPS (basic fallback; derived Q4) filed ≤ D; needs 6 quarters, latest quarter end ≥ D − 200d |
+| C | `sue` | (E_0 − E_4) / sd of the last 8 yoy changes (E_k − E_{k+4}, k = 0..7), ≥ 6 changes, sd > 0; estimate-free SUE (Bernard–Thomas), clipped to [−10, 10] |
+| C | `rev_growth` | latest SEC quarterly revenue (Revenues → RevenueFromContract… → SalesRevenueNet; 80–100 day periods) / same quarter a year earlier − 1, clipped to [−1, 5]; latest end ≥ D − 200d |
+| C | `rev_accel` | rev_growth(latest) − rev_growth(previous quarter) |
+| A | `eps_stable` | number of the last 3 fiscal years whose FY EPS exceeded the prior FY's (0–3); needs 4 FYs filed ≤ D, latest FY end ≥ D − 550d |
+| S | `ud_vol50` | log(Σ volume on up-close days / Σ volume on down-close days), last 50 sessions ≤ D (stitched series) |
+| I | `inst_chg` | (13F inst shares, latest period known ≤ D − the period before) / shares outstanding as known on D (pp of shares), clipped to [−50, 50] |
+| I | `breadth_chg` | n_filers(latest period) / n_filers(period before) − 1 (Chen–Hong–Stein breadth), both ≥ 5 filers, clipped to [−1, 3] |
+
+**Stage 1 (reporting, per feature):** per-date Spearman IC vs winsorized 60-session
+excess (yw), full v3 universe, NW t, sign in both halves (2016–20, 2021–26), as in
+the v3 scoreboard. Eight looks → single-feature t's are descriptive only.
+
+**Stage 2 — v8 = trial 10 (the only gated result):** v5b's exact rule with the
+candidate pool widened to the 38 v3 features + these 8: per test year 2019–2026,
+select on the full v3 universe's training dates (60-session embargo; keep |NW t| ≥ 2
+with the same sign in both halves); score = mean signed centered rank of kept
+features; S&P-relative tilt on the 500 largest (w ∝ cap × (1 + (2u − 1))), every 20
+sessions, 19 bps per unit one-way turnover, total return.
+Gates: (1) CAGR > SPY TR 2019-01 → 2026-09; (2) beats SPY in ≥ 5 of 8 years;
+(3) active > 95th percentile of the **best of 10** random-score tilts; (4) max DD ≤
+SPY + 10 pp. Reported: ranks 501–1000 confirmation (same rule vs that universe's
+cap-weighted benchmark, percentile of 300 random tilts), v8 − v5b.
+
+**Reporting only (in-sample by construction, cannot pass):** `c2` = the CANSLIM 2.0
+letter composite chosen from the full-period scoreboard: C = mean(R beat_streak,
+R surprise_pct), A = R roe, S = mean(R s3, −R dtc), I = R n_brokers; c2 = mean of the
+four letters. Tilted the same way.
+
+**What follows (decided now):** a new feature joins the app's CANSLIM 2.0 score only
+if v8 passes all four gates **and** the 2026 selection keeps it. Otherwise CANSLIM 2.0
+uses v5b's 2026 selection (surprise, beat streak, buybacks, ROE, analyst coverage,
+low days-to-cover) and is labelled "best available, below the luck bar." No feature
+definition, clip, threshold or gate changes after the first number.
