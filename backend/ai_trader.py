@@ -390,7 +390,8 @@ def get_or_create_config(db: Session, user_id: int = 1) -> AIPortfolioConfig:
         # does — previously this hardcoded pre-sweep values (20 positions /
         # 12%) and left strategy to the column default ('balanced'), so
         # signups silently got a config nobody chose.
-        default_strategy = DEFAULT_STRATEGY
+        from backend.canslim2_trader import pivot_default_strategy
+        default_strategy = pivot_default_strategy(DEFAULT_STRATEGY)
         profile = get_strategy_profile(default_strategy)
         config = AIPortfolioConfig(
             starting_cash=25000.0,
@@ -847,6 +848,9 @@ def evaluate_pyramids(db: Session, user_id: int = 1) -> list:
     - Stock is showing accumulation (good volume)
     """
     config = get_or_create_config(db, user_id=user_id)
+    from backend.canslim2_trader import is_engine
+    if is_engine(get_strategy_profile(getattr(config, 'strategy', None) or "balanced")):
+        return []   # CANSLIM 2.0 engine: no pyramids (docs/canslim2-forward-plan.md)
     positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     portfolio = get_portfolio_value(db, user_id=user_id)
     portfolio_value = portfolio["total_value"]
@@ -1462,6 +1466,10 @@ def update_position_prices(db: Session, use_live_prices: bool = True, user_id: i
 
     positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     updated = 0
+    # CANSLIM 2.0 engine: positions track the CANSLIM 2.0 percentile, the score it trades on
+    from backend.canslim2_trader import is_engine, c2_pcts
+    _cfg = get_or_create_config(db, user_id=user_id) if positions else None
+    _c2 = c2_pcts(db) if _cfg is not None and is_engine(get_strategy_profile(getattr(_cfg, 'strategy', None) or "balanced")) else None
 
     # Batch fetch all stocks in one query (fixes N+1)
     tickers = [pos.ticker for pos in positions]
@@ -1523,7 +1531,7 @@ def update_position_prices(db: Session, use_live_prices: bool = True, user_id: i
             # Update scores from Stock table (from batch-fetched dict)
             stock = ticker_to_stock.get(position.ticker)
             if stock:
-                position.current_score = stock.canslim_score
+                position.current_score = _c2.get(position.ticker) if _c2 is not None else stock.canslim_score
                 position.current_growth_score = stock.growth_mode_score
                 position.is_growth_stock = stock.is_growth_stock or False
 
@@ -1704,6 +1712,10 @@ def _check_and_execute_stop_losses_impl(db: Session, user_id: int = 1) -> dict:
     # First update prices to get current values
     logger.info(f"Checking stop losses for {len(positions)} positions...")
     update_position_prices(db, use_live_prices=True, user_id=user_id)
+
+    from backend.canslim2_trader import is_engine, engine_stop_check
+    if is_engine(profile):   # CANSLIM 2.0 engine: fixed -15% hard stop only
+        return engine_stop_check(db, user_id, profile, config, positions)
 
     # Batch fetch all stocks in one query (fixes N+1)
     tickers = [pos.ticker for pos in positions]
@@ -2065,6 +2077,10 @@ def evaluate_sells(db: Session, user_id: int = 1) -> list:
     # Load strategy profile for sell thresholds
     strategy = getattr(portfolio_config, 'strategy', None) or "balanced"
     profile = get_strategy_profile(strategy)
+
+    from backend.canslim2_trader import is_engine, engine_sells
+    if is_engine(profile):   # CANSLIM 2.0 engine (docs/canslim2-forward-plan.md, Strategy 3)
+        return engine_sells(db, positions, profile)
 
     # Batch fetch all stocks in one query (fixes N+1 for score crash checks)
     tickers = [pos.ticker for pos in positions]
@@ -2493,6 +2509,11 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
 
     positions = db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == user_id).all()
     current_tickers = {p.ticker for p in positions}
+
+    from backend.canslim2_trader import is_engine, engine_buys
+    _c2_profile = get_strategy_profile(getattr(portfolio_config, 'strategy', None) or "balanced")
+    if is_engine(_c2_profile):   # CANSLIM 2.0 engine (docs/canslim2-forward-plan.md, Strategy 3)
+        return engine_buys(db, user_id, _c2_profile, portfolio, positions, _f)
 
     # Define duplicate ticker groups (same company, different share classes)
     DUPLICATE_TICKERS = [
@@ -3863,10 +3884,18 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
     _set_cycle_started(get_cst_now())
 
     try:
+        if user_id and user_id > 0:   # CANSLIM 2.0 pivot: pre-registered, dated, real portfolios only
+            try:
+                from backend.canslim2_trader import apply_pivot_if_due
+                apply_pivot_if_due(db)
+            except Exception as e:
+                logger.error(f"CANSLIM 2.0 pivot check failed: {e}")
         config = get_or_create_config(db, user_id=user_id)
         paper_mode = getattr(config, 'paper_mode', False) or False
         strategy = getattr(config, 'strategy', None) or "balanced"
         profile = get_strategy_profile(strategy)
+        from backend.canslim2_trader import is_engine
+        _engine = is_engine(profile)   # CANSLIM 2.0: no circuit breaker, no cash reserve
         # Profile-driven max positions (concentrated portfolio = higher returns)
         max_positions = profile.get('max_positions', config.max_positions)
         logger.info(f"Starting AI trading cycle. Active: {config.is_active}, Cash: ${config.current_cash:.2f}, Paper: {paper_mode}, Strategy: {strategy}, Max positions: {max_positions}")
@@ -4112,6 +4141,8 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
             # Recovery: only resume if below recovery threshold (conservative)
             drawdown_halt = False
 
+        if _engine:
+            drawdown_halt = False
         # Evaluate and execute pyramid trades (add to winners) - blocked by circuit breaker
         results["pyramids_executed"] = []
         if not drawdown_halt:
@@ -4203,7 +4234,7 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
         # Reserve fraction now lives in compute_dynamic_reserve_pct (shared
         # with the shadow harness so the two never drift).
-        dynamic_reserve_pct = compute_dynamic_reserve_pct(market_regime)
+        dynamic_reserve_pct = 0.0 if _engine else compute_dynamic_reserve_pct(market_regime)
 
         min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
 

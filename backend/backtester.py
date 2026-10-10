@@ -370,6 +370,11 @@ class BacktestEngine:
         # "control" inherited the prior run's overrides. Copy makes each run's
         # profile independent. Backtester-only — trading_utils/ai_trader untouched.
         self.profile = copy.deepcopy(get_strategy_profile(self.strategy))
+        if self.profile.get("engine"):
+            # CANSLIM 2.0 engine (backend/canslim2_trader.py): its signals need point-in-time scores
+            # this replay doesn't have; the research test lives in research/pit (docs/score-v3-plan.md).
+            raise ValueError(f"strategy {self.strategy} uses engine {self.profile['engine']}, which "
+                             "backtester.py cannot replay (see docs/canslim2-forward-plan.md)")
 
         # Apply profile overrides for A/B testing (e.g., ML signal on/off)
         if profile_overrides:

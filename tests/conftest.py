@@ -11,6 +11,11 @@ os.environ["TZ"] = "UTC"
 time.tzset()
 
 import pytest
+
+# The dated AI Portfolio -> CANSLIM 2.0 switch (config canslim2_pivot, 2026-10-22) must never fire
+# inside unrelated tests that run the trading cycle against the real calendar. Tests of the
+# switch itself patch backend.canslim2_trader._pivot_cfg.
+os.environ["CANSLIM2_PIVOT_DISABLED"] = "1"
 import sys
 from contextlib import contextmanager
 from pathlib import Path

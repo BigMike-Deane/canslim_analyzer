@@ -600,6 +600,9 @@ def stop_context(db, user_id: int) -> dict:
 
     pcfg = db.query(AIPortfolioConfig).filter(AIPortfolioConfig.user_id == user_id).first()
     profile = get_strategy_profile(getattr(pcfg, "strategy", None) or "balanced")
+    from backend.canslim2_trader import is_engine, rules
+    if is_engine(profile):   # CANSLIM 2.0 engine: fixed stop below cost, no ATR, no guard
+        return {"base_pct": rules(profile)["stop_pct"], "use_atr": False, "guard_cfg": {"enabled": False}}
     stops_cfg = yaml_config.get("ai_trader.stops", {}) or {}
     bearish = False
     try:

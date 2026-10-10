@@ -79,6 +79,9 @@ def compute_exit_plan(
     the target it is the upside still to go.
     """
     profile = get_strategy_profile(strategy)
+    from backend.canslim2_trader import is_engine, exit_plan as _c2_exit_plan
+    if is_engine(profile):   # CANSLIM 2.0 engine: fixed stop + score exit only
+        return _c2_exit_plan(cost_basis, current_price, current_score, profile)
     triggers: list[dict] = []
 
     has_price = (

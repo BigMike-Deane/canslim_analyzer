@@ -920,6 +920,15 @@ lab_strategies:
     enabled: true
     starting_value: 25000
 
+# AI Portfolio -> CANSLIM 2.0 (owner approved Oct-10; pre-registered docs/canslim2-forward-plan.md,
+# Strategy 3). On/after activate_on, the first trading cycle flips every REAL portfolio
+# (user_id > 0) still on a from_strategies entry; new portfolios default to `strategy`.
+canslim2_pivot:
+  activate_on: "2026-10-22"
+  strategy: canslim2_picks_live
+  from_strategies: [nostate_cs_bear]
+  notify_user_id: 1
+
 broker_mirror:
   enabled: true
   user_id: 1
@@ -2016,6 +2025,22 @@ strategy_profiles:
       min_confidence: 0.0
       veto_action: "skip"
 
+  # CANSLIM 2.0 picks, traded live by the AI Portfolio (backend/canslim2_trader.py). `engine`
+  # replaces the classic buy/sell/stop logic; pre-registered docs/canslim2-forward-plan.md
+  # (Strategy 3). Auto-activates via canslim2_pivot below. Never edit the rules in place --
+  # a changed rule is a new profile with its own start date.
+  canslim2_picks_live:
+    label: "CANSLIM 2.0 picks (live)"
+    description: "Up to 20 equal-dollar stocks from the top 10% of CANSLIM 2.0 (max 5 per sector); sells below the 70th percentile or at -15% from cost; trades live each cycle"
+    engine: canslim2_picks
+    canslim2: { buy_pct: 90, sell_pct: 70, stop_pct: 15, sector_max: 5 }
+    max_positions: 20                # equal dollars = value / 20 (no max_single_position_pct: no pyramids)
+    min_score: 0
+    stop_loss_pct: 15.0
+    bearish_stop_loss_pct: 15.0
+    take_profit_pct: 0
+    trailing_stops: {}
+    market_state: { enabled: false }
   nostate_cs_bear:
     label: "NoState + CS Bear"
     description: "Correction zone allows ONLY coiled spring entries with confidence >= 60"
