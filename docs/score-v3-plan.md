@@ -568,3 +568,19 @@ with the candidate pool = 38 v3 features + these 4 (v8's variants excluded: they
 same tilt, costs, gates; luck bar = 95th pct of the **best of 11** random tilts; placebo first.
 A volume feature joins CANSLIM 2.0 only if v9 passes all four gates AND the 2026 selection keeps
 it. No definition, window, clip or gate changes after the first number.
+
+## Small-cap confirmation — result (2026-10-10 ~3:30 PM CT, single run): CARRIES OVER
+
+Band $250M–$1B (> $5, $vol ≥ $1M): 149,465 rows, 2,881 companies, median 560/date. The frozen
+walk-forward formula (each year's set as chosen on ≥ $1B; union of 12 signals built with the v3
+definitions; am coverage 39%, dtc/si 77%, roe 83%, s3 87%, others ~100%).
+
+- OOS IC 2019–2026 **+0.0249, NW t +2.06**; 2019–22 +0.0296, 2023–26 +0.0194 (both positive).
+- Band tilt vs its cap-weighted benchmark **+0.72%/yr, 100th percentile** of 300 random tilts
+  (random median −0.59%, 95th +0.24%).
+- Reporting: top-minus-bottom quintile +0.97% per 60 sessions, positive on 57% of dates.
+
+**Verdict: carries over** (bar: t ≥ 2 and ≥ 90th pct). The first test of CANSLIM 2.0 on data never
+used to build or test it, and the size of the edge matches the ≥ $1B result (~+0.7%/yr). The IC
+clears the bar only just (t 2.06): a consistent small edge, not a strong one. App: sub-$1B scores
+are labelled "provisional — formula confirmed $250M–$1B in 2016–26 testing"; below $250M untested.
