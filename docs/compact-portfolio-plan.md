@@ -92,3 +92,33 @@ of 40%.
 by single-stock noise; the random luck band for 13-name sleeves will be wide. The most likely
 outcome is "about SPY, not distinguishable from luck." K3 is the most likely to beat SPY on
 gates 1–2, through A5, not through stock picks.
+
+## Results (2026-10-12 ~8:30 PM CT, single run; placebo first): ALL FAIL
+
+Placebo (stock returns shuffled within each date, 20 luck runs): every design at the 35th–60th
+percentile of its random versions — pipeline clean. Real run, 2019-01 → 2026-07 (95 periods,
+SPY TR 17.23%/yr), 300 random versions per design, bar = 95th pct of the best of 14:
+
+| Design | CAGR | Active | Years beat | Rolling 12m beat | Max DD | Random median / 95th | Bar | Pct of random | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| K1 SPY 60% + 13 best-scored of 100 largest | 16.11% | −1.12% | 3/8 | 20% | 31.4% | −0.81% / +1.55% | +4.22% | 42nd | **FAIL** (1,2,3) |
+| K3 A5 core + K1's stocks | 17.08% | −0.15% | 5/8 | 33% | 30.6% | +0.11% / +2.47% | (K1 gate 3) | 44th | **FAIL** (1,3) |
+| K4 11 sector funds tilted | 18.31% | +1.08% | 6/8 | 62% | 30.2% | −0.14% / +2.50% | +3.05% | 69th | **FAIL** (3) |
+| K5 SPY 60% + fresh beat streaks | 16.31% | −0.93% | 4/8 | 36% | 34.0% | −1.60% / +0.66% | +1.90% | 68th | **FAIL** (1,2,3) |
+
+Reporting only: K1 with the **13 largest** companies instead of the best-scored: 18.73% (+1.50%,
+5/8 yrs, DD 28.5%) — owning mega-caps beat SPY in this era; the score picked worse than size.
+K1 sleeve 30%: −0.83%; sleeve 100% (13 stocks, no index): −2.99%. A5 core alone: 18.22% (+0.98%).
+
+**What it means.**
+1. **Inside a ≤14-position portfolio the CANSLIM 2.0 score did no better than random picks**
+   (K1 42nd, K5 68th percentile). With 13 names, single-stock luck is ±2–4 pp/yr over 7.5 years —
+   far larger than the score's ~0.7%/yr edge, which only shows up across hundreds of names.
+2. **K4 is the near miss:** +1.08%/yr and 6 of 8 years with 11 funds, but a *random* fixed sector
+   lean did as well 31% of the time — indistinguishable from luck on 7.5 years.
+3. **The more stock slots replace the index, the worse it got** (30% → −0.83%, 40% → −1.12%,
+   100% → −2.99%): the mega-cap gap again.
+
+**Decision (as pre-registered):** no Lab strategy from this batch. For a ≤14-position account the
+applicable answer is an index core, with the A5 rule as the optional exposure layer (forward test
+running). Trial ledger: 14. Stock selection on free 2016–26 data is closed.
