@@ -61,7 +61,7 @@ def _latest_decision(db, s):
 
 
 def _summary(db, s) -> dict:
-    from backend.lab import get_client
+    from backend.lab import get_client, lab_config
     marks = _marks(db, s)
     last = marks[-1] if marks else None
     spy = _spy_rebased(marks)
@@ -70,6 +70,7 @@ def _summary(db, s) -> dict:
     spy_ret = (spy[-1] / marks[0].equity - 1) * 100 if marks and spy[-1] else None
     return {
         "name": s.name, "label": s.label, "kind": s.kind, "description": s.description,
+        "tagline": (lab_config().get(s.name) or {}).get("tagline"),
         "is_active": s.is_active, "starting_value": s.starting_value,
         "activated_at": s.activated_at.isoformat() if s.activated_at else None,
         "broker_connected": get_client(s.name) is not None,

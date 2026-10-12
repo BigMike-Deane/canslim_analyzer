@@ -857,6 +857,7 @@ lab_strategies:
   a1_trend_2x:
     kind: a1_trend_2x
     label: "A1 · Trend 2×"
+    tagline: "2× S&P 500 in uptrends, T-bills otherwise"
     description: "Hold SSO (2× S&P 500) when the S&P 500 closed above its 200-day average on the prior session, else SGOV (T-bills). Market-on-close orders. Passed 1928–93 (14.6% vs 9.6%/yr) and 1994–2026 (12.3% vs 10.9%/yr)."
     enabled: true
     starting_value: 25000
@@ -882,6 +883,7 @@ lab_strategies:
   a5_dual_momentum:
     kind: a5_dual_momentum
     label: "A5 · Dual momentum"
+    tagline: "2×, 1× or T-bills by trend + momentum"
     description: "2× S&P (SSO) when the S&P is above its 200-day average AND its 12-month return beats T-bills; 1× (SPY) when only one is true; T-bills (SGOV) when neither. Passed 1928–93 (13.3% vs 9.6%/yr) and 1994–2026 (13.7% vs 10.9%/yr, max drawdown 37% vs 55%)."
     enabled: true
     starting_value: 25000
@@ -910,12 +912,14 @@ lab_strategies:
   canslim2_tilt:
     kind: canslim2_tilt
     label: "CANSLIM 2.0 · Stock tilt"
+    tagline: "All 500 largest stocks, leaning toward high scores"
     description: "The 500 largest US stocks, weighted like the market but tilted toward high CANSLIM 2.0 scores (earnings beats, profitability, buybacks, low short pressure, analyst coverage): top-scored 2x, bottom ~0x. Rebalanced every 20 sessions; simulated at closing prices, no broker. Research 2016-2026: about +0.7%/yr over SPY out of sample, below a strict luck bar."
     enabled: true
     starting_value: 25000
   canslim2_picks:
     kind: canslim2_picks
     label: "CANSLIM 2.0 · 20 picks"
+    tagline: "Only the 20 top-scored stocks; sells the laggards"
     description: "20 equal-weight stocks from the top 10% of CANSLIM 2.0 scores (max 5 per sector). Sells when a score falls below the 70th percentile or a holding is down 15% from cost; refills from the top 10%. Simulated at closing prices with 0.1% cost per trade, no broker. Pre-registered Oct-10 (docs/canslim2-forward-plan.md). Research: concentrated lists trailed SPY 2019-26, so expect noise and possibly a lag."
     enabled: true
     starting_value: 25000

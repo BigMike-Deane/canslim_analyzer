@@ -13,7 +13,7 @@ from tests.conftest import TEST_USER_A_ID, override_dependency
 
 init_db()
 
-CFG = {"lab_t_a1": {"kind": "a1_trend_2x", "label": "A1 test", "enabled": True, "starting_value": 25000,
+CFG = {"lab_t_a1": {"kind": "a1_trend_2x", "label": "A1 test", "tagline": "2x in uptrends", "enabled": True, "starting_value": 25000,
                     "index": "^GSPC", "sma_days": 200, "risk_on": "SSO", "risk_off": "SGOV",
                     "key_env": "LAB_TEST_KEY", "secret_env": "LAB_TEST_SECRET",
                     "stop_rules": {"target_share_min": 0.90, "fill_cost_review_bps": 7, "fill_cost_stop_bps": 14,
@@ -211,12 +211,22 @@ def test_api_lists_strategy_and_serves_history_and_edge():
         rows = client.get("/api/lab/strategies").json()
         a1 = [r for r in rows if r["name"] == "lab_t_a1"][0]
         assert a1["broker_connected"] is False and a1["days"] == 4
+        assert a1["tagline"] == "2x in uptrends"
         assert a1["total_return_pct"] == 2.4 and a1["spy_return_pct"] == 1.0 and a1["excess_return_pct"] == 1.4
         hist = client.get("/api/lab/strategies/lab_t_a1/history").json()
         assert hist[0]["spy_value"] == 25000.0 and hist[-1]["spy_value"] == 25250.0
         edge = client.get("/api/lab/strategies/lab_t_a1/edge").json()
         assert edge["status"] == "ok" and edge["total_return_pct"] == 2.4
         assert client.get("/api/lab/strategies/nope").status_code == 404
+
+
+def test_every_configured_strategy_has_its_own_tagline():
+    # the Lab switcher tells strategies apart by this one-liner (the two CANSLIM 2.0 labels look alike)
+    from config_loader import config
+    cfg = config.get("lab_strategies", {})
+    tags = [c.get("tagline") for c in cfg.values()]
+    assert all(t and len(t) <= 60 for t in tags), tags
+    assert len(set(tags)) == len(tags)
 
 
 def test_safe_error_never_leaks_api_key():

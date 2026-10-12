@@ -92,7 +92,9 @@ function Signal({ decision, simulated }) {
 }
 
 const RANGES = ['1M', '3M', 'YTD', 'All']
-const SERIES_COLORS = [chartColors.brand, chartColors.accent, chartColors.violet, chartColors.muted]
+// One colour per strategy (by list position), shared by the comparison chart and the switcher cards.
+const SERIES_COLORS = [chartColors.brand, chartColors.accent, chartColors.violet, chartColors.pink, chartColors.muted]
+const seriesColor = (i) => SERIES_COLORS[i % SERIES_COLORS.length]
 
 function inRange(rows, range) {
   if (!rows?.length || range === 'All') return rows || []
@@ -123,9 +125,11 @@ function CompareChart({ strategies, range }) {
   if (!histories) return <div className="skeleton h-48 rounded-xl" />
   const byDate = {}
   let spySeries = null
+  const points = {}   // strategy -> closes in range; a strategy with one close so far is drawn as a dot
   histories.forEach((h, i) => {
     const rows = inRange(h, range)
-    if (rows.length < 2) return
+    points[strategies[i].name] = rows.length
+    if (!rows.length) return
     const base = rows[0].equity
     rows.forEach((r) => { (byDate[r.date] ||= { date: r.date })[strategies[i].name] = (r.equity / base - 1) * 100 })
     if (!spySeries || rows.length > spySeries.length) spySeries = rows
@@ -135,6 +139,8 @@ function CompareChart({ strategies, range }) {
     if (b) spySeries.forEach((r) => { if (r.spy_value && byDate[r.date]) byDate[r.date].SPY = (r.spy_value / b - 1) * 100 })
   }
   const data = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
+  // strategies started on the same day share one point (0%): nested rings keep each visible
+  const fresh = strategies.filter((s) => points[s.name] === 1).map((s) => s.name)
   if (data.length < 2) return <div className="h-48 flex items-center justify-center text-dark-400 text-sm">Comparison starts after the second daily close.</div>
   return (
     <div className="h-60">
@@ -146,7 +152,8 @@ function CompareChart({ strategies, range }) {
                    formatter={(v, k) => [`${v >= 0 ? '+' : ''}${v.toFixed(2)}%`, strategies.find((s) => s.name === k)?.label || k]} />
           <Legend formatter={(k) => strategies.find((s) => s.name === k)?.label || k} wrapperStyle={{ fontSize: 11 }} />
           {strategies.map((s, i) => (
-            <Area key={s.name} type="monotone" dataKey={s.name} stroke={SERIES_COLORS[i % SERIES_COLORS.length]} fill="none" strokeWidth={2} isAnimationActive={false} connectNulls />
+            <Area key={s.name} type="monotone" dataKey={s.name} stroke={seriesColor(i)} fill="none" strokeWidth={2} isAnimationActive={false} connectNulls
+                  dot={points[s.name] === 1 ? { r: 4 + 3 * fresh.indexOf(s.name), fill: 'none', stroke: seriesColor(i), strokeWidth: 2 } : false} />
           ))}
           <Area type="monotone" dataKey="SPY" stroke={chartColors.spy} fill="none" strokeWidth={1.5} strokeDasharray="4 3" isAnimationActive={false} connectNulls />
         </ComposedChart>
@@ -379,12 +386,32 @@ function StrategyView({ s, range, setRange }) {
         </div>
       )}
       <CollapsedDrawer title={s.kind === 'canslim2_tilt' ? 'Rebalance log' : s.kind === 'canslim2_picks' ? 'Trade log' : 'Daily decision log'}
-                       badge={decisions?.length ? `${decisions.length} ${s.kind === 'canslim2_tilt' ? 'rebalances' : 'days'}` : undefined}>
+                       badge={decisions?.length ? `${decisions.length} ${s.kind === 'canslim2_tilt' ? 'rebalance' : 'day'}${decisions.length === 1 ? '' : 's'}` : undefined}>
         <div className="divide-y divide-dark-700/50">
           {(decisions || []).map((d) => <div key={d.date} className="py-2"><Signal decision={d} simulated={simulated} /></div>)}
         </div>
       </CollapsedDrawer>
     </>
+  )
+}
+
+// Switcher card: colour dot matching the chart line, the rule in one line, return so far.
+function StrategyPick({ s, color, selected, onClick }) {
+  return (
+    <button onClick={onClick} aria-pressed={selected}
+            className={`text-left p-2.5 rounded-lg border ${selected ? 'border-primary-500 bg-primary-500/10' : 'border-dark-700'}`}>
+      <div className="flex items-start gap-1.5">
+        <span className="mt-1.5 w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+        <span className={`text-sm font-medium leading-snug ${selected ? 'text-primary-400' : 'text-dark-100'}`}>{s.label}</span>
+      </div>
+      {s.tagline && <div className="mt-1 text-[11px] leading-snug text-dark-400">{s.tagline}</div>}
+      <div className="mt-1.5 text-[11px] text-dark-400">
+        {s.days > 1
+          ? <><span className={pnl(s.total_return_pct)}>{formatPercent(s.total_return_pct, true)}</span> · {s.days} days</>
+          : s.as_of ? `started ${s.as_of}` : 'not started'}
+        {' · '}{SIMULATED.has(s.kind) ? 'simulated' : 'paper account'}
+      </div>
+    </button>
   )
 }
 
@@ -407,12 +434,9 @@ export default function Lab() {
         </Card>
       )}
       {list.length > 1 && (
-        <div className="flex gap-2 mb-4 overflow-x-auto">
-          {list.map((s) => (
-            <button key={s.name} onClick={() => setActive(s.name)}
-                    className={`px-3 py-1.5 rounded-lg text-sm whitespace-nowrap border ${current?.name === s.name ? 'border-primary-500 text-primary-400 bg-primary-500/10' : 'border-dark-700 text-dark-300'}`}>
-              {s.label}
-            </button>
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          {list.map((s, i) => (
+            <StrategyPick key={s.name} s={s} color={seriesColor(i)} selected={current?.name === s.name} onClick={() => setActive(s.name)} />
           ))}
         </div>
       )}
