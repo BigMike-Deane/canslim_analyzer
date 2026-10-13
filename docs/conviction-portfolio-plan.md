@@ -78,3 +78,32 @@ SPY core; random median; rolling 12-month beat rate.
 **Honest expectation (before running):** the luck band for a 10-stock small/large book is very wide
 (random books can differ by ±5–10 pp/yr over 7.5 years), so gate 3 is very hard. Part A is the more
 informative answer.
+
+## Results (2026-10-12 ~10:15 PM CT, single run; placebo first): A FAIL, B FAIL
+
+Placebo (returns shuffled within date): all bucket t-values within ±1 except one at −1.99 of 18;
+B at the 40th pct of random — pipeline clean. Panel: core 1,912 names/date, small 550.
+
+**Part A — conviction does NOT pay.** Mean 20-session return minus SPY TR:
+
+| Bucket (within band) | Pooled | Core | Small |
+|---|---|---|---|
+| top 1% | −0.00% (t −0.01) | −0.27% (t −0.75) | +0.76% (t +1.01) |
+| 1–2% | −0.45% (t −1.26) | −0.40% | −0.71% |
+| 2–5% | −0.39% (t −1.31) | −0.18% | −1.19% |
+| 5–10% | +0.03% (t +0.10) | +0.01% | +0.07% |
+| 10–20% | −0.03% | −0.08% | +0.06% |
+| below 20% | −0.31% | −0.25% | −0.51% |
+| **top 2%** | **−0.22% (t −0.66); 2019–22 −0.18%, 2023–26 −0.26%** | −0.33% | +0.08% |
+
+The very top of the ranking earned no more than the 5–20% band (slightly less). The score's small
+edge lives in broad ranks (it moves a 500-stock tilt), not in a sharper tail.
+
+**Part B — FAIL (gates 1, 3, 4):** 10 names, conviction-weighted: **8.64%/yr vs SPY 17.23%**
+(−8.59%), 5/8 years, max DD **61.2%** (2022: −46.2%), 38th pct of random (random median −6.53%,
+95th +3.92%, bar +6.33%). Reporting: 6 names 4.82% (DD 70%); 14 names 5.84%; equal-weight 9.38%;
+core only 13.15% (6/8 yrs, DD 64%); small only 5.64%; with 30% SPY 11.71%.
+
+**Decision (as pre-registered, A fails):** loading up on top scores is not supported; concentrated
+stock picking is not the best-chance design. Ledger: 15. Random 10-name books from this universe
+trailed SPY by a median 6.5 pp/yr — the hurdle any concentrated picker starts behind.

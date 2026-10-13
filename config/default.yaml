@@ -914,21 +914,23 @@ lab_strategies:
     label: "CANSLIM 2.0 · Stock tilt"
     tagline: "All 500 largest stocks, leaning toward high scores"
     description: "The 500 largest US stocks, weighted like the market but tilted toward high CANSLIM 2.0 scores (earnings beats, profitability, buybacks, low short pressure, analyst coverage): top-scored 2x, bottom ~0x. Rebalanced every 20 sessions; simulated at closing prices, no broker. Research 2016-2026: about +0.7%/yr over SPY out of sample, below a strict luck bar."
-    enabled: true
+    enabled: false   # retired 2026-10-12 (owner): not applicable to a <=14-position account; history kept
     starting_value: 25000
   canslim2_picks:
     kind: canslim2_picks
     label: "CANSLIM 2.0 · 20 picks"
     tagline: "Only the 20 top-scored stocks; sells the laggards"
     description: "20 equal-weight stocks from the top 10% of CANSLIM 2.0 scores (max 5 per sector). Sells when a score falls below the 70th percentile or a holding is down 15% from cost; refills from the top 10%. Simulated at closing prices with 0.1% cost per trade, no broker. Pre-registered Oct-10 (docs/canslim2-forward-plan.md). Research: concentrated lists trailed SPY 2019-26, so expect noise and possibly a lag."
-    enabled: true
+    enabled: false   # retired 2026-10-12 (owner): not applicable to a <=14-position account; history kept
     starting_value: 25000
 
 # AI Portfolio -> CANSLIM 2.0 (owner approved Oct-10; pre-registered docs/canslim2-forward-plan.md,
 # Strategy 3). On/after activate_on, the first trading cycle flips every REAL portfolio
 # (user_id > 0) still on a from_strategies entry; new portfolios default to `strategy`.
 canslim2_pivot:
-  activate_on: "2026-10-22"
+  # ON HOLD 2026-10-12 (owner: "figure out a model that works", concentrated, small caps allowed) --
+  # the 20-picks switch does not fire; docs/conviction-portfolio-plan.md decides what replaces it.
+  activate_on: null   # was "2026-10-22"
   strategy: canslim2_picks_live
   from_strategies: [nostate_cs_bear]
   notify_user_id: 1

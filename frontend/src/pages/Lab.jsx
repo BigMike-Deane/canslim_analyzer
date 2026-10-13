@@ -419,7 +419,7 @@ export default function Lab() {
   const { data: strategies, error, loading } = useApi(() => api.getLabStrategies(), [], { pollMs: 300000 })
   const [active, setActive] = useState(null)
   const [range, setRange] = useState('All')
-  const list = strategies || []
+  const list = (strategies || []).filter((s) => s.is_active)   // retired strategies keep their history in the DB
   const current = list.find((s) => s.name === active) || list[0]
   return (
     <div className="p-4 md:p-6 max-w-3xl mx-auto pb-24">

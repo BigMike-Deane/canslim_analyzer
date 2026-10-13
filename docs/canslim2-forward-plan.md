@@ -77,3 +77,8 @@ readout, trading the way the AI Portfolio does (intraday, live prices, Alpaca pa
   close-only measures what intraday execution adds or costs. Reviews on the same calendar.
 - **Backtester:** not run here (`backtester.py` refuses the engine); the research test of
   these signals is research/pit (docs/score-v3-plan.md).
+
+## Status update 2026-10-12 (owner)
+
+- **Strategies 1 and 2 (Lab tilt + Lab 20 picks) RETIRED** after one day: the owner will not hold 500 stocks or 20 names ("14 positions max"). Config `enabled: false`; their marks/orders stay in the database. Not a verdict on the score.
+- **Strategy 3 (AI Portfolio pivot) ON HOLD:** `canslim2_pivot.activate_on: null`, so nothing switches on Oct-22. The owner asked for a concentrated, conviction-weighted model with small caps allowed; docs/conviction-portfolio-plan.md decides what replaces it. The ≤14-position designs in docs/compact-portfolio-plan.md all failed.
