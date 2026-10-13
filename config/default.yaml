@@ -949,7 +949,8 @@ lab_strategies:
 # (user_id > 0) still on a from_strategies entry; new portfolios default to `strategy`.
 canslim2_pivot:
   # ON HOLD 2026-10-12 (owner: "figure out a model that works", concentrated, small caps allowed) --
-  # the 20-picks switch does not fire; docs/conviction-portfolio-plan.md decides what replaces it.
+  # the 20-picks switch does not fire. 2026-10-13 owner: AI Portfolio STAYS on nostate_cs_bear (the
+  # comparison baseline for the evidence-weighted model, shadow_model_v1); A1/A5 continue in the Lab.
   activate_on: null   # was "2026-10-22"
   strategy: canslim2_picks_live
   from_strategies: [nostate_cs_bear]

@@ -99,6 +99,9 @@ const RANGES = ['1M', '3M', 'YTD', 'All']
 const SERIES_COLORS = [chartColors.brand, chartColors.accent, chartColors.violet, chartColors.pink, chartColors.muted]
 const seriesColor = (i) => SERIES_COLORS[i % SERIES_COLORS.length]
 
+// date-only strings parse as UTC midnight; format in UTC or US time zones show the day before
+const fmtDate = (d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+
 function inRange(rows, range) {
   if (!rows?.length || range === 'All') return rows || []
   const last = new Date(rows[rows.length - 1].date)
@@ -129,8 +132,12 @@ function CompareChart({ strategies, range }) {
   const byDate = {}
   let spySeries = null
   const points = {}   // strategy -> closes in range; a strategy with one close so far is drawn as a dot
-  histories.forEach((h, i) => {
-    const rows = inRange(h, range)
+  // every line starts on the same day (the newest strategy's first close in range), so a
+  // strategy that started earlier can't look ahead or behind just from its head start
+  const ranged = histories.map((h) => inRange(h, range))
+  const start = ranged.reduce((d, rows) => (rows.length && rows[0].date > d ? rows[0].date : d), '')
+  ranged.forEach((all, i) => {
+    const rows = all.filter((r) => r.date >= start)
     points[strategies[i].name] = rows.length
     if (!rows.length) return
     const base = rows[0].equity
@@ -146,6 +153,7 @@ function CompareChart({ strategies, range }) {
   const fresh = strategies.filter((s) => points[s.name] === 1).map((s) => s.name)
   if (data.length < 2) return <div className="h-48 flex items-center justify-center text-dark-400 text-sm">Comparison starts after the second daily close.</div>
   return (
+    <>
     <div className="h-60">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -162,6 +170,8 @@ function CompareChart({ strategies, range }) {
         </ComposedChart>
       </ResponsiveContainer>
     </div>
+    <div className="text-xs text-dark-400 mt-1">All lines start together on {fmtDate(start)}; each strategy's own card shows its full history.</div>
+    </>
   )
 }
 
@@ -483,7 +493,7 @@ export default function Lab() {
       {error && <Card className="mb-4 text-red-400 text-sm">Couldn't load Lab strategies: {String(error.message || error)}</Card>}
       {list.length > 1 && (
         <Card variant="glass" className="mb-4">
-          <CardHeader title="All strategies vs SPY" subtitle="% return from the start of the range"
+          <CardHeader title="All strategies vs SPY" subtitle="% return from a common start day"
                       action={<RangeButtons range={range} setRange={setRange} />} />
           <CompareChart strategies={list} range={range} />
         </Card>
