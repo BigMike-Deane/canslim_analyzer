@@ -255,7 +255,6 @@ def test_weekly_review_flags_the_gaps(db, monkeypatch):
         db.add(LabOrder(strategy_id=ai.id, date=fri, symbol=f"X{i}", side="sell", qty=1, client_order_id=f"t{i}",
                         status="filled", reason="STOP LOSS: Down 8%"))
     db.commit()
-    monkeypatch.setattr(lab, "sync_strategies", lambda d: [model, ai])
     monkeypatch.setattr(bt, "a5_exposure", lambda d, today=None: (2, "test"))
     monkeypatch.setattr(bt, "small_cap_brake", lambda md=None: None)
     rv = lm.weekly_review(db, fri)

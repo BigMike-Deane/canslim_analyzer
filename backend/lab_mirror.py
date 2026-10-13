@@ -258,8 +258,9 @@ def weekly_review(db, today: Optional[date] = None) -> dict:
     """The model vs the AI Portfolio: returns (week, since start), how invested, holdings overlap,
     trades, and flags for gaps worth a look."""
     today = today or datetime.now(ET).date()
-    from backend.lab import sync_strategies
-    rows = {x.kind: x for x in sync_strategies(db) if x.is_active and x.kind in MIRROR_KINDS}
+    # Read-only: never upsert strategies here (the Lab page fires this next to /strategies, whose
+    # sync inserts new config entries -- two concurrent inserts hit the unique name, Oct-12).
+    rows = {x.kind: x for x in db.query(LabStrategy).filter(LabStrategy.kind.in_(MIRROR_KINDS)).all() if x.is_active}
     model, ai = rows.get("mirror_shadow"), rows.get("mirror_ai_portfolio")
     if model is None or ai is None:
         return {"status": "not_configured"}
