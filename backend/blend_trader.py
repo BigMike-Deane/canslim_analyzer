@@ -20,6 +20,7 @@ shared code paths, so it trades exactly like the AI Portfolio except for WHAT it
                  portfolio value / max_positions; no re-buy within 5 days of a sell
 """
 import logging
+import math
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -238,7 +239,7 @@ def blend_buys(db, user_id: int, profile: dict, portfolio: dict, positions: list
         proxy = SimpleNamespace(ticker=t, current_price=st.current_price, canslim_score=v["pct"],
                                 growth_mode_score=None, is_growth_stock=False, sector=st.sector)
         out.append({"stock": proxy, "value": slot, "effective_score": v["pct"], "is_growth_stock": False,
-                    "reason": f"MODEL top {100 - v['pct']:.0f}%{' small cap' if small else ''}: score {v['pct']:.0f} "
+                    "reason": f"MODEL top {max(1, math.ceil(100 - v['pct']))}%{' small cap' if small else ''}: score {v['pct']:.1f} "
                               f"(C {L['C'] or 0:.0f} · I {L['I'] or 0:.0f} · S {L['S'] or 0:.0f} · A {L['A'] or 0:.0f}) "
                               f"| market {exposure}/2",
                     "signal_factors": {"engine": ENGINE, "blend_pct": v["pct"], "segment": v["segment"],

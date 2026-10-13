@@ -90,7 +90,7 @@ def test_buys_best_first_with_room_from_the_market_switch(db):
     # >= 90th percentile of 20 names = K19 (100), K18 (95), K17 (90); equal dollars = 25,000 / 10
     assert [b["stock"].ticker for b in buys] == ["K19", "K18", "K17"]
     assert buys[0]["value"] == pytest.approx(2500.0) and buys[0]["stock"].canslim_score == 100.0
-    assert "MODEL top 0%" in buys[0]["reason"] and buys[0]["signal_factors"]["engine"] == "blend"
+    assert "MODEL top 1%" in buys[0]["reason"] and buys[0]["signal_factors"]["engine"] == "blend"
     held = [SimpleNamespace(ticker=f"H{i}") for i in range(5)]
     assert bt.blend_buys(db, 1, PROFILE, {"total_value": 25000.0}, held, exposure=1, brake=None) == []   # 5/5 when mixed
     assert bt.blend_buys(db, 1, PROFILE, {"total_value": 25000.0}, [], exposure=0, brake=None) == []      # downtrend
