@@ -909,6 +909,26 @@ lab_strategies:
       max_dd_review_pct: 37.3
       excess_review_pct: {63: -16.0, 126: -20.7, 252: -28.3, 756: -35.7}
       excess_stop_pct: {63: -40.0, 126: -47.7, 252: -46.3, 756: -72.2}
+  # Mirrors (backend/lab_mirror.py, owner Oct-12): the evidence-weighted model's shadow book and the
+  # live AI Portfolio, from the same start date, so the Lab compares them side by side.
+  model_v1:
+    kind: mirror_shadow
+    source: shadow_model_v1
+    start: "2026-10-13"
+    label: "Model · Evidence-weighted"
+    tagline: "Best-evidence signals + market switch; AI Portfolio exits"
+    description: "Buys the top 10% by weighted CANSLIM 2.0 signals (earnings beats 35%, analyst coverage 20%, low short pressure 20%, ROE 15%, buybacks 10%); up to 10 stocks in an uptrend, 5 when mixed, none in a downtrend (A5 switch); no stocks stretched >15% above their 50-day average; max 3 small caps, none while IWM is below its 50-day average. Exits, stops and pyramids are the AI Portfolio's. Trades every cycle on a shadow book. Not backtested: weighted by the evidence (docs/blend-model.md)."
+    enabled: true
+    starting_value: 25000
+  ai_portfolio_ref:
+    kind: mirror_ai_portfolio
+    source_user: 1
+    start: "2026-10-13"
+    label: "AI Portfolio"
+    tagline: "The live strategy, measured from the model's start"
+    description: "The live AI Portfolio (classic CANSLIM score + setups, nostate_cs_bear), measured from Oct-13 so it lines up with the model. Its full record since April is on the AI Portfolio page."
+    enabled: true
+    starting_value: 25000
   canslim2_tilt:
     kind: canslim2_tilt
     label: "CANSLIM 2.0 · Stock tilt"
@@ -2047,6 +2067,41 @@ strategy_profiles:
     take_profit_pct: 0
     trailing_stops: {}
     market_state: { enabled: false }
+  # Evidence-weighted model (owner Oct-12: "stop trying to backtest and just work off the signals we
+  # have"). docs/blend-model.md. Buys come from backend/blend_trader.py (weighted CANSLIM 2.0 signals,
+  # A5 market switch, small-cap brake, no stretched stocks); everything after the buy -- stops, ATR
+  # widening, trailing tiers, partial profits, take-profit, pyramids -- is nostate_cs_bear's, so it
+  # differs from the AI Portfolio only in WHAT it buys and WHEN. Runs as shadow_model_v1; the Lab
+  # shows it next to the AI Portfolio (lab_strategies model_v1 / ai_portfolio_ref).
+  blend_v1:
+    hidden: true
+    label: "Evidence-weighted model"
+    description: "Weighted CANSLIM 2.0 signals (earnings beats 35%, analyst coverage 20%, low short pressure 20%, ROE 15%, buybacks 10%) + A5 market switch + the AI Portfolio's exits"
+    engine: blend
+    min_score: 90
+    max_positions: 10
+    max_single_position_pct: 25   # = the global pyramid cap, as the AI Portfolio
+    max_sector_pct: 50
+    stop_loss_pct: 7.0
+    bearish_stop_loss_pct: 6.0
+    take_profit_pct: 75.0
+    trailing_stops: { gain_50_plus: 25, gain_30_to_50: 18, gain_20_to_30: 12, gain_10_to_20: 6, gain_5_to_10: 4 }
+    seed_count: 0
+    # The score-crash rule reads the classic score history (another scale) -> off; the score exit
+    # (model percentile < 45 = bottom 45% of its universe) stays on the shared sell path.
+    score_crash_drop_required: 999
+    score_crash_ignore_if_profitable: 20
+    market_state: { enabled: false }
+    correction_zone: { enabled: false }
+    spy_sweep: { enabled: true, gate: a5, min_idle_pct: 20 }   # idle cash -> SPY while A5 exposure >= 1
+    ml_signal: { enabled: false }
+    blend:
+      buy_pct: 90
+      regime_positions: { 2: 10, 1: 5, 0: 0 }
+      sector_max: 3
+      small_max: 3
+      max_extension_pct: 15
+
   nostate_cs_bear:
     label: "NoState + CS Bear"
     description: "Correction zone allows ONLY coiled spring entries with confidence >= 60"
@@ -2505,6 +2560,14 @@ strategy_profiles:
 #     pre-Approach-2 view. NULL c_score_uncapped (rows scored before Step 7
 #     landed) passes through unchanged.
 shadow_strategy_profiles:
+  # Evidence-weighted model (owner Oct-12; docs/blend-model.md). No promotion gate: the owner tracks
+  # it against the LIVE AI Portfolio in the Lab (lab_strategies model_v1 vs ai_portfolio_ref) with a
+  # weekly review (Fridays, backend/lab_mirror.py). Same harness = same cycles, quotes, stops.
+  shadow_model_v1:
+    parent_strategy: blend_v1
+    starting_value: 25000
+    description: "Evidence-weighted model: weighted CANSLIM 2.0 signals + A5 market switch + the AI Portfolio's exits (owner Oct-12)"
+    scorer_overrides: {}
   shadow_baseline:
     parent_strategy: nostate_cs_bear
     role: benchmark          # Aug-19 vintage of the champion; also every arm's comparator

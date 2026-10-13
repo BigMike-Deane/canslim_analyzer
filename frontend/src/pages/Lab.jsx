@@ -24,6 +24,7 @@ const VERDICT = {
 }
 
 const SIMULATED = new Set(['canslim2_tilt', 'canslim2_picks'])   // simulated at closing prices (no broker)
+const MIRROR = new Set(['mirror_shadow', 'mirror_ai_portfolio'])    // books that trade elsewhere, shown here (backend/lab_mirror.py)
 
 function Rebalance({ decision }) {
   const i = decision.inputs || {}
@@ -64,8 +65,10 @@ function TradeDay({ decision }) {
   )
 }
 
-function Signal({ decision, simulated }) {
-  if (!decision) return <div className="text-sm text-dark-400">{simulated
+function Signal({ decision, simulated, mirror }) {
+  if (!decision) return <div className="text-sm text-dark-400">{mirror
+    ? 'Starts with the next session — the first daily mark lands after that close (~5:45 PM ET).'
+    : simulated
     ? 'Not started — the first trades run after the next close (5:20 PM ET).'
     : 'No decision recorded yet — the first runs ~15 minutes before the next close.'}</div>
   if (decision.inputs?.kind === 'rebalance') return <Rebalance decision={decision} />
@@ -345,6 +348,7 @@ function StrategyView({ s, range, setRange }) {
   const { data: decisions } = useApi(() => api.getLabDecisions(s.name), [s.name])
   const { data: checks } = useApi(() => api.getLabChecks(s.name), [s.name], { pollMs: 300000 })
   const simulated = SIMULATED.has(s.kind)
+  const mirror = MIRROR.has(s.kind)
   const showOrders = !simulated || s.kind === 'canslim2_picks'   // the picks strategy records each simulated trade
   return (
     <>
@@ -360,11 +364,15 @@ function StrategyView({ s, range, setRange }) {
               <span className="text-dark-400"> · {s.days} day{s.days === 1 ? '' : 's'}</span>
             </div>}
           </div>
-          {simulated
+          {s.kind === 'mirror_shadow'
+            ? <AlertChip tone="ok" label="Shadow book" value="Trades every cycle, like the AI Portfolio" />
+            : s.kind === 'mirror_ai_portfolio'
+            ? <AlertChip tone="ok" label="Live" value="Measured from the model's start" />
+            : simulated
             ? <AlertChip tone="ok" label="Simulated" value="Closing prices, no broker" />
             : !s.broker_connected && <AlertChip tone="ok" label="Broker" value="Waiting for Alpaca keys" />}
         </div>
-        <div className="mt-3"><Signal decision={s.latest_decision} simulated={simulated} /></div>
+        <div className="mt-3"><Signal decision={s.latest_decision} simulated={simulated} mirror={mirror} /></div>
         {s.description && <div className="mt-2 text-xs text-dark-400">{s.description}</div>}
       </Card>
       <Card variant="glass" className="mb-4">
@@ -373,7 +381,7 @@ function StrategyView({ s, range, setRange }) {
         <EquityChart history={history} range={range} />
       </Card>
       <EdgeCard edge={edge} />
-      {!simulated && <StopRules checks={checks} />}
+      {!simulated && !mirror && <StopRules checks={checks} />}
       <Card variant="glass" className="mb-4">
         <CardHeader title="Positions" subtitle={simulated && s.positions?.length ? `${s.positions.length} stocks, largest first` : undefined} />
         <Positions positions={s.positions} equity={s.equity} simulated={simulated} />
@@ -388,10 +396,57 @@ function StrategyView({ s, range, setRange }) {
       <CollapsedDrawer title={s.kind === 'canslim2_tilt' ? 'Rebalance log' : s.kind === 'canslim2_picks' ? 'Trade log' : 'Daily decision log'}
                        badge={decisions?.length ? `${decisions.length} ${s.kind === 'canslim2_tilt' ? 'rebalance' : 'day'}${decisions.length === 1 ? '' : 's'}` : undefined}>
         <div className="divide-y divide-dark-700/50">
-          {(decisions || []).map((d) => <div key={d.date} className="py-2"><Signal decision={d} simulated={simulated} /></div>)}
+          {(decisions || []).map((d) => <div key={d.date} className="py-2"><Signal decision={d} simulated={simulated} mirror={mirror} /></div>)}
         </div>
       </CollapsedDrawer>
     </>
+  )
+}
+
+// Model vs AI Portfolio (backend/lab_mirror.py weekly_review): returns, how invested, overlap, gaps.
+function WeeklyReview() {
+  const { data: rv } = useApi(() => api.getLabWeeklyReview(), [], { pollMs: 300000 })
+  if (!rv || rv.status === 'not_configured') return null
+  const header = <CardHeader title="Model vs AI Portfolio" subtitle="Weekly review — also pushed Fridays after the close" />
+  if (rv.status !== 'ok') {
+    return (
+      <Card variant="glass" className="mb-4">{header}
+        <div className="text-sm text-dark-400">Starts once both books have two daily closes — the model buys in the next session's cycles.</div>
+      </Card>
+    )
+  }
+  const m = rv.books.model, a = rv.books.ai
+  const pct = (v) => (v == null ? '—' : formatPercent(v, true))
+  const cell = (v) => <td className={`py-1 text-right font-data ${v == null ? 'text-dark-400' : pnl(v)}`}>{pct(v)}</td>
+  const mk = rv.market || {}
+  return (
+    <Card variant="glass" className="mb-4">{header}
+      <table className="w-full text-sm">
+        <thead><tr className="text-[11px] text-dark-400"><th className="text-left font-normal" />
+          <th className="text-right font-normal">Model</th><th className="text-right font-normal">AI Portfolio</th><th className="text-right font-normal">SPY</th></tr></thead>
+        <tbody className="text-dark-200">
+          <tr><td className="py-1">This week</td>{cell(m.week_pct)}{cell(a.week_pct)}{cell(m.spy_week_pct)}</tr>
+          <tr><td className="py-1">Since start</td>{cell(m.since_start_pct)}{cell(a.since_start_pct)}{cell(m.spy_since_start_pct)}</tr>
+          <tr><td className="py-1">In stocks</td>
+            <td className="py-1 text-right font-data">{m.invested_pct.toFixed(0)}%</td>
+            <td className="py-1 text-right font-data">{a.invested_pct.toFixed(0)}%</td><td /></tr>
+        </tbody>
+      </table>
+      <div className="mt-2 text-xs text-dark-400 space-y-0.5">
+        <div>Both hold: <span className="text-dark-200">{rv.overlap.both.join(', ') || 'none'}</span></div>
+        <div>Model only: <span className="text-dark-200">{rv.overlap.model_only.join(', ') || 'none'}</span></div>
+        <div>AI Portfolio only: <span className="text-dark-200">{rv.overlap.ai_only.join(', ') || 'none'}</span></div>
+        {mk.a5_exposure != null && <div>Market switch: <span className="text-dark-200">{mk.a5_exposure}/2</span>
+          {' '}({['downtrend — no new stocks', 'mixed — up to 5 stocks', 'uptrend — up to 10 stocks'][mk.a5_exposure]})
+          {mk.small_cap_brake && <span> · small-cap brake on</span>}</div>}
+      </div>
+      {rv.flags.length > 0 && (
+        <div className="mt-3 space-y-1">
+          {rv.flags.map((f) => <div key={f} className="text-xs text-dark-200 border-l-2 border-amber-500 pl-2">{f}</div>)}
+        </div>
+      )}
+      {rv.flags.length === 0 && <div className="mt-3 text-xs text-dark-400">No notable gaps this week.</div>}
+    </Card>
   )
 }
 
@@ -409,7 +464,7 @@ function StrategyPick({ s, color, selected, onClick }) {
         {s.days > 1
           ? <><span className={pnl(s.total_return_pct)}>{formatPercent(s.total_return_pct, true)}</span> · {s.days} days</>
           : s.as_of ? `started ${s.as_of}` : 'not started'}
-        {' · '}{SIMULATED.has(s.kind) ? 'simulated' : 'paper account'}
+        {' · '}{s.kind === 'mirror_shadow' ? 'shadow book' : s.kind === 'mirror_ai_portfolio' ? 'live' : SIMULATED.has(s.kind) ? 'simulated' : 'paper account'}
       </div>
     </button>
   )
@@ -433,6 +488,7 @@ export default function Lab() {
           <CompareChart strategies={list} range={range} />
         </Card>
       )}
+      <WeeklyReview />
       {list.length > 1 && (
         <div className="grid grid-cols-2 gap-2 mb-4">
           {list.map((s, i) => (

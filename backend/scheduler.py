@@ -2829,6 +2829,7 @@ def start_lab_jobs():
     catches late fill reports)."""
     from apscheduler.triggers.cron import CronTrigger
     from backend.lab import run_close_job, run_decision_job
+    from backend.lab_mirror import run_mirror_job, run_weekly_review_job
 
     for job_id, fn, trig, name in (
         ("lab_decision", run_decision_job,
@@ -2837,11 +2838,19 @@ def start_lab_jobs():
         ("lab_close", run_close_job,
          CronTrigger(day_of_week="mon-fri", hour="16,17", minute=35, timezone="America/New_York"),
          "Lab Close Mark"),
+        # Mirrors (model shadow book + live AI Portfolio): after the shadow closing marks (16:17+ ET)
+        ("lab_mirror", run_mirror_job,
+         CronTrigger(day_of_week="mon-fri", hour="18,19", minute=45, timezone="America/New_York"),
+         "Lab Mirrors (model vs AI Portfolio)"),
+        ("lab_weekly_review", run_weekly_review_job,
+         CronTrigger(day_of_week="fri", hour=19, minute=55, timezone="America/New_York"),
+         "Lab Weekly Review (model vs AI Portfolio)"),
     ):
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
         scheduler.add_job(fn, trig, id=job_id, name=name, replace_existing=True)
-    logger.info("Lab jobs scheduled (decision 12:00-15:55 ET /5min, close 16:35+17:35 ET)")
+    logger.info("Lab jobs scheduled (decision 12:00-15:55 ET /5min, close 16:35+17:35 ET, mirrors 18:45+19:45 ET, "
+                "weekly review Fri 19:55 ET)")
     start_canslim2_jobs()
 
 

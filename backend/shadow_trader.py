@@ -398,6 +398,19 @@ class ShadowSession:
             for a in (analysis_results or [])
         }
         self._analysis_by_ticker.pop(None, None)
+        # Engine profiles that score positions themselves (backend/blend_trader.py): synthetic
+        # positions carry the engine's score, as update_position_prices does for a live book.
+        self._score_override = None
+        try:
+            from backend import blend_trader
+            from backend.trading_utils import get_strategy_profile
+            _prof = get_strategy_profile(shadow_strategy.parent_strategy)
+            if blend_trader.is_engine(_prof):
+                _sc = blend_trader.position_scores(sandbox_db)
+                _unscored = blend_trader.rules(_prof)["unscored_score"]
+                self._score_override = lambda t: _sc.get(t, _unscored)
+        except Exception as e:
+            logger.error(f"shadow score override failed for {shadow_strategy.name}: {e}", exc_info=True)
         self._synthetic_positions: List[_SyntheticPosition] = []
         self._synthetic_config: _SyntheticConfig = self._build_synthetic_config()
         self._shadow_trade_view: List[ShadowTrade] = []
@@ -412,13 +425,18 @@ class ShadowSession:
 
     def _build_synthetic_config(self) -> _SyntheticConfig:
         ss = self.shadow_strategy
+        # Classic arms keep the historical 8 / 12% (changing them would move every running arm);
+        # engine profiles (`engine:` key, e.g. blend) size from their own profile, as a live book would.
+        from backend.trading_utils import get_strategy_profile
+        prof = get_strategy_profile(ss.parent_strategy) or {}
+        engine = bool(prof.get("engine"))
         return _SyntheticConfig(
             id=ss.id,
             user_id=SHADOW_USER_ID,
             starting_cash=ss.starting_value or 25000.0,
             current_cash=ss.starting_value or 25000.0,
-            max_positions=8,
-            max_position_pct=12.0,
+            max_positions=int(prof.get("max_positions", 8)) if engine else 8,
+            max_position_pct=float(prof.get("max_single_position_pct", 12.0)) if engine else 12.0,
             min_score_to_buy=72,
             sell_score_threshold=45,
             take_profit_pct=75.0,
@@ -557,6 +575,8 @@ class ShadowSession:
                 growth_score = getattr(analysis, "growth_mode_score", None) or 0
                 is_growth_stock = bool(getattr(analysis, "is_growth_stock", False))
 
+            if self._score_override is not None:
+                current_score = self._score_override(ticker)
             current_value = total_shares * current_price
             gain_loss = (current_price - weighted_cost) * total_shares
             gain_loss_pct = ((current_price / weighted_cost) - 1) * 100 if weighted_cost > 0 else 0

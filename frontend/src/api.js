@@ -424,6 +424,7 @@ export const api = {
   getLabDecisions: (name) => request(`/api/lab/strategies/${name}/decisions`),
   getLabEdge: (name) => request(`/api/lab/strategies/${name}/edge`),
   getLabChecks: (name) => request(`/api/lab/strategies/${name}/checks`),
+  getLabWeeklyReview: () => request('/api/lab/weekly-review'),
   getCanslim2Meta: () => request('/api/canslim2/meta'),
   getCanslim2Top: ({ limit = 50, tiltOnly = false, bottom = false, movers = null, segment = 'core' } = {}) =>
     request(`/api/canslim2/top?limit=${limit}&tilt_only=${tiltOnly}&bottom=${bottom}&segment=${segment}${movers ? `&movers=${movers}` : ''}`),

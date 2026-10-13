@@ -1178,6 +1178,9 @@ def handle_spy_sweep(db: Session, config, profile: dict, user_id: int = 1):
         return
 
     spy_above_50ma = spy_price > spy_ma50 if spy_ma50 > 0 else False
+    if sweep_config.get('gate') == 'a5':   # evidence-weighted model: park cash while A5 exposure >= 1
+        from backend.blend_trader import sweep_allowed
+        spy_above_50ma = sweep_allowed(db)
     spy_sweep_shares = getattr(config, 'spy_sweep_shares', 0) or 0
 
     # Sell sweep if SPY below 50MA (bear protection)
@@ -1470,6 +1473,13 @@ def update_position_prices(db: Session, use_live_prices: bool = True, user_id: i
     from backend.canslim2_trader import is_engine, c2_pcts
     _cfg = get_or_create_config(db, user_id=user_id) if positions else None
     _c2 = c2_pcts(db) if _cfg is not None and is_engine(get_strategy_profile(getattr(_cfg, 'strategy', None) or "balanced")) else None
+    # Evidence-weighted model (backend/blend_trader.py): positions carry the model's percentile
+    from backend import blend_trader
+    _bl_profile = get_strategy_profile(getattr(_cfg, 'strategy', None) or "balanced") if _cfg is not None else None
+    if _c2 is None and blend_trader.is_engine(_bl_profile):
+        _bl = blend_trader.position_scores(db)
+        _unscored = blend_trader.rules(_bl_profile)["unscored_score"]
+        _c2 = {p.ticker: _bl.get(p.ticker, _unscored) for p in positions}
 
     # Batch fetch all stocks in one query (fixes N+1)
     tickers = [pos.ticker for pos in positions]
@@ -2514,6 +2524,9 @@ def evaluate_buys(db: Session, ftd_penalty_active: bool = False, heat_penalty_ac
     _c2_profile = get_strategy_profile(getattr(portfolio_config, 'strategy', None) or "balanced")
     if is_engine(_c2_profile):   # CANSLIM 2.0 engine (docs/canslim2-forward-plan.md, Strategy 3)
         return engine_buys(db, user_id, _c2_profile, portfolio, positions, _f)
+    from backend import blend_trader
+    if blend_trader.is_engine(_c2_profile):   # evidence-weighted model (docs/blend-model.md): buys only
+        return blend_trader.blend_buys(db, user_id, _c2_profile, portfolio, positions, _f)
 
     # Define duplicate ticker groups (same company, different share classes)
     DUPLICATE_TICKERS = [

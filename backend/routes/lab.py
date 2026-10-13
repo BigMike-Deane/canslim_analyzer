@@ -93,6 +93,13 @@ def list_strategies(db: Session = Depends(get_db), user=Depends(get_current_user
     return [_summary(db, s) for s in db.query(LabStrategy).order_by(LabStrategy.id).all()]
 
 
+@router.get("/weekly-review")
+def weekly_review(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """The evidence-weighted model vs the live AI Portfolio (backend/lab_mirror.py)."""
+    from backend.lab_mirror import weekly_review as review
+    return review(db)
+
+
 @router.get("/strategies/{name}")
 def strategy_detail(name: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
     return _summary(db, _strategy(db, name))
