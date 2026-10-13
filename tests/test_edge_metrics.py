@@ -417,6 +417,36 @@ class TestAttributeReturns:
         assert c["top3_share_of_gains_pct"] == 100.0
         assert c["names_for_half_of_gains"] == 1
 
+    def test_partials_plus_open_rank_as_one_stock(self):
+        # Owner, Oct-13: CARE/ECO (partials banked, rest still held) are real
+        # winners but lost to DELL's lots when only closed lots were ranked.
+        lots = [
+            {"ticker": "BIG", "realized_gain": 500.0, "deployed": 1000.0,
+             "position_return_pct": 50.0, "spy_return_pct": 5.0, "holding_days": 60},
+            {"ticker": "RUN", "realized_gain": 200.0, "deployed": 1000.0,
+             "position_return_pct": 20.0, "spy_return_pct": 2.0, "holding_days": 10},
+            {"ticker": "RUN", "realized_gain": 150.0, "deployed": 500.0,
+             "position_return_pct": 30.0, "spy_return_pct": 3.0, "holding_days": 20},
+            {"ticker": "BAD", "realized_gain": -100.0, "deployed": 1000.0,
+             "position_return_pct": -10.0, "spy_return_pct": 1.0, "holding_days": 5},
+        ]
+        held = [{"ticker": "RUN", "unrealized_gain": 400.0},
+                {"ticker": "NEW", "unrealized_gain": -50.0}]
+        out = attribute_returns(lots, starting_equity=10000.0, open_positions=held)
+        by = {r["ticker"]: r for r in out["by_stock"]}
+        assert by["RUN"] == {"ticker": "RUN", "realized_gain": 350.0, "unrealized_gain": 400.0,
+                             "total_gain": 750.0, "lots": 2, "is_open": True, "contribution_pct": 7.5}
+        assert by["NEW"]["lots"] == 0 and by["NEW"]["is_open"] and by["NEW"]["total_gain"] == -50.0
+        assert [r["ticker"] for r in out["top_contributors"]] == ["RUN", "BIG"]
+        assert [r["ticker"] for r in out["top_detractors"]] == ["BAD", "NEW"]
+        # RUN 750 of 1250 stock-level gains; RUN alone passes half
+        assert out["concentration"]["top1_share_of_gains_pct"] == 60.0
+        assert out["concentration"]["names_for_half_of_gains"] == 1
+        assert out["open_unrealized_gain"] == 350.0
+        # realized roll-ups and the skill/market split stay closed-lot only
+        assert out["total_realized_gain"] == 750.0
+        assert out["closed_positions"] == 4
+
     def test_missing_spy_leaves_excess_none(self):
         positions = [{"ticker": "ZZZ", "realized_gain": 100.0, "deployed": 1000.0,
                       "position_return_pct": 10.0, "spy_return_pct": None, "holding_days": 5}]

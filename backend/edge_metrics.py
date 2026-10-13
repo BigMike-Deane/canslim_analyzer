@@ -343,6 +343,7 @@ def attribute_returns(
     positions: Sequence[dict],
     starting_equity: Optional[float] = None,
     top_n: int = 5,
+    open_positions: Sequence[dict] = (),
 ) -> dict:
     """Edge Validation Phase 3 — decompose the realized edge by closed position.
 
@@ -360,6 +361,13 @@ def attribute_returns(
     starting equity). Returns positions ranked by dollar contribution, aggregate
     roll-ups, and a concentration block answering "do a few names drive the
     edge?". ``status='insufficient_data'`` when there are no closed positions.
+
+    ``open_positions`` (``ticker``, ``unrealized_gain``) adds what is still
+    riding. Contributors, detractors and concentration are ranked PER STOCK on
+    banked + open profit (``by_stock``): a name trimmed by partial profits and
+    still held (CARE, ECO, Oct-13) is one winner, not a few small lots that
+    lose to a fully closed name. The realized totals and the skill/market
+    split stay closed-lot only.
     """
     rows = []
     for p in positions:
@@ -394,18 +402,44 @@ def attribute_returns(
     gross_winners = round(sum(r["realized_gain"] for r in winners), 2)
     gross_losers = round(sum(r["realized_gain"] for r in losers), 2)
 
-    # Concentration of the *gains*: what share do the very top names carry?
-    top1_share = round(winners[0]["realized_gain"] / gross_winners * 100, 1) if gross_winners > 0 else None
+    # One row per stock: every closed lot (partials included) + what is still open.
+    stocks: dict = {}
+    for r in rows:
+        s = stocks.setdefault(r["ticker"], {"ticker": r["ticker"], "realized_gain": 0.0,
+                                            "unrealized_gain": 0.0, "lots": 0, "is_open": False})
+        s["realized_gain"] += r["realized_gain"]
+        s["lots"] += 1
+    for p in open_positions:
+        ug = p.get("unrealized_gain")
+        if ug is None or not p.get("ticker"):
+            continue
+        s = stocks.setdefault(p["ticker"], {"ticker": p["ticker"], "realized_gain": 0.0,
+                                            "unrealized_gain": 0.0, "lots": 0, "is_open": False})
+        s["unrealized_gain"] += ug
+        s["is_open"] = True
+    by_stock = []
+    for s in stocks.values():
+        total = s["realized_gain"] + s["unrealized_gain"]
+        by_stock.append({**s, "realized_gain": round(s["realized_gain"], 2),
+                         "unrealized_gain": round(s["unrealized_gain"], 2),
+                         "total_gain": round(total, 2),
+                         "contribution_pct": round(total / starting_equity * 100, 2) if starting_equity else None})
+    by_stock.sort(key=lambda r: r["total_gain"], reverse=True)
+
+    # Concentration of the *gains* across stocks: what share do the very top names carry?
+    stock_winners = [r for r in by_stock if r["total_gain"] > 0]
+    stock_gross = sum(r["total_gain"] for r in stock_winners)
+    top1_share = round(stock_winners[0]["total_gain"] / stock_gross * 100, 1) if stock_gross > 0 else None
     top3_share = (
-        round(sum(r["realized_gain"] for r in winners[:3]) / gross_winners * 100, 1)
-        if gross_winners > 0 else None
+        round(sum(r["total_gain"] for r in stock_winners[:3]) / stock_gross * 100, 1)
+        if stock_gross > 0 else None
     )
     names_for_half = None
-    if gross_winners > 0:
+    if stock_gross > 0:
         cum = 0.0
-        for i, r in enumerate(winners, 1):
-            cum += r["realized_gain"]
-            if cum >= gross_winners / 2:
+        for i, r in enumerate(stock_winners, 1):
+            cum += r["total_gain"]
+            if cum >= stock_gross / 2:
                 names_for_half = i
                 break
 
@@ -420,9 +454,12 @@ def attribute_returns(
         "gross_losers_loss": gross_losers,
         "winners": len(winners),
         "losers": len(losers),
-        "top_contributors": rows[:top_n],
-        "top_detractors": [r for r in reversed(rows) if r["realized_gain"] < 0][:top_n],
+        "by_stock": by_stock,
+        "open_unrealized_gain": round(sum(r["unrealized_gain"] for r in by_stock), 2),
+        "top_contributors": [r for r in by_stock if r["total_gain"] > 0][:top_n],
+        "top_detractors": [r for r in reversed(by_stock) if r["total_gain"] < 0][:top_n],
         "concentration": {
+            "basis": "per stock, banked + open",
             "top1_share_of_gains_pct": top1_share,
             "top3_share_of_gains_pct": top3_share,
             "names_for_half_of_gains": names_for_half,

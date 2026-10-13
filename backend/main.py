@@ -4200,7 +4200,13 @@ async def get_ai_portfolio_edge(
         })
 
     start_equity = base_value if base_value else (port_values[0] if port_values else None)
-    metrics["attribution"] = attribute_returns(positions, starting_equity=start_equity)
+    # What is still riding counts toward each stock's total (partials + open lot = one winner).
+    open_rows = [
+        {"ticker": p.ticker, "unrealized_gain": (p.current_price - p.cost_basis) * p.shares}
+        for p in db.query(AIPortfolioPosition).filter(AIPortfolioPosition.user_id == current_user.id).all()
+        if p.current_price and p.cost_basis and p.shares
+    ]
+    metrics["attribution"] = attribute_returns(positions, starting_equity=start_equity, open_positions=open_rows)
 
     return metrics
 

@@ -912,7 +912,6 @@ function EdgeAttribution({ edge }) {
   if (!a || a.status !== 'ok' || !a.closed_positions) return null
 
   const usd = (v) => (v == null ? '—' : formatCurrency(v))
-  const pct = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`)
   const signCls = (v) => (v == null ? 'text-dark-400' : v >= 0 ? 'text-emerald-400' : 'text-red-400')
 
   // The headline insight: realized P&L vs the slice of it that actually beat
@@ -929,12 +928,11 @@ function EdgeAttribution({ edge }) {
   const PositionRows = ({ rows }) => (
     <div className="space-y-1">
       {rows.map((r) => (
-        <div key={r.ticker + r.holding_days} className="grid grid-cols-12 gap-1 items-center text-[11px] py-0.5">
-          <span className="col-span-3 font-semibold text-dark-200 truncate">{r.ticker}</span>
-          <span className={`col-span-2 text-right ${signCls(r.position_return_pct)}`}>{pct(r.position_return_pct)}</span>
-          <span className="col-span-3 text-right text-dark-500">SPY {pct(r.spy_return_pct)}</span>
-          <span className={`col-span-2 text-right ${signCls(r.excess_gain)}`} title="Dollars earned beyond what the same capital would have made in SPY over this hold window">{usd(r.excess_gain)}</span>
-          <span className="col-span-2 text-right text-dark-400">{r.holding_days != null ? `${r.holding_days}d` : '—'}</span>
+        <div key={r.ticker} className="grid grid-cols-12 gap-1 items-center text-[11px] py-0.5">
+          <span className="col-span-3 font-semibold text-dark-200 truncate">{r.ticker}{r.is_open && <span className="ml-1 text-[9px] font-normal text-dark-400" title="still held">open</span>}</span>
+          <span className={`col-span-3 text-right ${r.lots ? signCls(r.realized_gain) : 'text-dark-400'}`} title="Profit already banked from closed lots (partial sales included)">{r.lots ? usd(r.realized_gain) : '—'}</span>
+          <span className={`col-span-3 text-right ${r.is_open ? signCls(r.unrealized_gain) : 'text-dark-400'}`} title="Paper profit on the shares still held">{r.is_open ? usd(r.unrealized_gain) : '—'}</span>
+          <span className={`col-span-3 text-right font-semibold ${signCls(r.total_gain)}`}>{usd(r.total_gain)}</span>
         </div>
       ))}
     </div>
@@ -942,7 +940,7 @@ function EdgeAttribution({ edge }) {
 
   return (
     <Card variant="glass" className="mb-4">
-      <CardHeader title="Edge Attribution" subtitle="Which closed positions drive the edge — skill or market?" />
+      <CardHeader title="Edge Attribution" subtitle="Which stocks drive the gains (banked + open), and how much of the closed profit beat SPY" />
 
       <div className="grid grid-cols-2 gap-2 mb-3">
         <EdgeMetric
@@ -978,12 +976,12 @@ function EdgeAttribution({ edge }) {
       )}
 
       <div className="flex items-center justify-between text-[11px] text-dark-400 mb-2">
-        <span>{a.winners}W / {a.losers}L · winners {usd(a.gross_winners_gain)}, losers {usd(a.gross_losers_loss)}</span>
+        <span>Closed lots: {a.winners}W / {a.losers}L · winners {usd(a.gross_winners_gain)}, losers {usd(a.gross_losers_loss)}</span>
       </div>
 
       {(conc.top1_share_of_gains_pct != null || conc.names_for_half_of_gains != null) && (
         <div className="text-[11px] text-dark-500 border-t border-dark-700/50 pt-2 mb-1">
-          Concentration:{' '}
+          Concentration (per stock, banked + open):{' '}
           {conc.top1_share_of_gains_pct != null && <>top name = {conc.top1_share_of_gains_pct}% of gains</>}
           {conc.top3_share_of_gains_pct != null && <> · top 3 = {conc.top3_share_of_gains_pct}%</>}
           {conc.names_for_half_of_gains != null && <> · {conc.names_for_half_of_gains} name{conc.names_for_half_of_gains === 1 ? '' : 's'} = half the gains</>}
@@ -992,12 +990,11 @@ function EdgeAttribution({ edge }) {
 
       <div className="border-t border-dark-700/50 mt-2 pt-2">
         <CollapsibleSection title="Top contributors & detractors" defaultOpen={false}>
-          <div className="grid grid-cols-12 gap-1 text-[10px] uppercase tracking-wide text-dark-600 mb-1">
-            <span className="col-span-3">Ticker</span>
-            <span className="col-span-2 text-right">Return</span>
-            <span className="col-span-3 text-right">vs SPY</span>
-            <span className="col-span-2 text-right">Excess $</span>
-            <span className="col-span-2 text-right">Held</span>
+          <div className="grid grid-cols-12 gap-1 text-[10px] uppercase tracking-wide text-dark-400 mb-1">
+            <span className="col-span-3">Stock</span>
+            <span className="col-span-3 text-right">Banked</span>
+            <span className="col-span-3 text-right">Open</span>
+            <span className="col-span-3 text-right">Total</span>
           </div>
           {a.top_contributors?.length > 0 && <PositionRows rows={a.top_contributors} />}
           {a.top_detractors?.length > 0 && (
@@ -1389,8 +1386,10 @@ function PortfolioNarrative({ edge, trades }) {
             capital would have earned in SPY over the same hold windows; the rest is market exposure.</>
           )}
           {a.concentration?.top1_share_of_gains_pct != null && a.top_contributors?.[0] && (
-            <> The gains are top-heavy: <b className="text-dark-100">{a.top_contributors[0].ticker}</b> alone
-            accounts for {a.concentration.top1_share_of_gains_pct}%.</>
+            <> Counting banked and still-open profit per stock, the biggest winner is{' '}
+            <b className="text-dark-100">{a.top_contributors[0].ticker}</b> at {a.concentration.top1_share_of_gains_pct}% of
+            the gains{a.top_contributors[1] && <>, then <b className="text-dark-100">{a.top_contributors[1].ticker}</b>
+            {a.top_contributors[2] && <> and <b className="text-dark-100">{a.top_contributors[2].ticker}</b></>}</>}.</>
           )}
           {lastSell && (
             <> Latest realization: <b className="text-dark-100">{lastSell.ticker}</b>
