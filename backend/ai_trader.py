@@ -4247,7 +4247,11 @@ def run_ai_trading_cycle(db: Session, user_id: int = 1) -> dict:
 
         # Reserve fraction now lives in compute_dynamic_reserve_pct (shared
         # with the shadow harness so the two never drift).
-        dynamic_reserve_pct = 0.0 if _engine else compute_dynamic_reserve_pct(market_regime)
+        # The evidence-weighted model (blend engine) sizes 10 equal slots of equity/10 and parks idle
+        # cash by its own A5 rule (docs/blend-model.md), so no regime reserve either -- with one, the
+        # 10th slot never fills (Oct-13 first cycle bought 9; owner approved). Keeps the circuit breaker.
+        from backend import blend_trader as _bt
+        dynamic_reserve_pct = 0.0 if (_engine or _bt.is_engine(profile)) else compute_dynamic_reserve_pct(market_regime)
 
         min_cash_reserve = portfolio["total_value"] * dynamic_reserve_pct
 

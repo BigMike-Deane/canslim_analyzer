@@ -773,6 +773,28 @@ class TestBuyExecutionGuard:
         # Reserve preserved: spent <= 25000 - 1250, never drives cash to $0.
         assert sum(r.total_value for r in rows) == pytest.approx(23750.0)
 
+    def test_model_engine_skips_regime_reserve(self, db_session, monkeypatch):
+        # Oct-13: the evidence-weighted model sizes 10 slots of equity/10; the
+        # 10% bull-tape reserve held back exactly one slot (first cycle bought
+        # 9). Live exempts engine profiles from the reserve -- the shadow loop
+        # must too, so all 10 fill while a classic stack keeps its cushion.
+        from backend import shadow_trader
+        from backend import ai_trader
+        strategy = _make_strategy(db_session, name="model_reserve_test", parent="blend_v1")
+        strategy.config_snapshot = {"strategy": "blend_v1", "engine": "blend"}
+        db_session.commit()
+        decisions = [self._buy_decision(f"M{i}", value=2500.0) for i in range(10)]
+        monkeypatch.setattr(ai_trader, "evaluate_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(ai_trader, "evaluate_buys", lambda *a, **kw: decisions)
+        monkeypatch.setattr(ai_trader, "compute_dynamic_reserve_pct", lambda *a, **kw: 0.10)
+
+        shadow_trader._run_one_strategy(strategy.id, [])
+
+        rows = db_session.query(ShadowTrade).filter(
+            ShadowTrade.shadow_strategy_id == strategy.id).all()
+        assert len(rows) == 10
+        assert sum(r.total_value for r in rows) == pytest.approx(25000.0)
+
     def test_clamped_runt_below_min_position_is_skipped(self, db_session, monkeypatch):
         # Sep-24 audit: live skips a buy whose post-clamp value is under
         # min_position_value; the shadow loop bought $0.34-$27 runts that sat

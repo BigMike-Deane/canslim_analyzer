@@ -1494,10 +1494,18 @@ def _run_one_strategy(strategy_id: int, analysis_results: List[dict]) -> int:
             _total_value = float(
                 (get_portfolio_value(shadow_session, user_id=SHADOW_USER_ID) or {})
                 .get("total_value") or 0)
-            try:
-                _reserve_pct = compute_dynamic_reserve_pct(get_market_regime(shadow_session))
-            except Exception:
-                _reserve_pct = 0.05  # conservative floor if regime lookup fails
+            # Engine profiles (CANSLIM 2.0, evidence-weighted model) skip the regime
+            # reserve live (ai_trader run_ai_trading_cycle) -- mirror it, or the
+            # model's 10th equal slot never fills (Oct-13 first cycle bought 9).
+            from backend import blend_trader, canslim2_trader
+            _snap = strategy.config_snapshot or {}
+            if blend_trader.is_engine(_snap) or canslim2_trader.is_engine(_snap):
+                _reserve_pct = 0.0
+            else:
+                try:
+                    _reserve_pct = compute_dynamic_reserve_pct(get_market_regime(shadow_session))
+                except Exception:
+                    _reserve_pct = 0.05  # conservative floor if regime lookup fails
             min_cash_reserve = _total_value * _reserve_pct
         except Exception as e:
             logger.error(f"shadow reserve calc failed for {strategy.name}: {e}", exc_info=True)

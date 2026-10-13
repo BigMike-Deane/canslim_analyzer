@@ -47,7 +47,9 @@ and the live book made money on trend days (+16 bps/day) and lost on chop (−10
 - **Small caps** ($250M–$1B, ≥ $1M/day traded — the band where the score carried over in testing):
   max 3 of the 10 slots, ranked among themselves; **none, and nothing under $2B, while IWM is
   below its 50-day average** (62% of the live chop losses were small caps lagging).
-- **Equal size** (portfolio ÷ 10). No extra weight for the top score at entry: the very top of the
+- **Equal size** (portfolio ÷ 10), fully invested when the switch says 10 — no 5–60% regime cash
+  reserve (the AI Portfolio's would hold back exactly one slot; Oct-13 first cycle bought 9, owner
+  approved the exemption the same day). Idle cash only follows the market switch above. No extra weight for the top score at entry: the very top of the
   ranking did not beat the merely good (conviction test, Oct-12).
 - No re-buy within 5 days of selling.
 
