@@ -168,3 +168,16 @@ class TestMonitoringConfig:
         [cmd] = svc["command"]
         assert "\n" not in cmd and "\r" not in cmd
         assert "$$AM_SMTP_PASSWORD" in cmd and "$$AM_WEBHOOK_TOKEN" in cmd
+
+    def test_outbound_services_do_not_hang_on_one_resolver(self):
+        # 2026-10-15: host systemd-resolved stalled three times in a week and
+        # every FMP/Alpaca/Yahoo call failed with NameResolutionError. The
+        # app and Alertmanager must carry their own resolvers, at least two
+        # operators, so one stalled path cannot take outbound calls down.
+        services = yaml.safe_load(open(os.path.join(ROOT, "docker-compose.yml")))["services"]
+        for name in ("canslim", "alertmanager"):
+            dns = services[name].get("dns")
+            assert isinstance(dns, list) and len(dns) >= 2, name
+            assert all(re.fullmatch(r"\d+\.\d+\.\d+\.\d+", s) for s in dns), name
+            assert "127.0.0.53" not in dns, name
+            assert len({s.split(".")[0] for s in dns}) >= 2, name

@@ -1,5 +1,18 @@
 version: '3.8'
 
+# Outbound DNS for every service that calls the internet (2026-10-15).
+# Default chain was container -> Docker 127.0.0.11 -> host systemd-resolved
+# 127.0.0.53 -> Hetzner resolvers: one path, and resolved stalled three times
+# in a week (Oct-8 ~15:00-20:00 UTC on/off in market hours, Oct-14 09 UTC,
+# Oct-15 14:28-14:37 UTC) -- every FMP/Alpaca/Yahoo call failed with
+# NameResolutionError until it came back. Three operators, in order; Docker's
+# embedded resolver moves to the next on a timeout and still answers service
+# names (postgres, redis) itself. No service resolves *.ts.net names.
+x-outbound-dns: &outbound_dns
+  - 1.1.1.1        # Cloudflare
+  - 9.9.9.9        # Quad9
+  - 185.12.64.1    # Hetzner (in-datacenter)
+
 services:
   canslim:
     build:
@@ -63,6 +76,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    dns: *outbound_dns
     restart: unless-stopped
     # Memory ceiling (2026-09-08): uvicorn leaked to 2.87 GB and the kernel
     # OOM-killed it host-wide (postgres was an eligible victim). A cgroup
@@ -231,6 +245,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: ["umask 077 && printf '%s' \"$$AM_SMTP_PASSWORD\" > /tmp/smtp_password && printf '%s' \"$$AM_WEBHOOK_TOKEN\" > /tmp/webhook_token && sed -e \"s|__SMTP_USER__|$$AM_SMTP_USER|g\" -e \"s|__SMTP_TO__|$$AM_SMTP_TO|g\" /etc/alertmanager/template.yml > /tmp/alertmanager.yml && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager --web.external-url=http://100.104.189.36:9093"]
     mem_limit: 64m
+    dns: *outbound_dns
     restart: unless-stopped
 
 volumes:
